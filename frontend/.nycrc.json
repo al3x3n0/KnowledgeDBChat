@@ -1,0 +1,17 @@
+{
+  "reporter": ["text", "text-summary", "html", "lcov"],
+  "exclude": [
+    "**/*.test.{ts,tsx}",
+    "**/setupTests.ts",
+    "**/__tests__/**",
+    "**/node_modules/**",
+    "**/build/**",
+    "**/coverage/**"
+  ],
+  "check-coverage": true,
+  "lines": 60,
+  "functions": 60,
+  "branches": 60,
+  "statements": 60
+}
+

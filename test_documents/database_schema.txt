@@ -1,0 +1,109 @@
+Database Schema Documentation
+=============================
+
+This document describes the database schema for the Knowledge Database Chat application.
+
+USERS TABLE
+-----------
+- id: UUID (Primary Key)
+- username: VARCHAR(50) UNIQUE NOT NULL
+- email: VARCHAR(100) UNIQUE NOT NULL
+- full_name: VARCHAR(200)
+- hashed_password: VARCHAR(128) NOT NULL
+- is_active: BOOLEAN DEFAULT TRUE
+- is_verified: BOOLEAN DEFAULT FALSE
+- role: VARCHAR(20) DEFAULT 'user'
+- permissions: JSON
+- avatar_url: VARCHAR(500)
+- last_login: TIMESTAMP
+- login_count: INTEGER DEFAULT 0
+- created_at: TIMESTAMP
+- updated_at: TIMESTAMP
+
+DOCUMENTS TABLE
+---------------
+- id: UUID (Primary Key)
+- title: VARCHAR(500) NOT NULL
+- content: TEXT
+- content_hash: VARCHAR(64) NOT NULL
+- url: VARCHAR(1000)
+- file_path: VARCHAR(1000)
+- file_type: VARCHAR(50)
+- file_size: INTEGER
+- source_id: UUID (Foreign Key -> document_sources)
+- source_identifier: VARCHAR(500) NOT NULL
+- author: VARCHAR(200)
+- tags: JSON
+- extra_metadata: JSON
+- is_processed: BOOLEAN DEFAULT FALSE
+- processing_error: TEXT
+- created_at: TIMESTAMP
+- updated_at: TIMESTAMP
+- last_modified: TIMESTAMP
+
+DOCUMENT_CHUNKS TABLE
+---------------------
+- id: UUID (Primary Key)
+- document_id: UUID (Foreign Key -> documents)
+- content: TEXT NOT NULL
+- content_hash: VARCHAR(64) NOT NULL
+- chunk_index: INTEGER NOT NULL
+- start_pos: INTEGER
+- end_pos: INTEGER
+- embedding_id: VARCHAR(100)
+- embedding_hash: VARCHAR(64)
+- extra_metadata: JSON
+- created_at: TIMESTAMP
+- updated_at: TIMESTAMP
+
+CHAT_SESSIONS TABLE
+-------------------
+- id: UUID (Primary Key)
+- title: VARCHAR(200)
+- user_id: UUID (Foreign Key -> users)
+- is_active: BOOLEAN DEFAULT TRUE
+- extra_metadata: JSON
+- created_at: TIMESTAMP
+- updated_at: TIMESTAMP
+- last_message_at: TIMESTAMP
+
+CHAT_MESSAGES TABLE
+-------------------
+- id: UUID (Primary Key)
+- session_id: UUID (Foreign Key -> chat_sessions)
+- content: TEXT NOT NULL
+- role: VARCHAR(20) NOT NULL (user/assistant/system)
+- message_type: VARCHAR(50)
+- model_used: VARCHAR(100)
+- response_time: FLOAT
+- token_count: INTEGER
+- source_documents: JSON
+- context_used: TEXT
+- search_query: VARCHAR(500)
+- is_processed: BOOLEAN
+- processing_error: TEXT
+- user_rating: INTEGER
+- user_feedback: TEXT
+- created_at: TIMESTAMP
+- updated_at: TIMESTAMP
+
+RELATIONSHIPS
+-------------
+- Users have many Chat Sessions
+- Chat Sessions have many Chat Messages
+- Documents have many Document Chunks
+- Document Sources have many Documents
+- Users have one User Preferences record
+
+INDEXES
+-------
+- users.username (UNIQUE)
+- users.email (UNIQUE)
+- documents.source_id
+- documents.content_hash
+- document_chunks.document_id
+- document_chunks.embedding_id
+- chat_messages.session_id
+- chat_sessions.user_id
+
+

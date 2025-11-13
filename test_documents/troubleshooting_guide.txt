@@ -1,0 +1,131 @@
+Troubleshooting Guide
+=====================
+
+Common Issues and Solutions
+
+1. DOCUMENT UPLOAD FAILURES
+---------------------------
+Problem: Documents fail to upload or process
+
+Solutions:
+- Check file size limits (default: 10MB)
+- Verify file format is supported
+- Check backend logs for processing errors
+- Ensure Celery worker is running
+- Verify vector store is initialized
+
+2. SEARCH NOT RETURNING RESULTS
+-------------------------------
+Problem: Search queries return no results
+
+Solutions:
+- Verify documents have been processed
+- Check if embeddings were generated
+- Ensure vector store is properly initialized
+- Verify search index is up to date
+- Check query format and syntax
+
+3. SLOW RESPONSE TIMES
+----------------------
+Problem: API responses are slow
+
+Solutions:
+- Check database query performance
+- Verify Redis cache is working
+- Monitor Celery task queue
+- Check vector store performance
+- Review database indexes
+
+4. AUTHENTICATION ERRORS
+-------------------------
+Problem: Login or token validation fails
+
+Solutions:
+- Verify SECRET_KEY is set correctly
+- Check token expiration settings
+- Ensure JWT algorithm matches
+- Verify user account is active
+- Check token format in requests
+
+5. DATABASE CONNECTION ERRORS
+------------------------------
+Problem: Cannot connect to database
+
+Solutions:
+- Verify PostgreSQL is running
+- Check connection string format
+- Ensure database exists
+- Verify user permissions
+- Check network connectivity
+
+6. VECTOR STORE ERRORS
+----------------------
+Problem: Vector store operations fail
+
+Solutions:
+- Verify ChromaDB is initialized
+- Check disk space for persistence
+- Ensure embedding model is loaded
+- Verify collection exists
+- Check vector store logs
+
+7. CELERY TASK FAILURES
+-----------------------
+Problem: Background tasks fail
+
+Solutions:
+- Check Celery worker logs
+- Verify Redis connection
+- Ensure task dependencies are met
+- Check task timeout settings
+- Verify worker has sufficient resources
+
+8. FRONTEND DISPLAY ISSUES
+--------------------------
+Problem: UI not displaying correctly
+
+Solutions:
+- Clear browser cache
+- Check browser console for errors
+- Verify API endpoints are accessible
+- Check CORS configuration
+- Verify environment variables
+
+9. MEMORY ISSUES
+----------------
+Problem: Application runs out of memory
+
+Solutions:
+- Reduce batch sizes
+- Limit concurrent requests
+- Increase container memory
+- Optimize query results
+- Use pagination
+
+10. EMBEDDING GENERATION FAILURES
+---------------------------------
+Problem: Embeddings not generated
+
+Solutions:
+- Verify embedding model is downloaded
+- Check model file permissions
+- Ensure sufficient disk space
+- Verify model compatibility
+- Check model loading logs
+
+DEBUGGING TIPS
+--------------
+- Enable debug logging
+- Check application logs regularly
+- Use health check endpoints
+- Monitor resource usage
+- Review error messages carefully
+
+LOG LOCATIONS
+-------------
+- Backend: /app/data/logs/backend.log
+- Celery: /app/data/logs/celery.log
+- Frontend: Browser console
+- Docker: docker-compose logs
+
+

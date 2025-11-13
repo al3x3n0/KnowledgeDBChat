@@ -1,0 +1,161 @@
+version: '3.8'
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    container_name: knowledge_db_postgres
+    environment:
+      POSTGRES_DB: knowledge_db
+      POSTGRES_USER: user
+      POSTGRES_PASSWORD: password
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./data/postgres-init:/docker-entrypoint-initdb.d
+    networks:
+      - knowledge_net
+
+  # Redis for caching and task queue
+  redis:
+    image: redis:7-alpine
+    container_name: knowledge_db_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    networks:
+      - knowledge_net
+
+  # Backend API
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: knowledge_db_backend
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
+      - REDIS_URL=redis://redis:6379/0
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - DEFAULT_MODEL=llama3.2:1b  # Force smallest model for Mac
+      - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+      - ./backend:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - knowledge_net
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Ollama for local LLM
+  ollama:
+    image: ollama/ollama:latest
+    container_name: knowledge_db_ollama
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    networks:
+      - knowledge_net
+    environment:
+      - OLLAMA_HOST=0.0.0.0
+      # Force CPU-only mode for Mac compatibility (disable GPU completely)
+      - OLLAMA_NUM_GPU=0
+      - CUDA_VISIBLE_DEVICES=""
+      # Limit memory usage (adjust based on your Mac's available RAM)
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_NUM_PARALLEL=1
+      # Additional memory management
+      - OLLAMA_KEEP_ALIVE=2m  # Shorter keep-alive to free memory faster
+      - OLLAMA_NUM_THREAD=2  # Reduce threads to save memory
+      # Force CPU-only (disable Metal/GPU on Mac)
+      - OLLAMA_GPU_LAYERS=0
+      - METAL_DEVICE=0
+    # Resource limits for Mac (reduced for 8GB Docker Desktop)
+    deploy:
+      resources:
+        limits:
+          # Reduced to 4GB since Docker Desktop only has ~7.6GB total
+          # This leaves memory for other containers (postgres, redis, backend)
+          memory: 4G
+          cpus: '4.0'  # Limit CPU cores
+        reservations:
+          memory: 1G  # Reduced reservation
+          cpus: '1.0'
+    # Increase shared memory for model loading (important for Mac)
+    shm_size: 2gb
+    # Explicitly disable GPU access
+    devices: []
+    # Restart policy
+    restart: unless-stopped
+
+  # Frontend (React)
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile.dev
+    container_name: knowledge_db_frontend
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+    depends_on:
+      - backend
+    networks:
+      - knowledge_net
+    command: npm start
+
+  # Celery worker for background tasks
+  celery:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: knowledge_db_celery
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+    volumes:
+      - ./data:/app/data
+      - ./backend:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - knowledge_net
+    command: celery -A app.core.celery worker --loglevel=info
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.core.celery", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+volumes:
+  postgres_data:
+  redis_data:
+  ollama_data:
+
+networks:
+  knowledge_net:
+    driver: bridge
+
+
+

@@ -104,7 +104,7 @@ const ChatPage: React.FC = () => {
 
   // Delete session mutation
   const deleteSessionMutation = useMutation(
-    apiClient.deleteChatSession,
+    (sessionId: string) => apiClient.deleteChatSession(sessionId),
     {
       onSuccess: () => {
         queryClient.invalidateQueries('chatSessions');

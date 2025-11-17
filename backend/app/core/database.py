@@ -46,7 +46,10 @@ async def get_db() -> AsyncSession:
         try:
             yield session
         except Exception as e:
-            logger.error(f"Database session error: {e}")
+            # Don't log HTTPException as database errors - they're expected API responses
+            from fastapi import HTTPException
+            if not isinstance(e, HTTPException):
+                logger.error(f"Database session error: {e}", exc_info=True)
             await session.rollback()
             raise
         finally:
@@ -77,6 +80,8 @@ async def drop_tables():
     except Exception as e:
         logger.error(f"Error dropping database tables: {e}")
         raise
+
+
 
 
 

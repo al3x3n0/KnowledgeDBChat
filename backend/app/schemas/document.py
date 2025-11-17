@@ -66,6 +66,7 @@ class DocumentResponse(BaseModel):
     last_modified: Optional[datetime]
     source: DocumentSourceResponse
     chunks: Optional[List[DocumentChunkResponse]] = []
+    download_url: Optional[str] = None  # Presigned download URL (generated on demand)
     
     class Config:
         from_attributes = True

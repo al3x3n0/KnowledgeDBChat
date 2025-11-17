@@ -4,6 +4,7 @@ Document service for managing documents and document sources.
 
 import os
 import hashlib
+import tempfile
 import aiofiles
 from datetime import datetime
 from typing import List, Optional, Dict, Any
@@ -17,6 +18,7 @@ from loguru import logger
 from app.models.document import Document, DocumentChunk, DocumentSource
 from app.services.vector_store import VectorStoreService
 from app.services.text_processor import TextProcessor
+from app.services.storage_service import storage_service
 from app.core.config import settings
 from app.core.cache import cache_service
 
@@ -179,24 +181,18 @@ class DocumentService:
                 logger.info(f"Document already exists: {existing_doc.id}")
                 return existing_doc
             
-            # Save file to disk
-            file_path = await self._save_uploaded_file(file, content)
-            
-            # Extract text content
-            text_content = await self.text_processor.extract_text(file_path, file.content_type)
-            
-            # Create document record
+            # Create document record first to get ID
             document = Document(
                 title=title or file.filename or "Uploaded Document",
-                content=text_content,
+                content="",  # Will be filled after text extraction
                 content_hash=content_hash,
-                file_path=file_path,
+                file_path="",  # Will be filled after MinIO upload
                 file_type=self._get_file_extension(file.filename),
                 file_size=len(content),
                 source_id=upload_source.id,
                 source_identifier=file.filename or f"upload_{content_hash[:8]}",
                 tags=tags,
-                metadata={
+                extra_metadata={
                     "original_filename": file.filename,
                     "content_type": file.content_type,
                     "upload_timestamp": datetime.utcnow().isoformat()
@@ -206,6 +202,31 @@ class DocumentService:
             db.add(document)
             await db.commit()
             await db.refresh(document)
+            
+            # Extract text content from temporary file
+            # Save to temp file for text extraction (text processor needs file path)
+            with tempfile.NamedTemporaryFile(delete=False, suffix=os.path.splitext(file.filename or "")[1]) as temp_file:
+                temp_file.write(content)
+                temp_file_path = temp_file.name
+            
+            try:
+                # Extract text content
+                text_content = await self.text_processor.extract_text(temp_file_path, file.content_type)
+                
+                # Upload to MinIO
+                object_path = await self._save_uploaded_file(document.id, file, content)
+                
+                # Update document with extracted content and MinIO path
+                document.content = text_content
+                document.file_path = object_path
+                await db.commit()
+                await db.refresh(document)
+            finally:
+                # Clean up temp file
+                try:
+                    os.unlink(temp_file_path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete temp file {temp_file_path}: {e}")
             
             # Process document asynchronously
             await self._process_document_async(document, db)
@@ -221,22 +242,27 @@ class DocumentService:
             logger.error(f"Error uploading file: {e}")
             raise
     
-    async def _save_uploaded_file(self, file: UploadFile, content: bytes) -> str:
-        """Save uploaded file to disk."""
-        # Create documents directory if it doesn't exist
-        docs_dir = "./data/documents"
-        os.makedirs(docs_dir, exist_ok=True)
+    async def _save_uploaded_file(
+        self,
+        document_id: UUID,
+        file: UploadFile,
+        content: bytes
+    ) -> str:
+        """
+        Save uploaded file to MinIO.
         
-        # Generate unique filename
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"{timestamp}_{file.filename}"
-        file_path = os.path.join(docs_dir, filename)
+        Returns:
+            Object path in MinIO (e.g., "documents/{document_id}/{filename}")
+        """
+        # Upload to MinIO
+        object_path = await storage_service.upload_file(
+            document_id=document_id,
+            filename=file.filename or "uploaded_file",
+            content=content,
+            content_type=file.content_type
+        )
         
-        # Save file
-        async with aiofiles.open(file_path, "wb") as f:
-            await f.write(content)
-        
-        return file_path
+        return object_path
     
     def _get_file_extension(self, filename: Optional[str]) -> Optional[str]:
         """Get file extension from filename."""
@@ -338,12 +364,15 @@ class DocumentService:
             # Ensure vector store is initialized
             await self._ensure_vector_store_initialized()
             
+            # Delete from MinIO if file_path exists
+            if document.file_path:
+                try:
+                    await storage_service.delete_file(document.file_path)
+                except Exception as e:
+                    logger.warning(f"Failed to delete file from MinIO: {e}")
+            
             # Delete from vector store
             await self.vector_store.delete_document_chunks(document_id)
-            
-            # Delete file if it exists
-            if document.file_path and os.path.exists(document.file_path):
-                os.remove(document.file_path)
             
             # Delete from database
             await db.delete(document)

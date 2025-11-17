@@ -16,7 +16,9 @@ import {
   ExternalLink,
   ThumbsUp,
   ThumbsDown,
-  Clock
+  Clock,
+  Download,
+  Loader2
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
@@ -47,11 +49,35 @@ const ChatPage: React.FC = () => {
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
 
   // Fetch chat sessions
-  const { data: sessions, isLoading: sessionsLoading } = useQuery(
+  const { data: sessions, isLoading: sessionsLoading, error: sessionsError } = useQuery(
     'chatSessions',
-    apiClient.getChatSessions,
+    async () => {
+      console.log('Fetching chat sessions...');
+      try {
+        const result = await apiClient.getChatSessions();
+        console.log('Chat sessions fetched:', result);
+        return result;
+      } catch (error) {
+        console.error('Error in getChatSessions:', error);
+        throw error;
+      }
+    },
     {
+      enabled: !!user, // Only fetch if user is authenticated
       refetchOnWindowFocus: false,
+      retry: 2,
+      onError: (error: any) => {
+        console.error('Error fetching chat sessions:', error);
+        console.error('Error details:', {
+          message: error?.message,
+          response: error?.response?.data,
+          status: error?.response?.status,
+        });
+        toast.error('Failed to load chat sessions');
+      },
+      onSuccess: (data) => {
+        console.log('Chat sessions loaded successfully:', data?.length || 0, 'sessions');
+      },
     }
   );
 
@@ -82,7 +108,25 @@ const ChatPage: React.FC = () => {
     {
       onSuccess: () => {
         queryClient.invalidateQueries('chatSessions');
-        navigate('/chat');
+        // If we deleted the current session, navigate away
+        if (sessionToDelete === sessionId) {
+          navigate('/chat');
+        }
+        setDeleteConfirmOpen(false);
+        setSessionToDelete(null);
+        toast.success('Chat session deleted');
+      },
+      onError: (error: any) => {
+        console.error('Error deleting session:', error);
+        const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to delete chat session';
+        console.error('Delete error details:', {
+          status: error?.response?.status,
+          data: error?.response?.data,
+          message: errorMessage,
+        });
+        toast.error(errorMessage);
+        setDeleteConfirmOpen(false);
+        setSessionToDelete(null);
       },
     }
   );
@@ -222,15 +266,19 @@ const ChatPage: React.FC = () => {
   };
 
   const handleDeleteSession = (sessionToDeleteId: string) => {
+    console.log('Delete session clicked:', sessionToDeleteId);
     setSessionToDelete(sessionToDeleteId);
     setDeleteConfirmOpen(true);
   };
 
   const confirmDeleteSession = () => {
+    console.log('Confirm delete called, sessionToDelete:', sessionToDelete);
     if (sessionToDelete) {
+      console.log('Calling delete mutation for:', sessionToDelete);
       deleteSessionMutation.mutate(sessionToDelete);
-      setDeleteConfirmOpen(false);
-      setSessionToDelete(null);
+    } else {
+      console.error('No session to delete!');
+      toast.error('No session selected for deletion');
     }
   };
 
@@ -248,12 +296,16 @@ const ChatPage: React.FC = () => {
     return <LoadingSpinner className="h-full" text="Loading chat sessions..." />;
   }
 
+  if (sessionsError) {
+    console.error('Sessions error:', sessionsError);
+  }
+
   return (
     <div className="flex h-full">
       {/* Sidebar - Chat Sessions */}
-      <div className="w-80 bg-white border-r border-gray-200 flex flex-col">
+      <div className="w-80 bg-white border-r border-gray-200 flex flex-col h-full">
         {/* Header */}
-        <div className="p-4 border-b border-gray-200">
+        <div className="p-4 border-b border-gray-200 flex-shrink-0">
           <Button
             onClick={handleCreateSession}
             fullWidth
@@ -265,8 +317,13 @@ const ChatPage: React.FC = () => {
         </div>
 
         {/* Sessions List */}
-        <div className="flex-1 overflow-y-auto">
-          {sessions?.length === 0 ? (
+        <div className="flex-1 overflow-y-auto min-h-0">
+          {sessionsError ? (
+            <div className="p-4 text-center text-red-500">
+              <p>Error loading sessions</p>
+              <p className="text-xs mt-1">Please refresh the page</p>
+            </div>
+          ) : sessions?.length === 0 ? (
             <div className="p-4 text-center text-gray-500">
               <MessageCircle className="w-12 h-12 mx-auto mb-2 text-gray-300" />
               <p>No chat sessions yet</p>
@@ -290,15 +347,21 @@ const ChatPage: React.FC = () => {
                         {session.title || 'Untitled Chat'}
                       </h3>
                       <p className="text-xs text-gray-500 mt-1">
-                        {formatDistanceToNow(new Date(session.last_message_at))} ago
+                        {session.last_message_at 
+                          ? `${formatDistanceToNow(new Date(session.last_message_at))} ago`
+                          : 'Just now'}
                       </p>
                     </div>
                     <button
-                      className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-200 rounded"
+                      type="button"
+                      className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-200 rounded transition-opacity flex-shrink-0"
                       onClick={(e) => {
                         e.stopPropagation();
+                        e.preventDefault();
                         handleDeleteSession(session.id);
                       }}
+                      title="Delete session"
+                      aria-label="Delete session"
                     >
                       <Trash2 className="w-4 h-4 text-gray-500" />
                     </button>
@@ -440,6 +503,48 @@ interface ChatMessageProps {
 const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback }) => {
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
+  const [downloadingDocs, setDownloadingDocs] = React.useState<Set<string>>(new Set());
+
+  const handleDownload = async (docId: string, downloadUrl?: string) => {
+    try {
+      setDownloadingDocs(prev => new Set(prev).add(docId));
+      
+      // Use backend proxy endpoint - streams file through backend
+      // This avoids presigned URL signature issues
+      console.log('Starting download for document:', docId);
+      
+      // Use the API client method to download as blob
+      const { blob, filename } = await apiClient.downloadDocument(docId, true);
+      
+      console.log('Download successful, filename:', filename);
+      
+      // Create download link and trigger download
+      const url = window.URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      window.document.body.appendChild(link);
+      link.click();
+      window.document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+      
+      toast.success('Download started');
+    } catch (error: any) {
+      console.error('Error downloading document:', error);
+      const errorMessage = error.response?.data 
+        ? (error.response.data instanceof Blob 
+            ? 'Download failed: Server error' 
+            : error.response.data.detail || error.response.data.message || 'Download failed')
+        : error.message || 'Failed to download document. Please try again.';
+      toast.error(errorMessage);
+    } finally {
+      setDownloadingDocs(prev => {
+        const next = new Set(prev);
+        next.delete(docId);
+        return next;
+      });
+    }
+  };
 
   return (
     <div className={`flex items-start space-x-3 ${isUser ? 'flex-row-reverse space-x-reverse' : ''}`}>
@@ -491,25 +596,40 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
           <div className="mt-2 space-y-1">
             <p className="text-xs font-medium text-gray-700">Sources:</p>
             {message.source_documents.map((doc, index) => (
-              <div key={index} className="text-xs bg-gray-100 rounded p-2">
+              <div key={index} className="text-xs bg-gray-100 rounded p-2 hover:bg-gray-200 transition-colors">
                 <div className="flex items-center justify-between">
                   <span className="font-medium truncate">{doc.title}</span>
                   <span className="text-gray-500 ml-2">
                     {(doc.score * 100).toFixed(0)}% match
                   </span>
                 </div>
-                <div className="text-gray-600 mt-1">
-                  <span>{doc.source}</span>
-                  {doc.url && (
-                    <a 
-                      href={doc.url} 
-                      target="_blank" 
-                      rel="noopener noreferrer"
-                      className="ml-2 text-primary-600 hover:text-primary-800"
-                    >
-                      <ExternalLink className="w-3 h-3 inline" />
-                    </a>
-                  )}
+                <div className="text-gray-600 mt-1 flex items-center gap-2 flex-wrap">
+                  <span className="truncate">{doc.source}</span>
+                  <div className="flex items-center gap-1 ml-auto">
+                    {doc.url && (
+                      <button
+                        onClick={() => window.open(doc.url, '_blank', 'noopener,noreferrer')}
+                        className="text-primary-600 hover:text-primary-800 p-1 rounded hover:bg-primary-50 transition-colors"
+                        title="Open source"
+                      >
+                        <ExternalLink className="w-3 h-3" />
+                      </button>
+                    )}
+                    {doc.id && (
+                      <button
+                        onClick={() => handleDownload(doc.id)}
+                        disabled={downloadingDocs.has(doc.id)}
+                        className="text-primary-600 hover:text-primary-800 p-1 rounded hover:bg-primary-50 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                        title="Download document"
+                      >
+                        {downloadingDocs.has(doc.id) ? (
+                          <Loader2 className="w-3 h-3 animate-spin" />
+                        ) : (
+                          <Download className="w-3 h-3" />
+                        )}
+                      </button>
+                    )}
+                  </div>
                 </div>
               </div>
             ))}

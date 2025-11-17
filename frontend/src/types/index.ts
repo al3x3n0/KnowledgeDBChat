@@ -48,6 +48,7 @@ export interface SourceDocument {
   score: number;
   source: string;
   url?: string;
+  download_url?: string;
 }
 
 export interface Document {
@@ -70,6 +71,7 @@ export interface Document {
   last_modified?: string;
   source: DocumentSource;
   chunks?: DocumentChunk[];
+  download_url?: string;
 }
 
 export interface DocumentSource {

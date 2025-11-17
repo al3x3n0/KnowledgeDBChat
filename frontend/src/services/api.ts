@@ -93,11 +93,24 @@ class ApiClient {
 
   // Authentication endpoints
   async login(username: string, password: string): Promise<LoginResponse> {
-    const response = await this.client.post('/api/v1/auth/login', {
-      username,
-      password,
-    });
-    return response.data;
+    try {
+      console.log('API: Attempting login for user:', username);
+      const response = await this.client.post('/api/v1/auth/login', {
+        username,
+        password,
+      });
+      console.log('API: Login response received:', {
+        status: response.status,
+        hasAccessToken: !!response.data?.access_token,
+        hasUser: !!response.data?.user,
+        data: response.data
+      });
+      return response.data;
+    } catch (error: any) {
+      console.error('API: Login error:', error);
+      console.error('API: Login error response:', error.response?.data);
+      throw error;
+    }
   }
 
   async register(userData: {
@@ -121,8 +134,19 @@ class ApiClient {
 
   // Chat endpoints
   async getChatSessions(): Promise<ChatSession[]> {
-    const response = await this.client.get('/api/v1/chat/sessions');
-    return response.data;
+    try {
+      console.log('API: Fetching chat sessions from /api/v1/chat/sessions');
+      const response = await this.client.get('/api/v1/chat/sessions');
+      console.log('API: Chat sessions response:', response.data);
+      // Backend returns PaginatedResponse with items array
+      const sessions = response.data?.items || response.data || [];
+      console.log('API: Returning sessions:', sessions.length);
+      return sessions;
+    } catch (error: any) {
+      console.error('API: Error fetching chat sessions:', error);
+      console.error('API: Error response:', error.response?.data);
+      throw error;
+    }
   }
 
   async createChatSession(title?: string): Promise<ChatSession> {
@@ -146,7 +170,18 @@ class ApiClient {
   }
 
   async deleteChatSession(sessionId: string): Promise<void> {
-    await this.client.delete(`/api/v1/chat/sessions/${sessionId}`);
+    try {
+      console.log('API: Deleting chat session:', sessionId);
+      const response = await this.client.delete(`/api/v1/chat/sessions/${sessionId}`);
+      console.log('API: Chat session deleted successfully:', response.data);
+      return response.data;
+    } catch (error: any) {
+      console.error('API: Error deleting chat session:', error);
+      console.error('API: Error status:', error.response?.status);
+      console.error('API: Error response:', error.response?.data);
+      console.error('API: Error message:', error.message);
+      throw error;
+    }
   }
 
   async submitMessageFeedback(
@@ -175,6 +210,45 @@ class ApiClient {
   async getDocument(documentId: string): Promise<Document> {
     const response = await this.client.get(`/api/v1/documents/${documentId}`);
     return response.data;
+  }
+
+  async getDocumentDownloadUrl(documentId: string, useProxy: boolean = true): Promise<string> {
+    if (useProxy) {
+      // Return the direct download URL (backend will stream the file)
+      // The URL will be used with an anchor tag, and auth token will be added via Authorization header
+      // or query parameter if needed
+      const baseUrl = this.client.defaults.baseURL || API_BASE_URL;
+      return `${baseUrl}/api/v1/documents/${documentId}/download?use_proxy=true`;
+    } else {
+      // Legacy mode: get presigned URL
+      const response = await this.client.get(`/api/v1/documents/${documentId}/download?use_proxy=false`);
+      return response.data.download_url;
+    }
+  }
+
+  async downloadDocument(documentId: string, useProxy: boolean = true): Promise<{ blob: Blob; filename: string }> {
+    // Download document as blob with authentication
+    const response = await this.client.get(
+      `/api/v1/documents/${documentId}/download?use_proxy=${useProxy}`,
+      {
+        responseType: 'blob', // Important: tell axios to handle as blob
+      }
+    );
+
+    // Get filename from Content-Disposition header
+    const contentDisposition = response.headers['content-disposition'] || response.headers['Content-Disposition'];
+    let filename = `document_${documentId}`;
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1].replace(/['"]/g, '');
+      }
+    }
+
+    return {
+      blob: response.data,
+      filename,
+    };
   }
 
   async uploadDocument(
@@ -390,8 +464,13 @@ class ApiClient {
       throw new Error('No authentication token found. Please log in.');
     }
     
-    // Add token as query parameter (WebSocket doesn't support custom headers easily)
-    const wsUrl = `${API_BASE_URL.replace('http', 'ws')}/api/v1/chat/sessions/${sessionId}/ws?token=${encodeURIComponent(token)}`;
+    // Use current window origin to avoid mixed content issues
+    // This ensures WebSocket URL matches the page origin (http://127.0.0.1:3000 or http://localhost:3000)
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host; // Includes port (e.g., "127.0.0.1:3000" or "localhost:3000")
+    const wsUrl = `${protocol}//${host}/api/v1/chat/sessions/${sessionId}/ws?token=${encodeURIComponent(token)}`;
+    
+    console.log('Creating WebSocket connection to:', wsUrl);
     return new WebSocket(wsUrl);
   }
 }

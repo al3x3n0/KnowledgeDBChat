@@ -63,6 +63,7 @@ class ChatService:
         
         db.add(session)
         await db.commit()
+        await db.refresh(session)
         
         # Re-query the session with noload to prevent loading messages
         # This ensures messages relationship is not loaded
@@ -73,7 +74,7 @@ class ChatService:
         )
         session = result.scalar_one()
         
-        logger.info(f"Created chat session {session.id} for user {user_id}")
+        logger.info(f"Created chat session {session.id} for user {user_id} with title '{session.title}'")
         return session
     
     async def get_session(
@@ -162,8 +163,13 @@ class ChatService:
         """
         from sqlalchemy import func
         
-        # Base query for user sessions
-        base_query = select(ChatSession).where(ChatSession.user_id == user_id)
+        # Base query for user sessions - only active sessions
+        base_query = select(ChatSession).where(
+            and_(
+                ChatSession.user_id == user_id,
+                ChatSession.is_active == True
+            )
+        )
         
         # Get total count
         count_query = select(func.count()).select_from(base_query.subquery())
@@ -172,9 +178,17 @@ class ChatService:
         
         # Get paginated results
         # Use noload for messages to prevent lazy loading (messages not needed in list view)
-        query = base_query.options(noload(ChatSession.messages)).order_by(ChatSession.last_message_at.desc()).offset(skip).limit(limit)
+        # Order by last_message_at (most recent activity), then by created_at (newest first) as fallback
+        # Use COALESCE to handle NULL last_message_at values
+        from sqlalchemy import desc, func as sql_func
+        query = base_query.options(noload(ChatSession.messages)).order_by(
+            desc(sql_func.coalesce(ChatSession.last_message_at, ChatSession.created_at)),
+            desc(ChatSession.created_at)
+        ).offset(skip).limit(limit)
         result = await db.execute(query)
         sessions = result.scalars().all()
+        
+        logger.debug(f"Retrieved {len(sessions)} sessions for user {user_id} (skip={skip}, limit={limit}, total={total})")
         
         return sessions, total
     
@@ -212,18 +226,17 @@ class ChatService:
         db.add(message)
         
         # Update session's last_message_at
-        await db.execute(
+        session_result = await db.execute(
             select(ChatSession).where(ChatSession.id == session_id)
         )
-        session = await db.execute(
-            select(ChatSession).where(ChatSession.id == session_id)
-        )
-        session = session.scalar_one_or_none()
+        session = session_result.scalar_one_or_none()
         if session:
             session.last_message_at = datetime.utcnow()
         
         await db.commit()
         await db.refresh(message)
+        
+        logger.debug(f"Created {role} message in session {session_id}, updated last_message_at")
         
         return message
     
@@ -392,18 +405,43 @@ class ChatService:
             
             # Create assistant message
             # search_results is a list of dicts with "metadata" key (dict), not objects
+            from app.services.storage_service import storage_service
+            from app.services.document_service import DocumentService
+            
+            # Create document service instance once
+            doc_service = DocumentService()
+            
+            source_docs = []
+            for doc in search_results:
+                doc_id = doc.get("metadata", {}).get("document_id", doc.get("id"))
+                doc_metadata = doc.get("metadata", {})
+                
+                # Generate download URL if document has file_path
+                download_url = None
+                if doc_id:
+                    try:
+                        # Get document to check if it has file_path
+                        document = await doc_service.get_document(UUID(doc_id) if isinstance(doc_id, str) else doc_id, db)
+                        if document and document.file_path:
+                            download_url = await storage_service.get_presigned_download_url(document.file_path)
+                    except Exception as e:
+                        logger.warning(f"Failed to generate download URL for document {doc_id}: {e}")
+                
+                source_docs.append({
+                    "id": doc_id,
+                    "title": doc_metadata.get("title", "Unknown"),
+                    "score": doc_metadata.get("score", doc.get("score", 0.0)),
+                    "source": doc_metadata.get("source", "Unknown"),
+                    "download_url": download_url
+                })
+            
             assistant_message = await self.create_message(
                 session_id=session_id,
                 content=response_content,
                 role="assistant",
                 model_used=settings.DEFAULT_MODEL,
                 response_time=response_time,
-                source_documents=[{
-                    "id": doc.get("metadata", {}).get("document_id", doc.get("id")),
-                    "title": doc.get("metadata", {}).get("title", "Unknown"),
-                    "score": doc.get("metadata", {}).get("score", doc.get("score", 0.0)),
-                    "source": doc.get("metadata", {}).get("source", "Unknown")
-                } for doc in search_results],
+                source_documents=source_docs,
                 context_used=context,
                 search_query=query,
                 db=db
@@ -493,7 +531,7 @@ class ChatService:
         db: AsyncSession
     ) -> bool:
         """
-        Delete a chat session, ensuring it belongs to the user.
+        Soft delete a chat session (set is_active to False), ensuring it belongs to the user.
         
         Args:
             session_id: Chat session ID
@@ -503,15 +541,40 @@ class ChatService:
         Returns:
             True if session was deleted, False if not found or doesn't belong to user
         """
-        session = await self.get_session(session_id, user_id, db)
-        if not session:
-            return False
-        
-        await db.delete(session)
-        await db.commit()
-        
-        logger.info(f"Deleted chat session {session_id}")
-        return True
+        try:
+            # Get session without is_active filter (so we can delete already-deleted sessions if needed)
+            result = await db.execute(
+                select(ChatSession).where(
+                    and_(
+                        ChatSession.id == session_id,
+                        ChatSession.user_id == user_id
+                    )
+                )
+            )
+            session = result.scalar_one_or_none()
+            
+            if not session:
+                logger.warning(f"Session {session_id} not found or doesn't belong to user {user_id}")
+                return False
+            
+            # Check if already deleted
+            if not session.is_active:
+                logger.info(f"Session {session_id} is already deleted")
+                return True  # Consider it successful if already deleted
+            
+            # Soft delete: set is_active to False
+            session.is_active = False
+            session.updated_at = datetime.utcnow()
+            await db.commit()
+            await db.refresh(session)
+            
+            logger.info(f"Soft deleted chat session {session_id} for user {user_id}")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deleting session {session_id}: {e}")
+            await db.rollback()
+            raise
     
     async def update_message_feedback(
         self,
@@ -598,17 +661,8 @@ class ChatService:
                     db=db
                 )
             
-            # Record memory interactions for the memories used
-            if hasattr(assistant_message, 'source_documents'):
-                for memory in memories:
-                    await self.memory_service.create_memory_interaction(
-                        memory_id=memory.id,
-                        session_id=session_id,
-                        interaction_type="retrieved",
-                        relevance_score=0.8,  # Default relevance
-                        message_id=assistant_message.id,
-                        db=db
-                    )
+            # Note: Memory interactions are recorded when memories are retrieved in generate_response
+            # This function only extracts new memories from the conversation
             
         except Exception as e:
             logger.error(f"Error extracting memories from turn: {e}")

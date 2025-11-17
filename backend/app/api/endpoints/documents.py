@@ -2,9 +2,11 @@
 Document-related API endpoints.
 """
 
+import os
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
+from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
@@ -100,6 +102,140 @@ async def get_documents(
     except Exception as e:
         log_error(e, context={"page": page, "page_size": page_size})
         raise HTTPException(status_code=500, detail="Failed to retrieve documents")
+
+
+@router.get("/{document_id}/download")
+async def download_document(
+    document_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    use_proxy: bool = Query(True, description="If True, stream file through backend; if False, return presigned URL")
+):
+    """
+    Download a document file.
+    
+    If use_proxy=True (default): Streams file through backend (avoids signature issues)
+    If use_proxy=False: Returns presigned URL for direct download
+    """
+    try:
+        from app.services.storage_service import storage_service
+        
+        logger.info(f"Download request for document {document_id} by user {current_user.id}")
+        document = await document_service.get_document(document_id, db)
+        if not document:
+            logger.warning(f"Document {document_id} not found")
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        logger.info(f"Document {document_id} found, file_path: {document.file_path}")
+        if not document.file_path:
+            logger.warning(f"Document {document_id} has no file_path")
+            raise HTTPException(status_code=404, detail="Document file not found")
+        
+        # Normalize file_path - handle old format (data/documents/...) and new format (documents/{id}/...)
+        file_path = document.file_path
+        original_path = file_path
+        
+        # Remove leading './' if present (common in old file paths)
+        if file_path.startswith('./'):
+            file_path = file_path[2:]  # Remove './' prefix
+            logger.info(f"Removed './' prefix from file_path: {original_path} -> {file_path}")
+        
+        # Remove 'documents/' prefix if present (bucket name is already 'documents')
+        # This handles cases where file_path is stored as "documents/{id}/{filename}"
+        if file_path.startswith('documents/'):
+            file_path = file_path[10:]  # Remove 'documents/' prefix (10 chars)
+            logger.info(f"Removed 'documents/' prefix from file_path, new path: {file_path}")
+        
+        # Try to find the file in MinIO
+        from app.services.storage_service import storage_service
+        
+        # First, try the path as-is (after removing ./ and documents/)
+        file_exists = await storage_service.file_exists(file_path)
+        
+        # If not found and path starts with 'data/documents/', try new format
+        if not file_exists and file_path.startswith('data/documents/'):
+            # Old format: try to find in new format location
+            filename = file_path.split('/')[-1]
+            # New format: {document_id}/{filename} (no 'documents/' prefix since bucket name is 'documents')
+            new_path = f"{document_id}/{filename}"
+            logger.info(f"File not found at old path {file_path}, trying new format: {new_path}")
+            
+            if await storage_service.file_exists(new_path):
+                file_path = new_path
+                file_exists = True
+                logger.info(f"Found file at new location: {file_path}")
+        
+        # If still not found, try with 'documents/' prefix (some files were uploaded with prefix)
+        if not file_exists:
+            path_with_prefix = f"documents/{file_path}" if not file_path.startswith('documents/') else file_path
+            logger.info(f"File not found at {file_path}, trying with 'documents/' prefix: {path_with_prefix}")
+            if await storage_service.file_exists(path_with_prefix):
+                file_path = path_with_prefix
+                file_exists = True
+                logger.info(f"Found file with 'documents/' prefix: {file_path}")
+        
+        # If file still doesn't exist, return 404
+        if not file_exists:
+            logger.error(f"File not found in MinIO at any path: original={original_path}, tried={file_path}")
+            raise HTTPException(
+                status_code=404, 
+                detail=f"Document file not found in MinIO storage. The file may have been deleted."
+            )
+        
+        # If use_proxy is True, stream the file through the backend
+        # This avoids presigned URL signature issues
+        if use_proxy:
+            try:
+                # Ensure MinIO is initialized
+                await storage_service.initialize()
+                
+                # Get file metadata for headers
+                metadata = await storage_service.get_file_metadata(file_path)
+                
+                # Get filename from document title or file path
+                filename = os.path.basename(file_path) or document.title or f"document_{document_id}"
+                # Ensure filename has extension if file_path has one
+                if '.' not in filename and '.' in file_path:
+                    ext = os.path.splitext(file_path)[1]
+                    filename = f"{filename}{ext}"
+                
+                # Stream file from MinIO (sync generator, but MinIO is initialized)
+                file_stream = storage_service.get_file_stream(file_path)
+                
+                # Determine content type
+                content_type = metadata.get("content_type") or "application/octet-stream"
+                
+                logger.info(f"Streaming file download for document {document_id}: {filename} ({metadata.get('size', 0)} bytes)")
+                
+                return StreamingResponse(
+                    file_stream,
+                    media_type=content_type,
+                    headers={
+                        "Content-Disposition": f'attachment; filename="{filename}"',
+                        "Content-Length": str(metadata.get("size", 0)),
+                    }
+                )
+            except FileNotFoundError:
+                raise HTTPException(status_code=404, detail="File not found in storage")
+            except Exception as e:
+                logger.error(f"Error streaming file for document {document_id}: {e}")
+                raise HTTPException(status_code=500, detail=f"Failed to stream file: {str(e)}")
+        else:
+            # Legacy mode: return presigned URL
+            # Generate fresh presigned URL (always generate new one to avoid expiry)
+            download_url = await storage_service.get_presigned_download_url(file_path)
+            
+            logger.debug(f"Generated download URL for document {document_id}")
+            return JSONResponse(content={"download_url": download_url})
+    
+    except HTTPException:
+        raise
+    except ValueError as e:
+        logger.error(f"Invalid file path for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=400, detail=f"Invalid file path: {str(e)}")
+    except Exception as e:
+        logger.error(f"Error generating download URL for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to generate download URL")
 
 
 @router.get("/{document_id}", response_model=DocumentResponse)

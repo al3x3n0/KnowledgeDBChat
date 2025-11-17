@@ -63,15 +63,32 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const login = async (username: string, password: string): Promise<void> => {
     try {
       setLoading(true);
+      console.log('AuthContext: Starting login for:', username);
       const response: LoginResponse = await apiClient.login(username, password);
+      console.log('AuthContext: Login response:', response);
+      
+      // Validate response structure
+      if (!response || !response.access_token) {
+        console.error('AuthContext: Invalid login response - missing access_token');
+        throw new Error('Invalid login response: missing access token');
+      }
+      
+      if (!response.user) {
+        console.error('AuthContext: Invalid login response - missing user');
+        throw new Error('Invalid login response: missing user data');
+      }
       
       // Store token and user data
+      console.log('AuthContext: Storing token and user data');
       apiClient.setToken(response.access_token);
       setUser(response.user);
       
+      console.log('AuthContext: Login successful, user set:', response.user.username);
       toast.success(`Welcome back, ${response.user.username}!`);
     } catch (error: any) {
-      const errorMessage = error.response?.data?.detail || 'Login failed';
+      console.error('AuthContext: Login error:', error);
+      const errorMessage = error.response?.data?.detail || error.message || 'Login failed';
+      console.error('AuthContext: Error message:', errorMessage);
       toast.error(errorMessage);
       throw error;
     } finally {

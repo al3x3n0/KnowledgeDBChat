@@ -104,12 +104,16 @@ async def get_chat_sessions(
             limit=page_size
         )
         
+        logger.info(f"Retrieved {len(sessions)} sessions for user {current_user.id} (total: {total}, page: {page}, page_size: {page_size})")
+        
         # Convert to response models
         # For list view, set messages to empty list to prevent lazy loading issues
         items = []
         for session in sessions:
             session.messages = []
             items.append(ChatSessionResponse.from_orm(session))
+        
+        logger.debug(f"Converted {len(items)} sessions to response models")
         
         # Return paginated response
         return PaginatedResponse.create(
@@ -301,8 +305,11 @@ async def delete_chat_session(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
-    """Delete a chat session."""
+    """Delete a chat session (soft delete)."""
+    from app.core.logging import log_error
+    
     try:
+        logger.info(f"Delete request for session {session_id} by user {current_user.id}")
         success = await chat_service.delete_session(
             session_id=session_id,
             user_id=current_user.id,
@@ -310,14 +317,16 @@ async def delete_chat_session(
         )
         
         if not success:
+            logger.warning(f"Session {session_id} not found or doesn't belong to user {current_user.id}")
             raise HTTPException(status_code=404, detail="Chat session not found")
         
+        logger.info(f"Successfully deleted session {session_id}")
         return {"message": "Chat session deleted successfully"}
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting chat session: {e}")
+        log_error(e, context={"session_id": str(session_id), "user_id": str(current_user.id)})
         raise HTTPException(status_code=500, detail="Failed to delete chat session")
 
 

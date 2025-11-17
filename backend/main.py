@@ -41,6 +41,14 @@ async def lifespan(app: FastAPI):
     vector_service = VectorStoreService()
     await vector_service.initialize()
     
+    # Initialize MinIO storage service
+    from app.services.storage_service import storage_service
+    try:
+        await storage_service.initialize()
+        logger.info("MinIO storage service initialized")
+    except Exception as e:
+        logger.warning(f"Failed to initialize MinIO storage service: {e}. Uploads may fail.")
+    
     logger.info("Application startup complete")
     
     yield

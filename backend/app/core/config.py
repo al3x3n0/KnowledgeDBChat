@@ -81,6 +81,15 @@ class Settings(BaseSettings):
     RAG_DEDUPLICATION_ENABLED: bool = True
     RAG_DEDUPLICATION_THRESHOLD: float = 0.95  # Similarity threshold for considering duplicates
     
+    # MinIO Object Storage
+    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_BUCKET_NAME: str = "documents"
+    MINIO_USE_SSL: bool = False
+    MINIO_PRESIGNED_URL_EXPIRY: int = 3600  # 1 hour in seconds
+    MINIO_PROXY_BASE_URL: Optional[str] = None  # Base URL for nginx proxy (e.g., "http://localhost:3000/minio")
+    
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def validate_database_url(cls, v):

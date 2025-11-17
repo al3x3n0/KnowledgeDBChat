@@ -294,10 +294,49 @@ const DocumentsPage: React.FC = () => {
                         <Button
                           variant="ghost"
                           size="sm"
-                          icon={<Download className="w-4 h-4" />}
+                          icon={<Eye className="w-4 h-4" />}
                           onClick={() => window.open(document.url, '_blank')}
                         >
                           Open
+                        </Button>
+                      )}
+                      
+                      {document.file_path && (
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<Download className="w-4 h-4" />}
+                          onClick={async () => {
+                            try {
+                              const downloadUrl = await apiClient.getDocumentDownloadUrl(document.id, true);
+                              // Use fetch to download with authentication
+                              const response = await fetch(downloadUrl, {
+                                method: 'GET',
+                                headers: {
+                                  'Authorization': `Bearer ${localStorage.getItem('access_token') || ''}`,
+                                },
+                                credentials: 'include',
+                              });
+                              
+                              if (!response.ok) {
+                                throw new Error(`Download failed: ${response.statusText}`);
+                              }
+                              
+                              const blob = await response.blob();
+                              const url = window.URL.createObjectURL(blob);
+                              const link = window.document.createElement('a');
+                              link.href = url;
+                              link.download = document.title || `document_${document.id}`;
+                              window.document.body.appendChild(link);
+                              link.click();
+                              window.document.body.removeChild(link);
+                              window.URL.revokeObjectURL(url);
+                            } catch (error) {
+                              toast.error('Failed to generate download URL');
+                            }
+                          }}
+                        >
+                          Download
                         </Button>
                       )}
                       
@@ -517,17 +556,69 @@ interface DocumentDetailsModalProps {
 }
 
 const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({ document, onClose }) => {
+  const handleDownload = async () => {
+    try {
+      const downloadUrl = await apiClient.getDocumentDownloadUrl(document.id, true);
+      // Use fetch to download with authentication
+      const response = await fetch(downloadUrl, {
+        method: 'GET',
+        headers: {
+          'Authorization': `Bearer ${localStorage.getItem('access_token') || ''}`,
+        },
+        credentials: 'include',
+      });
+      
+      if (!response.ok) {
+        throw new Error(`Download failed: ${response.statusText}`);
+      }
+      
+      // Get filename from Content-Disposition header
+      const contentDisposition = response.headers.get('Content-Disposition');
+      let filename = document.title || `document_${document.id}`;
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1].replace(/['"]/g, '');
+        }
+      }
+      
+      const blob = await response.blob();
+      const url = window.URL.createObjectURL(blob);
+      const link = window.document.createElement('a');
+      link.href = url;
+      link.download = filename;
+      window.document.body.appendChild(link);
+      link.click();
+      window.document.body.removeChild(link);
+      window.URL.revokeObjectURL(url);
+    } catch (error) {
+      toast.error('Failed to generate download URL');
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
       <div className="bg-white rounded-lg p-6 w-full max-w-4xl max-h-[90vh] overflow-auto">
         <div className="flex items-center justify-between mb-4">
           <h2 className="text-lg font-semibold text-gray-900">{document.title}</h2>
-          <button
-            onClick={onClose}
-            className="text-gray-400 hover:text-gray-600"
-          >
-            <X className="w-6 h-6" />
-          </button>
+          <div className="flex items-center gap-2">
+            {document.file_path && (
+              <Button
+                variant="ghost"
+                size="sm"
+                icon={<Download className="w-4 h-4" />}
+                onClick={handleDownload}
+              >
+                Download
+              </Button>
+            )}
+            <button
+              onClick={onClose}
+              className="text-gray-400 hover:text-gray-600"
+            >
+              <X className="w-6 h-6" />
+            </button>
+          </div>
         </div>
 
         <div className="space-y-4">

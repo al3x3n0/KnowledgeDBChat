@@ -322,17 +322,21 @@ async def delete_document(
 ):
     """Delete a document."""
     try:
+        logger.info(f"Delete request for document {document_id} by user {current_user.id}")
         success = await document_service.delete_document(document_id, db)
         if not success:
+            logger.warning(f"Document {document_id} not found or deletion failed")
             raise HTTPException(status_code=404, detail="Document not found")
         
+        logger.info(f"Successfully deleted document {document_id}")
         return {"message": "Document deleted successfully"}
     
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error deleting document: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete document")
+        logger.error(f"Error deleting document {document_id}: {e}", exc_info=True)
+        error_detail = str(e) if str(e) else "Failed to delete document"
+        raise HTTPException(status_code=500, detail=error_detail)
 
 
 @router.post("/reprocess/{document_id}")

@@ -282,7 +282,7 @@ class MinIOStorageService:
         Delete file from MinIO.
         
         Args:
-            object_path: Path to object in MinIO
+            object_path: Path to object in MinIO (may or may not include 'documents/' prefix)
             
         Returns:
             True if successful, False otherwise
@@ -291,22 +291,32 @@ class MinIOStorageService:
             await self.initialize()
             client = self._get_client()
             
+            # Sanitize and normalize the path
+            sanitized_path = self._sanitize_object_path(object_path)
+            
+            # Remove 'documents/' prefix if present (bucket name is already 'documents')
+            if sanitized_path.startswith('documents/'):
+                sanitized_path = sanitized_path[10:]  # Remove 'documents/' prefix (10 chars)
+            
+            logger.info(f"Deleting file from MinIO: {sanitized_path} (original: {object_path})")
+            
             client.remove_object(
                 bucket_name=settings.MINIO_BUCKET_NAME,
-                object_name=object_path
+                object_name=sanitized_path
             )
             
-            logger.info(f"Deleted file from MinIO: {object_path}")
+            logger.info(f"Successfully deleted file from MinIO: {sanitized_path}")
             return True
         
         except S3Error as e:
             if e.code == "NoSuchKey":
-                logger.warning(f"File not found in MinIO: {object_path}")
-                return False
-            logger.error(f"MinIO S3Error during delete: {e}")
+                logger.warning(f"File not found in MinIO: {object_path} (sanitized: {sanitized_path if 'sanitized_path' in locals() else 'N/A'})")
+                # Return True if file doesn't exist - it's already deleted
+                return True
+            logger.error(f"MinIO S3Error during delete: {e}", exc_info=True)
             return False
         except Exception as e:
-            logger.error(f"Failed to delete file from MinIO: {e}")
+            logger.error(f"Failed to delete file from MinIO: {e}", exc_info=True)
             return False
     
     async def file_exists(self, object_path: str) -> bool:

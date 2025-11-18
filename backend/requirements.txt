@@ -32,6 +32,10 @@ scrapy==2.11.0
 GitPython==3.1.40
 python-multipart==0.0.6
 aiofiles==23.2.1
+pypdf>=3.0.0
+unstructured>=0.10.0
+python-pptx>=0.6.21
+markdown>=3.4.0
 
 # Utilities
 pydantic==2.5.0

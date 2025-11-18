@@ -317,7 +317,7 @@ const ChatPage: React.FC = () => {
         </div>
 
         {/* Sessions List */}
-        <div className="flex-1 overflow-y-auto min-h-0">
+        <div className="flex-1 overflow-y-auto min-h-0 scroll-smooth scrollbar-thin">
           {sessionsError ? (
             <div className="p-4 text-center text-red-500">
               <p>Error loading sessions</p>

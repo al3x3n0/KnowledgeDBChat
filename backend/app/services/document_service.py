@@ -355,38 +355,94 @@ class DocumentService:
             await db.commit()
     
     async def delete_document(self, document_id: UUID, db: AsyncSession) -> bool:
-        """Delete a document and its chunks."""
+        """
+        Delete a document and all associated data.
+        
+        This method deletes:
+        1. File from MinIO storage
+        2. Chunks from vector store (ChromaDB)
+        3. Chunks from database (explicitly, in addition to cascade)
+        4. Document from database
+        5. Cache entries
+        
+        Args:
+            document_id: UUID of the document to delete
+            db: Database session
+            
+        Returns:
+            True if deletion was successful, False otherwise
+        """
         document = await self.get_document(document_id, db)
         if not document:
+            logger.warning(f"Document {document_id} not found for deletion")
             return False
         
         try:
+            logger.info(f"Starting deletion of document {document_id}: {document.title}")
+            
             # Ensure vector store is initialized
             await self._ensure_vector_store_initialized()
             
-            # Delete from MinIO if file_path exists
+            # Step 1: Delete from MinIO if file_path exists
             if document.file_path:
                 try:
-                    await storage_service.delete_file(document.file_path)
+                    logger.info(f"Deleting file from MinIO: {document.file_path}")
+                    deleted = await storage_service.delete_file(document.file_path)
+                    if deleted:
+                        logger.info(f"Successfully deleted file from MinIO: {document.file_path}")
+                    else:
+                        logger.warning(f"File deletion returned False for: {document.file_path}")
                 except Exception as e:
-                    logger.warning(f"Failed to delete file from MinIO: {e}")
+                    logger.warning(f"Failed to delete file from MinIO {document.file_path}: {e}", exc_info=True)
+                    # Continue with deletion even if MinIO delete fails
             
-            # Delete from vector store
-            await self.vector_store.delete_document_chunks(document_id)
+            # Step 2: Delete from vector store (ChromaDB)
+            try:
+                logger.info(f"Deleting chunks from vector store for document {document_id}")
+                await self.vector_store.delete_document_chunks(document_id)
+                logger.info(f"Successfully deleted chunks from vector store for document {document_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete chunks from vector store for document {document_id}: {e}")
+                # Continue with deletion even if vector store delete fails
             
-            # Delete from database
+            # Step 3: Delete chunks from database explicitly (in addition to cascade)
+            try:
+                from app.models.document import DocumentChunk
+                from sqlalchemy import delete
+                
+                delete_chunks_stmt = delete(DocumentChunk).where(
+                    DocumentChunk.document_id == document_id
+                )
+                result = await db.execute(delete_chunks_stmt)
+                deleted_chunks = result.rowcount
+                logger.info(f"Deleted {deleted_chunks} chunks from database for document {document_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete chunks from database for document {document_id}: {e}")
+                # Continue with deletion even if chunk delete fails
+            
+            # Step 4: Delete document from database
+            # Use delete() method which is async in SQLAlchemy 2.0
             await db.delete(document)
+            await db.flush()  # Flush before commit to ensure all deletes are processed
             await db.commit()
+            logger.info(f"Successfully deleted document {document_id} from database")
             
-            # Invalidate cache
-            cache_key = f"document:{document_id}"
-            await cache_service.delete(cache_key)
+            # Step 5: Invalidate cache
+            try:
+                cache_key = f"document:{document_id}"
+                await cache_service.delete(cache_key)
+                # Also invalidate documents list cache
+                await cache_service.delete_pattern("documents:*")
+                logger.info(f"Invalidated cache for document {document_id}")
+            except Exception as e:
+                logger.warning(f"Failed to invalidate cache for document {document_id}: {e}")
             
-            logger.info(f"Deleted document: {document_id}")
+            logger.info(f"Successfully deleted document {document_id}: {document.title}")
             return True
             
         except Exception as e:
-            logger.error(f"Error deleting document {document_id}: {e}")
+            logger.error(f"Error deleting document {document_id}: {e}", exc_info=True)
+            await db.rollback()
             return False
     
     async def reprocess_document(self, document_id: UUID, db: AsyncSession) -> bool:

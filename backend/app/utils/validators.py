@@ -13,13 +13,15 @@ ALLOWED_FILE_TYPES = {
     'application/pdf': ['.pdf'],
     'application/msword': ['.doc'],
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document': ['.docx'],
+    'application/vnd.openxmlformats-officedocument.presentationml.presentation': ['.pptx'],
+    'application/vnd.ms-powerpoint': ['.ppt'],
     'text/plain': ['.txt'],
     'text/html': ['.html', '.htm'],
     'text/markdown': ['.md', '.markdown'],
 }
 
 ALLOWED_EXTENSIONS = [
-    '.pdf', '.doc', '.docx', '.txt', '.html', '.htm', '.md', '.markdown'
+    '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt', '.html', '.htm', '.md', '.markdown'
 ]
 
 

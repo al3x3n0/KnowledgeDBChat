@@ -68,14 +68,16 @@ const DocumentsPage: React.FC = () => {
 
   // Delete document mutation
   const deleteDocumentMutation = useMutation(
-    apiClient.deleteDocument,
+    (documentId: string) => apiClient.deleteDocument(documentId),
     {
       onSuccess: () => {
         queryClient.invalidateQueries('documents');
         toast.success('Document deleted successfully');
       },
-      onError: () => {
-        toast.error('Failed to delete document');
+      onError: (error: any) => {
+        console.error('Delete document error:', error);
+        const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to delete document';
+        toast.error(errorMessage);
       },
     }
   );
@@ -340,28 +342,26 @@ const DocumentsPage: React.FC = () => {
                         </Button>
                       )}
                       
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        icon={<Trash2 className="w-4 h-4" />}
+                        onClick={() => handleDeleteDocument(document.id)}
+                        loading={deleteDocumentMutation.isLoading}
+                      >
+                        Delete
+                      </Button>
+                      
                       {user?.role === 'admin' && (
-                        <>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            icon={<RefreshCw className="w-4 h-4" />}
-                            onClick={() => handleReprocessDocument(document.id)}
-                            loading={reprocessDocumentMutation.isLoading}
-                          >
-                            Reprocess
-                          </Button>
-                          
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            icon={<Trash2 className="w-4 h-4" />}
-                            onClick={() => handleDeleteDocument(document.id)}
-                            loading={deleteDocumentMutation.isLoading}
-                          >
-                            Delete
-                          </Button>
-                        </>
+                        <Button
+                          variant="ghost"
+                          size="sm"
+                          icon={<RefreshCw className="w-4 h-4" />}
+                          onClick={() => handleReprocessDocument(document.id)}
+                          loading={reprocessDocumentMutation.isLoading}
+                        >
+                          Reprocess
+                        </Button>
                       )}
                     </div>
                   </div>
@@ -484,6 +484,7 @@ const UploadModal: React.FC<UploadModalProps> = ({ onClose, onSuccess }) => {
             </label>
             <input
               type="file"
+              accept=".pdf,.doc,.docx,.ppt,.pptx,.txt,.html,.htm,.md,.markdown,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,application/vnd.openxmlformats-officedocument.presentationml.presentation,application/vnd.ms-powerpoint,text/plain,text/html,text/markdown"
               onChange={(e) => setFile(e.target.files?.[0] || null)}
               className="block w-full text-sm text-gray-500 file:mr-4 file:py-2 file:px-4 file:rounded-lg file:border-0 file:text-sm file:font-medium file:bg-primary-50 file:text-primary-700 hover:file:bg-primary-100"
               required

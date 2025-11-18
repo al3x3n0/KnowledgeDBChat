@@ -12,7 +12,8 @@ from langchain.document_loaders import (
     PyPDFLoader,
     UnstructuredWordDocumentLoader,
     UnstructuredHTMLLoader,
-    UnstructuredMarkdownLoader
+    UnstructuredMarkdownLoader,
+    UnstructuredPowerPointLoader
 )
 from sentence_transformers import SentenceTransformer
 from loguru import logger
@@ -63,9 +64,11 @@ class TextProcessor:
                 return await self._extract_pdf(file_path)
             elif file_extension in ['.docx', '.doc'] or (content_type and 'word' in content_type):
                 return await self._extract_word(file_path)
+            elif file_extension in ['.pptx', '.ppt'] or (content_type and ('powerpoint' in content_type.lower() or 'presentation' in content_type.lower())):
+                return await self._extract_powerpoint(file_path)
             elif file_extension in ['.html', '.htm'] or (content_type and 'html' in content_type):
                 return await self._extract_html(file_path)
-            elif file_extension in ['.md', '.markdown']:
+            elif file_extension in ['.md', '.markdown'] or (content_type and 'markdown' in content_type.lower()):
                 return await self._extract_markdown(file_path)
             elif file_extension == '.txt' or (content_type and 'text' in content_type):
                 return await self._extract_text_file(file_path)
@@ -80,11 +83,28 @@ class TextProcessor:
     async def _extract_pdf(self, file_path: str) -> str:
         """Extract text from PDF file."""
         try:
+            logger.info(f"Extracting text from PDF: {file_path}")
             loader = PyPDFLoader(file_path)
             documents = loader.load()
-            return "\n\n".join([doc.page_content for doc in documents])
+            
+            if not documents:
+                logger.warning(f"No content extracted from PDF: {file_path}")
+                return ""
+            
+            # Combine all pages with page breaks
+            text_content = "\n\n".join([doc.page_content for doc in documents])
+            
+            # Log extraction stats
+            page_count = len(documents)
+            text_length = len(text_content)
+            logger.info(f"Extracted {text_length} characters from {page_count} pages of PDF: {file_path}")
+            
+            return text_content
+        except ImportError as e:
+            logger.error(f"PDF extraction library not available: {e}. Please install pypdf.")
+            raise
         except Exception as e:
-            logger.error(f"Error extracting PDF {file_path}: {e}")
+            logger.error(f"Error extracting PDF {file_path}: {e}", exc_info=True)
             return ""
     
     async def _extract_word(self, file_path: str) -> str:
@@ -95,6 +115,31 @@ class TextProcessor:
             return "\n\n".join([doc.page_content for doc in documents])
         except Exception as e:
             logger.error(f"Error extracting Word document {file_path}: {e}")
+            return ""
+    
+    async def _extract_powerpoint(self, file_path: str) -> str:
+        """Extract text from PowerPoint presentation."""
+        try:
+            logger.info(f"Extracting text from PowerPoint: {file_path}")
+            loader = UnstructuredPowerPointLoader(file_path)
+            documents = loader.load()
+            
+            if not documents:
+                logger.warning(f"No content extracted from PowerPoint: {file_path}")
+                return ""
+            
+            # Combine all slides with slide separators
+            # Each document typically represents a slide
+            text_content = "\n\n--- Slide ---\n\n".join([doc.page_content for doc in documents])
+            
+            # Log extraction stats
+            slide_count = len(documents)
+            text_length = len(text_content)
+            logger.info(f"Extracted {text_length} characters from {slide_count} slides of PowerPoint: {file_path}")
+            
+            return text_content
+        except Exception as e:
+            logger.error(f"Error extracting PowerPoint {file_path}: {e}", exc_info=True)
             return ""
     
     async def _extract_html(self, file_path: str) -> str:
@@ -108,14 +153,35 @@ class TextProcessor:
             return ""
     
     async def _extract_markdown(self, file_path: str) -> str:
-        """Extract text from Markdown file."""
-        try:
-            loader = UnstructuredMarkdownLoader(file_path)
-            documents = loader.load()
-            return "\n\n".join([doc.page_content for doc in documents])
-        except Exception as e:
-            logger.error(f"Error extracting Markdown {file_path}: {e}")
-            return ""
+        """Extract text from Markdown file, preserving structure."""
+        # Markdown extraction is required - no fallbacks
+        logger.info(f"Extracting text from Markdown: {file_path}")
+        
+        loader = UnstructuredMarkdownLoader(file_path)
+        documents = loader.load()
+        
+        if not documents:
+            error_msg = f"No content extracted from Markdown: {file_path}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Combine documents, preserving markdown structure
+        # UnstructuredMarkdownLoader already handles markdown parsing
+        text_content = "\n\n".join([doc.page_content for doc in documents])
+        
+        if not text_content or not text_content.strip():
+            error_msg = f"Empty content extracted from Markdown: {file_path}"
+            logger.error(error_msg)
+            raise ValueError(error_msg)
+        
+        # Log extraction stats
+        text_length = len(text_content)
+        header_count = len(re.findall(r'^#{1,6}\s+', text_content, re.MULTILINE))
+        code_block_count = len(re.findall(r'```', text_content))
+        logger.info(f"Extracted {text_length} characters from Markdown: {file_path} "
+                   f"(headers: {header_count}, code blocks: {code_block_count})")
+        
+        return text_content
     
     async def _extract_text_file(self, file_path: str) -> str:
         """Extract text from plain text file."""
@@ -258,13 +324,24 @@ class TextProcessor:
         chunk_overlap: int
     ) -> List[str]:
         """Split text using fixed-size chunking."""
+        # Detect if text is markdown and use markdown-aware separators
+        is_markdown = self._is_markdown(text)
+        
         # Update splitter configuration if different from default
         if chunk_size != self.text_splitter._chunk_size or chunk_overlap != self.text_splitter._chunk_overlap:
+            # Use markdown-aware separators if content is markdown
+            # This helps preserve structure: headers, code blocks, lists
+            separators = (
+                ["\n\n## ", "\n\n# ", "\n\n```", "\n\n", "\n", " ", ""] 
+                if is_markdown 
+                else ["\n\n", "\n", " ", ""]
+            )
+            
             self.text_splitter = RecursiveCharacterTextSplitter(
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
                 length_function=len,
-                separators=["\n\n", "\n", " ", ""]
+                separators=separators
             )
         
         # Clean the text
@@ -305,15 +382,34 @@ class TextProcessor:
             # Clean the text
             cleaned_text = self._clean_text(text)
             
-            # Split by paragraphs first (natural boundaries)
-            paragraphs = re.split(r'\n\s*\n', cleaned_text)
+            # For markdown, split by headers first to preserve structure
+            is_markdown = self._is_markdown(cleaned_text)
+            if is_markdown:
+                # Split by markdown headers (## or #) to create sections
+                # This preserves markdown structure better
+                sections = re.split(r'\n(#{1,6}\s+)', cleaned_text)
+                # Recombine headers with their content
+                paragraphs = []
+                for i in range(0, len(sections) - 1, 2):
+                    if i + 1 < len(sections):
+                        paragraphs.append(sections[i] + sections[i + 1])
+                    else:
+                        paragraphs.append(sections[i])
+                # Also split by double newlines within sections
+                all_paragraphs = []
+                for section in paragraphs:
+                    all_paragraphs.extend(re.split(r'\n\s*\n', section))
+            else:
+                # Split by paragraphs first (natural boundaries)
+                paragraphs = re.split(r'\n\s*\n', cleaned_text)
+                all_paragraphs = paragraphs
             
             # Group paragraphs into semantic chunks
             chunks = []
             current_chunk = []
             current_size = 0
             
-            for para in paragraphs:
+            for para in all_paragraphs:
                 para = para.strip()
                 if not para:
                     continue
@@ -410,6 +506,38 @@ class TextProcessor:
         
         return chunks if chunks else [text]
     
+    def _is_markdown(self, text: str) -> bool:
+        """
+        Detect if text content is markdown format.
+        
+        Args:
+            text: Text content to check
+            
+        Returns:
+            True if text appears to be markdown, False otherwise
+        """
+        if not text:
+            return False
+        
+        # Check for common markdown patterns
+        markdown_patterns = [
+            r'^#{1,6}\s+',  # Headers (# Header)
+            r'\*\*.*?\*\*',  # Bold (**text**)
+            r'\*.*?\*',  # Italic (*text*)
+            r'\[.*?\]\(.*?\)',  # Links [text](url)
+            r'```',  # Code blocks
+            r'^\s*[-*+]\s+',  # Unordered lists
+            r'^\s*\d+\.\s+',  # Ordered lists
+            r'^\s*>\s+',  # Blockquotes
+        ]
+        
+        # Count markdown patterns found
+        pattern_count = sum(1 for pattern in markdown_patterns if re.search(pattern, text, re.MULTILINE))
+        
+        # Consider it markdown if at least 2 patterns are found
+        # This helps avoid false positives on plain text with occasional markdown-like characters
+        return pattern_count >= 2
+    
     def _clean_text(self, text: str) -> str:
         """Clean and normalize text content."""
         if not text:
@@ -468,7 +596,7 @@ class TextProcessor:
     def get_supported_formats(self) -> List[str]:
         """Get list of supported file formats."""
         return [
-            'pdf', 'txt', 'docx', 'doc', 'html', 'htm', 'md', 'markdown'
+            'pdf', 'txt', 'docx', 'doc', 'pptx', 'ppt', 'html', 'htm', 'md', 'markdown'
         ]
     
     def is_supported_format(self, file_path: str) -> bool:

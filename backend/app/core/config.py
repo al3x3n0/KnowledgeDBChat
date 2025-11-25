@@ -47,6 +47,15 @@ class Settings(BaseSettings):
     CONFLUENCE_USER: Optional[str] = None
     CONFLUENCE_API_TOKEN: Optional[str] = None
     
+    # Transcription
+    WHISPER_MODEL_SIZE: str = "small"  # Options: tiny, base, small, medium, large
+    WHISPER_DEVICE: str = "auto"  # Options: cpu, cuda, auto
+    TRANSCRIPTION_LANGUAGE: str = "ru"  # Default language for transcription
+    
+    # File Upload Limits
+    MAX_FILE_SIZE: int = 500 * 1024 * 1024  # 500MB default (videos can be large)
+    MAX_VIDEO_SIZE: int = 2000 * 1024 * 1024  # 2GB for videos specifically
+    
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
@@ -108,6 +117,24 @@ class Settings(BaseSettings):
         env_file = ".env"
         case_sensitive = True
 
+    # Validators
+    @field_validator("CELERY_BROKER_URL", mode="before")
+    @classmethod
+    def default_celery_broker_from_redis(cls, v):
+        # If not explicitly set, default to REDIS_URL to avoid localhost in containers
+        env_val = os.getenv("CELERY_BROKER_URL")
+        if env_val:
+            return env_val
+        return os.getenv("REDIS_URL", v or "redis://localhost:6379/0")
+
+    @field_validator("CELERY_RESULT_BACKEND", mode="before")
+    @classmethod
+    def default_celery_backend_from_redis(cls, v):
+        env_val = os.getenv("CELERY_RESULT_BACKEND")
+        if env_val:
+            return env_val
+        return os.getenv("REDIS_URL", v or "redis://localhost:6379/0")
+
 
 # Global settings instance
 settings = Settings()
@@ -126,5 +153,4 @@ logger.add(
     level=settings.LOG_LEVEL,
     format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | {message}"
 )
-
 

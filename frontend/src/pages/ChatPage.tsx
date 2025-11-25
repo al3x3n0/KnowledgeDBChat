@@ -65,6 +65,7 @@ const ChatPage: React.FC = () => {
     {
       enabled: !!user, // Only fetch if user is authenticated
       refetchOnWindowFocus: false,
+      refetchInterval: 10000, // Refetch every 10 seconds to catch title updates
       retry: 2,
       onError: (error: any) => {
         console.error('Error fetching chat sessions:', error);

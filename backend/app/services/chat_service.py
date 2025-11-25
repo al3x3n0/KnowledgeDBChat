@@ -456,6 +456,21 @@ class ChatService:
                 db=db
             )
             
+            # Trigger async title generation if this is the first assistant message
+            # Check if session has default title (starts with "Chat ") or is None
+            session_result = await db.execute(
+                select(ChatSession).where(ChatSession.id == session_id)
+            )
+            session = session_result.scalar_one_or_none()
+            if session and (not session.title or session.title.startswith("Chat ")):
+                try:
+                    from app.tasks.chat_tasks import generate_chat_title
+                    # Trigger async title generation
+                    generate_chat_title.delay(str(session_id))
+                    logger.info(f"Triggered title generation for session {session_id}")
+                except Exception as e:
+                    logger.warning(f"Failed to trigger title generation for session {session_id}: {e}")
+            
             logger.info(f"Generated response for session {session_id} in {response_time:.2f}s")
             return assistant_message
             

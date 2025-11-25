@@ -49,7 +49,8 @@ async def get_db() -> AsyncSession:
             # Don't log HTTPException as database errors - they're expected API responses
             from fastapi import HTTPException
             if not isinstance(e, HTTPException):
-                logger.error(f"Database session error: {e}", exc_info=True)
+                # Use % formatting to avoid issues with curly braces in exception messages
+                logger.error("Database session error: %s", str(e), exc_info=True)
             await session.rollback()
             raise
         finally:
@@ -61,7 +62,7 @@ async def create_tables():
     try:
         async with engine.begin() as conn:
             # Import all models to ensure they're registered
-            from app.models import document, chat, user
+            from app.models import document, chat, user, upload_session
             
             # Create all tables
             await conn.run_sync(Base.metadata.create_all)

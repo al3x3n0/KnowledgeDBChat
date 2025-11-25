@@ -64,6 +64,12 @@ export interface Document {
   author?: string;
   tags?: string[];
   metadata?: any;
+  extra_metadata?: {
+    is_transcribing?: boolean;
+    is_transcribed?: boolean;
+    transcription_metadata?: any;
+    [key: string]: any;
+  };
   is_processed: boolean;
   processing_error?: string;
   created_at: string;

@@ -18,10 +18,30 @@ ALLOWED_FILE_TYPES = {
     'text/plain': ['.txt'],
     'text/html': ['.html', '.htm'],
     'text/markdown': ['.md', '.markdown'],
+    # Video formats
+    'video/mp4': ['.mp4'],
+    'video/x-msvideo': ['.avi'],
+    'video/x-matroska': ['.mkv'],
+    'video/quicktime': ['.mov'],
+    'video/webm': ['.webm'],
+    'video/x-flv': ['.flv'],
+    'video/x-ms-wmv': ['.wmv'],
+    # Audio formats
+    'audio/mpeg': ['.mp3'],
+    'audio/wav': ['.wav'],
+    'audio/x-m4a': ['.m4a'],
+    'audio/flac': ['.flac'],
+    'audio/ogg': ['.ogg'],
+    'audio/aac': ['.aac'],
 }
 
 ALLOWED_EXTENSIONS = [
-    '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt', '.html', '.htm', '.md', '.markdown'
+    # Documents
+    '.pdf', '.doc', '.docx', '.ppt', '.pptx', '.txt', '.html', '.htm', '.md', '.markdown',
+    # Video
+    '.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv', '.wmv',
+    # Audio
+    '.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac'
 ]
 
 

@@ -212,7 +212,49 @@ class ApiClient {
     return response.data;
   }
 
-  async getDocumentDownloadUrl(documentId: string, useProxy: boolean = true): Promise<string> {
+  async getDocumentDownloadUrl(documentId: string, useProxy: boolean = true, useVideoStreamer: boolean = false): Promise<string> {
+    // Use video streamer for video/audio files
+    if (useVideoStreamer) {
+      // 1) Prefer explicit env override
+      const envVideoBase = (process.env.REACT_APP_VIDEO_STREAM_URL || '').replace(/\/$/, '');
+      if (envVideoBase) {
+        const url = envVideoBase.match(/\/stream$/)
+          ? `${envVideoBase}/${documentId}`
+          : envVideoBase.match(/\/video$/)
+            ? `${envVideoBase}/${documentId}`
+            : `${envVideoBase}/video/${documentId}`;
+        console.log('Video streamer URL (env):', url, 'for document:', documentId);
+        return url;
+      }
+
+      // 2) Derive from known base URLs
+      let baseUrl = this.client.defaults.baseURL || API_BASE_URL;
+      baseUrl = baseUrl.replace(/\/$/, '');
+      if (baseUrl.endsWith('/api')) baseUrl = baseUrl.slice(0, -4);
+
+      // If pointing to nginx (port 3000), use /video
+      if (/(:|\/)3000(\/|$)/.test(baseUrl)) {
+        const url = `${baseUrl}/video/${documentId}`;
+        console.log('Video streamer URL (nginx base):', url, 'for document:', documentId);
+        return url;
+      }
+
+      // 3) Try current page origin (useful when running behind nginx)
+      if (typeof window !== 'undefined' && window.location?.origin) {
+        const origin = window.location.origin.replace(/\/$/, '');
+        if (/(:|\/)3000(\/|$)/.test(origin)) {
+          const url = `${origin}/video/${documentId}`;
+          console.log('Video streamer URL (window origin):', url, 'for document:', documentId);
+          return url;
+        }
+      }
+
+      // 4) Fallback to direct video-streamer (dev without nginx)
+      const fallback = `http://localhost:8080/stream/${documentId}`;
+      console.log('Video streamer URL (fallback direct):', fallback, 'for document:', documentId);
+      return fallback;
+    }
+    
     if (useProxy) {
       // Return the direct download URL (backend will stream the file)
       // The URL will be used with an anchor tag, and auth token will be added via Authorization header
@@ -273,8 +315,17 @@ class ApiClient {
     file: File,
     title?: string,
     tags?: string[],
-    onProgress?: (progress: number) => void
+    onProgress?: (progress: number) => void,
+    onStatusChange?: (status: string) => void,
+    onBytesProgress?: (uploaded: number, total: number) => void
   ): Promise<{ message: string; document_id: string }> {
+    // For large files (especially videos), use chunked upload
+    const LARGE_FILE_THRESHOLD = 50 * 1024 * 1024; // 50MB
+    if (file.size > LARGE_FILE_THRESHOLD) {
+      return this.uploadDocumentChunked(file, title, tags, onProgress, onStatusChange);
+    }
+    
+    // For smaller files, use regular upload with progress
     const formData = new FormData();
     formData.append('file', file);
     if (title) formData.append('title', title);
@@ -291,8 +342,142 @@ class ApiClient {
           );
           onProgress(percentCompleted);
         }
+        if (progressEvent.total && onBytesProgress) {
+          onBytesProgress(progressEvent.loaded, progressEvent.total);
+        }
       },
     });
+    return response.data;
+  }
+
+  /**
+   * Chunked upload for large files with resume capability
+   */
+  async uploadDocumentChunked(
+    file: File,
+    title?: string,
+    tags?: string[],
+    onProgress?: (progress: number) => void,
+    onStatusChange?: (status: string) => void,
+    onBytesProgress?: (uploaded: number, total: number) => void
+  ): Promise<{ message: string; document_id: string }> {
+    const CHUNK_SIZE = 5 * 1024 * 1024; // 5MB chunks
+    const totalChunks = Math.ceil(file.size / CHUNK_SIZE);
+    
+    // Check for existing upload session
+    let sessionId: string | null = null;
+    let uploadedChunks: number[] = [];
+    
+    try {
+      // Initialize upload session
+      onStatusChange?.('Initializing upload...');
+      const initFormData = new FormData();
+      
+      // Ensure filename is not empty
+      const filename = file.name || `upload_${Date.now()}`;
+      initFormData.append('filename', filename);
+      initFormData.append('file_size', file.size.toString());
+      initFormData.append('file_type', file.type || '');
+      initFormData.append('content_type', file.type || '');
+      if (title) initFormData.append('title', title);
+      if (tags) initFormData.append('tags', tags.join(','));
+      
+      const initResponse = await this.client.post('/api/v1/upload/init', initFormData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        },
+      });
+      sessionId = initResponse.data.session_id;
+      uploadedChunks = initResponse.data.uploaded_chunks || [];
+
+      // Bytes already uploaded (resume)
+      const sizeForIndex = (index: number) => index < totalChunks - 1
+        ? CHUNK_SIZE
+        : file.size - (totalChunks - 1) * CHUNK_SIZE;
+      let uploadedSoFar = uploadedChunks.reduce((sum: number, idx: number) => sum + sizeForIndex(idx), 0);
+      onBytesProgress?.(uploadedSoFar, file.size);
+      
+      onStatusChange?.('Uploading chunks...');
+      
+      // Upload each chunk
+      for (let chunkIndex = 0; chunkIndex < totalChunks; chunkIndex++) {
+        // Skip if already uploaded
+        if (uploadedChunks.includes(chunkIndex)) {
+          const progress = ((chunkIndex + 1) / totalChunks) * 100;
+          onProgress?.(Math.round(progress));
+          uploadedSoFar += sizeForIndex(chunkIndex);
+          onBytesProgress?.(uploadedSoFar, file.size);
+          continue;
+        }
+        
+        const start = chunkIndex * CHUNK_SIZE;
+        const end = Math.min(start + CHUNK_SIZE, file.size);
+        const chunk = file.slice(start, end);
+        
+        const chunkFormData = new FormData();
+        chunkFormData.append('chunk_number', chunkIndex.toString());
+        chunkFormData.append('chunk', chunk, file.name);
+        
+        try {
+          await this.client.post(`/api/v1/upload/${sessionId}/chunk`, chunkFormData, {
+            headers: {
+              'Content-Type': 'multipart/form-data',
+            },
+            onUploadProgress: (progressEvent) => {
+              if (progressEvent.total) {
+                // Progress for this chunk
+                const chunkProgress = (progressEvent.loaded / progressEvent.total) * 100;
+                // Overall progress
+                const overallProgress = ((chunkIndex + chunkProgress / 100) / totalChunks) * 100;
+                onProgress?.(Math.round(overallProgress));
+                onBytesProgress?.(uploadedSoFar + progressEvent.loaded, file.size);
+              }
+            },
+          });
+          
+          uploadedChunks.push(chunkIndex);
+          uploadedSoFar += (end - start);
+          onBytesProgress?.(uploadedSoFar, file.size);
+        } catch (error: any) {
+          // If chunk upload fails, we can resume later
+          console.error(`Failed to upload chunk ${chunkIndex}:`, error);
+          throw new Error(`Failed to upload chunk ${chunkIndex}: ${error.message}`);
+        }
+      }
+      
+      // Complete upload
+      onStatusChange?.('Finalizing upload...');
+      const completeResponse = await this.client.post(`/api/v1/upload/${sessionId}/complete`);
+      
+      onStatusChange?.('Upload complete!');
+      onProgress?.(100);
+      onBytesProgress?.(file.size, file.size);
+      
+      return {
+        message: completeResponse.data.message,
+        document_id: completeResponse.data.document_id,
+      };
+    } catch (error: any) {
+      console.error('Chunked upload error:', error);
+      throw error;
+    }
+  }
+
+  /**
+   * Get upload session status (for resume)
+   */
+  async getUploadStatus(sessionId: string): Promise<{
+    session_id: string;
+    filename: string;
+    file_size: number;
+    total_chunks: number;
+    uploaded_chunks: number[];
+    uploaded_bytes: number;
+    progress: number;
+    status: string;
+    can_resume: boolean;
+  }> {
+    const response = await this.client.get(`/api/v1/upload/${sessionId}/status`);
     return response.data;
   }
 
@@ -302,6 +487,11 @@ class ApiClient {
 
   async reprocessDocument(documentId: string): Promise<void> {
     await this.client.post(`/api/v1/documents/reprocess/${documentId}`);
+  }
+
+  async transcribeDocument(documentId: string): Promise<{ message: string }> {
+    const response = await this.client.post(`/api/v1/documents/${documentId}/transcribe`);
+    return response.data;
   }
 
   // Document sources endpoints
@@ -471,6 +661,23 @@ class ApiClient {
     const wsUrl = `${protocol}//${host}/api/v1/chat/sessions/${sessionId}/ws?token=${encodeURIComponent(token)}`;
     
     console.log('Creating WebSocket connection to:', wsUrl);
+    return new WebSocket(wsUrl);
+  }
+
+  // WebSocket connection for transcription progress
+  createTranscriptionProgressWebSocket(documentId: string): WebSocket {
+    // Get token from localStorage
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      throw new Error('No authentication token found. Please log in.');
+    }
+    
+    // Use current window origin to avoid mixed content issues
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/api/v1/documents/${documentId}/transcription-progress?token=${encodeURIComponent(token)}`;
+    
+    console.log('Creating transcription progress WebSocket connection to:', wsUrl);
     return new WebSocket(wsUrl);
   }
 }

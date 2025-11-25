@@ -274,13 +274,25 @@ class VectorStoreService:
                 embeddings.append(embedding)
                 
                 # Build metadata, filtering out None values (ChromaDB doesn't allow None)
+                # Avoid triggering lazy-loads on async ORM relationships inside this async context
+                # Access only fields that are already loaded on the instance
+                source_name = "Unknown"
+                source_type = "Unknown"
+                if "source" in document.__dict__ and document.__dict__["source"] is not None:
+                    try:
+                        src = document.__dict__["source"]
+                        source_name = getattr(src, "name", source_name)
+                        source_type = getattr(src, "source_type", source_type)
+                    except Exception:
+                        pass
+
                 metadata_dict = {
                     "document_id": str(document.id),
                     "chunk_id": str(chunk.id),
                     "chunk_index": chunk.chunk_index,
                     "title": document.title,
-                    "source": document.source.name if document.source else "Unknown",
-                    "source_type": document.source.source_type if document.source else "Unknown",
+                    "source": source_name,
+                    "source_type": source_type,
                 }
                 
                 # Add optional fields only if they're not None
@@ -783,5 +795,4 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Error resetting collection: {e}")
             raise
-
 

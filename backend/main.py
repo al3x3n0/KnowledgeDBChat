@@ -49,12 +49,26 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"Failed to initialize MinIO storage service: {e}. Uploads may fail.")
     
+    # Start Redis subscriber for transcription progress
+    from app.utils.redis_subscriber import redis_subscriber
+    try:
+        await redis_subscriber.start()
+        logger.info("Redis subscriber started for transcription progress")
+    except Exception as e:
+        logger.warning(f"Failed to start Redis subscriber: {e}. Progress updates may not work.")
+    
     logger.info("Application startup complete")
     
     yield
     
     # Shutdown
     logger.info("Shutting down application")
+    
+    # Stop Redis subscriber
+    try:
+        await redis_subscriber.stop()
+    except Exception as e:
+        logger.warning(f"Error stopping Redis subscriber: {e}")
 
 
 # Create FastAPI app

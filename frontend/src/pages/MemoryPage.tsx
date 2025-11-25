@@ -82,7 +82,7 @@ const MemoryPage: React.FC = () => {
   // Fetch memory stats
   const { data: stats, isLoading: statsLoading } = useQuery(
     'memoryStats',
-    apiClient.getMemoryStats,
+    () => apiClient.getMemoryStats(),
     {
       refetchOnWindowFocus: false,
     }
@@ -90,7 +90,7 @@ const MemoryPage: React.FC = () => {
 
   // Delete memory mutation
   const deleteMemoryMutation = useMutation(
-    apiClient.deleteMemory,
+    (memoryId: string) => apiClient.deleteMemory(memoryId),
     {
       onSuccess: () => {
         queryClient.invalidateQueries('memories');

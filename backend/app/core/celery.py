@@ -14,7 +14,10 @@ celery_app = Celery(
     include=[
         "app.tasks.ingestion_tasks",
         "app.tasks.processing_tasks",
-        "app.tasks.sync_tasks"
+        "app.tasks.sync_tasks",
+        "app.tasks.chat_tasks",
+        "app.tasks.transcription_tasks",
+        "app.tasks.transcode_tasks",
     ]
 )
 
@@ -66,7 +69,6 @@ celery_app.conf.beat_schedule = {
 }
 
 celery_app.conf.timezone = "UTC"
-
 
 
 

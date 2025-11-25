@@ -5,7 +5,7 @@ Document-related API endpoints.
 import os
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query
+from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -104,13 +104,145 @@ async def get_documents(
         raise HTTPException(status_code=500, detail="Failed to retrieve documents")
 
 
+async def get_current_user_optional(
+    request: Request,
+    token: Optional[str] = Query(None),
+    db: AsyncSession = Depends(get_db)
+) -> Optional[User]:
+    """
+    Get current user with optional authentication.
+    Supports both Authorization header and token query parameter.
+    """
+    # Try token from query parameter first (for video players)
+    if token:
+        try:
+            from jose import jwt
+            from app.core.config import settings
+            from sqlalchemy import select
+            
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            user_id: str = payload.get("sub")
+            if user_id:
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+                if user and user.is_active:
+                    return user
+        except Exception as e:
+            logger.debug(f"Token query param authentication failed: {e}")
+    
+    # Try Authorization header
+    auth_header = request.headers.get("Authorization")
+    if auth_header and auth_header.startswith("Bearer "):
+        try:
+            token = auth_header.replace("Bearer ", "")
+            from jose import jwt
+            from app.core.config import settings
+            from sqlalchemy import select
+            
+            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+            user_id: str = payload.get("sub")
+            if user_id:
+                result = await db.execute(select(User).where(User.id == user_id))
+                user = result.scalar_one_or_none()
+                if user and user.is_active:
+                    return user
+        except Exception as e:
+            logger.debug(f"Authorization header authentication failed: {e}")
+    
+    return None
+
+
+@router.head("/{document_id}/download")
+async def download_document_head(
+    document_id: UUID,
+    request: Request,
+    token: Optional[str] = Query(None),
+    current_user: Optional[User] = Depends(get_current_user_optional),
+    db: AsyncSession = Depends(get_db),
+    use_proxy: bool = Query(True),
+):
+    """
+    Handle HEAD request for video streaming (used by players to check availability).
+    Returns metadata without the actual file content.
+    """
+    # Require authentication
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    try:
+        from app.services.storage_service import storage_service
+        
+        document = await document_service.get_document(document_id, db)
+        if not document or not document.file_path:
+            raise HTTPException(status_code=404, detail="Document not found")
+        
+        # Normalize file path
+        file_path = document.file_path
+        if file_path.startswith('./'):
+            file_path = file_path[2:]
+        if file_path.startswith('documents/'):
+            file_path = file_path[10:]
+        
+        # Check if file exists
+        file_exists = await storage_service.file_exists(file_path)
+        if not file_exists:
+            raise HTTPException(status_code=404, detail="File not found in storage")
+        
+        if use_proxy:
+            # Get file metadata
+            await storage_service.initialize()
+            metadata = await storage_service.get_file_metadata(file_path)
+            file_size = metadata.get("size", 0)
+            content_type = metadata.get("content_type") or "application/octet-stream"
+            filename = os.path.basename(file_path) or document.title or f"document_{document_id}"
+            
+            from fastapi.responses import Response
+            response = Response(
+                status_code=200,
+                headers={
+                    "Content-Type": content_type,
+                    "Content-Length": str(file_size),
+                    "Accept-Ranges": "bytes",
+                    "Content-Disposition": f'inline; filename="{filename}"',
+                    "Access-Control-Allow-Origin": "*",
+                    "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
+                    "Access-Control-Allow-Headers": "Range, Authorization, Content-Type",
+                    "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
+                }
+            )
+            return response
+        else:
+            raise HTTPException(status_code=400, detail="HEAD requests only supported with use_proxy=true")
+    
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in HEAD request for document {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to get file metadata")
+
+
 @router.get("/{document_id}/download")
 async def download_document(
     document_id: UUID,
-    current_user: User = Depends(get_current_user),
+    request: Request,  # Added to access headers for Range requests
+    token: Optional[str] = Query(None, description="JWT token for authentication (alternative to Authorization header)"),
+    current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
     use_proxy: bool = Query(True, description="If True, stream file through backend; if False, return presigned URL")
 ):
+    """
+    Download a document file.
+    
+    If use_proxy=True (default): Streams file through backend (avoids signature issues)
+    If use_proxy=False: Returns presigned URL for direct download
+    
+    Authentication can be provided via:
+    - Authorization header (Bearer token) - standard method
+    - token query parameter - for video players that don't support custom headers
+    """
+    # Require authentication
+    if not current_user:
+        raise HTTPException(status_code=401, detail="Authentication required")
     """
     Download a document file.
     
@@ -191,6 +323,7 @@ async def download_document(
                 
                 # Get file metadata for headers
                 metadata = await storage_service.get_file_metadata(file_path)
+                file_size = metadata.get("size", 0)
                 
                 # Get filename from document title or file path
                 filename = os.path.basename(file_path) or document.title or f"document_{document_id}"
@@ -199,22 +332,75 @@ async def download_document(
                     ext = os.path.splitext(file_path)[1]
                     filename = f"{filename}{ext}"
                 
-                # Stream file from MinIO (sync generator, but MinIO is initialized)
-                file_stream = storage_service.get_file_stream(file_path)
-                
                 # Determine content type
                 content_type = metadata.get("content_type") or "application/octet-stream"
                 
-                logger.info(f"Streaming file download for document {document_id}: {filename} ({metadata.get('size', 0)} bytes)")
+                # Handle HTTP Range requests for video streaming
+                # Check both "Range" and "range" headers (browsers may send either)
+                range_header = request.headers.get("Range") or request.headers.get("range")
                 
-                return StreamingResponse(
+                if range_header:
+                    # Parse Range header (e.g., "bytes=0-1023" or "bytes=1024-")
+                    try:
+                        range_match = range_header.replace("bytes=", "").split("-")
+                        start = int(range_match[0]) if range_match[0] else 0
+                        end = int(range_match[1]) if range_match[1] and range_match[1] else file_size - 1
+                        
+                        # Validate range
+                        if start < 0 or end >= file_size or start > end:
+                            from fastapi.responses import Response
+                            return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
+                        
+                        # Calculate content length for partial content
+                        content_length = end - start + 1
+                        
+                        logger.info(f"Range request for document {document_id}: bytes {start}-{end} of {file_size}")
+                        
+                        # Get partial file stream
+                        file_stream = storage_service.get_file_stream_range(file_path, start, end)
+                        
+                        response = StreamingResponse(
+                            file_stream,
+                            status_code=206,  # Partial Content
+                            media_type=content_type,
+                            headers={
+                                "Content-Range": f"bytes {start}-{end}/{file_size}",
+                                "Content-Length": str(content_length),
+                                "Accept-Ranges": "bytes",
+                                "Content-Disposition": f'inline; filename="{filename}"',
+                                "Cache-Control": "public, max-age=3600",
+                            }
+                        )
+                        # Add CORS headers for video streaming
+                        response.headers["Access-Control-Allow-Origin"] = "*"
+                        response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+                        response.headers["Access-Control-Allow-Headers"] = "Range, Authorization, Content-Type"
+                        response.headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+                        return response
+                    except (ValueError, IndexError):
+                        # Invalid range header, fall through to full file
+                        logger.warning(f"Invalid Range header: {range_header}")
+                
+                # No range request or invalid range - return full file
+                logger.info(f"Streaming full file download for document {document_id}: {filename} ({file_size} bytes)")
+                file_stream = storage_service.get_file_stream(file_path)
+                
+                response = StreamingResponse(
                     file_stream,
                     media_type=content_type,
                     headers={
-                        "Content-Disposition": f'attachment; filename="{filename}"',
-                        "Content-Length": str(metadata.get("size", 0)),
+                        "Content-Disposition": f'inline; filename="{filename}"',  # Changed to inline for video playback
+                        "Content-Length": str(file_size),
+                        "Accept-Ranges": "bytes",  # Enable range requests
+                        "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
                     }
                 )
+                # Add CORS headers for video streaming
+                response.headers["Access-Control-Allow-Origin"] = "*"
+                response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
+                response.headers["Access-Control-Allow-Headers"] = "Range, Authorization, Content-Type"
+                response.headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+                return response
             except FileNotFoundError:
                 raise HTTPException(status_code=404, detail="File not found in storage")
             except Exception as e:
@@ -276,19 +462,37 @@ async def upload_document(
                 field="file"
             )
         
-        # Validate file size (max 50MB)
-        MAX_FILE_SIZE = 50 * 1024 * 1024  # 50MB
+        # Validate file size (configurable, larger limit for videos)
+        from app.core.config import settings
+        from app.utils.validators import ALLOWED_EXTENSIONS
+        
+        # Check if it's a video/audio file
+        file_ext = os.path.splitext(file.filename or "")[1].lower()
+        is_video_audio = file_ext in ['.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv', '.wmv', 
+                                      '.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac']
+        
+        # Use larger limit for video/audio files
+        max_size = settings.MAX_VIDEO_SIZE if is_video_audio else settings.MAX_FILE_SIZE
+        
         file_content = await file.read()
         file_size = len(file_content)
-        if file_size > MAX_FILE_SIZE:
+        if file_size > max_size:
+            size_mb = file_size / (1024*1024)
+            max_mb = max_size / (1024*1024)
             raise ValidationError(
-                f"File size ({file_size / (1024*1024):.2f}MB) exceeds maximum allowed size of {MAX_FILE_SIZE / (1024*1024)}MB",
+                f"File size ({size_mb:.2f}MB) exceeds maximum allowed size of {max_mb:.0f}MB",
                 field="file"
             )
         
-        # Create a new file-like object with the content for the service
+        # Reset file pointer and create a new file-like object with the content for the service
         from io import BytesIO
+        # Reset the file pointer to the beginning
+        await file.seek(0)
+        # Create a new BytesIO object with the content
         file.file = BytesIO(file_content)
+        # Reset the filename and content_type attributes
+        file.filename = file.filename
+        file.content_type = file.content_type
         
         # Parse tags if provided
         tag_list = []
@@ -310,8 +514,10 @@ async def upload_document(
     except (ValidationError, DocumentNotFoundError):
         raise
     except Exception as e:
-        log_error(e, context={"filename": file.filename if file else None})
-        raise HTTPException(status_code=500, detail="Failed to upload document")
+        error_detail = str(e)
+        logger.error(f"Error uploading document {file.filename if file else 'unknown'}: {error_detail}", exc_info=True)
+        log_error(e, context={"filename": file.filename if file else None, "file_type": file.content_type if file else None})
+        raise HTTPException(status_code=500, detail=f"Failed to upload document: {error_detail}")
 
 
 @router.delete("/{document_id}")
@@ -323,6 +529,14 @@ async def delete_document(
     """Delete a document."""
     try:
         logger.info(f"Delete request for document {document_id} by user {current_user.id}")
+        # Prevent deletion while transcoding
+        from sqlalchemy import select as sql_select
+        from app.models.document import Document
+        res = await db.execute(sql_select(Document).where(Document.id == document_id))
+        doc = res.scalar_one_or_none()
+        if doc and isinstance(doc.extra_metadata, dict) and doc.extra_metadata.get("is_transcoding"):
+            logger.info(f"Delete denied for {document_id}: currently transcoding")
+            raise HTTPException(status_code=409, detail="Document is being converted. Please wait until it finishes.")
         success = await document_service.delete_document(document_id, db)
         if not success:
             logger.warning(f"Document {document_id} not found or deletion failed")
@@ -358,6 +572,124 @@ async def reprocess_document(
     except Exception as e:
         logger.error(f"Error reprocessing document: {e}")
         raise HTTPException(status_code=500, detail="Failed to reprocess document")
+
+
+@router.post("/{document_id}/transcribe")
+async def retrigger_transcription(
+    document_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Manually retrigger transcription for a document.
+    If the document is a non-MP4 video and not transcoded, schedule transcode first.
+    """
+    try:
+        # Load document
+        from sqlalchemy import select
+        from app.models.document import Document as _Document
+        result = await db.execute(select(_Document).where(_Document.id == document_id))
+        document = result.scalar_one_or_none()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        # Clear previous errors
+        document.processing_error = None
+        document.extra_metadata = document.extra_metadata or {}
+        document.extra_metadata.pop("transcription_error", None)
+        document.extra_metadata.pop("transcription_traceback", None)
+
+        # Detect type
+        ext = (document.file_path or "").split("/")[-1].lower()
+        ext = ('.' + ext.split('.')[-1]) if '.' in ext else ''
+        video_exts = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
+        is_video = (document.file_type or "").startswith("video/") or ext in video_exts
+        is_mp4 = (document.file_type == "video/mp4") or ext == ".mp4"
+
+        # Publish status helper
+        try:
+            from app.tasks.transcription_tasks import _publish_status as publish_status_trans
+            from app.tasks.transcode_tasks import _publish_status as publish_status_transcode
+        except Exception:
+            publish_status_trans = publish_status_transcode = None
+
+        if is_video and not is_mp4 and not (document.extra_metadata or {}).get("is_transcoded"):
+            # Transcode first
+            document.extra_metadata["is_transcoding"] = True
+            document.extra_metadata["is_transcribing"] = False
+            await db.commit()
+            if publish_status_transcode:
+                publish_status_transcode(str(document.id), {
+                    "is_transcoding": True,
+                    "is_transcribing": False,
+                    "is_transcribed": False,
+                })
+            from app.tasks.transcode_tasks import transcode_to_mp4
+            transcode_to_mp4.delay(str(document.id))
+            return {"message": "Transcode scheduled, transcription will start after conversion"}
+        else:
+            # Transcribe now
+            document.extra_metadata["is_transcribing"] = True
+            await db.commit()
+            if publish_status_trans:
+                publish_status_trans(str(document.id), {
+                    "is_transcoding": False,
+                    "is_transcribing": True,
+                    "is_transcribed": False,
+                })
+            from app.tasks.transcription_tasks import transcribe_document
+            transcribe_document.delay(str(document.id))
+            return {"message": "Transcription scheduled"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error re-triggering transcription for {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to schedule transcription")
+
+
+@router.websocket("/{document_id}/transcription-progress")
+async def transcription_progress_websocket(
+    websocket: WebSocket,
+    document_id: UUID
+):
+    """WebSocket endpoint for real-time transcription progress updates."""
+    from app.utils.websocket_auth import require_websocket_auth
+    from app.utils.websocket_manager import websocket_manager
+    from app.services.document_service import DocumentService
+    
+    # Authenticate WebSocket connection
+    try:
+        user = await require_websocket_auth(websocket)
+        logger.info(f"Transcription progress WebSocket authenticated for user {user.id}, document {document_id}")
+    except WebSocketDisconnect:
+        logger.warning(f"Transcription progress WebSocket authentication failed for document {document_id}")
+        return
+    
+    # Verify user has access to this document
+    from app.core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        document = await document_service.get_document(document_id, db)
+        
+        if not document:
+            await websocket.close(code=1008, reason="Document not found")
+            return
+    
+    # Connect to WebSocket manager
+    await websocket_manager.connect(websocket, str(document_id))
+    
+    try:
+        # Keep connection alive and wait for messages (client can send ping)
+        while True:
+            try:
+                # Wait for messages from client (ping/pong or close)
+                data = await websocket.receive_text()
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except WebSocketDisconnect:
+                break
+    except Exception as e:
+        logger.error(f"Error in transcription progress WebSocket: {e}")
+    finally:
+        websocket_manager.disconnect(websocket, str(document_id))
 
 
 # Document Sources endpoints
@@ -481,5 +813,3 @@ async def delete_document_source(
     except Exception as e:
         logger.error(f"Error deleting document source: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete document source")
-
-

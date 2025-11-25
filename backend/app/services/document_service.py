@@ -7,6 +7,7 @@ import hashlib
 import tempfile
 import aiofiles
 from datetime import datetime
+from pathlib import Path
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 from fastapi import UploadFile
@@ -157,6 +158,7 @@ class DocumentService:
     ) -> Document:
         """Upload and process a file."""
         try:
+            logger.info(f"Starting upload for file: {file.filename}, content_type: {file.content_type}, size: {file.size if hasattr(file, 'size') else 'unknown'}")
             # Create upload source if it doesn't exist
             upload_source = await self._get_or_create_upload_source(db)
             
@@ -182,12 +184,23 @@ class DocumentService:
                 return existing_doc
             
             # Create document record first to get ID
+            # Use content_type if available, otherwise derive from filename
+            file_type = file.content_type or self._get_file_extension(file.filename)
+            if not file_type and file.filename:
+                # Fallback: try to determine from extension
+                ext = os.path.splitext(file.filename)[1].lower()
+                from app.utils.validators import ALLOWED_FILE_TYPES
+                for mime_type, extensions in ALLOWED_FILE_TYPES.items():
+                    if ext in extensions:
+                        file_type = mime_type
+                        break
+            
             document = Document(
                 title=title or file.filename or "Uploaded Document",
                 content="",  # Will be filled after text extraction
                 content_hash=content_hash,
                 file_path="",  # Will be filled after MinIO upload
-                file_type=self._get_file_extension(file.filename),
+                file_type=file_type,
                 file_size=len(content),
                 source_id=upload_source.id,
                 source_identifier=file.filename or f"upload_{content_hash[:8]}",
@@ -210,26 +223,92 @@ class DocumentService:
                 temp_file_path = temp_file.name
             
             try:
-                # Extract text content
-                text_content = await self.text_processor.extract_text(temp_file_path, file.content_type)
-                
-                # Upload to MinIO
+                # Upload to MinIO first
+                logger.info(f"Uploading file to MinIO: {file.filename}")
                 object_path = await self._save_uploaded_file(document.id, file, content)
-                
-                # Update document with extracted content and MinIO path
-                document.content = text_content
                 document.file_path = object_path
+                logger.info(f"File uploaded to MinIO: {object_path}")
+                
+                # Check if file is video/audio that needs transcription
+                from app.services.transcription_service import get_transcription_service
+                transcription_service = get_transcription_service()
+                file_path_obj = Path(temp_file_path)
+                
+                if transcription_service and transcription_service.is_supported_format(file_path_obj):
+                    # Video/audio file
+                    logger.info(f"Video/audio file detected: {file.filename}.")
+                    document.content = ""  # Will be filled by background task
+                    document.extra_metadata = document.extra_metadata or {}
+                    
+                    # If non-MP4 video -> transcode first, then transcribe
+                    try:
+                        from pathlib import Path as _Path
+                        suffix = _Path(file.filename or "").suffix.lower()
+                        is_video = (file.content_type or "").startswith("video/")
+                        is_mp4 = suffix == ".mp4" or (file.content_type == "video/mp4")
+                    except Exception:
+                        is_video = True
+                        is_mp4 = False
+
+                    if is_video and not is_mp4:
+                        document.extra_metadata["is_transcoding"] = True
+                        document.extra_metadata.pop("is_transcribing", None)
+                        try:
+                            from app.tasks.transcode_tasks import transcode_to_mp4, _publish_status as publish_status
+                            publish_status(str(document.id), {
+                                "is_transcoding": True,
+                                "is_transcribing": False,
+                                "is_transcribed": False,
+                            })
+                            transcode_to_mp4.delay(str(document.id))
+                            logger.info(f"Triggered transcode (then transcribe) for document {document.id}")
+                        except Exception as e:
+                            logger.error(f"Failed to dispatch transcode task: {e}")
+                            document.extra_metadata["transcode_error"] = str(e)
+                    else:
+                        # Audio or already MP4 -> transcribe now
+                        document.extra_metadata["is_transcribing"] = True
+                        try:
+                            from app.tasks.transcription_tasks import transcribe_document, _publish_status as publish_status
+                            publish_status(str(document.id), {
+                                "is_transcoding": False,
+                                "is_transcribing": True,
+                                "is_transcribed": False,
+                            })
+                            transcribe_document.delay(str(document.id))
+                            logger.info(f"Triggered transcription task for document {document.id}")
+                        except Exception as e:
+                            logger.error(f"Failed to dispatch transcription task: {e}")
+                else:
+                    # Regular document - extract text content
+                    logger.info(f"Extracting text from regular document: {file.filename}")
+                    try:
+                        text_content = await self.text_processor.extract_text(temp_file_path, file.content_type)
+                        document.content = text_content
+                        logger.info(f"Extracted {len(text_content)} characters from document")
+                    except Exception as e:
+                        logger.warning(f"Failed to extract text from {file.filename}: {e}. Continuing with empty content.")
+                        document.content = ""
+                    
+                    # Process document asynchronously
+                    await self._process_document_async(document, db)
+                
                 await db.commit()
                 await db.refresh(document)
+                logger.info(f"Successfully uploaded and processed document: {document.id}")
+            except Exception as e:
+                logger.error(f"Error during file processing for {file.filename}: {e}", exc_info=True)
+                # Rollback document creation if processing fails
+                await db.rollback()
+                raise
             finally:
                 # Clean up temp file
                 try:
-                    os.unlink(temp_file_path)
+                    if 'temp_file_path' in locals() and os.path.exists(temp_file_path):
+                        os.unlink(temp_file_path)
+                        logger.debug(f"Cleaned up temp file: {temp_file_path}")
                 except Exception as e:
                     logger.warning(f"Failed to delete temp file {temp_file_path}: {e}")
-            
-            # Process document asynchronously
-            await self._process_document_async(document, db)
             
             # Cache the newly created document
             cache_key = f"document:{document.id}"
@@ -372,9 +451,21 @@ class DocumentService:
         Returns:
             True if deletion was successful, False otherwise
         """
-        document = await self.get_document(document_id, db)
+        # Try to get document directly from database (bypass cache)
+        # This ensures we get the latest state even if cache is stale
+        result = await db.execute(
+            select(Document).where(Document.id == document_id)
+        )
+        document = result.scalar_one_or_none()
+        
         if not document:
-            logger.warning(f"Document {document_id} not found for deletion")
+            # Also try cache in case it exists there but not in DB (shouldn't happen, but for debugging)
+            cache_key = f"document:{document_id}"
+            cached_doc = await cache_service.get(cache_key)
+            if cached_doc:
+                logger.warning(f"Document {document_id} found in cache but not in database - possible race condition")
+            else:
+                logger.warning(f"Document {document_id} not found in database or cache for deletion")
             return False
         
         try:
@@ -419,6 +510,26 @@ class DocumentService:
             except Exception as e:
                 logger.warning(f"Failed to delete chunks from database for document {document_id}: {e}")
                 # Continue with deletion even if chunk delete fails
+            
+            # Step 3.5: Delete or update upload sessions that reference this document
+            try:
+                from app.models.upload_session import UploadSession
+                
+                # Find upload sessions that reference this document
+                upload_sessions_result = await db.execute(
+                    select(UploadSession).where(UploadSession.document_id == document_id)
+                )
+                upload_sessions = upload_sessions_result.scalars().all()
+                
+                if upload_sessions:
+                    logger.info(f"Found {len(upload_sessions)} upload session(s) referencing document {document_id}")
+                    # Delete the upload sessions (they're just tracking records)
+                    for session in upload_sessions:
+                        await db.delete(session)
+                    logger.info(f"Deleted {len(upload_sessions)} upload session(s) for document {document_id}")
+            except Exception as e:
+                logger.warning(f"Failed to delete upload sessions for document {document_id}: {e}")
+                # Continue with deletion even if upload session delete fails
             
             # Step 4: Delete document from database
             # Use delete() method which is async in SQLAlchemy 2.0
@@ -570,5 +681,4 @@ class DocumentService:
         
         logger.info(f"Triggered sync for document source: {source_id}")
         return True
-
 

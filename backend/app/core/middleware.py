@@ -24,6 +24,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         
         # Process request
         start_time = time.time()
+        response = None
+        status_code = 500  # Default to 500 in case of exception
         try:
             response = await call_next(request)
             status_code = response.status_code
@@ -37,8 +39,8 @@ class LoggingMiddleware(BaseHTTPMiddleware):
             # Log response
             log_response(status_code, response_time_ms, correlation_id)
             
-            # Add correlation ID to response headers
-            if hasattr(response, 'headers'):
+            # Add correlation ID to response headers (only if response exists)
+            if response is not None and hasattr(response, 'headers'):
                 response.headers["X-Correlation-ID"] = correlation_id
         
         return response

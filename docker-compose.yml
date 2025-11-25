@@ -59,6 +59,8 @@ services:
     environment:
       - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
       - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
       - OLLAMA_BASE_URL=http://ollama:11434
       - DEFAULT_MODEL=llama3.2:1b  # Force smallest model for Mac
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db
@@ -69,11 +71,19 @@ services:
       - MINIO_USE_SSL=false
       - MINIO_PRESIGNED_URL_EXPIRY=3600
       - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      - SECRET_KEY=your-secret-key-here  # Must match JWT_SECRET in video-streamer
+      # Transcription configuration
+      - WHISPER_MODEL_SIZE=small
+      - WHISPER_DEVICE=auto
+      - TRANSCRIPTION_LANGUAGE=ru
+      - PRELOAD_WHISPER_MODEL=true  # Preload model on container startup
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
       - ./backend:/app
+      # Mount Whisper model cache directory
+      - whisper_models:/root/.cache/knowledge_db_transcriber
     depends_on:
       - postgres
       - redis
@@ -87,6 +97,37 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
+
+  # Video Streaming Service (Go microservice)
+  video-streamer:
+    build:
+      context: ./video-streamer
+      dockerfile: Dockerfile
+    container_name: knowledge_db_video_streamer
+    environment:
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET_NAME=documents
+      - MINIO_USE_SSL=false
+      - JWT_SECRET=your-secret-key-here # Must match backend SECRET_KEY
+      - BACKEND_API_URL=http://backend:8000/api/v1/documents
+      - PORT=8080
+      - CORS_ORIGIN=*
+      - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
+    ports:
+      - "8080:8080"
+    depends_on:
+      - minio
+      - postgres
+    networks:
+      - knowledge_net
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
 
   # Ollama for local LLM
   ollama:
@@ -191,9 +232,16 @@ services:
       - MINIO_USE_SSL=false
       - MINIO_PRESIGNED_URL_EXPIRY=3600
       - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      # Transcription configuration
+      - WHISPER_MODEL_SIZE=small
+      - WHISPER_DEVICE=auto
+      - TRANSCRIPTION_LANGUAGE=ru
+      - PRELOAD_WHISPER_MODEL=true  # Preload model on container startup
     volumes:
       - ./data:/app/data
       - ./backend:/app
+      # Mount Whisper model cache directory (shared with backend)
+      - whisper_models:/root/.cache/knowledge_db_transcriber
     depends_on:
       - postgres
       - redis
@@ -213,10 +261,10 @@ volumes:
   redis_data:
   ollama_data:
   minio_data:
+  whisper_models:  # Persistent storage for Whisper models
 
 networks:
   knowledge_net:
     driver: bridge
-
 
 

@@ -37,6 +37,11 @@ unstructured>=0.10.0
 python-pptx>=0.6.21
 markdown>=3.4.0
 
+# Video/Audio Transcription
+openai-whisper>=20230918
+ffmpeg-python>=0.2.0
+librosa>=0.10.0
+
 # Utilities
 pydantic==2.5.0
 pydantic-settings==2.1.0

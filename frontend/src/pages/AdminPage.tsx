@@ -46,7 +46,7 @@ const AdminPage: React.FC = () => {
   // Fetch system health
   const { data: health, isLoading: healthLoading, refetch: refetchHealth } = useQuery(
     'systemHealth',
-    apiClient.getSystemHealth,
+    () => apiClient.getSystemHealth(),
     {
       refetchInterval: 30000, // Refresh every 30 seconds
       refetchOnWindowFocus: false,
@@ -56,7 +56,7 @@ const AdminPage: React.FC = () => {
   // Fetch system stats
   const { data: stats, isLoading: statsLoading, refetch: refetchStats } = useQuery(
     'systemStats',
-    apiClient.getSystemStats,
+    () => apiClient.getSystemStats(),
     {
       refetchInterval: 60000, // Refresh every minute
       refetchOnWindowFocus: false,
@@ -318,14 +318,14 @@ const DataSourcesTab: React.FC = () => {
 
   const { data: sources, isLoading } = useQuery(
     'documentSources',
-    apiClient.getDocumentSources,
+    () => apiClient.getDocumentSources(),
     {
       refetchOnWindowFocus: false,
     }
   );
 
   const syncAllMutation = useMutation(
-    apiClient.triggerFullSync,
+    () => apiClient.triggerFullSync(),
     {
       onSuccess: () => {
         toast.success('Full synchronization started');
@@ -337,7 +337,7 @@ const DataSourcesTab: React.FC = () => {
   );
 
   const syncSourceMutation = useMutation(
-    apiClient.triggerSourceSync,
+    (sourceId: string) => apiClient.triggerSourceSync(sourceId),
     {
       onSuccess: () => {
         toast.success('Source synchronization started');
@@ -447,7 +447,7 @@ const DataSourcesTab: React.FC = () => {
 const TasksTab: React.FC = () => {
   const { data: taskStatus, isLoading } = useQuery(
     'taskStatus',
-    apiClient.getTaskStatus,
+    () => apiClient.getTaskStatus(),
     {
       refetchInterval: 5000, // Refresh every 5 seconds
       refetchOnWindowFocus: false,

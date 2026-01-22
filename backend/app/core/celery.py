@@ -18,6 +18,9 @@ celery_app = Celery(
         "app.tasks.chat_tasks",
         "app.tasks.transcription_tasks",
         "app.tasks.transcode_tasks",
+        "app.tasks.summarization_tasks",
+        "app.tasks.monitoring_tasks",
+        "app.tasks.git_compare_tasks",
     ]
 )
 
@@ -66,12 +69,14 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.monitoring_tasks.health_check",
         "schedule": crontab(minute="*/15"),
     },
+    
+    # Per-source scheduling scan (every 5 minutes)
+    "scan-scheduled-sources": {
+        "task": "app.tasks.sync_tasks.scan_scheduled_sources",
+        "schedule": crontab(minute="*/5"),
+    },
 }
 
 celery_app.conf.timezone = "UTC"
-
-
-
-
 
 

@@ -38,15 +38,26 @@ target_metadata = Base.metadata
 # ... etc.
 
 
+def _ensure_asyncpg(url: str) -> str:
+    """Ensure the SQLAlchemy URL uses asyncpg driver for PostgreSQL."""
+    if not url:
+        return url
+    if url.startswith("postgresql://"):
+        return url.replace("postgresql://", "postgresql+asyncpg://", 1)
+    if url.startswith("postgres://"):
+        return url.replace("postgres://", "postgresql+asyncpg://", 1)
+    return url
+
+
 def get_database_url():
     """Get database URL from environment or config."""
     # Try to get from environment first
     database_url = os.getenv("DATABASE_URL")
     if database_url:
-        return database_url
+        return _ensure_asyncpg(database_url)
     
     # Fall back to config file
-    return config.get_main_option("sqlalchemy.url")
+    return _ensure_asyncpg(config.get_main_option("sqlalchemy.url"))
 
 
 def run_migrations_offline() -> None:

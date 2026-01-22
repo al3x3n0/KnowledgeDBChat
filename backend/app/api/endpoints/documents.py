@@ -3,18 +3,24 @@ Document-related API endpoints.
 """
 
 import os
-from typing import List, Optional
+import hashlib
+import tempfile
+from pathlib import Path
+from typing import List, Optional, Dict, Any
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect
 from fastapi.responses import StreamingResponse, JSONResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
-from app.core.database import get_db
+from app.core.database import get_db, AsyncSessionLocal
 from app.core.rate_limit import limiter, UPLOAD_LIMIT
 from app.models.user import User
 from app.services.auth_service import get_current_user
 from app.services.document_service import DocumentService
+from app.services.text_processor import TextProcessor
+from app.services.transcription_service import TranscriptionService
+from app.services.storage_service import storage_service
 from app.utils.exceptions import DocumentNotFoundError, ValidationError
 from app.utils.validators import validate_file_type
 from app.core.logging import log_error
@@ -22,12 +28,82 @@ from app.schemas.document import (
     DocumentResponse,
     DocumentSourceResponse,
     DocumentSourceCreate,
-    DocumentUpload
+    DocumentUpload,
+    GitRepoSourceRequest,
+    ArxivSourceRequest,
+    ActiveSourceStatus,
 )
 from app.schemas.common import PaginatedResponse
+from app.tasks.summarization_tasks import summarize_document as summarize_task
+from sqlalchemy import select as sql_select
+from app.models.document import Document as _Document, DocumentSource as _DocumentSource
+from app.tasks.ingestion_tasks import ingest_from_source
+from app.core.celery import celery_app
+from celery.result import AsyncResult
+from app.utils.ingestion_state import (
+    set_ingestion_task_mapping,
+    get_ingestion_task_mapping,
+    set_ingestion_cancel_flag,
+)
+from datetime import datetime
+from uuid import uuid4
+import re
+import uuid
 
 router = APIRouter()
 document_service = DocumentService()
+text_processor_service = TextProcessor()
+
+
+@router.get("/search")
+async def search_documents(
+    q: str = Query(..., min_length=1, description="Search query"),
+    mode: str = Query("smart", regex="^(smart|keyword|exact)$", description="Search mode"),
+    sort_by: str = Query("relevance", regex="^(relevance|date|title)$", description="Sort field"),
+    sort_order: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
+    page: int = Query(1, ge=1, description="Page number"),
+    page_size: int = Query(10, ge=1, le=100, description="Results per page"),
+    source_id: Optional[str] = Query(None, description="Filter by source ID"),
+    file_type: Optional[str] = Query(None, description="Filter by file type"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search documents with multiple modes.
+
+    Modes:
+    - smart: Hybrid semantic + keyword search with reranking (recommended)
+    - keyword: BM25 keyword search only
+    - exact: SQL LIKE matching for exact phrases
+    """
+    from app.services.search_service import search_service
+    from app.schemas.search import SearchResponse, SearchResult
+
+    try:
+        results, total, took_ms = await search_service.search(
+            query=q,
+            mode=mode,
+            page=page,
+            page_size=page_size,
+            sort_by=sort_by,
+            sort_order=sort_order,
+            source_id=source_id,
+            file_type=file_type,
+            db=db,
+        )
+
+        return SearchResponse(
+            results=[SearchResult(**r) for r in results],
+            total=total,
+            page=page,
+            page_size=page_size,
+            query=q,
+            mode=mode,
+            took_ms=took_ms,
+        )
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/", response_model=PaginatedResponse[DocumentResponse])
@@ -38,6 +114,9 @@ async def get_documents(
     search: Optional[str] = None,
     order_by: Optional[str] = "updated_at",
     order: Optional[str] = "desc",
+    owner_persona_id: Optional[UUID] = Query(None),
+    persona_id: Optional[UUID] = Query(None),
+    persona_role: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -78,7 +157,23 @@ async def get_documents(
             search=search,
             order_by=order_by,
             order=order,
+            owner_persona_id=owner_persona_id,
+            persona_id=persona_id,
+            persona_role=persona_role,
             db=db
+        )
+        logger.debug(
+            "Fetched documents for listing",
+            extra={
+                "skip": skip,
+                "limit": page_size,
+                "result_count": len(documents),
+                "total": total,
+                "source_id": str(source_id) if source_id else None,
+                "search": search,
+                "order_by": order_by,
+                "order": order,
+            }
         )
         
         # Convert to response models
@@ -88,7 +183,20 @@ async def get_documents(
             # Set chunks to empty list for list view (chunks are only needed in detail view)
             # This prevents SQLAlchemy from trying to lazy load the relationship in async context
             doc.chunks = []
-            items.append(DocumentResponse.from_orm(doc))
+            doc.persona_detections = []
+            try:
+                items.append(DocumentResponse.from_orm(doc))
+            except Exception as exc:
+                logger.error(
+                    "Failed to serialize document for response",
+                    extra={
+                        "document_id": getattr(doc, "id", None),
+                        "title": getattr(doc, "title", None),
+                        "source_id": getattr(doc, "source_id", None),
+                    },
+                    exc_info=exc,
+                )
+                raise
         
         # Return paginated response
         return PaginatedResponse.create(
@@ -100,6 +208,17 @@ async def get_documents(
     except ValidationError:
         raise
     except Exception as e:
+        logger.exception(
+            "Unhandled error retrieving documents",
+            extra={
+                "page": page,
+                "page_size": page_size,
+                "source_id": str(source_id) if source_id else None,
+                "search": search,
+                "order_by": order_by,
+                "order": order,
+            }
+        )
         log_error(e, context={"page": page, "page_size": page_size})
         raise HTTPException(status_code=500, detail="Failed to retrieve documents")
 
@@ -506,7 +625,8 @@ async def upload_document(
             file=file,
             title=title,
             tags=tag_list,
-            db=db
+            db=db,
+            owner_user=current_user
         )
         
         return {"message": "Document uploaded successfully", "document_id": document.id}
@@ -551,6 +671,212 @@ async def delete_document(
         logger.error(f"Error deleting document {document_id}: {e}", exc_info=True)
         error_detail = str(e) if str(e) else "Failed to delete document"
         raise HTTPException(status_code=500, detail=error_detail)
+
+
+@router.delete("/sources/{source_id}/documents")
+async def delete_documents_for_source(
+    source_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Delete all documents for a specific Git source (GitHub/GitLab)."""
+    try:
+        source = await db.get(_DocumentSource, source_id)
+        if not source:
+            raise HTTPException(status_code=404, detail="Document source not found")
+        if source.source_type not in ("github", "gitlab"):
+            raise HTTPException(status_code=400, detail="Bulk deletion only supported for Git sources")
+
+        config = source.config or {}
+        requested_by = config.get("requested_by") or config.get("requestedBy")
+        if not current_user.is_admin() and requested_by != current_user.username:
+            raise HTTPException(status_code=403, detail="Not authorized to modify this source")
+
+        deleted = await document_service.delete_documents_by_source(source_id, db)
+        logger.info(f"Deleted {deleted} documents for source {source_id}")
+        return {"message": f"Deleted {deleted} documents", "deleted": deleted}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting documents for source {source_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to delete documents for source")
+
+
+@router.post("/{document_id}/presentation/audio")
+async def attach_presentation_audio(
+    document_id: UUID,
+    audio: UploadFile = File(...),
+    language: str = Form("ru"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Attach an audio narration to a presentation document and align it with slides."""
+    try:
+        result = await db.execute(sql_select(_Document).where(_Document.id == document_id))
+        document = result.scalar_one_or_none()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        presentation_meta = await _ensure_presentation_metadata(document, db)
+        if not presentation_meta or not presentation_meta.get("slides"):
+            raise HTTPException(status_code=400, detail="Presentation metadata unavailable for this document")
+        if not audio or not audio.filename:
+            raise HTTPException(status_code=400, detail="Audio file required")
+        audio_ext = os.path.splitext(audio.filename)[1].lower()
+        allowed_exts = {".mp3", ".wav", ".m4a", ".flac", ".ogg", ".aac"}
+        if audio_ext not in allowed_exts:
+            raise HTTPException(status_code=400, detail="Unsupported audio format")
+        audio_bytes = await audio.read()
+        if not audio_bytes:
+            raise HTTPException(status_code=400, detail="Empty audio file")
+        temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=audio_ext or ".tmp")
+        temp_audio.write(audio_bytes)
+        temp_audio_path = Path(temp_audio.name)
+        temp_audio.close()
+        try:
+            object_path = await storage_service.upload_file(
+                document.id,
+                f"presentation_audio_{uuid.uuid4().hex}{audio_ext}",
+                audio_bytes,
+                audio.content_type or "audio/mpeg"
+            )
+            transcription_service = TranscriptionService()
+            transcript_text, metadata = transcription_service.transcribe_file(
+                temp_audio_path,
+                language=language or "ru"
+            )
+            segments = metadata.get("sentence_segments") or metadata.get("segments")
+            if not segments:
+                raise HTTPException(status_code=500, detail="Unable to extract speech segments from audio")
+            alignment = _align_segments_to_slides(presentation_meta.get("slides", []), segments)
+            audio_duration = metadata.get("duration")
+            if not audio_duration and segments:
+                audio_duration = segments[-1].get("end")
+            transcript_doc = _Document(
+                title=f"{document.title or 'Presentation'} - Narration Transcript",
+                content=transcript_text,
+                content_hash=hashlib.sha256(transcript_text.encode("utf-8")).hexdigest(),
+                url=None,
+                file_path=None,
+                file_type="text/plain",
+                file_size=len(transcript_text.encode("utf-8")),
+                source_id=document.source_id,
+                source_identifier=f"{document.source_identifier}:audio_transcript:{uuid.uuid4().hex[:8]}",
+                extra_metadata={
+                    "doc_type": "transcript",
+                    "parent_document_id": str(document.id),
+                    "presentation_audio": True,
+                    "transcription_metadata": metadata,
+                },
+            )
+            db.add(transcript_doc)
+            await db.commit()
+            await db.refresh(transcript_doc)
+            await document_service._process_document_async(transcript_doc, db)
+            presentation_meta["audio_track"] = {
+                "object_path": object_path,
+                "file_name": audio.filename,
+                "content_type": audio.content_type or "audio/mpeg",
+                "duration": audio_duration,
+                "alignment": alignment,
+                "transcript_document_id": str(transcript_doc.id),
+                "language": language,
+                "created_at": datetime.utcnow().isoformat(),
+            }
+            document.extra_metadata = document.extra_metadata or {}
+            document.extra_metadata["presentation"] = presentation_meta
+            await db.commit()
+            await db.refresh(document)
+            audio_url = await storage_service.get_presigned_download_url(object_path)
+            return {
+                "message": "Audio narration synchronized",
+                "audio_url": audio_url,
+                "alignment": alignment,
+                "duration": audio_duration,
+                "audio_track": presentation_meta["audio_track"],
+                "transcript_document_id": str(transcript_doc.id),
+            }
+        finally:
+            try:
+                if temp_audio_path.exists():
+                    temp_audio_path.unlink()
+            except Exception:
+                pass
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error attaching audio to presentation {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to attach audio narration")
+
+
+@router.get("/{document_id}/presentation/audio")
+async def get_presentation_audio(
+    document_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Return signed URL and alignment metadata for presentation audio."""
+    try:
+        result = await db.execute(sql_select(_Document).where(_Document.id == document_id))
+        document = result.scalar_one_or_none()
+        if not document:
+            raise HTTPException(status_code=404, detail="Document not found")
+        presentation_meta = (document.extra_metadata or {}).get("presentation") or {}
+        audio_track = presentation_meta.get("audio_track")
+        if not audio_track:
+            raise HTTPException(status_code=404, detail="Audio track not available")
+        object_path = audio_track.get("object_path")
+        if not object_path:
+            raise HTTPException(status_code=404, detail="Audio file missing")
+        audio_url = await storage_service.get_presigned_download_url(object_path)
+        return {
+            "audio_url": audio_url,
+            "alignment": audio_track.get("alignment") or [],
+            "duration": audio_track.get("duration"),
+            "transcript_document_id": audio_track.get("transcript_document_id"),
+            "file_name": audio_track.get("file_name"),
+            "content_type": audio_track.get("content_type"),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error retrieving presentation audio for {document_id}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to retrieve audio narration")
+
+
+@router.post("/sources/{source_id}/cancel")
+async def cancel_user_source_ingestion(
+    source_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Allow source owners to request cancellation of an active/pending ingestion."""
+    try:
+        source = await db.get(_DocumentSource, source_id)
+        if not source:
+            raise HTTPException(status_code=404, detail="Document source not found")
+        config = source.config or {}
+        requested_by = config.get("requested_by") or config.get("requestedBy")
+        if not current_user.is_admin() and requested_by != current_user.username:
+            raise HTTPException(status_code=403, detail="Not authorized to cancel this source")
+
+        source_id_str = str(source_id)
+        task_id = await get_ingestion_task_mapping(source_id_str)
+
+        await set_ingestion_cancel_flag(source_id_str, ttl=600)
+
+        if task_id:
+            try:
+                AsyncResult(task_id, app=celery_app).revoke(terminate=True)
+            except Exception as revoke_err:
+                logger.warning(f"Failed to revoke task {task_id} for source {source_id}: {revoke_err}")
+
+        return {"message": "Cancellation requested", "task_id": task_id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error cancelling ingestion for source {source_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to cancel ingestion for source")
 
 
 @router.post("/reprocess/{document_id}")
@@ -692,6 +1018,76 @@ async def transcription_progress_websocket(
         websocket_manager.disconnect(websocket, str(document_id))
 
 
+@router.websocket("/{document_id}/summarization-progress")
+async def summarization_progress_websocket(
+    websocket: WebSocket,
+    document_id: UUID
+):
+    """WebSocket endpoint for real-time summarization progress updates."""
+    from app.utils.websocket_auth import require_websocket_auth
+    from app.utils.websocket_manager import websocket_manager
+    
+    # Authenticate WebSocket connection
+    try:
+        user = await require_websocket_auth(websocket)
+        logger.info(f"Summarization progress WebSocket authenticated for user {user.id}, document {document_id}")
+    except WebSocketDisconnect:
+        logger.warning(f"Summarization progress WebSocket authentication failed for document {document_id}")
+        return
+    
+    # Verify user has access to this document
+    from app.core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        document = await document_service.get_document(document_id, db)
+        if not document:
+            await websocket.close(code=1008, reason="Document not found")
+            return
+    
+    await websocket_manager.connect(websocket, str(document_id))
+    try:
+        while True:
+            try:
+                data = await websocket.receive_text()
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except WebSocketDisconnect:
+                break
+    except Exception as e:
+        logger.error(f"Error in summarization progress WebSocket: {e}")
+    finally:
+        websocket_manager.disconnect(websocket, str(document_id))
+
+
+@router.post("/summarize-missing")
+async def summarize_missing_documents(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    limit: int = Query(500, ge=1, le=5000)
+):
+    """Admin: queue summaries for processed documents lacking a summary."""
+    try:
+        if not current_user.is_admin():
+            raise HTTPException(status_code=403, detail="Admin privileges required")
+        from app.core.config import settings as _settings
+        if not _settings.SUMMARIZATION_ENABLED:
+            raise HTTPException(status_code=400, detail="Summarization disabled")
+        res = await db.execute(
+            sql_select(_Document.id).where((_Document.is_processed == True) & ((_Document.summary == None) | (_Document.summary == ''))).limit(limit)
+        )
+        ids = [str(r[0]) for r in res.all()]
+        for doc_id in ids:
+            try:
+                summarize_task.delay(doc_id, False)
+            except Exception:
+                pass
+        return {"queued": len(ids)}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error queuing summarization: {e}")
+        raise HTTPException(status_code=500, detail="Failed to queue summarization")
+
+
 # Document Sources endpoints
 @router.get("/sources/", response_model=List[DocumentSourceResponse])
 async def get_document_sources(
@@ -705,6 +1101,146 @@ async def get_document_sources(
     except Exception as e:
         logger.error(f"Error retrieving document sources: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve document sources")
+
+
+@router.get("/sources/git-active", response_model=List[ActiveSourceStatus])
+async def get_active_git_sources(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Return git sources currently syncing or queued for ingestion for the requesting user."""
+    try:
+        from app.core.cache import get_redis_client
+        
+        stmt = sql_select(_DocumentSource).where(_DocumentSource.source_type.in_(["github", "gitlab"]))
+        result = await db.execute(stmt)
+        sources = result.scalars().all()
+        active_items: List[ActiveSourceStatus] = []
+        for source in sources:
+            config = source.config or {}
+            requested_by = config.get("requested_by") or config.get("requestedBy")
+            if not current_user.is_admin() and requested_by != current_user.username:
+                continue
+            
+            # Check if source is canceled
+            source_id_str = str(source.id)
+            is_canceled = False
+            try:
+                rc = await get_redis_client()
+                if rc:
+                    cancel_flag = await rc.get(f"ingestion:cancel:{source_id_str}")
+                    if cancel_flag:
+                        is_canceled = True
+            except Exception:
+                pass
+            
+            # Skip canceled sources
+            if is_canceled:
+                continue
+            
+            pending = False
+            task_id = None
+            try:
+                cached_task = await get_ingestion_task_mapping(str(source.id))
+                if cached_task:
+                    pending = True
+                    task_id = cached_task
+            except Exception:
+                pending = False
+                task_id = None
+            if source.is_syncing or pending:
+                active_items.append(
+                    ActiveSourceStatus(
+                        source=DocumentSourceResponse.from_orm(source),
+                        pending=bool(pending and not source.is_syncing),
+                        task_id=task_id,
+                    )
+                )
+        return active_items
+    except Exception as e:
+        logger.error(f"Error retrieving active git sources: {e}")
+        raise HTTPException(status_code=500, detail="Failed to retrieve active git sources")
+
+
+def _token_count(text: Optional[str]) -> int:
+    if not text:
+        return 0
+    return len(re.findall(r"\w+", text.lower()))
+
+
+def _combine_slide_text(slide: Dict[str, Any]) -> str:
+    parts = []
+    for key in ("title", "text", "notes"):
+        value = slide.get(key)
+        if value:
+            parts.append(value)
+    return "\n".join(parts)
+
+
+def _align_segments_to_slides(slides: List[Dict[str, Any]], segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    if not slides or not segments:
+        return []
+    alignments: List[Dict[str, Any]] = []
+    seg_index = 0
+    total_segments = len(segments)
+    for idx, slide in enumerate(slides):
+        if seg_index >= total_segments:
+            last_end = alignments[-1]["end"] if alignments else 0.0
+            alignments.append({
+                "slide_index": slide.get("index", idx + 1),
+                "start": last_end,
+                "end": last_end,
+            })
+            continue
+        slide_tokens = max(_token_count(_combine_slide_text(slide)), 5)
+        start_time = float(segments[seg_index].get("start", 0.0))
+        end_time = start_time
+        consumed_tokens = 0
+        while seg_index < total_segments:
+            segment = segments[seg_index]
+            seg_tokens = max(_token_count(segment.get("text")), 1)
+            consumed_tokens += seg_tokens
+            end_time = float(segment.get("end", end_time))
+            seg_index += 1
+            if consumed_tokens >= slide_tokens or seg_index >= total_segments:
+                break
+        alignments.append({
+            "slide_index": slide.get("index", idx + 1),
+            "start": start_time,
+            "end": end_time if end_time >= start_time else start_time,
+        })
+    if alignments and alignments[-1]["end"] < alignments[-1]["start"]:
+        alignments[-1]["end"] = alignments[-1]["start"]
+    return alignments
+
+
+async def _ensure_presentation_metadata(document: _Document, db: AsyncSession) -> Optional[Dict[str, Any]]:
+    metadata = (document.extra_metadata or {}).get("presentation")
+    if metadata and metadata.get("slides"):
+        return metadata
+    if not document.file_path:
+        return None
+    suffix = os.path.splitext(document.file_path)[1] or ".pptx"
+    temp_file = tempfile.NamedTemporaryFile(delete=False, suffix=suffix)
+    temp_file_path = temp_file.name
+    temp_file.close()
+    try:
+        downloaded = await storage_service.download_file(document.file_path, temp_file_path)
+        if not downloaded:
+            return None
+        _, extraction_meta = await text_processor_service.extract_text(temp_file_path, document.file_type)
+        presentation_meta = extraction_meta.get("presentation") if extraction_meta else None
+        if presentation_meta:
+            document.extra_metadata = document.extra_metadata or {}
+            document.extra_metadata["presentation"] = presentation_meta
+            await db.commit()
+            await db.refresh(document)
+        return presentation_meta
+    finally:
+        try:
+            os.unlink(temp_file_path)
+        except Exception:
+            pass
 
 
 @router.post("/sources/", response_model=DocumentSourceResponse)
@@ -733,6 +1269,191 @@ async def create_document_source(
     except Exception as e:
         logger.error(f"Error creating document source: {e}")
         raise HTTPException(status_code=500, detail="Failed to create document source")
+
+
+@router.post("/sources/git-repo", response_model=DocumentSourceResponse)
+async def submit_git_repository(
+    request: GitRepoSourceRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Allow authenticated users to request processing of Git-compatible repositories.
+    Creates a GitHub or GitLab document source scoped to the provided configuration.
+    """
+    try:
+        provider = request.provider.lower()
+        repos = request.repositories
+        if not repos:
+            raise HTTPException(status_code=400, detail="At least one repository must be provided")
+
+        config: Dict[str, Any] = {
+            "include_files": request.include_files,
+            "include_issues": request.include_issues,
+            "include_wiki": request.include_wiki,
+            "include_pull_requests": request.include_pull_requests,
+            "incremental_files": request.incremental_files,
+            "use_gitignore": request.use_gitignore,
+            "max_pages": request.max_pages,
+            "requested_by": current_user.username,
+        }
+        if request.token:
+            config["token"] = request.token
+
+        source_type = provider
+        if provider == "github":
+            config["repos"] = repos
+        elif provider == "gitlab":
+            if not request.token:
+                raise HTTPException(status_code=400, detail="GitLab access token is required for repository ingestion")
+            gitlab_url = request.gitlab_url or getattr(settings, "GITLAB_URL", None)
+            if not gitlab_url:
+                raise HTTPException(status_code=400, detail="GitLab URL must be provided for GitLab repositories")
+            config["gitlab_url"] = gitlab_url.rstrip("/")
+            # GitLab connector expects project dictionaries
+            config["projects"] = [
+                {
+                    "id": repo,
+                    "include_files": request.include_files,
+                    "include_wikis": request.include_wiki,
+                    "include_issues": request.include_issues,
+                    "include_merge_requests": request.include_pull_requests,
+                }
+                for repo in repos
+            ]
+        else:
+            raise HTTPException(status_code=400, detail="Unsupported provider")
+
+        auto_name = request.name or f"{provider.title()} repo ({current_user.username})"
+        unique_suffix = uuid4().hex[:6]
+        source_name = f"{auto_name.strip()} #{unique_suffix}"
+
+        source = await document_service.create_document_source(
+            name=source_name,
+            source_type=source_type,
+            config=config,
+            db=db
+        )
+
+        if request.auto_sync:
+            try:
+                task = ingest_from_source.delay(str(source.id))
+                await set_ingestion_task_mapping(str(source.id), task.id, ttl=3600)
+            except Exception as sync_err:
+                logger.warning(f"Failed to trigger ingestion for {source.id}: {sync_err}")
+
+        return DocumentSourceResponse.from_orm(source)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating git repository source: {e}")
+        raise HTTPException(status_code=500, detail="Failed to submit repository for processing")
+
+
+@router.post("/sources/arxiv", response_model=DocumentSourceResponse)
+async def submit_arxiv_request(
+    request: ArxivSourceRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Allow authenticated users to ingest papers from ArXiv searches or explicit IDs.
+    """
+    try:
+        config = {
+            "queries": request.search_queries or [],
+            "paper_ids": request.paper_ids or [],
+            "categories": request.categories or [],
+            "max_results": request.max_results,
+            "start": request.start,
+            "sort_by": request.sort_by,
+            "sort_order": request.sort_order,
+            "requested_by": current_user.username,
+            "display": {
+                "queries": request.search_queries or [],
+                "paper_ids": request.paper_ids or [],
+                "categories": request.categories or [],
+                "max_results": request.max_results,
+            }
+        }
+
+        base_name = request.name or "ArXiv search"
+        source_name = f"{base_name.strip()} #{uuid4().hex[:6]}"
+
+        source = await document_service.create_document_source(
+            name=source_name,
+            source_type="arxiv",
+            config=config,
+            db=db
+        )
+
+        if request.auto_sync:
+            try:
+                ingest_from_source.delay(str(source.id))
+            except Exception as sync_err:
+                logger.warning(f"Failed to trigger ArXiv ingestion for {source.id}: {sync_err}")
+
+        return DocumentSourceResponse.from_orm(source)
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating ArXiv source: {e}")
+        raise HTTPException(status_code=500, detail="Failed to submit ArXiv ingestion request")
+
+
+@router.websocket("/sources/{source_id}/ingestion-progress")
+async def document_source_ingestion_progress(
+    websocket: WebSocket,
+    source_id: UUID,
+):
+    """WebSocket endpoint for ingestion progress updates (requesting user or admin)."""
+    from app.utils.websocket_auth import require_websocket_auth
+    from app.utils.websocket_manager import websocket_manager
+
+    try:
+        user = await require_websocket_auth(websocket)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        await websocket.close(code=1008, reason="Authentication failed")
+        return
+
+    # Verify access rights to the source
+    try:
+        async with AsyncSessionLocal() as session:
+            source = await session.get(_DocumentSource, source_id)
+    except Exception:
+        source = None
+
+    if not source:
+        await websocket.close(code=1008, reason="Source not found")
+        return
+
+    config = source.config or {}
+    requested_by = None
+    if isinstance(config, dict):
+        requested_by = config.get("requested_by") or config.get("requestedBy")
+
+    if not user.is_admin() and requested_by and requested_by != user.username:
+        await websocket.close(code=1008, reason="Not authorized to view this source")
+        return
+    if not user.is_admin() and not requested_by:
+        await websocket.close(code=1008, reason="Progress available only to source owner")
+        return
+
+    await websocket_manager.connect(websocket, str(source_id))
+    try:
+        while True:
+            try:
+                data = await websocket.receive_text()
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except WebSocketDisconnect:
+                break
+    finally:
+        websocket_manager.disconnect(websocket, str(source_id))
 
 
 @router.put("/sources/{source_id}", response_model=DocumentSourceResponse)
@@ -813,3 +1534,24 @@ async def delete_document_source(
     except Exception as e:
         logger.error(f"Error deleting document source: {e}")
         raise HTTPException(status_code=500, detail="Failed to delete document source")
+
+
+@router.post("/{document_id}/summarize")
+async def summarize_document_endpoint(
+    document_id: UUID,
+    force: bool = Query(False),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Trigger summarization for a document (background task)."""
+    try:
+        doc = await document_service.get_document(document_id, db)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+        task = summarize_task.delay(str(document_id), force)
+        return {"message": "summarization_started", "task_id": task.id}
+    except HTTPException:
+        raise
+    except Exception as e:
+        log_error(e, context={"document_id": str(document_id)})
+        raise HTTPException(status_code=500, detail="Failed to start summarization")

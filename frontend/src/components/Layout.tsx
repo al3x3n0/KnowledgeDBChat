@@ -4,21 +4,29 @@
 
 import React, { useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
-import { 
-  MessageCircle, 
-  FileText, 
+import {
+  MessageCircle,
+  FileText,
   Brain,
-  Settings, 
-  Menu, 
-  X, 
+  Settings,
+  Menu,
+  X,
   LogOut,
   Shield,
   User,
-  Database
+  Database,
+  FileCheck,
+  Workflow,
+  Wrench,
+  Presentation,
+  Network,
+  Search,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import Button from './common/Button';
+import AgentWidget from './agent/AgentWidget';
+import NotificationBell from './notifications/NotificationBell';
 
 const Layout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -56,7 +64,13 @@ const Layout: React.FC = () => {
 
   const navigation = [
     { name: 'Chat', href: '/chat', icon: MessageCircle },
+    { name: 'Search', href: '/search', icon: Search },
     { name: 'Documents', href: '/documents', icon: FileText },
+    { name: 'Knowledge Graph', href: '/kg/global', icon: Network },
+    { name: 'Templates', href: '/templates', icon: FileCheck },
+    { name: 'Presentations', href: '/presentations', icon: Presentation },
+    { name: 'Workflows', href: '/workflows', icon: Workflow },
+    { name: 'Tools', href: '/tools', icon: Wrench },
     { name: 'Memory', href: '/memory', icon: Brain },
     { name: 'Settings', href: '/settings', icon: Settings },
   ];
@@ -67,6 +81,16 @@ const Layout: React.FC = () => {
       name: 'Admin',
       href: '/admin',
       icon: Shield,
+    });
+    navigation.push({
+      name: 'KG Admin',
+      href: '/admin/kg',
+      icon: Database,
+    });
+    navigation.push({
+      name: 'KG Audit',
+      href: '/admin/kg/audit',
+      icon: Database,
     });
   }
 
@@ -189,7 +213,7 @@ const Layout: React.FC = () => {
           </div>
 
           <div className="flex items-center space-x-4">
-            {/* Add any header actions here */}
+            <NotificationBell />
           </div>
         </header>
 
@@ -198,6 +222,9 @@ const Layout: React.FC = () => {
           <Outlet />
         </main>
       </div>
+
+      {/* Agent Widget */}
+      <AgentWidget />
     </div>
   );
 };

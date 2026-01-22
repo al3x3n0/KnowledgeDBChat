@@ -17,7 +17,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.celery import celery_app
-from app.core.database import AsyncSessionLocal
+from app.core.database import create_celery_session
 from app.models.document import Document
 from app.services.storage_service import storage_service
 
@@ -33,7 +33,7 @@ def transcode_to_mp4(self, document_id: str) -> Dict[str, Any]:
 
 
 async def _async_transcode_to_mp4(task, document_id: str) -> Dict[str, Any]:
-    async with AsyncSessionLocal() as db:
+    async with create_celery_session()() as db:
         # Fetch document
         result = await db.execute(select(Document).where(Document.id == UUID(document_id)))
         document = result.scalar_one_or_none()
@@ -121,11 +121,28 @@ async def _async_transcode_to_mp4(task, document_id: str) -> Dict[str, Any]:
                 "is_transcribing": True,
             })
 
-            # Dispatch transcription task
+            # Probe duration of the produced MP4 to set dynamic Celery timeouts
+            soft_limit = 25 * 60
+            hard_limit = 30 * 60
+            try:
+                import subprocess
+                probe_cmd = [
+                    "ffprobe", "-v", "error", "-show_entries", "format=duration",
+                    "-of", "default=noprint_wrappers=1:nokey=1", str(temp_dst)
+                ]
+                out = subprocess.check_output(probe_cmd, stderr=subprocess.STDOUT).decode().strip()
+                dur = float(out)
+                if dur and dur > 0:
+                    soft_limit = int(min(6 * dur + 300, 5 * 3600))
+                    hard_limit = int(min(soft_limit + 600, 6 * 3600))
+            except Exception:
+                pass
+
+            # Dispatch transcription task with dynamic time limits
             try:
                 from app.tasks.transcription_tasks import transcribe_document
-                transcribe_document.delay(str(document.id))
-                logger.info(f"Transcode: dispatched transcription for document {document_id}")
+                transcribe_document.apply_async(args=[str(document.id)], soft_time_limit=soft_limit, time_limit=hard_limit)
+                logger.info(f"Transcode: dispatched transcription for document {document_id} with soft_limit={soft_limit}s hard_limit={hard_limit}s")
             except Exception as e:
                 logger.error(f"Transcode: failed to dispatch transcription for {document_id}: {e}")
                 _publish_error(document_id, f"dispatch_transcription_failed: {e}")

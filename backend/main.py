@@ -11,7 +11,6 @@ from loguru import logger
 import uvicorn
 
 from app.core.config import settings
-from app.core.database import engine, create_tables
 from app.core.exceptions import (
     knowledge_db_exception_handler,
     validation_exception_handler,
@@ -32,9 +31,6 @@ async def lifespan(app: FastAPI):
     """Application lifespan events."""
     # Startup
     logger.info("Starting Knowledge Database Chat application")
-    
-    # Create database tables
-    await create_tables()
     
     # Initialize vector database
     from app.services.vector_store import VectorStoreService
@@ -132,5 +128,4 @@ if __name__ == "__main__":
         reload=settings.DEBUG,
         workers=1 if settings.DEBUG else settings.WORKERS
     )
-
 

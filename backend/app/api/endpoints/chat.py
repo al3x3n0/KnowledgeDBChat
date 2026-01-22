@@ -13,8 +13,11 @@ from app.core.database import get_db
 from app.core.rate_limit import limiter, CHAT_LIMIT
 from app.models.chat import ChatSession, ChatMessage
 from app.models.user import User
+from app.models.memory import UserPreferences
 from app.services.chat_service import ChatService
+from app.services.llm_service import UserLLMSettings
 from app.services.auth_service import get_current_user
+from sqlalchemy import select
 from app.schemas.chat import (
     ChatSessionCreate,
     ChatSessionResponse,
@@ -194,13 +197,21 @@ async def send_message(
             role="user",
             db=db
         )
-        
+
+        # Load user LLM preferences
+        prefs_result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
+        user_prefs = prefs_result.scalar_one_or_none()
+        user_settings = UserLLMSettings.from_preferences(user_prefs)
+
         # Generate AI response
         ai_response = await chat_service.generate_response(
             session_id=session_id,
             query=message_data.content,
             user_id=current_user.id,
-            db=db
+            db=db,
+            user_settings=user_settings,
         )
         
         return ChatMessageResponse.from_orm(ai_response)
@@ -263,13 +274,21 @@ async def websocket_chat(
                         "message": "Chat session not found or access denied"
                     })
                     continue
-                
+
+                # Load user LLM preferences
+                prefs_result = await db.execute(
+                    select(UserPreferences).where(UserPreferences.user_id == user.id)
+                )
+                user_prefs = prefs_result.scalar_one_or_none()
+                user_settings = UserLLMSettings.from_preferences(user_prefs)
+
                 # Generate response
                 response = await chat_service.generate_response(
                     session_id=session_id,
                     query=query,
                     user_id=user.id,
-                    db=db
+                    db=db,
+                    user_settings=user_settings,
                 )
                 
                 # Send response

@@ -47,13 +47,14 @@ class TranscriptionService:
                 model_dir = Path.home() / ".cache" / "knowledge_db_transcriber"
                 model_dir.mkdir(parents=True, exist_ok=True)
                 
+                from app.core.config import settings as app_settings
                 self.transcriber = RussianTranscriber(
                     model_size=self.model_size,
                     model_dir=model_dir,
                     device=self.device,
                     lightweight=False,  # Use standard models
                     enable_summarization=False,  # We only need transcription
-                    enable_speaker_diarization=False,  # Disable for now
+                    enable_speaker_diarization=bool(getattr(app_settings, 'TRANSCRIPTION_SPEAKER_DIARIZATION', True)),
                     enable_checkpoints=False  # Disable for now
                 )
                 self._initialized = True
@@ -109,8 +110,12 @@ class TranscriptionService:
             import re
             
             transcription_done = threading.Event()
-            segments_processed = [0]  # Use list for mutable reference
+            segments_processed = [0]  # kept for compatibility
             stream_path_holder = { 'path': None }
+            # Track actual processed audio seconds based on streamed segments
+            # Use dict for mutability across inner closures
+            processed_state = { 'audio_sec': 0.0, 'started_at': None }
+            streamed_sentences: list = []
             
             def progress_tracker():
                 """Track and report transcription progress."""
@@ -118,17 +123,35 @@ class TranscriptionService:
                     return
                 
                 start_time = time.time()
+                processed_state['started_at'] = start_time
                 while not transcription_done.wait(0.5):  # Update every 0.5 seconds
                     elapsed = time.time() - start_time
-                    # Whisper processes roughly in real-time
-                    estimated_progress = min((elapsed / duration) * 100, 95)  # Cap at 95% until done
+                    # Prefer actual processed audio seconds from streaming segments
+                    processed_sec = float(processed_state.get('audio_sec') or 0.0)
+                    if processed_sec > 0:
+                        estimated_progress = min((processed_sec / duration) * 100.0, 95.0)
+                        avg_speed = max(processed_sec / max(elapsed, 1e-6), 1e-3)  # audio-seconds per wall-second
+                        remaining_seconds = max(int((duration - processed_sec) / avg_speed), 0)
+                    else:
+                        # Fallback to elapsed-based rough estimate
+                        estimated_progress = min((elapsed / duration) * 100.0, 95.0)
+                        remaining_seconds = max(int(duration - elapsed), 0)
+
+                    # Build a simple HH:MM:SS string for remaining time
+                    hrs = remaining_seconds // 3600
+                    mins = (remaining_seconds % 3600) // 60
+                    secs = remaining_seconds % 60
+                    remaining_formatted = f"{int(hrs):02d}:{int(mins):02d}:{int(secs):02d}"
                     
                     progress_callback({
                         "stage": "transcribing",
-                        "message": f"Transcribing audio... {estimated_progress:.1f}%",
+                        "message": f"Transcribing audio...",
                         "progress": estimated_progress,
                         "duration": duration,
-                        "elapsed": elapsed
+                        "elapsed": elapsed,
+                        "remaining_seconds": remaining_seconds,
+                        "remaining_formatted": remaining_formatted,
+                        "processed_seconds": processed_sec,
                     })
             
             # Start progress tracking thread
@@ -139,6 +162,14 @@ class TranscriptionService:
             
             # Tail streaming file and emit partial segments via progress_callback
             def tail_stream_file():
+                last_pos = 0
+                seen = set()
+                # Speaker normalization state
+                speaker_map = {}
+                speaker_counter = 0
+                last_assigned = None
+                last_start_time = None
+                gap_threshold = 8  # seconds between sentences to consider same speaker when unknown
                 while not transcription_done.is_set():
                     try:
                         spath = stream_path_holder['path']
@@ -146,22 +177,78 @@ class TranscriptionService:
                             time.sleep(0.3)
                             continue
                         with spath.open('r', encoding='utf-8', errors='ignore') as f:
-                            f.seek(0, 0)
+                            try:
+                                f.seek(last_pos)
+                            except Exception:
+                                f.seek(0)
+                                last_pos = 0
                             for line in f:
+                                line = line.strip()
+                                if not line:
+                                    continue
+                                if line in seen:
+                                    continue
+                                seen.add(line)
                                 # Expected format: [Speaker] HH:MM:SS text
-                                m = re.match(r"^\[[^\]]*\]\s*(\d{2}):(\d{2}):(\d{2})\s+(.*)$", line.strip())
+                                m = re.match(r"^\[([^\]]*)\]\s*(\d{2}):(\d{2}):(\d{2})\s+(.*)$", line)
                                 if m and progress_callback:
-                                    h, mnt, s, txt = m.groups()
+                                    speaker_label, h, mnt, s, txt = m.groups()
                                     start_sec = int(h) * 3600 + int(mnt) * 60 + int(s)
-                                    progress_callback({
+                                    # Update processed audio seconds to latest seen time
+                                    try:
+                                        if start_sec > (processed_state.get('audio_sec') or 0):
+                                            processed_state['audio_sec'] = float(start_sec)
+                                    except Exception:
+                                        pass
+                                    # Normalize speaker label to Speaker N
+                                    raw = (speaker_label or '').strip()
+                                    if raw and raw.lower() != 'unknown':
+                                        if raw not in speaker_map:
+                                            speaker_counter += 1
+                                            speaker_map[raw] = f"Speaker {speaker_counter}"
+                                        speak_norm = speaker_map[raw]
+                                    else:
+                                        # When unknown, assume continuity if gap is small; else new speaker
+                                        if last_assigned is not None and last_start_time is not None and (start_sec - last_start_time) <= gap_threshold:
+                                            speak_norm = last_assigned
+                                        else:
+                                            speaker_counter += 1
+                                            speak_norm = f"Speaker {speaker_counter}"
+                                    last_assigned = speak_norm
+                                    last_start_time = start_sec
+                                    payload = {
                                         'type': 'segment',
                                         'start': start_sec,
                                         'text': txt,
-                                    })
-                        # After reading current file, wait a bit
-                        time.sleep(0.5)
-                    except Exception:
-                        time.sleep(0.5)
+                                    }
+                                    payload['speaker'] = speak_norm
+                                    progress_callback(payload)
+                                    # Collect for final metadata
+                                    try:
+                                        if not streamed_sentences or not (
+                                            streamed_sentences[-1].get('start') == start_sec and
+                                            streamed_sentences[-1].get('text') == txt and
+                                            streamed_sentences[-1].get('speaker') == speak_norm
+                                        ):
+                                            # Close previous sentence by setting its end to current start
+                                            try:
+                                                if streamed_sentences:
+                                                    streamed_sentences[-1]['end'] = start_sec
+                                            except Exception:
+                                                pass
+                                            # Append new sentence
+                                            streamed_sentences.append({
+                                                'start': start_sec,
+                                                'text': txt,
+                                                'speaker': speak_norm
+                                            })
+                                    except Exception:
+                                        pass
+                            last_pos = f.tell()
+                        time.sleep(0.4)
+                    except Exception as e:
+                        logger.debug(f"Error reading stream file: {e}")
+                        time.sleep(0.4)
 
             # Prepare streaming file path
             tmp_stream = Path(tempfile.gettempdir()) / f"transcript_stream_{int(time.time()*1000)}.txt"
@@ -183,10 +270,72 @@ class TranscriptionService:
             transcription_done.set()
             
             transcript_text = result.get('text', '')
+            # Ensure any remaining lines are read into streamed_sentences (best-effort)
+            try:
+                if tmp_stream.exists():
+                    with tmp_stream.open('r', encoding='utf-8', errors='ignore') as f:
+                        # Reset normalization state for full pass to ensure consistency
+                        speaker_map = {}
+                        speaker_counter = 0
+                        last_assigned = None
+                        last_start_time = None
+                        gap_threshold = 8
+                        for line in f:
+                            line = line.strip()
+                            m = re.match(r"^\[([^\]]*)\]\s*(\d{2}):(\d{2}):(\d{2})\s+(.*)$", line)
+                            if not m:
+                                continue
+                            speaker_label, h, mnt, s, txt = m.groups()
+                            start_sec = int(h) * 3600 + int(mnt) * 60 + int(s)
+                            # Normalize speaker again in final pass
+                            raw = (speaker_label or '').strip()
+                            if raw and raw.lower() != 'unknown':
+                                if raw not in speaker_map:
+                                    speaker_counter += 1
+                                    speaker_map[raw] = f"Speaker {speaker_counter}"
+                                speak_norm = speaker_map[raw]
+                            else:
+                                if last_assigned is not None and last_start_time is not None and (start_sec - last_start_time) <= gap_threshold:
+                                    speak_norm = last_assigned
+                                else:
+                                    speaker_counter += 1
+                                    speak_norm = f"Speaker {speaker_counter}"
+                            last_assigned = speak_norm
+                            last_start_time = start_sec
+                            if not streamed_sentences or not (
+                                streamed_sentences[-1].get('start') == start_sec and
+                                streamed_sentences[-1].get('text') == txt and
+                                streamed_sentences[-1].get('speaker') == speak_norm
+                            ):
+                                # Close previous
+                                try:
+                                    if streamed_sentences:
+                                        streamed_sentences[-1]['end'] = start_sec
+                                except Exception:
+                                    pass
+                                streamed_sentences.append({
+                                    'start': start_sec,
+                                    'text': txt,
+                                    'speaker': speak_norm
+                                })
+            except Exception as e:
+                logger.debug(f"Error reading final transcript stream: {e}")
+
+            # Set end of last sentence to duration when available
+            try:
+                if streamed_sentences:
+                    last = streamed_sentences[-1]
+                    if last.get('end') in (None, 0):
+                        # Use probed duration when available, else fall back to last seen start
+                        last['end'] = int(duration) if duration else (processed_state.get('audio_sec') or last.get('start', 0))
+            except Exception:
+                pass
+
             metadata = {
                 'duration': result.get('duration', 0),
                 'language': result.get('language', language),
-                'segments': result.get('segments', [])
+                'segments': result.get('segments', []),
+                'sentence_segments': streamed_sentences,
             }
             
             # Report completion

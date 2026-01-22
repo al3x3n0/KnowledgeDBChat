@@ -7,6 +7,15 @@ import hashlib
 from typing import List, Optional, Dict, Any
 from uuid import UUID
 import numpy as np
+"""
+Ensure Chroma telemetry is disabled at runtime to avoid noisy warnings
+from PostHog/telemetry inside the worker logs.
+This must be set before importing chromadb so its telemetry picks it up.
+"""
+os.environ.setdefault("CHROMA_TELEMETRY_ENABLED", "false")
+os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
+os.environ.setdefault("POSTHOG_DISABLED", "true")
+
 import chromadb
 from chromadb.config import Settings
 from sentence_transformers import SentenceTransformer, CrossEncoder
@@ -795,4 +804,3 @@ class VectorStoreService:
         except Exception as e:
             logger.error(f"Error resetting collection: {e}")
             raise
-

@@ -10,11 +10,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.database import AsyncSessionLocal
+from app.core.database import create_celery_session
 from app.core.config import settings
 from app.models.chat import ChatSession, ChatMessage
+from app.models.memory import UserPreferences
 from app.services.chat_service import ChatService
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, UserLLMSettings
 from sqlalchemy import select, and_
 from sqlalchemy.orm import selectinload
 
@@ -35,7 +36,7 @@ def generate_chat_title(self, session_id: str) -> Dict[str, Any]:
 
 async def _async_generate_chat_title(task, session_id: str) -> Dict[str, Any]:
     """Async implementation of chat title generation."""
-    async with AsyncSessionLocal() as db:
+    async with create_celery_session()() as db:
         try:
             logger.info(f"Starting title generation for session {session_id}")
             
@@ -87,7 +88,19 @@ async def _async_generate_chat_title(task, session_id: str) -> Dict[str, Any]:
                 f"{msg.role.capitalize()}: {msg.content[:200]}"  # Limit to first 200 chars per message
                 for msg in messages
             ])
-            
+
+            # Load user preferences for task-specific model selection
+            user_settings = None
+            try:
+                prefs_result = await db.execute(
+                    select(UserPreferences).where(UserPreferences.user_id == session.user_id)
+                )
+                user_prefs = prefs_result.scalar_one_or_none()
+                if user_prefs:
+                    user_settings = UserLLMSettings.from_preferences(user_prefs)
+            except Exception as e:
+                logger.warning(f"Failed to load user preferences for title generation: {e}")
+
             # Generate title using LLM
             llm_service = LLMService()
             title_prompt = f"""Generate a concise title (3-6 words) for this conversation. Only return the title, nothing else.
@@ -96,13 +109,15 @@ Conversation:
 {conversation_text}
 
 Title:"""
-            
+
             try:
                 generated_title = await llm_service.generate_response(
                     query=title_prompt,
                     model=settings.DEFAULT_MODEL,
                     temperature=0.5,  # Lower temperature for more consistent titles
-                    max_tokens=30
+                    max_tokens=30,
+                    user_settings=user_settings,
+                    task_type="title_generation",
                 )
                 
                 # Clean up the title (remove quotes, extra whitespace, newlines, etc.)

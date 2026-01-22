@@ -88,6 +88,20 @@ class UserPreferencesBase(BaseModel):
     allow_cross_session_memory: bool = Field(True, description="Share memories across sessions")
     allow_personal_data_storage: bool = Field(True, description="Store personal information")
 
+    # LLM preferences (per-user overrides)
+    llm_provider: Optional[str] = Field(None, description="LLM provider override: ollama, deepseek, openai, or custom")
+    llm_model: Optional[str] = Field(None, description="Model name override (default for chat)")
+    llm_api_url: Optional[str] = Field(None, description="Custom API URL override")
+    llm_api_key: Optional[str] = Field(None, description="User's own API key for external providers")
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature override")
+    llm_max_tokens: Optional[int] = Field(None, ge=1, le=32000, description="Max response tokens override")
+
+    # Per-task model overrides
+    llm_task_models: Optional[Dict[str, str]] = Field(
+        None,
+        description="Task-specific model overrides: title_generation, summarization, query_expansion, memory_extraction"
+    )
+
 class UserPreferencesCreate(UserPreferencesBase):
     """Schema for creating user preferences."""
     user_id: UUID
@@ -100,6 +114,17 @@ class UserPreferencesUpdate(BaseModel):
     auto_summarize_sessions: Optional[bool] = None
     allow_cross_session_memory: Optional[bool] = None
     allow_personal_data_storage: Optional[bool] = None
+
+    # LLM preferences (per-user overrides)
+    llm_provider: Optional[str] = Field(None, description="LLM provider override")
+    llm_model: Optional[str] = Field(None, description="Model name override")
+    llm_api_url: Optional[str] = Field(None, description="Custom API URL override")
+    llm_api_key: Optional[str] = Field(None, description="User's own API key")
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0)
+    llm_max_tokens: Optional[int] = Field(None, ge=1, le=32000)
+
+    # Per-task model overrides
+    llm_task_models: Optional[Dict[str, str]] = Field(None, description="Task-specific model overrides")
 
 class UserPreferencesResponse(UserPreferencesBase):
     """Schema for user preferences response."""
@@ -147,6 +172,7 @@ class MemoryStatsResponse(BaseModel):
     recent_memories: int  # Last 7 days
     most_accessed_memories: List[MemoryResponse]
     memory_usage_trend: List[Dict[str, Any]]  # Usage over time
+
 
 
 

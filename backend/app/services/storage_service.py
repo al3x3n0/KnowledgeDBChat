@@ -203,6 +203,41 @@ class MinIOStorageService:
         except Exception as e:
             logger.error(f"Failed to upload file to MinIO: {e}")
             raise
+
+    async def upload_file_from_path(
+        self,
+        document_id: UUID,
+        filename: str,
+        file_path: str,
+        content_type: Optional[str] = None
+    ) -> str:
+        """
+        Upload file to MinIO from a local path without loading it into memory.
+        """
+        try:
+            await self.initialize()
+            client = self._get_client()
+
+            object_path = self._get_object_path(document_id, filename)
+            file_size = os.path.getsize(file_path)
+
+            with open(file_path, "rb") as file_handle:
+                client.put_object(
+                    bucket_name=settings.MINIO_BUCKET_NAME,
+                    object_name=object_path,
+                    data=file_handle,
+                    length=file_size,
+                    content_type=content_type or "application/octet-stream"
+                )
+
+            logger.info(f"Uploaded file to MinIO: {object_path}")
+            return object_path
+        except S3Error as e:
+            logger.error(f"MinIO S3Error during upload: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to upload file to MinIO: {e}")
+            raise
     
     def _rewrite_presigned_url_for_proxy(self, url: str) -> str:
         """
@@ -904,3 +939,9 @@ class MinIOStorageService:
 
 
 storage_service = MinIOStorageService()
+
+
+# Backward-compatible alias used throughout the codebase.
+# The implementation lives in MinIOStorageService.
+class StorageService(MinIOStorageService):
+    pass

@@ -33,7 +33,12 @@ def set_correlation_id(cid: Optional[str] = None) -> str:
     return cid
 
 
-def log_request(request: Request, method: str, path: str) -> None:
+def log_request(
+    request: Request,
+    method: str,
+    path: str,
+    correlation_id: Optional[str] = None
+) -> None:
     """
     Log incoming HTTP request with correlation ID.
     
@@ -42,7 +47,8 @@ def log_request(request: Request, method: str, path: str) -> None:
         method: HTTP method
         path: Request path
     """
-    correlation_id = set_correlation_id()
+    if correlation_id is None:
+        correlation_id = get_correlation_id() or set_correlation_id()
     
     logger.info(
         "Incoming request",
@@ -153,4 +159,3 @@ def log_service_call(
         f"Service call: {service_name}.{method_name}",
         extra=extra
     )
-

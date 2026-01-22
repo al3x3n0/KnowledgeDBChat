@@ -19,6 +19,7 @@ from app.models.upload_session import UploadSession
 from app.services.auth_service import get_current_user
 from app.services.storage_service import storage_service
 from app.services.document_service import DocumentService
+from app.services.persona_service import persona_service
 from app.utils.validators import validate_file_type
 from app.utils.exceptions import ValidationError
 
@@ -389,9 +390,11 @@ async def complete_upload(
             # Manual reassembly: download all chunks and concatenate them
             logger.info(f"Reassembling file manually from chunks for session {session_id}")
             import tempfile
-            import asyncio
-            
-            temp_file_path = tempfile.mktemp()
+            import shutil
+
+            temp_file = tempfile.NamedTemporaryFile(delete=False)
+            temp_file_path = temp_file.name
+            temp_file.close()
             try:
                 # Download all chunks in order and concatenate
                 with open(temp_file_path, 'wb') as final_file:
@@ -401,25 +404,23 @@ async def complete_upload(
                             raise HTTPException(status_code=400, detail=f"Chunk {chunk_idx} path not found")
                         
                         # Download chunk to temp file
-                        chunk_temp_path = tempfile.mktemp()
+                        chunk_temp = tempfile.NamedTemporaryFile(delete=False)
+                        chunk_temp_path = chunk_temp.name
+                        chunk_temp.close()
                         try:
                             await storage_service.download_file(chunk_path, chunk_temp_path)
                             # Append to final file
                             with open(chunk_temp_path, 'rb') as chunk_file:
-                                final_file.write(chunk_file.read())
+                                shutil.copyfileobj(chunk_file, final_file)
                         finally:
                             if os.path.exists(chunk_temp_path):
                                 os.unlink(chunk_temp_path)
                 
-                # Upload the reassembled file
-                with open(temp_file_path, 'rb') as f:
-                    reassembled_data = f.read()
-                
-                # Upload to final location
-                await storage_service.upload_file(
+                # Upload to final location without loading into memory
+                await storage_service.upload_file_from_path(
                     UUID(session.extra_metadata.get("temp_doc_id")),
                     session.filename,
-                    reassembled_data,
+                    temp_file_path,
                     session.content_type
                 )
                 
@@ -427,8 +428,8 @@ async def complete_upload(
                 for chunk_path in session.extra_metadata.get("chunk_paths", {}).values():
                     try:
                         await storage_service.delete_file(chunk_path)
-                    except:
-                        pass  # Ignore errors when cleaning up chunks
+                    except Exception as e:
+                        logger.debug(f"Failed to delete chunk file {chunk_path}: {e}")
                 
                 logger.info(f"Manually reassembled file for session {session_id}")
             finally:
@@ -464,16 +465,25 @@ async def complete_upload(
         # Actually, we can't easily get the hash without downloading, so we'll use a placeholder
         # Or we can download it temporarily
         import tempfile
-        temp_file_path = tempfile.mktemp()
+        temp_file = tempfile.NamedTemporaryFile(delete=False)
+        temp_file_path = temp_file.name
+        temp_file.close()
         try:
             await storage_service.download_file(object_path, temp_file_path)
+            hasher = hashlib.sha256()
             with open(temp_file_path, 'rb') as f:
-                content = f.read()
-            content_hash = hashlib.sha256(content).hexdigest()
+                for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                    hasher.update(chunk)
+            content_hash = hasher.hexdigest()
         finally:
             if os.path.exists(temp_file_path):
                 os.unlink(temp_file_path)
         
+        owner_user = await db.get(User, session.user_id)
+        owner_display_name = None
+        if owner_user:
+            owner_display_name = owner_user.full_name or owner_user.username or owner_user.email
+
         # Create document
         document = Document(
             title=session.title or session.filename,
@@ -484,6 +494,7 @@ async def complete_upload(
             file_size=session.file_size,
             source_id=upload_source.id,
             source_identifier=session.filename,
+            author=owner_display_name,
             tags=session.tags,
             extra_metadata={
                 "original_filename": session.filename,
@@ -496,6 +507,16 @@ async def complete_upload(
         db.add(document)
         await db.commit()
         await db.refresh(document)
+
+        if owner_user:
+            await persona_service.assign_document_owner(
+                db,
+                document,
+                user=owner_user,
+                platform_scope="file-upload"
+            )
+            await db.commit()
+            await db.refresh(document)
         
         # Move file to final location
         final_object_path = storage_service._get_object_path(document.id, session.filename)
@@ -593,15 +614,30 @@ async def complete_upload(
                             })
                         except Exception:
                             pass
+                        # Estimate duration to set Celery timeouts dynamically
+                        soft_limit = 25 * 60
+                        hard_limit = 30 * 60
+                        try:
+                            import librosa  # type: ignore
+                            dur = librosa.get_duration(filename=str(temp_check_path))
+                            if dur and dur > 0:
+                                # Allow generous CPU time: 6x audio duration + 5 minutes, hard limit +10 minutes
+                                soft_limit = int(min(6 * dur + 300, 5 * 3600))
+                                hard_limit = int(min(soft_limit + 600, 6 * 3600))
+                        except Exception:
+                            pass
                         from app.tasks.transcription_tasks import transcribe_document
-                        transcribe_document.delay(str(document.id))
-                        logger.info(f"Triggered transcription task for document {document.id}")
+                        transcribe_document.apply_async(args=[str(document.id)], soft_time_limit=soft_limit, time_limit=hard_limit)
+                        logger.info(f"Triggered transcription task for document {document.id} with soft_limit={soft_limit}s hard_limit={hard_limit}s")
                 else:
                     # Regular document - extract text
                     from app.services.text_processor import TextProcessor
                     text_processor = TextProcessor()
-                    text_content = await text_processor.extract_text(temp_check_path, session.content_type)
+                    text_content, extraction_metadata = await text_processor.extract_text(temp_check_path, session.content_type)
                     document.content = text_content
+                    if extraction_metadata:
+                        document.extra_metadata = document.extra_metadata or {}
+                        document.extra_metadata.update(extraction_metadata)
                     
                     # Process document
                     await document_service._process_document_async(document, db)

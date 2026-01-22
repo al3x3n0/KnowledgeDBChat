@@ -13,7 +13,7 @@ from loguru import logger
 
 from app.models.chat import ChatSession, ChatMessage
 from app.models.user import User
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.vector_store import VectorStoreService
 from app.services.memory_service import MemoryService
 from app.services.query_processor import QueryProcessor
@@ -245,11 +245,12 @@ class ChatService:
         session_id: UUID,
         query: str,
         user_id: UUID,
-        db: AsyncSession
+        db: AsyncSession,
+        user_settings: Optional["UserLLMSettings"] = None,
     ) -> ChatMessage:
         """
         Generate an AI response to a user query using RAG (Retrieval-Augmented Generation).
-        
+
         This method:
         1. Creates a user message from the query
         2. Retrieves relevant documents from the vector store
@@ -257,13 +258,14 @@ class ChatService:
         4. Builds conversation history
         5. Generates response using LLM with all context
         6. Creates and returns assistant message
-        
+
         Args:
             session_id: Chat session ID
             query: User's question or query
             user_id: User ID for memory retrieval
             db: Database session
-            
+            user_settings: Optional user-specific LLM settings
+
         Returns:
             ChatMessage object containing the AI response with metadata
             
@@ -378,16 +380,61 @@ class ChatService:
             
             # Get context metrics for logging
             context_metrics = self.context_manager.get_context_metrics(search_results)
-            
+
+            # Inject Knowledge Graph context if enabled
+            kg_context = ""
+            if settings.RAG_KG_CONTEXT_ENABLED:
+                try:
+                    from app.services.knowledge_graph_service import KnowledgeGraphService
+                    kg_service = KnowledgeGraphService()
+
+                    # Extract potential entity names from query and search results
+                    entity_names = self.context_manager.extract_entity_names_from_results(search_results)
+
+                    # Also add key terms from the processed query
+                    key_terms = processed_query.get("key_terms", [])
+                    for term in key_terms:
+                        if len(term) > 2 and term not in entity_names:
+                            entity_names.append(term)
+
+                    # Search for matching entities in KG
+                    if entity_names:
+                        entities = await kg_service.search_entities_by_names(
+                            names=entity_names[:20],  # Limit search candidates
+                            db=db,
+                            limit=settings.RAG_KG_MAX_ENTITIES
+                        )
+
+                        if entities:
+                            # Get relationships between found entities
+                            entity_ids = [e.id for e in entities]
+                            kg_data = await kg_service.get_entity_context(
+                                entity_ids=entity_ids,
+                                db=db,
+                                max_relationships=settings.RAG_KG_MAX_RELATIONSHIPS
+                            )
+
+                            # Build KG context string
+                            kg_context = self.context_manager.build_kg_context(
+                                entities=kg_data["entities"],
+                                relationships=kg_data["relationships"]
+                            )
+                            logger.debug(f"KG context injected: {len(kg_data['entities'])} entities, {len(kg_data['relationships'])} relationships")
+                except Exception as e:
+                    logger.warning(f"KG context injection failed: {e}")
+                    # Continue without KG context - don't break the chat flow
+
             memory_context = self._build_memory_context(relevant_memories)
             conversation_history = self._build_conversation_history(session.messages[:-1])  # Exclude current user message
-            
-            # Generate response using LLM with memory context
+
+            # Generate response using LLM with memory and KG context
             response_content = await self.llm_service.generate_response(
                 query=query,
                 context=context,
                 conversation_history=conversation_history,
-                memory_context=memory_context
+                memory_context=memory_context,
+                kg_context=kg_context,
+                user_settings=user_settings,
             )
             
             response_time = time.time() - start_time
@@ -406,40 +453,63 @@ class ChatService:
             # Create assistant message
             # search_results is a list of dicts with "metadata" key (dict), not objects
             from app.services.storage_service import storage_service
-            from app.services.document_service import DocumentService
-            
-            # Create document service instance once
-            doc_service = DocumentService()
-            
+            from app.models.document import Document
+            from sqlalchemy import select as sql_select
+
+            # Batch fetch documents to avoid N+1 queries
+            doc_ids = set()
+            for doc in search_results:
+                doc_id = doc.get("metadata", {}).get("document_id", doc.get("id"))
+                if doc_id:
+                    try:
+                        doc_ids.add(UUID(doc_id) if isinstance(doc_id, str) else doc_id)
+                    except (ValueError, TypeError):
+                        pass
+
+            # Fetch all documents in one query
+            documents_map = {}
+            if doc_ids:
+                stmt = sql_select(Document).where(Document.id.in_(list(doc_ids)))
+                result = await db.execute(stmt)
+                for document in result.scalars().all():
+                    documents_map[document.id] = document
+
             source_docs = []
             for doc in search_results:
                 doc_id = doc.get("metadata", {}).get("document_id", doc.get("id"))
                 doc_metadata = doc.get("metadata", {})
-                
+
                 # Generate download URL if document has file_path
                 download_url = None
                 if doc_id:
                     try:
-                        # Get document to check if it has file_path
-                        document = await doc_service.get_document(UUID(doc_id) if isinstance(doc_id, str) else doc_id, db)
+                        doc_uuid = UUID(doc_id) if isinstance(doc_id, str) else doc_id
+                        document = documents_map.get(doc_uuid)
                         if document and document.file_path:
                             download_url = await storage_service.get_presigned_download_url(document.file_path)
                     except Exception as e:
                         logger.warning(f"Failed to generate download URL for document {doc_id}: {e}")
-                
+
+                # Get content snippet for preview (first 200 chars)
+                content = doc.get("content") or doc.get("page_content", "")
+                snippet = content[:200].strip() if content else None
+
                 source_docs.append({
                     "id": doc_id,
                     "title": doc_metadata.get("title", "Unknown"),
                     "score": doc_metadata.get("score", doc.get("score", 0.0)),
                     "source": doc_metadata.get("source", "Unknown"),
-                    "download_url": download_url
+                    "download_url": download_url,
+                    "chunk_id": doc_metadata.get("chunk_id"),
+                    "chunk_index": doc_metadata.get("chunk_index"),
+                    "snippet": snippet,
                 })
             
             assistant_message = await self.create_message(
                 session_id=session_id,
                 content=response_content,
                 role="assistant",
-                model_used=settings.DEFAULT_MODEL,
+                model_used=self.llm_service.get_active_model(),
                 response_time=response_time,
                 source_documents=source_docs,
                 context_used=context,

@@ -91,10 +91,15 @@ export const useWebSocket = (url: string | null, options: UseWebSocketOptions = 
     setConnectionStatus('disconnected');
   };
 
-  const sendMessage = (message: any) => {
+  const sendMessage = (message: Record<string, unknown>): boolean => {
     if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify(message));
-      return true;
+      try {
+        wsRef.current.send(JSON.stringify(message));
+        return true;
+      } catch (error) {
+        console.error('Failed to send WebSocket message:', error);
+        return false;
+      }
     }
     return false;
   };

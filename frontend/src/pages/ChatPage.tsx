@@ -5,11 +5,10 @@
 import React, { useState, useEffect, useRef } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
-import { 
-  Plus, 
-  Send, 
-  MoreVertical, 
-  Trash2, 
+import {
+  Plus,
+  Send,
+  Trash2,
   MessageCircle,
   Bot,
   User,
@@ -18,7 +17,8 @@ import {
   ThumbsDown,
   Clock,
   Download,
-  Loader2
+  Loader2,
+  Eye
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
@@ -51,33 +51,14 @@ const ChatPage: React.FC = () => {
   // Fetch chat sessions
   const { data: sessions, isLoading: sessionsLoading, error: sessionsError } = useQuery(
     'chatSessions',
-    async () => {
-      console.log('Fetching chat sessions...');
-      try {
-        const result = await apiClient.getChatSessions();
-        console.log('Chat sessions fetched:', result);
-        return result;
-      } catch (error) {
-        console.error('Error in getChatSessions:', error);
-        throw error;
-      }
-    },
+    () => apiClient.getChatSessions(),
     {
       enabled: !!user, // Only fetch if user is authenticated
       refetchOnWindowFocus: false,
       refetchInterval: 10000, // Refetch every 10 seconds to catch title updates
       retry: 2,
-      onError: (error: any) => {
-        console.error('Error fetching chat sessions:', error);
-        console.error('Error details:', {
-          message: error?.message,
-          response: error?.response?.data,
-          status: error?.response?.status,
-        });
+      onError: () => {
         toast.error('Failed to load chat sessions');
-      },
-      onSuccess: (data) => {
-        console.log('Chat sessions loaded successfully:', data?.length || 0, 'sessions');
       },
     }
   );
@@ -118,13 +99,7 @@ const ChatPage: React.FC = () => {
         toast.success('Chat session deleted');
       },
       onError: (error: any) => {
-        console.error('Error deleting session:', error);
         const errorMessage = error?.response?.data?.detail || error?.message || 'Failed to delete chat session';
-        console.error('Delete error details:', {
-          status: error?.response?.status,
-          data: error?.response?.data,
-          message: errorMessage,
-        });
         toast.error(errorMessage);
         setDeleteConfirmOpen(false);
         setSessionToDelete(null);
@@ -184,14 +159,13 @@ const ChatPage: React.FC = () => {
     const ws = apiClient.createWebSocket(sessionId);
     
     ws.onopen = () => {
-      console.log('WebSocket connected');
       setWsConnection(ws);
     };
 
     ws.onmessage = (event) => {
       try {
         const data: WebSocketMessage = JSON.parse(event.data);
-        
+
         if (data.type === 'typing') {
           setIsTyping(true);
         } else if (data.type === 'message') {
@@ -201,19 +175,17 @@ const ChatPage: React.FC = () => {
           setIsTyping(false);
           toast.error(data.message || 'An error occurred');
         }
-      } catch (error) {
-        console.error('WebSocket message parsing error:', error);
+      } catch {
+        // Ignore malformed messages
       }
     };
 
     ws.onclose = () => {
-      console.log('WebSocket disconnected');
       setWsConnection(null);
       setIsTyping(false);
     };
 
-    ws.onerror = (error) => {
-      console.error('WebSocket error:', error);
+    ws.onerror = () => {
       setIsTyping(false);
     };
 
@@ -248,8 +220,7 @@ const ChatPage: React.FC = () => {
         // Fallback to HTTP API
         await sendMessageMutation.mutateAsync({ sessionId, content: messageContent });
       }
-    } catch (error) {
-      console.error('Error sending message:', error);
+    } catch {
       toast.error('Failed to send message');
     }
   };
@@ -267,18 +238,14 @@ const ChatPage: React.FC = () => {
   };
 
   const handleDeleteSession = (sessionToDeleteId: string) => {
-    console.log('Delete session clicked:', sessionToDeleteId);
     setSessionToDelete(sessionToDeleteId);
     setDeleteConfirmOpen(true);
   };
 
   const confirmDeleteSession = () => {
-    console.log('Confirm delete called, sessionToDelete:', sessionToDelete);
     if (sessionToDelete) {
-      console.log('Calling delete mutation for:', sessionToDelete);
       deleteSessionMutation.mutate(sessionToDelete);
     } else {
-      console.error('No session to delete!');
       toast.error('No session selected for deletion');
     }
   };
@@ -297,9 +264,7 @@ const ChatPage: React.FC = () => {
     return <LoadingSpinner className="h-full" text="Loading chat sessions..." />;
   }
 
-  if (sessionsError) {
-    console.error('Sessions error:', sessionsError);
-  }
+  // Error already handled by onError callback
 
   return (
     <div className="flex h-full">
@@ -502,23 +467,27 @@ interface ChatMessageProps {
 }
 
 const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback }) => {
+  const navigate = useNavigate();
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   const [downloadingDocs, setDownloadingDocs] = React.useState<Set<string>>(new Set());
 
+  const handleViewSource = (docId: string, chunkId?: string) => {
+    navigate('/documents', {
+      state: {
+        openDocId: docId,
+        highlightChunkId: chunkId
+      }
+    });
+  };
+
   const handleDownload = async (docId: string, downloadUrl?: string) => {
     try {
       setDownloadingDocs(prev => new Set(prev).add(docId));
-      
-      // Use backend proxy endpoint - streams file through backend
-      // This avoids presigned URL signature issues
-      console.log('Starting download for document:', docId);
-      
+
       // Use the API client method to download as blob
       const { blob, filename } = await apiClient.downloadDocument(docId, true);
-      
-      console.log('Download successful, filename:', filename);
-      
+
       // Create download link and trigger download
       const url = window.URL.createObjectURL(blob);
       const link = window.document.createElement('a');
@@ -528,13 +497,12 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
       link.click();
       window.document.body.removeChild(link);
       window.URL.revokeObjectURL(url);
-      
+
       toast.success('Download started');
     } catch (error: any) {
-      console.error('Error downloading document:', error);
-      const errorMessage = error.response?.data 
-        ? (error.response.data instanceof Blob 
-            ? 'Download failed: Server error' 
+      const errorMessage = error.response?.data
+        ? (error.response.data instanceof Blob
+            ? 'Download failed: Server error'
             : error.response.data.detail || error.response.data.message || 'Download failed')
         : error.message || 'Failed to download document. Please try again.';
       toast.error(errorMessage);
@@ -604,9 +572,23 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
                     {(doc.score * 100).toFixed(0)}% match
                   </span>
                 </div>
+                {doc.snippet && (
+                  <div className="text-gray-600 mt-1 text-xs italic line-clamp-2">
+                    "{doc.snippet}..."
+                  </div>
+                )}
                 <div className="text-gray-600 mt-1 flex items-center gap-2 flex-wrap">
                   <span className="truncate">{doc.source}</span>
                   <div className="flex items-center gap-1 ml-auto">
+                    {doc.id && doc.chunk_id && (
+                      <button
+                        onClick={() => handleViewSource(doc.id, doc.chunk_id)}
+                        className="text-primary-600 hover:text-primary-800 p-1 rounded hover:bg-primary-50 transition-colors"
+                        title="View in document"
+                      >
+                        <Eye className="w-3 h-3" />
+                      </button>
+                    )}
                     {doc.url && (
                       <button
                         onClick={() => window.open(doc.url, '_blank', 'noopener,noreferrer')}

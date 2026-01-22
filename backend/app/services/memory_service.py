@@ -635,9 +635,12 @@ class MemoryService:
             
             Return up to 5 memories, one per line.
             """
-            
+
             # Use LLM service to extract memories
-            response = await self.llm_service.generate_response(prompt)
+            response = await self.llm_service.generate_response(
+                query=prompt,
+                task_type="memory_extraction",
+            )
             
             # Parse the response
             memories = []

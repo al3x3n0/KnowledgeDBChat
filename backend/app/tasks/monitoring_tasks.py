@@ -11,7 +11,7 @@ from sqlalchemy import select, func, and_
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.database import AsyncSessionLocal
+from app.core.database import create_celery_session
 from app.models.document import Document, DocumentSource
 from app.models.chat import ChatSession, ChatMessage
 from app.services.vector_store import VectorStoreService
@@ -20,16 +20,27 @@ from app.services.llm_service import LLMService
 # Note: cleanup_old_data has been moved to app.tasks.maintenance_tasks
 
 
+def _run_async(coro):
+    try:
+        loop = asyncio.get_event_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+    if loop.is_running():
+        return asyncio.run(coro)
+    return loop.run_until_complete(coro)
+
+
 @celery_app.task(name="app.tasks.monitoring_tasks.health_check")
 def health_check() -> Dict[str, Any]:
     """Perform comprehensive health check of all services."""
-    return asyncio.run(_async_health_check())
+    return _run_async(_async_health_check())
 
 
 @celery_app.task(name="app.tasks.monitoring_tasks.generate_stats")
 def generate_stats() -> Dict[str, Any]:
     """Generate system statistics."""
-    return asyncio.run(_async_generate_stats())
+    return _run_async(_async_generate_stats())
 
 
 async def _async_health_check() -> Dict[str, Any]:
@@ -42,7 +53,7 @@ async def _async_health_check() -> Dict[str, Any]:
     
     # Check database connectivity
     try:
-        async with AsyncSessionLocal() as db:
+        async with create_celery_session()() as db:
             result = await db.execute(select(func.count(DocumentSource.id)))
             source_count = result.scalar()
             
@@ -139,7 +150,7 @@ async def _async_health_check() -> Dict[str, Any]:
 
 async def _async_generate_stats() -> Dict[str, Any]:
     """Generate comprehensive system statistics."""
-    async with AsyncSessionLocal() as db:
+    async with create_celery_session()() as db:
         try:
             stats = {
                 "timestamp": datetime.utcnow().isoformat(),
@@ -172,6 +183,20 @@ async def _async_generate_stats() -> Dict[str, Any]:
                 "pending": total_docs - processed_docs - failed_docs,
                 "success_rate": round((processed_docs / total_docs * 100) if total_docs > 0 else 0, 2)
             }
+
+            # Documents without summary (processed but missing or empty summary)
+            try:
+                without_summary_result = await db.execute(
+                    select(func.count(Document.id)).where(
+                        and_(
+                            Document.is_processed == True,
+                            (Document.summary.is_(None)) | (Document.summary == "")
+                        )
+                    )
+                )
+                stats["documents"]["without_summary"] = int(without_summary_result.scalar() or 0)
+            except Exception:
+                stats["documents"]["without_summary"] = 0
             
             # Chat statistics
             total_sessions_result = await db.execute(select(func.count(ChatSession.id)))
@@ -255,4 +280,3 @@ async def _async_generate_stats() -> Dict[str, Any]:
                 "timestamp": datetime.utcnow().isoformat(),
                 "error": str(e)
             }
-

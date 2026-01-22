@@ -12,18 +12,120 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.database import AsyncSessionLocal
+from celery import Task
+from app.core.database import create_celery_session
 from app.core.config import settings
+import hashlib
 from app.models.document import Document
 from app.services.transcription_service import get_transcription_service
 from app.services.storage_service import storage_service
+from app.services.persona_service import persona_service
 from sqlalchemy import select
 import tempfile
 import os
 import redis
+from datetime import timedelta
 
 
-@celery_app.task(bind=True, name="app.tasks.transcription_tasks.transcribe_document")
+def _format_timecode(seconds: float) -> str:
+    try:
+        if seconds is None:
+            seconds = 0
+        seconds = max(0, float(seconds))
+        h = int(seconds // 3600)
+        m = int((seconds % 3600) // 60)
+        s = int(seconds % 60)
+        return f"{h:02d}:{m:02d}:{s:02d}"
+    except Exception:
+        return "00:00:00"
+
+
+def _format_transcript_with_timecodes(segments: list, fallback_text: str) -> str:
+    """Create a human-friendly transcript with one timecoded line per segment."""
+    lines = []
+    try:
+        for seg in segments or []:
+            start = seg.get('start', 0)
+            text = (seg.get('text') or '').strip()
+            if not text:
+                continue
+            tc = _format_timecode(start)
+            lines.append(f"[{tc}] {text}")
+    except Exception:
+        pass
+    # Ensure each timecode is on its own line
+    formatted = "\n".join(lines).strip()
+    return formatted if formatted else (fallback_text or '')
+
+
+def _format_transcript_from_sentences(sentences: list, fallback_text: str) -> str:
+    """Format transcript from sentence-level items with speakers and start times.
+
+    sentences: list of {'start': seconds, 'text': str, 'speaker': optional}
+    """
+    try:
+        lines = []
+        for item in sentences or []:
+            start = item.get('start', 0)
+            text = (item.get('text') or '').strip()
+            if not text:
+                continue
+            tc = _format_timecode(start)
+            speaker = item.get('speaker')
+            end = item.get('end')
+            if end is not None:
+                tc_end = _format_timecode(end)
+                prefix = f"[{tc} - {tc_end}]"
+            else:
+                prefix = f"[{tc}]"
+            if speaker:
+                lines.append(f"{prefix} [{speaker}] {text}")
+            else:
+                lines.append(f"{prefix} {text}")
+        formatted = "\n".join(lines).strip()
+        return formatted if formatted else (fallback_text or '')
+    except Exception:
+        return fallback_text or ''
+
+
+class TranscribeTask(Task):
+    def on_failure(self, exc, task_id, args, kwargs, einfo=None):
+        try:
+            document_id = args[0] if args else None
+            if not document_id:
+                return
+            async def _mark_failed(doc_id: str, error_text: str):
+                async with create_celery_session()() as db:
+                    try:
+                        from sqlalchemy import select as _select
+                        result = await db.execute(_select(Document).where(Document.id == UUID(doc_id)))
+                        doc = result.scalar_one_or_none()
+                        if not doc:
+                            return
+                        doc.extra_metadata = (doc.extra_metadata or {})
+                        doc.extra_metadata.update({
+                            "transcription_error": error_text or "Transcription failed",
+                            "is_transcribing": False,
+                            "is_transcribed": False,
+                        })
+                        doc.processing_error = f"Transcription failed: {error_text}"
+                        await db.commit()
+                    except Exception as _e:
+                        logger.warning(f"Failed to mark transcription failure for {doc_id}: {_e}")
+            import asyncio
+            error_text = str(exc) if exc else "Worker lost"
+            asyncio.run(_mark_failed(document_id, error_text))
+            # Publish websocket notifications
+            try:
+                _publish_error(str(document_id), error_text)
+                _publish_status(str(document_id), {"is_transcribing": False})
+            except Exception:
+                pass
+        except Exception as ee:
+            logger.warning(f"on_failure handler error: {ee}")
+
+
+@celery_app.task(bind=True, base=TranscribeTask, name="app.tasks.transcription_tasks.transcribe_document")
 def transcribe_document(self, document_id: str) -> Dict[str, Any]:
     """
     Transcribe a video/audio document and update its content.
@@ -39,7 +141,7 @@ def transcribe_document(self, document_id: str) -> Dict[str, Any]:
 
 async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
     """Async implementation of document transcription."""
-    async with AsyncSessionLocal() as db:
+    async with create_celery_session()() as db:
         try:
             logger.info(f"Starting transcription for document {document_id}")
             
@@ -148,10 +250,13 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
                 def progress_callback(progress_dict: dict):
                     """Callback to publish transcription progress or segments."""
                     if progress_dict and progress_dict.get('type') == 'segment':
-                        _publish_segment(document_id, {
+                        seg = {
                             'start': progress_dict.get('start'),
                             'text': progress_dict.get('text'),
-                        })
+                        }
+                        if 'speaker' in progress_dict and progress_dict.get('speaker'):
+                            seg['speaker'] = progress_dict.get('speaker')
+                        _publish_segment(document_id, seg)
                     else:
                         _publish_progress(document_id, progress_dict)
                 
@@ -178,20 +283,74 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
                     "progress": 98
                 })
                 
-                # Format transcript with time codes
-                formatted_transcript = _format_transcript_with_timecodes(metadata.get('segments', []), transcript_text)
+                # Prefer diarization-driven sentence segments if available
+                sentence_segs = metadata.get('sentence_segments') or []
+                if sentence_segs:
+                    formatted_transcript = _format_transcript_from_sentences(sentence_segs, transcript_text)
+                else:
+                    formatted_transcript = _format_transcript_with_timecodes(metadata.get('segments', []), transcript_text)
                 
-                # Update document with formatted transcript
-                document.content = formatted_transcript
+                # Create a separate transcript document linked to this video/audio
+                # Keep metadata on original for UI (segments, flags), but index a new text document
+                base_title = (document.title or '').rsplit('.', 1)[0] or (document.title or '')
+                transcript_title = f"{base_title} (Transcript)"
+                content_bytes = formatted_transcript.encode('utf-8')
+                content_hash = hashlib.sha256(content_bytes).hexdigest()
+
+                transcript_doc = Document(
+                    title=transcript_title,
+                    content=formatted_transcript,
+                    content_hash=content_hash,
+                    url=None,
+                    file_path=None,
+                    file_type="text/plain",
+                    file_size=len(content_bytes),
+                    source_id=document.source_id,
+                    source_identifier=f"{document.source_identifier}:transcript",
+                    author=document.author,
+                    owner_persona_id=document.owner_persona_id,
+                    tags=document.tags,
+                    extra_metadata={
+                        "doc_type": "transcript",
+                        "parent_document_id": str(document.id),
+                        "transcription_metadata": metadata,
+                    },
+                )
+                db.add(transcript_doc)
+                
+                # Update original document flags and link to transcript
                 document.extra_metadata = document.extra_metadata or {}
                 document.extra_metadata.update({
                     "transcription_metadata": metadata,
                     "is_transcribed": True,
-                    "is_transcribing": False
+                    "is_transcribing": False,
+                    "transcript_document_id": None,  # set after flush
                 })
+
+                await db.commit()
+                await db.refresh(transcript_doc)
                 
+                # Now set the link id
+                document.extra_metadata["transcript_document_id"] = str(transcript_doc.id)
                 await db.commit()
                 await db.refresh(document)
+
+                try:
+                    await persona_service.record_sentence_speakers(
+                        db,
+                        document=document,
+                        sentence_segments=sentence_segs,
+                        base_document_id=document.id,
+                    )
+                    await persona_service.record_sentence_speakers(
+                        db,
+                        document=transcript_doc,
+                        sentence_segments=sentence_segs,
+                        base_document_id=document.id,
+                    )
+                    await db.commit()
+                except Exception as persona_err:
+                    logger.debug(f"Failed to persist diarization personas for document {document_id}: {persona_err}")
                 # Publish status update for UI
                 _publish_status(document_id, {
                     "is_transcribing": False,
@@ -207,10 +366,10 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
                     "progress": 99
                 })
                 
-                # Now process the document for indexing (chunking, embedding, etc.)
+                # Now process the transcript document for indexing (chunking, embedding, etc.)
                 from app.services.document_service import DocumentService
                 document_service = DocumentService()
-                await document_service._process_document_async(document, db)
+                await document_service._process_document_async(transcript_doc, db)
                 
                 # Publish completion
                 result = {
@@ -355,52 +514,3 @@ def _publish_error(document_id: str, error: str):
         logger.warning(f"Failed to publish error: {e}")
 
 
-def _format_timecode(seconds: float) -> str:
-    """Format seconds to timecode string (HH:MM:SS or MM:SS)."""
-    hours = int(seconds // 3600)
-    minutes = int((seconds % 3600) // 60)
-    secs = int(seconds % 60)
-    
-    if hours > 0:
-        return f"{hours:02d}:{minutes:02d}:{secs:02d}"
-    else:
-        return f"{minutes:02d}:{secs:02d}"
-
-
-def _format_transcript_with_timecodes(segments: list, plain_text: str) -> str:
-    """
-    Format transcript text with time codes.
-    
-    Args:
-        segments: List of segment dictionaries with 'start', 'end', 'text'
-        plain_text: Plain transcript text (fallback if segments unavailable)
-        
-    Returns:
-        Formatted transcript with time codes
-    """
-    if not segments:
-        # Fallback to plain text if no segments
-        return plain_text
-    
-    formatted_lines = []
-    for segment in segments:
-        start_time = segment.get('start', 0)
-        end_time = segment.get('end', 0)
-        text = segment.get('text', '').strip()
-        
-        if not text:
-            continue
-        
-        # Format timecode
-        start_tc = _format_timecode(start_time)
-        end_tc = _format_timecode(end_time)
-        
-        # Add speaker label if available
-        speaker = segment.get('speaker')
-        speaker_label = f"[{speaker}] " if speaker else ""
-        
-        # Format: [00:15 - 00:23] [Speaker] Text here...
-        formatted_line = f"[{start_tc} - {end_tc}] {speaker_label}{text}"
-        formatted_lines.append(formatted_line)
-    
-    return "\n\n".join(formatted_lines)

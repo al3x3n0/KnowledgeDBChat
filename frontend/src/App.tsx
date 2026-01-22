@@ -4,6 +4,7 @@ import { QueryClient, QueryClientProvider } from 'react-query';
 import { Toaster } from 'react-hot-toast';
 
 import { AuthProvider, useAuth } from './contexts/AuthContext';
+import { NotificationProvider } from './contexts/NotificationContext';
 import Layout from './components/Layout';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import ErrorBoundary from './components/common/ErrorBoundary';
@@ -15,6 +16,16 @@ const DocumentsPage = lazy(() => import('./pages/DocumentsPage'));
 const MemoryPage = lazy(() => import('./pages/MemoryPage'));
 const SettingsPage = lazy(() => import('./pages/SettingsPage'));
 const AdminPage = lazy(() => import('./pages/AdminPage'));
+const KGAdminPage = lazy(() => import('./pages/KGAdminPage'));
+const KGAuditPage = lazy(() => import('./pages/KGAuditPage'));
+const DocumentGraphPage = lazy(() => import('./pages/DocumentGraphPage'));
+const TemplateFillPage = lazy(() => import('./pages/TemplateFillPage'));
+const WorkflowsPage = lazy(() => import('./pages/WorkflowsPage'));
+const WorkflowEditorPage = lazy(() => import('./pages/WorkflowEditorPage'));
+const ToolsPage = lazy(() => import('./pages/ToolsPage'));
+const PresentationsPage = lazy(() => import('./pages/PresentationsPage'));
+const GlobalGraphPage = lazy(() => import('./pages/GlobalGraphPage'));
+const SearchPage = lazy(() => import('./pages/SearchPage'));
 
 // Create a client
 const queryClient = new QueryClient({
@@ -113,11 +124,27 @@ const AppRoutes: React.FC = () => {
               </Suspense>
             } 
           />
-          <Route 
-            path="documents" 
+          <Route
+            path="documents"
             element={
               <Suspense fallback={<PageLoader />}>
                 <DocumentsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="search"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <SearchPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="documents/:documentId/graph" 
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <DocumentGraphPage />
               </Suspense>
             } 
           />
@@ -129,15 +156,23 @@ const AppRoutes: React.FC = () => {
               </Suspense>
             } 
           />
-          <Route 
-            path="settings" 
+          <Route
+            path="settings"
             element={
               <Suspense fallback={<PageLoader />}>
                 <SettingsPage />
               </Suspense>
-            } 
+            }
           />
-          <Route 
+          <Route
+            path="templates"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <TemplateFillPage />
+              </Suspense>
+            }
+          />
+          <Route
             path="admin" 
             element={
               <Suspense fallback={<PageLoader />}>
@@ -145,7 +180,67 @@ const AppRoutes: React.FC = () => {
               </Suspense>
             } 
           />
+          <Route 
+            path="admin/kg" 
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <KGAdminPage />
+              </Suspense>
+            } 
+          />
+          <Route
+            path="admin/kg/audit"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <KGAuditPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="kg/global"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <GlobalGraphPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="workflows"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <WorkflowsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="tools"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ToolsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="presentations"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <PresentationsPage />
+              </Suspense>
+            }
+          />
         </Route>
+
+        {/* Workflow editor (full page, no layout) */}
+        <Route
+          path="/workflows/:id/edit"
+          element={
+            <ProtectedRoute>
+              <Suspense fallback={<PageLoader />}>
+                <WorkflowEditorPage />
+              </Suspense>
+            </ProtectedRoute>
+          }
+        />
 
         {/* Catch all route */}
         <Route path="*" element={<Navigate to="/" replace />} />
@@ -159,8 +254,9 @@ const App: React.FC = () => {
     <ErrorBoundary>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
-          <Router>
-            <div className="App">
+          <NotificationProvider>
+            <Router>
+              <div className="App">
               <AppRoutes />
               <Toaster
               position="top-right"
@@ -184,8 +280,9 @@ const App: React.FC = () => {
                 },
               }}
             />
-          </div>
-        </Router>
+            </div>
+          </Router>
+        </NotificationProvider>
       </AuthProvider>
     </QueryClientProvider>
     </ErrorBoundary>

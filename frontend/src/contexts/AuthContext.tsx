@@ -3,9 +3,16 @@
  */
 
 import React, { createContext, useContext, useEffect, useState } from 'react';
+import { AxiosError } from 'axios';
 import { apiClient, LoginResponse } from '../services/api';
 import { User } from '../types';
 import toast from 'react-hot-toast';
+
+// Error response structure from API
+interface ApiErrorResponse {
+  detail?: string;
+  message?: string;
+}
 
 interface AuthContextType {
   user: User | null;
@@ -63,32 +70,24 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
   const login = async (username: string, password: string): Promise<void> => {
     try {
       setLoading(true);
-      console.log('AuthContext: Starting login for:', username);
       const response: LoginResponse = await apiClient.login(username, password);
-      console.log('AuthContext: Login response:', response);
-      
+
       // Validate response structure
       if (!response || !response.access_token) {
-        console.error('AuthContext: Invalid login response - missing access_token');
         throw new Error('Invalid login response: missing access token');
       }
-      
+
       if (!response.user) {
-        console.error('AuthContext: Invalid login response - missing user');
         throw new Error('Invalid login response: missing user data');
       }
-      
+
       // Store token and user data
-      console.log('AuthContext: Storing token and user data');
       apiClient.setToken(response.access_token);
       setUser(response.user);
-      
-      console.log('AuthContext: Login successful, user set:', response.user.username);
       toast.success(`Welcome back, ${response.user.username}!`);
-    } catch (error: any) {
-      console.error('AuthContext: Login error:', error);
-      const errorMessage = error.response?.data?.detail || error.message || 'Login failed';
-      console.error('AuthContext: Error message:', errorMessage);
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiErrorResponse>;
+      const errorMessage = axiosError.response?.data?.detail || axiosError.message || 'Login failed';
       toast.error(errorMessage);
       throw error;
     } finally {
@@ -105,13 +104,14 @@ export const AuthProvider: React.FC<AuthProviderProps> = ({ children }) => {
     try {
       setLoading(true);
       const newUser = await apiClient.register(userData);
-      
+
       // After registration, automatically log in
       await login(userData.username, userData.password);
-      
+
       toast.success(`Welcome to Knowledge Database, ${newUser.username}!`);
-    } catch (error: any) {
-      const errorMessage = error.response?.data?.detail || 'Registration failed';
+    } catch (error) {
+      const axiosError = error as AxiosError<ApiErrorResponse>;
+      const errorMessage = axiosError.response?.data?.detail || 'Registration failed';
       toast.error(errorMessage);
       throw error;
     } finally {

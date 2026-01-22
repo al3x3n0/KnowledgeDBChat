@@ -27,10 +27,12 @@ class RedisSubscriber:
         try:
             self.redis_client = redis.from_url(settings.REDIS_URL, decode_responses=True)
             self.pubsub = self.redis_client.pubsub()
-            # Subscribe to all transcription progress channels
+            # Subscribe to transcription, summarization, and ingestion progress channels
             self.pubsub.psubscribe("transcription_progress:*")
+            self.pubsub.psubscribe("summarization_progress:*")
+            self.pubsub.psubscribe("ingestion_progress:*")
             self.running = True
-            logger.info("Redis subscriber started for transcription progress")
+            logger.info("Redis subscriber started for progress forwarding (transcription, summarization, ingestion)")
             
             # Start listening in background
             self.task = asyncio.create_task(self._listen())
@@ -76,23 +78,56 @@ class RedisSubscriber:
                         
                         if not document_id:
                             continue
-                        
-                        # Forward to WebSocket clients
-                        if message_type == 'progress':
-                            progress = data.get('progress', {})
-                            await websocket_manager.send_progress(document_id, progress)
-                        elif message_type == 'complete':
-                            result = data.get('result', {})
-                            await websocket_manager.send_complete(document_id, result)
-                        elif message_type == 'error':
-                            error = data.get('error', 'Unknown error')
-                            await websocket_manager.send_error(document_id, error)
-                        elif message_type == 'status':
-                            status = data.get('status', {})
-                            await websocket_manager.send_status(document_id, status)
-                        elif message_type == 'segment':
-                            segment = data.get('segment', {})
-                            await websocket_manager.send_segment(document_id, segment)
+                        # Determine which channel group
+                        channel: str = message.get('channel', '') or message.get('pattern', '')
+                        if isinstance(channel, bytes):
+                            channel = channel.decode()
+
+                        if channel.startswith('transcription_progress:') or channel == 'transcription_progress:*':
+                            # Forward transcription messages
+                            if message_type == 'progress':
+                                progress = data.get('progress', {})
+                                await websocket_manager.send_progress(document_id, progress)
+                            elif message_type == 'complete':
+                                result = data.get('result', {})
+                                await websocket_manager.send_complete(document_id, result)
+                            elif message_type == 'error':
+                                error = data.get('error', 'Unknown error')
+                                await websocket_manager.send_error(document_id, error)
+                            elif message_type == 'status':
+                                status = data.get('status', {})
+                                await websocket_manager.send_status(document_id, status)
+                            elif message_type == 'segment':
+                                segment = data.get('segment', {})
+                                await websocket_manager.send_segment(document_id, segment)
+                        elif channel.startswith('summarization_progress:') or channel == 'summarization_progress:*':
+                            # Forward summarization messages
+                            if message_type == 'progress':
+                                progress = data.get('progress', {})
+                                await websocket_manager.send_summarization_progress(document_id, progress)
+                            elif message_type == 'complete':
+                                result = data.get('result', {})
+                                await websocket_manager.send_summarization_complete(document_id, result)
+                            elif message_type == 'error':
+                                error = data.get('error', 'Unknown error')
+                                await websocket_manager.send_summarization_error(document_id, error)
+                            elif message_type == 'status':
+                                status = data.get('status', {})
+                                await websocket_manager.send_summarization_status(document_id, status)
+                        elif channel.startswith('ingestion_progress:') or channel == 'ingestion_progress:*':
+                            # Forward ingestion messages (admin sources)
+                            if message_type == 'progress':
+                                progress = data.get('progress', {})
+                                await websocket_manager.send_ingestion_progress(document_id, progress)
+                            elif message_type == 'complete':
+                                result = data.get('result', {})
+                                await websocket_manager.send_ingestion_complete(document_id, result)
+                            elif message_type == 'error':
+                                error = data.get('error', 'Unknown error')
+                                await websocket_manager.send_ingestion_error(document_id, error)
+                            elif message_type == 'status':
+                                status = data.get('status', {})
+                                await websocket_manager.send_ingestion_status(document_id, status)
                     except json.JSONDecodeError as e:
                         logger.warning(f"Failed to parse Redis message: {e}")
                     except Exception as e:

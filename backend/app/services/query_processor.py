@@ -175,11 +175,12 @@ class QueryProcessor:
 "{query}"
 
 Return only the variations, one per line, without numbering or bullets."""
-                
+
                 response = await llm_service.generate_response(
                     query=prompt,
                     context=None,
-                    conversation_history=None
+                    conversation_history=None,
+                    task_type="query_expansion",
                 )
                 
                 # Parse variations from response

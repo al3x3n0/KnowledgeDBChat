@@ -17,11 +17,17 @@ from sqlalchemy.orm import selectinload, noload
 from loguru import logger
 
 from app.models.document import Document, DocumentChunk, DocumentSource
+from app.models.persona import DocumentPersonaDetection
+from app.models.user import User
 from app.services.vector_store import VectorStoreService
 from app.services.text_processor import TextProcessor
 from app.services.storage_service import storage_service
 from app.core.config import settings
 from app.core.cache import cache_service
+from app.services.llm_service import LLMService
+from app.services.persona_service import persona_service
+import json
+import redis
 
 
 class DocumentService:
@@ -31,6 +37,7 @@ class DocumentService:
         self.vector_store = VectorStoreService()
         self.text_processor = TextProcessor()
         self._vector_store_initialized = False
+        self.llm = LLMService()
     
     async def _ensure_vector_store_initialized(self):
         """Ensure vector store is initialized."""
@@ -46,7 +53,10 @@ class DocumentService:
         source_id: Optional[UUID] = None,
         search: Optional[str] = None,
         order_by: Optional[str] = "updated_at",
-        order: Optional[str] = "desc"
+        order: Optional[str] = "desc",
+        owner_persona_id: Optional[UUID] = None,
+        persona_id: Optional[UUID] = None,
+        persona_role: Optional[str] = None,
     ) -> tuple[List[Document], int]:
         """
         Get paginated list of documents with total count.
@@ -81,6 +91,17 @@ class DocumentService:
                     Document.author.ilike(search_term)
                 )
             )
+
+        if owner_persona_id:
+            base_query = base_query.where(Document.owner_persona_id == owner_persona_id)
+
+        if persona_id or persona_role:
+            base_query = base_query.join(Document.persona_detections)
+            if persona_id:
+                base_query = base_query.where(DocumentPersonaDetection.persona_id == persona_id)
+            if persona_role:
+                base_query = base_query.where(DocumentPersonaDetection.role == persona_role)
+            base_query = base_query.distinct()
         
         # Get total count
         count_query = select(func.count()).select_from(base_query.subquery())
@@ -88,10 +109,12 @@ class DocumentService:
         total = total_result.scalar() or 0
         
         # Get paginated results with ordering
-        # Use noload for chunks to prevent lazy loading (chunks not needed in list view)
+        # Use noload for chunks and persona_detections to prevent lazy loading (not needed in list view)
         query = base_query.options(
             selectinload(Document.source),
-            noload(Document.chunks)
+            noload(Document.chunks),
+            noload(Document.persona_detections),
+            selectinload(Document.owner_persona),
         )
         
         # Apply ordering
@@ -137,7 +160,9 @@ class DocumentService:
             select(Document)
             .options(
                 selectinload(Document.source),
-                selectinload(Document.chunks)
+                selectinload(Document.chunks),
+                selectinload(Document.owner_persona),
+                selectinload(Document.persona_detections).selectinload(DocumentPersonaDetection.persona),
             )
             .where(Document.id == document_id)
         )
@@ -154,7 +179,8 @@ class DocumentService:
         file: UploadFile,
         db: AsyncSession,
         title: Optional[str] = None,
-        tags: Optional[List[str]] = None
+        tags: Optional[List[str]] = None,
+        owner_user: Optional[User] = None
     ) -> Document:
         """Upload and process a file."""
         try:
@@ -195,6 +221,10 @@ class DocumentService:
                         file_type = mime_type
                         break
             
+            owner_display_name = None
+            if owner_user:
+                owner_display_name = owner_user.full_name or owner_user.username or owner_user.email
+
             document = Document(
                 title=title or file.filename or "Uploaded Document",
                 content="",  # Will be filled after text extraction
@@ -204,6 +234,7 @@ class DocumentService:
                 file_size=len(content),
                 source_id=upload_source.id,
                 source_identifier=file.filename or f"upload_{content_hash[:8]}",
+                author=owner_display_name,
                 tags=tags,
                 extra_metadata={
                     "original_filename": file.filename,
@@ -215,6 +246,16 @@ class DocumentService:
             db.add(document)
             await db.commit()
             await db.refresh(document)
+
+            if owner_user:
+                await persona_service.assign_document_owner(
+                    db,
+                    document,
+                    user=owner_user,
+                    platform_scope="file-upload"
+                )
+                await db.commit()
+                await db.refresh(document)
             
             # Extract text content from temporary file
             # Save to temp file for text extraction (text processor needs file path)
@@ -283,8 +324,11 @@ class DocumentService:
                     # Regular document - extract text content
                     logger.info(f"Extracting text from regular document: {file.filename}")
                     try:
-                        text_content = await self.text_processor.extract_text(temp_file_path, file.content_type)
+                        text_content, extraction_metadata = await self.text_processor.extract_text(temp_file_path, file.content_type)
                         document.content = text_content
+                        if extraction_metadata:
+                            document.extra_metadata = document.extra_metadata or {}
+                            document.extra_metadata.update(extraction_metadata)
                         logger.info(f"Extracted {len(text_content)} characters from document")
                     except Exception as e:
                         logger.warning(f"Failed to extract text from {file.filename}: {e}. Continuing with empty content.")
@@ -412,6 +456,21 @@ class DocumentService:
             
             # Add to vector store
             await self.vector_store.add_document_chunks(document, document_chunks)
+
+            # Extract knowledge graph (entities and relations) from chunks
+            from app.core.feature_flags import get_flag as _get_flag
+            if await _get_flag("knowledge_graph_enabled"):
+                try:
+                    from app.services.knowledge_extraction import extractor as kg_extractor
+                    total_mentions, total_relations = 0, 0
+                    for ch in document_chunks:
+                        m, r = await kg_extractor.index_chunk(db, document, ch)
+                        total_mentions += m
+                        total_relations += r
+                    await db.commit()
+                    logger.info(f"KG extraction for document {document.id}: mentions={total_mentions}, relations={total_relations}")
+                except Exception as e:
+                    logger.warning(f"Knowledge extraction failed for document {document.id}: {e}")
             
             # Update document as processed
             document.is_processed = True
@@ -424,6 +483,15 @@ class DocumentService:
             await cache_service.set(cache_key, document, ttl=3600)
             
             logger.info(f"Processed document {document.id} with {len(document_chunks)} chunks")
+
+            # Optionally auto-summarize
+            if await _get_flag("summarization_enabled") and await _get_flag("auto_summarize_on_process"):
+                try:
+                    from app.tasks.summarization_tasks import summarize_document as _summ_task
+                    _summ_task.delay(str(document.id), False)
+                    logger.info(f"Scheduled auto-summarization for document {document.id}")
+                except Exception as _e:
+                    logger.warning(f"Failed to schedule auto-summarization for {document.id}: {_e}")
             
         except Exception as e:
             logger.error(f"Error processing document {document.id}: {e}")
@@ -555,6 +623,22 @@ class DocumentService:
             logger.error(f"Error deleting document {document_id}: {e}", exc_info=True)
             await db.rollback()
             return False
+
+    async def delete_documents_by_source(self, source_id: UUID, db: AsyncSession) -> int:
+        """Delete all documents for a specific source."""
+        result = await db.execute(
+            select(Document.id).where(Document.source_id == source_id)
+        )
+        document_ids = [row[0] for row in result.fetchall()]
+        deleted = 0
+        for doc_id in document_ids:
+            try:
+                success = await self.delete_document(doc_id, db)
+                if success:
+                    deleted += 1
+            except Exception as exc:
+                logger.warning(f"Failed to delete document {doc_id} for source {source_id}: {exc}")
+        return deleted
     
     async def reprocess_document(self, document_id: UUID, db: AsyncSession) -> bool:
         """Reprocess a document for indexing."""
@@ -587,6 +671,180 @@ class DocumentService:
         except Exception as e:
             logger.error(f"Error reprocessing document {document_id}: {e}")
             return False
+
+    async def summarize_document(self, document_id: UUID, db: AsyncSession, force: bool = False, model: Optional[str] = None) -> Optional[str]:
+        """Generate and store a summary for a document using the LLM.
+
+        Args:
+            document_id: UUID of document
+            db: session
+            force: if True, regenerates even if summary exists
+            model: optional model override
+
+        Returns:
+            The generated summary text, or None if document not found.
+        """
+        document = await self.get_document(document_id, db)
+        if not document:
+            return None
+        if document.summary and not force:
+            return document.summary
+        text = document.content or ""
+        if not text.strip():
+            # Fall back to concatenated chunks
+            if hasattr(document, 'chunks') and document.chunks:
+                text = "\n\n".join([c.content for c in document.chunks])
+
+        # Heuristics for heavy jobs and chunking
+        from app.core.config import settings as _settings
+        heavy_threshold = getattr(_settings, 'SUMMARIZATION_HEAVY_THRESHOLD_CHARS', 30000)
+        prefer_deepseek = bool(getattr(_settings, 'DEEPSEEK_API_KEY', None)) and len(text) > heavy_threshold
+
+        chunk_size = getattr(_settings, 'SUMMARIZATION_CHUNK_SIZE_CHARS', 12000)
+        chunk_overlap = getattr(_settings, 'SUMMARIZATION_CHUNK_OVERLAP_CHARS', 800)
+
+        def _chunk_text(t: str) -> List[str]:
+            if len(t) <= chunk_size:
+                return [t]
+            chunks: List[str] = []
+            start = 0
+            while start < len(t):
+                end = min(len(t), start + chunk_size)
+                chunk = t[start:end]
+                chunks.append(chunk)
+                if end == len(t):
+                    break
+                start = max(end - chunk_overlap, start + 1)
+            return chunks
+
+        chunks = _chunk_text(text)
+
+        system = (
+            "Summarize the text with: (1) a 3-5 sentence abstract, "
+            "(2) 5-10 bullet key takeaways, and (3) any dates or action items."
+        )
+
+        # Helper to publish summarization progress to Redis (for WebSocket bridge)
+        def _publish_sum_progress(progress: dict):
+            try:
+                client = redis.from_url(settings.REDIS_URL, decode_responses=True)
+                channel = f"summarization_progress:{str(document_id)}"
+                msg = json.dumps({
+                    "type": "progress",
+                    "document_id": str(document_id),
+                    "progress": progress,
+                })
+                client.publish(channel, msg)
+            except Exception as e:
+                logger.debug(f"Failed to publish summarization progress to Redis: {e}")
+
+        # Track which model was actually used
+        actual_model_used = None
+        
+        # Helper function to generate response with fallback to local model
+        async def _generate_with_fallback(query: str, max_tokens: int, use_deepseek: bool = False) -> str:
+            """Generate response, falling back to local model if remote fails."""
+            nonlocal actual_model_used
+            first_error = None
+            try:
+                result = await self.llm.generate_response(
+                    query=query,
+                    context=None,
+                    model=model or None,
+                    temperature=0.2,
+                    max_tokens=max_tokens,
+                    prefer_deepseek=use_deepseek,
+                    task_type="summarization",
+                )
+                if use_deepseek:
+                    actual_model_used = getattr(_settings, 'DEEPSEEK_MODEL', 'deepseek-chat')
+                else:
+                    actual_model_used = model or self.llm.default_model
+                return result
+            except Exception as e:
+                first_error = e
+                if use_deepseek:
+                    # If DeepSeek failed, try with local model (Ollama)
+                    logger.warning(f"Remote model (DeepSeek) failed: {e}. Falling back to local model (Ollama).")
+                    try:
+                        result = await self.llm.generate_response(
+                            query=query,
+                            context=None,
+                            model=model or None,
+                            temperature=0.2,
+                            max_tokens=max_tokens,
+                            prefer_deepseek=False,  # Force local model
+                            task_type="summarization",
+                        )
+                        actual_model_used = model or self.llm.default_model
+                        logger.info(f"Successfully used local model (Ollama) after DeepSeek failure")
+                        return result
+                    except Exception as local_error:
+                        error_msg = (
+                            f"Both remote (DeepSeek) and local (Ollama) models failed. "
+                            f"Remote error: {str(first_error)}. "
+                            f"Local error: {str(local_error)}. "
+                            f"Please ensure Ollama is running and accessible at {self.llm.base_url}"
+                        )
+                        logger.error(error_msg)
+                        from app.utils.exceptions import LLMServiceError
+                        raise LLMServiceError(error_msg) from local_error
+                else:
+                    # Already using local model, provide helpful error message
+                    error_msg = (
+                        f"Local model (Ollama) failed: {str(e)}. "
+                        f"Please ensure Ollama is running and accessible at {self.llm.base_url}"
+                    )
+                    logger.error(error_msg)
+                    from app.utils.exceptions import LLMServiceError
+                    raise LLMServiceError(error_msg) from e
+
+        if len(chunks) == 1:
+            query = f"{system}\n\nDocument:\n{chunks[0]}"
+            summary = await _generate_with_fallback(query, max_tokens=800, use_deepseek=prefer_deepseek)
+        else:
+            # Summarize each chunk first
+            chunk_summaries: List[str] = []
+            for i, ch in enumerate(chunks, 1):
+                q = f"{system}\n\nChunk {i}/{len(chunks)}:\n{ch}"
+                s = await _generate_with_fallback(q, max_tokens=600, use_deepseek=prefer_deepseek)
+                chunk_summaries.append(s)
+                # Publish incremental progress (up to 90%)
+                pct = int((i / max(1, len(chunks))) * 90)
+                _publish_sum_progress({
+                    "stage": "chunk",
+                    "current_chunk": i,
+                    "total_chunks": len(chunks),
+                    "progress": pct,
+                })
+
+            # Combine chunk summaries into a final cohesive summary
+            combine_prompt = (
+                "You are synthesizing a final document summary from chunk summaries.\n"
+                "Combine, deduplicate, and produce: (1) a cohesive abstract;"
+                " (2) 7-12 bullet key takeaways grouped by theme;"
+                " (3) important dates/action items. Keep under 600 words.\n\n"
+                "Chunk summaries:\n" + "\n\n---\n\n".join(chunk_summaries)
+            )
+            _publish_sum_progress({
+                "stage": "combining",
+                "progress": 95,
+            })
+            summary = await _generate_with_fallback(combine_prompt, max_tokens=1000, use_deepseek=prefer_deepseek)
+
+        # Track which model was actually used (will be set by the fallback function)
+        from datetime import datetime as _dt
+        document.summary = summary
+        # Set the model that was actually used (may differ from preferred if fallback occurred)
+        document.summary_model = actual_model_used or (
+            getattr(_settings, 'DEEPSEEK_MODEL', 'deepseek-chat') if prefer_deepseek and bool(getattr(_settings, 'DEEPSEEK_API_KEY', None))
+            else (model or self.llm.default_model)
+        )
+        document.summary_generated_at = _dt.utcnow()
+        await db.commit()
+        # Invalidate cache so next fetch includes summary
+        await cache_service.delete(f"document:{document_id}")
+        return summary
     
     # Document Source methods
     async def get_document_sources(self, db: AsyncSession) -> List[DocumentSource]:
@@ -681,4 +939,3 @@ class DocumentService:
         
         logger.info(f"Triggered sync for document source: {source_id}")
         return True
-

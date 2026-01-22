@@ -9,7 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.database import AsyncSessionLocal
+from app.core.database import create_celery_session
 from app.models.document import Document
 from app.services.document_service import DocumentService
 
@@ -30,7 +30,7 @@ def process_document(self, document_id: str) -> Dict[str, Any]:
 
 async def _async_process_document(task, document_id: str) -> Dict[str, Any]:
     """Async implementation of document processing."""
-    async with AsyncSessionLocal() as db:
+    async with create_celery_session()() as db:
         try:
             logger.info(f"Starting processing of document {document_id}")
             
@@ -142,7 +142,7 @@ def reprocess_document(self, document_id: str) -> Dict[str, Any]:
 
 async def _async_reprocess_document(task, document_id: str) -> Dict[str, Any]:
     """Async implementation of document reprocessing."""
-    async with AsyncSessionLocal() as db:
+    async with create_celery_session()() as db:
         try:
             logger.info(f"Starting reprocessing of document {document_id}")
             

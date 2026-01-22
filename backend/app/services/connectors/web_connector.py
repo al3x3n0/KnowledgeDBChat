@@ -304,8 +304,8 @@ class WebConnector(BaseConnector):
                 try:
                     from email.utils import parsedate_to_datetime
                     last_modified = parsedate_to_datetime(last_modified_header)
-                except:
-                    pass
+                except (TypeError, ValueError):
+                    pass  # Invalid date format, use None
             
             # Generate URL hash as identifier
             url_hash = hashlib.md5(url.encode()).hexdigest()
@@ -385,6 +385,7 @@ class WebConnector(BaseConnector):
         """Clean up the HTTP client."""
         if self.client:
             await self.client.aclose()
+
 
 
 

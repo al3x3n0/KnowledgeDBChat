@@ -20,7 +20,7 @@ class LoggingMiddleware(BaseHTTPMiddleware):
         correlation_id = set_correlation_id()
         
         # Log request
-        log_request(request, request.method, request.url.path)
+        log_request(request, request.method, request.url.path, correlation_id=correlation_id)
         
         # Process request
         start_time = time.time()
@@ -65,4 +65,3 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
             response.headers["X-Correlation-ID"] = correlation_id
         
         return response
-

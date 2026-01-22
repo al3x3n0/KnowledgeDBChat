@@ -136,7 +136,8 @@ Provide a concise summary that captures the essential information:"""
                 compressed = await llm_service.generate_response(
                     query=summary_prompt,
                     context=None,
-                    conversation_history=None
+                    conversation_history=None,
+                    prefer_deepseek=True  # Route heavy compression to external provider if available
                 )
                 
                 compressed_tokens = self.estimate_tokens(compressed)
@@ -242,3 +243,120 @@ Provide a concise summary that captures the essential information:"""
             "max_score": max(scores) if scores else 0.0
         }
 
+    def build_kg_context(
+        self,
+        entities: List[Any],
+        relationships: List[Any],
+        max_entities: Optional[int] = None,
+        max_relationships: Optional[int] = None
+    ) -> str:
+        """
+        Build knowledge graph context string for LLM prompt.
+
+        Creates a structured text representation of entities and their
+        relationships to inject into the chat context.
+
+        Args:
+            entities: List of Entity objects from knowledge graph
+            relationships: List of Relationship objects
+            max_entities: Maximum entities to include (uses config if None)
+            max_relationships: Maximum relationships to include
+
+        Returns:
+            Formatted knowledge graph context string
+        """
+        if not entities:
+            return ""
+
+        max_entities = max_entities or settings.RAG_KG_MAX_ENTITIES
+        max_relationships = max_relationships or settings.RAG_KG_MAX_RELATIONSHIPS
+
+        parts = ["\n--- Knowledge Graph Context ---"]
+
+        # Build entity map for quick lookup
+        entity_map = {}
+        for e in entities[:max_entities]:
+            entity_map[str(e.id)] = e
+            entity_info = f"• {e.canonical_name} ({e.entity_type})"
+            if hasattr(e, 'description') and e.description:
+                entity_info += f": {e.description[:100]}"
+            parts.append(entity_info)
+
+        # Add relationships section if present
+        if relationships:
+            parts.append("\nRelationships:")
+            rel_count = 0
+            for r in relationships:
+                if rel_count >= max_relationships:
+                    break
+
+                # Get entity names from map or use IDs
+                source_id = str(r.source_entity_id)
+                target_id = str(r.target_entity_id)
+
+                source_name = entity_map.get(source_id)
+                target_name = entity_map.get(target_id)
+
+                if source_name:
+                    source_name = source_name.canonical_name
+                else:
+                    source_name = f"[Entity:{source_id[:8]}]"
+
+                if target_name:
+                    target_name = target_name.canonical_name
+                else:
+                    target_name = f"[Entity:{target_id[:8]}]"
+
+                rel_line = f"  {source_name} --[{r.relation_type}]--> {target_name}"
+                if hasattr(r, 'confidence') and r.confidence:
+                    rel_line += f" (confidence: {r.confidence:.2f})"
+                parts.append(rel_line)
+                rel_count += 1
+
+        kg_context = "\n".join(parts)
+        logger.debug(f"Built KG context with {len(entities)} entities, {len(relationships)} relationships")
+        return kg_context
+
+    def extract_entity_names_from_results(
+        self,
+        results: List[Dict[str, Any]]
+    ) -> List[str]:
+        """
+        Extract potential entity names from search results.
+
+        Looks for capitalized phrases and proper nouns that might be entity names.
+
+        Args:
+            results: List of search results
+
+        Returns:
+            List of potential entity names
+        """
+        import re
+
+        entity_names = set()
+
+        for result in results:
+            content = result.get("content", result.get("page_content", ""))
+            if not content:
+                continue
+
+            # Find capitalized phrases (potential names)
+            # Pattern: Two or more capitalized words together
+            pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
+            matches = re.findall(pattern, content)
+            for match in matches:
+                if len(match) > 3:  # Filter out very short matches
+                    entity_names.add(match)
+
+            # Also get metadata entities if present
+            metadata = result.get("metadata", {})
+            if "entities" in metadata:
+                for ent in metadata["entities"]:
+                    if isinstance(ent, str):
+                        entity_names.add(ent)
+                    elif isinstance(ent, dict) and "name" in ent:
+                        entity_names.add(ent["name"])
+
+        # Return as sorted list, limited
+        return sorted(list(entity_names))[:50]

@@ -9,9 +9,11 @@ from sqlalchemy import select
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.database import AsyncSessionLocal
+from app.core.database import create_celery_session
 from app.models.document import DocumentSource
 from app.tasks.ingestion_tasks import ingest_from_source
+from app.core.cache import cache_service
+from croniter import croniter
 
 
 @celery_app.task(name="app.tasks.sync_tasks.sync_all_gitlab_sources")
@@ -40,7 +42,7 @@ def sync_all_sources() -> Dict[str, Any]:
 
 async def _async_sync_sources_by_type(source_type: str) -> Dict[str, Any]:
     """Sync all sources of a specific type."""
-    async with AsyncSessionLocal() as db:
+    async with create_celery_session()() as db:
         try:
             # Get all active sources of the specified type
             result = await db.execute(
@@ -114,7 +116,7 @@ async def _async_sync_sources_by_type(source_type: str) -> Dict[str, Any]:
 
 async def _async_sync_all_sources() -> Dict[str, Any]:
     """Sync all active document sources."""
-    async with AsyncSessionLocal() as db:
+    async with create_celery_session()() as db:
         try:
             # Get all active sources
             result = await db.execute(
@@ -186,6 +188,68 @@ async def _async_sync_all_sources() -> Dict[str, Any]:
                 "success": False
             }
 
+
+@celery_app.task(name="app.tasks.sync_tasks.scan_scheduled_sources")
+def scan_scheduled_sources() -> Dict[str, Any]:
+    """Scan sources for auto-sync scheduling and trigger ingestion as needed."""
+    return asyncio.run(_async_scan_scheduled_sources())
+
+
+async def _async_scan_scheduled_sources() -> Dict[str, Any]:
+    async with create_celery_session()() as db:
+        try:
+            result = await db.execute(select(DocumentSource).where(DocumentSource.is_active == True))
+            sources = result.scalars().all()
+            triggered = []
+            from datetime import datetime, timedelta
+            now = datetime.utcnow()
+            for src in sources:
+                try:
+                    cfg = src.config or {}
+                    auto = bool(cfg.get('auto_sync', False))
+                    interval_min = int(cfg.get('sync_interval_minutes', 0) or 0)
+                    cron_expr = cfg.get('cron')
+                    if not auto:
+                        continue
+                    if getattr(src, 'is_syncing', False):
+                        continue
+                    last = src.last_sync
+                    due = False
+                    # Interval-based due
+                    if interval_min and interval_min > 0:
+                        due = (last is None) or (now - last >= timedelta(minutes=interval_min))
+                    # Cron-based due
+                    if cron_expr:
+                        try:
+                            it = croniter(cron_expr, now)
+                            last_sched = it.get_prev(datetime)
+                            if last is None or last < last_sched:
+                                due = True
+                        except Exception as ce:
+                            logger.warning(f"Invalid cron for source {getattr(src,'name','?')}: {cron_expr} ({ce})")
+                    if not due:
+                        continue
+                    # Trigger ingestion
+                    # Respect sync_only_changed flag to optionally force full
+                    try:
+                        sync_only_changed = bool(cfg.get('sync_only_changed', True))
+                        if not sync_only_changed:
+                            await cache_service.set(f"ingestion:force_full:{src.id}", 1, ttl=600)
+                    except Exception:
+                        pass
+                    task_res = ingest_from_source.delay(str(src.id))
+                    try:
+                        await cache_service.set(f"ingestion:task:{src.id}", task_res.id, ttl=3600)
+                    except Exception:
+                        pass
+                    triggered.append({"source_id": str(src.id), "task_id": task_res.id})
+                except Exception as e:
+                    logger.warning(f"Auto-sync check failed for source {getattr(src,'name','?')}: {e}")
+                    continue
+            return {"triggered": triggered, "count": len(triggered), "success": True}
+        except Exception as e:
+            logger.error(f"Scheduled scan failed: {e}")
+            return {"success": False, "error": str(e)}
 
 
 

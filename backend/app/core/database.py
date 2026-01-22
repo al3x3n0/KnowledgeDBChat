@@ -2,7 +2,7 @@
 Database configuration and connection management.
 """
 
-from sqlalchemy import create_engine, MetaData
+from sqlalchemy import create_engine, MetaData, text
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
@@ -62,11 +62,14 @@ async def create_tables():
     try:
         async with engine.begin() as conn:
             # Import all models to ensure they're registered
-            from app.models import document, chat, user, upload_session
+            from app.models import document, chat, user, upload_session, knowledge_graph
             
             # Create all tables
             await conn.run_sync(Base.metadata.create_all)
             logger.info("Database tables created successfully")
+
+            # Apply lightweight migrations for columns added after initial release
+            await _apply_minimal_migrations(conn)
     except Exception as e:
         logger.error(f"Error creating database tables: {e}")
         raise
@@ -83,6 +86,50 @@ async def drop_tables():
         raise
 
 
+def create_celery_session():
+    """
+    Create a fresh async session for Celery tasks.
+
+    Celery workers fork from the main process, and the global engine's connection pool
+    is bound to the parent's event loop. When asyncio.run() creates a new event loop
+    in the worker, the old engine is incompatible, causing "Future attached to a
+    different loop" errors.
+
+    This function creates a fresh engine and session factory for each task invocation.
+
+    Returns:
+        AsyncSession factory (sessionmaker instance)
+    """
+    fresh_engine = create_async_engine(
+        async_database_url,
+        echo=settings.DEBUG,
+        pool_pre_ping=True,
+        pool_recycle=300,
+    )
+    return sessionmaker(
+        fresh_engine,
+        class_=AsyncSession,
+        expire_on_commit=False,
+    )
+
+
+async def _apply_minimal_migrations(conn) -> None:
+    """
+    Apply idempotent schema updates that are safe to run on every startup.
+    This supplements Alembic for environments that only rely on create_all.
+    """
+    statements = [
+        # Document summarization columns (introduced after initial schema)
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS summary TEXT",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS summary_model VARCHAR(100)",
+        "ALTER TABLE documents ADD COLUMN IF NOT EXISTS summary_generated_at TIMESTAMPTZ",
+    ]
+
+    for stmt in statements:
+        try:
+            await conn.execute(text(stmt))
+        except Exception as exc:
+            logger.warning(f"Minimal migration statement failed ({stmt}): {exc}")
 
 
 

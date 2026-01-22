@@ -48,7 +48,19 @@ class User(Base):
     # Relationships
     chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
     memories = relationship("ConversationMemory", back_populates="user", cascade="all, delete-orphan")
+    personas = relationship("Persona", back_populates="user", cascade="all, delete-orphan")
     preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan", uselist=False)
+    persona_edit_requests = relationship("PersonaEditRequest", back_populates="requested_by_user", passive_deletes=True)
+    agent_conversations = relationship("AgentConversation", back_populates="user", cascade="all, delete-orphan")
+
+    # Workflow relationships
+    custom_tools = relationship("UserTool", back_populates="user", cascade="all, delete-orphan")
+    workflows = relationship("Workflow", back_populates="user", cascade="all, delete-orphan")
+    workflow_executions = relationship("WorkflowExecution", back_populates="user", cascade="all, delete-orphan")
+
+    # Presentation relationships
+    presentation_jobs = relationship("PresentationJob", back_populates="user", cascade="all, delete-orphan")
+    presentation_templates = relationship("PresentationTemplate", back_populates="user", cascade="all, delete-orphan")
     
     def __repr__(self):
         return f"<User(id={self.id}, username='{self.username}', email='{self.email}')>"

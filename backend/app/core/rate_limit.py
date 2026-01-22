@@ -6,10 +6,9 @@ from slowapi import Limiter
 from slowapi.util import get_remote_address
 from slowapi.errors import RateLimitExceeded
 from fastapi import Request
+from jose import JWTError, jwt
 
-# Create limiter instance
-limiter = Limiter(key_func=get_remote_address)
-
+from app.core.config import settings
 
 def get_user_identifier(request: Request) -> str:
     """
@@ -17,11 +16,29 @@ def get_user_identifier(request: Request) -> str:
     Uses user ID if authenticated, otherwise uses IP address.
     """
     # Try to get user from request state (set by auth middleware)
-    if hasattr(request.state, 'user') and request.state.user:
+    if hasattr(request.state, "user") and request.state.user:
         return f"user:{request.state.user.id}"
+
+    auth_header = request.headers.get("authorization")
+    if auth_header and auth_header.lower().startswith("bearer "):
+        token = auth_header.split(" ", 1)[1].strip()
+        try:
+            payload = jwt.decode(
+                token,
+                settings.SECRET_KEY,
+                algorithms=[settings.ALGORITHM]
+            )
+            if payload.get("type") == "access" and payload.get("sub"):
+                return f"user:{payload['sub']}"
+        except JWTError:
+            pass
     
     # Fall back to IP address
     return get_remote_address(request)
+
+
+# Create limiter instance
+limiter = Limiter(key_func=get_user_identifier)
 
 
 # Rate limit configurations
@@ -58,4 +75,3 @@ def get_rate_limit_for_endpoint(path: str) -> str:
         return ADMIN_LIMIT
     else:
         return DEFAULT_LIMIT
-

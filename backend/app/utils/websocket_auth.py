@@ -79,21 +79,24 @@ async def authenticate_websocket(
 async def require_websocket_auth(websocket: WebSocket) -> User:
     """
     Require WebSocket authentication, reject connection if not authenticated.
-    
+
     Args:
         websocket: WebSocket connection
-        
+
     Returns:
         Authenticated User object
-        
+
     Raises:
         WebSocketDisconnect: If authentication fails
     """
+    # Must accept the WebSocket connection before doing anything else in ASGI
+    await websocket.accept()
+
     user = await authenticate_websocket(websocket)
-    
+
     if user is None:
         await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
         raise WebSocketDisconnect(code=1008, reason="Authentication required")
-    
+
     return user
 

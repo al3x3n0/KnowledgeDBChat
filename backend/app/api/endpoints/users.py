@@ -8,15 +8,56 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from loguru import logger
+from pydantic import BaseModel, Field
 
 from app.core.database import get_db
 from app.models.user import User
+from app.models.memory import UserPreferences
 from app.services.auth_service import get_current_user, require_admin, auth_service
 from app.schemas.auth import UserResponse, PasswordChange
+from app.schemas.memory import UserPreferencesResponse, UserPreferencesUpdate
 from app.schemas.common import PaginatedResponse
 from app.utils.exceptions import ValidationError
 from app.core.logging import log_error
-from sqlalchemy import select, func
+
+
+# Supported task types for per-task model configuration
+LLM_TASK_TYPES = [
+    "chat",
+    "title_generation",
+    "summarization",
+    "query_expansion",
+    "memory_extraction",
+    "workflow_synthesis",
+]
+
+
+class LLMSettingsUpdate(BaseModel):
+    """Schema for updating only LLM settings."""
+    llm_provider: Optional[str] = Field(None, description="LLM provider: ollama, deepseek, openai, or custom URL")
+    llm_model: Optional[str] = Field(None, description="Default model name (used for chat)")
+    llm_api_url: Optional[str] = Field(None, description="Custom API URL override")
+    llm_api_key: Optional[str] = Field(None, description="API key for external providers")
+    llm_temperature: Optional[float] = Field(None, ge=0.0, le=2.0, description="Temperature (0.0-2.0)")
+    llm_max_tokens: Optional[int] = Field(None, ge=1, le=32000, description="Max response tokens")
+    llm_task_models: Optional[dict] = Field(
+        None,
+        description="Per-task model overrides: {task_type: model_name}"
+    )
+
+
+class LLMSettingsResponse(BaseModel):
+    """Schema for LLM settings response."""
+    llm_provider: Optional[str] = None
+    llm_model: Optional[str] = None
+    llm_api_url: Optional[str] = None
+    llm_api_key_set: bool = False  # Don't return the actual key, just whether it's set
+    llm_temperature: Optional[float] = None
+    llm_max_tokens: Optional[int] = None
+    llm_task_models: Optional[dict] = None  # Per-task model overrides
+
+    class Config:
+        from_attributes = True
 
 router = APIRouter()
 
@@ -114,3 +155,158 @@ async def change_password(
     except Exception as e:
         logger.error(f"Error changing password: {e}")
         raise HTTPException(status_code=500, detail="Failed to change password")
+
+
+@router.get("/me/preferences", response_model=UserPreferencesResponse)
+async def get_my_preferences(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get current user's preferences."""
+    try:
+        result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
+        preferences = result.scalar_one_or_none()
+
+        if not preferences:
+            # Create default preferences if they don't exist
+            preferences = UserPreferences(user_id=current_user.id)
+            db.add(preferences)
+            await db.commit()
+            await db.refresh(preferences)
+
+        return preferences
+    except Exception as e:
+        logger.error(f"Error getting preferences: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get preferences")
+
+
+@router.put("/me/preferences", response_model=UserPreferencesResponse)
+async def update_my_preferences(
+    updates: UserPreferencesUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update current user's preferences."""
+    try:
+        result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
+        preferences = result.scalar_one_or_none()
+
+        if not preferences:
+            # Create preferences if they don't exist
+            preferences = UserPreferences(user_id=current_user.id)
+            db.add(preferences)
+
+        # Update only provided fields
+        update_data = updates.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(preferences, field, value)
+
+        await db.commit()
+        await db.refresh(preferences)
+
+        return preferences
+    except Exception as e:
+        logger.error(f"Error updating preferences: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update preferences")
+
+
+@router.get("/me/llm-settings", response_model=LLMSettingsResponse)
+async def get_my_llm_settings(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Get current user's LLM settings."""
+    try:
+        result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
+        preferences = result.scalar_one_or_none()
+
+        if not preferences:
+            # Return defaults (all None)
+            return LLMSettingsResponse()
+
+        return LLMSettingsResponse(
+            llm_provider=preferences.llm_provider,
+            llm_model=preferences.llm_model,
+            llm_api_url=preferences.llm_api_url,
+            llm_api_key_set=bool(preferences.llm_api_key),
+            llm_temperature=preferences.llm_temperature,
+            llm_max_tokens=preferences.llm_max_tokens,
+            llm_task_models=preferences.llm_task_models,
+        )
+    except Exception as e:
+        logger.error(f"Error getting LLM settings: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get LLM settings")
+
+
+@router.put("/me/llm-settings", response_model=LLMSettingsResponse)
+async def update_my_llm_settings(
+    updates: LLMSettingsUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Update current user's LLM settings."""
+    try:
+        result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
+        preferences = result.scalar_one_or_none()
+
+        if not preferences:
+            # Create preferences if they don't exist
+            preferences = UserPreferences(user_id=current_user.id)
+            db.add(preferences)
+
+        # Update only provided fields
+        update_data = updates.model_dump(exclude_unset=True)
+        for field, value in update_data.items():
+            setattr(preferences, field, value)
+
+        await db.commit()
+        await db.refresh(preferences)
+
+        return LLMSettingsResponse(
+            llm_provider=preferences.llm_provider,
+            llm_model=preferences.llm_model,
+            llm_api_url=preferences.llm_api_url,
+            llm_api_key_set=bool(preferences.llm_api_key),
+            llm_temperature=preferences.llm_temperature,
+            llm_max_tokens=preferences.llm_max_tokens,
+            llm_task_models=preferences.llm_task_models,
+        )
+    except Exception as e:
+        logger.error(f"Error updating LLM settings: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update LLM settings")
+
+
+@router.delete("/me/llm-settings")
+async def clear_my_llm_settings(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """Clear current user's LLM settings (revert to system defaults)."""
+    try:
+        result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
+        preferences = result.scalar_one_or_none()
+
+        if preferences:
+            preferences.llm_provider = None
+            preferences.llm_model = None
+            preferences.llm_api_url = None
+            preferences.llm_api_key = None
+            preferences.llm_temperature = None
+            preferences.llm_max_tokens = None
+            preferences.llm_task_models = None
+            await db.commit()
+
+        return {"message": "LLM settings cleared, using system defaults"}
+    except Exception as e:
+        logger.error(f"Error clearing LLM settings: {e}")
+        raise HTTPException(status_code=500, detail="Failed to clear LLM settings")

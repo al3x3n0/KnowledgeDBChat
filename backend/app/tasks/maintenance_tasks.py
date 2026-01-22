@@ -11,7 +11,7 @@ from sqlalchemy import select, and_
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.database import AsyncSessionLocal
+from app.core.database import create_celery_session
 from app.models.chat import ChatSession
 
 
@@ -53,7 +53,7 @@ async def _async_cleanup_old_data() -> Dict[str, Any]:
                             cleanup_results["errors"].append(f"Failed to delete {filename}: {str(e)}")
         
         # Clean up old chat sessions (older than 1 year, inactive)
-        async with AsyncSessionLocal() as db:
+        async with create_celery_session()() as db:
             cutoff_date = datetime.utcnow() - timedelta(days=365)
             
             old_sessions_result = await db.execute(

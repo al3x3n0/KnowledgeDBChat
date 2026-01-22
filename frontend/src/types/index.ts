@@ -49,6 +49,79 @@ export interface SourceDocument {
   source: string;
   url?: string;
   download_url?: string;
+  chunk_id?: string;
+  chunk_index?: number;
+  snippet?: string;
+}
+
+export interface Persona {
+  id: string;
+  name: string;
+  platform_id?: string | null;
+  user_id?: string | null;
+  avatar_url?: string | null;
+  description?: string | null;
+  extra_metadata?: Record<string, any> | null;
+  is_active?: boolean;
+  is_system?: boolean;
+  created_at?: string;
+  updated_at?: string;
+}
+
+export interface DocumentPersonaDetection {
+  id: string;
+  persona_id: string;
+  role: string;
+  detection_type?: string | null;
+  confidence?: number | null;
+  start_time?: number | null;
+  end_time?: number | null;
+  details?: Record<string, any> | null;
+  created_at: string;
+  persona: Persona;
+}
+
+// Agent definitions for multi-agent system
+export interface AgentDefinition {
+  id: string;
+  name: string;
+  display_name: string;
+  description?: string | null;
+  system_prompt: string;
+  capabilities: string[];
+  tool_whitelist?: string[] | null;
+  priority: number;
+  is_active: boolean;
+  is_system: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentDefinitionCreate {
+  name: string;
+  display_name: string;
+  description?: string | null;
+  system_prompt: string;
+  capabilities: string[];
+  tool_whitelist?: string[] | null;
+  priority?: number;
+  is_active?: boolean;
+}
+
+export interface AgentDefinitionUpdate {
+  display_name?: string;
+  description?: string | null;
+  system_prompt?: string;
+  capabilities?: string[];
+  tool_whitelist?: string[] | null;
+  priority?: number;
+  is_active?: boolean;
+}
+
+export interface CapabilityInfo {
+  name: string;
+  description: string;
+  keywords: string[];
 }
 
 export interface Document {
@@ -72,23 +145,69 @@ export interface Document {
   };
   is_processed: boolean;
   processing_error?: string;
+  summary?: string;
+  summary_model?: string;
+  summary_generated_at?: string;
   created_at: string;
   updated_at: string;
   last_modified?: string;
   source: DocumentSource;
   chunks?: DocumentChunk[];
   download_url?: string;
+  owner_persona?: Persona | null;
+  persona_detections?: DocumentPersonaDetection[];
 }
 
 export interface DocumentSource {
   id: string;
   name: string;
-  source_type: 'gitlab' | 'confluence' | 'web' | 'file';
+  source_type: 'gitlab' | 'github' | 'confluence' | 'web' | 'file';
   config: any;
   is_active: boolean;
+  is_syncing?: boolean;
   last_sync?: string;
+  last_error?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface ActiveGitSource {
+  source: DocumentSource;
+  pending: boolean;
+  task_id?: string;
+}
+
+export interface GitBranch {
+  repository: string;
+  name: string;
+  commit_sha?: string;
+  commit_message?: string;
+  commit_author?: string;
+  commit_date?: string;
+  protected?: boolean;
+}
+
+export type GitCompareStatus =
+  | 'queued'
+  | 'running'
+  | 'completed'
+  | 'failed'
+  | 'cancel_requested'
+  | 'canceled';
+
+export interface GitCompareJob {
+  id: string;
+  source_id: string;
+  repository: string;
+  base_branch: string;
+  compare_branch: string;
+  status: GitCompareStatus;
+  diff_summary?: Record<string, any>;
+  llm_summary?: string;
+  error?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
 }
 
 export interface DocumentChunk {
@@ -130,6 +249,7 @@ export interface DocumentStats {
   failed: number;
   pending: number;
   success_rate: number;
+  without_summary?: number;
 }
 
 export interface ChatStats {
@@ -201,4 +321,319 @@ export interface MemorySummary {
   time_range: string;
 }
 
+// Template Types
+export interface TemplateSection {
+  title: string;
+  level: number;
+  placeholder_text?: string;
+}
 
+export type TemplateJobStatus = 'pending' | 'analyzing' | 'extracting' | 'filling' | 'completed' | 'failed';
+
+export interface TemplateJob {
+  id: string;
+  template_filename: string;
+  sections?: TemplateSection[];
+  source_document_ids: string[];
+  status: TemplateJobStatus;
+  progress: number;
+  current_section?: string;
+  filled_filename?: string;
+  error_message?: string;
+  created_at: string;
+  updated_at: string;
+  completed_at?: string;
+  download_url?: string;
+}
+
+export interface TemplateJobListResponse {
+  jobs: TemplateJob[];
+  total: number;
+}
+
+export interface TemplateProgressUpdate {
+  type: 'progress' | 'complete' | 'error';
+  job_id: string;
+  data?: {
+    stage?: string;
+    progress?: number;
+    current_section?: string;
+    section_index?: number;
+    total_sections?: number;
+    filled_filename?: string;
+  };
+  error?: string;
+  result?: {
+    filled_filename?: string;
+    filled_file_path?: string;
+  };
+}
+
+// DOCX Editor types
+export interface DocxEditResponse {
+  html_content: string;
+  document_title: string;
+  document_id: string;
+  version: string;
+  editable: boolean;
+  warnings?: string[];
+}
+
+export interface DocxEditRequest {
+  html_content: string;
+  version: string;
+  create_backup?: boolean;
+}
+
+export interface DocxSaveResponse {
+  success: boolean;
+  document_id: string;
+  new_version: string;
+  message: string;
+  backup_path?: string;
+}
+
+// Presentation Types
+export type PresentationStatus = 'pending' | 'generating' | 'completed' | 'failed' | 'cancelled';
+export type PresentationStyle = 'professional' | 'casual' | 'technical' | 'modern' | 'minimal' | 'corporate' | 'creative' | 'dark';
+
+export interface ThemeColors {
+  title_color: string;
+  accent_color: string;
+  text_color: string;
+  bg_color: string;
+}
+
+export interface ThemeFonts {
+  title_font: string;
+  body_font: string;
+}
+
+export interface ThemeSizes {
+  title_size: number;
+  subtitle_size: number;
+  heading_size: number;
+  body_size: number;
+  bullet_size: number;
+}
+
+export interface ThemeConfig {
+  colors: ThemeColors;
+  fonts: ThemeFonts;
+  sizes: ThemeSizes;
+}
+
+export interface PresentationTemplate {
+  id: string;
+  user_id?: string;
+  name: string;
+  description?: string;
+  template_type: 'theme' | 'pptx';
+  theme_config?: ThemeConfig;
+  preview_url?: string;
+  is_system: boolean;
+  is_public: boolean;
+  is_active: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface PresentationSlideContent {
+  slide_number: number;
+  slide_type: 'title' | 'content' | 'diagram' | 'summary' | 'two_column';
+  title: string;
+  content: string[];
+  subtitle?: string;
+  diagram_code?: string;
+  diagram_description?: string;
+  notes?: string;
+}
+
+export interface PresentationOutline {
+  title: string;
+  subtitle?: string;
+  slides: PresentationSlideContent[];
+}
+
+export interface PresentationJob {
+  id: string;
+  user_id: string;
+  title: string;
+  topic: string;
+  source_document_ids: string[];
+  slide_count: number;
+  style: PresentationStyle;
+  include_diagrams: boolean;
+  status: PresentationStatus;
+  progress: number;
+  current_stage?: string;
+  generated_outline?: PresentationOutline;
+  file_path?: string;
+  file_size?: number;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+  download_url?: string;
+}
+
+export interface PresentationProgressUpdate {
+  type: 'progress';
+  progress: number;
+  stage: string;
+  status: PresentationStatus;
+  error?: string;
+}
+
+// Knowledge Graph Relationship Types
+export interface KGRelationshipDetail {
+  id: string;
+  relation_type: string;
+  source_entity_id: string;
+  target_entity_id: string;
+  source_entity_name: string;
+  target_entity_name: string;
+  confidence: number;
+  evidence?: string | null;
+  document_id?: string | null;
+  chunk_id?: string | null;
+  is_manual: boolean;
+  created_at: string;
+}
+
+export interface KGRelationshipCreate {
+  source_entity_id: string;
+  target_entity_id: string;
+  relation_type: string;
+  confidence?: number;
+  evidence?: string;
+}
+
+export interface KGRelationshipUpdate {
+  relation_type?: string;
+  confidence?: number;
+  evidence?: string;
+}
+
+// Search Types
+export type SearchMode = 'smart' | 'keyword' | 'exact';
+export type SearchSortBy = 'relevance' | 'date' | 'title';
+export type SearchSortOrder = 'asc' | 'desc';
+
+export interface SearchResult {
+  id: string;
+  title: string;
+  source: string;
+  source_type: string;
+  file_type?: string;
+  author?: string;
+  snippet: string;
+  relevance_score: number;
+  created_at: string;
+  updated_at: string;
+  url?: string;
+  download_url?: string;
+  chunk_id?: string;
+}
+
+export interface SearchResponse {
+  results: SearchResult[];
+  total: number;
+  page: number;
+  page_size: number;
+  query: string;
+  mode: string;
+  took_ms: number;
+}
+
+export interface SearchParams {
+  q: string;
+  mode?: SearchMode;
+  sort_by?: SearchSortBy;
+  sort_order?: SearchSortOrder;
+  page?: number;
+  page_size?: number;
+  source_id?: string;
+  file_type?: string;
+}
+
+// Notification Types
+export type NotificationType =
+  | 'document_processing_complete'
+  | 'document_processing_error'
+  | 'source_sync_complete'
+  | 'source_sync_error'
+  | 'ingestion_complete'
+  | 'ingestion_error'
+  | 'transcription_complete'
+  | 'transcription_error'
+  | 'summarization_complete'
+  | 'system_maintenance'
+  | 'quota_warning'
+  | 'admin_broadcast'
+  | 'mention'
+  | 'share'
+  | 'comment';
+
+export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent';
+
+export interface Notification {
+  id: string;
+  notification_type: NotificationType;
+  title: string;
+  message: string;
+  priority: NotificationPriority;
+  related_entity_type?: string;
+  related_entity_id?: string;
+  data?: Record<string, any>;
+  action_url?: string;
+  is_read: boolean;
+  read_at?: string;
+  created_at: string;
+}
+
+export interface NotificationListResponse {
+  items: Notification[];
+  total: number;
+  page: number;
+  page_size: number;
+  unread_count: number;
+}
+
+export interface NotificationPreferences {
+  id: string;
+  user_id: string;
+  notify_document_processing: boolean;
+  notify_document_errors: boolean;
+  notify_sync_complete: boolean;
+  notify_ingestion_complete: boolean;
+  notify_transcription_complete: boolean;
+  notify_summarization_complete: boolean;
+  notify_maintenance: boolean;
+  notify_quota_warnings: boolean;
+  notify_admin_broadcasts: boolean;
+  notify_mentions: boolean;
+  notify_shares: boolean;
+  notify_comments: boolean;
+  play_sound: boolean;
+  show_desktop_notification: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface NotificationPreferencesUpdate {
+  notify_document_processing?: boolean;
+  notify_document_errors?: boolean;
+  notify_sync_complete?: boolean;
+  notify_ingestion_complete?: boolean;
+  notify_transcription_complete?: boolean;
+  notify_summarization_complete?: boolean;
+  notify_maintenance?: boolean;
+  notify_quota_warnings?: boolean;
+  notify_admin_broadcasts?: boolean;
+  notify_mentions?: boolean;
+  notify_shares?: boolean;
+  notify_comments?: boolean;
+  play_sound?: boolean;
+  show_desktop_notification?: boolean;
+}

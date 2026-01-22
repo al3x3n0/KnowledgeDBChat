@@ -9,7 +9,7 @@ import sys
 import argparse
 import logging
 from pathlib import Path
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, Dict, Any
 import json
 from datetime import datetime
 import torch
@@ -171,11 +171,14 @@ class RussianTranscriber:
             from pyannote.audio import Pipeline
             
             # Try to load the latest speaker diarization model
-            logger.info("Loading pyannote.audio speaker diarization model...")
-            self.diarization_pipeline = Pipeline.from_pretrained(
-                "pyannote/speaker-diarization-3.1",
-                use_auth_token=False  # Public model, no HuggingFace token needed
-            )
+            from app.core.config import settings as app_settings
+            model_id = getattr(app_settings, 'TRANSCRIPTION_DIARIZATION_MODEL', 'pyannote/speaker-diarization-3.1')
+            hf_token = getattr(app_settings, 'HUGGINGFACE_TOKEN', None)
+            logger.info(f"Loading pyannote.audio speaker diarization model: {model_id} (token: {'set' if hf_token else 'not set'})")
+            if hf_token:
+                self.diarization_pipeline = Pipeline.from_pretrained(model_id, use_auth_token=hf_token)
+            else:
+                self.diarization_pipeline = Pipeline.from_pretrained(model_id)
             
             # Move to appropriate device
             if self.device == "cuda" and torch.cuda.is_available():
@@ -185,14 +188,92 @@ class RussianTranscriber:
                 logger.info("✓ Speaker diarization loaded on CPU")
                 
         except ImportError:
-            logger.warning("⚠️  pyannote.audio not installed. Install with: pip install pyannote.audio")
-            self.enable_speaker_diarization = False
+            logger.warning("⚠️  pyannote.audio not installed. Will try SpeechBrain/local diarization instead")
+            # Keep diarization enabled; we'll fall back at runtime
             self.diarization_pipeline = None
+
+    def _local_diarization_available(self) -> bool:
+        """Check availability of token-free diarization stack (resemblyzer + sklearn)."""
+        try:
+            import numpy as np  # noqa: F401
+            from resemblyzer import VoiceEncoder  # noqa: F401
+            from sklearn.cluster import KMeans  # noqa: F401
+            from sklearn.metrics import silhouette_score  # noqa: F401
+            import librosa  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def _perform_local_diarization(self, audio_path: Path) -> dict:
+        """Token-free diarization using embeddings + clustering.
+        Returns dict mapping (start, end) -> 'Speaker N'.
+        """
+        try:
+            import numpy as np
+            import librosa
+            from resemblyzer import VoiceEncoder
+            from sklearn.cluster import KMeans
+            from sklearn.metrics import silhouette_score
+
+            wav, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+            if len(wav) == 0:
+                return {}
+            win_sec, hop_sec = 1.5, 0.75
+            win = int(win_sec * sr)
+            hop = int(hop_sec * sr)
+            frames, starts = [], []
+            for start in range(0, max(1, len(wav) - win + 1), hop):
+                end = start + win
+                seg = wav[start:end]
+                if len(seg) < win:
+                    seg = np.pad(seg, (0, win - len(seg)))
+                frames.append(seg)
+                starts.append(start / sr)
+            if not frames:
+                return {}
+
+            enc = VoiceEncoder()
+            X = np.vstack([enc.embed_utterance(seg) for seg in frames])
+
+            best_k, best_score = 1, -1
+            labels_best = np.zeros((X.shape[0],), dtype=int)
+            for k in range(2, 5):
+                try:
+                    km = KMeans(n_clusters=k, n_init=10, random_state=42)
+                    lbls = km.fit_predict(X)
+                    score = silhouette_score(X, lbls)
+                    if score > best_score:
+                        best_score = score
+                        best_k = k
+                        labels_best = lbls
+                except Exception:
+                    continue
+            if best_k == 1:
+                labels_best = np.zeros((X.shape[0],), dtype=int)
+
+            segments = []
+            cur_label = labels_best[0]
+            cur_start = starts[0]
+            for i in range(1, len(labels_best)):
+                if labels_best[i] != cur_label:
+                    segments.append((cur_start, starts[i], int(cur_label)))
+                    cur_label = labels_best[i]
+                    cur_start = starts[i]
+            segments.append((cur_start, len(wav)/sr, int(cur_label)))
+
+            mapping = {}
+            next_idx = 1
+            out = {}
+            for (s, e, lab) in segments:
+                if lab not in mapping:
+                    mapping[lab] = f"Speaker {next_idx}"
+                    next_idx += 1
+                out[(s, e)] = mapping[lab]
+            logger.info(f"Local diarization detected {len(set(mapping.values()))} speakers")
+            return out
         except Exception as e:
-            logger.warning(f"⚠️  Failed to load speaker diarization model: {e}")
-            logger.info("🔄 Continuing without speaker diarization...")
-            self.enable_speaker_diarization = False
-            self.diarization_pipeline = None
+            logger.warning(f"Local diarization failed: {e}")
+            return {}
     
     def _setup_fallback_summarizer(self):
         """Setup simple rule-based Russian summarizer"""
@@ -243,6 +324,109 @@ class RussianTranscriber:
             logger.error(f"Error extracting audio: {e}")
             raise
     
+    def _speechbrain_available(self) -> bool:
+        try:
+            from speechbrain.pretrained import EncoderClassifier  # noqa: F401
+            import torchaudio  # noqa: F401
+            import numpy as np  # noqa: F401
+            import librosa  # noqa: F401
+            from sklearn.cluster import AgglomerativeClustering  # noqa: F401
+            from sklearn.metrics import silhouette_score  # noqa: F401
+            return True
+        except Exception:
+            return False
+
+    def _perform_speaker_diarization_speechbrain(self, audio_path: Path) -> dict:
+        try:
+            import numpy as np
+            import librosa
+            from speechbrain.pretrained import EncoderClassifier
+            from sklearn.cluster import AgglomerativeClustering
+            from sklearn.metrics import silhouette_score
+
+            wav, sr = librosa.load(str(audio_path), sr=16000, mono=True)
+            if len(wav) == 0:
+                return {}
+
+            # Energy VAD
+            frame_len = int(0.025 * sr)
+            hop_len = int(0.010 * sr)
+            energies = []
+            for i in range(0, len(wav) - frame_len + 1, hop_len):
+                frame = wav[i:i+frame_len]
+                energies.append(float(np.mean(frame ** 2)))
+            thr = max(1e-6, np.percentile(energies, 60))
+
+            # Windows 1.5s with 0.5s hop
+            win_sec, hop_sec = 1.5, 0.5
+            win = int(win_sec * sr)
+            hop = int(hop_sec * sr)
+            segs = []
+            for start in range(0, len(wav) - win + 1, hop):
+                mid = start + win // 2
+                if mid + frame_len <= len(wav):
+                    mid_energy = float(np.mean(wav[mid:mid+frame_len] ** 2))
+                    if mid_energy > thr:
+                        segs.append((start, start + win))
+            if not segs:
+                return {}
+
+            enc = EncoderClassifier.from_hparams(source="speechbrain/spkrec-ecapa-voxceleb")
+            X = []
+            times = []
+            for s, e in segs:
+                seg = wav[s:e]
+                if len(seg) < win:
+                    seg = np.pad(seg, (0, win - len(seg)))
+                # SpeechBrain expects torch tensor [batch, time]
+                import torch as _torch
+                sig_np = np.expand_dims(seg.astype(np.float32), 0)
+                sig = _torch.from_numpy(sig_np)
+                emb = enc.encode_batch(sig).detach().cpu().numpy().squeeze()
+                X.append(emb)
+                times.append((s/sr, e/sr))
+            X = np.vstack(X)
+
+            best_k, best_score = 1, -1
+            best_labels = np.zeros((X.shape[0],), dtype=int)
+            for k in range(2, 6):
+                try:
+                    model = AgglomerativeClustering(n_clusters=k)
+                    lbls = model.fit_predict(X)
+                    score = silhouette_score(X, lbls)
+                    if score > best_score:
+                        best_k, best_score, best_labels = k, score, lbls
+                except Exception:
+                    continue
+            if best_k == 1:
+                best_labels = np.zeros((X.shape[0],), dtype=int)
+
+            merged = []
+            cur_lab = int(best_labels[0])
+            cur_s, cur_e = times[0]
+            for i in range(1, len(best_labels)):
+                if int(best_labels[i]) == cur_lab and times[i][0] <= cur_e + 0.5:
+                    cur_e = max(cur_e, times[i][1])
+                else:
+                    merged.append((cur_s, cur_e, cur_lab))
+                    cur_lab = int(best_labels[i])
+                    cur_s, cur_e = times[i]
+            merged.append((cur_s, cur_e, cur_lab))
+
+            mapping = {}
+            next_idx = 1
+            out = {}
+            for s, e, lab in merged:
+                if lab not in mapping:
+                    mapping[lab] = f"Speaker {next_idx}"
+                    next_idx += 1
+                out[(s, e)] = mapping[lab]
+            logger.info(f"SpeechBrain diarization detected {len(mapping)} speakers")
+            return out
+        except Exception as e:
+            logger.warning(f"SpeechBrain diarization failed: {e}")
+            return {}
+
     def _perform_speaker_diarization(self, audio_path: Path) -> dict:
         """
         Perform speaker diarization on audio file
@@ -253,27 +437,62 @@ class RussianTranscriber:
         Returns:
             Dictionary mapping time ranges to speaker labels
         """
-        if not self.enable_speaker_diarization or not self.diarization_pipeline:
+        if not self.enable_speaker_diarization:
+            logger.info("Diarization disabled by configuration; proceeding without speakers")
+            return {}
+        if not self.diarization_pipeline:
+            # Try SpeechBrain first (token-free), then local resemblyzer fallback
+            if self._speechbrain_available():
+                logger.info("Using SpeechBrain diarization (ECAPA embeddings + clustering)")
+                return self._perform_speaker_diarization_speechbrain(audio_path)
+            if self._local_diarization_available():
+                logger.info("Using local resemblyzer+KMeans diarization (fallback)")
+                return self._perform_local_diarization(audio_path)
+            logger.info("No diarization backend available; proceeding without speakers")
             return {}
         
         try:
             logger.info(f"🎭 Running speaker diarization on: {audio_path}")
-            
+            logger.info("Using pyannote.audio diarization pipeline")
+
             # Run diarization
             diarization = self.diarization_pipeline(str(audio_path))
-            
+
             # Convert to time-based speaker mapping
             speaker_segments = {}
             for turn, _, speaker in diarization.itertracks(yield_label=True):
                 start_time = turn.start
                 end_time = turn.end
                 speaker_segments[(start_time, end_time)] = speaker
-            
+
             logger.info(f"✓ Found {len(set(speaker_segments.values()))} unique speakers")
             return speaker_segments
-            
+
         except Exception as e:
-            logger.warning(f"⚠️  Speaker diarization failed: {e}")
+            logger.warning(f"⚠️  pyannote.audio diarization failed: {e}")
+            logger.info("Attempting fallback diarization methods...")
+
+            # Try SpeechBrain fallback
+            if self._speechbrain_available():
+                try:
+                    logger.info("Falling back to SpeechBrain diarization")
+                    result = self._perform_speaker_diarization_speechbrain(audio_path)
+                    if result:
+                        return result
+                except Exception as sb_error:
+                    logger.warning(f"SpeechBrain fallback failed: {sb_error}")
+
+            # Try local resemblyzer fallback
+            if self._local_diarization_available():
+                try:
+                    logger.info("Falling back to local resemblyzer diarization")
+                    result = self._perform_local_diarization(audio_path)
+                    if result:
+                        return result
+                except Exception as local_error:
+                    logger.warning(f"Local diarization fallback failed: {local_error}")
+
+            logger.info("All diarization methods failed; proceeding without speakers")
             return {}
     
     def _find_speaker_for_segment(self, segment_start: float, segment_end: float, speaker_segments: dict) -> str:
@@ -392,7 +611,8 @@ class RussianTranscriber:
             import librosa
             duration = librosa.get_duration(filename=str(audio_path))
             logger.info(f"📏 Audio duration: {duration:.1f} seconds")
-        except:
+        except Exception as e:
+            logger.debug(f"Could not determine audio duration: {e}")
             duration = None
         
         # Enhanced progress tracking for transcription
@@ -505,20 +725,39 @@ class RussianTranscriber:
         from whisper.utils import exact_div
         import numpy as np
         
-        # Load and preprocess audio
+        # Load full audio (do NOT pad/trim globally; we process in segments below)
         audio = load_audio(str(audio_path))
-        audio = pad_or_trim(audio)
-        
-        # Make log-Mel spectrogram and move to the same device as the model
-        mel = whisper.log_mel_spectrogram(audio).to(self.model.device)
-        
-        # Detect language (optional, for logging only). DecodingOptions already gets 'language'.
+        # Trim leading silence to avoid spurious early tokens; keep base offset for timecodes
+        base_offset_sec = 0.0
+        try:
+            import librosa as _librosa
+            import numpy as _np
+            # librosa.effects.split returns intervals of non-silent audio
+            intervals = _librosa.effects.split(audio, top_db=30)
+            if intervals is not None and len(intervals) > 0:
+                start_idx = int(intervals[0][0])
+                if start_idx > 0:
+                    base_offset_sec = start_idx / float(whisper.audio.SAMPLE_RATE)
+                    audio = audio[start_idx:]
+                    logger.info(f"Trimmed leading silence: {base_offset_sec:.2f}s")
+        except Exception as _e:
+            logger.debug(f"Leading silence trim skipped: {_e}")
+
+        # Prepare segment sizing for both detection and decoding
+        segment_duration = 30.0  # seconds per segment
+        samples_per_segment = int(segment_duration * whisper.audio.SAMPLE_RATE)
+
+        # Detect language (optional, for logging only). If language not provided,
+        # use only the first ~30s to build mel for detection to avoid full-audio mel.
         try:
             if language not in (None, ""):
                 logger.info(f"🔤 Using specified language: {language}")
             else:
-                # Auto-detect for informational purposes
-                _, probs = self.model.detect_language(mel)
+                first_seg = audio[:samples_per_segment]
+                if len(first_seg) < samples_per_segment:
+                    first_seg = pad_or_trim(first_seg, samples_per_segment)
+                mel_short = whisper.log_mel_spectrogram(first_seg).to(self.model.device)
+                _, probs = self.model.detect_language(mel_short)
                 detected = max(probs, key=probs.get)
                 logger.info(f"🔤 Detected language: {detected}")
         except Exception as e:
@@ -562,9 +801,7 @@ class RussianTranscriber:
             segments_completed = 0
         
         # Process in segments for streaming
-        segment_duration = 30.0  # 30 second segments
         hop_length = exact_div(whisper.audio.N_FFT, 4)
-        samples_per_segment = int(segment_duration * whisper.audio.SAMPLE_RATE)
         
         # Calculate starting position for resume
         start_sample = int(current_offset * whisper.audio.SAMPLE_RATE)
@@ -587,8 +824,8 @@ class RussianTranscriber:
             
             if result.text.strip():
                 # Calculate timing
-                start_time = current_offset
-                end_time = current_offset + min(segment_duration, len(segment_audio) / whisper.audio.SAMPLE_RATE)
+                start_time = base_offset_sec + current_offset
+                end_time = base_offset_sec + current_offset + min(segment_duration, len(segment_audio) / whisper.audio.SAMPLE_RATE)
                 
                 # Create segment info
                 speaker_label = self._find_speaker_for_segment(start_time, end_time, speaker_segments)
@@ -609,8 +846,8 @@ class RussianTranscriber:
                 segments.append(segment_info)
                 text_parts.append(result.text)
                 
-                # Stream to file with sentence segmentation and timecodes  
-                self._stream_with_sentences(result.text, start_time, end_time, stream_file, speaker_label)
+                # Stream to file with sentence segmentation and timecodes, computing speaker per sentence when available
+                self._stream_with_sentences(result.text, start_time, end_time, stream_file, speaker_label, speaker_segments)
                 
                 # Also print to console for real-time feedback
                 print(f"[{start_time:.1f}s-{end_time:.1f}s] {result.text.strip()}")
@@ -640,10 +877,10 @@ class RussianTranscriber:
             "text": full_text,
             "segments": segments,
             "language": language,
-            "duration": current_offset
+            "duration": base_offset_sec + current_offset
         }
     
-    def _stream_with_sentences(self, text: str, start_time: float, end_time: float, stream_file, speaker_label: str = "Unknown") -> None:
+    def _stream_with_sentences(self, text: str, start_time: float, end_time: float, stream_file, speaker_label: str = "Unknown", speaker_segments: Optional[Dict[str, Any]] = None) -> None:
         """Stream text with sentence segmentation and timecodes"""
         import re
         
@@ -669,12 +906,10 @@ class RussianTranscriber:
                 secs = int(seconds % 60)
                 return f"{hours:02d}:{minutes:02d}:{secs:02d}"
             
-            # Improved Russian sentence pattern - handles abbreviations and ellipsis
-            # Negative lookbehind for common Russian abbreviations
-            sentence_pattern = r'(?<!\b(?:[тТ]|[иИ]|[дД][рР]|[пП][рР]|[гГ]|[сС][мМ]|[сС][тТ][рР]|[рР][иИ][сС]|[тТ][аА][бБ][лЛ])\.)[\.\!\?\…]+(?=\s+[А-ЯЁ\d]|$)'
-            
-            sentences = re.split(sentence_pattern, text.strip())
-            sentences = [s.strip() for s in sentences if s.strip()]
+            # Split sentences without variable-length lookbehind (compatible with Python re)
+            sentence_regex = re.compile(r'(.+?[\.!\?…]+)(?=\s+|$)', re.U)
+            sentences = [m.group(1).strip() for m in sentence_regex.finditer(text.strip())]
+            sentences = [s for s in sentences if s]
             
             if not sentences:
                 # Fallback: treat entire text as one sentence
@@ -688,8 +923,12 @@ class RussianTranscriber:
             if len(sentences) == 1:
                 # Single sentence gets the full time range
                 timecode = format_timecode(start_time)
+                # Determine speaker for this sentence time range if diarization available
+                sentence_speaker = speaker_label
+                if speaker_segments is not None:
+                    sentence_speaker = self._find_speaker_for_segment(start_time, end_time, speaker_segments)
                 try:
-                    stream_file.write(f"[{speaker_label}] {timecode} {sentences[0]}\n")
+                    stream_file.write(f"[{sentence_speaker}] {timecode} {sentences[0]}\n")
                     stream_file.flush()
                 except (IOError, OSError) as e:
                     logger.error(f"Failed to write single sentence to stream: {e}")
@@ -711,8 +950,12 @@ class RussianTranscriber:
                     sentence_duration = max(0.1, sentence_duration)
                     
                     timecode = format_timecode(current_time)
+                    # Choose speaker for this sentence time slice
+                    sentence_speaker = speaker_label
+                    if speaker_segments is not None:
+                        sentence_speaker = self._find_speaker_for_segment(current_time, min(current_time + sentence_duration, end_time), speaker_segments)
                     try:
-                        stream_file.write(f"[{speaker_label}] {timecode} {sentence}\n")
+                        stream_file.write(f"[{sentence_speaker}] {timecode} {sentence}\n")
                         stream_file.flush()
                     except (IOError, OSError) as e:
                         logger.error(f"Failed to write sentence {i+1}/{len(sentences)} to stream: {e}")
@@ -729,9 +972,8 @@ class RussianTranscriber:
                     timecode = format_timecode(start_time) if start_time >= 0 else "00:00:00"
                     stream_file.write(f"[{speaker_label}] {timecode} {text.strip()}\n")
                     stream_file.flush()
-            except:
-                logger.error("Failed to write fallback text to stream")
-                pass  # Don't crash the entire transcription
+            except (IOError, OSError) as write_err:
+                logger.error(f"Failed to write fallback text to stream: {write_err}")
     
     def summarize_text(self, text: str, max_length: int = 300, min_length: int = 50) -> str:
         """

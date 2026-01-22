@@ -17,6 +17,8 @@ from langchain.document_loaders import (
 )
 from sentence_transformers import SentenceTransformer
 from loguru import logger
+from pptx import Presentation
+from pptx.enum.shapes import PP_PLACEHOLDER
 
 from app.core.config import settings
 
@@ -41,7 +43,7 @@ class TextProcessor:
                 logger.warning(f"Failed to initialize semantic chunking model: {e}. Falling back to fixed-size chunking.")
                 self.semantic_model = None
     
-    async def extract_text(self, file_path: str, content_type: Optional[str] = None) -> str:
+    async def extract_text(self, file_path: str, content_type: Optional[str] = None) -> Tuple[str, Optional[Dict[str, Any]]]:
         """
         Extract text content from a file.
         
@@ -49,8 +51,8 @@ class TextProcessor:
             file_path: Path to the file to extract text from
             content_type: Optional MIME type of the file (e.g., 'application/pdf')
             
-        Returns:
-            Extracted text content as a string, or empty string if extraction fails
+            Returns:
+                Tuple of (text content, optional metadata dict)
             
         Raises:
             FileNotFoundError: If the file does not exist
@@ -58,27 +60,30 @@ class TextProcessor:
         """
         try:
             file_extension = os.path.splitext(file_path)[1].lower()
+            metadata: Optional[Dict[str, Any]] = None
             
             # Determine the appropriate loader based on file extension or content type
             if file_extension == '.pdf' or (content_type and 'pdf' in content_type):
-                return await self._extract_pdf(file_path)
+                text = await self._extract_pdf(file_path)
             elif file_extension in ['.docx', '.doc'] or (content_type and 'word' in content_type):
-                return await self._extract_word(file_path)
+                text = await self._extract_word(file_path)
             elif file_extension in ['.pptx', '.ppt'] or (content_type and ('powerpoint' in content_type.lower() or 'presentation' in content_type.lower())):
-                return await self._extract_powerpoint(file_path)
+                text, metadata = await self._extract_powerpoint(file_path)
             elif file_extension in ['.html', '.htm'] or (content_type and 'html' in content_type):
-                return await self._extract_html(file_path)
+                text = await self._extract_html(file_path)
             elif file_extension in ['.md', '.markdown'] or (content_type and 'markdown' in content_type.lower()):
-                return await self._extract_markdown(file_path)
+                text = await self._extract_markdown(file_path)
             elif file_extension == '.txt' or (content_type and 'text' in content_type):
-                return await self._extract_text_file(file_path)
+                text = await self._extract_text_file(file_path)
             else:
                 # Default to text extraction
-                return await self._extract_text_file(file_path)
+                text = await self._extract_text_file(file_path)
+            
+            return text, metadata
                 
         except Exception as e:
             logger.error(f"Error extracting text from {file_path}: {e}")
-            return ""
+            return "", None
     
     async def _extract_pdf(self, file_path: str) -> str:
         """Extract text from PDF file."""
@@ -117,30 +122,135 @@ class TextProcessor:
             logger.error(f"Error extracting Word document {file_path}: {e}")
             return ""
     
-    async def _extract_powerpoint(self, file_path: str) -> str:
-        """Extract text from PowerPoint presentation."""
+    async def _extract_powerpoint(self, file_path: str) -> Tuple[str, Optional[Dict[str, Any]]]:
+        """Extract text and metadata from PowerPoint presentation, including notes/comments."""
         try:
             logger.info(f"Extracting text from PowerPoint: {file_path}")
+            presentation = Presentation(file_path)
+            slide_entries: List[Dict[str, Any]] = []
+            slide_sections: List[str] = []
+            
+            for idx, slide in enumerate(presentation.slides, start=1):
+                body_texts: List[str] = []
+                title_text: Optional[str] = None
+                
+                for shape in slide.shapes:
+                    text = self._get_shape_text(shape)
+                    if not text:
+                        continue
+                    body_texts.append(text)
+                    try:
+                        if title_text is None and getattr(shape, "is_placeholder", False):
+                            placeholder_type = shape.placeholder_format.type
+                            if placeholder_type in (PP_PLACEHOLDER.TITLE, PP_PLACEHOLDER.CENTER_TITLE):
+                                title_text = text.splitlines()[0]
+                    except Exception:
+                        pass
+                
+                slide_body = "\n".join(body_texts).strip()
+                if not title_text and slide_body:
+                    title_text = slide_body.splitlines()[0]
+                
+                notes_text = ""
+                try:
+                    if slide.has_notes_slide and slide.notes_slide and slide.notes_slide.notes_text_frame:
+                        note_paragraphs = []
+                        for paragraph in slide.notes_slide.notes_text_frame.paragraphs:
+                            note_line = "".join(run.text for run in paragraph.runs).strip()
+                            if note_line:
+                                note_paragraphs.append(note_line)
+                        notes_text = "\n".join(note_paragraphs).strip()
+                except Exception:
+                    notes_text = ""
+                
+                comments: List[Dict[str, Any]] = []
+                try:
+                    comments_part = getattr(slide.part, "comments_part", None)
+                    if comments_part is not None:
+                        for comment in getattr(comments_part, "comment_list", []):
+                            text = getattr(comment, "text", "") or ""
+                            if not text.strip():
+                                continue
+                            author_name = None
+                            try:
+                                author_obj = getattr(comment, "author", None)
+                                author_name = getattr(author_obj, "name", None) if author_obj else None
+                                author_initials = getattr(author_obj, "initials", None) if author_obj else None
+                            except Exception:
+                                author_obj = getattr(comment, "author", None)
+                                author_name = getattr(author_obj, "name", None) if author_obj else str(author_obj)
+                                author_initials = None
+                            timestamp = None
+                            comment_dt = getattr(comment, "datetime", None) or getattr(comment, "dt", None)
+                            if comment_dt:
+                                try:
+                                    timestamp = comment_dt.isoformat()
+                                except Exception:
+                                    timestamp = str(comment_dt)
+                            comments.append({
+                                "author": author_name,
+                                "author_initials": author_initials,
+                                "text": text.strip(),
+                                "created_at": timestamp,
+                            })
+                except Exception:
+                    pass
+                
+                slide_entry: Dict[str, Any] = {
+                    "index": idx,
+                }
+                if title_text:
+                    slide_entry["title"] = title_text
+                if slide_body:
+                    slide_entry["text"] = slide_body
+                if notes_text:
+                    slide_entry["notes"] = notes_text
+                if comments:
+                    slide_entry["comments"] = comments
+                slide_entries.append(slide_entry)
+                
+                section_parts = [f"Slide {idx}: {title_text or 'Untitled slide'}"]
+                if slide_body:
+                    section_parts.append(slide_body)
+                if notes_text:
+                    section_parts.append(f"Notes:\n{notes_text}")
+                if comments:
+                    comment_lines = [
+                        f"- {(c.get('author') or c.get('author_initials') or 'Comment')}: {c['text']}"
+                        for c in comments
+                    ]
+                    section_parts.append("Comments:\n" + "\n".join(comment_lines))
+                slide_sections.append("\n\n".join(part for part in section_parts if part))
+            
+            if slide_sections:
+                text_content = "\n\n--- Slide ---\n\n".join(slide_sections)
+                metadata = {
+                    "presentation": {
+                        "slide_count": len(slide_entries),
+                        "slides": slide_entries,
+                        "has_comments": any(entry.get("comments") for entry in slide_entries),
+                    }
+                }
+                text_length = len(text_content)
+                logger.info(f"Extracted {text_length} characters from {len(slide_entries)} slides of PowerPoint: {file_path}")
+                return text_content, metadata
+            
+            # Fallback to unstructured loader if no sections were produced
             loader = UnstructuredPowerPointLoader(file_path)
             documents = loader.load()
-            
             if not documents:
                 logger.warning(f"No content extracted from PowerPoint: {file_path}")
-                return ""
-            
-            # Combine all slides with slide separators
-            # Each document typically represents a slide
+                return "", None
             text_content = "\n\n--- Slide ---\n\n".join([doc.page_content for doc in documents])
-            
-            # Log extraction stats
-            slide_count = len(documents)
-            text_length = len(text_content)
-            logger.info(f"Extracted {text_length} characters from {slide_count} slides of PowerPoint: {file_path}")
-            
-            return text_content
+            metadata = {
+                "presentation": {
+                    "slide_count": len(documents)
+                }
+            }
+            return text_content, metadata
         except Exception as e:
             logger.error(f"Error extracting PowerPoint {file_path}: {e}", exc_info=True)
-            return ""
+            return "", None
     
     async def _extract_html(self, file_path: str) -> str:
         """Extract text from HTML file."""
@@ -198,6 +308,21 @@ class TextProcessor:
             except Exception as e2:
                 logger.error(f"Fallback text extraction failed for {file_path}: {e2}")
                 return ""
+
+    def _get_shape_text(self, shape) -> str:
+        """Extract text from a pptx shape."""
+        try:
+            if not getattr(shape, "has_text_frame", False):
+                return ""
+            paragraphs = []
+            for paragraph in shape.text_frame.paragraphs:
+                runs = [run.text for run in paragraph.runs]
+                text = "".join(runs).strip()
+                if text:
+                    paragraphs.append(text)
+            return "\n".join(paragraphs).strip()
+        except Exception:
+            return ""
     
     async def split_text_with_metadata(
         self,
@@ -603,5 +728,3 @@ class TextProcessor:
         """Check if file format is supported."""
         file_extension = os.path.splitext(file_path)[1].lower().lstrip('.')
         return file_extension in self.get_supported_formats()
-
-

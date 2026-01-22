@@ -21,6 +21,7 @@ langchain-community==0.0.1
 ollama==0.1.7
 transformers==4.35.2
 torch==2.1.1
+torchaudio==2.1.1
 
 # Background Tasks
 celery==5.3.4
@@ -35,12 +36,17 @@ aiofiles==23.2.1
 pypdf>=3.0.0
 unstructured>=0.10.0
 python-pptx>=0.6.21
+python-docx>=0.8.11
+mammoth>=1.6.0
 markdown>=3.4.0
 
 # Video/Audio Transcription
 openai-whisper>=20230918
 ffmpeg-python>=0.2.0
 librosa>=0.10.0
+speechbrain>=0.5.14
+scikit-learn>=1.3.2
+resemblyzer>=0.1.1
 
 # Utilities
 pydantic==2.5.0
@@ -50,6 +56,7 @@ httpx==0.25.2
 tenacity==8.2.3
 loguru==0.7.2
 minio>=7.2.0
+croniter>=2.0.3
 
 # Security
 python-jose[cryptography]==3.3.0
@@ -72,3 +79,8 @@ flake8==6.1.0
 
 # Email utilities (for parsing dates)
 email-validator==2.1.0
+
+# Custom tool dependencies
+jsonpath-ng>=1.6.0
+RestrictedPython>=7.0
+Jinja2>=3.1.0

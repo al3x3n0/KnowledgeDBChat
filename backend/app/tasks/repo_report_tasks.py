@@ -53,6 +53,7 @@ async def _publish_progress(job_id: str, progress: int, stage: str, status: str,
 async def _generate_repo_report_async(job_id: str, user_id: str):
     """Async implementation of repository report generation."""
     job_uuid = UUID(job_id)
+    user_uuid = UUID(user_id)
     session_factory = create_celery_session()
     storage = StorageService()
 
@@ -102,7 +103,8 @@ async def _generate_repo_report_async(job_id: str, user_id: str):
                     source_id=job.source_id,
                     db=db,
                     sections=job.sections,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
+                    user_id=user_uuid,
                 )
             elif job.adhoc_url:
                 # From ad-hoc URL
@@ -110,13 +112,15 @@ async def _generate_repo_report_async(job_id: str, user_id: str):
                     repo_url=job.adhoc_url,
                     token=job.adhoc_token,
                     sections=job.sections,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
+                    user_id=user_uuid,
+                    db=db,
                 )
             else:
                 raise RepoReportGenerationError("No source_id or adhoc_url provided")
 
-            # Cache analysis data
-            job.analysis_data = analysis.model_dump()
+            # Cache analysis data (use mode='json' to serialize datetime objects)
+            job.analysis_data = analysis.model_dump(mode='json')
             job.status = "generating"
             job.current_stage = "Analysis complete, generating output"
             await db.commit()

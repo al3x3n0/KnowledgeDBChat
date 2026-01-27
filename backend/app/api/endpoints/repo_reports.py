@@ -140,7 +140,9 @@ async def create_repo_report(
 
     elif request.repo_url:
         try:
+            logger.info(f"Parsing repo URL: '{request.repo_url}' (len={len(request.repo_url)})")
             repo_type, owner, repo = _parse_repo_url(request.repo_url)
+            logger.info(f"Parsed: type={repo_type}, owner={owner}, repo={repo}")
             repo_name = f"{owner}/{repo}"
             repo_url = request.repo_url
         except ValueError as e:

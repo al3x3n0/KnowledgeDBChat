@@ -184,8 +184,16 @@ class RepoAnalysisService:
         """Analyze a GitHub repository."""
         connector = GitHubConnector()
         try:
+            repos = config.get("repos", [])
+            logger.info(f"Initializing GitHub connector for repos: {repos}")
             if not await connector.initialize(config):
-                raise ValueError("Failed to initialize GitHub connector")
+                repo_str = repos[0] if repos else "unknown"
+                has_token = bool(config.get("token"))
+                raise ValueError(
+                    f"Failed to initialize GitHub connector for {repo_str}. "
+                    f"Token provided: {has_token}. "
+                    "Check if the repository exists and is accessible."
+                )
 
             # Determine owner and repo
             if owner_override and repo_override:

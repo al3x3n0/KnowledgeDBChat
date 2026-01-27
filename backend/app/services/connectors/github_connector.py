@@ -85,13 +85,25 @@ class GitHubConnector(BaseConnector):
         try:
             if self.token:
                 resp = await self.client.get(f"{self.api_base}/user")
-                return resp.status_code == 200
+                if resp.status_code == 200:
+                    return True
+                logger.warning(f"GitHub auth check failed: {resp.status_code} - {resp.text[:200]}")
+                return False
             if not self.repos:
                 return True
             owner = self.repos[0]["owner"]
             name = self.repos[0]["repo"]
             resp = await self.client.get(f"{self.api_base}/repos/{owner}/{name}")
-            return resp.status_code == 200
+            if resp.status_code == 200:
+                return True
+            # For public repos, 403 might mean rate limiting - log but allow to proceed
+            if resp.status_code == 403:
+                remaining = resp.headers.get("x-ratelimit-remaining", "unknown")
+                logger.warning(f"GitHub rate limit hit (remaining: {remaining}). Proceeding anyway for public repo.")
+                # Still mark as initialized - individual calls may work
+                return True
+            logger.warning(f"GitHub repo check failed for {owner}/{name}: {resp.status_code} - {resp.text[:200]}")
+            return False
         except Exception as e:
             logger.error(f"GitHub connection test failed: {e}")
             return False

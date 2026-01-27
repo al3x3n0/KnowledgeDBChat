@@ -47,7 +47,7 @@ def _parse_repo_url(url: str) -> tuple[str, str, str]:
     for pattern in github_patterns:
         match = re.search(pattern, url)
         if match:
-            return ("github", match.group(1), match.group(2).rstrip(".git"))
+            return ("github", match.group(1), match.group(2).removesuffix(".git"))
 
     # GitLab patterns
     gitlab_patterns = [
@@ -57,7 +57,7 @@ def _parse_repo_url(url: str) -> tuple[str, str, str]:
     for pattern in gitlab_patterns:
         match = re.search(pattern, url)
         if match:
-            return ("gitlab", match.group(1), match.group(2).rstrip(".git"))
+            return ("gitlab", match.group(1), match.group(2).removesuffix(".git"))
 
     raise ValueError(f"Could not parse repository URL: {url}")
 

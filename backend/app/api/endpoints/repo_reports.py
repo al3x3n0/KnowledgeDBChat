@@ -41,8 +41,8 @@ def _parse_repo_url(url: str) -> tuple[str, str, str]:
     """
     # GitHub patterns
     github_patterns = [
-        r"github\.com[:/]([^/]+)/([^/.]+)",
-        r"api\.github\.com/repos/([^/]+)/([^/]+)",
+        r"github\.com[:/]([^/]+)/([^/?#\s]+)",
+        r"api\.github\.com/repos/([^/]+)/([^/?#\s]+)",
     ]
     for pattern in github_patterns:
         match = re.search(pattern, url)
@@ -51,8 +51,8 @@ def _parse_repo_url(url: str) -> tuple[str, str, str]:
 
     # GitLab patterns
     gitlab_patterns = [
-        r"gitlab\.com[:/]([^/]+)/([^/.]+)",
-        r"gitlab\.[^/]+[:/]([^/]+)/([^/.]+)",
+        r"gitlab\.com[:/]([^/]+)/([^/?#\s]+)",
+        r"gitlab\.[^/]+[:/]([^/]+)/([^/?#\s]+)",
     ]
     for pattern in gitlab_patterns:
         match = re.search(pattern, url)

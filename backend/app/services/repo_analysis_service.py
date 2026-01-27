@@ -146,8 +146,8 @@ class RepoAnalysisService:
         """
         # GitHub patterns
         github_patterns = [
-            r"github\.com[:/]([^/]+)/([^/.]+)",
-            r"api\.github\.com/repos/([^/]+)/([^/]+)",
+            r"github\.com[:/]([^/]+)/([^/?#\s]+)",
+            r"api\.github\.com/repos/([^/]+)/([^/?#\s]+)",
         ]
         for pattern in github_patterns:
             match = re.search(pattern, url)
@@ -156,8 +156,8 @@ class RepoAnalysisService:
 
         # GitLab patterns
         gitlab_patterns = [
-            r"gitlab\.com[:/]([^/]+)/([^/.]+)",
-            r"gitlab\.[^/]+[:/]([^/]+)/([^/.]+)",
+            r"gitlab\.com[:/]([^/]+)/([^/?#\s]+)",
+            r"gitlab\.[^/]+[:/]([^/]+)/([^/?#\s]+)",
         ]
         for pattern in gitlab_patterns:
             match = re.search(pattern, url)

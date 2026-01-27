@@ -575,7 +575,7 @@ class RepoAnalysisService:
         user_settings = None
         if user_id and db:
             try:
-                from app.models.user import UserPreferences
+                from app.models.memory import UserPreferences
                 result = await db.execute(
                     select(UserPreferences).where(UserPreferences.user_id == user_id)
                 )

@@ -20,7 +20,13 @@ celery_app = Celery(
         "app.tasks.transcode_tasks",
         "app.tasks.summarization_tasks",
         "app.tasks.monitoring_tasks",
+        "app.tasks.presentation_tasks",
         "app.tasks.git_compare_tasks",
+        "app.tasks.research_tasks",
+        "app.tasks.paper_kg_tasks",
+        "app.tasks.paper_enrichment_tasks",
+        "app.tasks.maintenance_tasks",
+        "app.tasks.repo_report_tasks",
     ]
 )
 
@@ -78,5 +84,3 @@ celery_app.conf.beat_schedule = {
 }
 
 celery_app.conf.timezone = "UTC"
-
-

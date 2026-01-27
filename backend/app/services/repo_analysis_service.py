@@ -26,7 +26,7 @@ from app.schemas.repo_report import (
 )
 from app.services.connectors.github_connector import GitHubConnector
 from app.services.connectors.gitlab_connector import GitLabConnector
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, UserLLMSettings
 
 
 class RepoAnalysisService:
@@ -46,7 +46,8 @@ class RepoAnalysisService:
         source_id: UUID,
         db: AsyncSession,
         sections: List[str],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        user_id: Optional[UUID] = None,
     ) -> RepoAnalysisResult:
         """
         Analyze a repository from an existing DocumentSource.
@@ -75,13 +76,17 @@ class RepoAnalysisService:
             return await self._analyze_github(
                 config=config,
                 sections=sections,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                user_id=user_id,
+                db=db,
             )
         elif source_type == "gitlab":
             return await self._analyze_gitlab(
                 config=config,
                 sections=sections,
-                progress_callback=progress_callback
+                progress_callback=progress_callback,
+                user_id=user_id,
+                db=db,
             )
         else:
             raise ValueError(f"Unsupported source type: {source_type}")
@@ -91,7 +96,9 @@ class RepoAnalysisService:
         repo_url: str,
         token: Optional[str],
         sections: List[str],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        user_id: Optional[UUID] = None,
+        db: Optional[AsyncSession] = None,
     ) -> RepoAnalysisResult:
         """
         Analyze a repository from an ad-hoc URL.
@@ -117,7 +124,9 @@ class RepoAnalysisService:
                 sections=sections,
                 progress_callback=progress_callback,
                 owner_override=owner,
-                repo_override=repo
+                repo_override=repo,
+                user_id=user_id,
+                db=db,
             )
         elif repo_type == "gitlab":
             # Extract GitLab URL base
@@ -132,7 +141,9 @@ class RepoAnalysisService:
                 config=config,
                 sections=sections,
                 progress_callback=progress_callback,
-                project_override=project_path
+                project_override=project_path,
+                user_id=user_id,
+                db=db,
             )
         else:
             raise ValueError(f"Could not determine repository type from URL: {repo_url}")
@@ -179,7 +190,9 @@ class RepoAnalysisService:
         sections: List[str],
         progress_callback: Optional[callable] = None,
         owner_override: Optional[str] = None,
-        repo_override: Optional[str] = None
+        repo_override: Optional[str] = None,
+        user_id: Optional[UUID] = None,
+        db: Optional[AsyncSession] = None,
     ) -> RepoAnalysisResult:
         """Analyze a GitHub repository."""
         connector = GitHubConnector()
@@ -208,7 +221,7 @@ class RepoAnalysisService:
                     owner = repos[0].get("owner", "")
                     repo = repos[0].get("repo", "")
 
-            return await self._collect_github_data(connector, owner, repo, sections, progress_callback)
+            return await self._collect_github_data(connector, owner, repo, sections, progress_callback, user_id, db)
         finally:
             await connector.cleanup()
 
@@ -218,7 +231,9 @@ class RepoAnalysisService:
         owner: str,
         repo: str,
         sections: List[str],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        user_id: Optional[UUID] = None,
+        db: Optional[AsyncSession] = None,
     ) -> RepoAnalysisResult:
         """Collect data from GitHub repository."""
         # Get basic repo info
@@ -354,6 +369,8 @@ class RepoAnalysisService:
                 language_stats=result.language_stats,
                 include_architecture="architecture" in sections,
                 include_tech_stack="technology_stack" in sections,
+                user_id=user_id,
+                db=db,
             )
 
         if progress_callback:
@@ -366,7 +383,9 @@ class RepoAnalysisService:
         config: Dict[str, Any],
         sections: List[str],
         progress_callback: Optional[callable] = None,
-        project_override: Optional[str] = None
+        project_override: Optional[str] = None,
+        user_id: Optional[UUID] = None,
+        db: Optional[AsyncSession] = None,
     ) -> RepoAnalysisResult:
         """Analyze a GitLab repository."""
         connector = GitLabConnector()
@@ -383,7 +402,7 @@ class RepoAnalysisService:
                     raise ValueError("No project configured")
                 project_id = projects[0].get("id") or projects[0].get("name")
 
-            return await self._collect_gitlab_data(connector, project_id, sections, progress_callback)
+            return await self._collect_gitlab_data(connector, project_id, sections, progress_callback, user_id, db)
         finally:
             await connector.cleanup()
 
@@ -392,7 +411,9 @@ class RepoAnalysisService:
         connector: GitLabConnector,
         project_id: str,
         sections: List[str],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
+        user_id: Optional[UUID] = None,
+        db: Optional[AsyncSession] = None
     ) -> RepoAnalysisResult:
         """Collect data from GitLab repository."""
         # Get basic repo info
@@ -527,6 +548,8 @@ class RepoAnalysisService:
                 language_stats=result.language_stats,
                 include_architecture="architecture" in sections,
                 include_tech_stack="technology_stack" in sections,
+                user_id=user_id,
+                db=db,
             )
 
         if progress_callback:
@@ -542,9 +565,26 @@ class RepoAnalysisService:
         language_stats: Optional[LanguageStats],
         include_architecture: bool,
         include_tech_stack: bool,
+        user_id: Optional[UUID] = None,
+        db: Optional[AsyncSession] = None,
     ) -> RepoInsights:
         """Generate LLM-powered insights about the repository."""
         insights = RepoInsights()
+
+        # Load user LLM settings
+        user_settings = None
+        if user_id and db:
+            try:
+                from app.models.user import UserPreferences
+                result = await db.execute(
+                    select(UserPreferences).where(UserPreferences.user_id == user_id)
+                )
+                user_prefs = result.scalar_one_or_none()
+                if user_prefs:
+                    user_settings = UserLLMSettings.from_preferences(user_prefs)
+                    logger.info(f"Loaded user LLM settings for user {user_id}")
+            except Exception as e:
+                logger.warning(f"Failed to load user LLM settings: {e}")
 
         # Build context
         context_parts = [
@@ -582,10 +622,13 @@ Repository context:
 Provide a concise architecture summary:"""
 
                 arch_response = await self.llm_service.generate_response(
-                    messages=[{"role": "user", "content": arch_prompt}],
-                    task_type="summarization"
+                    query=arch_prompt,
+                    task_type="summarization",
+                    user_id=user_id,
+                    db=db,
+                    user_settings=user_settings,
                 )
-                insights.architecture_summary = arch_response.get("content", "")
+                insights.architecture_summary = arch_response
 
                 # Extract key features
                 features_prompt = f"""Based on this repository, list 3-5 key features or capabilities.
@@ -597,10 +640,13 @@ Description: {repo_info.description or 'No description'}
 Key features:"""
 
                 features_response = await self.llm_service.generate_response(
-                    messages=[{"role": "user", "content": features_prompt}],
-                    task_type="summarization"
+                    query=features_prompt,
+                    task_type="summarization",
+                    user_id=user_id,
+                    db=db,
+                    user_settings=user_settings,
                 )
-                features_text = features_response.get("content", "")
+                features_text = features_response
                 insights.key_features = [
                     line.strip().lstrip("•-*").strip()
                     for line in features_text.split("\n")
@@ -618,10 +664,13 @@ Repository context:
 Technology stack:"""
 
                 tech_response = await self.llm_service.generate_response(
-                    messages=[{"role": "user", "content": tech_prompt}],
-                    task_type="summarization"
+                    query=tech_prompt,
+                    task_type="summarization",
+                    user_id=user_id,
+                    db=db,
+                    user_settings=user_settings,
                 )
-                tech_text = tech_response.get("content", "")
+                tech_text = tech_response
                 insights.technology_stack = [
                     line.strip().lstrip("•-*").strip()
                     for line in tech_text.split("\n")

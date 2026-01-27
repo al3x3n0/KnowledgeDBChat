@@ -29,6 +29,7 @@ import {
   AgentDefinition,
   AgentDefinitionCreate,
   AgentDefinitionUpdate,
+  AgentDefinitionSummary,
   CapabilityInfo,
   KGRelationshipDetail,
   KGRelationshipCreate,
@@ -39,6 +40,20 @@ import {
   NotificationListResponse,
   NotificationPreferences,
   NotificationPreferencesUpdate,
+  ArxivSearchResponse,
+  ToolAudit,
+  LLMUsageSummaryResponse,
+  LLMUsageEvent,
+  APIKey,
+  APIKeyCreate,
+  APIKeyCreateResponse,
+  APIKeyUpdate,
+  APIKeyListResponse,
+  APIKeyUsageStats,
+  RepoReportJob,
+  RepoReportJobCreate,
+  RepoReportJobListResponse,
+  AvailableSectionsResponse,
 } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -328,6 +343,7 @@ class ApiClient {
     llm_temperature: number | null;
     llm_max_tokens: number | null;
     llm_task_models: Record<string, string> | null;
+    llm_task_providers: Record<string, string> | null;
   }> {
     const response = await this.client.get('/api/v1/users/me/llm-settings');
     return response.data;
@@ -341,6 +357,7 @@ class ApiClient {
     llm_temperature?: number | null;
     llm_max_tokens?: number | null;
     llm_task_models?: Record<string, string> | null;
+    llm_task_providers?: Record<string, string> | null;
   }): Promise<{
     llm_provider: string | null;
     llm_model: string | null;
@@ -349,6 +366,7 @@ class ApiClient {
     llm_temperature: number | null;
     llm_max_tokens: number | null;
     llm_task_models: Record<string, string> | null;
+    llm_task_providers: Record<string, string> | null;
   }> {
     const response = await this.client.put('/api/v1/users/me/llm-settings', settings);
     return response.data;
@@ -359,9 +377,15 @@ class ApiClient {
     return response.data;
   }
 
+  async listMyLLMModels(params?: { provider?: string }): Promise<{ provider: string; models: string[]; default_model?: string | null; error?: string | null }> {
+    const response = await this.client.get('/api/v1/users/me/llm-models', { params });
+    return response.data;
+  }
+
   // Agent Chat API
   async agentChat(request: {
     message: string;
+    agent_id?: string;
     conversation_history?: Array<{
       id: string;
       role: string;
@@ -388,6 +412,13 @@ class ApiClient {
     }>;
     requires_user_action: boolean;
     action_type?: string;
+    routing_info?: {
+      agent_id: string;
+      agent_name: string;
+      agent_display_name: string;
+      routing_reason: string;
+      handoff_from?: string | null;
+    };
   }> {
     const response = await this.client.post('/api/v1/agent/chat', request);
     return response.data;
@@ -414,6 +445,133 @@ class ApiClient {
     return response.data;
   }
 
+  async searchArxiv(params: {
+    q: string;
+    start?: number;
+    max_results?: number;
+    sort_by?: 'relevance' | 'lastUpdatedDate' | 'submittedDate';
+    sort_order?: 'ascending' | 'descending';
+  }): Promise<ArxivSearchResponse> {
+    const response = await this.client.get('/api/v1/research/arxiv/search', { params });
+    return response.data;
+  }
+
+  async translateArxivQuery(payload: {
+    text: string;
+    categories?: string[];
+  }): Promise<{ query: string }>{
+    const response = await this.client.post('/api/v1/research/arxiv/translate-query', payload);
+    return response.data;
+  }
+
+  async listArxivImports(params?: {
+    limit?: number;
+    offset?: number;
+  }): Promise<{ items: Array<any>; total: number; limit: number; offset: number }>{
+    const response = await this.client.get('/api/v1/research/arxiv/imports', { params });
+    return response.data;
+  }
+
+  async ingestArxivPapers(payload: {
+    name?: string;
+    search_queries?: string[];
+    paper_ids?: string[];
+    categories?: string[];
+    max_results?: number;
+    start?: number;
+    sort_by?: 'relevance' | 'lastUpdatedDate' | 'submittedDate';
+    sort_order?: 'ascending' | 'descending';
+    auto_sync?: boolean;
+    auto_summarize?: boolean;
+    auto_literature_review?: boolean;
+    topic?: string;
+  }): Promise<DocumentSource> {
+    const response = await this.client.post('/api/v1/documents/sources/arxiv', payload);
+    return response.data;
+  }
+
+  async summarizeArxivImport(
+    sourceId: string,
+    payload?: { force?: boolean; limit?: number; only_missing?: boolean }
+  ): Promise<{ message: string; source_id: string; queued: number; considered: number }>{
+    const response = await this.client.post(`/api/v1/research/arxiv/imports/${sourceId}/summarize`, {
+      force: payload?.force ?? false,
+      limit: payload?.limit ?? 200,
+      only_missing: payload?.only_missing ?? true,
+    });
+    return response.data;
+  }
+
+  async generateReviewForArxivImport(
+    sourceId: string,
+    payload?: { topic?: string | null }
+  ): Promise<{ message: string; source_id: string; task_id: string }>{
+    const response = await this.client.post(`/api/v1/research/arxiv/imports/${sourceId}/generate-review`, {
+      topic: payload?.topic ?? null,
+    });
+    return response.data;
+  }
+
+  async generateSlidesForArxivImport(
+    sourceId: string,
+    payload?: {
+      title?: string;
+      topic?: string | null;
+      slide_count?: number;
+      style?: string;
+      include_diagrams?: boolean;
+      prefer_review_document?: boolean;
+    }
+  ): Promise<{ message: string; source_id: string; presentation_job_id: string }>{
+    const response = await this.client.post(`/api/v1/research/arxiv/imports/${sourceId}/generate-slides`, payload || {});
+    return response.data;
+  }
+
+  async enrichMetadataForArxivImport(
+    sourceId: string,
+    payload?: { force?: boolean; limit?: number }
+  ): Promise<{ message: string; source_id: string; task_id: string }>{
+    const response = await this.client.post(`/api/v1/research/arxiv/imports/${sourceId}/enrich-metadata`, {
+      force: payload?.force ?? false,
+      limit: payload?.limit ?? 500,
+    });
+    return response.data;
+  }
+
+  async listReadingLists(params?: { limit?: number; offset?: number }): Promise<{ items: any[]; total: number; limit: number; offset: number }>{
+    const response = await this.client.get('/api/v1/reading-lists', { params });
+    return response.data;
+  }
+
+  async getReadingList(readingListId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/reading-lists/${readingListId}`);
+    return response.data;
+  }
+
+  async createReadingList(payload: {
+    name: string;
+    description?: string | null;
+    source_id?: string | null;
+    auto_populate_from_source?: boolean;
+  }): Promise<any> {
+    const response = await this.client.post('/api/v1/reading-lists', payload);
+    return response.data;
+  }
+
+  async updateReadingListItem(
+    readingListId: string,
+    itemId: string,
+    payload: { status?: 'to-read' | 'reading' | 'done'; priority?: number; position?: number; notes?: string | null }
+  ): Promise<any> {
+    const response = await this.client.put(`/api/v1/reading-lists/${readingListId}/items/${itemId}`, payload);
+    return response.data;
+  }
+
+  async createWorkflow(payload: any): Promise<any> {
+    const response = await this.client.post('/api/v1/workflows', payload);
+    return response.data;
+  }
+
   async searchKGEntities(
     q?: string,
     limit: number = 50,
@@ -435,6 +593,11 @@ class ApiClient {
 
   async summarizeDocument(documentId: string, force: boolean = false): Promise<{ message: string; task_id: string }>{
     const response = await this.client.post(`/api/v1/documents/${documentId}/summarize`, null, { params: { force } });
+    return response.data;
+  }
+
+  async getRelatedDocuments(documentId: string, limit: number = 8): Promise<{ items: any[]; limit: number }>{
+    const response = await this.client.get(`/api/v1/documents/${documentId}/related`, { params: { limit } });
     return response.data;
   }
 
@@ -503,14 +666,17 @@ class ApiClient {
   async listAgentDefinitions(params?: {
     search?: string;
     active_only?: boolean;
-  }): Promise<{ agents: AgentDefinition[]; total: number }> {
+  }): Promise<{ agents: AgentDefinitionSummary[]; total: number }> {
     const response = await this.client.get('/api/v1/agent/agents', { params });
     return response.data;
   }
 
   async getAgentDefinition(agentId: string): Promise<AgentDefinition> {
     const response = await this.client.get(`/api/v1/agent/agents/${agentId}`);
-    return response.data;
+    return {
+      ...response.data,
+      system_prompt: response.data?.system_prompt ?? null,
+    };
   }
 
   async createAgentDefinition(data: AgentDefinitionCreate): Promise<AgentDefinition> {
@@ -622,6 +788,54 @@ class ApiClient {
   // Users (admin)
   async searchUsers(search: string, page: number = 1, page_size: number = 10): Promise<{ items: Array<User>; total: number; page: number; page_size: number }>{
     const response = await this.client.get('/api/v1/users/', { params: { search, page, page_size } });
+    return response.data;
+  }
+
+  // Tool audit & approvals (admin)
+  async listToolAudits(params?: { status?: string; limit?: number }): Promise<ToolAudit[]> {
+    const response = await this.client.get('/api/v1/audit/tools', { params });
+    return response.data;
+  }
+
+  async approveToolAudit(auditId: string, note?: string): Promise<ToolAudit> {
+    const response = await this.client.post(`/api/v1/audit/tools/${auditId}/approve`, { note });
+    return response.data;
+  }
+
+  async rejectToolAudit(auditId: string, note?: string): Promise<ToolAudit> {
+    const response = await this.client.post(`/api/v1/audit/tools/${auditId}/reject`, { note });
+    return response.data;
+  }
+
+  async runToolAudit(auditId: string): Promise<ToolAudit> {
+    const response = await this.client.post(`/api/v1/audit/tools/${auditId}/run`);
+    return response.data;
+  }
+
+  // LLM usage (tokens/latency)
+  async getLLMUsageSummary(params?: {
+    provider?: string;
+    model?: string;
+    task_type?: string;
+    user_id?: string;
+    date_from?: string;
+    date_to?: string;
+  }): Promise<LLMUsageSummaryResponse> {
+    const response = await this.client.get('/api/v1/usage/llm/summary', { params });
+    return response.data;
+  }
+
+  async listLLMUsageEvents(params?: {
+    provider?: string;
+    model?: string;
+    task_type?: string;
+    user_id?: string;
+    date_from?: string;
+    date_to?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<{ items: LLMUsageEvent[]; total: number; page: number; page_size: number; total_pages: number }>{
+    const response = await this.client.get('/api/v1/usage/llm/events', { params });
     return response.data;
   }
 
@@ -1086,6 +1300,12 @@ class ApiClient {
   // Admin endpoints
   async getSystemHealth(): Promise<SystemHealth> {
     const response = await this.client.get('/api/v1/admin/health');
+    return response.data;
+  }
+
+  // Non-admin system health (for degraded-mode banner)
+  async getSystemHealthStatus(): Promise<SystemHealth> {
+    const response = await this.client.get('/api/v1/system/health');
     return response.data;
   }
 
@@ -1767,6 +1987,129 @@ class ApiClient {
     const host = window.location.host;
     const wsUrl = `${protocol}//${host}/api/v1/notifications/ws?token=${encodeURIComponent(token)}`;
     console.log('Creating notifications WebSocket connection to:', wsUrl);
+    return new WebSocket(wsUrl);
+  }
+
+  // ==================== API Key endpoints ====================
+
+  async createAPIKey(data: APIKeyCreate): Promise<APIKeyCreateResponse> {
+    const response = await this.client.post('/api/v1/api-keys/', data);
+    return response.data;
+  }
+
+  async listAPIKeys(includeRevoked: boolean = false): Promise<APIKeyListResponse> {
+    const response = await this.client.get('/api/v1/api-keys/', {
+      params: { include_revoked: includeRevoked },
+    });
+    return response.data;
+  }
+
+  async getAPIKey(keyId: string): Promise<APIKey> {
+    const response = await this.client.get(`/api/v1/api-keys/${keyId}`);
+    return response.data;
+  }
+
+  async updateAPIKey(keyId: string, data: APIKeyUpdate): Promise<APIKey> {
+    const response = await this.client.patch(`/api/v1/api-keys/${keyId}`, data);
+    return response.data;
+  }
+
+  async revokeAPIKey(keyId: string): Promise<void> {
+    await this.client.delete(`/api/v1/api-keys/${keyId}`);
+  }
+
+  async getAPIKeyUsage(keyId: string, days: number = 30): Promise<APIKeyUsageStats> {
+    const response = await this.client.get(`/api/v1/api-keys/${keyId}/usage`, {
+      params: { days },
+    });
+    return response.data;
+  }
+
+  // ==================== Repository Report endpoints ====================
+
+  async getRepoReportSections(): Promise<AvailableSectionsResponse> {
+    const response = await this.client.get('/api/v1/repo-reports/sections');
+    return response.data;
+  }
+
+  async createRepoReport(data: RepoReportJobCreate): Promise<RepoReportJob> {
+    const response = await this.client.post('/api/v1/repo-reports', data);
+    return response.data;
+  }
+
+  async listRepoReports(params?: {
+    limit?: number;
+    offset?: number;
+    status_filter?: string;
+    output_format?: string;
+  }): Promise<RepoReportJobListResponse> {
+    const response = await this.client.get('/api/v1/repo-reports', { params });
+    return response.data;
+  }
+
+  async getRepoReport(jobId: string, includeAnalysis: boolean = false): Promise<RepoReportJob> {
+    const response = await this.client.get(`/api/v1/repo-reports/${jobId}`, {
+      params: { include_analysis: includeAnalysis },
+    });
+    return response.data;
+  }
+
+  async downloadRepoReport(jobId: string): Promise<void> {
+    const token = localStorage.getItem('access_token');
+    const baseUrl = this.client.defaults.baseURL || API_BASE_URL;
+    const url = `${baseUrl}/api/v1/repo-reports/${jobId}/download`;
+
+    const response = await fetch(url, {
+      headers: {
+        'Authorization': `Bearer ${token}`,
+      },
+      redirect: 'follow',
+    });
+
+    if (response.ok) {
+      const blob = await response.blob();
+      const contentDisposition = response.headers.get('content-disposition');
+      let filename = `repo_report_${jobId}`;
+      if (contentDisposition) {
+        const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+        if (filenameMatch && filenameMatch[1]) {
+          filename = filenameMatch[1].replace(/['"]/g, '');
+        }
+      }
+
+      // Trigger download
+      const downloadUrl = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = downloadUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+      URL.revokeObjectURL(downloadUrl);
+    } else {
+      throw new Error(`Download failed: ${response.statusText}`);
+    }
+  }
+
+  async deleteRepoReport(jobId: string): Promise<void> {
+    await this.client.delete(`/api/v1/repo-reports/${jobId}`);
+  }
+
+  async cancelRepoReport(jobId: string): Promise<RepoReportJob> {
+    const response = await this.client.post(`/api/v1/repo-reports/${jobId}/cancel`);
+    return response.data;
+  }
+
+  // WebSocket for repo report progress
+  createRepoReportProgressWebSocket(jobId: string): WebSocket {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      throw new Error('No authentication token found. Please log in.');
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/api/v1/repo-reports/${jobId}/progress?token=${encodeURIComponent(token)}`;
+    console.log('Creating repo report progress WebSocket connection to:', wsUrl);
     return new WebSocket(wsUrl);
   }
 }

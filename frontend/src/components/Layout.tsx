@@ -2,7 +2,7 @@
  * Main layout component with sidebar navigation
  */
 
-import React, { useState } from 'react';
+import React, { useMemo, useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
   MessageCircle,
@@ -21,12 +21,27 @@ import {
   Presentation,
   Network,
   Search,
+  Bot,
+  BookOpen,
+  ListChecks,
+  BarChart3,
+  FolderGit2,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
 import Button from './common/Button';
 import AgentWidget from './agent/AgentWidget';
 import NotificationBell from './notifications/NotificationBell';
+import { useQuery } from 'react-query';
+import { apiClient } from '../services/api';
+import type { SystemHealth } from '../types';
+
+type NavTo = string | { pathname: string; search?: string };
+interface NavItem {
+  name: string;
+  to: NavTo;
+  icon: React.ComponentType<{ className?: string }>;
+}
 
 const Layout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -62,42 +77,108 @@ const Layout: React.FC = () => {
     },
   ]);
 
-  const navigation = [
-    { name: 'Chat', href: '/chat', icon: MessageCircle },
-    { name: 'Search', href: '/search', icon: Search },
-    { name: 'Documents', href: '/documents', icon: FileText },
-    { name: 'Knowledge Graph', href: '/kg/global', icon: Network },
-    { name: 'Templates', href: '/templates', icon: FileCheck },
-    { name: 'Presentations', href: '/presentations', icon: Presentation },
-    { name: 'Workflows', href: '/workflows', icon: Workflow },
-    { name: 'Tools', href: '/tools', icon: Wrench },
-    { name: 'Memory', href: '/memory', icon: Brain },
-    { name: 'Settings', href: '/settings', icon: Settings },
+  const navigation: NavItem[] = [
+    { name: 'Chat', to: '/chat', icon: MessageCircle },
+    { name: 'Search', to: '/search', icon: Search },
+    { name: 'Papers', to: '/papers', icon: BookOpen },
+    { name: 'Reading Lists', to: '/reading-lists', icon: ListChecks },
+    { name: 'Documents', to: '/documents', icon: FileText },
+    { name: 'Knowledge Graph', to: '/kg/global', icon: Network },
+    { name: 'Templates', to: '/templates', icon: FileCheck },
+    { name: 'Presentations', to: '/presentations', icon: Presentation },
+    { name: 'Repo Reports', to: '/repo-reports', icon: FolderGit2 },
+    { name: 'Workflows', to: '/workflows', icon: Workflow },
+    { name: 'Tools', to: '/tools', icon: Wrench },
+    { name: 'Memory', to: '/memory', icon: Brain },
+    { name: 'Settings', to: '/settings', icon: Settings },
   ];
 
   // Add admin navigation for admin users
   if (user?.role === 'admin') {
     navigation.push({
+      name: 'Usage',
+      to: '/usage',
+      icon: BarChart3,
+    });
+    navigation.push({
       name: 'Admin',
-      href: '/admin',
+      to: { pathname: '/admin', search: '?tab=overview' },
       icon: Shield,
     });
     navigation.push({
+      name: 'Agents',
+      to: { pathname: '/admin', search: '?tab=agents' },
+      icon: Bot,
+    });
+    navigation.push({
       name: 'KG Admin',
-      href: '/admin/kg',
+      to: '/admin/kg',
       icon: Database,
     });
     navigation.push({
       name: 'KG Audit',
-      href: '/admin/kg/audit',
+      to: '/admin/kg/audit',
       icon: Database,
     });
   }
+
+  const isActiveNavItem = (item: NavItem) => {
+    const pathname = typeof item.to === 'string' ? item.to : item.to.pathname;
+    if (!location.pathname.startsWith(pathname)) return false;
+
+    if (typeof item.to === 'string') return true;
+
+    const desiredTab = item.to.search ? new URLSearchParams(item.to.search).get('tab') : null;
+    if (!desiredTab) return true;
+    const currentTab = new URLSearchParams(location.search).get('tab') || 'overview';
+    return desiredTab === currentTab;
+  };
 
   const handleLogout = async () => {
     await logout();
     navigate('/login');
   };
+
+  const { data: systemHealth } = useQuery<SystemHealth>(
+    ['system-health-status'],
+    () => apiClient.getSystemHealthStatus(),
+    {
+      enabled: !!user,
+      refetchInterval: 15000,
+      retry: 1,
+    }
+  );
+
+  const degradedBanner = useMemo(() => {
+    if (!systemHealth) return null;
+    if (systemHealth.overall_status === 'healthy') return null;
+
+    const unhealthy = Object.entries(systemHealth.services)
+      .filter(([, s]) => s.status && s.status !== 'healthy')
+      .map(([name, s]) => `${name}${s.error ? `: ${s.error}` : s.message ? `: ${s.message}` : ''}`);
+
+    const title =
+      systemHealth.overall_status === 'unhealthy' ? 'System degraded' : 'Limited functionality';
+    const bg = systemHealth.overall_status === 'unhealthy' ? 'bg-red-50 border-red-200 text-red-900' : 'bg-yellow-50 border-yellow-200 text-yellow-900';
+
+    return (
+      <div className={`border-b px-4 py-2 text-sm ${bg}`}>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="font-medium">{title}</div>
+            {unhealthy.length > 0 && (
+              <div className="text-xs mt-0.5 opacity-90">{unhealthy.join(' • ')}</div>
+            )}
+          </div>
+          {user?.role === 'admin' && (
+            <Link className="text-xs underline whitespace-nowrap" to={{ pathname: '/admin', search: '?tab=overview' }}>
+              View system health
+            </Link>
+          )}
+        </div>
+      </div>
+    );
+  }, [systemHealth, user]);
 
   return (
     <div className="h-screen flex overflow-hidden bg-gray-50">
@@ -134,13 +215,13 @@ const Layout: React.FC = () => {
         {/* Navigation */}
         <nav className="flex-1 px-4 py-4 space-y-2 overflow-y-auto">
           {navigation.map((item) => {
-            const isActive = location.pathname.startsWith(item.href);
+            const isActive = isActiveNavItem(item);
             const Icon = item.icon;
             
             return (
               <Link
                 key={item.name}
-                to={item.href}
+                to={item.to}
                 className={`
                   flex items-center px-3 py-2 text-sm font-medium rounded-lg transition-colors duration-200
                   ${isActive 
@@ -208,7 +289,7 @@ const Layout: React.FC = () => {
           
           <div className="flex items-center space-x-4">
             <h1 className="text-xl font-semibold text-gray-900">
-              {navigation.find(item => location.pathname.startsWith(item.href))?.name || 'Knowledge Database'}
+              {navigation.find(isActiveNavItem)?.name || 'Knowledge Database'}
             </h1>
           </div>
 
@@ -219,6 +300,7 @@ const Layout: React.FC = () => {
 
         {/* Page content */}
         <main className="flex-1 overflow-auto">
+          {degradedBanner}
           <Outlet />
         </main>
       </div>

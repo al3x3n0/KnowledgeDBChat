@@ -14,6 +14,13 @@ from .agent_definition import AgentDefinition, AgentConversationContext, AgentMe
 from .workflow import UserTool, Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowNodeExecution
 from .presentation import PresentationJob, PresentationTemplate
 from .notification import Notification, NotificationPreferences, NotificationType
+from .reading_list import ReadingList, ReadingListItem
+from .secret import UserSecret
+from .tool_audit import ToolExecutionAudit
+from .saved_search import SavedSearch, SearchShare
+from .llm_usage import LLMUsageEvent
+from .export_job import ExportJob
+from .repo_report import RepoReportJob
 
 __all__ = [
     "Document",
@@ -53,8 +60,15 @@ __all__ = [
     "Notification",
     "NotificationPreferences",
     "NotificationType",
+    "ReadingList",
+    "ReadingListItem",
+    "UserSecret",
+    "ToolExecutionAudit",
+    "SavedSearch",
+    "SearchShare",
+    "LLMUsageEvent",
+    # Export models
+    "ExportJob",
+    # Repository report models
+    "RepoReportJob",
 ]
-
-
-
-

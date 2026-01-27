@@ -250,6 +250,321 @@ class GitHubConnector(BaseConnector):
             logger.error(f"Error comparing {owner}/{repo} {base_branch}..{compare_branch}: {exc}")
             raise
 
+    # =========================================================================
+    # Repository Metadata Methods (for report generation)
+    # =========================================================================
+
+    async def get_repository_info(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Get repository metadata including stars, forks, description, etc."""
+        self._ensure_initialized()
+        try:
+            resp = await self._get(f"{self.api_base}/repos/{owner}/{repo}")
+            if resp.status_code != 200:
+                logger.error(f"Failed to get repo info for {owner}/{repo}: {resp.status_code}")
+                return {}
+            data = resp.json()
+            return {
+                "name": data.get("name", ""),
+                "full_name": data.get("full_name", f"{owner}/{repo}"),
+                "description": data.get("description"),
+                "url": data.get("html_url", f"https://github.com/{owner}/{repo}"),
+                "default_branch": data.get("default_branch", "main"),
+                "stars": data.get("stargazers_count", 0),
+                "forks": data.get("forks_count", 0),
+                "watchers": data.get("watchers_count", 0),
+                "open_issues": data.get("open_issues_count", 0),
+                "license": (data.get("license") or {}).get("name"),
+                "language": data.get("language"),
+                "created_at": data.get("created_at"),
+                "updated_at": data.get("updated_at"),
+                "pushed_at": data.get("pushed_at"),
+                "topics": data.get("topics", []),
+                "visibility": data.get("visibility", "public"),
+                "archived": data.get("archived", False),
+                "is_fork": data.get("fork", False),
+                "size": data.get("size", 0),  # Size in KB
+            }
+        except Exception as e:
+            logger.error(f"Error getting repo info for {owner}/{repo}: {e}")
+            return {}
+
+    async def get_readme(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Get README content and HTML."""
+        self._ensure_initialized()
+        try:
+            # Get raw README content
+            resp = await self._get(f"{self.api_base}/repos/{owner}/{repo}/readme")
+            if resp.status_code != 200:
+                logger.debug(f"No README found for {owner}/{repo}")
+                return {"content": None, "html": None, "name": None}
+
+            data = resp.json()
+            content = None
+            if data.get("encoding") == "base64" and data.get("content"):
+                try:
+                    content = base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
+                except Exception:
+                    pass
+
+            # Get HTML-rendered README
+            html_resp = await self.client.get(
+                f"{self.api_base}/repos/{owner}/{repo}/readme",
+                headers={"Accept": "application/vnd.github.html+json"}
+            )
+            html_content = html_resp.text if html_resp.status_code == 200 else None
+
+            return {
+                "content": content,
+                "html": html_content,
+                "name": data.get("name", "README.md"),
+                "path": data.get("path"),
+                "url": data.get("html_url"),
+            }
+        except Exception as e:
+            logger.error(f"Error getting README for {owner}/{repo}: {e}")
+            return {"content": None, "html": None, "name": None}
+
+    async def get_recent_commits(
+        self,
+        owner: str,
+        repo: str,
+        limit: int = 20,
+        branch: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get recent commits for a repository."""
+        self._ensure_initialized()
+        commits: List[Dict[str, Any]] = []
+        try:
+            params = {"per_page": min(limit, 100)}
+            if branch:
+                params["sha"] = branch
+
+            resp = await self._get(f"{self.api_base}/repos/{owner}/{repo}/commits", params=params)
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get commits for {owner}/{repo}: {resp.status_code}")
+                return commits
+
+            for item in resp.json()[:limit]:
+                commit_data = item.get("commit", {})
+                author_info = commit_data.get("author", {})
+                commits.append({
+                    "sha": item.get("sha", "")[:8],  # Short SHA
+                    "full_sha": item.get("sha", ""),
+                    "message": commit_data.get("message", "").split("\n")[0],  # First line
+                    "full_message": commit_data.get("message", ""),
+                    "author": author_info.get("name", "Unknown"),
+                    "author_email": author_info.get("email"),
+                    "date": author_info.get("date"),
+                    "url": item.get("html_url"),
+                })
+        except Exception as e:
+            logger.error(f"Error getting commits for {owner}/{repo}: {e}")
+        return commits
+
+    async def get_contributors(self, owner: str, repo: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get top contributors for a repository."""
+        self._ensure_initialized()
+        contributors: List[Dict[str, Any]] = []
+        try:
+            resp = await self._get(
+                f"{self.api_base}/repos/{owner}/{repo}/contributors",
+                params={"per_page": min(limit, 100)}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get contributors for {owner}/{repo}: {resp.status_code}")
+                return contributors
+
+            for item in resp.json()[:limit]:
+                contributors.append({
+                    "username": item.get("login", ""),
+                    "contributions": item.get("contributions", 0),
+                    "avatar_url": item.get("avatar_url"),
+                    "profile_url": item.get("html_url"),
+                    "type": item.get("type", "User"),
+                })
+        except Exception as e:
+            logger.error(f"Error getting contributors for {owner}/{repo}: {e}")
+        return contributors
+
+    async def get_languages(self, owner: str, repo: str) -> Dict[str, Any]:
+        """Get language statistics for a repository."""
+        self._ensure_initialized()
+        try:
+            resp = await self._get(f"{self.api_base}/repos/{owner}/{repo}/languages")
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get languages for {owner}/{repo}: {resp.status_code}")
+                return {"languages": {}, "total_bytes": 0, "percentages": {}}
+
+            data = resp.json()
+            total = sum(data.values()) if data else 0
+            percentages = {}
+            if total > 0:
+                percentages = {lang: round((bytes_count / total) * 100, 1) for lang, bytes_count in data.items()}
+
+            return {
+                "languages": data,
+                "total_bytes": total,
+                "percentages": percentages,
+            }
+        except Exception as e:
+            logger.error(f"Error getting languages for {owner}/{repo}: {e}")
+            return {"languages": {}, "total_bytes": 0, "percentages": {}}
+
+    async def get_file_tree(self, owner: str, repo: str, max_depth: int = 3) -> Dict[str, Any]:
+        """Get repository file tree structure."""
+        self._ensure_initialized()
+        try:
+            resp = await self._get(
+                f"{self.api_base}/repos/{owner}/{repo}/git/trees/HEAD",
+                params={"recursive": 1}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get file tree for {owner}/{repo}: {resp.status_code}")
+                return {"tree": None, "text": ""}
+
+            tree_data = resp.json().get("tree", [])
+
+            # Build tree structure
+            root = {"name": repo, "type": "directory", "path": "", "children": []}
+            nodes = {"/": root}
+
+            for item in tree_data:
+                path = item.get("path", "")
+                if not path:
+                    continue
+
+                # Skip deeply nested files
+                depth = path.count("/")
+                if depth >= max_depth:
+                    continue
+
+                parts = path.split("/")
+                parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+
+                # Ensure parent exists
+                if parent_path not in nodes and len(parts) > 1:
+                    # Create missing parent directories
+                    current_path = ""
+                    for i, part in enumerate(parts[:-1]):
+                        current_path = "/" + "/".join(parts[:i+1])
+                        if current_path not in nodes:
+                            parent_parent = "/" + "/".join(parts[:i]) if i > 0 else "/"
+                            new_node = {"name": part, "type": "directory", "path": current_path.lstrip("/"), "children": []}
+                            nodes[current_path] = new_node
+                            if parent_parent in nodes:
+                                nodes[parent_parent]["children"].append(new_node)
+
+                # Create node
+                node = {
+                    "name": parts[-1],
+                    "type": "file" if item.get("type") == "blob" else "directory",
+                    "path": path,
+                    "size": item.get("size"),
+                }
+                if item.get("type") == "tree":
+                    node["children"] = []
+
+                node_path = "/" + path
+                nodes[node_path] = node
+
+                if parent_path in nodes:
+                    nodes[parent_path]["children"].append(node)
+
+            # Generate text representation
+            text_lines = [f"{repo}/"]
+            self._tree_to_text(root, "", text_lines)
+
+            return {
+                "tree": root,
+                "text": "\n".join(text_lines),
+                "total_files": len([t for t in tree_data if t.get("type") == "blob"]),
+                "total_dirs": len([t for t in tree_data if t.get("type") == "tree"]),
+            }
+        except Exception as e:
+            logger.error(f"Error getting file tree for {owner}/{repo}: {e}")
+            return {"tree": None, "text": ""}
+
+    def _tree_to_text(self, node: Dict, prefix: str, lines: List[str]) -> None:
+        """Convert tree node to text lines recursively."""
+        children = node.get("children", [])
+        # Sort: directories first, then files, alphabetically
+        children = sorted(children, key=lambda x: (x.get("type") != "directory", x.get("name", "").lower()))
+
+        for i, child in enumerate(children):
+            is_last = i == len(children) - 1
+            connector = "└── " if is_last else "├── "
+            name = child.get("name", "")
+            if child.get("type") == "directory":
+                name += "/"
+            lines.append(f"{prefix}{connector}{name}")
+
+            if child.get("type") == "directory" and child.get("children"):
+                extension = "    " if is_last else "│   "
+                self._tree_to_text(child, prefix + extension, lines)
+
+    async def get_open_issues(self, owner: str, repo: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get open issues for a repository."""
+        self._ensure_initialized()
+        issues: List[Dict[str, Any]] = []
+        try:
+            resp = await self._get(
+                f"{self.api_base}/repos/{owner}/{repo}/issues",
+                params={"state": "open", "per_page": min(limit, 100), "sort": "updated", "direction": "desc"}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get issues for {owner}/{repo}: {resp.status_code}")
+                return issues
+
+            for item in resp.json()[:limit]:
+                # Skip pull requests
+                if item.get("pull_request"):
+                    continue
+                issues.append({
+                    "number": item.get("number"),
+                    "title": item.get("title", ""),
+                    "state": item.get("state", "open"),
+                    "author": (item.get("user") or {}).get("login", "Unknown"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "labels": [l.get("name") for l in item.get("labels", [])],
+                    "url": item.get("html_url"),
+                    "comments": item.get("comments", 0),
+                })
+        except Exception as e:
+            logger.error(f"Error getting issues for {owner}/{repo}: {e}")
+        return issues
+
+    async def get_open_pull_requests(self, owner: str, repo: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get open pull requests for a repository."""
+        self._ensure_initialized()
+        prs: List[Dict[str, Any]] = []
+        try:
+            resp = await self._get(
+                f"{self.api_base}/repos/{owner}/{repo}/pulls",
+                params={"state": "open", "per_page": min(limit, 100), "sort": "updated", "direction": "desc"}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get PRs for {owner}/{repo}: {resp.status_code}")
+                return prs
+
+            for item in resp.json()[:limit]:
+                prs.append({
+                    "number": item.get("number"),
+                    "title": item.get("title", ""),
+                    "state": item.get("state", "open"),
+                    "author": (item.get("user") or {}).get("login", "Unknown"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "labels": [l.get("name") for l in item.get("labels", [])],
+                    "source_branch": (item.get("head") or {}).get("ref", ""),
+                    "target_branch": (item.get("base") or {}).get("ref", ""),
+                    "url": item.get("html_url"),
+                    "draft": item.get("draft", False),
+                })
+        except Exception as e:
+            logger.error(f"Error getting PRs for {owner}/{repo}: {e}")
+        return prs
+
     async def get_document_content(self, identifier: str) -> str:
         self._ensure_initialized()
         try:

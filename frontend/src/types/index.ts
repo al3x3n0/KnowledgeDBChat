@@ -87,14 +87,30 @@ export interface AgentDefinition {
   name: string;
   display_name: string;
   description?: string | null;
-  system_prompt: string;
+  system_prompt: string | null;
   capabilities: string[];
   tool_whitelist?: string[] | null;
   priority: number;
   is_active: boolean;
   is_system: boolean;
+  owner_user_id?: string | null;
+  version?: number | null;
+  lifecycle_status?: 'draft' | 'published' | 'archived' | string;
   created_at: string;
   updated_at: string;
+}
+
+export interface AgentDefinitionSummary {
+  id: string;
+  name: string;
+  display_name: string;
+  description?: string | null;
+  capabilities: string[];
+  priority: number;
+  is_active: boolean;
+  is_system: boolean;
+  created_at?: string | null;
+  updated_at?: string | null;
 }
 
 export interface AgentDefinitionCreate {
@@ -122,6 +138,28 @@ export interface CapabilityInfo {
   name: string;
   description: string;
   keywords: string[];
+}
+
+export interface ArxivPaper {
+  id: string;
+  entry_url: string;
+  pdf_url?: string | null;
+  title: string;
+  summary?: string;
+  authors?: string[];
+  published?: string;
+  updated?: string;
+  categories?: string[];
+  primary_category?: string | null;
+  doi?: string | null;
+  comments?: string | null;
+}
+
+export interface ArxivSearchResponse {
+  total_results: number;
+  start: number;
+  max_results: number;
+  items: ArxivPaper[];
 }
 
 export interface Document {
@@ -161,7 +199,7 @@ export interface Document {
 export interface DocumentSource {
   id: string;
   name: string;
-  source_type: 'gitlab' | 'github' | 'confluence' | 'web' | 'file';
+  source_type: 'gitlab' | 'github' | 'confluence' | 'web' | 'file' | 'arxiv';
   config: any;
   is_active: boolean;
   is_syncing?: boolean;
@@ -241,6 +279,60 @@ export interface SystemStats {
   vector_store?: VectorStoreStats;
   processing?: ProcessingStats;
   error?: string;
+}
+
+export interface ToolAudit {
+  id: string;
+  user_id: string;
+  agent_definition_id?: string | null;
+  conversation_id?: string | null;
+  tool_name: string;
+  tool_input?: Record<string, any> | null;
+  tool_output?: any;
+  status: string;
+  error?: string | null;
+  execution_time_ms?: number | null;
+  approval_required: boolean;
+  approval_status?: string | null;
+  approved_by?: string | null;
+  approved_at?: string | null;
+  approval_note?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface LLMUsageEvent {
+  id: string;
+  user_id?: string | null;
+  provider: string;
+  model?: string | null;
+  task_type?: string | null;
+  prompt_tokens?: number | null;
+  completion_tokens?: number | null;
+  total_tokens?: number | null;
+  input_chars?: number | null;
+  output_chars?: number | null;
+  latency_ms?: number | null;
+  error?: string | null;
+  extra?: Record<string, any> | null;
+  created_at: string;
+}
+
+export interface LLMUsageSummaryItem {
+  provider: string;
+  model?: string | null;
+  task_type?: string | null;
+  request_count: number;
+  total_prompt_tokens: number;
+  total_completion_tokens: number;
+  total_tokens: number;
+  avg_latency_ms?: number | null;
+}
+
+export interface LLMUsageSummaryResponse {
+  items: LLMUsageSummaryItem[];
+  date_from?: string | null;
+  date_to?: string | null;
 }
 
 export interface DocumentStats {
@@ -636,4 +728,146 @@ export interface NotificationPreferencesUpdate {
   notify_comments?: boolean;
   play_sound?: boolean;
   show_desktop_notification?: boolean;
+}
+
+// API Key Types
+export interface APIKey {
+  id: string;
+  name: string;
+  description?: string;
+  key_prefix: string;
+  scopes?: string[];
+  rate_limit_per_minute: number;
+  rate_limit_per_day: number;
+  is_active: boolean;
+  expires_at?: string;
+  last_used_at?: string;
+  last_used_ip?: string;
+  usage_count: number;
+  created_at: string;
+  revoked_at?: string;
+}
+
+export interface APIKeyCreate {
+  name: string;
+  description?: string;
+  scopes?: string[];
+  expires_in_days?: number;
+  rate_limit_per_minute?: number;
+  rate_limit_per_day?: number;
+}
+
+export interface APIKeyCreateResponse extends APIKey {
+  api_key: string; // The actual key - only shown once!
+  message: string;
+}
+
+export interface APIKeyUpdate {
+  name?: string;
+  description?: string;
+  scopes?: string[];
+  rate_limit_per_minute?: number;
+  rate_limit_per_day?: number;
+  is_active?: boolean;
+}
+
+export interface APIKeyListResponse {
+  api_keys: APIKey[];
+  total: number;
+}
+
+export interface APIKeyUsageStats {
+  key_id: string;
+  key_name: string;
+  period_days: number;
+  total_requests: number;
+  lifetime_requests: number;
+  last_used_at?: string;
+  top_endpoints: Array<{ endpoint: string; count: number }>;
+}
+
+// ==================== Repository Report Types ====================
+
+export type RepoReportStatus = 'pending' | 'analyzing' | 'generating' | 'uploading' | 'completed' | 'failed' | 'cancelled';
+export type RepoReportOutputFormat = 'docx' | 'pdf' | 'pptx';
+export type RepoReportStyle = 'professional' | 'casual' | 'technical' | 'modern' | 'minimal' | 'corporate' | 'creative' | 'dark';
+
+export interface RepoReportSection {
+  id: string;
+  name: string;
+  description: string;
+  default: boolean;
+}
+
+export interface RepoReportJobCreate {
+  source_id?: string;
+  repo_url?: string;
+  repo_token?: string;
+  output_format: RepoReportOutputFormat;
+  title?: string;
+  sections?: string[];
+  slide_count?: number;
+  include_diagrams?: boolean;
+  style?: RepoReportStyle;
+  custom_theme?: ThemeConfig;
+}
+
+export interface RepoReportJob {
+  id: string;
+  user_id: string;
+  source_id?: string;
+  adhoc_url?: string;
+  repo_name: string;
+  repo_url: string;
+  repo_type: 'github' | 'gitlab';
+  output_format: RepoReportOutputFormat;
+  title: string;
+  sections: string[];
+  slide_count?: number;
+  include_diagrams: boolean;
+  style: RepoReportStyle;
+  custom_theme?: ThemeConfig;
+  status: RepoReportStatus;
+  progress: number;
+  current_stage?: string;
+  file_path?: string;
+  file_size?: number;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface RepoReportJobListItem {
+  id: string;
+  user_id: string;
+  repo_name: string;
+  repo_url: string;
+  repo_type: 'github' | 'gitlab';
+  output_format: RepoReportOutputFormat;
+  title: string;
+  status: RepoReportStatus;
+  progress: number;
+  file_size?: number;
+  error?: string;
+  created_at: string;
+  started_at?: string;
+  completed_at?: string;
+}
+
+export interface RepoReportJobListResponse {
+  jobs: RepoReportJobListItem[];
+  total: number;
+}
+
+export interface AvailableSectionsResponse {
+  sections: RepoReportSection[];
+}
+
+export interface RepoReportProgressUpdate {
+  type: 'progress';
+  progress: number;
+  stage: string;
+  status: RepoReportStatus;
+  error?: string;
 }

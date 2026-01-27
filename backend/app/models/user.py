@@ -61,7 +61,13 @@ class User(Base):
     # Presentation relationships
     presentation_jobs = relationship("PresentationJob", back_populates="user", cascade="all, delete-orphan")
     presentation_templates = relationship("PresentationTemplate", back_populates="user", cascade="all, delete-orphan")
-    
+
+    # Export relationships
+    export_jobs = relationship("ExportJob", back_populates="user", cascade="all, delete-orphan")
+
+    # Repository report relationships
+    repo_report_jobs = relationship("RepoReportJob", back_populates="user", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<User(id={self.id}, username='{self.username}', email='{self.email}')>"
     

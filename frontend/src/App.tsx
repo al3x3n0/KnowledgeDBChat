@@ -26,6 +26,12 @@ const ToolsPage = lazy(() => import('./pages/ToolsPage'));
 const PresentationsPage = lazy(() => import('./pages/PresentationsPage'));
 const GlobalGraphPage = lazy(() => import('./pages/GlobalGraphPage'));
 const SearchPage = lazy(() => import('./pages/SearchPage'));
+const PapersPage = lazy(() => import('./pages/PapersPage'));
+const ReadingListsPage = lazy(() => import('./pages/ReadingListsPage'));
+const ReadingListDetailPage = lazy(() => import('./pages/ReadingListDetailPage'));
+const UsagePage = lazy(() => import('./pages/UsagePage'));
+const APIKeysPage = lazy(() => import('./pages/APIKeysPage'));
+const RepoReportsPage = lazy(() => import('./pages/RepoReportsPage'));
 
 // Create a client
 const queryClient = new QueryClient({
@@ -141,6 +147,30 @@ const AppRoutes: React.FC = () => {
             }
           />
           <Route
+            path="papers"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <PapersPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="reading-lists"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ReadingListsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="reading-lists/:id"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ReadingListDetailPage />
+              </Suspense>
+            }
+          />
+          <Route
             path="documents/:documentId/graph" 
             element={
               <Suspense fallback={<PageLoader />}>
@@ -161,6 +191,22 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <SettingsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="usage"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <UsagePage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="api-keys"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <APIKeysPage />
               </Suspense>
             }
           />
@@ -225,6 +271,14 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <PresentationsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="repo-reports"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <RepoReportsPage />
               </Suspense>
             }
           />

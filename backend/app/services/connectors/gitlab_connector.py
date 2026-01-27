@@ -794,7 +794,330 @@ class GitLabConnector(BaseConnector):
         except Exception as exc:
             logger.error(f"Error comparing GitLab branches for {project_id}: {exc}")
             raise
-    
+
+    # =========================================================================
+    # Repository Metadata Methods (for report generation)
+    # =========================================================================
+
+    async def get_repository_info(self, project_id: str) -> Dict[str, Any]:
+        """Get repository metadata including stars, forks, description, etc."""
+        self._ensure_initialized()
+        encoded_id = urllib.parse.quote_plus(str(project_id))
+        try:
+            resp = await self.client.get(f"{self.base_url}/api/v4/projects/{encoded_id}")
+            if resp.status_code != 200:
+                logger.error(f"Failed to get repo info for {project_id}: {resp.status_code}")
+                return {}
+            data = resp.json()
+            return {
+                "name": data.get("name", ""),
+                "full_name": data.get("path_with_namespace", str(project_id)),
+                "description": data.get("description"),
+                "url": data.get("web_url", f"{self.base_url}/{project_id}"),
+                "default_branch": data.get("default_branch", "main"),
+                "stars": data.get("star_count", 0),
+                "forks": data.get("forks_count", 0),
+                "open_issues": data.get("open_issues_count", 0),
+                "visibility": data.get("visibility", "private"),
+                "created_at": data.get("created_at"),
+                "updated_at": data.get("last_activity_at"),
+                "topics": data.get("topics", []) or data.get("tag_list", []),
+                "archived": data.get("archived", False),
+                "avatar_url": data.get("avatar_url"),
+                "namespace": data.get("namespace", {}).get("name"),
+            }
+        except Exception as e:
+            logger.error(f"Error getting repo info for {project_id}: {e}")
+            return {}
+
+    async def get_readme(self, project_id: str) -> Dict[str, Any]:
+        """Get README content."""
+        self._ensure_initialized()
+        encoded_id = urllib.parse.quote_plus(str(project_id))
+        try:
+            # Get project info first to find default branch
+            info = await self.get_repository_info(project_id)
+            default_branch = info.get("default_branch", "main")
+
+            # Try common README filenames
+            readme_files = ["README.md", "README.rst", "README.txt", "README", "readme.md"]
+            for readme_name in readme_files:
+                encoded_path = urllib.parse.quote(readme_name, safe='')
+                resp = await self.client.get(
+                    f"{self.base_url}/api/v4/projects/{encoded_id}/repository/files/{encoded_path}",
+                    params={"ref": default_branch}
+                )
+                if resp.status_code == 200:
+                    data = resp.json()
+                    content = None
+                    if data.get("encoding") == "base64" and data.get("content"):
+                        try:
+                            content = base64.b64decode(data["content"]).decode("utf-8", errors="ignore")
+                        except Exception:
+                            pass
+                    return {
+                        "content": content,
+                        "html": None,  # GitLab doesn't provide rendered HTML easily
+                        "name": data.get("file_name", readme_name),
+                        "path": data.get("file_path"),
+                    }
+
+            return {"content": None, "html": None, "name": None}
+        except Exception as e:
+            logger.error(f"Error getting README for {project_id}: {e}")
+            return {"content": None, "html": None, "name": None}
+
+    async def get_recent_commits(
+        self,
+        project_id: str,
+        limit: int = 20,
+        branch: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Get recent commits for a project."""
+        self._ensure_initialized()
+        encoded_id = urllib.parse.quote_plus(str(project_id))
+        commits: List[Dict[str, Any]] = []
+        try:
+            params = {"per_page": min(limit, 100)}
+            if branch:
+                params["ref_name"] = branch
+
+            resp = await self.client.get(
+                f"{self.base_url}/api/v4/projects/{encoded_id}/repository/commits",
+                params=params
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get commits for {project_id}: {resp.status_code}")
+                return commits
+
+            for item in resp.json()[:limit]:
+                commits.append({
+                    "sha": item.get("short_id", "")[:8],
+                    "full_sha": item.get("id", ""),
+                    "message": item.get("title", ""),
+                    "full_message": item.get("message", ""),
+                    "author": item.get("author_name", "Unknown"),
+                    "author_email": item.get("author_email"),
+                    "date": item.get("committed_date"),
+                    "url": item.get("web_url"),
+                })
+        except Exception as e:
+            logger.error(f"Error getting commits for {project_id}: {e}")
+        return commits
+
+    async def get_contributors(self, project_id: str, limit: int = 10) -> List[Dict[str, Any]]:
+        """Get top contributors for a project."""
+        self._ensure_initialized()
+        encoded_id = urllib.parse.quote_plus(str(project_id))
+        contributors: List[Dict[str, Any]] = []
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/v4/projects/{encoded_id}/repository/contributors",
+                params={"per_page": min(limit, 100)}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get contributors for {project_id}: {resp.status_code}")
+                return contributors
+
+            for item in resp.json()[:limit]:
+                contributors.append({
+                    "username": item.get("name", ""),
+                    "name": item.get("name"),
+                    "contributions": item.get("commits", 0),
+                    "email": item.get("email"),
+                    "avatar_url": None,  # GitLab doesn't provide this in contributors endpoint
+                })
+        except Exception as e:
+            logger.error(f"Error getting contributors for {project_id}: {e}")
+        return contributors
+
+    async def get_languages(self, project_id: str) -> Dict[str, Any]:
+        """Get language statistics for a project."""
+        self._ensure_initialized()
+        encoded_id = urllib.parse.quote_plus(str(project_id))
+        try:
+            resp = await self.client.get(f"{self.base_url}/api/v4/projects/{encoded_id}/languages")
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get languages for {project_id}: {resp.status_code}")
+                return {"languages": {}, "total_bytes": 0, "percentages": {}}
+
+            data = resp.json()
+            # GitLab returns percentages directly, not bytes
+            # Convert to our format
+            return {
+                "languages": {},  # GitLab doesn't give byte counts
+                "total_bytes": 0,
+                "percentages": data,
+            }
+        except Exception as e:
+            logger.error(f"Error getting languages for {project_id}: {e}")
+            return {"languages": {}, "total_bytes": 0, "percentages": {}}
+
+    async def get_file_tree(self, project_id: str, max_depth: int = 3) -> Dict[str, Any]:
+        """Get repository file tree structure."""
+        self._ensure_initialized()
+        encoded_id = urllib.parse.quote_plus(str(project_id))
+        try:
+            # Get project info for name
+            info = await self.get_repository_info(project_id)
+            repo_name = info.get("name", str(project_id))
+            default_branch = info.get("default_branch", "main")
+
+            # Get tree
+            all_items = []
+            page = 1
+            while True:
+                resp = await self.client.get(
+                    f"{self.base_url}/api/v4/projects/{encoded_id}/repository/tree",
+                    params={"recursive": True, "per_page": 100, "page": page, "ref": default_branch}
+                )
+                if resp.status_code != 200:
+                    break
+                items = resp.json()
+                if not items:
+                    break
+                all_items.extend(items)
+                if len(items) < 100:
+                    break
+                page += 1
+
+            # Build tree structure
+            root = {"name": repo_name, "type": "directory", "path": "", "children": []}
+            nodes = {"/": root}
+
+            for item in all_items:
+                path = item.get("path", "")
+                if not path:
+                    continue
+
+                # Skip deeply nested files
+                depth = path.count("/")
+                if depth >= max_depth:
+                    continue
+
+                parts = path.split("/")
+                parent_path = "/" + "/".join(parts[:-1]) if len(parts) > 1 else "/"
+
+                # Ensure parent exists
+                if parent_path not in nodes and len(parts) > 1:
+                    current_path = ""
+                    for i, part in enumerate(parts[:-1]):
+                        current_path = "/" + "/".join(parts[:i+1])
+                        if current_path not in nodes:
+                            parent_parent = "/" + "/".join(parts[:i]) if i > 0 else "/"
+                            new_node = {"name": part, "type": "directory", "path": current_path.lstrip("/"), "children": []}
+                            nodes[current_path] = new_node
+                            if parent_parent in nodes:
+                                nodes[parent_parent]["children"].append(new_node)
+
+                # Create node
+                node = {
+                    "name": parts[-1],
+                    "type": "file" if item.get("type") == "blob" else "directory",
+                    "path": path,
+                }
+                if item.get("type") == "tree":
+                    node["children"] = []
+
+                node_path = "/" + path
+                nodes[node_path] = node
+
+                if parent_path in nodes:
+                    nodes[parent_path]["children"].append(node)
+
+            # Generate text representation
+            text_lines = [f"{repo_name}/"]
+            self._tree_to_text(root, "", text_lines)
+
+            return {
+                "tree": root,
+                "text": "\n".join(text_lines),
+                "total_files": len([t for t in all_items if t.get("type") == "blob"]),
+                "total_dirs": len([t for t in all_items if t.get("type") == "tree"]),
+            }
+        except Exception as e:
+            logger.error(f"Error getting file tree for {project_id}: {e}")
+            return {"tree": None, "text": ""}
+
+    def _tree_to_text(self, node: Dict, prefix: str, lines: List[str]) -> None:
+        """Convert tree node to text lines recursively."""
+        children = node.get("children", [])
+        children = sorted(children, key=lambda x: (x.get("type") != "directory", x.get("name", "").lower()))
+
+        for i, child in enumerate(children):
+            is_last = i == len(children) - 1
+            connector = "└── " if is_last else "├── "
+            name = child.get("name", "")
+            if child.get("type") == "directory":
+                name += "/"
+            lines.append(f"{prefix}{connector}{name}")
+
+            if child.get("type") == "directory" and child.get("children"):
+                extension = "    " if is_last else "│   "
+                self._tree_to_text(child, prefix + extension, lines)
+
+    async def get_open_issues(self, project_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get open issues for a project."""
+        self._ensure_initialized()
+        encoded_id = urllib.parse.quote_plus(str(project_id))
+        issues: List[Dict[str, Any]] = []
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/v4/projects/{encoded_id}/issues",
+                params={"state": "opened", "per_page": min(limit, 100), "order_by": "updated_at", "sort": "desc"}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get issues for {project_id}: {resp.status_code}")
+                return issues
+
+            for item in resp.json()[:limit]:
+                issues.append({
+                    "number": item.get("iid"),
+                    "title": item.get("title", ""),
+                    "state": item.get("state", "opened"),
+                    "author": (item.get("author") or {}).get("name", "Unknown"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "labels": item.get("labels", []),
+                    "url": item.get("web_url"),
+                    "comments": item.get("user_notes_count", 0),
+                })
+        except Exception as e:
+            logger.error(f"Error getting issues for {project_id}: {e}")
+        return issues
+
+    async def get_open_merge_requests(self, project_id: str, limit: int = 20) -> List[Dict[str, Any]]:
+        """Get open merge requests for a project."""
+        self._ensure_initialized()
+        encoded_id = urllib.parse.quote_plus(str(project_id))
+        mrs: List[Dict[str, Any]] = []
+        try:
+            resp = await self.client.get(
+                f"{self.base_url}/api/v4/projects/{encoded_id}/merge_requests",
+                params={"state": "opened", "per_page": min(limit, 100), "order_by": "updated_at", "sort": "desc"}
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Failed to get MRs for {project_id}: {resp.status_code}")
+                return mrs
+
+            for item in resp.json()[:limit]:
+                mrs.append({
+                    "number": item.get("iid"),
+                    "title": item.get("title", ""),
+                    "state": item.get("state", "opened"),
+                    "author": (item.get("author") or {}).get("name", "Unknown"),
+                    "created_at": item.get("created_at"),
+                    "updated_at": item.get("updated_at"),
+                    "labels": item.get("labels", []),
+                    "source_branch": item.get("source_branch", ""),
+                    "target_branch": item.get("target_branch", ""),
+                    "url": item.get("web_url"),
+                    "draft": item.get("work_in_progress", False) or item.get("draft", False),
+                })
+        except Exception as e:
+            logger.error(f"Error getting MRs for {project_id}: {e}")
+        return mrs
+
     async def cleanup(self):
         """Clean up the HTTP client."""
         if self.client:

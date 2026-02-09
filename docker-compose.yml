@@ -119,7 +119,7 @@ services:
       - minio
     networks:
       - knowledge_net
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-include "main.py"
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-include "main.py" --timeout-graceful-shutdown 2 --reload-delay 0.25
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s

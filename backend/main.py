@@ -44,10 +44,18 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Knowledge Database Chat application")
 
-    async def _run_background(name: str, coro, timeout_s: float = 20.0):
+    async def _start_init_task(name: str, coro, timeout_s: float = 20.0) -> None:
+        """
+        Start an initialization coroutine in the background and (optionally) wait briefly.
+
+        Important for hot-reload: we keep the Task handle so it can be cancelled on shutdown/reload.
+        Avoid creating shielded coroutines without tracking them, which can keep the loop alive and
+        make uvicorn reload hang while waiting for background tasks.
+        """
+        task = asyncio.create_task(coro, name=f"init:{name}")
+        getattr(app.state, "background_tasks", []).append(task)
         try:
-            # Don't cancel the underlying init coroutine on timeout; keep loading in background.
-            await asyncio.wait_for(asyncio.shield(coro), timeout=timeout_s)
+            await asyncio.wait_for(asyncio.shield(task), timeout=timeout_s)
             logger.info(f"{name} initialized")
         except asyncio.TimeoutError:
             logger.warning(f"{name} init timed out after {timeout_s}s (continuing startup)")
@@ -65,20 +73,25 @@ async def lifespan(app: FastAPI):
         logger.warning(f"Minimal migrations failed: {e} (continuing startup)")
 
     # Kick off heavy/optional initializations in background so the server can start serving immediately.
-    background_tasks = []
-    app.state.background_init_tasks = background_tasks
+    app.state.background_tasks = []
 
     # Vector store initialization can be slow (model load). Most services also lazy-init it on demand.
     from app.services.vector_store import vector_store_service
-    background_tasks.append(asyncio.create_task(_run_background("Vector store", vector_store_service.initialize(background=True), timeout_s=2.0)))
+    await _start_init_task("Vector store", vector_store_service.initialize(background=True), timeout_s=2.0)
 
     # MinIO storage service (uploads/downloads)
     from app.services.storage_service import storage_service
-    background_tasks.append(asyncio.create_task(_run_background("Storage service", storage_service.initialize(), timeout_s=20.0)))
+    await _start_init_task("Storage service", storage_service.initialize(), timeout_s=20.0)
 
     # Redis subscriber for progress updates (transcription/summarization/ingestion)
     from app.utils.redis_subscriber import redis_subscriber
-    background_tasks.append(asyncio.create_task(_run_background("Redis subscriber", redis_subscriber.start(), timeout_s=10.0)))
+    # This is a long-running loop; start it and rely on explicit stop/cancel on shutdown.
+    try:
+        sub_task = asyncio.create_task(redis_subscriber.start(), name="bg:redis_subscriber")
+        app.state.background_tasks.append(sub_task)
+        logger.info("Redis subscriber started")
+    except Exception as e:
+        logger.warning(f"Redis subscriber start failed: {e} (continuing startup)")
     
     logger.info("Application startup complete")
     logger.info(
@@ -93,21 +106,26 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down application")
     
-    # Cancel background init tasks
-    try:
-        for t in getattr(app.state, "background_init_tasks", []) or []:
-            try:
-                t.cancel()
-            except Exception:
-                pass
-    except Exception:
-        pass
-
     # Stop Redis subscriber
     try:
         await redis_subscriber.stop()
     except Exception as e:
         logger.warning(f"Error stopping Redis subscriber: {e}")
+    
+    # Cancel any background tasks we started (best-effort).
+    tasks = list(getattr(app.state, "background_tasks", []) or [])
+    for t in tasks:
+        try:
+            if not t.done():
+                t.cancel()
+        except Exception:
+            pass
+    if tasks:
+        try:
+            # Don't hang shutdown/reload forever in dev.
+            await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=2.0)
+        except Exception:
+            pass
 
 
 # Create FastAPI app

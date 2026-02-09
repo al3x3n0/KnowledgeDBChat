@@ -514,6 +514,57 @@ export interface SystemStats {
   error?: string;
 }
 
+export interface AdminIngestionDBStatus {
+  documents_total: number;
+  documents_processed: number;
+  documents_pending: number;
+  documents_failed: number;
+  documents_without_chunks: number;
+  chunks_total: number;
+  chunks_embedded: number;
+  chunks_missing_embedding: number;
+}
+
+export interface AdminIngestionVectorStoreStatus {
+  provider: string;
+  collection_name?: string | null;
+  collection_exists?: boolean | null;
+  points_total?: number | null;
+  error?: string | null;
+}
+
+export interface AdminIngestionSourceStatus {
+  source_id: string;
+  name: string;
+  source_type: string;
+  is_active: boolean;
+  is_syncing: boolean;
+  last_sync?: string | null;
+  last_error?: string | null;
+  docs_total: number;
+  docs_processed: number;
+  docs_pending: number;
+  docs_failed: number;
+  chunks_total: number;
+  chunks_embedded: number;
+  chunks_missing_embedding: number;
+  last_sync_log?: Record<string, any> | null;
+}
+
+export interface AdminIngestionStatus {
+  timestamp: string;
+  db: AdminIngestionDBStatus;
+  vector_store: AdminIngestionVectorStoreStatus;
+  sources: AdminIngestionSourceStatus[];
+  recent_document_errors: Array<{
+    document_id: string;
+    title?: string;
+    source_id?: string;
+    updated_at?: string | null;
+    error?: string | null;
+  }>;
+}
+
 export interface UnsafeExecStatusResponse {
   enabled: boolean;
   backend: 'subprocess' | 'docker' | string;

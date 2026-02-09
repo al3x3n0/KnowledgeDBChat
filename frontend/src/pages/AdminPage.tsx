@@ -1303,6 +1303,15 @@ const DataSourcesTab: React.FC = () => {
     }
   );
 
+  const { data: ingestionStatus, isLoading: ingestionStatusLoading } = useQuery(
+    ['adminIngestionStatus'],
+    () => apiClient.getAdminIngestionStatus(),
+    {
+      refetchInterval: 30000,
+      refetchOnWindowFocus: false,
+    }
+  );
+
   // Auto-connect ingestion WS for sources already syncing
   useEffect(() => {
     if (!sources) return;
@@ -1561,6 +1570,147 @@ const DataSourcesTab: React.FC = () => {
         >
           Sync All Sources
         </Button>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-6">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-lg font-medium text-gray-900">Indexing Status</h3>
+            <p className="text-sm text-gray-600">
+              DB processing status vs vector store points (helps diagnose when Qdrant is empty).
+            </p>
+          </div>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => queryClient.invalidateQueries(['adminIngestionStatus'])}
+            icon={<RefreshCw className="w-4 h-4" />}
+          >
+            Refresh
+          </Button>
+        </div>
+
+        {ingestionStatusLoading ? (
+          <div className="mt-4">
+            <LoadingSpinner text="Loading ingestion status..." />
+          </div>
+        ) : ingestionStatus ? (
+          <div className="mt-4 space-y-4">
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+              <div className="p-3 border border-gray-200 rounded-lg">
+                <div className="text-xs text-gray-500">Vector store</div>
+                <div className="mt-1 text-sm text-gray-900">
+                  <span className="font-medium">{ingestionStatus.vector_store.provider}</span>
+                  {ingestionStatus.vector_store.collection_name ? (
+                    <span className="text-gray-500"> · {ingestionStatus.vector_store.collection_name}</span>
+                  ) : null}
+                </div>
+                <div className="mt-1 text-sm text-gray-700">
+                  Points: <span className="font-medium">{ingestionStatus.vector_store.points_total ?? '—'}</span>
+                  {typeof ingestionStatus.vector_store.collection_exists === 'boolean' ? (
+                    <span className="text-gray-500"> · {ingestionStatus.vector_store.collection_exists ? 'collection ok' : 'collection missing'}</span>
+                  ) : null}
+                </div>
+                {ingestionStatus.vector_store.error ? (
+                  <div className="mt-2 text-xs text-red-700 bg-red-50 border border-red-200 rounded p-2">
+                    {String(ingestionStatus.vector_store.error)}
+                  </div>
+                ) : null}
+              </div>
+
+              <div className="p-3 border border-gray-200 rounded-lg">
+                <div className="text-xs text-gray-500">Documents (DB)</div>
+                <div className="mt-1 text-sm text-gray-700">
+                  Total: <span className="font-medium">{ingestionStatus.db.documents_total}</span>
+                </div>
+                <div className="text-sm text-gray-700">
+                  Processed: <span className="font-medium">{ingestionStatus.db.documents_processed}</span>
+                  <span className="text-gray-500"> · Pending: {ingestionStatus.db.documents_pending} · Failed: {ingestionStatus.db.documents_failed}</span>
+                </div>
+                <div className="text-sm text-gray-700">
+                  Without chunks: <span className="font-medium">{ingestionStatus.db.documents_without_chunks}</span>
+                </div>
+              </div>
+
+              <div className="p-3 border border-gray-200 rounded-lg">
+                <div className="text-xs text-gray-500">Chunks (DB)</div>
+                <div className="mt-1 text-sm text-gray-700">
+                  Total: <span className="font-medium">{ingestionStatus.db.chunks_total}</span>
+                </div>
+                <div className="text-sm text-gray-700">
+                  Embedded: <span className="font-medium">{ingestionStatus.db.chunks_embedded}</span>
+                  <span className="text-gray-500"> · Missing: {ingestionStatus.db.chunks_missing_embedding}</span>
+                </div>
+              </div>
+            </div>
+
+            {(() => {
+              const points = ingestionStatus.vector_store.points_total ?? null;
+              const embedded = ingestionStatus.db.chunks_embedded ?? 0;
+              if (points === 0 && embedded > 0) {
+                return (
+                  <div className="text-sm text-yellow-900 bg-yellow-50 border border-yellow-200 rounded p-3">
+                    Warning: DB shows embedded chunks, but vector store has 0 points. This usually means the app is writing embeddings to DB but not to Qdrant (provider mismatch, Qdrant URL wrong, or collection missing).
+                  </div>
+                );
+              }
+              if (points !== null && points > 0 && embedded === 0) {
+                return (
+                  <div className="text-sm text-yellow-900 bg-yellow-50 border border-yellow-200 rounded p-3">
+                    Warning: Vector store has points, but DB chunks have no embedding ids. This usually indicates old data or mismatched indexing logic.
+                  </div>
+                );
+              }
+              return null;
+            })()}
+
+            <div className="border border-gray-200 rounded-lg overflow-hidden">
+              <div className="grid grid-cols-12 bg-gray-50 text-xs font-medium text-gray-700 px-3 py-2">
+                <div className="col-span-4">Source</div>
+                <div className="col-span-2 text-right">Docs</div>
+                <div className="col-span-2 text-right">Processed</div>
+                <div className="col-span-2 text-right">Pending</div>
+                <div className="col-span-2 text-right">Failed</div>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {(ingestionStatus.sources || []).slice(0, 12).map((s: any) => (
+                  <div key={s.source_id} className="grid grid-cols-12 px-3 py-2 text-sm">
+                    <div className="col-span-4 min-w-0">
+                      <div className="font-medium text-gray-900 truncate">{s.name}</div>
+                      <div className="text-xs text-gray-500">{s.source_type}{s.is_syncing ? ' · syncing' : ''}</div>
+                    </div>
+                    <div className="col-span-2 text-right text-gray-700">{s.docs_total}</div>
+                    <div className="col-span-2 text-right text-gray-700">{s.docs_processed}</div>
+                    <div className="col-span-2 text-right text-gray-700">{s.docs_pending}</div>
+                    <div className="col-span-2 text-right text-gray-700">{s.docs_failed}</div>
+                  </div>
+                ))}
+                {(ingestionStatus.sources || []).length === 0 ? (
+                  <div className="px-3 py-3 text-sm text-gray-500">No sources configured.</div>
+                ) : null}
+              </div>
+            </div>
+
+            {(ingestionStatus.recent_document_errors || []).length > 0 ? (
+              <details className="border border-gray-200 rounded-lg p-3">
+                <summary className="cursor-pointer text-sm font-medium text-gray-900">
+                  Recent document processing errors ({ingestionStatus.recent_document_errors.length})
+                </summary>
+                <div className="mt-3 space-y-2">
+                  {ingestionStatus.recent_document_errors.slice(0, 10).map((e: any) => (
+                    <div key={e.document_id} className="text-xs bg-red-50 border border-red-200 rounded p-2">
+                      <div className="font-mono text-red-900">{String(e.document_id).slice(0, 8)}…</div>
+                      <div className="text-red-800">{e.title || 'Untitled'}</div>
+                      <div className="text-red-700 whitespace-pre-wrap">{e.error}</div>
+                    </div>
+                  ))}
+                </div>
+              </details>
+            ) : null}
+          </div>
+        ) : (
+          <div className="mt-4 text-sm text-gray-600">No ingestion status available.</div>
+        )}
       </div>
 
       <div className="bg-white rounded-lg shadow p-6">

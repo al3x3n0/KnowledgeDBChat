@@ -16,6 +16,7 @@ import {
   DocumentChunk,
   SystemHealth,
   SystemStats,
+  AdminIngestionStatus,
   UnsafeExecStatusResponse,
   Memory,
   MemoryStats,
@@ -1710,6 +1711,11 @@ class ApiClient {
 
   async getSystemStats(): Promise<SystemStats> {
     const response = await this.client.get('/api/v1/admin/stats');
+    return response.data;
+  }
+
+  async getAdminIngestionStatus(): Promise<AdminIngestionStatus> {
+    const response = await this.client.get('/api/v1/admin/ingestion/status');
     return response.data;
   }
 

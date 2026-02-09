@@ -92,6 +92,53 @@ class LogsResponse(BaseModel):
     message: Optional[str] = None
 
 
+class IngestionSourceStatusResponse(BaseModel):
+    source_id: str
+    name: str
+    source_type: str
+    is_active: bool
+    is_syncing: bool
+    last_sync: Optional[str] = None
+    last_error: Optional[str] = None
+
+    docs_total: int
+    docs_processed: int
+    docs_pending: int
+    docs_failed: int
+
+    chunks_total: int
+    chunks_embedded: int
+    chunks_missing_embedding: int
+
+    last_sync_log: Optional[Dict[str, Any]] = None
+
+
+class IngestionDBStatusResponse(BaseModel):
+    documents_total: int
+    documents_processed: int
+    documents_pending: int
+    documents_failed: int
+    documents_without_chunks: int
+
+    chunks_total: int
+    chunks_embedded: int
+    chunks_missing_embedding: int
+
+
+class IngestionVectorStoreStatusResponse(BaseModel):
+    provider: str
+    collection_name: Optional[str] = None
+    collection_exists: Optional[bool] = None
+    points_total: Optional[int] = None
+    error: Optional[str] = None
+
+
+class IngestionStatusResponse(BaseModel):
+    timestamp: str
+    db: IngestionDBStatusResponse
+    vector_store: IngestionVectorStoreStatusResponse
+    sources: List[IngestionSourceStatusResponse]
+    recent_document_errors: List[Dict[str, Any]]
 
 
 

@@ -30,7 +30,11 @@ from app.services.vector_store import vector_store_service
 from app.schemas.admin import (
     SystemStatsResponse,
     HealthCheckResponse,
-    TaskTriggerResponse
+    TaskTriggerResponse,
+    IngestionStatusResponse,
+    IngestionDBStatusResponse,
+    IngestionVectorStoreStatusResponse,
+    IngestionSourceStatusResponse,
 )
 from app.core.feature_flags import get_flags as get_feature_flags, set_flag as set_feature_flag, set_str as set_feature_str, get_str as get_feature_str
 from app.services.llm_service import LLMService
@@ -55,6 +59,191 @@ from app.schemas.ai_hub_feedback_admin import (
 )
 
 router = APIRouter()
+
+@router.get("/ingestion/status", response_model=IngestionStatusResponse)
+async def get_ingestion_status(
+    current_user: User = Depends(require_admin),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Admin: high-level ingestion/indexing status.
+
+    Designed to answer "are documents actually indexed into the vector store?"
+    without requiring embedding models to be loaded.
+    """
+    from datetime import datetime
+    from sqlalchemy import and_
+
+    from app.models.document import Document, DocumentChunk, DocumentSource, DocumentSourceSyncLog
+
+    ts = datetime.utcnow().isoformat()
+
+    # DB aggregates
+    docs_total = int((await db.execute(select(func.count(Document.id)))).scalar() or 0)
+    docs_processed = int((await db.execute(select(func.count(Document.id)).where(Document.is_processed.is_(True)))).scalar() or 0)
+    docs_failed = int((await db.execute(select(func.count(Document.id)).where(Document.processing_error.isnot(None)))).scalar() or 0)
+    docs_pending = int(
+        (await db.execute(
+            select(func.count(Document.id)).where(and_(Document.is_processed.is_(False), Document.processing_error.is_(None)))
+        )).scalar() or 0
+    )
+
+    chunks_total = int((await db.execute(select(func.count(DocumentChunk.id)))).scalar() or 0)
+    chunks_embedded = int((await db.execute(select(func.count(DocumentChunk.id)).where(DocumentChunk.embedding_id.isnot(None)))).scalar() or 0)
+    chunks_missing = int((await db.execute(select(func.count(DocumentChunk.id)).where(DocumentChunk.embedding_id.is_(None)))).scalar() or 0)
+
+    # Docs with no chunks: left join chunks, count where none
+    docs_without_chunks = int(
+        (await db.execute(
+            select(func.count(Document.id))
+            .outerjoin(DocumentChunk, DocumentChunk.document_id == Document.id)
+            .where(DocumentChunk.id.is_(None))
+        )).scalar() or 0
+    )
+
+    db_status = IngestionDBStatusResponse(
+        documents_total=docs_total,
+        documents_processed=docs_processed,
+        documents_pending=docs_pending,
+        documents_failed=docs_failed,
+        documents_without_chunks=docs_without_chunks,
+        chunks_total=chunks_total,
+        chunks_embedded=chunks_embedded,
+        chunks_missing_embedding=chunks_missing,
+    )
+
+    # Recent doc processing errors (sample)
+    recent_errors_rows = (await db.execute(
+        select(Document.id, Document.title, Document.source_id, Document.updated_at, Document.processing_error)
+        .where(Document.processing_error.isnot(None))
+        .order_by(Document.updated_at.desc())
+        .limit(25)
+    )).all()
+    recent_errors = [
+        {
+            "document_id": str(r[0]),
+            "title": r[1],
+            "source_id": str(r[2]),
+            "updated_at": (r[3].isoformat() if r[3] else None),
+            "error": (str(r[4])[:500] if r[4] else None),
+        }
+        for r in recent_errors_rows
+    ]
+
+    # Vector store view (best-effort, no embedding model load)
+    provider = str(getattr(settings, "VECTOR_STORE_PROVIDER", "chroma") or "chroma").strip().lower()
+    vs = IngestionVectorStoreStatusResponse(provider=provider)
+    if provider == "qdrant":
+        try:
+            from qdrant_client import QdrantClient  # type: ignore
+
+            client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+            collection = settings.QDRANT_COLLECTION_NAME
+            vs.collection_name = collection
+
+            try:
+                client.get_collection(collection_name=collection)
+                vs.collection_exists = True
+            except Exception:
+                vs.collection_exists = False
+
+            if vs.collection_exists:
+                cnt = client.count(collection_name=collection, exact=True)
+                vs.points_total = int(getattr(cnt, "count", 0) or 0)
+        except Exception as e:
+            vs.error = str(e)
+    elif provider == "chroma":
+        # Avoid initializing Chroma client here; report collection name only.
+        vs.collection_name = getattr(settings, "CHROMA_COLLECTION_NAME", None)
+        vs.collection_exists = None
+        vs.points_total = None
+
+    # Per-source aggregates
+    sources = (await db.execute(select(DocumentSource))).scalars().all()
+
+    # Docs per source
+    docs_by_source_rows = (await db.execute(
+        select(
+            Document.source_id,
+            func.count(Document.id).label("total"),
+            func.count(Document.id).filter(Document.is_processed.is_(True)).label("processed"),
+            func.count(Document.id).filter(and_(Document.is_processed.is_(False), Document.processing_error.is_(None))).label("pending"),
+            func.count(Document.id).filter(Document.processing_error.isnot(None)).label("failed"),
+        ).group_by(Document.source_id)
+    )).all()
+    docs_by_source = {str(r[0]): {"total": int(r[1] or 0), "processed": int(r[2] or 0), "pending": int(r[3] or 0), "failed": int(r[4] or 0)} for r in docs_by_source_rows}
+
+    chunks_by_source_rows = (await db.execute(
+        select(
+            Document.source_id,
+            func.count(DocumentChunk.id).label("chunks_total"),
+            func.count(DocumentChunk.id).filter(DocumentChunk.embedding_id.isnot(None)).label("chunks_embedded"),
+            func.count(DocumentChunk.id).filter(DocumentChunk.embedding_id.is_(None)).label("chunks_missing"),
+        )
+        .join(DocumentChunk, DocumentChunk.document_id == Document.id)
+        .group_by(Document.source_id)
+    )).all()
+    chunks_by_source = {str(r[0]): {"chunks_total": int(r[1] or 0), "chunks_embedded": int(r[2] or 0), "chunks_missing": int(r[3] or 0)} for r in chunks_by_source_rows}
+
+    # Latest sync log per source (Postgres DISTINCT ON)
+    last_logs = (await db.execute(
+        select(DocumentSourceSyncLog)
+        .distinct(DocumentSourceSyncLog.source_id)
+        .order_by(DocumentSourceSyncLog.source_id, DocumentSourceSyncLog.started_at.desc())
+    )).scalars().all()
+    last_log_by_source = {str(l.source_id): l for l in last_logs}
+
+    source_statuses: list[IngestionSourceStatusResponse] = []
+    for s in sources:
+        sid = str(s.id)
+        d = docs_by_source.get(sid, {"total": 0, "processed": 0, "pending": 0, "failed": 0})
+        c = chunks_by_source.get(sid, {"chunks_total": 0, "chunks_embedded": 0, "chunks_missing": 0})
+        l = last_log_by_source.get(sid)
+
+        last_sync_log = None
+        if l is not None:
+            last_sync_log = {
+                "status": getattr(l, "status", None),
+                "started_at": getattr(l, "started_at", None).isoformat() if getattr(l, "started_at", None) else None,
+                "finished_at": getattr(l, "finished_at", None).isoformat() if getattr(l, "finished_at", None) else None,
+                "total_documents": getattr(l, "total_documents", None),
+                "processed": getattr(l, "processed", None),
+                "created": getattr(l, "created", None),
+                "updated": getattr(l, "updated", None),
+                "errors": getattr(l, "errors", None),
+                "error_message": (str(getattr(l, "error_message", None) or "")[:500] or None),
+            }
+
+        source_statuses.append(
+            IngestionSourceStatusResponse(
+                source_id=sid,
+                name=str(getattr(s, "name", "") or ""),
+                source_type=str(getattr(s, "source_type", "") or ""),
+                is_active=bool(getattr(s, "is_active", False)),
+                is_syncing=bool(getattr(s, "is_syncing", False)),
+                last_sync=(getattr(s, "last_sync", None).isoformat() if getattr(s, "last_sync", None) else None),
+                last_error=(str(getattr(s, "last_error", None) or "")[:500] or None),
+                docs_total=d["total"],
+                docs_processed=d["processed"],
+                docs_pending=d["pending"],
+                docs_failed=d["failed"],
+                chunks_total=c["chunks_total"],
+                chunks_embedded=c["chunks_embedded"],
+                chunks_missing_embedding=c["chunks_missing"],
+                last_sync_log=last_sync_log,
+            )
+        )
+
+    # Sort: most problematic first
+    source_statuses.sort(key=lambda x: (-(x.docs_failed or 0), -(x.docs_pending or 0), -(x.docs_total or 0)))
+
+    return IngestionStatusResponse(
+        timestamp=ts,
+        db=db_status,
+        vector_store=vs,
+        sources=source_statuses,
+        recent_document_errors=recent_errors,
+    )
 
 
 @router.get("/health", response_model=HealthCheckResponse)

@@ -1433,8 +1433,12 @@ const DocumentsPage: React.FC = () => {
     onRequestPersonaEdit?: (persona: Persona, document: KnowledgeDocument) => void;
   }) {
     const ownerPersona = document.owner_persona;
+    // Button variant styles are tuned for the app-wide inverted-gray theme; override here for
+    // document-card actions so they look intentional and stay readable on white cards.
     const actionBtnClass =
-      'text-slate-900 hover:bg-slate-100 focus:ring-slate-400';
+      'bg-primary-50 text-primary-900 border border-primary-300 hover:bg-primary-100 focus:ring-primary-700';
+    const dangerBtnClass =
+      'bg-red-50 text-red-800 border border-red-300 hover:bg-red-100 focus:ring-red-500';
     return (
       <div className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow duration-200">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -1816,7 +1820,7 @@ const DocumentsPage: React.FC = () => {
             <Button
               variant="ghost"
               size="sm"
-              className={actionBtnClass}
+              className={dangerBtnClass}
               icon={<Trash2 className="w-4 h-4" />}
               onClick={() => handleDeleteDocument(document.id)}
               disabled={document.extra_metadata?.is_transcoding === true}

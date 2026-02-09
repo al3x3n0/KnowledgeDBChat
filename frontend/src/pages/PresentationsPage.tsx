@@ -674,7 +674,7 @@ const CreatePresentationModal: React.FC<CreateModalProps> = ({
               value={searchQuery}
               onChange={(e) => setSearchQuery(e.target.value)}
               placeholder="Search documents..."
-              className="w-full px-3 py-2 border border-gray-300 rounded-md mb-2"
+              className="w-full px-3 py-2 border border-gray-300 rounded-md mb-2 bg-white text-gray-900 placeholder-gray-400"
               disabled={isLoading}
             />
             <div className="border border-gray-200 rounded-md max-h-48 overflow-y-auto">

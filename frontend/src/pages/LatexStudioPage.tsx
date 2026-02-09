@@ -2492,7 +2492,7 @@ const LatexStudioPage: React.FC = () => {
             <div className="relative">
               <Search className="w-4 h-4 absolute left-3 top-1/2 -translate-y-1/2 text-gray-400" />
               <input
-                className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm"
+                className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
                 value={citeQuery}
                 onChange={(e) => setCiteQuery(e.target.value)}
                 placeholder="Search documents to cite…"

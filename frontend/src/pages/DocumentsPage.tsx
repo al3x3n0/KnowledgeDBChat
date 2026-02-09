@@ -1946,7 +1946,7 @@ const DocumentsPage: React.FC = () => {
               <select
                 value={selectedSource}
                 onChange={(e) => setSelectedSource(e.target.value)}
-                className="block w-full rounded-lg border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
+                className="block w-full rounded-lg border-gray-300 shadow-sm bg-white text-gray-900 focus:border-primary-500 focus:ring-primary-500"
               >
                 <option value="">All Sources</option>
                 {sources?.map((source) => (

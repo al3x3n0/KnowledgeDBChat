@@ -801,7 +801,7 @@ const SynthesisPage: React.FC = () => {
                     <input
                       type="text"
                       placeholder="Search documents..."
-                      className="w-full border border-gray-300 rounded-lg pl-10 pr-4 py-2 text-sm"
+                      className="w-full border border-gray-300 rounded-lg pl-10 pr-4 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
                       value={searchQuery}
                       onChange={(e) => setSearchQuery(e.target.value)}
                     />

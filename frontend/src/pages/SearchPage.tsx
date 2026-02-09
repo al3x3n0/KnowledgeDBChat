@@ -93,7 +93,7 @@ const SearchPage: React.FC = () => {
               }
             }}
             placeholder="Search for documents, topics, or questions..."
-            className="w-full pl-12 pr-4 py-3 text-lg border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+            className="w-full pl-12 pr-4 py-3 text-lg border border-gray-300 rounded-lg shadow-sm bg-white text-gray-900 placeholder-gray-400 focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             autoFocus
           />
           {isFetching && (

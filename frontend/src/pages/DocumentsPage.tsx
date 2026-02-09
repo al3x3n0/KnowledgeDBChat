@@ -1433,9 +1433,11 @@ const DocumentsPage: React.FC = () => {
     onRequestPersonaEdit?: (persona: Persona, document: KnowledgeDocument) => void;
   }) {
     const ownerPersona = document.owner_persona;
+    const actionBtnClass =
+      'text-slate-900 hover:bg-slate-100 focus:ring-slate-400';
     return (
       <div className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow duration-200">
-        <div className="flex items-start justify-between">
+        <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex-1 min-w-0">
             {/* Title and status */}
             <div className="flex items-center space-x-2 mb-2">
@@ -1640,11 +1642,11 @@ const DocumentsPage: React.FC = () => {
           </div>
 
           {/* Actions */}
-          <div className="flex items-center space-x-2 ml-4">
+          <div className="flex flex-wrap gap-2 lg:justify-end lg:shrink-0">
             <Button
               variant="ghost"
               size="sm"
-              className="text-gray-200"
+              className={actionBtnClass}
               icon={<Eye className="w-4 h-4" />}
               onClick={() => {
                 if (document.extra_metadata?.is_transcoding) {
@@ -1661,7 +1663,7 @@ const DocumentsPage: React.FC = () => {
             <Button
               variant="ghost"
               size="sm"
-              className="text-gray-200"
+              className={actionBtnClass}
               icon={<Network className="w-4 h-4" />}
               onClick={() => navigate(`/documents/${document.id}/graph`)}
               disabled={document.extra_metadata?.is_transcoding === true}
@@ -1672,7 +1674,7 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-gray-200"
+                className={actionBtnClass}
                 icon={<FileText className="w-4 h-4" />}
                 onClick={() => {
                   const tId = document.extra_metadata?.transcript_document_id as string;
@@ -1693,7 +1695,7 @@ const DocumentsPage: React.FC = () => {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-gray-200"
+                  className={actionBtnClass}
                   icon={<Play className="w-4 h-4" />}
                   onClick={() => {
                     const vId = document.extra_metadata?.parent_document_id as string;
@@ -1717,7 +1719,7 @@ const DocumentsPage: React.FC = () => {
                 <Button
                   variant="ghost"
                   size="sm"
-                  className="text-gray-200"
+                  className={actionBtnClass}
                   icon={<RefreshCw className="w-4 h-4" />}
                   onClick={async () => {
                     try {
@@ -1737,7 +1739,7 @@ const DocumentsPage: React.FC = () => {
             <Button
               variant="ghost"
               size="sm"
-              className="text-gray-200"
+              className={actionBtnClass}
               icon={<Sparkles className="w-4 h-4" />}
               onClick={() => summarizeMutation.mutate(document.id)}
               disabled={document.extra_metadata?.is_transcoding === true || getDocFlags(document).isSummarizing}
@@ -1748,7 +1750,7 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-gray-200"
+                className={actionBtnClass}
                 icon={<ExternalLink className="w-4 h-4" />}
                 onClick={() => window.open(document.url, '_blank')}
                 disabled={document.extra_metadata?.is_transcoding === true}
@@ -1760,7 +1762,7 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                className="text-gray-200"
+                className={actionBtnClass}
                 icon={<Download className="w-4 h-4" />}
                 onClick={async () => {
                   if (document.extra_metadata?.is_transcoding) {
@@ -1803,6 +1805,7 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
+                className={actionBtnClass}
                 icon={<Edit className="w-4 h-4" />}
                 onClick={() => handleEditDocument(document)}
                 disabled={document.extra_metadata?.is_transcoding === true}
@@ -1813,6 +1816,7 @@ const DocumentsPage: React.FC = () => {
             <Button
               variant="ghost"
               size="sm"
+              className={actionBtnClass}
               icon={<Trash2 className="w-4 h-4" />}
               onClick={() => handleDeleteDocument(document.id)}
               disabled={document.extra_metadata?.is_transcoding === true}
@@ -1824,6 +1828,7 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
+                className={actionBtnClass}
                 icon={<RefreshCw className="w-4 h-4" />}
                 onClick={() => handleReprocessDocument(document.id)}
                 loading={reprocessDocumentMutation.isLoading}

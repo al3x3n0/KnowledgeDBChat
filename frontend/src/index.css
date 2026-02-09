@@ -27,11 +27,16 @@
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 
-  /* Prevent inputs from inheriting `text-white` from parent containers. */
-  input,
+  /* Global textbox defaults (avoid white-on-white and `text-white` inheritance). */
+  input[type="text"],
+  input[type="search"],
+  input[type="email"],
+  input[type="password"],
+  input[type="url"],
+  input[type="number"],
   textarea,
   select {
-    @apply text-gray-900 placeholder-gray-400;
+    @apply bg-white text-gray-900 placeholder-gray-400;
   }
   
   html {

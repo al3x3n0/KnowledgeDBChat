@@ -41,6 +41,19 @@
   .hover\\:bg-white:hover {
     background-color: theme('colors.gray.100') !important;
   }
+
+  /*
+   * Prevent white-on-white inputs when a parent sets `text-white`:
+   * Many pages use `bg-white` on inputs/selects without an explicit `text-*`.
+   */
+  input.bg-white,
+  textarea.bg-white,
+  select.bg-white,
+  input.bg-gray-50,
+  textarea.bg-gray-50,
+  select.bg-gray-50 {
+    @apply text-gray-900 placeholder-gray-400;
+  }
 }
 
 @layer components {

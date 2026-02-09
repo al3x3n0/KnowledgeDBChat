@@ -3,6 +3,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import apiClient from '../services/api';
 import {
@@ -454,6 +455,7 @@ const CreateReportModal: React.FC<CreateModalProps> = ({
 };
 
 const RepoReportsPage: React.FC = () => {
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState<RepoReportJobListItem[]>([]);
   const [sources, setSources] = useState<DocumentSource[]>([]);
   const [sections, setSections] = useState<RepoReportSection[]>([]);
@@ -612,6 +614,17 @@ const RepoReportsPage: React.FC = () => {
     }
   };
 
+  const handleCreateDraft = async (job: RepoReportJobListItem) => {
+    try {
+      const draft = await apiClient.createArtifactDraftFromRepoReport(job.id);
+      toast.success('Draft created');
+      navigate('/artifact-drafts', { state: { selectedDraftId: draft.id } as any });
+    } catch (error: any) {
+      console.error('Failed to create draft:', error);
+      toast.error(error?.response?.data?.detail || 'Failed to create draft');
+    }
+  };
+
   const handleDelete = async (jobId: string) => {
     if (!window.confirm('Are you sure you want to delete this report?')) return;
     try {
@@ -732,29 +745,29 @@ const RepoReportsPage: React.FC = () => {
           </div>
         </div>
       ) : (
-        <div className="bg-white shadow overflow-hidden sm:rounded-lg">
-          <table className="min-w-full divide-y divide-gray-200">
+        <div className="bg-white shadow sm:rounded-lg overflow-x-auto">
+          <table className="w-full divide-y divide-gray-200 table-fixed">
             <thead className="bg-gray-50">
               <tr>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="w-1/4 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Repository
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="w-16 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Format
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="w-24 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Status
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="w-36 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Progress
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="w-20 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Size
                 </th>
-                <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="w-40 px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Created
                 </th>
-                <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
+                <th className="w-24 px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">
                   Actions
                 </th>
               </tr>
@@ -762,90 +775,103 @@ const RepoReportsPage: React.FC = () => {
             <tbody className="bg-white divide-y divide-gray-200">
               {jobs.map((job) => (
                 <tr key={job.id} className="hover:bg-gray-50">
-                  <td className="px-6 py-4">
-                    <div className="flex items-center">
-                      {getRepoIcon(job.repo_type)}
-                      <div className="ml-3">
-                        <div className="text-sm font-medium text-gray-900 truncate max-w-xs">
+                  <td className="px-4 py-4">
+                    <div className="flex items-center min-w-0">
+                      <div className="flex-shrink-0">
+                        {getRepoIcon(job.repo_type)}
+                      </div>
+                      <div className="ml-3 min-w-0 flex-1">
+                        <div className="text-sm font-medium text-gray-900 truncate">
                           {job.title}
                         </div>
-                        <div className="text-xs text-gray-500 truncate max-w-xs">
+                        <div className="text-xs text-gray-500 truncate">
                           {job.repo_name}
                         </div>
                       </div>
                     </div>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 py-4">
                     {getFormatIcon(job.output_format)}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 py-4">
                     <span
-                      className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${
+                      className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ${
                         STATUS_COLORS[job.status]
                       }`}
                     >
                       {job.status}
                     </span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap">
+                  <td className="px-4 py-4">
                     {['pending', 'analyzing', 'generating', 'uploading'].includes(job.status) ? (
-                      <div className="w-32">
-                        <div className="flex items-center">
-                          <div className="flex-1 bg-gray-200 rounded-full h-2 mr-2">
-                            <div
-                              className="bg-blue-600 h-2 rounded-full transition-all duration-300"
-                              style={{ width: `${job.progress}%` }}
-                            />
-                          </div>
-                          <span className="text-xs text-gray-600">{job.progress}%</span>
+                      <div className="flex items-center">
+                        <div className="flex-1 bg-gray-200 rounded-full h-2 mr-2">
+                          <div
+                            className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                            style={{ width: `${job.progress}%` }}
+                          />
                         </div>
+                        <span className="text-xs text-gray-600 w-8">{job.progress}%</span>
                       </div>
                     ) : job.status === 'failed' ? (
-                      <span className="text-xs text-red-600" title={job.error}>
-                        {job.error?.substring(0, 50)}...
+                      <span className="text-xs text-red-600 truncate block" title={job.error}>
+                        {job.error?.substring(0, 30)}...
                       </span>
                     ) : (
                       <span className="text-xs text-gray-500">-</span>
                     )}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
+                  <td className="px-4 py-4 text-sm text-gray-500">
                     {formatFileSize(job.file_size)}
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">
-                    {formatDate(job.created_at)}
+                  <td className="px-4 py-4 text-sm text-gray-500">
+                    <span className="truncate block">{formatDate(job.created_at)}</span>
                   </td>
-                  <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium space-x-2">
-                    {job.status === 'completed' && (
+                  <td className="px-4 py-4 text-right text-sm font-medium">
+                    <div className="flex justify-end space-x-1">
+                      {job.status === 'completed' && (
+                        <button
+                          onClick={() => handleDownload(job)}
+                          className="text-blue-600 hover:text-blue-900 p-1"
+                          title="Download"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                        </button>
+                      )}
+                      {job.status === 'completed' && (
+                        <button
+                          onClick={() => handleCreateDraft(job)}
+                          className="text-primary-600 hover:text-primary-800 p-1"
+                          title="Create draft review"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+                          </svg>
+                        </button>
+                      )}
+                      {['pending', 'analyzing', 'generating', 'uploading'].includes(job.status) && (
+                        <button
+                          onClick={() => handleCancel(job.id)}
+                          className="text-yellow-600 hover:text-yellow-900 p-1"
+                          title="Cancel"
+                        >
+                          <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                        </button>
+                      )}
                       <button
-                        onClick={() => handleDownload(job)}
-                        className="text-blue-600 hover:text-blue-900"
-                        title="Download"
+                        onClick={() => handleDelete(job.id)}
+                        className="text-red-600 hover:text-red-900 p-1"
+                        title="Delete"
                       >
-                        <svg className="w-5 h-5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                        <svg className="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
                         </svg>
                       </button>
-                    )}
-                    {['pending', 'analyzing', 'generating', 'uploading'].includes(job.status) && (
-                      <button
-                        onClick={() => handleCancel(job.id)}
-                        className="text-yellow-600 hover:text-yellow-900"
-                        title="Cancel"
-                      >
-                        <svg className="w-5 h-5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                      </button>
-                    )}
-                    <button
-                      onClick={() => handleDelete(job.id)}
-                      className="text-red-600 hover:text-red-900"
-                      title="Delete"
-                    >
-                      <svg className="w-5 h-5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                      </svg>
-                    </button>
+                    </div>
                   </td>
                 </tr>
               ))}

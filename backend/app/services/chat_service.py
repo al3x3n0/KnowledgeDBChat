@@ -14,7 +14,7 @@ from loguru import logger
 from app.models.chat import ChatSession, ChatMessage
 from app.models.user import User
 from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.vector_store import VectorStoreService
+from app.services.vector_store import vector_store_service
 from app.services.memory_service import MemoryService
 from app.services.query_processor import QueryProcessor
 from app.services.context_manager import ContextManager
@@ -27,7 +27,7 @@ class ChatService:
     
     def __init__(self):
         self.llm_service = LLMService()
-        self.vector_store = VectorStoreService()
+        self.vector_store = vector_store_service
         self.memory_service = MemoryService()
         self.query_processor = QueryProcessor()
         self.context_manager = ContextManager()
@@ -36,14 +36,15 @@ class ChatService:
     async def _ensure_vector_store_initialized(self):
         """Ensure vector store is initialized."""
         if not self._vector_store_initialized:
-            await self.vector_store.initialize()
+            await self.vector_store.initialize(background=True)
             self._vector_store_initialized = True
     
     async def create_session(
         self,
         user_id: UUID,
         db: AsyncSession,
-        title: Optional[str] = None
+        title: Optional[str] = None,
+        extra_metadata: Optional[Dict[str, Any]] = None,
     ) -> ChatSession:
         """
         Create a new chat session for a user.
@@ -58,7 +59,8 @@ class ChatService:
         """
         session = ChatSession(
             user_id=user_id,
-            title=title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}"
+            title=title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+            extra_metadata=extra_metadata,
         )
         
         db.add(session)
@@ -289,6 +291,42 @@ class ChatService:
                 user_id=user_id,
                 db=db
             )
+
+            # Apply per-session LLM overrides (stored in session.extra_metadata)
+            effective_user_settings = user_settings or UserLLMSettings()
+            try:
+                meta = session.extra_metadata or {}
+                # Supported keys (intentionally simple for "plugin" consumers):
+                # - llm_provider, llm_model
+                # - llm_task_models: {"chat": "..."}
+                # - llm_task_providers: {"chat": "..."}
+                if isinstance(meta, dict):
+                    llm_provider = meta.get("llm_provider")
+                    llm_model = meta.get("llm_model")
+                    llm_task_models = meta.get("llm_task_models")
+                    llm_task_providers = meta.get("llm_task_providers")
+
+                    # Merge, preferring session overrides when present.
+                    merged_task_models = dict(effective_user_settings.task_models or {})
+                    if isinstance(llm_task_models, dict):
+                        merged_task_models.update({k: v for k, v in llm_task_models.items() if v})
+
+                    merged_task_providers = dict(effective_user_settings.task_providers or {})
+                    if isinstance(llm_task_providers, dict):
+                        merged_task_providers.update({k: v for k, v in llm_task_providers.items() if v})
+
+                    effective_user_settings = UserLLMSettings(
+                        provider=(llm_provider or effective_user_settings.provider),
+                        model=(llm_model or effective_user_settings.model),
+                        api_url=effective_user_settings.api_url,
+                        api_key=effective_user_settings.api_key,
+                        temperature=effective_user_settings.temperature,
+                        max_tokens=effective_user_settings.max_tokens,
+                        task_models=merged_task_models or None,
+                        task_providers=merged_task_providers or None,
+                    )
+            except Exception as e:
+                logger.warning(f"Failed to apply session LLM overrides: {e}")
             
             # Get relevant memories for context
             relevant_memories = await self.memory_service.search_memories(
@@ -317,6 +355,14 @@ class ChatService:
             
             # Generate multi-queries if enabled for better recall
             all_search_results = []
+            retrieval_trace_payload: dict[str, Any] = {
+                "original_query": query,
+                "processed_query": search_query,
+                "query_processor": {
+                    "intent": processed_query.get("intent"),
+                    "key_terms": processed_query.get("key_terms"),
+                },
+            }
             if settings.RAG_QUERY_EXPANSION_ENABLED:
                 try:
                     query_variations = await self.query_processor.generate_multi_queries(
@@ -326,12 +372,19 @@ class ChatService:
                     )
                     
                     # Search with all variations
+                    traces: list[dict[str, Any]] = []
                     for q_var in query_variations:
-                        results = await self.vector_store.search(
+                        results, one_trace = await self.vector_store.search_with_trace(
                             query=q_var,
                             limit=settings.MAX_SEARCH_RESULTS * 2
                         )
+                        traces.append({"query": q_var, "trace": one_trace})
                         all_search_results.extend(results)
+
+                    retrieval_trace_payload["multi_query"] = {
+                        "queries": query_variations,
+                        "traces": traces,
+                    }
                     
                     # Deduplicate by ID and merge scores
                     seen_ids = {}
@@ -351,16 +404,18 @@ class ChatService:
                     search_results = sorted(search_results, key=lambda x: x.get("score", 0.0), reverse=True)
                 except Exception as e:
                     logger.warning(f"Multi-query generation failed: {e}, using single query")
-                    search_results = await self.vector_store.search(
+                    search_results, one_trace = await self.vector_store.search_with_trace(
                         query=search_query,
                         limit=settings.MAX_SEARCH_RESULTS * 2
                     )
+                    retrieval_trace_payload["single_query"] = {"query": search_query, "trace": one_trace}
             else:
                 # Single query search
-                search_results = await self.vector_store.search(
+                search_results, one_trace = await self.vector_store.search_with_trace(
                     query=search_query,
                     limit=settings.MAX_SEARCH_RESULTS * 2  # Get more for filtering/reranking
                 )
+                retrieval_trace_payload["single_query"] = {"query": search_query, "trace": one_trace}
             
             # Filter by relevance
             search_results = self.context_manager.filter_by_relevance(search_results)
@@ -371,6 +426,18 @@ class ChatService:
                 query=search_query,
                 max_results=settings.MAX_SEARCH_RESULTS
             )
+
+            retrieval_trace_payload["selected_results"] = [
+                {
+                    "id": r.get("id"),
+                    "score": r.get("score"),
+                    "document_id": (r.get("metadata") or {}).get("document_id"),
+                    "chunk_id": (r.get("metadata") or {}).get("chunk_id"),
+                    "title": (r.get("metadata") or {}).get("title"),
+                    "source": (r.get("metadata") or {}).get("source") or (r.get("metadata") or {}).get("source_type"),
+                }
+                for r in (search_results or [])[:settings.MAX_SEARCH_RESULTS]
+            ]
             
             # Build context with token management
             context = await self.context_manager.compress_context(
@@ -380,6 +447,7 @@ class ChatService:
             
             # Get context metrics for logging
             context_metrics = self.context_manager.get_context_metrics(search_results)
+            retrieval_trace_payload["context_metrics"] = context_metrics
 
             # Inject Knowledge Graph context if enabled
             kg_context = ""
@@ -434,7 +502,10 @@ class ChatService:
                 conversation_history=conversation_history,
                 memory_context=memory_context,
                 kg_context=kg_context,
-                user_settings=user_settings,
+                user_settings=effective_user_settings,
+                task_type="chat",
+                user_id=user_id,
+                db=db,
             )
             
             response_time = time.time() - start_time
@@ -454,7 +525,33 @@ class ChatService:
             # search_results is a list of dicts with "metadata" key (dict), not objects
             from app.services.storage_service import storage_service
             from app.models.document import Document
+            from app.models.retrieval_trace import RetrievalTrace
             from sqlalchemy import select as sql_select
+
+            settings_snapshot = {
+                "provider": getattr(self.vector_store, "provider", None),
+                "hybrid_enabled": bool(getattr(settings, "RAG_HYBRID_SEARCH_ENABLED", False)),
+                "hybrid_alpha": float(getattr(settings, "RAG_HYBRID_SEARCH_ALPHA", 0.0)),
+                "rerank_enabled": bool(getattr(settings, "RAG_RERANKING_ENABLED", False)),
+                "rerank_model": getattr(settings, "RAG_RERANKING_MODEL", None),
+                "mmr_enabled": bool(getattr(settings, "RAG_MMR_ENABLED", False)),
+                "dedup_enabled": bool(getattr(settings, "RAG_DEDUPLICATION_ENABLED", False)),
+                "min_relevance": float(getattr(settings, "RAG_MIN_RELEVANCE_SCORE", 0.0)),
+                "max_search_results": int(getattr(settings, "MAX_SEARCH_RESULTS", 0)),
+            }
+            retrieval_trace = RetrievalTrace(
+                user_id=user_id,
+                session_id=session_id,
+                trace_type="chat",
+                query=query,
+                processed_query=search_query,
+                provider=getattr(self.vector_store, "provider", None),
+                settings_snapshot=settings_snapshot,
+                trace=retrieval_trace_payload,
+            )
+            db.add(retrieval_trace)
+            await db.commit()
+            await db.refresh(retrieval_trace)
 
             # Batch fetch documents to avoid N+1 queries
             doc_ids = set()
@@ -504,16 +601,35 @@ class ChatService:
                     "chunk_index": doc_metadata.get("chunk_index"),
                     "snippet": snippet,
                 })
+
+            # Heuristic groundedness score (0..1): combines retrieval confidence with context coverage.
+            try:
+                scores = []
+                for r in search_results:
+                    md = r.get("metadata") or {}
+                    s = md.get("score", r.get("score", 0.0))
+                    try:
+                        scores.append(float(s))
+                    except Exception:
+                        pass
+                avg_score = (sum(scores) / len(scores)) if scores else 0.0
+                coverage01 = float(context_metrics.get("coverage", 0.0) or 0.0) / 100.0
+                groundedness_score = 0.7 * avg_score + 0.3 * coverage01
+                groundedness_score = max(0.0, min(1.0, groundedness_score))
+            except Exception:
+                groundedness_score = None
             
             assistant_message = await self.create_message(
                 session_id=session_id,
                 content=response_content,
                 role="assistant",
-                model_used=self.llm_service.get_active_model(),
+                model_used=effective_user_settings.get_model_for_task("chat") or self.llm_service.get_active_model(),
                 response_time=response_time,
                 source_documents=source_docs,
                 context_used=context,
                 search_query=query,
+                groundedness_score=groundedness_score,
+                retrieval_trace_id=retrieval_trace.id,
                 db=db
             )
             

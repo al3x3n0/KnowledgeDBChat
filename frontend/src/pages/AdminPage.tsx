@@ -30,7 +30,7 @@ import {
 import { formatDistanceToNow } from 'date-fns';
 
 import { apiClient } from '../services/api';
-import { SystemHealth, SystemStats, DocumentSource, Persona, AgentDefinition, AgentDefinitionCreate, AgentDefinitionUpdate, CapabilityInfo } from '../types';
+import { SystemHealth, SystemStats, DocumentSource, Persona, AgentDefinition, AgentDefinitionCreate, AgentDefinitionUpdate, CapabilityInfo, AgentDefinitionSummary, ToolAudit } from '../types';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import ProgressBar from '../components/common/ProgressBar';
@@ -60,6 +60,8 @@ const AdminPage: React.FC = () => {
     { id: 'logs', name: 'System Logs', icon: Server },
     { id: 'personas', name: 'Personas', icon: Users },
     { id: 'agents', name: 'Agents', icon: Bot },
+    { id: 'ai-hub', name: 'AI Hub', icon: Cpu },
+    { id: 'tool-approvals', name: 'Tool Approvals', icon: CheckCircle },
   ];
 
   useEffect(() => {
@@ -172,8 +174,845 @@ const AdminPage: React.FC = () => {
             />
           )}
           {activeTab === 'agents' && <AgentsTab />}
+          {activeTab === 'ai-hub' && <AIHubAdminTab />}
+          {activeTab === 'tool-approvals' && <ToolApprovalsTab />}
         </div>
       </div>
+    </div>
+  );
+};
+
+const AIHubAdminTab: React.FC = () => {
+  const queryClient = useQueryClient();
+
+  const { data: allTemplates, isLoading: templatesLoading } = useQuery(
+    ['admin', 'ai-hub', 'eval-templates', 'all'],
+    () => apiClient.listAllTrainingEvalTemplates(),
+    { refetchOnWindowFocus: false }
+  );
+
+  const { data: enabledConfig, isLoading: enabledLoading } = useQuery(
+    ['admin', 'ai-hub', 'eval-templates', 'enabled'],
+    () => apiClient.getEnabledAIHubEvalTemplates(),
+    { refetchOnWindowFocus: false }
+  );
+
+  const { data: allPresets, isLoading: presetsLoading } = useQuery(
+    ['admin', 'ai-hub', 'dataset-presets', 'all'],
+    () => apiClient.listAllDatasetPresets(),
+    { refetchOnWindowFocus: false }
+  );
+
+  const { data: enabledPresetsConfig, isLoading: enabledPresetsLoading } = useQuery(
+    ['admin', 'ai-hub', 'dataset-presets', 'enabled'],
+    () => apiClient.getEnabledAIHubDatasetPresets(),
+    { refetchOnWindowFocus: false }
+  );
+
+  const { data: customerProfileData, isLoading: profileLoading } = useQuery(
+    ['admin', 'ai-hub', 'customer-profile'],
+    () => apiClient.getAIHubCustomerProfile(),
+    { refetchOnWindowFocus: false }
+  );
+
+  const enabledSet = useMemo(() => {
+    const enabled = enabledConfig?.enabled || [];
+    return new Set(enabled);
+  }, [enabledConfig?.enabled]);
+
+  const enabledPresetsSet = useMemo(() => {
+    const enabled = enabledPresetsConfig?.enabled || [];
+    return new Set(enabled);
+  }, [enabledPresetsConfig?.enabled]);
+
+  const [localEnabled, setLocalEnabled] = useState<Record<string, boolean>>({});
+  const [dirty, setDirty] = useState(false);
+
+  const [localPresetsEnabled, setLocalPresetsEnabled] = useState<Record<string, boolean>>({});
+  const [presetsDirty, setPresetsDirty] = useState(false);
+
+  const [profileName, setProfileName] = useState('');
+  const [profileKeywords, setProfileKeywords] = useState(''); // comma-separated
+  const [profileWorkflows, setProfileWorkflows] = useState<{ triage: boolean; extraction: boolean; literature: boolean }>({
+    triage: true,
+    extraction: true,
+    literature: true,
+  });
+  const [profileNotes, setProfileNotes] = useState('');
+  const [profileDirty, setProfileDirty] = useState(false);
+
+  useEffect(() => {
+    const templates = allTemplates?.templates || [];
+    const enabled = enabledConfig?.enabled || [];
+    const hasAllowlist = enabled.length > 0;
+
+    const next: Record<string, boolean> = {};
+    for (const t of templates) {
+      next[t.id] = hasAllowlist ? enabledSet.has(t.id) : true;
+    }
+    setLocalEnabled(next);
+    setDirty(false);
+  }, [allTemplates?.templates, enabledConfig?.enabled, enabledSet]);
+
+  useEffect(() => {
+    const presets = (allPresets as any)?.presets || [];
+    const enabled = enabledPresetsConfig?.enabled || [];
+    const hasAllowlist = enabled.length > 0;
+
+    const next: Record<string, boolean> = {};
+    for (const p of presets) {
+      next[p.id] = hasAllowlist ? enabledPresetsSet.has(p.id) : true;
+    }
+    setLocalPresetsEnabled(next);
+    setPresetsDirty(false);
+  }, [allPresets, enabledPresetsConfig?.enabled, enabledPresetsSet]);
+
+  useEffect(() => {
+    const p = (customerProfileData as any)?.profile;
+    if (!p) {
+      setProfileName('');
+      setProfileKeywords('');
+      setProfileNotes('');
+      setProfileWorkflows({ triage: true, extraction: true, literature: true });
+      setProfileDirty(false);
+      return;
+    }
+    setProfileName(p.name || '');
+    setProfileKeywords(Array.isArray(p.keywords) ? p.keywords.join(', ') : '');
+    setProfileNotes(p.notes || '');
+    const prefs = Array.isArray(p.preferred_workflows) ? p.preferred_workflows : [];
+    setProfileWorkflows({
+      triage: prefs.length ? prefs.includes('triage') : true,
+      extraction: prefs.length ? prefs.includes('extraction') : true,
+      literature: prefs.length ? prefs.includes('literature') : true,
+    });
+    setProfileDirty(false);
+  }, [customerProfileData]);
+
+  const saveProfileMutation = useMutation(
+    async () => {
+      const workflows: string[] = Object.entries(profileWorkflows)
+        .filter(([, v]) => v)
+        .map(([k]) => k);
+      const keywords = profileKeywords
+        .split(',')
+        .map((x) => x.trim())
+        .filter(Boolean);
+      return apiClient.setAIHubCustomerProfile({
+        profile: {
+          name: profileName.trim() || 'Customer',
+          keywords,
+          preferred_workflows: workflows as any,
+          notes: profileNotes.trim() ? profileNotes.trim() : null,
+        },
+      });
+    },
+    {
+      onSuccess: () => {
+        toast.success('Customer profile saved');
+        queryClient.invalidateQueries(['admin', 'ai-hub', 'customer-profile']);
+        setProfileDirty(false);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Failed to save customer profile');
+      },
+    }
+  );
+
+  const clearFeedbackMutation = useMutation(
+    async (profileId: string) => apiClient.clearAIHubRecommendationFeedback(profileId),
+    {
+      onSuccess: (res) => {
+        toast.success(`Cleared ${res.deleted} feedback entries`);
+        queryClient.invalidateQueries(['admin', 'ai-hub', 'feedback-stats']);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Failed to clear feedback');
+      },
+    }
+  );
+
+  const profileId = (customerProfileData as any)?.profile?.id as string | undefined;
+  const profileNameFromServer = (customerProfileData as any)?.profile?.name as string | undefined;
+
+  const { data: feedbackStats } = useQuery(
+    ['admin', 'ai-hub', 'feedback-stats', profileId],
+    () => apiClient.getAIHubRecommendationFeedbackStats(String(profileId), 50),
+    { enabled: !!profileId, refetchOnWindowFocus: false }
+  );
+
+  const backfillMutation = useMutation(
+    async () => {
+      if (!profileId) throw new Error('Missing profile id');
+      const name = profileNameFromServer || profileName || 'Customer';
+      return apiClient.backfillAIHubRecommendationFeedbackProfileId({ profile_id: String(profileId), profile_name: name });
+    },
+    {
+      onSuccess: (res) => {
+        toast.success(`Backfilled ${res.updated} rows`);
+        queryClient.invalidateQueries(['admin', 'ai-hub', 'feedback-stats', profileId]);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Backfill failed');
+      },
+    }
+  );
+
+  const saveMutation = useMutation(
+    (ids: string[]) => apiClient.setEnabledAIHubEvalTemplates({ enabled: ids }),
+    {
+      onSuccess: () => {
+        toast.success('Saved');
+        queryClient.invalidateQueries(['admin', 'ai-hub', 'eval-templates', 'enabled']);
+        queryClient.invalidateQueries(['training-eval-templates']);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Failed to save');
+      },
+    }
+  );
+
+  const savePresetsMutation = useMutation(
+    (ids: string[]) => apiClient.setEnabledAIHubDatasetPresets({ enabled: ids }),
+    {
+      onSuccess: () => {
+        toast.success('Saved');
+        queryClient.invalidateQueries(['admin', 'ai-hub', 'dataset-presets', 'enabled']);
+        queryClient.invalidateQueries(['ai-hub', 'dataset-presets', 'enabled']);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Failed to save');
+      },
+    }
+  );
+
+  const applyBundleMutation = useMutation(
+    async (bundle: { evalTemplateIds: string[]; datasetPresetIds: string[] }) => {
+      await Promise.all([
+        apiClient.setEnabledAIHubEvalTemplates({ enabled: bundle.evalTemplateIds }),
+        apiClient.setEnabledAIHubDatasetPresets({ enabled: bundle.datasetPresetIds }),
+      ]);
+    },
+    {
+      onSuccess: () => {
+        toast.success('Bundle applied');
+        queryClient.invalidateQueries(['admin', 'ai-hub', 'eval-templates', 'enabled']);
+        queryClient.invalidateQueries(['admin', 'ai-hub', 'dataset-presets', 'enabled']);
+        queryClient.invalidateQueries(['training-eval-templates']);
+        queryClient.invalidateQueries(['ai-hub', 'dataset-presets', 'enabled']);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Failed to apply bundle');
+      },
+    }
+  );
+
+  const templates = allTemplates?.templates || [];
+  const presets: any[] = (allPresets as any)?.presets || [];
+
+  const selectedIds = useMemo(() => {
+    return templates.filter((t) => localEnabled[t.id]).map((t) => t.id);
+  }, [templates, localEnabled]);
+
+  const allSelected = templates.length > 0 && templates.every((t) => localEnabled[t.id]);
+
+  const selectedPresetIds = useMemo(() => {
+    return presets.filter((p) => localPresetsEnabled[p.id]).map((p) => p.id);
+  }, [presets, localPresetsEnabled]);
+
+  const allPresetsSelected = presets.length > 0 && presets.every((p) => localPresetsEnabled[p.id]);
+
+  return (
+    <div className="space-y-6">
+      <div>
+        <h2 className="text-lg font-semibold text-gray-900">AI Hub</h2>
+        <p className="text-sm text-gray-600">Configure customer-visible AI Hub plugins</p>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-6">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Customer Profile</h3>
+            <p className="text-xs text-gray-600 mt-1">
+              Used by AI Scientist to generate customer-specific bundles without re-inferring from docs every run.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                setProfileName('');
+                setProfileKeywords('');
+                setProfileNotes('');
+                setProfileWorkflows({ triage: true, extraction: true, literature: true });
+                setProfileDirty(true);
+              }}
+              disabled={profileLoading}
+              title="Clears local fields (does not change saved profile until you click Save)"
+            >
+              Clear
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => saveProfileMutation.mutate()}
+              disabled={profileLoading || saveProfileMutation.isLoading || !profileDirty}
+              title={!profileDirty ? 'No changes to save' : undefined}
+            >
+              {saveProfileMutation.isLoading ? 'Saving…' : 'Save'}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                const id = (customerProfileData as any)?.profile?.id;
+                if (!id) {
+                  toast.error('Save a customer profile first');
+                  return;
+                }
+                if (!window.confirm('Clear AI Scientist learning feedback for this customer profile?')) {
+                  return;
+                }
+                clearFeedbackMutation.mutate(String(id));
+              }}
+              disabled={profileLoading || clearFeedbackMutation.isLoading}
+              title="Resets accept/reject learning for this customer profile"
+            >
+              {clearFeedbackMutation.isLoading ? 'Clearing…' : 'Clear Learning Feedback'}
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                if (!profileId) {
+                  toast.error('Save a customer profile first');
+                  return;
+                }
+                if (!window.confirm('Backfill legacy feedback rows using profile name?')) {
+                  return;
+                }
+                backfillMutation.mutate();
+              }}
+              disabled={profileLoading || backfillMutation.isLoading}
+              title="If you have older feedback rows that only stored profile name, this fills in profile id."
+            >
+              {backfillMutation.isLoading ? 'Backfilling…' : 'Backfill Profile ID'}
+            </Button>
+          </div>
+        </div>
+
+        <div className="mt-4 grid grid-cols-2 gap-4">
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Name</label>
+            <input
+              className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+              value={profileName}
+              onChange={(e) => {
+                setProfileName(e.target.value);
+                setProfileDirty(true);
+              }}
+              placeholder="e.g., Robotics Lab (Pilot)"
+            />
+            {(customerProfileData as any)?.profile?.id && (
+              <div className="mt-1 text-xs text-gray-500">
+                Profile id: <span className="font-mono">{String((customerProfileData as any).profile.id)}</span>
+              </div>
+            )}
+          </div>
+          <div>
+            <label className="block text-xs font-medium text-gray-700 mb-1">Preferred workflows</label>
+            <div className="flex flex-wrap gap-3 text-sm text-gray-700">
+              {(['triage', 'extraction', 'literature'] as const).map((k) => (
+                <label key={k} className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={(profileWorkflows as any)[k]}
+                    onChange={(e) => {
+                      setProfileWorkflows((prev) => ({ ...prev, [k]: e.target.checked }));
+                      setProfileDirty(true);
+                    }}
+                  />
+                  {k}
+                </label>
+              ))}
+            </div>
+          </div>
+        </div>
+
+        <div className="mt-4">
+          <label className="block text-xs font-medium text-gray-700 mb-1">Keywords (comma-separated)</label>
+          <input
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+            value={profileKeywords}
+            onChange={(e) => {
+              setProfileKeywords(e.target.value);
+              setProfileDirty(true);
+            }}
+            placeholder="e.g., robotics, slam, control, benchmarking, reproducibility"
+          />
+        </div>
+
+        <div className="mt-4">
+          <label className="block text-xs font-medium text-gray-700 mb-1">Notes (optional)</label>
+          <textarea
+            className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+            rows={3}
+            value={profileNotes}
+            onChange={(e) => {
+              setProfileNotes(e.target.value);
+              setProfileDirty(true);
+            }}
+            placeholder="Short description of the customer, what they do, and what success looks like."
+          />
+        </div>
+
+        {profileId && (
+          <div className="mt-4">
+            <div className="text-sm font-semibold text-gray-900">Learning analytics</div>
+            <div className="text-xs text-gray-600 mt-1">Top accepted/rejected items for this profile.</div>
+            <div className="mt-2 border border-gray-200 rounded-lg overflow-hidden">
+              <div className="grid grid-cols-12 bg-gray-50 text-xs font-medium text-gray-700 px-3 py-2">
+                <div className="col-span-4">Item</div>
+                <div className="col-span-3">Type</div>
+                <div className="col-span-2 text-right">Accept</div>
+                <div className="col-span-2 text-right">Reject</div>
+                <div className="col-span-1 text-right">Net</div>
+              </div>
+              <div className="divide-y divide-gray-100">
+                {((feedbackStats as any)?.rows || []).length === 0 ? (
+                  <div className="px-3 py-3 text-sm text-gray-500">No feedback yet.</div>
+                ) : (
+                  ((feedbackStats as any)?.rows || []).slice(0, 20).map((r: any) => (
+                    <div key={`${r.item_type}:${r.item_id}`} className="grid grid-cols-12 px-3 py-2 text-sm">
+                      <div className="col-span-4 font-mono text-xs text-gray-800 break-words">{r.item_id}</div>
+                      <div className="col-span-3 text-gray-600">{r.item_type}</div>
+                      <div className="col-span-2 text-right text-gray-700">{r.accepts}</div>
+                      <div className="col-span-2 text-right text-gray-700">{r.rejects}</div>
+                      <div className="col-span-1 text-right font-medium">{r.net}</div>
+                    </div>
+                  ))
+                )}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-6">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Customer Bundles</h3>
+            <p className="text-xs text-gray-600 mt-1">
+              Apply a known-good plugin configuration for a customer profile. This updates both dataset presets and eval templates.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-4 flex flex-wrap gap-2">
+          <Button
+            size="sm"
+            onClick={() => {
+              if (!window.confirm('Apply Research Lab (Perf Triage) bundle? This will overwrite current allowlists.')) {
+                return;
+              }
+              applyBundleMutation.mutate({
+                evalTemplateIds: ['perf_regression_triage_v1'],
+                datasetPresetIds: ['perf_regression_triage_v1'],
+              });
+            }}
+            disabled={applyBundleMutation.isLoading}
+          >
+            {applyBundleMutation.isLoading ? 'Applying…' : 'Research Lab (Perf Triage)'}
+          </Button>
+          <Button
+            size="sm"
+            onClick={() => {
+              if (
+                !window.confirm(
+                  'Apply Research Lab (All Workflows) bundle? This will overwrite current allowlists.'
+                )
+              ) {
+                return;
+              }
+              applyBundleMutation.mutate({
+                evalTemplateIds: ['perf_regression_triage_v1', 'extraction_quality_v1', 'literature_triage_v1'],
+                datasetPresetIds: ['perf_regression_triage_v1', 'repro_checklist_v1', 'gap_analysis_hypotheses_v1'],
+              });
+            }}
+            disabled={applyBundleMutation.isLoading}
+          >
+            {applyBundleMutation.isLoading ? 'Applying…' : 'Research Lab (All Workflows)'}
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              if (!window.confirm('Enable all presets + eval templates (default mode)? This will clear allowlists.')) {
+                return;
+              }
+              applyBundleMutation.mutate({ evalTemplateIds: [], datasetPresetIds: [] });
+            }}
+            disabled={applyBundleMutation.isLoading}
+            title="Clears allowlists so the system defaults to 'all enabled'"
+          >
+            Enable All (Default Mode)
+          </Button>
+        </div>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-6">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Eval Templates</h3>
+            <p className="text-xs text-gray-600 mt-1">
+              If none are selected, all templates are enabled (default). Select a subset to enforce a customer allowlist.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                const next: Record<string, boolean> = {};
+                for (const t of templates) next[t.id] = true;
+                setLocalEnabled(next);
+                setDirty(true);
+              }}
+              disabled={templatesLoading || enabledLoading || templates.length === 0}
+            >
+              Enable all
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                const next: Record<string, boolean> = {};
+                for (const t of templates) next[t.id] = false;
+                setLocalEnabled(next);
+                setDirty(true);
+              }}
+              disabled={templatesLoading || enabledLoading || templates.length === 0}
+              title="Clearing selection reverts to default behavior (all enabled)"
+            >
+              Clear selection
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => saveMutation.mutate(selectedIds)}
+              disabled={!dirty || saveMutation.isLoading || templatesLoading || enabledLoading}
+            >
+              {saveMutation.isLoading ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
+        </div>
+
+        {templatesLoading || enabledLoading ? (
+          <div className="flex justify-center py-10">
+            <LoadingSpinner size="md" />
+          </div>
+        ) : templates.length === 0 ? (
+          <div className="text-sm text-gray-600 py-6">No eval templates found on the server.</div>
+        ) : (
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={allSelected}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          const next: Record<string, boolean> = {};
+                          for (const t of templates) next[t.id] = checked;
+                          setLocalEnabled(next);
+                          setDirty(true);
+                        }}
+                      />
+                      Enabled
+                    </label>
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Template</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                  <th className="px-4 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Cases</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {templates.map((t) => (
+                  <tr key={t.id}>
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={!!localEnabled[t.id]}
+                        onChange={(e) => {
+                          setLocalEnabled((prev) => ({ ...prev, [t.id]: e.target.checked }));
+                          setDirty(true);
+                        }}
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-sm font-medium text-gray-900">{t.name}</div>
+                      {t.description && <div className="text-xs text-gray-500">{t.description}</div>}
+                      <div className="text-xs text-gray-400 mt-0.5">v{t.version}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-xs font-mono text-gray-700">{t.id}</div>
+                    </td>
+                    <td className="px-4 py-3 text-right text-sm text-gray-700">{t.case_count}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="mt-3 text-xs text-gray-500">
+              Current mode: {selectedIds.length === 0 ? 'default (all enabled)' : `allowlist (${selectedIds.length} enabled)`}
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-6">
+        <div className="flex items-start justify-between gap-6">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-900">Dataset Presets</h3>
+            <p className="text-xs text-gray-600 mt-1">
+              If none are selected, all presets are enabled (default). Select a subset to enforce a customer allowlist.
+            </p>
+          </div>
+          <div className="flex items-center gap-2">
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                const next: Record<string, boolean> = {};
+                for (const p of presets) next[p.id] = true;
+                setLocalPresetsEnabled(next);
+                setPresetsDirty(true);
+              }}
+              disabled={presetsLoading || enabledPresetsLoading || presets.length === 0}
+            >
+              Enable all
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => {
+                const next: Record<string, boolean> = {};
+                for (const p of presets) next[p.id] = false;
+                setLocalPresetsEnabled(next);
+                setPresetsDirty(true);
+              }}
+              disabled={presetsLoading || enabledPresetsLoading || presets.length === 0}
+              title="Clearing selection reverts to default behavior (all enabled)"
+            >
+              Clear selection
+            </Button>
+            <Button
+              size="sm"
+              onClick={() => savePresetsMutation.mutate(selectedPresetIds)}
+              disabled={!presetsDirty || savePresetsMutation.isLoading || presetsLoading || enabledPresetsLoading}
+            >
+              {savePresetsMutation.isLoading ? 'Saving…' : 'Save'}
+            </Button>
+          </div>
+        </div>
+
+        {presetsLoading || enabledPresetsLoading ? (
+          <div className="flex justify-center py-10">
+            <LoadingSpinner size="md" />
+          </div>
+        ) : presets.length === 0 ? (
+          <div className="text-sm text-gray-600 py-6">No dataset presets found on the server.</div>
+        ) : (
+          <div className="mt-4 overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">
+                    <label className="inline-flex items-center gap-2">
+                      <input
+                        type="checkbox"
+                        checked={allPresetsSelected}
+                        onChange={(e) => {
+                          const checked = e.target.checked;
+                          const next: Record<string, boolean> = {};
+                          for (const p of presets) next[p.id] = checked;
+                          setLocalPresetsEnabled(next);
+                          setPresetsDirty(true);
+                        }}
+                      />
+                      Enabled
+                    </label>
+                  </th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Preset</th>
+                  <th className="px-4 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">ID</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {presets.map((p) => (
+                  <tr key={p.id}>
+                    <td className="px-4 py-3">
+                      <input
+                        type="checkbox"
+                        checked={!!localPresetsEnabled[p.id]}
+                        onChange={(e) => {
+                          setLocalPresetsEnabled((prev) => ({ ...prev, [p.id]: e.target.checked }));
+                          setPresetsDirty(true);
+                        }}
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-sm font-medium text-gray-900">{p.name}</div>
+                      {p.description && <div className="text-xs text-gray-500">{p.description}</div>}
+                      <div className="text-xs text-gray-400 mt-0.5">type: {p.dataset_type}</div>
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-xs font-mono text-gray-700">{p.id}</div>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+            <div className="mt-3 text-xs text-gray-500">
+              Current mode: {selectedPresetIds.length === 0 ? 'default (all enabled)' : `allowlist (${selectedPresetIds.length} enabled)`}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+};
+
+const ToolApprovalsTab: React.FC = () => {
+  const queryClient = useQueryClient();
+
+  const { data, isLoading } = useQuery(
+    ['toolAudits', 'requires_approval'],
+    () => apiClient.listToolAudits({ status: 'requires_approval', limit: 100 }),
+    { refetchInterval: 5000, refetchOnWindowFocus: false }
+  );
+
+  const approveMutation = useMutation(
+    (auditId: string) => apiClient.approveToolAudit(auditId),
+    {
+      onSuccess: () => {
+        toast.success('Approved');
+        queryClient.invalidateQueries(['toolAudits', 'requires_approval']);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Failed to approve');
+      },
+    }
+  );
+
+  const rejectMutation = useMutation(
+    (auditId: string) => apiClient.rejectToolAudit(auditId),
+    {
+      onSuccess: () => {
+        toast.success('Rejected');
+        queryClient.invalidateQueries(['toolAudits', 'requires_approval']);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Failed to reject');
+      },
+    }
+  );
+
+  const runMutation = useMutation(
+    (auditId: string) => apiClient.runToolAudit(auditId),
+    {
+      onSuccess: () => {
+        toast.success('Tool executed');
+        queryClient.invalidateQueries(['toolAudits', 'requires_approval']);
+      },
+      onError: (e: any) => {
+        toast.error(e?.message || 'Failed to run tool');
+      },
+    }
+  );
+
+  const rows: ToolAudit[] = data || [];
+
+  return (
+    <div className="space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h2 className="text-lg font-semibold text-gray-900">Tool Approvals</h2>
+          <p className="text-sm text-gray-600">Approve and run dangerous agent tool calls</p>
+        </div>
+      </div>
+
+      {isLoading ? (
+        <div className="flex justify-center py-10">
+          <LoadingSpinner size="md" />
+        </div>
+      ) : rows.length === 0 ? (
+        <div className="bg-white rounded-lg shadow p-6 text-gray-600">No pending approvals.</div>
+      ) : (
+        <div className="bg-white rounded-lg shadow overflow-hidden">
+          <div className="overflow-x-auto">
+            <table className="min-w-full divide-y divide-gray-200">
+              <thead className="bg-gray-50">
+                <tr>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Tool</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Requested</th>
+                  <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">Approval</th>
+                  <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">Actions</th>
+                </tr>
+              </thead>
+              <tbody className="bg-white divide-y divide-gray-200">
+                {rows.map((row) => (
+                  <tr key={row.id}>
+                    <td className="px-6 py-4">
+                      <div className="text-sm font-medium text-gray-900">{row.tool_name}</div>
+                      <div className="text-xs text-gray-500 break-all">ID: {row.id}</div>
+                      {row.conversation_id && (
+                        <div className="text-xs text-gray-500 break-all">Conversation: {row.conversation_id}</div>
+                      )}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-600">
+                      {formatDistanceToNow(new Date(row.created_at), { addSuffix: true })}
+                    </td>
+                    <td className="px-6 py-4 text-sm text-gray-600">
+                      <div className="flex items-center space-x-2">
+                        <span className="inline-flex items-center px-2 py-1 rounded text-xs bg-yellow-100 text-yellow-800">
+                          {row.approval_status || 'pending'}
+                        </span>
+                        <span className="text-xs text-gray-500">{row.status}</span>
+                      </div>
+                    </td>
+                    <td className="px-6 py-4 text-right space-x-2">
+                      <Button
+                        size="sm"
+                        onClick={() => approveMutation.mutate(row.id)}
+                        disabled={approveMutation.isLoading || rejectMutation.isLoading || runMutation.isLoading}
+                      >
+                        Approve
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => runMutation.mutate(row.id)}
+                        disabled={approveMutation.isLoading || rejectMutation.isLoading || runMutation.isLoading || row.approval_status !== 'approved'}
+                      >
+                        Run
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="danger"
+                        onClick={() => rejectMutation.mutate(row.id)}
+                        disabled={approveMutation.isLoading || rejectMutation.isLoading || runMutation.isLoading}
+                      >
+                        Reject
+                      </Button>
+                    </td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 };
@@ -2092,7 +2931,8 @@ const AgentsTab: React.FC = () => {
   const [debouncedSearch, setDebouncedSearch] = useState('');
   const [isFormOpen, setIsFormOpen] = useState(false);
   const [currentAgent, setCurrentAgent] = useState<AgentDefinition | null>(null);
-  const [agentToDelete, setAgentToDelete] = useState<AgentDefinition | null>(null);
+  const [agentToDelete, setAgentToDelete] = useState<AgentDefinitionSummary | null>(null);
+  const [agentLoadingId, setAgentLoadingId] = useState<string | null>(null);
 
   useEffect(() => {
     const timer = setTimeout(() => {
@@ -2103,7 +2943,7 @@ const AgentsTab: React.FC = () => {
 
   const { data, isLoading } = useQuery(
     ['agentDefinitions', debouncedSearch],
-    () => apiClient.listAgentDefinitions({ search: debouncedSearch || undefined }),
+    () => apiClient.listAgentDefinitions({ search: debouncedSearch || undefined, active_only: false }),
     { keepPreviousData: true }
   );
 
@@ -2120,6 +2960,22 @@ const AgentsTab: React.FC = () => {
   const agents = useMemo(() => data?.agents || [], [data]);
   const capabilities = useMemo(() => capabilitiesData?.capabilities || [], [capabilitiesData]);
   const availableTools = useMemo(() => (toolsData?.tools || []).map(t => t.name), [toolsData]);
+
+  const loadAgentMutation = useMutation(
+    (agentId: string) => apiClient.getAgentDefinition(agentId),
+    {
+      onMutate: (agentId) => setAgentLoadingId(agentId),
+      onSuccess: (agent) => {
+        setCurrentAgent(agent);
+        setIsFormOpen(true);
+      },
+      onError: (error: any) => {
+        const message = error?.response?.data?.detail || error?.message || 'Failed to load agent';
+        toast.error(message);
+      },
+      onSettled: () => setAgentLoadingId(null),
+    }
+  );
 
   const createAgentMutation = useMutation(
     (payload: AgentDefinitionCreate) => apiClient.createAgentDefinition(payload),
@@ -2186,13 +3042,23 @@ const AgentsTab: React.FC = () => {
     setIsFormOpen(true);
   };
 
-  const openEditModal = (agent: AgentDefinition) => {
-    setCurrentAgent(agent);
-    setIsFormOpen(true);
+  const openEditModal = (agent: AgentDefinitionSummary) => {
+    loadAgentMutation.mutate(agent.id);
   };
 
   const handleAgentSubmit = (values: AgentFormValues) => {
     if (currentAgent) {
+      if (currentAgent.is_system) {
+        updateAgentMutation.mutate({
+          id: currentAgent.id,
+          values: {
+            priority: values.priority,
+            is_active: values.is_active,
+          },
+        });
+        return;
+      }
+
       updateAgentMutation.mutate({
         id: currentAgent.id,
         values: {
@@ -2316,7 +3182,13 @@ const AgentsTab: React.FC = () => {
                       {agent.updated_at ? `${formatDistanceToNow(new Date(agent.updated_at))} ago` : '—'}
                     </td>
                     <td className="px-4 py-3 text-right text-sm space-x-1">
-                      <Button variant="ghost" size="sm" onClick={() => openEditModal(agent)}>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={() => openEditModal(agent)}
+                        loading={agentLoadingId === agent.id}
+                        disabled={!!agentLoadingId && agentLoadingId !== agent.id}
+                      >
                         Edit
                       </Button>
                       <Button
@@ -2353,7 +3225,10 @@ const AgentsTab: React.FC = () => {
           capabilities={capabilities}
           availableTools={availableTools}
           isSaving={isSaving}
-          onClose={() => setIsFormOpen(false)}
+          onClose={() => {
+            setIsFormOpen(false);
+            setCurrentAgent(null);
+          }}
           onSubmit={handleAgentSubmit}
         />
       )}
@@ -2453,6 +3328,7 @@ const AgentFormModal: React.FC<AgentFormModalProps> = ({
   };
 
   const isSystem = agent?.is_system ?? false;
+  const requiresPrompt = !agent || !isSystem;
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
@@ -2629,7 +3505,7 @@ const AgentFormModal: React.FC<AgentFormModalProps> = ({
               disabled={
                 formValues.name.trim().length === 0 ||
                 formValues.display_name.trim().length === 0 ||
-                formValues.system_prompt.trim().length < 10
+                (requiresPrompt && formValues.system_prompt.trim().length < 10)
               }
             >
               {agent ? 'Save Changes' : 'Create Agent'}

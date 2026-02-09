@@ -8,7 +8,7 @@ from loguru import logger
 from app.models.document import DocumentSource
 from app.services.connectors.github_connector import GitHubConnector
 from app.services.connectors.gitlab_connector import GitLabConnector
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, UserLLMSettings
 
 
 class GitService:
@@ -47,6 +47,7 @@ class GitService:
         base_branch: str,
         compare_branch: str,
         summary: Dict[str, Any],
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> str:
         """Invoke the LLM to explain a diff summary."""
         try:
@@ -71,7 +72,11 @@ class GitService:
                 "Highlight key changes, risks, and recommended validation steps.\n\n"
                 + "\n".join(context_parts)
             )
-            return await self.llm_service.generate_response(prompt, prefer_deepseek=True)
+            return await self.llm_service.generate_response(
+                prompt,
+                prefer_deepseek=True,
+                user_settings=user_settings,
+            )
         except Exception as exc:
             logger.warning(f"LLM summary generation failed: {exc}")
             return ""

@@ -13,9 +13,10 @@ import json
 import time
 import re
 import asyncio
+import hashlib
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Tuple
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, desc, func, and_, or_
@@ -25,11 +26,12 @@ from loguru import logger
 
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.document_service import DocumentService
-from app.services.vector_store import VectorStoreService
+from app.services.vector_store import vector_store_service
 from app.services.agent_tools import AGENT_TOOLS, get_tools_description, validate_tool_params
 from app.services.agent_router import AgentRouter
 from app.services.agent_memory_integration import AgentMemoryIntegration
 from app.services.memory_service import MemoryService
+from app.services.arxiv_search_service import ArxivSearchService
 from app.schemas.agent import (
     AgentMessage,
     AgentToolCall,
@@ -40,8 +42,12 @@ from app.schemas.agent import (
     AgentRoutingInfo,
 )
 from app.models.document import Document, DocumentSource
+from app.models.user import User as DbUser
 from app.models.agent_definition import AgentDefinition, AgentConversationContext
 from app.models.memory import UserPreferences, AgentConversation
+from app.models.tool_audit import ToolExecutionAudit
+from app.core.config import settings
+from fastapi.encoders import jsonable_encoder
 
 
 class AgentService:
@@ -58,22 +64,32 @@ class AgentService:
     def __init__(self):
         self.llm_service = LLMService()
         self.document_service = DocumentService()
-        self.vector_store = VectorStoreService()
+        self.vector_store = vector_store_service
         self.memory_service = MemoryService()
         self.router = AgentRouter(self.llm_service)
         self.memory_integration = AgentMemoryIntegration(self.memory_service)
         self._vector_store_initialized = False
         self._agents_loaded = False
+        self._vector_store_init_lock = asyncio.Lock()
+        self._agents_load_lock = asyncio.Lock()
 
     async def _ensure_vector_store_initialized(self):
         """Ensure vector store is initialized."""
-        if not self._vector_store_initialized:
-            await self.vector_store.initialize()
+        if self._vector_store_initialized:
+            return
+        async with self._vector_store_init_lock:
+            if self._vector_store_initialized:
+                return
+            await self.vector_store.initialize(background=True)
             self._vector_store_initialized = True
 
     async def _ensure_agents_loaded(self, db: AsyncSession) -> None:
         """Ensure agent definitions are loaded from database."""
-        if not self._agents_loaded:
+        if self._agents_loaded:
+            return
+        async with self._agents_load_lock:
+            if self._agents_loaded:
+                return
             await self.router.load_agents(db)
             self._agents_loaded = True
 
@@ -97,20 +113,146 @@ class AgentService:
 
         return prefs
 
+    def _routing_from_agent(
+        self,
+        agent: AgentDefinition,
+        *,
+        user_id: Optional[UUID] = None,
+        conversation_id: Optional[UUID] = None,
+    ) -> Optional[Dict[str, Any]]:
+        rd = getattr(agent, "routing_defaults", None)
+        if not isinstance(rd, dict):
+            return None
+
+        # Base routing defaults
+        tier = str(rd.get("tier") or rd.get("llm_tier") or "").strip().lower() or None
+        fallback = rd.get("fallback_tiers") or rd.get("llm_fallback_tiers")
+        if not isinstance(fallback, list):
+            fallback = []
+        fallback_tiers = [str(x).strip().lower() for x in fallback if str(x).strip()]
+
+        out: Dict[str, Any] = {"tier": tier, "fallback_tiers": fallback_tiers}
+
+        for k_in, k_out, lo, hi in [
+            ("timeout_seconds", "timeout_seconds", 2, 600),
+            ("llm_timeout_seconds", "timeout_seconds", 2, 600),
+            ("max_tokens_cap", "max_tokens_cap", 64, 20000),
+            ("llm_max_tokens_cap", "max_tokens_cap", 64, 20000),
+            ("cooldown_seconds", "cooldown_seconds", 5, 3600),
+            ("llm_unhealthy_cooldown_seconds", "cooldown_seconds", 5, 3600),
+        ]:
+            if k_in in rd and rd.get(k_in) is not None:
+                try:
+                    v = int(rd.get(k_in))
+                    out[k_out] = max(lo, min(v, hi))
+                except Exception:
+                    pass
+
+        origin: Dict[str, Any] = {
+            "source": "agent_defaults",
+            "agent_id": str(getattr(agent, 'id', '') or ''),
+        }
+
+        # Optional A/B experiment routing per agent.
+        # routing_defaults.experiment = {
+        #   "id": "exp-1",
+        #   "enabled": true,
+        #   "salt": "optional",
+        #   "variants": [
+        #     {"id": "A", "weight": 50, "routing": {"tier": "deep", "fallback_tiers": ["balanced"]}},
+        #     {"id": "B", "weight": 50, "routing": {"tier": "balanced", "fallback_tiers": ["fast"]}}
+        #   ]
+        # }
+        exp = rd.get("experiment") if isinstance(rd.get("experiment"), dict) else None
+        if exp and bool(exp.get("enabled")):
+            exp_id = str(exp.get("id") or "").strip()
+            variants = exp.get("variants") if isinstance(exp.get("variants"), list) else []
+            salt = str(exp.get("salt") or "").strip()
+            cleaned = []
+            total_w = 0
+            for v in variants:
+                if not isinstance(v, dict):
+                    continue
+                vid = str(v.get("id") or "").strip()
+                if not vid:
+                    continue
+                try:
+                    w = int(v.get("weight") or 0)
+                except Exception:
+                    w = 0
+                w = max(0, min(w, 1000000))
+                routing_v = v.get("routing") if isinstance(v.get("routing"), dict) else {}
+                if w <= 0:
+                    continue
+                cleaned.append({"id": vid, "weight": w, "routing": routing_v})
+                total_w += w
+
+            if exp_id and cleaned and total_w > 0:
+                # Deterministic assignment.
+                uid = str(user_id or "")
+                cid = str(conversation_id or "")
+                key = f"{getattr(agent, 'id', '')}:{exp_id}:{uid}:{cid}:{salt}".encode('utf-8')
+                h = hashlib.sha256(key).hexdigest()
+                bucket = int(h[:8], 16) / float(0xFFFFFFFF)
+                target = bucket * float(total_w)
+
+                acc = 0.0
+                chosen = cleaned[-1]
+                for v in cleaned:
+                    acc += float(v["weight"])
+                    if target <= acc:
+                        chosen = v
+                        break
+
+                # Apply variant routing as overrides.
+                rv = chosen.get("routing") if isinstance(chosen.get("routing"), dict) else {}
+                if rv:
+                    for kk, vv in rv.items():
+                        if kk in {"tier", "llm_tier"}:
+                            t = str(vv or "").strip().lower() or None
+                            out["tier"] = t
+                        elif kk in {"fallback_tiers", "llm_fallback_tiers"} and isinstance(vv, list):
+                            out["fallback_tiers"] = [str(x).strip().lower() for x in vv if str(x).strip()]
+                        elif kk in {"timeout_seconds", "llm_timeout_seconds", "max_tokens_cap", "llm_max_tokens_cap", "cooldown_seconds", "llm_unhealthy_cooldown_seconds"}:
+                            try:
+                                out_key = kk
+                                if kk.startswith('llm_'):
+                                    out_key = kk.replace('llm_', '').replace('unhealthy_', '')
+                                    if out_key == 'cooldown_seconds':
+                                        out_key = 'cooldown_seconds'
+                                out[out_key] = int(vv)
+                            except Exception:
+                                pass
+
+                origin = {
+                    "source": "agent_experiment",
+                    "agent_id": str(getattr(agent, 'id', '') or ''),
+                    "experiment_id": exp_id,
+                    "experiment_variant_id": str(chosen.get("id") or ""),
+                }
+
+        out["_origin"] = origin
+
+        # Return None if empty
+        if out.get("tier") is None and not out.get("fallback_tiers") and not any(
+            k in out for k in ("timeout_seconds", "max_tokens_cap", "cooldown_seconds")
+        ):
+            return None
+        return out
+
+
     def _filter_tools_for_agent(
         self,
         agent: AgentDefinition,
-        all_tools: Dict[str, Any]
-    ) -> Dict[str, Any]:
+        all_tools: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Filter available tools based on agent's whitelist."""
         if agent.tool_whitelist is None:
             # No whitelist = all tools available
             return all_tools
 
-        return {
-            name: tool for name, tool in all_tools.items()
-            if name in agent.tool_whitelist
-        }
+        allowed = set(agent.tool_whitelist or [])
+        return [tool for tool in all_tools if tool.get("name") in allowed]
 
     def _get_tools_description_for_agent(
         self,
@@ -122,15 +264,19 @@ class AgentService:
             return "No tools available."
 
         descriptions = []
-        for name, tool in filtered_tools.items():
+        for tool in filtered_tools:
+            name = tool.get("name", "unknown_tool")
             desc = f"- {name}: {tool.get('description', 'No description')}"
-            params = tool.get("parameters", {})
+
+            params = (tool.get("parameters") or {}).get("properties") or {}
+            required_params = set((tool.get("parameters") or {}).get("required") or [])
             if params:
                 param_strs = []
                 for pname, pinfo in params.items():
-                    required = "(required)" if pinfo.get("required") else "(optional)"
+                    required = "(required)" if pname in required_params else "(optional)"
                     param_strs.append(f"  - {pname} {required}: {pinfo.get('description', '')}")
                 desc += "\n" + "\n".join(param_strs)
+
             descriptions.append(desc)
 
         return "\n\n".join(descriptions)
@@ -143,7 +289,8 @@ class AgentService:
         db: AsyncSession,
         user_settings: Optional[UserLLMSettings] = None,
         conversation_id: Optional[UUID] = None,
-        turn_number: int = 0
+        turn_number: int = 0,
+        agent_id: Optional[UUID] = None,
     ) -> AgentChatResponse:
         """
         Process user message through multi-agent loop:
@@ -190,17 +337,34 @@ class AgentService:
                             db=db
                         )
 
-            # Step 3: Route to appropriate agent
-            intent_analysis = await self.router.analyze_intent(
-                message=message,
-                history=[{"role": m.role, "content": m.content} for m in history[-5:]],
-                use_llm=True
-            )
+            # Step 3: Route to appropriate agent (or force a specific agent)
+            selected_agent: AgentDefinition
+            routing_reason: str
 
-            selected_agent, routing_reason = await self.router.select_agent(
-                intent_analysis=intent_analysis,
-                available_agents=self.router.get_agents()
-            )
+            if agent_id:
+                selected_agent = next(
+                    (a for a in self.router.get_agents().values() if a.id == agent_id),
+                    None
+                )
+                if not selected_agent:
+                    result = await db.execute(select(AgentDefinition).where(AgentDefinition.id == agent_id))
+                    selected_agent = result.scalar_one_or_none()
+                    if not selected_agent:
+                        raise ValueError("Requested agent not found")
+                    if not selected_agent.is_active:
+                        raise ValueError("Requested agent is inactive")
+                routing_reason = "Forced by request agent_id"
+            else:
+                intent_analysis = await self.router.analyze_intent(
+                    message=message,
+                    history=[{"role": m.role, "content": m.content} for m in history[-5:]],
+                    use_llm=True
+                )
+
+                selected_agent, routing_reason = await self.router.select_agent(
+                    intent_analysis=intent_analysis,
+                    available_agents=self.router.get_agents()
+                )
 
             logger.info(
                 f"Selected agent '{selected_agent.name}' for message: {routing_reason}"
@@ -242,7 +406,13 @@ class AgentService:
                     tool_results.append(call)
                     continue
 
-                result = await self._execute_tool(call, user_id, db)
+                result = await self._execute_tool(
+                    call,
+                    user_id,
+                    db,
+                    conversation_id=conversation_id,
+                    agent_definition_id=selected_agent.id,
+                )
                 tool_results.append(result)
 
                 # Check if any tool requires user action
@@ -257,7 +427,9 @@ class AgentService:
                 history=history,
                 agent=selected_agent,
                 memory_context=memory_context,
-                user_settings=user_settings
+                user_settings=user_settings,
+                user_id=user_id,
+                db=db,
             )
 
             # Step 7: Check for handoff to another agent
@@ -419,7 +591,8 @@ Your response (JSON array only):"""
                 temperature=0.1,
                 max_tokens=500,
                 user_settings=user_settings,
-                task_type="chat"
+                task_type="chat",
+                routing=self._routing_from_agent(agent),
             )
 
             tool_calls = self._parse_tool_calls(response)
@@ -436,7 +609,9 @@ Your response (JSON array only):"""
         history: List[AgentMessage],
         agent: AgentDefinition,
         memory_context: str,
-        user_settings: Optional[UserLLMSettings] = None
+        user_settings: Optional[UserLLMSettings] = None,
+        user_id: UUID | None = None,
+        db: AsyncSession | None = None,
     ) -> str:
         """Generate final response based on tool results, using agent's personality."""
         # Build context from tool results
@@ -487,7 +662,10 @@ Your response:"""
                 temperature=0.7,
                 max_tokens=800,
                 user_settings=user_settings,
-                task_type="chat"
+                task_type="chat",
+                user_id=user_id,
+                db=db,
+                routing=self._routing_from_agent(agent, user_id=user_id, conversation_id=None),
             )
             return response.strip()
         except Exception as e:
@@ -601,15 +779,190 @@ Your response (JSON array only):"""
         self,
         tool_call: AgentToolCall,
         user_id: UUID,
-        db: AsyncSession
+        db: AsyncSession,
+        conversation_id: UUID | None = None,
+        agent_definition_id: UUID | None = None,
+        audit_row: ToolExecutionAudit | None = None,
+        bypass_approval_gate: bool = False,
     ) -> AgentToolCall:
         """Execute a single tool and return result."""
         tool_name = tool_call.tool_name
         tool_input = tool_call.tool_input
         start_time = time.time()
+        audit: ToolExecutionAudit | None = audit_row
 
         try:
+            # Tool policies: allow-by-default with explicit denies and optional approvals.
+            try:
+                from app.models.user import User
+                from app.services.tool_policy_engine import evaluate_tool_policy
+
+                user = await db.get(User, user_id)
+                decision = await evaluate_tool_policy(
+                    db=db,
+                    tool_name=tool_name,
+                    tool_args=tool_input,
+                    user=user,
+                    agent_definition_id=agent_definition_id,
+                )
+                decision_snapshot = {
+                    "allowed": bool(decision.allowed),
+                    "require_approval": bool(decision.require_approval),
+                    "denied_reason": decision.denied_reason,
+                    "matched_policies": decision.matched_policies,
+                }
+                if not decision.allowed:
+                    tool_call.status = "failed"
+                    tool_call.error = decision.denied_reason or "Tool denied by policy"
+                    tool_call.tool_output = {"error": "tool_denied", "message": tool_call.error}
+
+                    if audit is None:
+                        audit = ToolExecutionAudit(
+                            user_id=user_id,
+                            agent_definition_id=agent_definition_id,
+                            conversation_id=conversation_id,
+                            tool_name=tool_name,
+                            tool_input=jsonable_encoder(tool_input),
+                            policy_decision=jsonable_encoder(decision_snapshot),
+                            status="failed",
+                            error=tool_call.error,
+                            approval_required=False,
+                            approval_status=None,
+                        )
+                        db.add(audit)
+                        await db.commit()
+                    else:
+                        audit.status = "failed"
+                        audit.error = tool_call.error
+                        audit.policy_decision = jsonable_encoder(decision_snapshot)
+                        await db.commit()
+
+                    return tool_call
+            except Exception:
+                # Fail closed: if policy evaluation fails, block execution.
+                tool_call.status = "failed"
+                tool_call.error = "Tool policy evaluation failed"
+                tool_call.tool_output = {"error": "policy_error", "message": tool_call.error}
+                if audit is None:
+                    audit = ToolExecutionAudit(
+                        user_id=user_id,
+                        agent_definition_id=agent_definition_id,
+                        conversation_id=conversation_id,
+                        tool_name=tool_name,
+                        tool_input=jsonable_encoder(tool_input),
+                        policy_decision=jsonable_encoder({"allowed": False, "error": "policy_evaluation_failed"}),
+                        status="failed",
+                        error=tool_call.error,
+                        approval_required=False,
+                        approval_status=None,
+                    )
+                    db.add(audit)
+                    await db.commit()
+                else:
+                    audit.status = "failed"
+                    audit.error = tool_call.error
+                    audit.policy_decision = jsonable_encoder({"allowed": False, "error": "policy_evaluation_failed"})
+                    await db.commit()
+                return tool_call
+
             tool_call.status = "running"
+            if audit is None:
+                audit = ToolExecutionAudit(
+                    user_id=user_id,
+                    agent_definition_id=agent_definition_id,
+                    conversation_id=conversation_id,
+                    tool_name=tool_name,
+                    tool_input=jsonable_encoder(tool_input),
+                    policy_decision=jsonable_encoder(
+                        {
+                            "allowed": True,
+                            "require_approval": bool(getattr(decision, "require_approval", False)),  # type: ignore[name-defined]
+                            "denied_reason": None,
+                            "matched_policies": getattr(decision, "matched_policies", None),  # type: ignore[name-defined]
+                        }
+                    ),
+                    status="running",
+                )
+                policy_requires_approval = False
+                try:
+                    policy_requires_approval = bool(decision.require_approval)  # type: ignore[name-defined]
+                except Exception:
+                    policy_requires_approval = False
+
+                if (
+                    settings.AGENT_REQUIRE_TOOL_APPROVAL
+                    and (tool_name in set(settings.AGENT_DANGEROUS_TOOLS or []) or policy_requires_approval)
+                ):
+                    audit.approval_required = True
+                    audit.approval_mode = "owner_and_admin"
+                    audit.approval_status = "pending_owner"
+                    audit.status = "requires_approval"
+                    db.add(audit)
+                    await db.commit()
+                    await db.refresh(audit)
+                    tool_call.status = "requires_approval"
+                    tool_call.tool_output = {
+                        "error": "approval_required",
+                        "message": f"Tool '{tool_name}' requires approval before it can run.",
+                        "approval_id": str(audit.id),
+                    }
+                    return tool_call
+
+                db.add(audit)
+                await db.commit()
+                await db.refresh(audit)
+            else:
+                # Re-running an existing audit record (typically after approval)
+                audit.agent_definition_id = audit.agent_definition_id or agent_definition_id
+                audit.conversation_id = audit.conversation_id or conversation_id
+                audit.tool_name = tool_name
+                audit.tool_input = jsonable_encoder(tool_input)
+                audit.tool_output = None
+                audit.error = None
+                audit.execution_time_ms = None
+                audit.status = "running"
+                await db.commit()
+
+            if (
+                not bypass_approval_gate
+                and audit.approval_required
+                and audit.approval_status != "approved"
+            ):
+                audit.status = "requires_approval"
+                await db.commit()
+                tool_call.status = "requires_approval"
+                tool_call.tool_output = {
+                    "error": "approval_required",
+                    "message": f"Tool '{tool_name}' requires approval before it can run.",
+                    "approval_id": str(audit.id),
+                }
+                return tool_call
+
+            # Enforce per-agent tool whitelist at execution time.
+            if agent_definition_id:
+                try:
+                    from app.models.agent_definition import AgentDefinition
+
+                    agent_def = await db.get(AgentDefinition, agent_definition_id)
+                    if agent_def and not agent_def.has_tool(tool_name):
+                        audit.status = "blocked"
+                        audit.error = f"Tool '{tool_name}' is not allowed for agent '{agent_def.name}'"
+                        await db.commit()
+
+                        tool_call.status = "failed"
+                        tool_call.tool_output = {
+                            "error": "tool_not_allowed",
+                            "message": audit.error,
+                        }
+                        return tool_call
+                except Exception:
+                    # If whitelist enforcement fails unexpectedly, fail closed (block execution).
+                    audit.status = "blocked"
+                    audit.error = f"Failed to validate tool whitelist for agent_definition_id={agent_definition_id}"
+                    await db.commit()
+                    tool_call.status = "failed"
+                    tool_call.tool_output = {"error": "tool_whitelist_check_failed", "message": audit.error}
+                    return tool_call
 
             if tool_name == "search_documents":
                 result = await self._tool_search_documents(tool_input, db)
@@ -625,6 +978,8 @@ Your response (JSON array only):"""
                 result = await self._tool_list_document_sources(tool_input, db)
             elif tool_name == "list_documents_by_source":
                 result = await self._tool_list_documents_by_source(tool_input, db)
+            elif tool_name == "web_scrape":
+                result = await self._tool_web_scrape(tool_input, user_id, db)
             elif tool_name == "request_file_upload":
                 result = {
                     "action": "upload_requested",
@@ -634,6 +989,8 @@ Your response (JSON array only):"""
                 }
             elif tool_name == "create_document_from_text":
                 result = await self._tool_create_document_from_text(tool_input, user_id, db)
+            elif tool_name == "ingest_url":
+                result = await self._tool_ingest_url(tool_input, user_id, db)
             elif tool_name == "find_similar_documents":
                 result = await self._tool_find_similar_documents(tool_input, db)
             elif tool_name == "search_documents_by_author":
@@ -700,6 +1057,20 @@ Your response (JSON array only):"""
                 result = await self._tool_list_workflows(tool_input, user_id, db)
             elif tool_name == "run_custom_tool":
                 result = await self._tool_run_custom_tool(tool_input, user_id, db)
+            elif tool_name == "search_arxiv":
+                result = await self._tool_search_arxiv(tool_input)
+            elif tool_name == "ingest_arxiv_papers":
+                result = await self._tool_ingest_arxiv_papers(tool_input, user_id, db)
+            elif tool_name == "literature_review_arxiv":
+                result = await self._tool_literature_review_arxiv(tool_input, user_id, db)
+            elif tool_name == "summarize_documents_in_source":
+                result = await self._tool_summarize_documents_in_source(tool_input, user_id, db)
+            elif tool_name == "enrich_arxiv_metadata_for_source":
+                result = await self._tool_enrich_arxiv_metadata_for_source(tool_input, user_id, db)
+            elif tool_name == "generate_literature_review_for_source":
+                result = await self._tool_generate_literature_review_for_source(tool_input, user_id, db)
+            elif tool_name == "generate_slides_for_source":
+                result = await self._tool_generate_slides_for_source(tool_input, user_id, db)
             elif tool_name == "list_custom_tools":
                 result = await self._tool_list_custom_tools(tool_input, user_id, db)
             # Agent Collaboration Tools
@@ -707,6 +1078,38 @@ Your response (JSON array only):"""
                 result = await self._tool_delegate_to_agent(tool_input, user_id, db)
             elif tool_name == "list_available_agents":
                 result = await self._tool_list_available_agents(db)
+            # Data Analysis & Visualization Tools
+            elif tool_name == "get_collection_statistics":
+                result = await self._tool_get_collection_statistics(tool_input, db)
+            elif tool_name == "get_source_analytics":
+                result = await self._tool_get_source_analytics(tool_input, db)
+            elif tool_name == "get_trending_topics":
+                result = await self._tool_get_trending_topics(tool_input, db)
+            elif tool_name == "generate_chart_data":
+                result = await self._tool_generate_chart_data(tool_input, db)
+            elif tool_name == "export_data":
+                result = await self._tool_export_data(tool_input, db)
+            # Advanced Search Tools
+            elif tool_name == "faceted_search":
+                result = await self._tool_faceted_search(tool_input, db)
+            elif tool_name == "get_search_suggestions":
+                result = await self._tool_get_search_suggestions(tool_input, db)
+            elif tool_name == "get_related_searches":
+                result = await self._tool_get_related_searches(tool_input, db)
+            # Content Generation Tools
+            elif tool_name == "draft_email":
+                result = await self._tool_draft_email(tool_input, db)
+            elif tool_name == "generate_meeting_notes":
+                result = await self._tool_generate_meeting_notes(tool_input, db)
+            elif tool_name == "generate_documentation":
+                result = await self._tool_generate_documentation(tool_input, db)
+            elif tool_name == "generate_executive_summary":
+                result = await self._tool_generate_executive_summary(tool_input, db)
+            elif tool_name == "generate_report":
+                result = await self._tool_generate_report(tool_input, db)
+            # GitLab Architecture Tools
+            elif tool_name == "generate_gitlab_architecture":
+                result = await self._tool_generate_gitlab_architecture(tool_input, user_id, db)
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
 
@@ -714,13 +1117,356 @@ Your response (JSON array only):"""
             tool_call.status = "completed"
             tool_call.execution_time_ms = int((time.time() - start_time) * 1000)
 
+            if audit:
+                audit.tool_output = jsonable_encoder(result)
+                audit.status = "completed"
+                audit.execution_time_ms = tool_call.execution_time_ms
+                await db.commit()
+
         except Exception as e:
             logger.error(f"Error executing tool {tool_name}: {e}")
             tool_call.status = "failed"
             tool_call.error = str(e)
             tool_call.execution_time_ms = int((time.time() - start_time) * 1000)
+            if audit:
+                audit.status = "failed"
+                audit.error = str(e)
+                audit.execution_time_ms = tool_call.execution_time_ms
+                try:
+                    await db.commit()
+                except Exception:
+                    pass
 
         return tool_call
+
+    async def _tool_search_arxiv(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        query = (params.get("query") or "").strip()
+        start = int(params.get("start") or 0)
+        max_results = int(params.get("max_results") or 10)
+        sort_by = params.get("sort_by") or "relevance"
+        sort_order = params.get("sort_order") or "descending"
+
+        service = ArxivSearchService()
+        result = await service.search(
+            query=query,
+            start=start,
+            max_results=max_results,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+        return {
+            "total_results": result.total_results,
+            "start": result.start,
+            "max_results": result.max_results,
+            "items": result.items,
+        }
+
+    async def _tool_literature_review_arxiv(
+        self,
+        params: Dict[str, Any],
+        user_id: UUID,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        topic = (params.get("topic") or "").strip()
+        if not topic:
+            raise ValueError("topic is required")
+
+        query_override = (params.get("query") or "").strip()
+        categories = [c.strip() for c in (params.get("categories") or []) if isinstance(c, str) and c.strip()]
+        max_papers = max(1, min(int(params.get("max_papers") or 5), 25))
+        ingest = bool(params.get("ingest", True))
+        sort_by = params.get("sort_by") or "relevance"
+        sort_order = params.get("sort_order") or "descending"
+
+        if query_override:
+            q = query_override
+        else:
+            q = f'all:"{topic}"' if " " in topic else f"all:{topic}"
+
+        if categories:
+            cat_expr = " OR ".join([f"cat:{c}" for c in categories])
+            q = f"{q} AND ({cat_expr})"
+
+        service = ArxivSearchService()
+        result = await service.search(
+            query=q,
+            start=0,
+            max_results=max_papers,
+            sort_by=sort_by,
+            sort_order=sort_order,
+        )
+
+        papers = result.items
+        paper_ids = [p.get("id") for p in papers if isinstance(p, dict) and p.get("id")]
+
+        ingest_result = None
+        if ingest and paper_ids:
+            ingest_result = await self._tool_ingest_arxiv_papers(
+                {
+                    "name": f"Literature review: {topic}",
+                    "paper_ids": paper_ids,
+                    "max_results": len(paper_ids),
+                    "start": 0,
+                    "sort_by": "submittedDate",
+                    "sort_order": "descending",
+                    "auto_summarize": True,
+                    "auto_literature_review": True,
+                    "topic": topic,
+                    "auto_sync": True,
+                },
+                user_id,
+                db,
+            )
+
+        return {
+            "topic": topic,
+            "query": q,
+            "papers": papers,
+            "ingest": ingest_result,
+            "next_steps": [
+                "Open the imported documents in Documents once ingestion completes.",
+                "Ask the agent to summarize and compare the imported papers.",
+            ],
+        }
+
+    async def _tool_ingest_arxiv_papers(
+        self,
+        params: Dict[str, Any],
+        user_id: UUID,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        name = (params.get("name") or "ArXiv import").strip()
+        search_queries = [q.strip() for q in (params.get("search_queries") or []) if isinstance(q, str) and q.strip()]
+        paper_ids = [p.strip() for p in (params.get("paper_ids") or []) if isinstance(p, str) and p.strip()]
+        categories = [c.strip() for c in (params.get("categories") or []) if isinstance(c, str) and c.strip()]
+        max_results = int(params.get("max_results") or 25)
+        start = int(params.get("start") or 0)
+        sort_by = params.get("sort_by") or "submittedDate"
+        sort_order = params.get("sort_order") or "descending"
+        auto_sync = bool(params.get("auto_sync", True))
+        auto_summarize = bool(params.get("auto_summarize", True))
+        auto_literature_review = bool(params.get("auto_literature_review", False))
+        topic = (params.get("topic") or None)
+
+        if not search_queries and not paper_ids and not categories:
+            raise ValueError("Provide at least one of: search_queries, paper_ids, categories")
+
+        config = {
+            "queries": search_queries,
+            "paper_ids": paper_ids,
+            "categories": categories,
+            "max_results": max_results,
+            "start": start,
+            "sort_by": sort_by,
+            "sort_order": sort_order,
+            "requested_by": str(user_id),
+            "requested_by_user_id": str(user_id),
+            "auto_summarize": auto_summarize,
+            "auto_literature_review": auto_literature_review,
+            "topic": topic,
+            "display": {
+                "queries": search_queries,
+                "paper_ids": paper_ids,
+                "categories": categories,
+                "max_results": max_results,
+            }
+        }
+        try:
+            user_row = await db.execute(select(DbUser).where(DbUser.id == user_id))
+            db_user = user_row.scalar_one_or_none()
+            if db_user and getattr(db_user, "username", None):
+                config["requested_by"] = db_user.username
+        except Exception:
+            pass
+
+        source_name = f"{name} #{uuid4().hex[:6]}"
+        source = await self.document_service.create_document_source(
+            name=source_name,
+            source_type="arxiv",
+            config=config,
+            db=db,
+        )
+
+        task_id = None
+        if auto_sync:
+            try:
+                from app.tasks.ingestion_tasks import ingest_from_source
+                task = ingest_from_source.delay(str(source.id))
+                task_id = getattr(task, "id", None)
+            except Exception as exc:
+                logger.warning(f"Failed to trigger arXiv ingestion for {source.id}: {exc}")
+
+        return {
+            "status": "created",
+            "source_id": str(source.id),
+            "source_name": source.name,
+            "queued": bool(task_id) if auto_sync else False,
+            "task_id": task_id,
+            "paper_ids_count": len(paper_ids),
+            "search_queries_count": len(search_queries),
+            "categories_count": len(categories),
+        }
+
+    async def _tool_summarize_documents_in_source(self, params: Dict[str, Any], user_id: UUID, db: AsyncSession) -> Dict[str, Any]:
+        from uuid import UUID as _UUID
+        from sqlalchemy import select, desc
+        from app.models.document import Document, DocumentSource
+        from app.tasks.summarization_tasks import summarize_document as summarize_task
+
+        source_id = params.get("source_id")
+        if not source_id:
+            raise ValueError("source_id is required")
+        src = await db.get(DocumentSource, _UUID(str(source_id)))
+        if not src:
+            raise ValueError("Source not found")
+
+        force = bool(params.get("force", False))
+        only_missing = bool(params.get("only_missing", True))
+        limit = min(int(params.get("limit", 500) or 500), 2000)
+
+        rows = (
+            await db.execute(
+                select(Document.id, Document.summary)
+                .where(Document.source_id == src.id)
+                .order_by(desc(Document.created_at))
+                .limit(limit)
+            )
+        ).all()
+        queued = 0
+        for doc_id, summary in rows:
+            if only_missing and summary and not force:
+                continue
+            summarize_task.delay(str(doc_id), force, user_id=str(user_id))
+            queued += 1
+
+        return {
+            "source_id": str(src.id),
+            "queued": queued,
+            "considered": len(rows),
+            "force": force,
+            "only_missing": only_missing,
+        }
+
+    async def _tool_enrich_arxiv_metadata_for_source(
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
+    ) -> Dict[str, Any]:
+        from uuid import UUID as _UUID
+        from app.models.document import DocumentSource
+        from app.tasks.paper_enrichment_tasks import enrich_arxiv_source
+
+        source_id = params.get("source_id")
+        if not source_id:
+            raise ValueError("source_id is required")
+        src = await db.get(DocumentSource, _UUID(str(source_id)))
+        if not src or src.source_type != "arxiv":
+            raise ValueError("arXiv source not found")
+
+        # Best-effort ownership check: match requested_by / requested_by_user_id if present (admins bypass)
+        cfg = src.config if isinstance(src.config, dict) else {}
+        requested_by_user_id = cfg.get("requested_by_user_id") or cfg.get("requestedByUserId")
+        requested_by = cfg.get("requested_by") or cfg.get("requestedBy")
+        if requested_by_user_id and requested_by_user_id != str(user_id) and requested_by != str(user_id):
+            from app.models.user import User as DbUser
+            u = await db.get(DbUser, user_id)
+            if not (u and u.is_admin()):
+                raise ValueError("Not authorized for this source")
+
+        force = bool(params.get("force", False))
+        limit = min(int(params.get("limit", 500) or 500), 5000)
+        task = enrich_arxiv_source.delay(str(src.id), force, limit)
+        return {"source_id": str(src.id), "queued": True, "task_id": task.id, "force": force, "limit": limit}
+
+    async def _tool_generate_literature_review_for_source(
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
+    ) -> Dict[str, Any]:
+        from uuid import UUID as _UUID
+        from app.models.document import DocumentSource
+        from app.tasks.research_tasks import generate_literature_review
+
+        source_id = params.get("source_id")
+        if not source_id:
+            raise ValueError("source_id is required")
+        src = await db.get(DocumentSource, _UUID(str(source_id)))
+        if not src or src.source_type != "arxiv":
+            raise ValueError("arXiv source not found")
+
+        topic = params.get("topic")
+        if topic and isinstance(src.config, dict):
+            cfg = dict(src.config)
+            cfg["topic"] = str(topic).strip()
+            src.config = cfg
+            await db.commit()
+
+        task = generate_literature_review.delay(str(src.id), user_id=str(user_id))
+        return {"source_id": str(src.id), "queued": True, "task_id": task.id}
+
+    async def _tool_generate_slides_for_source(
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
+    ) -> Dict[str, Any]:
+        from uuid import UUID as _UUID
+        from sqlalchemy import select, desc
+        from app.models.document import DocumentSource, Document
+        from app.models.presentation import PresentationJob
+        from app.tasks.presentation_tasks import generate_presentation_task
+
+        source_id = params.get("source_id")
+        if not source_id:
+            raise ValueError("source_id is required")
+        src = await db.get(DocumentSource, _UUID(str(source_id)))
+        if not src or src.source_type != "arxiv":
+            raise ValueError("arXiv source not found")
+
+        title = params.get("title") or f"Slides: {src.name}"
+        topic = params.get("topic")
+        if not topic and isinstance(src.config, dict):
+            topic = src.config.get("topic")
+        topic = topic or src.name
+
+        slide_count = int(params.get("slide_count", 10) or 10)
+        slide_count = max(3, min(40, slide_count))
+        style = params.get("style") or "professional"
+        include_diagrams = bool(params.get("include_diagrams", True))
+        prefer_review = bool(params.get("prefer_review_document", True))
+
+        review_doc_id = None
+        if prefer_review:
+            review_result = await db.execute(
+                select(Document.id)
+                .where(Document.source_id == src.id, Document.source_identifier.like("literature_review:%"))
+                .order_by(desc(Document.created_at))
+                .limit(1)
+            )
+            review_doc_id = review_result.scalar_one_or_none()
+
+        if review_doc_id:
+            source_document_ids = [str(review_doc_id)]
+        else:
+            docs_result = await db.execute(
+                select(Document.id)
+                .where(Document.source_id == src.id)
+                .order_by(desc(Document.created_at))
+                .limit(8)
+            )
+            source_document_ids = [str(r[0]) for r in docs_result.all()]
+            if not source_document_ids:
+                raise ValueError("No documents found for source")
+
+        job = PresentationJob(
+            user_id=user_id,
+            title=str(title),
+            topic=str(topic),
+            source_document_ids=source_document_ids,
+            slide_count=slide_count,
+            style=str(style),
+            include_diagrams=1 if include_diagrams else 0,
+            status="pending",
+            progress=0,
+        )
+        db.add(job)
+        await db.commit()
+        await db.refresh(job)
+        generate_presentation_task.delay(str(job.id), str(user_id))
+        return {"presentation_job_id": str(job.id), "source_id": str(src.id), "source_document_ids": source_document_ids}
 
     async def execute_tool(
         self,
@@ -838,6 +1584,104 @@ Your response (JSON array only):"""
             "created_at": document.created_at.isoformat() if document.created_at else None,
             "updated_at": document.updated_at.isoformat() if document.updated_at else None
         }
+
+    async def _tool_web_scrape(
+        self,
+        params: Dict[str, Any],
+        user_id: UUID,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Fetch a web page and extract readable text and links."""
+        url = params.get("url", "")
+        if not url:
+            return {"error": "Missing required parameter: url"}
+
+        follow_links = bool(params.get("follow_links", False))
+        max_pages = int(params.get("max_pages", 1))
+        max_depth = int(params.get("max_depth", 0))
+        same_domain_only = bool(params.get("same_domain_only", True))
+        include_links = bool(params.get("include_links", True))
+        allow_private_networks = bool(params.get("allow_private_networks", False))
+        max_content_chars = int(params.get("max_content_chars", 50_000))
+
+        allow_private_effective = False
+        is_allowlisted = await self._is_url_allowlisted_for_internal_scrape(url, db)
+
+        if allow_private_networks:
+            from app.models.user import User
+            user_result = await db.execute(select(User).where(User.id == user_id))
+            user = user_result.scalar_one_or_none()
+            if user and user.role == "admin":
+                allow_private_effective = True
+            elif is_allowlisted:
+                allow_private_effective = True
+            else:
+                return {"error": "allow_private_networks requires admin role (or an active web source allowlist)"}
+        else:
+            allow_private_effective = bool(is_allowlisted)
+
+        from app.services.web_scraper_service import WebScraperService
+
+        scraper = WebScraperService(enforce_network_safety=True)
+        try:
+            return await scraper.scrape(
+                url,
+                follow_links=follow_links,
+                max_pages=max_pages,
+                max_depth=max_depth,
+                same_domain_only=same_domain_only,
+                include_links=include_links,
+                allow_private_networks=allow_private_effective,
+                max_content_chars=max_content_chars,
+            )
+        finally:
+            await scraper.aclose()
+
+    async def _is_url_allowlisted_for_internal_scrape(self, url: str, db: AsyncSession) -> bool:
+        """
+        Check if a URL's hostname is allowlisted via active web document sources.
+
+        This enables scraping internal portals safely without opening arbitrary private-network access.
+        """
+        from urllib.parse import urlparse
+
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if not host:
+            return False
+
+        from app.models.document import DocumentSource
+
+        res = await db.execute(
+            select(DocumentSource).where(
+                DocumentSource.source_type == "web",
+                DocumentSource.is_active == True,
+            )
+        )
+        sources = res.scalars().all()
+
+        def host_matches(allowed: str) -> bool:
+            allowed = (allowed or "").strip().lower()
+            if not allowed:
+                return False
+            if host == allowed:
+                return True
+            return host.endswith("." + allowed)
+
+        for source in sources:
+            cfg = source.config or {}
+            for d in (cfg.get("allowed_domains") or []):
+                if host_matches(d):
+                    return True
+            for base in (cfg.get("base_urls") or []):
+                try:
+                    base_host = (urlparse(str(base)).hostname or "").lower()
+                except Exception:
+                    base_host = ""
+                if base_host and host_matches(base_host):
+                    return True
+
+        return False
 
     async def _tool_summarize_document(
         self,
@@ -1191,42 +2035,46 @@ Your response:"""
             return {"error": "Content is required"}
 
         try:
+            owner_display_name = None
+            try:
+                user_result = await db.execute(select(DbUser).where(DbUser.id == user_id))
+                user = user_result.scalar_one_or_none()
+                if user:
+                    owner_display_name = user.full_name or user.username or user.email
+            except Exception:
+                owner_display_name = None
+
+            content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
+            notes_source = await self.document_service._get_or_create_agent_notes_source(db)
+
             # Create document in database
             document = Document(
                 title=title,
                 content=content,
+                content_hash=content_hash,
+                url=None,
+                file_path=None,
                 file_type="text/plain",
-                file_size=len(content.encode('utf-8')),
+                file_size=len(content.encode("utf-8")),
+                source_id=notes_source.id,
+                source_identifier=f"agent_note:{uuid4()}",
+                author=owner_display_name,
                 tags=tags,
+                extra_metadata={
+                    "origin": "agent_created",
+                    "created_at": datetime.utcnow().isoformat(),
+                },
                 is_processed=False,
-                source="agent_created"
             )
             db.add(document)
             await db.commit()
             await db.refresh(document)
 
-            # Process document (create embeddings)
+            # Process document (chunks + vector index)
             try:
-                await self._ensure_vector_store_initialized()
-                from app.services.text_processor import TextProcessor
-                text_processor = TextProcessor()
-                chunks = text_processor.chunk_text(content, title=title)
-
-                if chunks:
-                    await self.vector_store.add_document_chunks(
-                        document_id=str(document.id),
-                        chunks=chunks,
-                        metadata={
-                            "title": title,
-                            "source": "agent_created",
-                            "file_type": "text/plain"
-                        }
-                    )
-                    document.is_processed = True
-                    await db.commit()
-
+                await self.document_service.reprocess_document(document.id, db, user_id=user_id)
             except Exception as e:
-                logger.warning(f"Failed to process document embeddings: {e}")
+                logger.warning(f"Failed to process agent-created document embeddings: {e}")
 
             return {
                 "action": "created",
@@ -1240,6 +2088,36 @@ Your response:"""
         except Exception as e:
             logger.error(f"Error creating document from text: {e}")
             return {"error": f"Failed to create document: {str(e)}"}
+
+    async def _tool_ingest_url(
+        self,
+        params: Dict[str, Any],
+        user_id: UUID,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """Scrape a URL and ingest it into the knowledge base as document(s)."""
+        user_result = await db.execute(select(DbUser).where(DbUser.id == user_id))
+        user = user_result.scalar_one_or_none()
+        if not user:
+            return {"error": "User not found"}
+
+        from app.services.url_ingestion_service import UrlIngestionService
+
+        service = UrlIngestionService()
+        return await service.ingest_url(
+            db=db,
+            user=user,
+            url=(params.get("url") or ""),
+            title=(params.get("title") or None),
+            tags=params.get("tags"),
+            follow_links=bool(params.get("follow_links", False)),
+            max_pages=int(params.get("max_pages", 1)),
+            max_depth=int(params.get("max_depth", 0)),
+            same_domain_only=bool(params.get("same_domain_only", True)),
+            one_document_per_page=bool(params.get("one_document_per_page", False)),
+            allow_private_networks=bool(params.get("allow_private_networks", False)),
+            max_content_chars=int(params.get("max_content_chars", 50_000)),
+        )
 
     async def _tool_find_similar_documents(
         self,
@@ -2682,6 +3560,23 @@ Answer:"""
                 return {"error": "No description provided for source='description'"}
             content_parts.append(description)
 
+        elif source == "gitlab_repo":
+            # Delegate to dedicated GitLab architecture tool
+            gitlab_result = await self._tool_generate_gitlab_architecture(
+                {
+                    "project_id": params.get("gitlab_project"),
+                    "branch": params.get("gitlab_branch"),
+                    "diagram_type": diagram_type,
+                    "focus": focus,
+                    "detail_level": detail_level,
+                },
+                user_id,
+                db,
+            )
+            if "error" in gitlab_result:
+                return gitlab_result
+            return gitlab_result
+
         if not content_parts:
             return {"error": "No content available to generate diagram"}
 
@@ -3319,3 +4214,398 @@ Include relevant information from the knowledge base when applicable.
         except Exception as e:
             logger.error(f"Error delegating to agent '{target_name}': {e}")
             return {"error": f"Delegation failed: {str(e)}"}
+
+    # =========================================================================
+    # Data Analysis & Visualization Tool Handlers
+    # =========================================================================
+
+    async def _tool_get_collection_statistics(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Get comprehensive statistics for a document collection."""
+        from app.services.analytics_service import analytics_service
+        from datetime import datetime
+
+        source_id = params.get("source_id")
+        if source_id:
+            source_id = UUID(str(source_id))
+
+        tag = params.get("tag")
+
+        date_from = None
+        date_to = None
+        if params.get("date_from"):
+            try:
+                date_from = datetime.fromisoformat(params["date_from"])
+            except ValueError:
+                pass
+        if params.get("date_to"):
+            try:
+                date_to = datetime.fromisoformat(params["date_to"])
+            except ValueError:
+                pass
+
+        return await analytics_service.get_collection_statistics(
+            db=db,
+            source_id=source_id,
+            tag=tag,
+            date_from=date_from,
+            date_to=date_to,
+        )
+
+    async def _tool_get_source_analytics(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Get analytics for document sources."""
+        from app.services.analytics_service import analytics_service
+
+        source_id = params.get("source_id")
+        if source_id:
+            source_id = UUID(str(source_id))
+
+        sources = await analytics_service.get_source_analytics(db=db, source_id=source_id)
+        return {"sources": sources}
+
+    async def _tool_get_trending_topics(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Find trending topics based on recent documents."""
+        from app.services.analytics_service import analytics_service
+
+        days = int(params.get("days", 7) or 7)
+        limit = int(params.get("limit", 10) or 10)
+
+        topics = await analytics_service.get_trending_topics(db=db, days=days, limit=limit)
+        return {"trending_topics": topics, "period_days": days}
+
+    async def _tool_generate_chart_data(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Generate data for charts and visualizations."""
+        from app.services.analytics_service import analytics_service
+        from datetime import datetime
+
+        chart_type = params.get("chart_type", "bar")
+        metric = params.get("metric", "document_count")
+        group_by = params.get("group_by", "source_type")
+        limit = int(params.get("limit", 10) or 10)
+
+        date_from = None
+        date_to = None
+        if params.get("date_from"):
+            try:
+                date_from = datetime.fromisoformat(params["date_from"])
+            except ValueError:
+                pass
+        if params.get("date_to"):
+            try:
+                date_to = datetime.fromisoformat(params["date_to"])
+            except ValueError:
+                pass
+
+        return await analytics_service.generate_chart_data(
+            db=db,
+            chart_type=chart_type,
+            metric=metric,
+            group_by=group_by,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+        )
+
+    async def _tool_export_data(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Export document data to various formats."""
+        from app.services.analytics_service import analytics_service
+
+        format_type = params.get("format", "json")
+        source_id = params.get("source_id")
+        if source_id:
+            source_id = UUID(str(source_id))
+
+        tag = params.get("tag")
+        include_content = bool(params.get("include_content", False))
+        include_chunks = bool(params.get("include_chunks", False))
+        limit = int(params.get("limit", 1000) or 1000)
+
+        content, filename, content_type = await analytics_service.export_data(
+            db=db,
+            format=format_type,
+            source_id=source_id,
+            tag=tag,
+            include_content=include_content,
+            include_chunks=include_chunks,
+            limit=limit,
+        )
+
+        # Return info about the export (not the full content for large exports)
+        return {
+            "filename": filename,
+            "content_type": content_type,
+            "format": format_type,
+            "size_bytes": len(content.encode('utf-8') if isinstance(content, str) else content),
+            "preview": content[:1000] if len(content) > 1000 else content,
+            "message": f"Export ready: {filename}"
+        }
+
+    # =========================================================================
+    # Advanced Search Tool Handlers
+    # =========================================================================
+
+    async def _tool_faceted_search(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Execute faceted search with aggregations."""
+        from app.services.search_service import search_service
+
+        query = params.get("query", "")
+        page = int(params.get("page", 1) or 1)
+        page_size = int(params.get("page_size", 10) or 10)
+        filters = params.get("filters")
+
+        return await search_service.faceted_search(
+            query=query,
+            db=db,
+            page=page,
+            page_size=page_size,
+            filters=filters,
+        )
+
+    async def _tool_get_search_suggestions(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Get search suggestions and autocomplete."""
+        from app.services.search_service import search_service
+
+        partial_query = params.get("partial_query", "")
+        limit = int(params.get("limit", 5) or 5)
+
+        suggestions = await search_service.get_search_suggestions(
+            partial_query=partial_query,
+            db=db,
+            limit=limit,
+        )
+        return {"suggestions": suggestions, "query": partial_query}
+
+    async def _tool_get_related_searches(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Get related search queries."""
+        from app.services.search_service import search_service
+
+        query = params.get("query", "")
+        limit = int(params.get("limit", 5) or 5)
+
+        related = await search_service.get_related_searches(
+            query=query,
+            db=db,
+            limit=limit,
+        )
+        return {"related_searches": related, "original_query": query}
+
+    # =========================================================================
+    # Content Generation Tool Handlers
+    # =========================================================================
+
+    async def _tool_draft_email(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Generate an email draft."""
+        from app.services.content_generation_service import content_generation_service
+
+        subject = params.get("subject", "")
+        recipient = params.get("recipient")
+        context = params.get("context")
+        tone = params.get("tone", "professional")
+        length = params.get("length", "medium")
+
+        document_ids = None
+        if params.get("document_ids"):
+            document_ids = [UUID(str(doc_id)) for doc_id in params["document_ids"]]
+
+        search_query = params.get("search_query")
+
+        return await content_generation_service.draft_email(
+            db=db,
+            subject=subject,
+            recipient=recipient,
+            context=context,
+            document_ids=document_ids,
+            search_query=search_query,
+            tone=tone,
+            length=length,
+        )
+
+    async def _tool_generate_meeting_notes(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Generate structured meeting notes."""
+        from app.services.content_generation_service import content_generation_service
+
+        transcript = params.get("transcript")
+        meeting_title = params.get("meeting_title")
+        participants = params.get("participants", [])
+        include_action_items = bool(params.get("include_action_items", True))
+        include_decisions = bool(params.get("include_decisions", True))
+
+        document_ids = None
+        if params.get("document_ids"):
+            document_ids = [UUID(str(doc_id)) for doc_id in params["document_ids"]]
+
+        return await content_generation_service.generate_meeting_notes(
+            db=db,
+            transcript=transcript,
+            document_ids=document_ids,
+            meeting_title=meeting_title,
+            participants=participants,
+            include_action_items=include_action_items,
+            include_decisions=include_decisions,
+        )
+
+    async def _tool_generate_documentation(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Generate documentation from source documents."""
+        from app.services.content_generation_service import content_generation_service
+
+        topic = params.get("topic", "")
+        doc_type = params.get("doc_type", "technical")
+        target_audience = params.get("target_audience", "developers")
+        include_examples = bool(params.get("include_examples", True))
+        search_query = params.get("search_query")
+
+        document_ids = None
+        if params.get("document_ids"):
+            document_ids = [UUID(str(doc_id)) for doc_id in params["document_ids"]]
+
+        return await content_generation_service.generate_documentation(
+            db=db,
+            topic=topic,
+            doc_type=doc_type,
+            document_ids=document_ids,
+            search_query=search_query,
+            target_audience=target_audience,
+            include_examples=include_examples,
+        )
+
+    async def _tool_generate_executive_summary(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Generate an executive summary."""
+        from app.services.content_generation_service import content_generation_service
+
+        topic = params.get("topic")
+        max_length = int(params.get("max_length", 500) or 500)
+        include_recommendations = bool(params.get("include_recommendations", True))
+        include_metrics = bool(params.get("include_metrics", True))
+        search_query = params.get("search_query")
+
+        document_ids = None
+        if params.get("document_ids"):
+            document_ids = [UUID(str(doc_id)) for doc_id in params["document_ids"]]
+
+        return await content_generation_service.generate_executive_summary(
+            db=db,
+            document_ids=document_ids,
+            search_query=search_query,
+            topic=topic,
+            max_length=max_length,
+            include_recommendations=include_recommendations,
+            include_metrics=include_metrics,
+        )
+
+    async def _tool_generate_report(
+        self, params: Dict[str, Any], db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Generate a structured report."""
+        from app.services.content_generation_service import content_generation_service
+
+        report_type = params.get("report_type", "summary")
+        title = params.get("title")
+        sections = params.get("sections")
+        search_query = params.get("search_query")
+
+        document_ids = None
+        if params.get("document_ids"):
+            document_ids = [UUID(str(doc_id)) for doc_id in params["document_ids"]]
+
+        return await content_generation_service.generate_report(
+            db=db,
+            report_type=report_type,
+            document_ids=document_ids,
+            search_query=search_query,
+            title=title,
+            sections=sections,
+        )
+
+    async def _tool_generate_gitlab_architecture(
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
+    ) -> Dict[str, Any]:
+        """Generate architecture diagram from a GitLab repository."""
+        from app.services.gitlab_architecture_service import get_gitlab_architecture_service
+        from app.models.data_source import DataSource
+
+        project_id = params.get("project_id")
+        if not project_id:
+            return {"error": "project_id is required"}
+
+        branch = params.get("branch")
+        diagram_type = params.get("diagram_type", "auto")
+        focus = params.get("focus")
+        detail_level = params.get("detail_level", "medium")
+
+        # Find GitLab data source to get credentials
+        query = select(DataSource).where(
+            DataSource.source_type == "gitlab",
+            DataSource.is_active == True,
+        )
+        result = await db.execute(query)
+        gitlab_source = result.scalars().first()
+
+        if not gitlab_source:
+            return {
+                "error": "No active GitLab data source configured",
+                "hint": "Please configure a GitLab data source in Admin settings first",
+            }
+
+        config = gitlab_source.config or {}
+        gitlab_url = config.get("gitlab_url")
+        token = config.get("token")
+
+        if not gitlab_url or not token:
+            return {
+                "error": "GitLab data source is missing URL or token",
+                "hint": "Please check the GitLab data source configuration",
+            }
+
+        try:
+            service = get_gitlab_architecture_service()
+            result = await service.generate_architecture_diagram(
+                gitlab_url=gitlab_url,
+                token=token,
+                project_id=project_id,
+                branch=branch,
+                diagram_type=diagram_type,
+                focus=focus,
+                detail_level=detail_level,
+            )
+
+            return {
+                "success": True,
+                "project": result["project"],
+                "mermaid_code": result["mermaid_code"],
+                "diagram_type": result["diagram_type"],
+                "focus": result["focus"],
+                "analysis_summary": result["analysis_summary"],
+                "has_png": result.get("png_base64") is not None,
+                "has_svg": result.get("svg") is not None,
+                "render_error": result.get("render_error"),
+            }
+
+        except Exception as e:
+            logger.error(f"Error generating GitLab architecture: {e}")
+            return {
+                "error": str(e),
+                "project_id": project_id,
+            }

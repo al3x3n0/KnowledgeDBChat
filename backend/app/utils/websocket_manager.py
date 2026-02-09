@@ -6,6 +6,7 @@ from typing import Dict, List, Set
 from fastapi import WebSocket
 from loguru import logger
 import json
+from starlette.websockets import WebSocketState
 
 
 class WebSocketManager:
@@ -17,7 +18,10 @@ class WebSocketManager:
 
     async def connect(self, websocket: WebSocket, document_id: str):
         """Connect a WebSocket for a specific document."""
-        await websocket.accept()
+        # Some endpoints accept the socket during auth (e.g., require_websocket_auth).
+        # Calling accept() twice raises: "Expected websocket.send/close, got websocket.accept".
+        if websocket.application_state != WebSocketState.CONNECTED:
+            await websocket.accept()
 
         if document_id not in self.active_connections:
             self.active_connections[document_id] = set()
@@ -165,6 +169,54 @@ class WebSocketManager:
             "source_id": source_id,
             "status": status,
         })
+
+    # Agent job specific events
+    async def send_agent_job_progress(self, job_id: str, progress: dict):
+        """Send agent job progress to clients."""
+        await self._broadcast(f"agent_job:{job_id}", {
+            "type": "agent_job_progress",
+            "job_id": job_id,
+            "progress": progress,
+        })
+
+    async def send_agent_job_complete(self, job_id: str, result: dict):
+        """Send agent job completion to clients."""
+        await self._broadcast(f"agent_job:{job_id}", {
+            "type": "agent_job_complete",
+            "job_id": job_id,
+            "result": result,
+        })
+
+    async def send_agent_job_error(self, job_id: str, error: str):
+        """Send agent job error to clients."""
+        await self._broadcast(f"agent_job:{job_id}", {
+            "type": "agent_job_error",
+            "job_id": job_id,
+            "error": error,
+        })
+
+    async def connect_agent_job(self, websocket: WebSocket, job_id: str):
+        """Connect a WebSocket for a specific agent job."""
+        key = f"agent_job:{job_id}"
+        if websocket.application_state != WebSocketState.CONNECTED:
+            await websocket.accept()
+
+        if key not in self.active_connections:
+            self.active_connections[key] = set()
+
+        self.active_connections[key].add(websocket)
+        logger.info(f"WebSocket connected for agent job {job_id}. Total connections: {len(self.active_connections[key])}")
+
+    def disconnect_agent_job(self, websocket: WebSocket, job_id: str):
+        """Disconnect a WebSocket for agent job."""
+        key = f"agent_job:{job_id}"
+        if key in self.active_connections:
+            self.active_connections[key].discard(websocket)
+
+            if not self.active_connections[key]:
+                del self.active_connections[key]
+
+            logger.info(f"WebSocket disconnected for agent job {job_id}")
 
 
 # Global WebSocket manager instance

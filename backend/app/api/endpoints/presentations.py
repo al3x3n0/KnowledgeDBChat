@@ -12,6 +12,9 @@ import os
 import re
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, delete
+from sqlalchemy.orm import selectinload
+from sqlalchemy import inspect as sa_inspect
+from sqlalchemy.orm.attributes import NO_VALUE
 from loguru import logger
 
 from app.core.database import get_db
@@ -44,6 +47,7 @@ async def create_presentation(
     The presentation will be generated asynchronously via Celery.
     Use GET /presentations/{job_id} to check status or WebSocket for real-time updates.
     """
+    template_name: Optional[str] = None
     # Validate template if provided
     if request.template_id:
         result = await db.execute(
@@ -64,6 +68,7 @@ async def create_presentation(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail="You don't have access to this template"
             )
+        template_name = template.name
 
     # Create job in database
     job = PresentationJob(
@@ -90,6 +95,156 @@ async def create_presentation(
 
     logger.info(f"Created presentation job {job.id} for user {current_user.id}")
 
+    return _job_to_response(job, template_name=template_name)
+
+
+@router.post("/from-research", response_model=PresentationJobResponse, status_code=status.HTTP_201_CREATED)
+async def create_research_presentation(
+    topic: str = Form(..., description="Research topic for the presentation"),
+    slide_count: int = Form(10, ge=5, le=25, description="Number of slides"),
+    include_arxiv: bool = Form(True, description="Search arXiv for papers"),
+    arxiv_max_papers: int = Form(5, ge=0, le=10, description="Max arXiv papers to ingest"),
+    style: str = Form("technical", description="Presentation style"),
+    include_diagrams: bool = Form(True, description="Include diagrams"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Create a research presentation from a topic.
+
+    This endpoint:
+    1. Searches the knowledge base for relevant documents
+    2. Optionally searches arXiv and ingests relevant papers (instant ingest)
+    3. Creates a presentation generation job
+
+    The arXiv papers are ingested synchronously (fast-path) so they're
+    immediately available for the presentation.
+    """
+    from app.services.connectors.arxiv_connector import ArxivConnector
+    from app.services.vector_store import vector_store_service
+    from app.models.document import Document as DocModel, DocumentChunk
+    from app.services.text_processor import TextProcessor
+    from app.tasks.presentation_tasks import generate_presentation_task
+    from uuid import uuid4
+    import hashlib
+
+    source_document_ids = []
+    text_processor = TextProcessor()
+
+    # If include_arxiv, search and ingest papers
+    if include_arxiv and arxiv_max_papers > 0:
+        try:
+            connector = ArxivConnector()
+            await connector.initialize({
+                "queries": [topic],
+                "max_results": arxiv_max_papers,
+                "sort_by": "relevance"
+            })
+
+            docs = await connector.list_documents()
+            logger.info(f"Found {len(docs)} arXiv papers for topic: {topic}")
+
+            for doc_info in docs[:arxiv_max_papers]:
+                arxiv_id = doc_info["identifier"]
+
+                # Check if already exists
+                existing = await db.execute(
+                    select(DocModel).where(DocModel.source_identifier == arxiv_id)
+                )
+                existing_doc = existing.scalar_one_or_none()
+
+                if existing_doc and existing_doc.is_processed:
+                    source_document_ids.append(str(existing_doc.id))
+                    continue
+
+                # Fetch and ingest
+                content = await connector.get_document_content(arxiv_id)
+                metadata = await connector.get_document_metadata(arxiv_id)
+
+                if existing_doc:
+                    document = existing_doc
+                    document.content = content
+                    document.content_hash = hashlib.sha256(content.encode()).hexdigest()
+                else:
+                    document = DocModel(
+                        id=uuid4(),
+                        title=doc_info["title"],
+                        content=content,
+                        content_hash=hashlib.sha256(content.encode()).hexdigest(),
+                        source_identifier=arxiv_id,
+                        url=doc_info.get("url"),
+                        author=doc_info.get("author"),
+                        extra_metadata={
+                            "arxiv": True,
+                            "authors": metadata.get("authors", []),
+                            "categories": metadata.get("categories", []),
+                            "research_presentation": True,
+                        }
+                    )
+                    db.add(document)
+
+                await db.commit()
+                await db.refresh(document)
+
+                # Quick chunking
+                chunks_data = text_processor.split_text(content, chunk_size=1000, chunk_overlap=200)
+
+                # Delete old chunks if updating
+                if existing_doc:
+                    await db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document.id))
+                    await db.commit()
+
+                chunks = []
+                for idx, chunk_text in enumerate(chunks_data):
+                    chunk = DocumentChunk(
+                        id=uuid4(),
+                        document_id=document.id,
+                        content=chunk_text,
+                        chunk_index=idx,
+                    )
+                    chunks.append(chunk)
+                    db.add(chunk)
+
+                await db.commit()
+
+                # Add to vector store
+                await vector_store_service.initialize()
+                await vector_store_service.add_document_chunks(document, chunks)
+
+                document.is_processed = True
+                await db.commit()
+
+                source_document_ids.append(str(document.id))
+
+            await connector.cleanup()
+
+        except Exception as e:
+            logger.warning(f"Failed to ingest arXiv papers: {e}")
+            # Continue without arXiv papers
+
+    # Create presentation job
+    job = PresentationJob(
+        user_id=current_user.id,
+        title=f"Research: {topic}",
+        topic=topic,
+        source_document_ids=source_document_ids,
+        slide_count=slide_count,
+        style=style,
+        include_diagrams=include_diagrams,
+        status="pending",
+        progress=0,
+        current_stage="queued"
+    )
+
+    db.add(job)
+    await db.commit()
+    await db.refresh(job)
+
+    # Queue generation task
+    generate_presentation_task.delay(str(job.id))
+
+    logger.info(f"Created research presentation job {job.id} with {len(source_document_ids)} source documents")
+
     return _job_to_response(job)
 
 
@@ -108,7 +263,7 @@ async def list_presentations(
     """
     query = select(PresentationJob).where(
         PresentationJob.user_id == current_user.id
-    )
+    ).options(selectinload(PresentationJob.template))
 
     if status_filter:
         query = query.where(PresentationJob.status == status_filter)
@@ -122,192 +277,6 @@ async def list_presentations(
     return [_job_to_response(job) for job in jobs]
 
 
-@router.get("/{job_id}", response_model=PresentationJobResponse)
-async def get_presentation_job(
-    job_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Get presentation job status and details.
-    """
-    job = await _get_user_job(job_id, current_user.id, db)
-    return _job_to_response(job)
-
-
-@router.get("/{job_id}/download")
-async def download_presentation(
-    job_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Download the generated presentation.
-
-    Redirects to a presigned MinIO URL for direct download.
-    """
-    job = await _get_user_job(job_id, current_user.id, db)
-
-    if job.status != "completed":
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Presentation is not ready. Current status: {job.status}"
-        )
-
-    if not job.file_path:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Presentation file not found"
-        )
-
-    # Generate presigned URL for download
-    storage = StorageService()
-    try:
-        download_url = await storage.get_presigned_url(
-            file_path=job.file_path,
-            expires_in=3600  # 1 hour
-        )
-        return RedirectResponse(url=download_url, status_code=status.HTTP_302_FOUND)
-    except Exception as e:
-        logger.error(f"Failed to generate download URL for job {job_id}: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to generate download URL"
-        )
-
-
-@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
-async def delete_presentation(
-    job_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Delete a presentation job and its associated file.
-    """
-    job = await _get_user_job(job_id, current_user.id, db)
-
-    # Delete file from MinIO if exists
-    if job.file_path:
-        storage = StorageService()
-        try:
-            await storage.delete_file(job.file_path)
-        except Exception as e:
-            logger.warning(f"Failed to delete presentation file {job.file_path}: {e}")
-
-    # Delete job from database
-    await db.delete(job)
-    await db.commit()
-
-    logger.info(f"Deleted presentation job {job_id}")
-
-
-@router.post("/{job_id}/cancel", response_model=PresentationJobResponse)
-async def cancel_presentation(
-    job_id: UUID,
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    Cancel a pending or in-progress presentation generation job.
-    """
-    job = await _get_user_job(job_id, current_user.id, db)
-
-    if job.status in ("completed", "failed", "cancelled"):
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot cancel job with status: {job.status}"
-        )
-
-    job.status = "cancelled"
-    job.error = "Cancelled by user"
-    await db.commit()
-    await db.refresh(job)
-
-    logger.info(f"Cancelled presentation job {job_id}")
-
-    return _job_to_response(job)
-
-
-@router.websocket("/{job_id}/progress")
-async def presentation_progress(
-    websocket: WebSocket,
-    job_id: UUID,
-    db: AsyncSession = Depends(get_db)
-):
-    """
-    WebSocket endpoint for real-time progress updates.
-
-    Sends JSON messages with format:
-    {
-        "type": "progress",
-        "progress": 50,
-        "stage": "generating_slides",
-        "status": "generating"
-    }
-
-    Connection closes automatically when job completes or fails.
-    """
-    await websocket.accept()
-
-    # Verify job exists
-    result = await db.execute(
-        select(PresentationJob).where(PresentationJob.id == job_id)
-    )
-    job = result.scalar_one_or_none()
-
-    if not job:
-        await websocket.close(code=4004, reason="Job not found")
-        return
-
-    import redis.asyncio as redis
-    from app.core.config import settings
-
-    try:
-        # Subscribe to Redis channel for this job
-        redis_client = redis.from_url(settings.REDIS_URL)
-        pubsub = redis_client.pubsub()
-        channel = f"presentation:{job_id}:progress"
-        await pubsub.subscribe(channel)
-
-        # Send initial status
-        await websocket.send_json({
-            "type": "progress",
-            "progress": job.progress,
-            "stage": job.current_stage or "pending",
-            "status": job.status,
-        })
-
-        # If already completed/failed, close immediately
-        if job.status in ("completed", "failed", "cancelled"):
-            await websocket.close()
-            return
-
-        # Listen for updates
-        async for message in pubsub.listen():
-            if message["type"] == "message":
-                import json
-                data = json.loads(message["data"])
-                await websocket.send_json(data)
-
-                # Close on completion
-                if data.get("status") in ("completed", "failed", "cancelled"):
-                    break
-
-        await pubsub.unsubscribe(channel)
-        await redis_client.close()
-
-    except WebSocketDisconnect:
-        logger.debug(f"WebSocket disconnected for job {job_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error for job {job_id}: {e}")
-    finally:
-        try:
-            await websocket.close()
-        except:
-            pass
-
-
 async def _get_user_job(
     job_id: UUID,
     user_id: UUID,
@@ -315,7 +284,7 @@ async def _get_user_job(
 ) -> PresentationJob:
     """Get a job ensuring it belongs to the user."""
     result = await db.execute(
-        select(PresentationJob).where(
+        select(PresentationJob).options(selectinload(PresentationJob.template)).where(
             PresentationJob.id == job_id,
             PresentationJob.user_id == user_id
         )
@@ -331,11 +300,17 @@ async def _get_user_job(
     return job
 
 
-def _job_to_response(job: PresentationJob) -> PresentationJobResponse:
+def _job_to_response(job: PresentationJob, template_name: Optional[str] = None) -> PresentationJobResponse:
     """Convert database model to response schema."""
-    template_name = None
-    if job.template:
-        template_name = job.template.name
+    if template_name is None:
+        # Avoid async lazy-loading (MissingGreenlet) by only reading the relationship
+        # if it's already loaded.
+        try:
+            insp = sa_inspect(job)
+            if insp.attrs.template.loaded_value is not NO_VALUE and job.template is not None:
+                template_name = job.template.name
+        except Exception:
+            template_name = None
 
     return PresentationJobResponse(
         id=job.id,
@@ -353,6 +328,7 @@ def _job_to_response(job: PresentationJob) -> PresentationJobResponse:
         progress=job.progress,
         current_stage=job.current_stage,
         generated_outline=job.generated_outline,
+        retrieval_trace_id=getattr(job, "retrieval_trace_id", None),
         file_path=job.file_path,
         file_size=job.file_size,
         error=job.error,
@@ -634,6 +610,214 @@ async def delete_template(
     await db.commit()
 
     logger.info(f"Deleted template {template_id}")
+
+
+# =============================================================================
+# Job Detail Endpoints
+# =============================================================================
+
+@router.get("/{job_id}", response_model=PresentationJobResponse)
+async def get_presentation_job(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Get presentation job status and details.
+    """
+    job = await _get_user_job(job_id, current_user.id, db)
+    return _job_to_response(job)
+
+
+@router.get("/{job_id}/download")
+async def download_presentation(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Download the generated presentation.
+
+    Redirects to a presigned MinIO URL for direct download.
+    """
+    job = await _get_user_job(job_id, current_user.id, db)
+
+    if job.status != "completed":
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Presentation is not ready. Current status: {job.status}"
+        )
+
+    if not job.file_path:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Presentation file not found"
+        )
+
+    # Stream file directly from MinIO
+    storage = StorageService()
+    try:
+        content = await storage.get_file_content(job.file_path)
+
+        # Determine filename from path
+        filename = job.file_path.split("/")[-1] if "/" in job.file_path else job.file_path
+        if not filename.endswith(".pptx"):
+            filename = f"{job.title or 'presentation'}.pptx"
+
+        from fastapi.responses import Response
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(content))
+            }
+        )
+    except FileNotFoundError:
+        logger.error(f"Presentation file not found in storage for job {job_id}: {job.file_path}")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail="Presentation file not found in storage"
+        )
+    except Exception as e:
+        logger.error(f"Failed to download presentation for job {job_id}: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Failed to download presentation"
+        )
+
+
+@router.delete("/{job_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_presentation(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Delete a presentation job and its associated file.
+    """
+    job = await _get_user_job(job_id, current_user.id, db)
+
+    # Delete file from MinIO if exists
+    if job.file_path:
+        storage = StorageService()
+        try:
+            await storage.delete_file(job.file_path)
+        except Exception as e:
+            logger.warning(f"Failed to delete presentation file {job.file_path}: {e}")
+
+    # Delete job from database
+    await db.delete(job)
+    await db.commit()
+
+    logger.info(f"Deleted presentation job {job_id}")
+
+
+@router.post("/{job_id}/cancel", response_model=PresentationJobResponse)
+async def cancel_presentation(
+    job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Cancel a pending or in-progress presentation generation job.
+    """
+    job = await _get_user_job(job_id, current_user.id, db)
+
+    if job.status in ("completed", "failed", "cancelled"):
+        raise HTTPException(
+            status_code=status.HTTP_400_BAD_REQUEST,
+            detail=f"Cannot cancel job with status: {job.status}"
+        )
+
+    job.status = "cancelled"
+    job.error = "Cancelled by user"
+    await db.commit()
+    await db.refresh(job)
+
+    logger.info(f"Cancelled presentation job {job_id}")
+
+    return _job_to_response(job)
+
+
+@router.websocket("/{job_id}/progress")
+async def presentation_progress(
+    websocket: WebSocket,
+    job_id: UUID,
+):
+    """
+    WebSocket endpoint for real-time progress updates.
+
+    Sends JSON messages with format:
+    {
+        "type": "progress",
+        "progress": 50,
+        "stage": "generating_slides",
+        "status": "generating"
+    }
+
+    Connection closes automatically when job completes or fails.
+    """
+    await websocket.accept()
+
+    # Verify job exists
+    from app.core.database import AsyncSessionLocal
+    async with AsyncSessionLocal() as db:
+        result = await db.execute(
+            select(PresentationJob).where(PresentationJob.id == job_id)
+        )
+        job = result.scalar_one_or_none()
+
+    if not job:
+        await websocket.close(code=4004, reason="Job not found")
+        return
+
+    import redis.asyncio as redis
+    from app.core.config import settings
+
+    try:
+        # Subscribe to Redis channel for this job
+        redis_client = redis.from_url(settings.REDIS_URL)
+        pubsub = redis_client.pubsub()
+        channel = f"presentation:{job_id}:progress"
+        await pubsub.subscribe(channel)
+
+        # Send initial status
+        await websocket.send_json({
+            "type": "progress",
+            "progress": job.progress,
+            "stage": job.current_stage or "pending",
+            "status": job.status,
+        })
+
+        # If already completed/failed, close immediately
+        if job.status in ("completed", "failed", "cancelled"):
+            await websocket.close()
+            return
+
+        # Listen for updates
+        async for message in pubsub.listen():
+            if message["type"] == "message":
+                import json
+                data = json.loads(message["data"])
+                await websocket.send_json(data)
+
+                # Close on completion
+                if data.get("status") in ("completed", "failed", "cancelled"):
+                    break
+
+        await pubsub.unsubscribe(channel)
+        await redis_client.close()
+
+    except WebSocketDisconnect:
+        logger.debug(f"WebSocket disconnected for job {job_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error for job {job_id}: {e}")
+    finally:
+        try:
+            await websocket.close()
+        except Exception:
+            pass
 
 
 async def _get_accessible_template(

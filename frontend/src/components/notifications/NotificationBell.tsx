@@ -58,6 +58,8 @@ const NotificationBell: React.FC = () => {
     if (type.includes('complete')) return '\u2713';
     if (type.includes('maintenance')) return '\uD83D\uDD27';
     if (type.includes('broadcast')) return '\uD83D\uDCE2';
+    if (type.includes('citation')) return '\uD83D\uDCCC';
+    if (type.includes('experiment')) return '\uD83E\uDDEA';
     return '\u2022';
   };
 

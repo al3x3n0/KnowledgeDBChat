@@ -3,7 +3,7 @@
  */
 
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen, waitFor, fireEvent } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import ChatPage from '../ChatPage';
@@ -24,6 +24,7 @@ jest.mock('../../services/api', () => ({
     getChatSessions: jest.fn().mockResolvedValue([]),
     getChatSession: jest.fn().mockResolvedValue(null),
     createChatSession: jest.fn().mockResolvedValue({ id: '1', title: 'New Session' }),
+    updateChatSession: jest.fn().mockResolvedValue({ id: '1', title: 'New Session' }),
     deleteChatSession: jest.fn().mockResolvedValue({}),
     sendMessage: jest.fn().mockResolvedValue({ id: '1', content: 'Response', role: 'assistant' }),
   },
@@ -50,9 +51,13 @@ const renderWithProviders = (component: React.ReactElement) => {
 describe('ChatPage', () => {
   it('renders chat interface', async () => {
     renderWithProviders(<ChatPage />);
-    
+
+    const apiClient = require('../../services/api').apiClient;
+    const newChatButton = await screen.findByRole('button', { name: /^new chat$/i });
+    fireEvent.click(newChatButton);
+
     await waitFor(() => {
-      expect(screen.getByPlaceholderText(/type your message/i)).toBeInTheDocument();
+      expect(apiClient.createChatSession).toHaveBeenCalled();
     });
   });
 
@@ -61,8 +66,7 @@ describe('ChatPage', () => {
     
     // Should show session list or empty state
     await waitFor(() => {
-      expect(screen.getByText(/new chat/i) || screen.getByText(/no sessions/i)).toBeInTheDocument();
+      expect(screen.getByRole('button', { name: /start new chat/i })).toBeInTheDocument();
     });
   });
 });
-

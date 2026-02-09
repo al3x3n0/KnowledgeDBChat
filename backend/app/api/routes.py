@@ -3,8 +3,7 @@ Main API router configuration.
 """
 
 from fastapi import APIRouter
-from app.api.endpoints import chat, documents, users, auth, admin, memory, upload, knowledge_graph, git, personas, templates, docx_editor, agent, user_tools, workflows, presentations, notifications, research, reading_lists, system, secrets, tool_audit, searches, usage, analytics, content, dashboard, api_keys, export, repo_reports
-
+from app.api.endpoints import chat, documents, users, auth, admin, memory, upload, knowledge_graph, git, personas, templates, docx_editor, agent, user_tools, workflows, presentations, notifications, research, reading_lists, research_notes, research_inbox, research_monitor_profiles, code_patches, system, secrets, tool_audit, tool_policies, admin_tool_policies, searches, usage, analytics, content, dashboard, api_keys, export, repo_reports, mcp_config, agent_jobs, synthesis, training_datasets, training_jobs, model_registry, ai_hub_eval, latex, patch_prs, experiments, artifact_drafts, retrieval_traces
 api_router = APIRouter()
 
 # Include all endpoint routers
@@ -27,9 +26,17 @@ api_router.include_router(workflows.router, prefix="/workflows", tags=["workflow
 api_router.include_router(presentations.router, prefix="/presentations", tags=["presentations"])
 api_router.include_router(notifications.router, prefix="/notifications", tags=["notifications"])
 api_router.include_router(research.router, prefix="/research", tags=["research"])
+api_router.include_router(research_inbox.router, prefix="/research/inbox", tags=["research-inbox"])
+api_router.include_router(research_monitor_profiles.router, prefix="/research/monitor-profiles", tags=["research-monitor-profiles"])
+api_router.include_router(code_patches.router, prefix="/code-patches", tags=["code-patches"])
+api_router.include_router(patch_prs.router, prefix="/patch-prs", tags=["patch-prs"])
 api_router.include_router(reading_lists.router, prefix="/reading-lists", tags=["reading-lists"])
+api_router.include_router(research_notes.router, prefix="/research-notes", tags=["research-notes"])
+api_router.include_router(experiments.router, prefix="/experiments", tags=["experiments"])
 api_router.include_router(secrets.router, prefix="/secrets", tags=["secrets"])
 api_router.include_router(tool_audit.router, prefix="/audit", tags=["audit"])
+api_router.include_router(tool_policies.router, prefix="/tools", tags=["tools"])
+api_router.include_router(admin_tool_policies.router, prefix="/admin", tags=["admin-tools"])
 api_router.include_router(searches.router, prefix="/searches", tags=["searches"])
 api_router.include_router(usage.router, prefix="/usage", tags=["usage"])
 api_router.include_router(analytics.router, prefix="/analytics", tags=["analytics"])
@@ -38,3 +45,15 @@ api_router.include_router(dashboard.router, prefix="/dashboard", tags=["dashboar
 api_router.include_router(api_keys.router, prefix="/api-keys", tags=["api-keys"])
 api_router.include_router(export.router, prefix="/export", tags=["export"])
 api_router.include_router(repo_reports.router, prefix="/repo-reports", tags=["repo-reports"])
+api_router.include_router(artifact_drafts.router, prefix="/artifact-drafts", tags=["artifact-drafts"])
+api_router.include_router(retrieval_traces.router, prefix="/retrieval-traces", tags=["retrieval-traces"])
+api_router.include_router(mcp_config.router, prefix="/mcp-config", tags=["mcp-config"])
+api_router.include_router(agent_jobs.router, prefix="/agent-jobs", tags=["agent-jobs"])
+api_router.include_router(synthesis.router, prefix="/synthesis", tags=["synthesis"])
+api_router.include_router(latex.router, prefix="/latex", tags=["latex"])
+
+# AI Hub / Training endpoints
+api_router.include_router(training_datasets.router, prefix="/training/datasets", tags=["training-datasets"])
+api_router.include_router(training_jobs.router, prefix="/training/jobs", tags=["training-jobs"])
+api_router.include_router(model_registry.router, prefix="/training/models", tags=["model-registry"])
+api_router.include_router(ai_hub_eval.router, prefix="/training/evals", tags=["training-evals"])

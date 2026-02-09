@@ -3,6 +3,7 @@
  */
 
 import React, { useState, useEffect, useCallback } from 'react';
+import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import apiClient from '../services/api';
 import { PresentationJob, PresentationStatus, PresentationStyle, Document, PresentationTemplate, ThemeConfig } from '../types';
@@ -735,6 +736,7 @@ const CreatePresentationModal: React.FC<CreateModalProps> = ({
 };
 
 const PresentationsPage: React.FC = () => {
+  const navigate = useNavigate();
   const [jobs, setJobs] = useState<PresentationJob[]>([]);
   const [documents, setDocuments] = useState<Document[]>([]);
   const [templates, setTemplates] = useState<PresentationTemplate[]>([]);
@@ -876,6 +878,17 @@ const PresentationsPage: React.FC = () => {
     } catch (error) {
       console.error('Download failed:', error);
       toast.error('Download failed');
+    }
+  };
+
+  const handleCreateDraft = async (job: PresentationJob) => {
+    try {
+      const draft = await apiClient.createArtifactDraftFromPresentation(job.id);
+      toast.success('Draft created');
+      navigate('/artifact-drafts', { state: { selectedDraftId: draft.id } as any });
+    } catch (error: any) {
+      console.error('Failed to create draft:', error);
+      toast.error(error?.response?.data?.detail || 'Failed to create draft');
     }
   };
 
@@ -1072,6 +1085,17 @@ const PresentationsPage: React.FC = () => {
                         >
                           <svg className="w-5 h-5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+                          </svg>
+                        </button>
+                      )}
+                      {job.status === 'completed' && (
+                        <button
+                          onClick={() => handleCreateDraft(job)}
+                          className="text-primary-600 hover:text-primary-800"
+                          title="Create draft review"
+                        >
+                          <svg className="w-5 h-5 inline" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
                           </svg>
                         </button>
                       )}

@@ -43,12 +43,20 @@ class AgentDefinition(Base):
     # e.g., ["search_documents", "answer_question"]
     tool_whitelist = Column(JSON, nullable=True)
 
+    # LLM routing defaults for this agent (tier/fallback/caps).
+    routing_defaults = Column(JSON, nullable=True)
+
     # Routing priority (higher = preferred when multiple agents match)
     priority = Column(Integer, default=50, nullable=False)
 
     # State
     is_active = Column(Boolean, default=True, nullable=False)
     is_system = Column(Boolean, default=True, nullable=False)
+
+    # Governance / lifecycle
+    owner_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    version = Column(Integer, default=1, nullable=False)
+    lifecycle_status = Column(String(20), default="published", nullable=False)  # draft, published, archived
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)

@@ -32,6 +32,12 @@ from app.schemas.document import (
     GitRepoSourceRequest,
     ArxivSourceRequest,
     ActiveSourceStatus,
+    IngestUrlRequest,
+    IngestUrlResponse,
+    IngestUrlJobResponse,
+    InstantArxivIngestRequest,
+    InstantArxivIngestResponse,
+    ResearchPresentationRequest,
 )
 from app.schemas.common import PaginatedResponse
 from app.tasks.summarization_tasks import summarize_document as summarize_task
@@ -52,6 +58,78 @@ import uuid
 
 router = APIRouter()
 document_service = DocumentService()
+
+
+@router.get("/sources/{source_id}/download-zip")
+async def download_document_source_zip(
+    source_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Download all Documents in a DocumentSource as a ZIP.
+
+    Intended for generated projects and repo sources. Access is restricted to:
+    - admins, or
+    - sources whose config indicates they were requested by the current user.
+    """
+    import io
+    import zipfile
+
+    try:
+        source = await db.get(_DocumentSource, source_id)
+        if not source:
+            raise HTTPException(status_code=404, detail="Source not found")
+
+        cfg = source.config or {}
+        requested_user_id = str(cfg.get("requested_by_user_id") or cfg.get("requestedByUserId") or "").strip()
+        requested_by = str(cfg.get("requested_by") or cfg.get("requestedBy") or "").strip()
+
+        if not current_user.is_admin():
+            if requested_user_id and requested_user_id != str(current_user.id):
+                raise HTTPException(status_code=403, detail="Not authorized for this source")
+            if not requested_user_id and requested_by and requested_by != current_user.username:
+                raise HTTPException(status_code=403, detail="Not authorized for this source")
+            if not requested_user_id and not requested_by:
+                raise HTTPException(status_code=403, detail="Not authorized for this source")
+
+        res = await db.execute(sql_select(_Document).where(_Document.source_id == source_id))
+        docs = res.scalars().all()
+        if not docs:
+            raise HTTPException(status_code=404, detail="No documents found for this source")
+
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for d in docs:
+                p = (d.file_path or d.source_identifier or d.title or str(d.id) or "").replace("\\", "/").strip()
+                p = re.sub(r"^/+", "", p)
+                while p.startswith("./"):
+                    p = p[2:]
+                parts = [x for x in p.split("/") if x not in {"", ".", ".."}]
+                safe_path = "/".join(parts) or f"file_{str(d.id)}.txt"
+                if len(safe_path) > 240:
+                    safe_path = safe_path[-240:]
+                zf.writestr(safe_path, d.content or "")
+
+            manifest = {
+                "source_id": str(source.id),
+                "source_name": source.name,
+                "source_type": source.source_type,
+                "generated_at": datetime.utcnow().isoformat(),
+                "documents_count": len(docs),
+                "config": cfg,
+            }
+            zf.writestr("_manifest.json", json.dumps(manifest, indent=2))
+
+        buf.seek(0)
+        filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", source.name or "source")[:80] + ".zip"
+        headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
+        return StreamingResponse(buf, media_type="application/zip", headers=headers)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating zip for source {source_id}: {e}")
+        raise HTTPException(status_code=500, detail="Failed to create ZIP")
 text_processor_service = TextProcessor()
 
 
@@ -110,6 +188,8 @@ async def search_documents(
 async def get_documents(
     page: int = 1,
     page_size: int = 20,
+    skip: Optional[int] = Query(None, ge=0, description="Optional offset (alternative to page/page_size)"),
+    limit: Optional[int] = Query(None, ge=1, le=2000, description="Optional limit (alternative to page_size)"),
     source_id: Optional[UUID] = None,
     search: Optional[str] = None,
     order_by: Optional[str] = "updated_at",
@@ -125,7 +205,7 @@ async def get_documents(
     
     Args:
         page: Page number (1-indexed)
-        page_size: Number of items per page (1-100)
+        page_size: Number of items per page (1-2000)
         source_id: Optional source ID filter
         search: Optional search term
         order_by: Field to order by (default: updated_at)
@@ -141,18 +221,21 @@ async def get_documents(
         # Validate pagination parameters
         if page < 1:
             raise ValidationError("Page must be >= 1", field="page")
-        if page_size < 1 or page_size > 100:
-            raise ValidationError("Page size must be between 1 and 100", field="page_size")
+        if page_size < 1 or page_size > 2000:
+            raise ValidationError("Page size must be between 1 and 2000", field="page_size")
+        if limit is not None and (limit < 1 or limit > 2000):
+            raise ValidationError("Limit must be between 1 and 2000", field="limit")
         if order not in ["asc", "desc"]:
             raise ValidationError("Order must be 'asc' or 'desc'", field="order")
         
-        # Calculate skip
-        skip = (page - 1) * page_size
+        # Support legacy skip/limit query params used by parts of the frontend.
+        effective_page_size = limit or page_size
+        effective_skip = skip if skip is not None else (page - 1) * effective_page_size
         
         # Get documents with total count
         documents, total = await document_service.get_documents(
-            skip=skip,
-            limit=page_size,
+            skip=effective_skip,
+            limit=effective_page_size,
             source_id=source_id,
             search=search,
             order_by=order_by,
@@ -165,8 +248,8 @@ async def get_documents(
         logger.debug(
             "Fetched documents for listing",
             extra={
-                "skip": skip,
-                "limit": page_size,
+                "skip": effective_skip,
+                "limit": effective_page_size,
                 "result_count": len(documents),
                 "total": total,
                 "source_id": str(source_id) if source_id else None,
@@ -203,7 +286,7 @@ async def get_documents(
             items=items,
             total=total,
             page=page,
-            page_size=page_size
+            page_size=effective_page_size
         )
     except ValidationError:
         raise
@@ -221,6 +304,32 @@ async def get_documents(
         )
         log_error(e, context={"page": page, "page_size": page_size})
         raise HTTPException(status_code=500, detail="Failed to retrieve documents")
+
+
+@router.get("/{document_id}/related")
+async def get_related_documents(
+    document_id: UUID,
+    limit: int = Query(8, ge=1, le=25),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Recommend related documents based on KG overlap + embedding similarity."""
+    _ = current_user  # authenticated access required
+    try:
+        doc = await document_service.get_document(document_id, db)
+        if not doc:
+            raise HTTPException(status_code=404, detail="Document not found")
+
+        from app.services.paper_recommendation_service import PaperRecommendationService
+
+        svc = PaperRecommendationService()
+        items = await svc.related_documents(db, document_id, limit=limit)
+        return {"items": items, "limit": limit}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        logger.error(f"Failed to get related documents: {exc}")
+        raise HTTPException(status_code=500, detail="Failed to get related documents")
 
 
 async def get_current_user_optional(
@@ -609,9 +718,7 @@ async def upload_document(
         await file.seek(0)
         # Create a new BytesIO object with the content
         file.file = BytesIO(file_content)
-        # Reset the filename and content_type attributes
-        file.filename = file.filename
-        file.content_type = file.content_type
+        # Do not assign to file.content_type: it's a read-only property on Starlette's UploadFile.
         
         # Parse tags if provided
         tag_list = []
@@ -638,6 +745,64 @@ async def upload_document(
         logger.error(f"Error uploading document {file.filename if file else 'unknown'}: {error_detail}", exc_info=True)
         log_error(e, context={"filename": file.filename if file else None, "file_type": file.content_type if file else None})
         raise HTTPException(status_code=500, detail=f"Failed to upload document: {error_detail}")
+
+
+@router.post("/ingest-url", response_model=IngestUrlResponse)
+async def ingest_url(
+    request: IngestUrlRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Scrape a URL and ingest the extracted text into the KnowledgeDB as document(s).
+
+    Convenience API for the platform UI; reuses built-in `ingest_url` tool logic.
+    """
+    try:
+        from app.services.agent_service import AgentService
+
+        agent_service = AgentService()
+        result = await agent_service.execute_tool(
+            tool_name="ingest_url",
+            tool_input=request.model_dump(exclude_none=True),
+            user_id=current_user.id,
+            db=db,
+        )
+        if isinstance(result, dict) and result.get("error"):
+            raise HTTPException(status_code=400, detail=result.get("error"))
+        return IngestUrlResponse(**(result or {}))
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error ingesting URL: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to ingest URL")
+
+
+@router.post("/ingest-url/async", response_model=IngestUrlJobResponse)
+async def ingest_url_async(
+    request: IngestUrlRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Schedule URL ingestion as a background job with progress over WebSocket."""
+    try:
+        from app.tasks.url_ingestion_tasks import ingest_url as ingest_url_task
+        from app.core.cache import get_redis_client
+
+        task_res = ingest_url_task.delay(request.model_dump(exclude_none=True), str(current_user.id))
+        job_id = task_res.id
+        progress_key = f"url_ingest:{job_id}"
+
+        # Store owner mapping for progress authorization (best-effort).
+        try:
+            client = await get_redis_client()
+            await client.setex(f"url_ingest:owner:{job_id}", 7200, str(current_user.id).encode("utf-8"))
+        except Exception:
+            pass
+
+        return IngestUrlJobResponse(job_id=job_id, progress_key=progress_key)
+    except Exception as e:
+        logger.error(f"Failed to schedule URL ingestion: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail="Failed to schedule URL ingestion")
 
 
 @router.delete("/{document_id}")
@@ -887,7 +1052,7 @@ async def reprocess_document(
 ):
     """Reprocess a document for indexing."""
     try:
-        success = await document_service.reprocess_document(document_id, db)
+        success = await document_service.reprocess_document(document_id, db, user_id=current_user.id)
         if not success:
             raise HTTPException(status_code=404, detail="Document not found")
         
@@ -1077,7 +1242,7 @@ async def summarize_missing_documents(
         ids = [str(r[0]) for r in res.all()]
         for doc_id in ids:
             try:
-                summarize_task.delay(doc_id, False)
+                summarize_task.delay(doc_id, False, user_id=str(current_user.id))
             except Exception:
                 pass
         return {"queued": len(ids)}
@@ -1160,6 +1325,91 @@ async def get_active_git_sources(
     except Exception as e:
         logger.error(f"Error retrieving active git sources: {e}")
         raise HTTPException(status_code=500, detail="Failed to retrieve active git sources")
+
+
+@router.get("/sources/git-search", response_model=List[DocumentSourceResponse])
+async def search_git_sources(
+    q: Optional[str] = Query(None, description="Case-insensitive search over source name"),
+    limit: int = Query(25, ge=1, le=100),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Search git DocumentSources (github/gitlab).
+
+    For non-admin users, restrict to sources whose config indicates they were requested by the user.
+    """
+    try:
+        stmt = sql_select(_DocumentSource).where(_DocumentSource.source_type.in_(["github", "gitlab"]))
+
+        q_norm = (q or "").strip()
+
+        # Prefer most recently updated sources.
+        # We do search + ownership filtering in Python to support config fields.
+        fetch_limit = 400 if not current_user.is_admin() else 500
+        stmt = stmt.order_by(_DocumentSource.updated_at.desc()).limit(fetch_limit)
+
+        result = await db.execute(stmt)
+        sources_all = list(result.scalars().all())
+
+        if not current_user.is_admin():
+            filtered: list[_DocumentSource] = []
+            for src in sources_all:
+                cfg = src.config or {}
+                requested_user_id = str(cfg.get("requested_by_user_id") or cfg.get("requestedByUserId") or "").strip()
+                requested_by = str(cfg.get("requested_by") or cfg.get("requestedBy") or "").strip()
+                if requested_user_id and requested_user_id == str(current_user.id):
+                    filtered.append(src)
+                elif not requested_user_id and requested_by and requested_by == current_user.username:
+                    filtered.append(src)
+            sources = filtered
+        else:
+            sources = sources_all
+
+        def _matches_query(src: _DocumentSource, qtext: str) -> bool:
+            if not qtext:
+                return True
+            ql = qtext.lower()
+            if ql in (src.name or "").lower():
+                return True
+            cfg = src.config or {}
+            if not isinstance(cfg, dict):
+                return False
+            display = cfg.get("display")
+            if isinstance(display, dict):
+                for k in ("url", "repo_url", "repository_url", "html_url", "web_url"):
+                    v = str(display.get(k) or "").strip()
+                    if v and ql in v.lower():
+                        return True
+            # github repos
+            repos = cfg.get("repos") or cfg.get("repositories")
+            if isinstance(repos, list):
+                for r in repos:
+                    rs = str(r or "").strip()
+                    if rs and ql in rs.lower():
+                        return True
+            # gitlab projects
+            gitlab_url = str(cfg.get("gitlab_url") or "").strip()
+            if gitlab_url and ql in gitlab_url.lower():
+                return True
+            projects = cfg.get("projects")
+            if isinstance(projects, list):
+                for p in projects:
+                    if isinstance(p, dict):
+                        pid = str(p.get("id") or "").strip()
+                        if pid and ql in pid.lower():
+                            return True
+            return False
+
+        if q_norm:
+            sources = [s for s in sources if _matches_query(s, q_norm)]
+
+        sources = sources[:limit]
+
+        return [DocumentSourceResponse.from_orm(source) for source in sources]
+    except Exception as e:
+        logger.error(f"Error searching git sources: {e}")
+        raise HTTPException(status_code=500, detail="Failed to search git sources")
 
 
 def _token_count(text: Optional[str]) -> int:
@@ -1370,6 +1620,11 @@ async def submit_arxiv_request(
             "sort_by": request.sort_by,
             "sort_order": request.sort_order,
             "requested_by": current_user.username,
+            "requested_by_user_id": str(current_user.id),
+            "auto_summarize": bool(getattr(request, "auto_summarize", True)),
+            "auto_literature_review": bool(getattr(request, "auto_literature_review", False)),
+            "auto_enrich_metadata": bool(getattr(request, "auto_enrich_metadata", True)),
+            "topic": getattr(request, "topic", None),
             "display": {
                 "queries": request.search_queries or [],
                 "paper_ids": request.paper_ids or [],
@@ -1401,6 +1656,184 @@ async def submit_arxiv_request(
     except Exception as e:
         logger.error(f"Error creating ArXiv source: {e}")
         raise HTTPException(status_code=500, detail="Failed to submit ArXiv ingestion request")
+
+
+@router.post("/ingest-arxiv-instant", response_model=InstantArxivIngestResponse)
+async def ingest_arxiv_instant(
+    request: InstantArxivIngestRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db)
+):
+    """
+    Instantly ingest a single arXiv paper for immediate chat.
+
+    This endpoint performs synchronous processing (~2-3 seconds) so the paper
+    is immediately searchable and available for Q&A. Background tasks for
+    summarization and metadata enrichment can be optionally queued.
+
+    Accepts arXiv URLs or paper IDs:
+    - https://arxiv.org/abs/2401.12345
+    - https://arxiv.org/pdf/2401.12345.pdf
+    - arxiv:2401.12345
+    - 2401.12345
+    """
+    from app.services.connectors.arxiv_connector import ArxivConnector
+    from app.services.vector_store import vector_store_service
+    from app.models.document import Document, DocumentChunk
+    from app.tasks.summarization_tasks import summarize_document as summarize_task
+
+    arxiv_id = request.arxiv_input  # Already validated/extracted by schema
+
+    try:
+        # Check if paper already exists
+        existing = await db.execute(
+            sql_select(_Document).where(_Document.source_identifier == arxiv_id)
+        )
+        existing_doc = existing.scalar_one_or_none()
+
+        if existing_doc and existing_doc.is_processed:
+            # Paper already indexed, return existing
+            metadata = existing_doc.extra_metadata or {}
+            return InstantArxivIngestResponse(
+                document_id=existing_doc.id,
+                arxiv_id=arxiv_id,
+                title=existing_doc.title,
+                authors=metadata.get("authors", [existing_doc.author] if existing_doc.author else []),
+                abstract=existing_doc.content[:1000] if existing_doc.content else "",
+                categories=metadata.get("categories", []),
+                url=existing_doc.url or f"https://arxiv.org/abs/{arxiv_id}",
+                pdf_url=f"https://arxiv.org/pdf/{arxiv_id}.pdf",
+                chunks_created=0,
+                ready_for_chat=True,
+                background_tasks=["already_indexed"]
+            )
+
+        # Fetch paper from arXiv
+        connector = ArxivConnector()
+        await connector.initialize({"paper_ids": [arxiv_id]})
+
+        docs = await connector.list_documents()
+        if not docs:
+            raise HTTPException(status_code=404, detail=f"Paper not found on arXiv: {arxiv_id}")
+
+        doc_info = docs[0]
+        content = await connector.get_document_content(arxiv_id)
+        metadata = await connector.get_document_metadata(arxiv_id)
+
+        await connector.cleanup()
+
+        # Create or update document
+        if existing_doc:
+            document = existing_doc
+            document.title = doc_info["title"]
+            document.content = content
+            document.content_hash = hashlib.sha256(content.encode()).hexdigest()
+            document.url = doc_info.get("url")
+            document.author = doc_info.get("author")
+            document.extra_metadata = {
+                "arxiv": True,
+                "authors": metadata.get("authors", []),
+                "categories": metadata.get("categories", []),
+                "primary_category": metadata.get("primary_category"),
+                "doi": metadata.get("doi"),
+                "instant_ingest": True,
+            }
+        else:
+            document = _Document(
+                id=uuid4(),
+                title=doc_info["title"],
+                content=content,
+                content_hash=hashlib.sha256(content.encode()).hexdigest(),
+                source_identifier=arxiv_id,
+                url=doc_info.get("url"),
+                author=doc_info.get("author"),
+                extra_metadata={
+                    "arxiv": True,
+                    "authors": metadata.get("authors", []),
+                    "categories": metadata.get("categories", []),
+                    "primary_category": metadata.get("primary_category"),
+                    "doi": metadata.get("doi"),
+                    "instant_ingest": True,
+                }
+            )
+            db.add(document)
+
+        await db.commit()
+        await db.refresh(document)
+
+        # Process chunks synchronously
+        chunks_data = text_processor_service.split_text(
+            content,
+            chunk_size=1000,
+            chunk_overlap=200
+        )
+
+        # Delete existing chunks if updating
+        if existing_doc:
+            from sqlalchemy import delete
+            await db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document.id))
+            await db.commit()
+
+        # Create new chunks
+        chunks = []
+        for idx, chunk_text in enumerate(chunks_data):
+            chunk = DocumentChunk(
+                id=uuid4(),
+                document_id=document.id,
+                content=chunk_text,
+                chunk_index=idx,
+            )
+            chunks.append(chunk)
+            db.add(chunk)
+
+        await db.commit()
+
+        # Add to vector store synchronously
+        await vector_store_service.initialize()
+        await vector_store_service.add_document_chunks(document, chunks)
+
+        # Mark as processed
+        document.is_processed = True
+        await db.commit()
+
+        # Queue background tasks (non-blocking)
+        background_tasks = []
+        if request.auto_summarize:
+            try:
+                summarize_task.delay(str(document.id), force=True, user_id=str(current_user.id))
+                background_tasks.append("summarization_queued")
+            except Exception as e:
+                logger.warning(f"Failed to queue summarization: {e}")
+
+        if request.auto_enrich:
+            try:
+                from app.tasks.paper_enrichment_tasks import enrich_arxiv_document
+                enrich_arxiv_document.delay(str(document.id))
+                background_tasks.append("enrichment_queued")
+            except Exception as e:
+                logger.warning(f"Failed to queue enrichment: {e}")
+
+        doc_metadata = document.extra_metadata or {}
+
+        return InstantArxivIngestResponse(
+            document_id=document.id,
+            arxiv_id=arxiv_id,
+            title=document.title,
+            authors=doc_metadata.get("authors", []),
+            abstract=content[:1500] if content else "",
+            categories=doc_metadata.get("categories", []),
+            url=document.url or f"https://arxiv.org/abs/{arxiv_id}",
+            pdf_url=f"https://arxiv.org/pdf/{arxiv_id}.pdf",
+            chunks_created=len(chunks),
+            ready_for_chat=True,
+            background_tasks=background_tasks
+        )
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in instant arXiv ingest: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to ingest arXiv paper: {str(e)}")
 
 
 @router.websocket("/sources/{source_id}/ingestion-progress")
@@ -1454,6 +1887,104 @@ async def document_source_ingestion_progress(
                 break
     finally:
         websocket_manager.disconnect(websocket, str(source_id))
+
+
+@router.websocket("/ingest-url/{job_id}/progress")
+async def url_ingest_progress(
+    websocket: WebSocket,
+    job_id: str,
+):
+    """WebSocket endpoint for ad-hoc URL ingestion progress updates."""
+    from app.utils.websocket_auth import require_websocket_auth
+    from app.utils.websocket_manager import websocket_manager
+    from app.core.cache import get_redis_client
+
+    try:
+        user = await require_websocket_auth(websocket)
+    except WebSocketDisconnect:
+        return
+    except Exception:
+        await websocket.close(code=1008, reason="Authentication failed")
+        return
+
+    # Verify ownership (best-effort; requires Redis mapping)
+    if not user.is_admin():
+        try:
+            client = await get_redis_client()
+            raw = await client.get(f"url_ingest:owner:{job_id}")
+            owner_id = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else None
+        except Exception:
+            owner_id = None
+
+        if not owner_id or owner_id != str(user.id):
+            await websocket.close(code=1008, reason="Not authorized to view this job")
+            return
+
+    key = f"url_ingest:{job_id}"
+    await websocket_manager.connect(websocket, key)
+    try:
+        while True:
+            try:
+                data = await websocket.receive_text()
+                if data == "ping":
+                    await websocket.send_text("pong")
+            except WebSocketDisconnect:
+                break
+    finally:
+        websocket_manager.disconnect(websocket, key)
+
+
+@router.post("/ingest-url/{job_id}/cancel")
+async def cancel_url_ingest(
+    job_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Cancel a running URL ingestion job (best-effort)."""
+    from app.core.cache import get_redis_client
+    from celery.result import AsyncResult
+
+    if not job_id:
+        raise HTTPException(status_code=400, detail="job_id required")
+
+    # Verify ownership (best-effort; requires Redis mapping)
+    if not current_user.is_admin():
+        try:
+            client = await get_redis_client()
+            raw = await client.get(f"url_ingest:owner:{job_id}")
+            owner_id = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else None
+        except Exception:
+            owner_id = None
+
+        if not owner_id or owner_id != str(current_user.id):
+            raise HTTPException(status_code=403, detail="Not authorized to cancel this job")
+
+    # Set cancel flag so cooperative workers can stop between steps
+    try:
+        client = await get_redis_client()
+        await client.setex(f"url_ingest:cancel:{job_id}", 3600, b"1")
+    except Exception:
+        pass
+
+    # Revoke task (may terminate depending on worker config)
+    try:
+        AsyncResult(job_id, app=celery_app).revoke(terminate=True)
+    except Exception as e:
+        logger.warning(f"Failed to revoke URL ingest job {job_id}: {e}")
+
+    # Publish status update to connected clients (best-effort)
+    try:
+        client = await get_redis_client()
+        channel = f"ingestion_progress:url_ingest:{job_id}"
+        msg = {
+            "type": "status",
+            "document_id": f"url_ingest:{job_id}",
+            "status": {"stage": "canceled", "status": "Canceled", "progress": 100},
+        }
+        await client.publish(channel, json.dumps(msg).encode("utf-8"))
+    except Exception:
+        pass
+
+    return {"message": "Cancel requested", "job_id": job_id}
 
 
 @router.put("/sources/{source_id}", response_model=DocumentSourceResponse)
@@ -1548,7 +2079,7 @@ async def summarize_document_endpoint(
         doc = await document_service.get_document(document_id, db)
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
-        task = summarize_task.delay(str(document_id), force)
+        task = summarize_task.delay(str(document_id), force, user_id=str(current_user.id))
         return {"message": "summarization_started", "task_id": task.id}
     except HTTPException:
         raise

@@ -19,7 +19,7 @@ from app.schemas.memory import (
     MemoryCreate, MemoryUpdate, MemoryResponse, MemorySearchRequest,
     MemorySummaryRequest, MemorySummaryResponse, MemoryStatsResponse
 )
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.text_processor import TextProcessor
 
 class MemoryService:
@@ -610,29 +610,30 @@ class MemoryService:
         self,
         conversation_text: str,
         user_id: UUID,
-        session_id: UUID
+        session_id: UUID,
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> List[MemoryCreate]:
         """Use LLM to extract memories from conversation."""
         try:
             prompt = f"""
             Analyze this conversation and extract important information that should be remembered for future interactions.
-            
+
             Conversation:
             {conversation_text}
-            
+
             Extract memories in this format:
             TYPE: [fact|preference|context|summary]
             CONTENT: [the memory content]
             IMPORTANCE: [0.0-1.0]
             TAGS: [comma-separated tags]
-            
+
             Focus on:
             - Personal preferences and settings
             - Important facts about the user or their work
             - Context that would be useful in future conversations
             - Goals or objectives mentioned
             - Constraints or limitations discussed
-            
+
             Return up to 5 memories, one per line.
             """
 
@@ -640,6 +641,7 @@ class MemoryService:
             response = await self.llm_service.generate_response(
                 query=prompt,
                 task_type="memory_extraction",
+                user_settings=user_settings,
             )
             
             # Parse the response
@@ -689,30 +691,34 @@ class MemoryService:
     
     async def _generate_memory_summary_with_llm(
         self,
-        memories: List[MemoryResponse]
+        memories: List[MemoryResponse],
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> str:
         """Generate a summary of memories using LLM."""
         try:
             memory_texts = []
             for mem in memories:
                 memory_texts.append(f"[{mem.memory_type.upper()}] {mem.content}")
-            
+
             prompt = f"""
             Create a comprehensive summary of these user memories:
-            
+
             {chr(10).join(memory_texts)}
-            
+
             The summary should:
             - Highlight key facts about the user
             - Note important preferences
             - Identify recurring themes or patterns
             - Be concise but informative
             - Be written in a natural, conversational tone
-            
+
             Keep it under 300 words.
             """
-            
-            return await self.llm_service.generate_response(prompt)
+
+            return await self.llm_service.generate_response(
+                prompt,
+                user_settings=user_settings,
+            )
             
         except Exception as e:
             logger.error(f"Error generating memory summary: {e}")

@@ -6,15 +6,17 @@ import asyncio
 import json
 from datetime import datetime
 from typing import Optional
+from uuid import UUID
 
 from celery import current_task
 from loguru import logger
 
 from app.core.celery import celery_app
-from app.core.database import async_session_maker
+from app.core.database import create_celery_session
 from app.models.presentation import PresentationJob
 from app.services.presentation_generator import PresentationGeneratorService, PresentationGenerationError
 from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 
 async def _publish_progress(job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None):
@@ -43,10 +45,14 @@ async def _publish_progress(job_id: str, progress: int, stage: str, status: str,
 
 async def _generate_presentation_async(job_id: str, user_id: str):
     """Async implementation of presentation generation."""
-    async with async_session_maker() as db:
+    job_uuid = UUID(job_id)
+    session_factory = create_celery_session()
+    async with session_factory() as db:
         # Load job from database
         result = await db.execute(
-            select(PresentationJob).where(PresentationJob.id == job_id)
+            select(PresentationJob)
+            .options(selectinload(PresentationJob.template))
+            .where(PresentationJob.id == job_uuid)
         )
         job = result.scalar_one_or_none()
 
@@ -158,18 +164,24 @@ def generate_presentation_task(self, job_id: str, user_id: str):
     except Exception as e:
         logger.exception(f"Presentation task failed for job {job_id}")
 
-        # Update job status synchronously as fallback
-        try:
-            from app.core.database import SessionLocal
-            with SessionLocal() as db:
-                job = db.query(PresentationJob).filter(PresentationJob.id == job_id).first()
+        async def _mark_failed():
+            job_uuid = UUID(job_id)
+            session_factory = create_celery_session()
+            async with session_factory() as db:
+                result = await db.execute(
+                    select(PresentationJob).where(PresentationJob.id == job_uuid)
+                )
+                job = result.scalar_one_or_none()
                 if job and job.status not in ("completed", "failed", "cancelled"):
                     job.status = "failed"
                     job.error = f"Task error: {str(e)}"
                     job.completed_at = datetime.utcnow()
-                    db.commit()
-        except:
-            pass
+                    await db.commit()
+
+        try:
+            asyncio.run(_mark_failed())
+        except Exception:
+            logger.warning("Failed to persist presentation task failure status")
 
         # Retry on transient errors
         if self.request.retries < self.max_retries:
@@ -193,7 +205,8 @@ def cleanup_old_presentations(days: int = 30):
     logger.info(f"Starting cleanup of presentations older than {days} days")
 
     async def _cleanup():
-        async with async_session_maker() as db:
+        session_factory = create_celery_session()
+        async with session_factory() as db:
             from app.services.storage_service import StorageService
             storage = StorageService()
 

@@ -106,6 +106,9 @@ class PresentationJob(Base):
     file_path = Column(String(500), nullable=True)  # MinIO path to generated PPTX
     file_size = Column(Integer, nullable=True)  # File size in bytes
 
+    # Observability / provenance (optional)
+    retrieval_trace_id = Column(UUID(as_uuid=True), ForeignKey("retrieval_traces.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # Error handling
     error = Column(Text, nullable=True)
 

@@ -23,6 +23,7 @@ from sqlalchemy import select
 
 from app.models.workflow import UserTool
 from app.models.user import User
+from app.core.config import settings
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.models.memory import UserPreferences
 
@@ -45,7 +46,8 @@ class CustomToolService:
         tool: UserTool,
         inputs: Dict[str, Any],
         user: User,
-        db: AsyncSession
+        db: AsyncSession,
+        bypass_approval_gate: bool = False,
     ) -> Dict[str, Any]:
         """
         Execute a user-defined tool.
@@ -65,6 +67,42 @@ class CustomToolService:
         start_time = time.time()
 
         try:
+            # Tool policies for user-defined tools (namespaced).
+            # allow-by-default; explicit denies; optional "require approval".
+            if not bypass_approval_gate:
+                from app.services.tool_policy_engine import evaluate_tool_policy
+                from app.models.tool_audit import ToolExecutionAudit
+
+                tool_policy_name = f"user_tool:{tool.id}"
+                decision = await evaluate_tool_policy(db=db, tool_name=tool_policy_name, tool_args=inputs, user=user)
+                if not decision.allowed:
+                    raise ToolExecutionError(decision.denied_reason or "Tool denied by policy")
+
+                if decision.require_approval:
+                    audit = ToolExecutionAudit(
+                        user_id=user.id,
+                        agent_definition_id=None,
+                        conversation_id=None,
+                        tool_name=tool_policy_name,
+                        tool_input=inputs,
+                        policy_decision={
+                            "allowed": bool(decision.allowed),
+                            "require_approval": bool(decision.require_approval),
+                            "denied_reason": decision.denied_reason,
+                            "matched_policies": decision.matched_policies,
+                        },
+                        status="requires_approval",
+                        approval_required=True,
+                        approval_mode="owner_and_admin",
+                        approval_status="pending_owner",
+                    )
+                    db.add(audit)
+                    await db.commit()
+                    await db.refresh(audit)
+                    raise ToolExecutionError(
+                        f"approval_required: tool '{tool.name}' requires approval; approval_id={audit.id}"
+                    )
+
             # Validate inputs against schema if provided
             if tool.parameters_schema:
                 self._validate_inputs(inputs, tool.parameters_schema)
@@ -78,6 +116,13 @@ class CustomToolService:
                 result = await self._execute_python(tool.config, inputs, user)
             elif tool.tool_type == "llm_prompt":
                 result = await self._execute_llm_prompt(tool.config, inputs, user, db)
+            elif tool.tool_type == "docker_container":
+                if not bool(getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
+                    raise ToolExecutionError(
+                        "Docker container tools are disabled on this deployment "
+                        "(CUSTOM_TOOL_DOCKER_ENABLED=false)."
+                    )
+                result = await self._execute_docker(tool.config, inputs, user)
             else:
                 raise ToolExecutionError(f"Unknown tool type: {tool.tool_type}")
 
@@ -415,6 +460,94 @@ class CustomToolService:
 
         except Exception as e:
             raise ToolExecutionError(f"LLM call failed: {str(e)}")
+
+    async def _execute_docker(
+        self,
+        config: Dict[str, Any],
+        inputs: Dict[str, Any],
+        user: User
+    ) -> Dict[str, Any]:
+        """
+        Execute a Docker container tool.
+
+        Config:
+            image: Docker image name
+            command: Command to run
+            entrypoint: Override entrypoint
+            input_mode: "stdin", "file", or "both"
+            output_mode: "stdout", "file", or "both"
+            input_file_path: Path inside container for input
+            output_file_path: Path inside container for output
+            timeout_seconds: Execution timeout
+            memory_limit: Memory limit (e.g., "512m")
+            cpu_limit: CPU limit
+            environment: Environment variables
+            working_dir: Working directory
+            network_enabled: Enable network access
+            user: User to run as
+        """
+        from app.services.docker_tool_executor import docker_executor
+        from app.schemas.docker_tool import DockerToolConfig, DockerToolExecutionInput
+
+        # Build config object
+        docker_config = DockerToolConfig(
+            image=config.get("image", ""),
+            command=config.get("command"),
+            entrypoint=config.get("entrypoint"),
+            input_mode=config.get("input_mode", "stdin"),
+            output_mode=config.get("output_mode", "stdout"),
+            input_file_path=config.get("input_file_path", "/workspace/input.txt"),
+            output_file_path=config.get("output_file_path", "/workspace/output.txt"),
+            timeout_seconds=config.get("timeout_seconds", 300),
+            memory_limit=config.get("memory_limit", "512m"),
+            cpu_limit=config.get("cpu_limit", 1.0),
+            environment=config.get("environment", {}),
+            working_dir=config.get("working_dir", "/workspace"),
+            network_enabled=config.get("network_enabled", False),
+            user=config.get("user"),
+        )
+
+        # Build execution input from tool inputs
+        execution_input = DockerToolExecutionInput(
+            stdin_data=inputs.get("stdin") or inputs.get("input") or json.dumps(inputs),
+            input_content=inputs.get("input_file_content") or inputs.get("content"),
+            document_ids=inputs.get("document_ids"),
+            environment_overrides=inputs.get("environment"),
+        )
+
+        # Check if Docker is available
+        if not docker_executor.is_docker_available():
+            raise ToolExecutionError("Docker is not available on this system")
+
+        # Execute the container
+        result = await docker_executor.execute(
+            config=docker_config,
+            execution_input=execution_input,
+            user_id=user.id
+        )
+
+        if not result.success:
+            raise ToolExecutionError(result.error or f"Container exited with code {result.exit_code}")
+
+        # Build output based on output_mode
+        output = {
+            "exit_code": result.exit_code,
+            "duration_seconds": result.duration_seconds,
+        }
+
+        if docker_config.output_mode in ("stdout", "both"):
+            output["stdout"] = result.stdout
+            output["stderr"] = result.stderr
+
+        if docker_config.output_mode in ("file", "both") and result.output_content:
+            output["output_content"] = result.output_content
+            # Try to parse as JSON
+            try:
+                output["output_json"] = json.loads(result.output_content)
+            except json.JSONDecodeError:
+                pass
+
+        return output
 
 
 # Create singleton instance

@@ -6,7 +6,6 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery } from 'react-query';
 import { Search, Loader2, FileText, ChevronLeft, ChevronRight } from 'lucide-react';
-import { formatDistanceToNow } from 'date-fns';
 
 import { apiClient } from '../services/api';
 import { SearchMode, SearchSortBy, SearchSortOrder, SearchResult } from '../types';
@@ -18,40 +17,35 @@ const SearchPage: React.FC = () => {
 
   // Initialize state from URL params
   const [query, setQuery] = useState(searchParams.get('q') || '');
+  const [submittedQuery, setSubmittedQuery] = useState(searchParams.get('q') || '');
   const [mode, setMode] = useState<SearchMode>((searchParams.get('mode') as SearchMode) || 'smart');
   const [sortBy, setSortBy] = useState<SearchSortBy>((searchParams.get('sort_by') as SearchSortBy) || 'relevance');
   const [sortOrder, setSortOrder] = useState<SearchSortOrder>((searchParams.get('sort_order') as SearchSortOrder) || 'desc');
   const [page, setPage] = useState(parseInt(searchParams.get('page') || '1', 10));
   const pageSize = 10;
 
-  // Debounced query for API calls
-  const [debouncedQuery, setDebouncedQuery] = useState(query);
-
-  // Debounce query input
-  useEffect(() => {
-    const timer = setTimeout(() => {
-      setDebouncedQuery(query);
-      setPage(1); // Reset to first page on new search
-    }, 300);
-    return () => clearTimeout(timer);
+  const handleSubmit = useCallback(() => {
+    const next = query.trim();
+    setSubmittedQuery(next);
+    setPage(1);
   }, [query]);
 
   // Update URL when search params change
   useEffect(() => {
     const params: Record<string, string> = {};
-    if (debouncedQuery) params.q = debouncedQuery;
+    if (submittedQuery) params.q = submittedQuery;
     if (mode !== 'smart') params.mode = mode;
     if (sortBy !== 'relevance') params.sort_by = sortBy;
     if (sortOrder !== 'desc') params.sort_order = sortOrder;
     if (page > 1) params.page = page.toString();
     setSearchParams(params, { replace: true });
-  }, [debouncedQuery, mode, sortBy, sortOrder, page, setSearchParams]);
+  }, [submittedQuery, mode, sortBy, sortOrder, page, setSearchParams]);
 
   // Search query
   const { data, isLoading, isFetching, error } = useQuery(
-    ['search', debouncedQuery, mode, sortBy, sortOrder, page],
+    ['search', submittedQuery, mode, sortBy, sortOrder, page],
     () => apiClient.searchDocuments({
-      q: debouncedQuery,
+      q: submittedQuery,
       mode,
       sort_by: sortBy,
       sort_order: sortOrder,
@@ -59,7 +53,7 @@ const SearchPage: React.FC = () => {
       page_size: pageSize,
     }),
     {
-      enabled: debouncedQuery.length >= 2,
+      enabled: submittedQuery.trim().length >= 2,
       keepPreviousData: true,
       staleTime: 30000,
     }
@@ -92,6 +86,12 @@ const SearchPage: React.FC = () => {
             type="text"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                e.preventDefault();
+                handleSubmit();
+              }
+            }}
             placeholder="Search for documents, topics, or questions..."
             className="w-full pl-12 pr-4 py-3 text-lg border border-gray-300 rounded-lg shadow-sm focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
             autoFocus
@@ -99,6 +99,15 @@ const SearchPage: React.FC = () => {
           {isFetching && (
             <Loader2 className="absolute right-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400 animate-spin" />
           )}
+        </div>
+        <div className="mt-3 flex justify-end">
+          <button
+            onClick={handleSubmit}
+            className="px-4 py-2 rounded-lg bg-primary-600 text-white text-sm font-medium hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={query.trim().length < 2 || isFetching}
+          >
+            Search
+          </button>
         </div>
       </div>
 
@@ -152,7 +161,7 @@ const SearchPage: React.FC = () => {
       </div>
 
       {/* Results Info */}
-      {data && debouncedQuery.length >= 2 && (
+      {data && submittedQuery.trim().length >= 2 && (
         <div className="flex items-center justify-between mb-4">
           <p className="text-sm text-gray-600">
             Showing {((page - 1) * pageSize) + 1}-{Math.min(page * pageSize, data.total)} of {data.total} results
@@ -164,11 +173,11 @@ const SearchPage: React.FC = () => {
       {/* Results */}
       <div className="space-y-4">
         {/* Empty state - no query */}
-        {debouncedQuery.length < 2 ? (
+        {submittedQuery.trim().length < 2 ? (
           <div className="text-center py-16">
             <FileText className="w-16 h-16 mx-auto text-gray-300 mb-4" />
             <h3 className="text-lg font-medium text-gray-900 mb-2">Start searching</h3>
-            <p className="text-gray-600">Enter at least 2 characters to search your documents</p>
+            <p className="text-gray-600">Enter at least 2 characters and click Search</p>
           </div>
         ) : isLoading ? (
           /* Loading state */
@@ -195,7 +204,7 @@ const SearchPage: React.FC = () => {
               <SearchResultCard
                 key={result.id + (result.chunk_id || '')}
                 result={result}
-                query={debouncedQuery}
+                query={submittedQuery}
                 onView={() => handleViewDocument(result)}
               />
             ))}

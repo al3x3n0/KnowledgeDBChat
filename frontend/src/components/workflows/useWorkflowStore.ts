@@ -629,6 +629,32 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
             from_node: node.id,
             description: 'Search results',
           });
+        } else if (node.data.builtinTool === 'web_scrape') {
+          outputs.push({
+            path: `context.${outputKey}.root_url`,
+            type: 'string',
+            from_node: node.id,
+            description: 'Start URL',
+          });
+          outputs.push({
+            path: `context.${outputKey}.pages`,
+            type: 'array',
+            from_node: node.id,
+            description: 'Scraped pages',
+          });
+        } else if (node.data.builtinTool === 'ingest_url') {
+          outputs.push({
+            path: `context.${outputKey}.created`,
+            type: 'array',
+            from_node: node.id,
+            description: 'Created documents',
+          });
+          outputs.push({
+            path: `context.${outputKey}.updated`,
+            type: 'array',
+            from_node: node.id,
+            description: 'Updated documents',
+          });
         } else if (node.data.builtinTool === 'get_document_details') {
           outputs.push({
             path: `context.${outputKey}.title`,

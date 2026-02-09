@@ -6,10 +6,12 @@ import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useMutation, useQuery } from 'react-query';
 import { User, Lock, Bell, Palette, Shield, Bot } from 'lucide-react';
+import { useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../contexts/AuthContext';
 import { useNotifications } from '../contexts/NotificationContext';
 import { apiClient } from '../services/api';
+import { NotificationPreferences } from '../types';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import toast from 'react-hot-toast';
@@ -23,6 +25,7 @@ interface PasswordChangeForm {
 const SettingsPage: React.FC = () => {
   const { user, updateUser } = useAuth();
   const [activeTab, setActiveTab] = useState('profile');
+  const [searchParams] = useSearchParams();
 
   const tabs = [
     { id: 'profile', name: 'Profile', icon: User },
@@ -36,6 +39,14 @@ const SettingsPage: React.FC = () => {
   if (user?.role === 'admin') {
     tabs.push({ id: 'admin', name: 'Administration', icon: Shield });
   }
+
+  useEffect(() => {
+    const tab = (searchParams.get('tab') || '').trim().toLowerCase();
+    if (!tab) return;
+    const allowed = new Set(['profile', 'security', 'llm', 'notifications', 'appearance', ...(user?.role === 'admin' ? ['admin'] : [])]);
+    if (!allowed.has(tab)) return;
+    setActiveTab(tab);
+  }, [searchParams, user?.role]);
 
   return (
     <div className="max-w-6xl mx-auto p-6">
@@ -349,7 +360,7 @@ const LLM_PRESETS: LLMPreset[] = [
     name: 'Ollama Llama 3.2',
     provider: 'ollama',
     model: 'llama3.2:3b',
-    apiUrl: 'http://ollama:11434',
+    apiUrl: '',
     description: 'Local Llama 3.2 3B via Ollama - no API key needed',
     requiresApiKey: false,
   },
@@ -358,7 +369,7 @@ const LLM_PRESETS: LLMPreset[] = [
     name: 'Ollama Mistral 7B',
     provider: 'ollama',
     model: 'mistral:7b',
-    apiUrl: 'http://ollama:11434',
+    apiUrl: '',
     description: 'Local Mistral 7B via Ollama - no API key needed',
     requiresApiKey: false,
   },
@@ -367,11 +378,23 @@ const LLM_PRESETS: LLMPreset[] = [
     name: 'Ollama Qwen 2.5',
     provider: 'ollama',
     model: 'qwen2.5:7b',
-    apiUrl: 'http://ollama:11434',
+    apiUrl: '',
     description: 'Local Qwen 2.5 7B via Ollama - multilingual',
     requiresApiKey: false,
   },
 ];
+
+const KNOWN_MODELS_BY_PROVIDER: Record<string, string[]> = {
+  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+  openai: [
+    'gpt-4o-mini',
+    'gpt-4o',
+    'gpt-4.1-mini',
+    'gpt-4.1',
+    'o1-mini',
+    'o1',
+  ],
+};
 
 // LLM Settings Tab
 const LLMSettingsTab: React.FC = () => {
@@ -382,6 +405,7 @@ const LLMSettingsTab: React.FC = () => {
   const [temperature, setTemperature] = useState<string>('');
   const [maxTokens, setMaxTokens] = useState<string>('');
   const [taskModels, setTaskModels] = useState<Record<string, string>>({});
+  const [taskProviders, setTaskProviders] = useState<Record<string, string>>({});
   const [showAdvanced, setShowAdvanced] = useState(false);
   const [selectedPreset, setSelectedPreset] = useState<string>('');
 
@@ -412,12 +436,35 @@ const LLMSettingsTab: React.FC = () => {
         setTemperature(data.llm_temperature !== null ? String(data.llm_temperature) : '');
         setMaxTokens(data.llm_max_tokens !== null ? String(data.llm_max_tokens) : '');
         setTaskModels(data.llm_task_models || {});
+        setTaskProviders(data.llm_task_providers || {});
         // Don't overwrite apiKey - just show indicator
         // Show advanced section if task models are configured
-        if (data.llm_task_models && Object.keys(data.llm_task_models).length > 0) {
+        if (
+          (data.llm_task_models && Object.keys(data.llm_task_models).length > 0) ||
+          (data.llm_task_providers && Object.keys(data.llm_task_providers).length > 0)
+        ) {
           setShowAdvanced(true);
         }
       },
+    }
+  );
+
+  const { data: availableModels, isFetching: modelsLoading, refetch: refetchModels } = useQuery(
+    ['myLLMModels', provider],
+    () => apiClient.listMyLLMModels({ provider: provider || undefined }),
+    {
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
+    }
+  );
+
+  // Always fetch Ollama models so per-task overrides can offer a dropdown even if the global provider isn't Ollama.
+  const { data: ollamaModels, isFetching: ollamaModelsLoading, refetch: refetchOllamaModels } = useQuery(
+    ['ollamaModels'],
+    () => apiClient.listMyLLMModels({ provider: 'ollama' }),
+    {
+      refetchOnWindowFocus: false,
+      staleTime: 30_000,
     }
   );
 
@@ -444,6 +491,7 @@ const LLMSettingsTab: React.FC = () => {
       setTemperature('');
       setMaxTokens('');
       setTaskModels({});
+      setTaskProviders({});
       setSelectedPreset('');
       toast.success('LLM settings cleared - using system defaults');
       refetch();
@@ -458,6 +506,9 @@ const LLMSettingsTab: React.FC = () => {
     const filteredTaskModels = Object.fromEntries(
       Object.entries(taskModels).filter(([_, v]) => v && v.trim())
     );
+    const filteredTaskProviders = Object.fromEntries(
+      Object.entries(taskProviders).filter(([_, v]) => v && v.trim())
+    );
 
     updateMutation.mutate({
       llm_provider: provider || null,
@@ -467,11 +518,16 @@ const LLMSettingsTab: React.FC = () => {
       llm_temperature: temperature ? parseFloat(temperature) : null,
       llm_max_tokens: maxTokens ? parseInt(maxTokens, 10) : null,
       llm_task_models: Object.keys(filteredTaskModels).length > 0 ? filteredTaskModels : null,
+      llm_task_providers: Object.keys(filteredTaskProviders).length > 0 ? filteredTaskProviders : null,
     });
   };
 
   const handleTaskModelChange = (taskId: string, value: string) => {
     setTaskModels(prev => ({ ...prev, [taskId]: value }));
+  };
+
+  const handleTaskProviderChange = (taskId: string, value: string) => {
+    setTaskProviders(prev => ({ ...prev, [taskId]: value }));
   };
 
   if (isLoading) {
@@ -557,6 +613,34 @@ const LLMSettingsTab: React.FC = () => {
           <label className="block text-sm font-medium text-gray-700 mb-1">
             Model Name
           </label>
+          {((provider || availableModels?.provider) === 'ollama') && (
+            <div className="mb-2 flex gap-2">
+              <select
+                value={model}
+                onChange={(e) => {
+                  setModel(e.target.value);
+                  setSelectedPreset('');
+                }}
+                className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                disabled={modelsLoading || !availableModels?.models?.length}
+              >
+                <option value="">
+                  {modelsLoading ? 'Loading Ollama models…' : 'Select a model (Ollama)'}
+                </option>
+                {(availableModels?.models || []).map((m) => (
+                  <option key={m} value={m}>{m}</option>
+                ))}
+              </select>
+              <Button
+                type="button"
+                variant="ghost"
+                onClick={() => refetchModels()}
+                disabled={modelsLoading}
+              >
+                Refresh
+              </Button>
+            </div>
+          )}
           <input
             type="text"
             value={model}
@@ -588,7 +672,7 @@ const LLMSettingsTab: React.FC = () => {
             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
           />
           <p className="text-xs text-gray-500 mt-1">
-            Custom API endpoint (for self-hosted or alternative providers)
+            Custom OpenAI-compatible API endpoint. Leave empty for Ollama (local).
           </p>
         </div>
 
@@ -681,13 +765,89 @@ const LLMSettingsTab: React.FC = () => {
                   <label className="block text-sm font-medium text-gray-700 mb-1">
                     {task.label}
                   </label>
-                  <input
-                    type="text"
-                    value={taskModels[task.id] || ''}
-                    onChange={(e) => handleTaskModelChange(task.id, e.target.value)}
-                    placeholder={`e.g., gpt-4-turbo, llama3.2:1b (${task.description})`}
-                    className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm"
-                  />
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Provider override
+                      </label>
+                      <select
+                        value={taskProviders[task.id] || ''}
+                        onChange={(e) => handleTaskProviderChange(task.id, e.target.value)}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm"
+                      >
+                        <option value="">Use default provider</option>
+                        <option value="ollama">Ollama</option>
+                        <option value="deepseek">DeepSeek</option>
+                        <option value="openai">OpenAI</option>
+                      </select>
+                    </div>
+                    <div>
+                      <label className="block text-xs font-medium text-gray-600 mb-1">
+                        Model override
+                      </label>
+                      {(() => {
+                        const taskProvider = (taskProviders[task.id] || provider || availableModels?.provider || '').toLowerCase();
+                        const isOllama = taskProvider === 'ollama';
+                        if (!isOllama) {
+                          const knownModels = KNOWN_MODELS_BY_PROVIDER[taskProvider] || [];
+                          const hasKnownModels = knownModels.length > 0;
+                          return (
+                            <div className="space-y-2">
+                              {hasKnownModels && (
+                                <select
+                                  value={knownModels.includes(taskModels[task.id] || '') ? (taskModels[task.id] || '') : ''}
+                                  onChange={(e) => handleTaskModelChange(task.id, e.target.value)}
+                                  className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm"
+                                >
+                                  <option value="">Select a known model ({taskProvider})</option>
+                                  {knownModels.map((m) => (
+                                    <option key={m} value={m}>{m}</option>
+                                  ))}
+                                </select>
+                              )}
+                              <input
+                                type="text"
+                                value={taskModels[task.id] || ''}
+                                onChange={(e) => handleTaskModelChange(task.id, e.target.value)}
+                                placeholder={
+                                  taskProvider
+                                    ? `Custom model name for ${taskProvider} (${task.description})`
+                                    : `Custom model name (${task.description})`
+                                }
+                                className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm"
+                              />
+                            </div>
+                          );
+                        }
+
+                        return (
+                          <div className="flex gap-2">
+                            <select
+                              value={taskModels[task.id] || ''}
+                              onChange={(e) => handleTaskModelChange(task.id, e.target.value)}
+                              className="flex-1 px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500 text-sm"
+                              disabled={ollamaModelsLoading || !ollamaModels?.models?.length}
+                            >
+                              <option value="">
+                                {ollamaModelsLoading ? 'Loading Ollama models…' : 'Select a model (Ollama)'}
+                              </option>
+                              {(ollamaModels?.models || []).map((m) => (
+                                <option key={m} value={m}>{m}</option>
+                              ))}
+                            </select>
+                            <Button
+                              type="button"
+                              variant="ghost"
+                              onClick={() => refetchOllamaModels()}
+                              disabled={ollamaModelsLoading}
+                            >
+                              Refresh
+                            </Button>
+                          </div>
+                        );
+                      })()}
+                    </div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -718,7 +878,7 @@ const LLMSettingsTab: React.FC = () => {
 // Notifications Tab
 const NotificationsTab: React.FC = () => {
   const { preferences, updatePreferences, isLoading } = useNotifications();
-  const [localPrefs, setLocalPrefs] = useState<Record<string, boolean>>({});
+  const [localPrefs, setLocalPrefs] = useState<Partial<NotificationPreferences>>({});
   const [isSaving, setIsSaving] = useState(false);
 
   // Sync local state with preferences from context
@@ -731,6 +891,13 @@ const NotificationsTab: React.FC = () => {
         notify_ingestion_complete: preferences.notify_ingestion_complete,
         notify_transcription_complete: preferences.notify_transcription_complete,
         notify_summarization_complete: preferences.notify_summarization_complete,
+        notify_research_note_citation_issues: preferences.notify_research_note_citation_issues,
+        notify_experiment_run_updates: preferences.notify_experiment_run_updates,
+        research_note_citation_coverage_threshold: preferences.research_note_citation_coverage_threshold,
+        research_note_citation_notify_cooldown_hours: preferences.research_note_citation_notify_cooldown_hours,
+        research_note_citation_notify_on_unknown_keys: preferences.research_note_citation_notify_on_unknown_keys,
+        research_note_citation_notify_on_low_coverage: preferences.research_note_citation_notify_on_low_coverage,
+        research_note_citation_notify_on_missing_bibliography: preferences.research_note_citation_notify_on_missing_bibliography,
         notify_maintenance: preferences.notify_maintenance,
         notify_quota_warnings: preferences.notify_quota_warnings,
         notify_admin_broadcasts: preferences.notify_admin_broadcasts,
@@ -744,7 +911,23 @@ const NotificationsTab: React.FC = () => {
   }, [preferences]);
 
   const handleToggle = (key: string) => (e: React.ChangeEvent<HTMLInputElement>) => {
-    setLocalPrefs(prev => ({ ...prev, [key]: e.target.checked }));
+    setLocalPrefs(prev => ({ ...prev, [key]: e.target.checked } as Partial<NotificationPreferences>));
+  };
+
+  const handleNumberChange = (key: string, mode: "int" | "float") => (e: React.ChangeEvent<HTMLInputElement>) => {
+    const raw = e.target.value;
+    if (raw === "") {
+      setLocalPrefs(prev => {
+        const next = { ...prev } as any;
+        delete next[key];
+        return next;
+      });
+      return;
+    }
+
+    const parsed = mode === "int" ? parseInt(raw, 10) : parseFloat(raw);
+    if (!Number.isFinite(parsed)) return;
+    setLocalPrefs(prev => ({ ...prev, [key]: parsed } as Partial<NotificationPreferences>));
   };
 
   const handleSave = async () => {
@@ -766,6 +949,12 @@ const NotificationsTab: React.FC = () => {
         { key: 'notify_transcription_complete', label: 'Transcription Complete', description: 'Notify when video/audio transcription is complete' },
         { key: 'notify_summarization_complete', label: 'Summarization Complete', description: 'Notify when document summarization is complete' },
         { key: 'notify_sync_complete', label: 'Source Sync', description: 'Notify when data source sync is complete' },
+      ],
+    },
+    {
+      title: 'Research Notes',
+      items: [
+        { key: 'notify_research_note_citation_issues', label: 'Citation Issues', description: 'Notify when a research note appears under-cited or has invalid citation keys' },
       ],
     },
     {
@@ -813,22 +1002,126 @@ const NotificationsTab: React.FC = () => {
         {notificationGroups.map((group) => (
           <div key={group.title}>
             <h3 className="text-md font-medium text-gray-900 mb-4">{group.title}</h3>
-            <div className="space-y-4">
-              {group.items.map((item) => (
-                <label key={item.key} className="flex items-start space-x-3">
+            {group.title === "Research Notes" ? (
+              <div className="space-y-4">
+                <label className="flex items-start space-x-3">
                   <input
                     type="checkbox"
                     className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
-                    checked={localPrefs[item.key] ?? false}
-                    onChange={handleToggle(item.key)}
+                    checked={Boolean((localPrefs as any).notify_research_note_citation_issues ?? false)}
+                    onChange={handleToggle("notify_research_note_citation_issues")}
                   />
                   <div>
-                    <div className="font-medium text-gray-900">{item.label}</div>
-                    <div className="text-sm text-gray-500">{item.description}</div>
+                    <div className="font-medium text-gray-900">Citation Issues</div>
+                    <div className="text-sm text-gray-500">
+                      Notify when a research note appears under-cited or has invalid citation keys
+                    </div>
                   </div>
                 </label>
-              ))}
-            </div>
+
+                <label className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    checked={Boolean((localPrefs as any).notify_experiment_run_updates ?? true)}
+                    onChange={handleToggle("notify_experiment_run_updates")}
+                  />
+                  <div>
+                    <div className="font-medium text-gray-900">Experiment Runs</div>
+                    <div className="text-sm text-gray-500">Notify when an experiment run completes or fails</div>
+                  </div>
+                </label>
+
+                <div
+                  className={`rounded-lg border p-4 space-y-4 ${
+                    (localPrefs as any).notify_research_note_citation_issues ? "" : "opacity-60"
+                  }`}
+                >
+                  <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                    <label className="block">
+                      <div className="text-sm font-medium text-gray-900">Coverage threshold</div>
+                      <div className="text-xs text-gray-500 mb-1">Notify when cited-line coverage drops below this value (0–1)</div>
+                      <input
+                        type="number"
+                        min={0}
+                        max={1}
+                        step={0.05}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
+                        value={(localPrefs as any).research_note_citation_coverage_threshold ?? 0.7}
+                        onChange={handleNumberChange("research_note_citation_coverage_threshold", "float")}
+                        disabled={!Boolean((localPrefs as any).notify_research_note_citation_issues)}
+                      />
+                    </label>
+                    <label className="block">
+                      <div className="text-sm font-medium text-gray-900">Cooldown (hours)</div>
+                      <div className="text-xs text-gray-500 mb-1">Minimum time between citation issue notifications for the same note</div>
+                      <input
+                        type="number"
+                        min={0}
+                        max={720}
+                        step={1}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
+                        value={(localPrefs as any).research_note_citation_notify_cooldown_hours ?? 12}
+                        onChange={handleNumberChange("research_note_citation_notify_cooldown_hours", "int")}
+                        disabled={!Boolean((localPrefs as any).notify_research_note_citation_issues)}
+                      />
+                    </label>
+                  </div>
+
+                  <div className="space-y-3">
+                    <div className="text-sm font-medium text-gray-900">Notify on</div>
+                    {[
+                      {
+                        key: "research_note_citation_notify_on_low_coverage",
+                        label: "Low citation coverage",
+                        description: "The note has many citable lines without citations",
+                      },
+                      {
+                        key: "research_note_citation_notify_on_unknown_keys",
+                        label: "Unknown citation keys",
+                        description: "The note references [[S#]] keys that don't map to its sources",
+                      },
+                      {
+                        key: "research_note_citation_notify_on_missing_bibliography",
+                        label: "Missing bibliography",
+                        description: "The note is missing a '## Sources' section",
+                      },
+                    ].map((item) => (
+                      <label key={item.key} className="flex items-start space-x-3">
+                        <input
+                          type="checkbox"
+                          className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                          checked={Boolean((localPrefs as any)[item.key] ?? true)}
+                          onChange={handleToggle(item.key)}
+                          disabled={!Boolean((localPrefs as any).notify_research_note_citation_issues)}
+                        />
+                        <div>
+                          <div className="font-medium text-gray-900">{item.label}</div>
+                          <div className="text-sm text-gray-500">{item.description}</div>
+                        </div>
+                      </label>
+                    ))}
+                  </div>
+                </div>
+              </div>
+            ) : (
+              <div className="space-y-4">
+                {group.items.map((item) => (
+                  <label key={item.key} className="flex items-start space-x-3">
+                    <input
+                      type="checkbox"
+                      className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                      checked={Boolean((localPrefs as any)[item.key] ?? false)}
+                      onChange={handleToggle(item.key)}
+                    />
+                    <div>
+                      <div className="font-medium text-gray-900">{item.label}</div>
+                      <div className="text-sm text-gray-500">{item.description}</div>
+                    </div>
+                  </label>
+                ))}
+              </div>
+            )}
           </div>
         ))}
 
@@ -898,11 +1191,18 @@ const AdminTab: React.FC = () => {
   const [llmModels, setLlmModels] = React.useState<{ models: string[]; default_model?: string } | null>(null);
   const [switchingEmbed, setSwitchingEmbed] = React.useState(false);
   const [switchingLLM, setSwitchingLLM] = React.useState(false);
+  const [unsafeExec, setUnsafeExec] = React.useState<any>(null);
+  const [unsafeExecDraft, setUnsafeExecDraft] = React.useState<{ enabled: boolean; backend: 'subprocess' | 'docker'; docker_image: string } | null>(null);
+  const [savingUnsafe, setSavingUnsafe] = React.useState(false);
+  const [pullingImage, setPullingImage] = React.useState(false);
+  const [checkingDocker, setCheckingDocker] = React.useState(false);
+  const [unsafeExecActionResult, setUnsafeExecActionResult] = React.useState<any>(null);
   React.useEffect(() => {
     let cancel = false;
     apiClient.getFeatureFlags().then(f => { if (!cancel) setFlags(f); });
     apiClient.getVectorStoreStats().then(s => { if (!cancel) setEmbedStats(s); });
     apiClient.listLLMModels().then(m => { if (!cancel) setLlmModels(m); });
+    apiClient.getUnsafeExecStatus().then(s => { if (!cancel) { setUnsafeExec(s); setUnsafeExecDraft({ enabled: !!s?.enabled, backend: (s?.backend === 'docker' ? 'docker' : 'subprocess'), docker_image: String(s?.docker?.image || 'python:3.11-slim') }); } });
     return () => { cancel = true; };
   }, []);
 
@@ -921,6 +1221,90 @@ const AdminTab: React.FC = () => {
       toast.error(e?.response?.data?.detail || e?.message || 'Failed to update flags');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const onRefreshUnsafe = async (opts?: { toastOnSuccess?: boolean }) => {
+    try {
+      const s = await apiClient.getUnsafeExecStatus();
+      setUnsafeExec(s);
+      setUnsafeExecDraft({ enabled: !!s?.enabled, backend: (s?.backend === 'docker' ? 'docker' : 'subprocess'), docker_image: String(s?.docker?.image || 'python:3.11-slim') });
+      if (opts?.toastOnSuccess !== false) toast.success('Unsafe exec status refreshed');
+      return s;
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Failed to refresh unsafe exec status');
+      return null;
+    }
+  };
+
+  const onSaveUnsafe = async () => {
+    if (!unsafeExecDraft) return;
+    setSavingUnsafe(true);
+    try {
+      await apiClient.updateUnsafeExecConfig({
+        enabled: unsafeExecDraft.enabled,
+        backend: unsafeExecDraft.backend,
+        docker_image: unsafeExecDraft.docker_image,
+      });
+      toast.success('Unsafe exec settings updated');
+      const s = await onRefreshUnsafe({ toastOnSuccess: false });
+      // Offer to pull image if enabling docker and image isn't present.
+      const needsPull =
+        unsafeExecDraft.enabled &&
+        unsafeExecDraft.backend === 'docker' &&
+        s?.docker?.available === true &&
+        s?.docker?.image_present === false;
+      if (needsPull) {
+        const ok = window.confirm('Docker image is not present on the server. Pull it now?');
+        if (ok) {
+          await onPullDockerImage();
+        }
+      }
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Failed to update unsafe exec settings');
+    } finally {
+      setSavingUnsafe(false);
+    }
+  };
+
+  const onPullDockerImage = async () => {
+    if (!unsafeExecDraft) return;
+    setPullingImage(true);
+    try {
+      const res = await apiClient.pullUnsafeExecDockerImage({ image: unsafeExecDraft.docker_image });
+      setUnsafeExecActionResult({ type: 'pull', ...res, at: new Date().toISOString() });
+      if (res?.status === 'ok') {
+        toast.success('Docker image pulled');
+      } else if (res?.status === 'timeout') {
+        toast.error('Docker pull timed out');
+      } else {
+        toast.error('Docker pull failed');
+      }
+      await onRefreshUnsafe();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Failed to pull docker image');
+    } finally {
+      setPullingImage(false);
+    }
+  };
+
+  const onCheckDockerSandbox = async () => {
+    if (!unsafeExecDraft) return;
+    setCheckingDocker(true);
+    try {
+      const res = await apiClient.checkUnsafeExecDockerSandbox({ image: unsafeExecDraft.docker_image });
+      setUnsafeExecActionResult({ type: 'check', ...res, at: new Date().toISOString() });
+      if (res?.status === 'ok') {
+        toast.success('Docker sandbox check: OK');
+      } else if (res?.status === 'timeout') {
+        toast.error('Docker sandbox check: timeout');
+      } else {
+        toast.error('Docker sandbox check: failed');
+      }
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Docker sandbox check failed');
+    } finally {
+      setCheckingDocker(false);
     }
   };
 
@@ -950,6 +1334,121 @@ const AdminTab: React.FC = () => {
             <div className="mt-4">
               <Button onClick={onSave} loading={saving}>Save</Button>
             </div>
+          </div>
+
+          <div>
+            <h3 className="text-md font-medium text-gray-900 mb-2">Unsafe Code Execution (Paper Demo)</h3>
+            {!unsafeExecDraft ? (
+              <div className="text-gray-600">Loading…</div>
+            ) : (
+              <div className="space-y-3 text-sm">
+                <div className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded p-2">
+                  WARNING: This executes untrusted generated code on the server. Use Docker backend and a sandboxed deployment.
+                </div>
+                <label className="flex items-center gap-2">
+                  <input
+                    type="checkbox"
+                    checked={unsafeExecDraft.enabled}
+                    onChange={(e) => setUnsafeExecDraft({ ...unsafeExecDraft, enabled: e.target.checked })}
+                  />
+                  <span>Enable unsafe execution</span>
+                </label>
+                <div className="flex items-center gap-2">
+                  <span className="w-28 text-gray-700">Backend</span>
+                  <select
+                    className="border rounded px-2 py-1 text-sm"
+                    value={unsafeExecDraft.backend}
+                    onChange={(e) => setUnsafeExecDraft({ ...unsafeExecDraft, backend: (e.target.value === 'docker' ? 'docker' : 'subprocess') })}
+                  >
+                    <option value="subprocess">subprocess (best-effort)</option>
+                    <option value="docker">docker (recommended)</option>
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-28 text-gray-700">Docker image</span>
+                  <input
+                    className="border rounded px-2 py-1 text-sm w-80"
+                    value={unsafeExecDraft.docker_image}
+                    onChange={(e) => setUnsafeExecDraft({ ...unsafeExecDraft, docker_image: e.target.value })}
+                    placeholder="python:3.11-slim"
+                  />
+                </div>
+                <div className="text-xs text-gray-700">
+                  Docker available: <span className="font-medium">{unsafeExec?.docker?.available ? 'yes' : 'no'}</span>
+                  {unsafeExec?.docker?.server_version ? <span> (server {String(unsafeExec.docker.server_version)})</span> : null}
+                </div>
+                {unsafeExec?.docker?.available ? (
+                  <div className="text-xs text-gray-700">
+                    Image present: <span className="font-medium">{unsafeExec?.docker?.image_present === true ? 'yes' : unsafeExec?.docker?.image_present === false ? 'no' : 'unknown'}</span>
+                  </div>
+                ) : null}
+                <div className="flex gap-2">
+                  <Button variant="secondary" onClick={() => onRefreshUnsafe()}>Refresh</Button>
+                  <Button
+                    variant="secondary"
+                    onClick={onPullDockerImage}
+                    loading={pullingImage}
+                    disabled={unsafeExecDraft.backend !== 'docker' || !unsafeExecDraft.docker_image.trim()}
+                  >
+                    Pull image
+                  </Button>
+                  <Button
+                    variant="secondary"
+                    onClick={onCheckDockerSandbox}
+                    loading={checkingDocker}
+                    disabled={unsafeExecDraft.backend !== 'docker' || !unsafeExecDraft.docker_image.trim()}
+                  >
+                    Run check
+                  </Button>
+                  <Button onClick={onSaveUnsafe} loading={savingUnsafe}>Save</Button>
+                </div>
+
+                {unsafeExecActionResult ? (
+                  <details className="text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded p-2">
+                    <summary className="cursor-pointer">
+                      Last action: {String(unsafeExecActionResult.type)} • {String(unsafeExecActionResult.status || 'unknown')} •{' '}
+                      {unsafeExecActionResult.at ? new Date(String(unsafeExecActionResult.at)).toLocaleString() : ''}
+                    </summary>
+                    <div className="mt-2 space-y-2">
+                      <div>
+                        Image: <span className="font-mono">{String(unsafeExecActionResult.image || '')}</span>
+                      </div>
+                      {typeof unsafeExecActionResult.exit_code === 'number' ? (
+                        <div>
+                          Exit code: <span className="font-mono">{String(unsafeExecActionResult.exit_code)}</span>
+                        </div>
+                      ) : null}
+                      {typeof unsafeExecActionResult.stdout === 'string' && unsafeExecActionResult.stdout.trim() ? (
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <div>stdout</div>
+                            <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(String(unsafeExecActionResult.stdout || ''))}>
+                              Copy
+                            </Button>
+                          </div>
+                          <pre className="mt-1 p-2 bg-white border border-gray-200 rounded whitespace-pre-wrap max-h-48 overflow-auto">
+                            {String(unsafeExecActionResult.stdout)}
+                          </pre>
+                        </div>
+                      ) : null}
+                      {typeof unsafeExecActionResult.stderr === 'string' && unsafeExecActionResult.stderr.trim() ? (
+                        <div>
+                          <div className="flex items-center justify-between">
+                            <div>stderr</div>
+                            <Button size="sm" variant="ghost" onClick={() => navigator.clipboard.writeText(String(unsafeExecActionResult.stderr || ''))}>
+                              Copy
+                            </Button>
+                          </div>
+                          <pre className="mt-1 p-2 bg-white border border-gray-200 rounded whitespace-pre-wrap max-h-48 overflow-auto">
+                            {String(unsafeExecActionResult.stderr)}
+                          </pre>
+                        </div>
+                      ) : null}
+                    </div>
+                  </details>
+                ) : null}
+              </div>
+            )}
           </div>
 
           <div>

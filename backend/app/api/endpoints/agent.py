@@ -12,7 +12,7 @@ from datetime import datetime
 from uuid import UUID
 from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func
+from sqlalchemy import select, desc, func, or_
 from loguru import logger
 
 from app.core.database import get_db, AsyncSessionLocal
@@ -22,6 +22,13 @@ from app.services.auth_service import get_current_user
 from app.services.agent_service import AgentService
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.llm_service import UserLLMSettings
+from app.services.llm_routing import (
+    coerce_routing_config,
+    compute_attempt_tiers,
+    resolve_effective_provider_model,
+    resolve_feature_default_model,
+    resolve_tier_overrides,
+)
 from app.schemas.agent import (
     AgentChatRequest,
     AgentChatResponse,
@@ -37,6 +44,7 @@ from app.schemas.agent import (
 
 
 router = APIRouter()
+agent_service = AgentService()
 
 
 @router.post("/chat", response_model=AgentChatResponse)
@@ -67,8 +75,6 @@ async def agent_chat(
         AgentChatResponse with assistant message, tool results, routing info
     """
     try:
-        agent_service = AgentService()
-
         # Load user LLM preferences
         user_settings = None
         try:
@@ -88,7 +94,8 @@ async def agent_chat(
             db=db,
             user_settings=user_settings,
             conversation_id=request.conversation_id,
-            turn_number=request.turn_number
+            turn_number=request.turn_number,
+            agent_id=request.agent_id,
         )
 
         logger.info(
@@ -149,8 +156,6 @@ async def confirm_document_deletion(
         Deletion result
     """
     try:
-        agent_service = AgentService()
-
         result = await agent_service._tool_delete_document(
             params={"document_id": document_id, "confirm": True},
             db=db
@@ -630,6 +635,7 @@ from app.models.memory import ConversationMemory
 @router.get("/agents")
 async def list_agents(
     active_only: bool = Query(True, description="Only return active agents"),
+    search: Optional[str] = Query(None, description="Search by name or display name"),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db)
 ):
@@ -640,6 +646,14 @@ async def list_agents(
         query = select(AgentDefinition)
         if active_only:
             query = query.where(AgentDefinition.is_active == True)
+        if search:
+            search_term = f"%{search.strip()}%"
+            query = query.where(
+                or_(
+                    AgentDefinition.name.ilike(search_term),
+                    AgentDefinition.display_name.ilike(search_term),
+                )
+            )
         query = query.order_by(desc(AgentDefinition.priority))
 
         result = await db.execute(query)
@@ -655,7 +669,13 @@ async def list_agents(
                     "capabilities": agent.capabilities,
                     "priority": agent.priority,
                     "is_active": agent.is_active,
-                    "is_system": agent.is_system
+                    "is_system": agent.is_system,
+                    "owner_user_id": str(agent.owner_user_id) if getattr(agent, "owner_user_id", None) else None,
+                    "version": getattr(agent, "version", 1),
+                    "lifecycle_status": getattr(agent, "lifecycle_status", "published"),
+            "routing_defaults": getattr(agent, "routing_defaults", None),
+                    "created_at": agent.created_at.isoformat() if agent.created_at else None,
+                    "updated_at": agent.updated_at.isoformat() if agent.updated_at else None,
                 }
                 for agent in agents
             ],
@@ -696,6 +716,9 @@ async def get_agent(
             "priority": agent.priority,
             "is_active": agent.is_active,
             "is_system": agent.is_system,
+            "owner_user_id": str(agent.owner_user_id) if getattr(agent, "owner_user_id", None) else None,
+            "version": getattr(agent, "version", 1),
+            "lifecycle_status": getattr(agent, "lifecycle_status", "published"),
             "created_at": agent.created_at.isoformat() if agent.created_at else None,
             "updated_at": agent.updated_at.isoformat() if agent.updated_at else None
         }
@@ -714,6 +737,8 @@ from app.schemas.agent import (
     AgentDefinitionListResponse,
     CapabilitiesListResponse,
     CapabilityInfo,
+    AgentRoutingPreviewRequest,
+    AgentRoutingPreviewResponse,
 )
 from app.services.agent_router import CAPABILITY_KEYWORDS
 
@@ -725,6 +750,202 @@ def require_admin(user: User) -> User:
     return user
 
 
+def _validate_agent_definition_fields(
+    *,
+    capabilities: Optional[List[str]] = None,
+    tool_whitelist: Optional[List[str]] = None,
+) -> None:
+    valid_capabilities = set(CAPABILITY_KEYWORDS.keys()) | {"general"}
+
+    if capabilities is not None:
+        unknown_caps = sorted({c for c in capabilities if c not in valid_capabilities})
+        if unknown_caps:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown capabilities: {', '.join(unknown_caps)}",
+            )
+
+    if tool_whitelist is not None:
+        valid_tool_names = {t.get("name") for t in AGENT_TOOLS if t.get("name")}
+        unknown_tools = sorted({t for t in tool_whitelist if t not in valid_tool_names})
+        if unknown_tools:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unknown tools in whitelist: {', '.join(unknown_tools)}",
+            )
+
+
+
+
+@router.post("/agents/{agent_id}/routing-preview", response_model=AgentRoutingPreviewResponse)
+async def preview_agent_routing(
+    agent_id: UUID,
+    request: AgentRoutingPreviewRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Preview effective LLM routing for this agent for the current user.
+
+    Combines:
+      - agent.routing_defaults
+      - optional request.agent_routing_overrides
+      - optional job config (job_id or job_config_overrides)
+      - user preferences (custom api_url/task models)
+      - feature-flag tier resolution (provider/model per tier)
+    """
+    from app.core.feature_flags import get_str as get_feature_str
+    from app.models.agent_job import AgentJob
+
+    res = await db.execute(select(AgentDefinition).where(AgentDefinition.id == agent_id))
+    agent = res.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    task_type = str(getattr(request, "task_type", None) or "chat").strip() or "chat"
+
+    # Load user preferences
+    prefs_result = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+    prefs = prefs_result.scalar_one_or_none()
+    user_settings = UserLLMSettings.from_preferences(prefs) if prefs else UserLLMSettings()
+
+    def _normalize_routing(obj: Any) -> dict | None:
+        if not isinstance(obj, dict):
+            return None
+        tier = str(obj.get("tier") or obj.get("llm_tier") or "").strip().lower() or None
+        fb = obj.get("fallback_tiers") or obj.get("llm_fallback_tiers")
+        if not isinstance(fb, list):
+            fb = []
+        fallback_tiers = [str(x).strip().lower() for x in fb if str(x).strip()]
+        out: dict[str, Any] = {"tier": tier, "fallback_tiers": fallback_tiers}
+        for k_in, k_out in [
+            ("timeout_seconds", "timeout_seconds"),
+            ("llm_timeout_seconds", "timeout_seconds"),
+            ("max_tokens_cap", "max_tokens_cap"),
+            ("llm_max_tokens_cap", "max_tokens_cap"),
+            ("cooldown_seconds", "cooldown_seconds"),
+            ("llm_unhealthy_cooldown_seconds", "cooldown_seconds"),
+        ]:
+            if obj.get(k_in) is not None:
+                out[k_out] = obj.get(k_in)
+        if out.get("tier") is None and not out.get("fallback_tiers") and all(out.get(k) is None for k in ("timeout_seconds", "max_tokens_cap", "cooldown_seconds")):
+            return None
+        return out
+
+    routing_agent = _normalize_routing(getattr(agent, "routing_defaults", None))
+
+    overrides = _normalize_routing(request.agent_routing_overrides)
+    if overrides:
+        routing_agent = dict(routing_agent or {})
+        # overrides win
+        for k, v in overrides.items():
+            if v is None and k in routing_agent:
+                continue
+            if k == "fallback_tiers" and isinstance(v, list):
+                routing_agent[k] = v
+            elif v is not None:
+                routing_agent[k] = v
+
+    job_cfg: dict[str, Any] | None = None
+    if request.job_id:
+        j = await db.get(AgentJob, request.job_id)
+        if j and j.user_id == current_user.id:
+            job_cfg = j.config if isinstance(j.config, dict) else None
+
+    if request.job_config_overrides and isinstance(request.job_config_overrides, dict):
+        job_cfg = dict(job_cfg or {})
+        job_cfg.update(request.job_config_overrides)
+
+    routing_job = None
+    if isinstance(job_cfg, dict):
+        routing_job = _normalize_routing(job_cfg)
+
+    # Merge job > agent
+    routing_effective = dict(routing_agent or {}) if routing_agent else {}
+    if routing_job:
+        for k, v in routing_job.items():
+            if v is None:
+                continue
+            routing_effective[k] = v
+
+    if not routing_effective:
+        routing_effective = None
+
+    # Tier resolution from feature flags
+    tier_resolution: dict[str, Any] = {}
+    for t in ("fast", "balanced", "deep"):
+        p, m = await resolve_tier_overrides(get_feature_str, t)
+        tier_resolution[t] = {"provider": p, "model": m}
+
+    # Determine attempt order (same as runtime)
+    routing_effective_cfg = coerce_routing_config(routing_effective)
+    attempt_tiers = compute_attempt_tiers(
+        tier=routing_effective_cfg.get("tier"),
+        fallback_tiers=routing_effective_cfg.get("fallback_tiers") or [],
+    )
+
+    # User overrides summary
+    user_llm = {
+        "provider": user_settings.get_provider_for_task(task_type),
+        "model": user_settings.get_model_for_task(task_type),
+        "api_url": user_settings.api_url,
+        "has_custom": user_settings.has_custom_settings(),
+    }
+
+    notes: list[str] = []
+    if user_settings.api_url:
+        notes.append("User has custom api_url configured; runtime will route via custom OpenAI-compatible endpoint.")
+    if any(t in {"fast", "balanced", "deep"} for t in attempt_tiers if t):
+        notes.append("Tier provider/model are resolved from feature flags (admin-configured).")
+
+    feature_default_model = await resolve_feature_default_model(get_feature_str)
+
+    # Compute effective provider/model per attempt exactly like runtime.
+    system_provider = (getattr(settings, "LLM_PROVIDER", None) or "ollama")
+    system_default_model = getattr(settings, "DEFAULT_MODEL", None) or ""
+
+    attempts: list[dict[str, Any]] = []
+    for i, t in enumerate(attempt_tiers):
+        tier_provider, tier_model = await resolve_tier_overrides(get_feature_str, t)
+
+        # Matches generate_response: attempt_provider/model are per-call overrides.
+        attempt_provider = tier_provider
+        attempt_model = tier_model
+
+        eff = resolve_effective_provider_model(
+            system_provider=str(system_provider).strip().lower(),
+            system_default_model=str(system_default_model),
+            feature_default_model=feature_default_model,
+            user_settings=user_settings,
+            task_type=task_type,
+            model=attempt_model,
+            provider_override=attempt_provider,
+            api_url_override=None,
+            api_key_override=None,
+            prefer_deepseek=False,
+        )
+
+        attempts.append(
+            {
+                "attempt": i + 1,
+                "tier": (str(t).strip().lower() if t else None),
+                "tier_provider": tier_provider,
+                "tier_model": tier_model,
+                "effective_provider": eff.get("provider_used"),
+                "effective_model": eff.get("effective_model"),
+            }
+        )
+
+    return AgentRoutingPreviewResponse(
+        agent_id=agent.id,
+        task_type=task_type,
+        user_llm=user_llm,
+        routing_agent=routing_agent,
+        routing_job=routing_job,
+        routing_effective=routing_effective,
+        tier_resolution=tier_resolution,
+        attempts=attempts,
+        notes=notes,
+    )
 @router.post("/agents", response_model=AgentDefinitionResponse)
 async def create_agent(
     request: AgentDefinitionCreate,
@@ -737,6 +958,12 @@ async def create_agent(
     require_admin(current_user)
 
     try:
+        _validate_agent_definition_fields(
+            capabilities=request.capabilities,
+            tool_whitelist=request.tool_whitelist,
+            routing_defaults=getattr(request, "routing_defaults", None),
+        )
+
         # Check if name already exists
         existing = await db.execute(
             select(AgentDefinition).where(AgentDefinition.name == request.name)
@@ -754,7 +981,10 @@ async def create_agent(
             tool_whitelist=request.tool_whitelist,
             priority=request.priority,
             is_active=request.is_active,
-            is_system=False  # User-created agents are never system agents
+            is_system=False,  # User-created agents are never system agents
+            owner_user_id=current_user.id,
+            version=1,
+            lifecycle_status="draft",
         )
         db.add(agent)
         await db.commit()
@@ -770,9 +1000,13 @@ async def create_agent(
             system_prompt=agent.system_prompt,
             capabilities=agent.capabilities or [],
             tool_whitelist=agent.tool_whitelist,
+            routing_defaults=getattr(agent, "routing_defaults", None),
             priority=agent.priority,
             is_active=agent.is_active,
+            lifecycle_status=getattr(agent, "lifecycle_status", "draft"),
             is_system=agent.is_system,
+            owner_user_id=getattr(agent, "owner_user_id", None),
+            version=getattr(agent, "version", 1),
             created_at=agent.created_at,
             updated_at=agent.updated_at
         )
@@ -828,20 +1062,40 @@ async def update_agent(
                 )
         else:
             # Non-system agents can be fully edited
+            _validate_agent_definition_fields(
+                capabilities=request.capabilities,
+                tool_whitelist=request.tool_whitelist,
+            )
+            changed = False
             if request.display_name is not None:
                 agent.display_name = request.display_name
+                changed = True
             if request.description is not None:
                 agent.description = request.description
+                changed = True
             if request.system_prompt is not None:
                 agent.system_prompt = request.system_prompt
+                changed = True
             if request.capabilities is not None:
                 agent.capabilities = request.capabilities
+                changed = True
             if request.tool_whitelist is not None:
                 agent.tool_whitelist = request.tool_whitelist
+            if request.routing_defaults is not None:
+                agent.routing_defaults = request.routing_defaults
+                changed = True
             if request.priority is not None:
                 agent.priority = request.priority
+                changed = True
             if request.is_active is not None:
                 agent.is_active = request.is_active
+                changed = True
+            if request.lifecycle_status is not None:
+                agent.lifecycle_status = request.lifecycle_status
+                changed = True
+
+            if changed:
+                agent.version = (agent.version or 1) + 1
 
         await db.commit()
         await db.refresh(agent)
@@ -858,7 +1112,11 @@ async def update_agent(
             tool_whitelist=agent.tool_whitelist,
             priority=agent.priority,
             is_active=agent.is_active,
+            lifecycle_status=getattr(agent, "lifecycle_status", "published"),
+            routing_defaults=getattr(agent, "routing_defaults", None),
             is_system=agent.is_system,
+            owner_user_id=getattr(agent, "owner_user_id", None),
+            version=getattr(agent, "version", 1),
             created_at=agent.created_at,
             updated_at=agent.updated_at
         )
@@ -1028,6 +1286,12 @@ async def list_capabilities(
             description=description,
             keywords=keywords[:5]  # Show first 5 keywords as examples
         ))
+
+    capabilities.append(CapabilityInfo(
+        name="general",
+        description="General assistance (fallback when no specialized capability matches)",
+        keywords=[]
+    ))
 
     return CapabilitiesListResponse(capabilities=capabilities)
 
@@ -1328,7 +1592,7 @@ async def _process_message_with_streaming(
                 logger.warning(f"Failed to load user preferences: {e}")
 
             # Create agent service with streaming callback
-            agent_service = AgentService()
+            # Reuse shared service to avoid re-initializing models per message
 
             # Convert conversation history to AgentMessage objects
             history = []
@@ -1482,3 +1746,428 @@ async def _process_message_with_streaming(
                 "type": "error",
                 "message": f"Failed to process message: {str(e)}"
             })
+
+
+# =============================================================================
+# Agent Builder Endpoints
+# =============================================================================
+
+@router.get("/templates", tags=["agent-builder"])
+async def list_agent_templates(
+    category: Optional[str] = Query(None, description="Filter by category"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List all available agent templates for the Agent Builder.
+
+    Templates provide pre-configured agent roles that can be customized:
+    - support: Customer support, onboarding guides
+    - content: Technical writers, documentation
+    - analysis: Research analysts, data insights
+    - productivity: Project managers, meeting assistants
+    - development: Code reviewers
+    - management: Content curators
+    - governance: Compliance checkers
+    """
+    from app.services.agent_templates import (
+        AGENT_TEMPLATES,
+        get_templates_by_category,
+        get_template_summary,
+        list_template_categories,
+    )
+
+    if category:
+        templates = get_templates_by_category(category)
+        summary = [
+            {
+                "template_id": t["template_id"],
+                "name": t["name"],
+                "display_name": t["display_name"],
+                "description": t["description"],
+                "category": t.get("category", "other"),
+                "capabilities": t.get("capabilities", []),
+                "tool_count": len(t.get("tool_whitelist") or []),
+                "use_cases": t.get("use_cases", []),
+            }
+            for t in templates
+        ]
+    else:
+        summary = get_template_summary()
+
+    return {
+        "templates": summary,
+        "categories": list_template_categories(),
+        "total": len(summary)
+    }
+
+
+@router.get("/templates/{template_id}", tags=["agent-builder"])
+async def get_agent_template(
+    template_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Get full details of an agent template including system prompt."""
+    from app.services.agent_templates import get_template_by_id
+
+    template = get_template_by_id(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    return template
+
+
+@router.post("/templates/{template_id}/create", tags=["agent-builder"])
+async def create_agent_from_template(
+    template_id: str,
+    name: Optional[str] = Query(None, description="Custom agent name"),
+    display_name: Optional[str] = Query(None, description="Custom display name"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Create a new agent from a template.
+
+    The agent will be created in 'draft' status so you can customize it
+    before publishing.
+    """
+    from app.services.agent_templates import get_template_by_id
+    import time
+
+    template = get_template_by_id(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Generate unique name if not provided
+    agent_name = name or f"{template['name']}_{int(time.time()) % 10000}"
+
+    # Check for duplicate name
+    existing = await db.execute(
+        select(AgentDefinition).where(AgentDefinition.name == agent_name)
+    )
+    if existing.scalar_one_or_none():
+        agent_name = f"{agent_name}_{int(time.time()) % 10000}"
+
+    # Create agent from template
+    agent = AgentDefinition(
+        name=agent_name,
+        display_name=display_name or template["display_name"],
+        description=template["description"],
+        system_prompt=template["system_prompt"],
+        capabilities=template["capabilities"],
+        tool_whitelist=template.get("tool_whitelist"),
+        priority=template.get("priority", 50),
+        is_active=False,  # Start inactive until published
+        is_system=False,
+        owner_user_id=current_user.id,
+        lifecycle_status="draft",
+    )
+
+    db.add(agent)
+    await db.commit()
+    await db.refresh(agent)
+
+    return {
+        "message": f"Agent created from template '{template['display_name']}'",
+        "agent": {
+            "id": str(agent.id),
+            "name": agent.name,
+            "display_name": agent.display_name,
+            "description": agent.description,
+            "capabilities": agent.capabilities,
+            "tool_whitelist": agent.tool_whitelist,
+            "priority": agent.priority,
+            "is_active": agent.is_active,
+            "lifecycle_status": agent.lifecycle_status,
+        },
+        "template_id": template_id
+    }
+
+
+@router.post("/agents/{agent_id}/test", tags=["agent-builder"])
+async def test_agent_routing(
+    agent_id: UUID,
+    message: str = Query(..., description="Test message to route"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Test how an agent would handle a message without executing tools.
+
+    Returns:
+    - Whether this agent would be selected for the message
+    - The routing score and reason
+    - Which tools the agent would have available
+    - What the agent's response approach would be
+    """
+    from app.services.agent_router import AgentRouter
+    from app.services.llm_service import LLMService
+    from app.services.agent_tools import AGENT_TOOLS
+
+    # Get the agent
+    result = await db.execute(
+        select(AgentDefinition).where(AgentDefinition.id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Check ownership for non-system agents
+    if not agent.is_system and agent.owner_user_id != current_user.id:
+        if not current_user.is_admin():
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    # Analyze intent
+    llm_service = LLMService()
+    router = AgentRouter(llm_service)
+    await router.load_agents(db)
+
+    intent_analysis = await router.analyze_intent(message)
+
+    # Score this agent against the intent
+    needed_caps = set(intent_analysis.get("capabilities_needed", []))
+    agent_caps = set(agent.capabilities or [])
+
+    if needed_caps:
+        capability_score = len(needed_caps & agent_caps) / len(needed_caps)
+    else:
+        capability_score = 0.5  # Neutral if no specific capabilities needed
+
+    priority_score = (agent.priority or 50) / 100
+    total_score = (capability_score * 0.7) + (priority_score * 0.3)
+
+    # Get available tools for this agent
+    if agent.tool_whitelist:
+        available_tools = [
+            {"name": t["name"], "description": t["description"][:100]}
+            for t in AGENT_TOOLS
+            if t["name"] in agent.tool_whitelist
+        ]
+    else:
+        available_tools = [
+            {"name": t["name"], "description": t["description"][:100]}
+            for t in AGENT_TOOLS
+        ]
+
+    # Get routing decision
+    selected_agent, routing_reason = await router.select_agent(
+        intent_analysis, db
+    )
+
+    would_be_selected = selected_agent and selected_agent.id == agent.id
+
+    return {
+        "agent": {
+            "id": str(agent.id),
+            "name": agent.name,
+            "display_name": agent.display_name,
+            "capabilities": agent.capabilities,
+        },
+        "test_message": message,
+        "intent_analysis": intent_analysis,
+        "scoring": {
+            "capability_score": round(capability_score, 3),
+            "priority_score": round(priority_score, 3),
+            "total_score": round(total_score, 3),
+            "matching_capabilities": list(needed_caps & agent_caps),
+            "missing_capabilities": list(needed_caps - agent_caps),
+        },
+        "routing_decision": {
+            "would_be_selected": would_be_selected,
+            "selected_agent": selected_agent.display_name if selected_agent else None,
+            "routing_reason": routing_reason,
+        },
+        "available_tools": available_tools[:20],  # Limit for readability
+        "total_tools_available": len(available_tools),
+    }
+
+
+@router.get("/agents/{agent_id}/analytics", tags=["agent-builder"])
+async def get_agent_analytics(
+    agent_id: UUID,
+    days: int = Query(30, ge=1, le=365, description="Days to analyze"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Get usage analytics for an agent.
+
+    Returns:
+    - Total conversations handled
+    - Tool usage statistics
+    - Handoff patterns
+    - Performance metrics
+    """
+    from datetime import datetime, timedelta
+    from sqlalchemy import func
+
+    # Get the agent
+    result = await db.execute(
+        select(AgentDefinition).where(AgentDefinition.id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Check ownership for non-system agents
+    if not agent.is_system and agent.owner_user_id != current_user.id:
+        if not current_user.is_admin():
+            raise HTTPException(status_code=403, detail="Access denied")
+
+    cutoff_date = datetime.utcnow() - timedelta(days=days)
+
+    # Get conversation context stats
+    context_query = select(
+        func.count(AgentConversationContext.id).label('total_turns'),
+        func.count(func.distinct(AgentConversationContext.conversation_id)).label('unique_conversations'),
+    ).where(
+        AgentConversationContext.agent_definition_id == agent_id,
+        AgentConversationContext.created_at >= cutoff_date
+    )
+    context_result = await db.execute(context_query)
+    context_stats = context_result.one()
+
+    # Get tool execution stats from ToolExecutionAudit
+    from app.models.tool_audit import ToolExecutionAudit
+
+    tool_query = select(
+        ToolExecutionAudit.tool_name,
+        func.count(ToolExecutionAudit.id).label('count'),
+        func.avg(ToolExecutionAudit.execution_time_ms).label('avg_time'),
+    ).where(
+        ToolExecutionAudit.agent_definition_id == agent_id,
+        ToolExecutionAudit.created_at >= cutoff_date
+    ).group_by(ToolExecutionAudit.tool_name).order_by(func.count(ToolExecutionAudit.id).desc())
+
+    tool_result = await db.execute(tool_query)
+    tool_stats = [
+        {
+            "tool_name": row.tool_name,
+            "call_count": row.count,
+            "avg_execution_time_ms": round(row.avg_time, 2) if row.avg_time else None
+        }
+        for row in tool_result.fetchall()
+    ]
+
+    # Get status distribution
+    status_query = select(
+        ToolExecutionAudit.status,
+        func.count(ToolExecutionAudit.id)
+    ).where(
+        ToolExecutionAudit.agent_definition_id == agent_id,
+        ToolExecutionAudit.created_at >= cutoff_date
+    ).group_by(ToolExecutionAudit.status)
+
+    status_result = await db.execute(status_query)
+    status_distribution = dict(status_result.fetchall())
+
+    # Get handoff stats (from context routing_reason)
+    handoff_query = select(
+        func.count(AgentConversationContext.id)
+    ).where(
+        AgentConversationContext.agent_definition_id == agent_id,
+        AgentConversationContext.created_at >= cutoff_date,
+        AgentConversationContext.handoff_context != None
+    )
+    handoff_result = await db.execute(handoff_query)
+    handoff_count = handoff_result.scalar() or 0
+
+    # Daily usage trend
+    daily_query = select(
+        func.date(AgentConversationContext.created_at).label('date'),
+        func.count(AgentConversationContext.id).label('turns')
+    ).where(
+        AgentConversationContext.agent_definition_id == agent_id,
+        AgentConversationContext.created_at >= cutoff_date
+    ).group_by(func.date(AgentConversationContext.created_at)).order_by('date')
+
+    daily_result = await db.execute(daily_query)
+    daily_trend = [
+        {"date": str(row.date), "turns": row.turns}
+        for row in daily_result.fetchall()
+    ]
+
+    return {
+        "agent": {
+            "id": str(agent.id),
+            "name": agent.name,
+            "display_name": agent.display_name,
+            "is_active": agent.is_active,
+        },
+        "period_days": days,
+        "summary": {
+            "total_turns": context_stats.total_turns or 0,
+            "unique_conversations": context_stats.unique_conversations or 0,
+            "handoffs_received": handoff_count,
+            "total_tool_calls": sum(t["call_count"] for t in tool_stats),
+        },
+        "tool_usage": tool_stats[:15],  # Top 15 tools
+        "status_distribution": status_distribution,
+        "daily_trend": daily_trend,
+    }
+
+
+@router.post("/agents/{agent_id}/publish", tags=["agent-builder"])
+async def publish_agent(
+    agent_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Publish a draft agent, making it active and available for routing.
+    """
+    result = await db.execute(
+        select(AgentDefinition).where(AgentDefinition.id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Check ownership
+    if agent.is_system:
+        raise HTTPException(status_code=403, detail="Cannot modify system agents")
+    if agent.owner_user_id != current_user.id and not current_user.is_admin():
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    agent.lifecycle_status = "published"
+    agent.is_active = True
+    await db.commit()
+
+    return {
+        "message": f"Agent '{agent.display_name}' published successfully",
+        "agent_id": str(agent.id),
+        "is_active": agent.is_active,
+        "lifecycle_status": agent.lifecycle_status
+    }
+
+
+@router.post("/agents/{agent_id}/archive", tags=["agent-builder"])
+async def archive_agent(
+    agent_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Archive an agent, making it inactive but preserving it for historical reference.
+    """
+    result = await db.execute(
+        select(AgentDefinition).where(AgentDefinition.id == agent_id)
+    )
+    agent = result.scalar_one_or_none()
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agent not found")
+
+    # Check ownership
+    if agent.is_system:
+        raise HTTPException(status_code=403, detail="Cannot archive system agents")
+    if agent.owner_user_id != current_user.id and not current_user.is_admin():
+        raise HTTPException(status_code=403, detail="Access denied")
+
+    agent.lifecycle_status = "archived"
+    agent.is_active = False
+    await db.commit()
+
+    return {
+        "message": f"Agent '{agent.display_name}' archived",
+        "agent_id": str(agent.id),
+        "lifecycle_status": agent.lifecycle_status
+    }

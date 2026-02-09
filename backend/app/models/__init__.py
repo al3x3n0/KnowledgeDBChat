@@ -17,10 +17,52 @@ from .notification import Notification, NotificationPreferences, NotificationTyp
 from .reading_list import ReadingList, ReadingListItem
 from .secret import UserSecret
 from .tool_audit import ToolExecutionAudit
+from .tool_policy import ToolPolicy
+from .agent_tool_prior import AgentToolPrior
 from .saved_search import SavedSearch, SearchShare
 from .llm_usage import LLMUsageEvent
 from .export_job import ExportJob
 from .repo_report import RepoReportJob
+from .artifact_draft import ArtifactDraft
+from .retrieval_trace import RetrievalTrace
+from .agent_job import (
+    AgentJob,
+    AgentJobCheckpoint,
+    AgentJobTemplate,
+    AgentJobChainDefinition,
+    AgentJobStatus,
+    AgentJobType,
+    ChainTriggerCondition,
+)
+from .synthesis_job import SynthesisJob, SynthesisJobType, SynthesisJobStatus
+from .research_note import ResearchNote
+from .experiment import ExperimentPlan, ExperimentRun
+from .research_inbox import ResearchInboxItem
+from .research_monitor_profile import ResearchMonitorProfile
+from .code_patch_proposal import CodePatchProposal
+from .patch_pr import PatchPR
+from .training_dataset import (
+    TrainingDataset,
+    DatasetSample,
+    DatasetType,
+    DatasetFormat,
+    DatasetStatus,
+)
+from .training_job import (
+    TrainingJob,
+    TrainingCheckpoint,
+    TrainingMethod,
+    TrainingBackend,
+    TrainingJobStatus,
+)
+from .model_registry import (
+    ModelAdapter,
+    AdapterType,
+    AdapterStatus,
+)
+from .ai_hub_recommendation_feedback import AIHubRecommendationFeedback
+from .latex_project import LatexProject
+from .latex_project_file import LatexProjectFile
 
 __all__ = [
     "Document",
@@ -64,6 +106,7 @@ __all__ = [
     "ReadingListItem",
     "UserSecret",
     "ToolExecutionAudit",
+    "AgentToolPrior",
     "SavedSearch",
     "SearchShare",
     "LLMUsageEvent",
@@ -71,4 +114,45 @@ __all__ = [
     "ExportJob",
     # Repository report models
     "RepoReportJob",
+    "ArtifactDraft",
+    "RetrievalTrace",
+    # Autonomous agent job models
+    "AgentJob",
+    "AgentJobCheckpoint",
+    "AgentJobTemplate",
+    "AgentJobChainDefinition",
+    "AgentJobStatus",
+    "AgentJobType",
+    "ChainTriggerCondition",
+    # Synthesis job models
+    "SynthesisJob",
+    "SynthesisJobType",
+    "SynthesisJobStatus",
+    # Research notes
+    "ResearchNote",
+    "ExperimentPlan",
+    "ExperimentRun",
+    "ResearchInboxItem",
+    "ResearchMonitorProfile",
+    "CodePatchProposal",
+    "PatchPR",
+    # Training dataset models
+    "TrainingDataset",
+    "DatasetSample",
+    "DatasetType",
+    "DatasetFormat",
+    "DatasetStatus",
+    # Training job models
+    "TrainingJob",
+    "TrainingCheckpoint",
+    "TrainingMethod",
+    "TrainingBackend",
+    "TrainingJobStatus",
+    # Model registry models
+    "ModelAdapter",
+    "AdapterType",
+    "AdapterStatus",
+    "AIHubRecommendationFeedback",
+    "LatexProject",
+    "LatexProjectFile",
 ]

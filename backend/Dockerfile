@@ -1,15 +1,16 @@
-FROM python:3.11-slim
+FROM python:3.11-slim-bookworm
 
 # Set working directory
 WORKDIR /app
 
-# Install system dependencies (including FFmpeg for video/audio transcription)
+# Install system dependencies (including FFmpeg for video/audio transcription, Docker CLI for container tools)
 RUN apt-get update && apt-get install -y \
     build-essential \
     curl \
     git \
     ffmpeg \
     libsndfile1 \
+    docker.io \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements and install Python dependencies
@@ -22,19 +23,8 @@ COPY . .
 # Create data directories
 RUN mkdir -p /app/data/documents /app/data/chroma_db /app/data/logs
 
-# Create entrypoint script for model preloading
-RUN echo '#!/bin/bash\n\
-set -e\n\
-\n\
-# Preload Whisper model if PRELOAD_WHISPER_MODEL is set\n\
-if [ "$PRELOAD_WHISPER_MODEL" = "true" ]; then\n\
-  echo "Preloading Whisper model..."\n\
-  python preload_models.py --model-size "${WHISPER_MODEL_SIZE:-small}" || echo "Model preload failed, will download on first use"\n\
-fi\n\
-\n\
-# Execute the main command\n\
-exec "$@"\n\
-' > /entrypoint.sh && chmod +x /entrypoint.sh
+# Entrypoint script (kept in repo so it is easy to edit and test)
+RUN chmod +x /app/entrypoint.sh && cp /app/entrypoint.sh /entrypoint.sh
 
 # Expose port
 EXPOSE 8000
@@ -44,5 +34,3 @@ ENTRYPOINT ["/entrypoint.sh"]
 
 # Default command
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
-
-

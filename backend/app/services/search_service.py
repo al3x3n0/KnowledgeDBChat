@@ -6,12 +6,11 @@ import time
 from typing import List, Dict, Any, Optional, Tuple
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, desc, asc, func
+from sqlalchemy import select, or_, and_, desc, asc, func
 from loguru import logger
 
 from app.models.document import Document, DocumentChunk
-from app.services.vector_store import VectorStoreService
-from app.services.storage_service import storage_service
+from app.services.vector_store import vector_store_service
 from app.core.config import settings
 
 
@@ -19,13 +18,13 @@ class SearchService:
     """Service for searching documents with multiple modes."""
 
     def __init__(self):
-        self.vector_store = VectorStoreService()
+        self.vector_store = vector_store_service
         self._initialized = False
 
     async def _ensure_initialized(self):
         """Ensure vector store is initialized."""
         if not self._initialized:
-            await self.vector_store.initialize()
+            await self.vector_store.initialize(background=True)
             self._initialized = True
 
     async def search(
@@ -121,6 +120,7 @@ class SearchService:
             query=query,
             limit=fetch_limit,
             filter_metadata=filter_metadata if filter_metadata else None,
+            apply_postprocessing=False,
         )
 
         # Deduplicate by document_id (keep highest scoring chunk per document)
@@ -165,20 +165,6 @@ class SearchService:
             metadata = item.get("metadata", {})
             content = item.get("content") or item.get("page_content", "")
 
-            # Generate download URL if we have db session
-            download_url = None
-            if db:
-                doc_id = metadata.get("document_id")
-                if doc_id:
-                    try:
-                        stmt = select(Document).where(Document.id == UUID(doc_id))
-                        doc_result = await db.execute(stmt)
-                        document = doc_result.scalar_one_or_none()
-                        if document and document.file_path:
-                            download_url = await storage_service.get_presigned_download_url(document.file_path)
-                    except Exception as e:
-                        logger.warning(f"Failed to get download URL for {doc_id}: {e}")
-
             results.append({
                 "id": metadata.get("document_id", item.get("id")),
                 "title": metadata.get("title", "Unknown"),
@@ -191,7 +177,7 @@ class SearchService:
                 "created_at": metadata.get("created_at", ""),
                 "updated_at": metadata.get("updated_at", ""),
                 "url": metadata.get("url"),
-                "download_url": download_url,
+                "download_url": None,
                 "chunk_id": metadata.get("chunk_id"),
             })
 
@@ -282,13 +268,6 @@ class SearchService:
                     snippet = doc.content[:300]
 
             # Get download URL
-            download_url = None
-            if doc.file_path:
-                try:
-                    download_url = await storage_service.get_presigned_download_url(doc.file_path)
-                except Exception as e:
-                    logger.warning(f"Failed to get download URL for {doc.id}: {e}")
-
             results.append({
                 "id": str(doc.id),
                 "title": doc.title,
@@ -301,11 +280,327 @@ class SearchService:
                 "created_at": doc.created_at.isoformat() if doc.created_at else "",
                 "updated_at": doc.updated_at.isoformat() if doc.updated_at else "",
                 "url": doc.url,
-                "download_url": download_url,
+                "download_url": None,
                 "chunk_id": None,  # No specific chunk for exact search
             })
 
         return results, total
+
+
+    async def faceted_search(
+        self,
+        query: str,
+        db: AsyncSession,
+        page: int = 1,
+        page_size: int = 10,
+        filters: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        """
+        Execute a faceted search with aggregations.
+
+        Args:
+            query: Search query text
+            db: Database session
+            page: Page number
+            page_size: Results per page
+            filters: Filter criteria (source_type, file_type, author, tags, date_range)
+
+        Returns:
+            Search results with facet aggregations
+        """
+        from app.models.document import DocumentSource
+        from collections import Counter
+
+        # Apply filters
+        source_id = None
+        file_type = None
+
+        if filters:
+            if filters.get("source_id"):
+                source_id = filters["source_id"]
+            if filters.get("file_type"):
+                file_type = filters["file_type"]
+
+        # Execute search
+        results, total, took_ms = await self.search(
+            query=query,
+            mode="smart",
+            page=page,
+            page_size=page_size,
+            source_id=source_id,
+            file_type=file_type,
+            db=db,
+        )
+
+        # Get all matching documents for facet computation (limited sample)
+        await self._ensure_initialized()
+        all_results = await self.vector_store.search(
+            query=query,
+            limit=500,  # Sample for facets
+            apply_postprocessing=False,
+        )
+
+        # Compute facets
+        source_types = Counter()
+        file_types = Counter()
+        authors = Counter()
+        tags = Counter()
+        date_buckets = Counter()
+
+        for item in all_results:
+            metadata = item.get("metadata", {})
+
+            source_type = metadata.get("source_type")
+            if source_type:
+                source_types[source_type] += 1
+
+            ft = metadata.get("file_type")
+            if ft:
+                file_types[ft] += 1
+
+            author = metadata.get("author")
+            if author:
+                authors[author] += 1
+
+            item_tags = metadata.get("tags", [])
+            if item_tags:
+                for tag in item_tags:
+                    tags[tag] += 1
+
+            created_at = metadata.get("created_at")
+            if created_at:
+                try:
+                    from datetime import datetime
+                    if isinstance(created_at, str):
+                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                    else:
+                        dt = created_at
+                    year_month = dt.strftime("%Y-%m")
+                    date_buckets[year_month] += 1
+                except Exception:
+                    pass
+
+        return {
+            "query": query,
+            "results": results,
+            "total": total,
+            "took_ms": took_ms,
+            "page": page,
+            "page_size": page_size,
+            "facets": {
+                "source_type": dict(source_types.most_common(10)),
+                "file_type": dict(file_types.most_common(10)),
+                "author": dict(authors.most_common(10)),
+                "tags": dict(tags.most_common(20)),
+                "date": dict(sorted(date_buckets.items(), reverse=True)[:12]),
+            },
+            "filters_applied": filters or {},
+        }
+
+    async def get_search_suggestions(
+        self,
+        partial_query: str,
+        db: AsyncSession,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get search suggestions/autocomplete for partial query.
+
+        Args:
+            partial_query: Partial search query
+            db: Database session
+            limit: Maximum suggestions
+
+        Returns:
+            List of search suggestions
+        """
+        if len(partial_query) < 2:
+            return []
+
+        suggestions = []
+        partial_lower = partial_query.lower()
+
+        # Search in document titles
+        title_query = select(Document.title).where(
+            and_(
+                Document.is_processed == True,
+                Document.title.ilike(f"%{partial_query}%")
+            )
+        ).limit(limit * 2)
+        title_result = await db.execute(title_query)
+        titles = [row[0] for row in title_result.fetchall() if row[0]]
+
+        for title in titles[:limit]:
+            suggestions.append({
+                "type": "title",
+                "text": title,
+                "display": f"📄 {title}",
+            })
+
+        # Search in tags
+        tag_query = select(Document.tags).where(
+            and_(
+                Document.is_processed == True,
+                Document.tags != None
+            )
+        ).limit(100)
+        tag_result = await db.execute(tag_query)
+
+        all_tags = set()
+        for row in tag_result.fetchall():
+            if row[0]:
+                for tag in row[0]:
+                    if partial_lower in tag.lower():
+                        all_tags.add(tag)
+
+        for tag in list(all_tags)[:limit - len(suggestions)]:
+            suggestions.append({
+                "type": "tag",
+                "text": f"tag:{tag}",
+                "display": f"🏷️ {tag}",
+            })
+
+        # Search in authors
+        author_query = select(func.distinct(Document.author)).where(
+            and_(
+                Document.is_processed == True,
+                Document.author != None,
+                Document.author.ilike(f"%{partial_query}%")
+            )
+        ).limit(limit)
+        author_result = await db.execute(author_query)
+        authors = [row[0] for row in author_result.fetchall() if row[0]]
+
+        for author in authors[:limit - len(suggestions)]:
+            suggestions.append({
+                "type": "author",
+                "text": f"author:{author}",
+                "display": f"👤 {author}",
+            })
+
+        return suggestions[:limit]
+
+    async def get_related_searches(
+        self,
+        query: str,
+        db: AsyncSession,
+        limit: int = 5,
+    ) -> List[str]:
+        """
+        Get related search queries based on current query.
+
+        Args:
+            query: Current search query
+            db: Database session
+            limit: Maximum related searches
+
+        Returns:
+            List of related search queries
+        """
+        await self._ensure_initialized()
+
+        # Search for documents matching the query
+        results = await self.vector_store.search(
+            query=query,
+            limit=20,
+            apply_postprocessing=False,
+        )
+
+        if not results:
+            return []
+
+        # Extract terms from result titles and content
+        from collections import Counter
+        import re
+
+        query_words = set(query.lower().split())
+        term_counter = Counter()
+
+        for item in results:
+            metadata = item.get("metadata", {})
+            title = metadata.get("title", "")
+            content = item.get("content", "") or item.get("page_content", "")
+
+            # Extract words from title
+            title_words = re.findall(r'\b[a-zA-Z]{3,}\b', title.lower())
+            for word in title_words:
+                if word not in query_words and len(word) > 3:
+                    term_counter[word] += 3  # Weight title words higher
+
+            # Extract words from content snippet
+            content_words = re.findall(r'\b[a-zA-Z]{4,}\b', content[:500].lower())
+            for word in content_words:
+                if word not in query_words:
+                    term_counter[word] += 1
+
+            # Add tags as related searches
+            tags = metadata.get("tags", [])
+            if tags:
+                for tag in tags:
+                    if tag.lower() not in query_words:
+                        term_counter[tag.lower()] += 5
+
+        # Generate related queries
+        related = []
+        common_words = {'this', 'that', 'with', 'from', 'have', 'been', 'were', 'will', 'would', 'could', 'should', 'about', 'into', 'more', 'some', 'such', 'than', 'then', 'there', 'these', 'they', 'their', 'what', 'when', 'where', 'which', 'while', 'your', 'other'}
+
+        for term, count in term_counter.most_common(limit * 3):
+            if term not in common_words and count >= 2:
+                # Create related search combining original query with new term
+                if len(query.split()) <= 3:
+                    related.append(f"{query} {term}")
+                else:
+                    related.append(term)
+
+            if len(related) >= limit:
+                break
+
+        return related
+
+    async def get_search_history_suggestions(
+        self,
+        user_id: Optional[UUID],
+        db: AsyncSession,
+        limit: int = 5,
+    ) -> List[Dict[str, Any]]:
+        """
+        Get search suggestions based on user's search history.
+
+        Args:
+            user_id: User ID for personalized suggestions
+            db: Database session
+            limit: Maximum suggestions
+
+        Returns:
+            List of recent/popular searches
+        """
+        # For now, return popular document topics as suggestions
+        # This could be extended to track actual search history
+
+        from app.models.document import DocumentSource
+
+        # Get popular sources
+        source_query = select(
+            DocumentSource.name,
+            func.count(Document.id).label('doc_count')
+        ).join(Document).where(
+            Document.is_processed == True
+        ).group_by(DocumentSource.name).order_by(
+            desc(func.count(Document.id))
+        ).limit(limit)
+
+        source_result = await db.execute(source_query)
+        sources = source_result.fetchall()
+
+        suggestions = []
+        for source_name, count in sources:
+            suggestions.append({
+                "type": "popular_source",
+                "text": f"source:{source_name}",
+                "display": f"📁 {source_name} ({count} docs)",
+            })
+
+        return suggestions
 
 
 # Singleton instance

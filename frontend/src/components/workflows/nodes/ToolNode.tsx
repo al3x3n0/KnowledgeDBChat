@@ -4,12 +4,14 @@
 
 import React from 'react';
 import { Handle, Position, NodeProps } from 'reactflow';
-import { Wrench, Search, FileText, Trash2, Upload, List, Tags, Bot } from 'lucide-react';
+import { Wrench, Search, Globe, Download, FileText, Trash2, Upload, List, Tags, Bot } from 'lucide-react';
 import { useWorkflowStore, WorkflowNodeData } from '../useWorkflowStore';
 
 // Icon mapping for built-in tools
 const toolIcons: Record<string, React.ReactNode> = {
   search_documents: <Search className="w-5 h-5" />,
+  web_scrape: <Globe className="w-5 h-5" />,
+  ingest_url: <Download className="w-5 h-5" />,
   get_document_details: <FileText className="w-5 h-5" />,
   summarize_document: <FileText className="w-5 h-5" />,
   delete_document: <Trash2 className="w-5 h-5" />,

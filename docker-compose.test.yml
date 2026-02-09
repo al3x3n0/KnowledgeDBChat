@@ -38,6 +38,17 @@ services:
       timeout: 3s
       retries: 5
 
+  # Qdrant Vector Database for Testing (default; set VECTOR_STORE_PROVIDER=chroma to use embedded ChromaDB)
+  qdrant_test:
+    image: qdrant/qdrant:latest
+    container_name: knowledge_db_qdrant_test
+    ports:
+      - "6334:6333"
+    volumes:
+      - qdrant_test_data:/qdrant/storage
+    networks:
+      - knowledge_test_net
+
   # Backend API for Testing
   backend_test:
     build:
@@ -49,6 +60,9 @@ services:
       - REDIS_URL=redis://redis_test:6379/0
       - OLLAMA_BASE_URL=http://ollama_test:11434
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db_test
+      - VECTOR_STORE_PROVIDER=${VECTOR_STORE_PROVIDER:-qdrant}
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant_test:6333}
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-knowledge_base_test}
       - SECRET_KEY=test-secret-key-change-in-production
       - DEBUG=True
       - LOG_LEVEL=DEBUG
@@ -62,6 +76,8 @@ services:
         condition: service_healthy
       redis_test:
         condition: service_healthy
+      qdrant_test:
+        condition: service_started
     networks:
       - knowledge_test_net
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
@@ -97,6 +113,9 @@ services:
       - REDIS_URL=redis://redis_test:6379/0
       - CELERY_BROKER_URL=redis://redis_test:6379/0
       - CELERY_RESULT_BACKEND=redis://redis_test:6379/0
+      - VECTOR_STORE_PROVIDER=${VECTOR_STORE_PROVIDER:-qdrant}
+      - QDRANT_URL=${QDRANT_URL:-http://qdrant_test:6333}
+      - QDRANT_COLLECTION_NAME=${QDRANT_COLLECTION_NAME:-knowledge_base_test}
       - DEBUG=True
     volumes:
       - ./data/test:/app/data
@@ -106,6 +125,8 @@ services:
         condition: service_healthy
       redis_test:
         condition: service_healthy
+      qdrant_test:
+        condition: service_started
     networks:
       - knowledge_test_net
     command: celery -A app.core.celery worker --loglevel=debug
@@ -114,8 +135,8 @@ volumes:
   postgres_test_data:
   redis_test_data:
   ollama_test_data:
+  qdrant_test_data:
 
 networks:
   knowledge_test_net:
     driver: bridge
-

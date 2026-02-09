@@ -18,7 +18,9 @@ import {
   Clock,
   Download,
   Loader2,
-  Eye
+  Eye,
+  Sparkles,
+  X
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
@@ -70,6 +72,27 @@ const ChatPage: React.FC = () => {
     {
       enabled: !!sessionId,
       refetchOnWindowFocus: false,
+    }
+  );
+
+  const updateSessionMutation = useMutation(
+    ({
+      sessionId,
+      payload,
+    }: {
+      sessionId: string;
+      payload: { title?: string | null; extra_metadata?: Record<string, any> | null };
+    }) => apiClient.updateChatSession(sessionId, payload),
+    {
+      onSuccess: () => {
+        queryClient.invalidateQueries(['chatSession', sessionId]);
+        queryClient.invalidateQueries('chatSessions');
+      },
+      onError: (error: any) => {
+        const errorMessage =
+          error?.response?.data?.detail || error?.message || 'Failed to update chat session';
+        toast.error(errorMessage);
+      },
     }
   );
 
@@ -260,6 +283,29 @@ const ChatPage: React.FC = () => {
     }
   };
 
+  const pinned = (() => {
+    const meta = (currentSession as any)?.extra_metadata || {};
+    const chatModel = meta?.llm_task_models?.chat;
+    const chatProvider = meta?.llm_task_providers?.chat;
+    const adapterId = meta?.ai_hub?.adapter_id;
+    const parts: string[] = [];
+    if (chatProvider) parts.push(String(chatProvider));
+    if (chatModel) parts.push(String(chatModel));
+    if (!chatModel && adapterId) parts.push(`adapter:${String(adapterId).slice(0, 8)}`);
+    return { isPinned: Boolean(chatModel || adapterId), label: parts.join(' • '), meta };
+  })();
+
+  const clearPinned = () => {
+    if (!sessionId || !pinned.isPinned) return;
+    const next = { ...(pinned.meta || {}) };
+    delete (next as any).ai_hub;
+    delete (next as any).llm_task_models;
+    delete (next as any).llm_task_providers;
+    delete (next as any).llm_provider;
+    delete (next as any).llm_model;
+    updateSessionMutation.mutate({ sessionId, payload: { extra_metadata: next } });
+  };
+
   if (sessionsLoading) {
     return <LoadingSpinner className="h-full" text="Loading chat sessions..." />;
   }
@@ -346,9 +392,27 @@ const ChatPage: React.FC = () => {
             {/* Chat Header */}
             <div className="bg-white border-b border-gray-200 p-4">
               <div className="flex items-center justify-between">
-                <h1 className="text-lg font-semibold text-gray-900">
-                  {currentSession?.title || 'Chat Session'}
-                </h1>
+                <div>
+                  <h1 className="text-lg font-semibold text-gray-900">
+                    {currentSession?.title || 'Chat Session'}
+                  </h1>
+                  {pinned.isPinned && (
+                    <div className="mt-2 inline-flex items-center gap-2 text-xs bg-indigo-50 text-indigo-700 border border-indigo-100 rounded-full px-3 py-1">
+                      <Sparkles className="w-3 h-3" />
+                      <span className="font-medium">AI Hub pinned</span>
+                      <span className="text-indigo-600">{pinned.label}</span>
+                      <button
+                        className="ml-1 text-indigo-600 hover:text-indigo-800"
+                        onClick={clearPinned}
+                        disabled={updateSessionMutation.isLoading}
+                        title="Clear pinned AI Hub model for this session"
+                        aria-label="Clear pinned model"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    </div>
+                  )}
+                </div>
                 <div className="flex items-center space-x-2">
                   {wsConnection && (
                     <span className="inline-flex items-center px-2 py-1 rounded-full text-xs font-medium bg-green-100 text-green-800">
@@ -471,6 +535,25 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   const [downloadingDocs, setDownloadingDocs] = React.useState<Set<string>>(new Set());
+  const sourceDocs = (message.source_documents || []) as Array<{
+    id: string;
+    title?: string;
+    score?: number;
+    source?: string;
+    chunk_id?: string;
+    snippet?: string;
+    download_url?: string;
+    url?: string;
+  }>;
+
+  const citationNumbers = React.useMemo(() => {
+    if (!isAssistant || !message.content) return [];
+    const matches = message.content.match(/\[(\d+)\]/g) || [];
+    const nums = matches
+      .map((m) => parseInt(m.replace(/\[|\]/g, ''), 10))
+      .filter((n) => Number.isFinite(n) && n >= 1 && n <= sourceDocs.length);
+    return Array.from(new Set(nums)).sort((a, b) => a - b);
+  }, [isAssistant, message.content, sourceDocs.length]);
 
   const handleViewSource = (docId: string, chunkId?: string) => {
     navigate('/documents', {
@@ -535,7 +618,7 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
         <div className={`inline-block rounded-lg p-3 shadow-sm ${
           isUser 
             ? 'bg-primary-600 text-white' 
-            : 'bg-white text-gray-900'
+            : 'bg-gray-100 text-gray-900 border border-gray-200 shadow-none'
         }`}>
           {isAssistant ? (
             <ReactMarkdown 
@@ -560,16 +643,41 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
           )}
         </div>
 
+        {/* Inline citations */}
+        {isAssistant && citationNumbers.length > 0 && (
+          <div className="mt-2 flex items-center gap-2 flex-wrap">
+            <span className="text-xs text-gray-600">Citations:</span>
+            {citationNumbers.map((n) => {
+              const doc = sourceDocs[n - 1];
+              const canOpen = Boolean(doc?.id);
+              return (
+                <button
+                  key={n}
+                  type="button"
+                  disabled={!canOpen}
+                  className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                  title={doc?.title || `Source ${n}`}
+                  onClick={() => {
+                    if (doc?.id) handleViewSource(doc.id, doc.chunk_id);
+                  }}
+                >
+                  [{n}]
+                </button>
+              );
+            })}
+          </div>
+        )}
+
         {/* Source documents */}
-        {message.source_documents && message.source_documents.length > 0 && (
+        {sourceDocs.length > 0 && (
           <div className="mt-2 space-y-1">
             <p className="text-xs font-medium text-gray-700">Sources:</p>
-            {message.source_documents.map((doc, index) => (
+            {sourceDocs.map((doc, index) => (
               <div key={index} className="text-xs bg-gray-100 rounded p-2 hover:bg-gray-200 transition-colors">
                 <div className="flex items-center justify-between">
-                  <span className="font-medium truncate">{doc.title}</span>
+                  <span className="font-medium truncate">Source {index + 1}: {doc.title}</span>
                   <span className="text-gray-500 ml-2">
-                    {(doc.score * 100).toFixed(0)}% match
+                    {(((doc.score ?? 0) as number) * 100).toFixed(0)}% match
                   </span>
                 </div>
                 {doc.snippet && (
@@ -645,5 +753,3 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
 };
 
 export default ChatPage;
-
-

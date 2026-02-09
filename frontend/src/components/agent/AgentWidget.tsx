@@ -13,6 +13,7 @@ import {
   Trash2,
   Upload,
   Search,
+  Globe,
   FileText,
   List,
   Play,
@@ -90,6 +91,11 @@ const AgentToolResult: React.FC<AgentToolResultProps> = ({ toolCall }) => {
   const getIcon = () => {
     switch (toolCall.tool_name) {
       case 'search_documents': return <Search className="w-3.5 h-3.5" />;
+      case 'search_arxiv': return <Search className="w-3.5 h-3.5" />;
+      case 'web_scrape': return <Globe className="w-3.5 h-3.5" />;
+      case 'ingest_url': return <Download className="w-3.5 h-3.5" />;
+      case 'ingest_arxiv_papers': return <Download className="w-3.5 h-3.5" />;
+      case 'literature_review_arxiv': return <FileText className="w-3.5 h-3.5" />;
       case 'summarize_document': return <FileText className="w-3.5 h-3.5" />;
       case 'delete_document': return <Trash2 className="w-3.5 h-3.5" />;
       case 'request_file_upload': return <Upload className="w-3.5 h-3.5" />;
@@ -186,6 +192,47 @@ interface ToolOutputDisplayProps {
 }
 
 const ToolOutputDisplay: React.FC<ToolOutputDisplayProps> = ({ output, toolName }) => {
+  // Ingest URL
+  if (toolName === 'ingest_url' && output && (Array.isArray(output.created) || Array.isArray(output.updated))) {
+    const created = Array.isArray(output.created) ? output.created : [];
+    const updated = Array.isArray(output.updated) ? output.updated : [];
+    const skipped = Array.isArray(output.skipped) ? output.skipped : [];
+    const errors = Array.isArray(output.errors) ? output.errors : [];
+
+    return (
+      <div className="space-y-2">
+        <div className="text-[10px] text-gray-600">
+          Created: {created.length} · Updated: {updated.length} · Skipped: {skipped.length} · Errors: {errors.length}
+        </div>
+        {[...created, ...updated].slice(0, 5).map((item: any, idx: number) => (
+          <div key={idx} className="bg-white rounded px-2 py-1 border">
+            <div className="font-medium truncate">{item.title || 'Document'}</div>
+            <div className="text-gray-500 truncate text-[10px]">{item.url}</div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // Web scrape
+  if (toolName === 'web_scrape' && output && Array.isArray(output.pages)) {
+    return (
+      <div className="space-y-1">
+        {output.pages.slice(0, 5).map((page: any, idx: number) => (
+          <div key={idx} className="bg-white rounded px-2 py-1 border">
+            <div className="font-medium truncate">{page.title || 'Untitled page'}</div>
+            <div className="text-gray-500 truncate text-[10px]">{page.url}</div>
+            {page.content && (
+              <div className="text-gray-700 text-[11px] mt-1 line-clamp-3 whitespace-pre-wrap">
+                {String(page.content).slice(0, 250)}
+              </div>
+            )}
+          </div>
+        ))}
+      </div>
+    );
+  }
+
   // Search results
   if (toolName === 'search_documents' && Array.isArray(output)) {
     return (
@@ -231,6 +278,104 @@ const ToolOutputDisplay: React.FC<ToolOutputDisplayProps> = ({ output, toolName 
             </div>
           </div>
         ))}
+      </div>
+    );
+  }
+
+  // arXiv paper search
+  if (toolName === 'search_arxiv' && output?.items && Array.isArray(output.items)) {
+    return (
+      <div className="space-y-1">
+        <div className="text-gray-500 text-[10px] mb-1">
+          Total: {output.total_results ?? output.items.length} • Showing: {output.items.length}
+        </div>
+        {output.items.slice(0, 10).map((paper: any) => (
+          <div key={paper.entry_url || paper.id} className="bg-white rounded px-2 py-1 border space-y-0.5">
+            <div className="font-medium truncate">{paper.title}</div>
+            <div className="text-gray-500 truncate text-[10px]">
+              {(paper.authors || []).slice(0, 3).join(', ')}
+              {(paper.authors || []).length > 3 ? ' et al.' : ''}
+              {paper.primary_category ? ` • ${paper.primary_category}` : ''}
+              {paper.published ? ` • ${String(paper.published).slice(0, 10)}` : ''}
+            </div>
+            <div className="flex items-center gap-2 text-[10px]">
+              {paper.pdf_url && (
+                <a
+                  href={paper.pdf_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary-600 hover:text-primary-700 underline"
+                >
+                  PDF
+                </a>
+              )}
+              {paper.entry_url && (
+                <a
+                  href={paper.entry_url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-primary-600 hover:text-primary-700 underline"
+                >
+                  arXiv
+                </a>
+              )}
+            </div>
+          </div>
+        ))}
+      </div>
+    );
+  }
+
+  // Ingest arXiv papers
+  if (toolName === 'ingest_arxiv_papers' && output?.source_id) {
+    return (
+      <div className="bg-white rounded px-2 py-2 border space-y-1">
+        <div className="font-medium text-[10px] truncate">{output.source_name || 'ArXiv import'}</div>
+        <div className="text-[10px] text-gray-600">
+          Source: <span className="font-mono">{output.source_id}</span>
+        </div>
+        <div className="text-[10px] text-gray-600">
+          Papers: {output.paper_ids_count ?? 0} • Queries: {output.search_queries_count ?? 0} • Categories: {output.categories_count ?? 0}
+        </div>
+        <div className="text-[10px] text-gray-500">
+          {output.queued ? 'Queued for ingestion.' : 'Created source.'}
+        </div>
+      </div>
+    );
+  }
+
+  // Literature review (arXiv)
+  if (toolName === 'literature_review_arxiv' && output?.papers && Array.isArray(output.papers)) {
+    return (
+      <div className="bg-white rounded px-2 py-2 border space-y-2">
+        <div className="text-[10px] text-gray-600">
+          Topic: <span className="font-medium text-gray-900">{output.topic}</span>
+        </div>
+        <div className="text-[10px] text-gray-500 font-mono truncate" title={output.query}>
+          {output.query}
+        </div>
+        {output.ingest?.source_id && (
+          <div className="text-[10px] text-gray-600">
+            Import source: <span className="font-mono">{output.ingest.source_id}</span>
+          </div>
+        )}
+        <div className="space-y-1">
+          {output.papers.slice(0, 5).map((paper: any) => (
+            <div key={paper.entry_url || paper.id} className="border rounded px-2 py-1">
+              <div className="font-medium truncate">{paper.title}</div>
+              <div className="text-gray-500 text-[10px] truncate">
+                {(paper.authors || []).slice(0, 3).join(', ')}
+                {(paper.authors || []).length > 3 ? ' et al.' : ''}
+                {paper.primary_category ? ` • ${paper.primary_category}` : ''}
+              </div>
+            </div>
+          ))}
+        </div>
+        {Array.isArray(output.next_steps) && output.next_steps.length > 0 && (
+          <div className="text-[10px] text-gray-500">
+            Next: {output.next_steps[0]}
+          </div>
+        )}
       </div>
     );
   }

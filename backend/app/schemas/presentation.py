@@ -167,6 +167,7 @@ class PresentationJobResponse(BaseModel):
     progress: int
     current_stage: Optional[str] = None
     generated_outline: Optional[PresentationOutline] = None
+    retrieval_trace_id: Optional[UUID] = None
     file_path: Optional[str] = None
     file_size: Optional[int] = None
     error: Optional[str] = None

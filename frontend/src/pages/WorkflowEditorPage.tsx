@@ -367,7 +367,7 @@ const WorkflowEditorPage: React.FC = () => {
                   <p>{issue.message}</p>
                   {issue.node_id && (
                     <p className="text-xs opacity-75 mt-0.5">
-                      Node: <code className="bg-white/50 px-1 rounded">{issue.node_id}</code>
+                      Node: <code className="bg-gray-100/50 px-1 rounded">{issue.node_id}</code>
                     </p>
                   )}
                 </div>

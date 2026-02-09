@@ -28,13 +28,12 @@ jest.mock('../../services/api', () => ({
   },
 }));
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { retry: false },
-  },
-});
-
 const renderWithProviders = (component: React.ReactElement) => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false },
+    },
+  });
   return render(
     <BrowserRouter>
       <QueryClientProvider client={queryClient}>
@@ -50,18 +49,13 @@ describe('DocumentsPage', () => {
   it('renders documents page', async () => {
     renderWithProviders(<DocumentsPage />);
     
-    await waitFor(() => {
-      expect(screen.getByText(/documents/i) || screen.getByText(/upload/i)).toBeInTheDocument();
-    });
+    expect(await screen.findByRole('button', { name: /documents/i })).toBeInTheDocument();
   });
 
   it('displays document list', async () => {
     renderWithProviders(<DocumentsPage />);
     
     // Should show document list or empty state
-    await waitFor(() => {
-      expect(screen.getByText(/no documents/i) || screen.getByText(/upload/i)).toBeInTheDocument();
-    });
+    expect(await screen.findByRole('button', { name: /upload/i })).toBeInTheDocument();
   });
 });
-

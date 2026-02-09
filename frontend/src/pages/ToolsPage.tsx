@@ -25,6 +25,8 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../services/api';
+import { AgentDefinitionSummary } from '../types';
+import JsonViewer from '../components/common/JsonViewer';
 
 // Types
 interface UserTool {
@@ -966,6 +968,10 @@ interface ToolTesterModalProps {
 }
 
 const ToolTesterModal: React.FC<ToolTesterModalProps> = ({ tool, onClose }) => {
+  const [runMode, setRunMode] = useState<'direct' | 'agent'>('direct');
+  const [agentId, setAgentId] = useState<string>('auto');
+  const [agents, setAgents] = useState<AgentDefinitionSummary[]>([]);
+  const [isAgentsLoading, setIsAgentsLoading] = useState(false);
   const [inputs, setInputs] = useState<string>('{}');
   const [isRunning, setIsRunning] = useState(false);
   const [result, setResult] = useState<{
@@ -974,6 +980,39 @@ const ToolTesterModal: React.FC<ToolTesterModalProps> = ({ tool, onClose }) => {
     error: string | null;
     execution_time_ms: number;
   } | null>(null);
+  const [agentPrompt, setAgentPrompt] = useState<string>('');
+  const [agentResponse, setAgentResponse] = useState<any>(null);
+
+  useEffect(() => {
+    setAgentPrompt(
+      `Execute the custom tool "${tool.name}" using the tool "run_custom_tool". ` +
+      `Use the JSON inputs provided in the UI. Return the raw tool output.`
+    );
+  }, [tool.id, tool.name]);
+
+  useEffect(() => {
+    if (runMode !== 'agent') return;
+    let cancelled = false;
+
+    const loadAgents = async () => {
+      setIsAgentsLoading(true);
+      try {
+        const res = await api.listAgentDefinitions({ active_only: true });
+        if (cancelled) return;
+        setAgents(res.agents || []);
+      } catch (error: any) {
+        if (cancelled) return;
+        toast.error(error?.response?.data?.detail || 'Failed to load agents');
+      } finally {
+        if (!cancelled) setIsAgentsLoading(false);
+      }
+    };
+
+    loadAgents();
+    return () => {
+      cancelled = true;
+    };
+  }, [runMode]);
 
   const runTest = async () => {
     let parsedInputs: Record<string, any>;
@@ -1004,6 +1043,39 @@ const ToolTesterModal: React.FC<ToolTesterModalProps> = ({ tool, onClose }) => {
     }
   };
 
+  const runViaAgent = async () => {
+    let parsedInputs: Record<string, any>;
+    try {
+      parsedInputs = JSON.parse(inputs);
+    } catch (e) {
+      toast.error('Invalid JSON inputs');
+      return;
+    }
+
+    setIsRunning(true);
+    setAgentResponse(null);
+
+    try {
+      const message =
+        (agentPrompt?.trim() ? agentPrompt.trim() : `Run "${tool.name}" using "run_custom_tool".`) +
+        `\n\nInputs (JSON):\n${JSON.stringify(parsedInputs, null, 2)}\n`;
+      const response = await api.agentChat({
+        message,
+        agent_id: agentId === 'auto' ? undefined : agentId,
+      });
+      setAgentResponse(response);
+    } catch (error: any) {
+      setAgentResponse({
+        message: {
+          content: error.response?.data?.detail || 'Agent request failed',
+        },
+        tool_results: [],
+      });
+    } finally {
+      setIsRunning(false);
+    }
+  };
+
   return (
     <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4">
       <div className="bg-white rounded-lg shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
@@ -1025,6 +1097,44 @@ const ToolTesterModal: React.FC<ToolTesterModalProps> = ({ tool, onClose }) => {
 
         {/* Body */}
         <div className="flex-1 overflow-auto p-6 space-y-4">
+          {/* Mode */}
+          <div className="flex items-center justify-between gap-3">
+            <div className="flex items-center rounded-lg border bg-gray-50 p-1">
+              <button
+                type="button"
+                onClick={() => setRunMode('direct')}
+                className={`px-3 py-1.5 text-sm rounded-md ${runMode === 'direct' ? 'bg-gray-100 text-gray-900 border border-gray-200' : 'text-gray-700 hover:text-gray-900'}`}
+              >
+                Direct
+              </button>
+              <button
+                type="button"
+                onClick={() => setRunMode('agent')}
+                className={`px-3 py-1.5 text-sm rounded-md ${runMode === 'agent' ? 'bg-gray-100 text-gray-900 border border-gray-200' : 'text-gray-700 hover:text-gray-900'}`}
+              >
+                Via Agent
+              </button>
+            </div>
+            {runMode === 'agent' && (
+              <div className="flex items-center gap-2">
+                <span className="text-sm text-gray-600">Agent</span>
+                <select
+                  value={agentId}
+                  onChange={(e) => setAgentId(e.target.value)}
+                  disabled={isAgentsLoading}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm bg-gray-50 disabled:bg-gray-100"
+                >
+                  <option value="auto">Auto-route</option>
+                  {agents.map((a) => (
+                    <option key={a.id} value={a.id}>
+                      {a.display_name} ({a.name})
+                    </option>
+                  ))}
+                </select>
+              </div>
+            )}
+          </div>
+
           {/* Inputs */}
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1039,9 +1149,26 @@ const ToolTesterModal: React.FC<ToolTesterModalProps> = ({ tool, onClose }) => {
             />
           </div>
 
+          {runMode === 'agent' && (
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">
+                Agent Prompt
+              </label>
+              <textarea
+                value={agentPrompt}
+                onChange={(e) => setAgentPrompt(e.target.value)}
+                rows={5}
+                className="w-full px-3 py-2 border rounded-lg text-sm focus:ring-2 focus:ring-primary-500"
+              />
+              <p className="text-xs text-gray-500 mt-1">
+                Uses the agent chat API and can call the tool `run_custom_tool`.
+              </p>
+            </div>
+          )}
+
           {/* Run button */}
           <button
-            onClick={runTest}
+            onClick={runMode === 'direct' ? runTest : runViaAgent}
             disabled={isRunning}
             className="flex items-center justify-center space-x-2 w-full py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 disabled:opacity-50"
           >
@@ -1050,13 +1177,13 @@ const ToolTesterModal: React.FC<ToolTesterModalProps> = ({ tool, onClose }) => {
             ) : (
               <>
                 <Play className="w-5 h-5" />
-                <span>Run Test</span>
+                <span>{runMode === 'direct' ? 'Run Test' : 'Run Via Agent'}</span>
               </>
             )}
           </button>
 
           {/* Result */}
-          {result && (
+          {runMode === 'direct' && result && (
             <div
               className={`p-4 rounded-lg border ${
                 result.success
@@ -1099,6 +1226,48 @@ const ToolTesterModal: React.FC<ToolTesterModalProps> = ({ tool, onClose }) => {
                   <pre className="bg-white p-3 rounded border text-sm overflow-auto max-h-48">
                     {JSON.stringify(result.output, null, 2)}
                   </pre>
+                </div>
+              )}
+            </div>
+          )}
+
+          {runMode === 'agent' && agentResponse && (
+            <div className="p-4 rounded-lg border bg-white">
+              {agentResponse.routing_info && (
+                <div className="text-xs text-gray-500 mb-2">
+                  Routed to: {agentResponse.routing_info.agent_display_name} ({agentResponse.routing_info.agent_name})
+                </div>
+              )}
+              <div className="mb-3">
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Agent Response
+                </label>
+                <pre className="bg-gray-50 p-3 rounded border text-sm overflow-auto max-h-48 whitespace-pre-wrap">
+                  {agentResponse?.message?.content || '—'}
+                </pre>
+              </div>
+
+              {Array.isArray(agentResponse.tool_results) && agentResponse.tool_results.length > 0 && (
+                <div>
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Tool Calls
+                  </label>
+                  <div className="space-y-2">
+                    {agentResponse.tool_results.map((tc: any) => (
+                      <div key={tc.id || `${tc.tool_name}-${Math.random()}`} className="border rounded p-2">
+                        <div className="flex items-center justify-between text-xs">
+                          <span className="font-medium text-gray-900">{tc.tool_name}</span>
+                          <span className="text-gray-500">{tc.status}</span>
+                        </div>
+                        {tc.error && <div className="text-xs text-red-600 mt-1">{tc.error}</div>}
+                        {tc.tool_output !== undefined && (
+                          <div className="mt-2 bg-gray-50 border rounded p-2">
+                            <JsonViewer json={tc.tool_output} />
+                          </div>
+                        )}
+                      </div>
+                    ))}
+                  </div>
                 </div>
               )}
             </div>

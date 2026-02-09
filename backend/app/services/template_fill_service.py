@@ -15,8 +15,8 @@ from loguru import logger
 
 from app.models.document import Document
 from app.models.template import TemplateJob
-from app.services.llm_service import LLMService
-from app.services.vector_store import VectorStoreService
+from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.vector_store import vector_store_service
 from app.services.storage_service import storage_service
 from app.utils.template_parser import TemplateParser
 from app.core.config import settings
@@ -26,7 +26,7 @@ class TemplateFillService:
     """Service for filling document templates with AI-generated content."""
 
     def __init__(self):
-        self.vector_store = VectorStoreService()
+        self.vector_store = vector_store_service
         self.llm_service = LLMService()
         self._initialized = False
 
@@ -34,7 +34,7 @@ class TemplateFillService:
         """Initialize the service and its dependencies."""
         if self._initialized:
             return
-        await self.vector_store.initialize()
+        await self.vector_store.initialize(background=True)
         self._initialized = True
 
     async def analyze_template(self, file_path: str) -> List[Dict[str, Any]]:
@@ -148,7 +148,8 @@ class TemplateFillService:
         section_title: str,
         context: str,
         template_hint: str = "",
-        max_tokens: int = 1000
+        max_tokens: int = 1000,
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> str:
         """
         Generate content for a template section using LLM.
@@ -191,7 +192,8 @@ Write the content for "{section_title}":"""
                 query=prompt,
                 temperature=0.3,  # Lower temperature for more consistent output
                 max_tokens=max_tokens,
-                prefer_deepseek=prefer_deepseek
+                prefer_deepseek=prefer_deepseek,
+                user_settings=user_settings,
             )
 
             logger.info(f"Generated {len(response)} chars for section '{section_title}'")
@@ -251,6 +253,20 @@ Write the content for "{section_title}":"""
 
         temp_template = None
         temp_output = None
+
+        # Load user LLM settings
+        user_settings = None
+        try:
+            from app.models.memory import UserPreferences
+            result = await db.execute(
+                select(UserPreferences).where(UserPreferences.user_id == job.user_id)
+            )
+            user_prefs = result.scalar_one_or_none()
+            if user_prefs:
+                user_settings = UserLLMSettings.from_preferences(user_prefs)
+                logger.info(f"Loaded user LLM settings for template job: provider={user_settings.provider}, model={user_settings.model}")
+        except Exception as e:
+            logger.warning(f"Failed to load user LLM settings for template job, using defaults: {e}")
 
         try:
             # Update job status
@@ -318,7 +334,8 @@ Write the content for "{section_title}":"""
                 content = await self.generate_section_content(
                     section_title,
                     context,
-                    section.get('placeholder_text', '')
+                    section.get('placeholder_text', ''),
+                    user_settings=user_settings,
                 )
                 sections_content[section_title] = content
 

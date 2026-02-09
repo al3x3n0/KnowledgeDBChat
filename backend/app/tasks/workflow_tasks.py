@@ -16,7 +16,7 @@ from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.celery import celery_app
-from app.core.database import get_sync_session, async_session_maker
+from app.core.database import create_celery_session
 from app.models.workflow import Workflow, WorkflowExecution
 from app.models.user import User
 
@@ -55,7 +55,8 @@ async def _execute_workflow_async(execution_id: str):
     """Async implementation of workflow execution."""
     from app.services.workflow_engine import WorkflowEngine
 
-    async with async_session_maker() as db:
+    session_factory = create_celery_session()
+    async with session_factory() as db:
         # Load the execution with workflow
         result = await db.execute(
             select(WorkflowExecution)
@@ -94,7 +95,8 @@ async def _execute_workflow_async(execution_id: str):
 
 async def _mark_execution_failed(execution_id: str, error: str):
     """Mark an execution as failed."""
-    async with async_session_maker() as db:
+    session_factory = create_celery_session()
+    async with session_factory() as db:
         result = await db.execute(
             select(WorkflowExecution).where(WorkflowExecution.id == UUID(execution_id))
         )
@@ -126,7 +128,8 @@ async def _trigger_scheduled_workflows_async():
     """Check and trigger scheduled workflows."""
     from croniter import croniter
 
-    async with async_session_maker() as db:
+    session_factory = create_celery_session()
+    async with session_factory() as db:
         # Find active workflows with schedule triggers
         result = await db.execute(
             select(Workflow)
@@ -209,7 +212,8 @@ def trigger_event_workflow(event_name: str, event_data: dict, user_id: str):
 
 async def _trigger_event_workflow_async(event_name: str, event_data: dict, user_id: str):
     """Find and trigger workflows matching the event."""
-    async with async_session_maker() as db:
+    session_factory = create_celery_session()
+    async with session_factory() as db:
         # Find active workflows with matching event triggers
         result = await db.execute(
             select(Workflow)

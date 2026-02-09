@@ -7,9 +7,11 @@ This guide explains how to set up and use the automated data ingestion pipelines
 The Knowledge Database supports automated ingestion from multiple data sources:
 
 - **GitLab**: Repositories, wikis, issues, and merge requests
+- **GitHub**: Repositories, issues, and pull requests
 - **Confluence**: Pages, attachments, and comments
 - **Web Scraping**: Internal websites and documentation
 - **File Upload**: Direct file uploads via API
+- **ArXiv**: Research preprints and abstracts
 
 ## Architecture
 
@@ -27,11 +29,14 @@ The Knowledge Database supports automated ingestion from multiple data sources:
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
 │   PostgreSQL    │    │  Text Processing│    │  Vector Store   │
 │                 │◄───│                 │───►│                 │
-│ • Documents     │    │ • Extraction    │    │ • ChromaDB      │
+│ • Documents     │    │ • Extraction    │    │ • Qdrant        │
 │ • Metadata      │    │ • Chunking      │    │ • Embeddings    │
 │ • History       │    │ • Cleaning      │    │ • Search Index  │
 └─────────────────┘    └─────────────────┘    └─────────────────┘
 ```
+
+Note: The default vector store is Qdrant. ChromaDB is still supported as an embedded option.
+To switch, set `VECTOR_STORE_PROVIDER=qdrant|chroma` in `backend/.env`.
 
 ## Setting Up Data Sources
 
@@ -144,12 +149,55 @@ The Knowledge Database supports automated ingestion from multiple data sources:
        "config": {
          "base_urls": ["https://docs.company.com"],
          "max_depth": 3,
-         "max_pages": 100
+       "max_pages": 100
+      }
+    }'
+   ```
+
+4. **Create ArXiv Source**
+   ```bash
+   curl -X POST "http://localhost:8000/api/v1/documents/sources/" \
+     -H "Authorization: Bearer YOUR_TOKEN" \
+     -H "Content-Type: application/json" \
+     -d '{
+       "name": "Latest LLM Papers",
+       "source_type": "arxiv",
+       "config": {
+         "queries": ["cat:cs.CL AND ti:transformer"],
+         "paper_ids": [],
+         "max_results": 50,
+         "sort_by": "submittedDate",
+         "sort_order": "descending"
        }
      }'
    ```
 
 ## Configuration Options
+
+## Instant URL Ingestion (Ad-hoc)
+
+For one-off pages (wikis/portals) you can ingest a URL directly into the KnowledgeDB without creating a long-running web source.
+
+- UI: `Documents` → `Ingest URL`
+- API (sync): `POST /api/v1/documents/ingest-url`
+- API (async + progress): `POST /api/v1/documents/ingest-url/async` then connect `WS /api/v1/documents/ingest-url/{job_id}/progress`
+
+Example:
+```bash
+curl -X POST "http://localhost:8000/api/v1/documents/ingest-url" \
+  -H "Authorization: Bearer YOUR_TOKEN" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "url": "https://wiki.company.com/page",
+    "follow_links": false,
+    "tags": ["wiki", "portal"]
+  }'
+```
+
+Notes:
+- Private-network hosts are only allowed for admins with `allow_private_networks=true`, or when the hostname is allowlisted by an active `web` source (`base_urls` / `allowed_domains`).
+- Crawling is bounded (`max_pages` ≤ 25, `max_depth` ≤ 5).
+- Cancel: `POST /api/v1/documents/ingest-url/{job_id}/cancel` (owner or admin).
 
 ### GitLab Connector
 
@@ -206,6 +254,33 @@ The Knowledge Database supports automated ingestion from multiple data sources:
 | `included_patterns` | array | [] | URL patterns to include |
 | `respect_robots` | boolean | true | Respect robots.txt |
 | `crawl_delay` | number | 1.0 | Delay between requests |
+
+### ArXiv Connector
+
+| Option | Type | Default | Description |
+|--------|------|---------|-------------|
+| `queries` | array | [] | List of ArXiv API `search_query` expressions |
+| `paper_ids` | array | [] | Explicit arXiv identifiers (e.g. `2402.01234`) |
+| `categories` | array | [] | Category codes combined with each query (`cs.CL`, `cs.AI`, etc.) |
+| `max_results` | number | 50 | Max results returned per query (1-200) |
+| `start` | number | 0 | Offset for pagination (0-1000) |
+| `sort_by` | string | submittedDate | `relevance`, `submittedDate`, or `lastUpdatedDate` |
+| `sort_order` | string | descending | `ascending` or `descending` |
+
+**Sample Configuration:**
+```json
+{
+  "name": "ArXiv - Retrieval",
+  "source_type": "arxiv",
+  "config": {
+    "queries": ["all:\"retrieval augmented\""],
+    "categories": ["cs.CL", "cs.AI"],
+    "max_results": 40,
+    "sort_by": "lastUpdatedDate",
+    "sort_order": "descending"
+  }
+}
+```
 
 ## Automated Scheduling
 
@@ -300,7 +375,7 @@ curl "http://localhost:8000/api/v1/admin/logs?lines=100" \
 - Reduce crawl rate if being rate-limited
 
 **4. Vector Store Issues**
-- Check ChromaDB permissions and disk space
+- Check vector store (Qdrant) disk space / container health, or ChromaDB permissions if using Chroma
 - Verify embedding model is downloaded
 - Restart vector store service if needed
 
@@ -361,7 +436,9 @@ for i in range(0, len(documents), batch_size):
 
 1. **Start Small**: Begin with a limited set of documents and gradually expand
 2. **Monitor Resources**: Keep an eye on disk space, memory, and CPU usage
-3. **Regular Backups**: Backup both PostgreSQL and ChromaDB data
+3. **Regular Backups**: Backup PostgreSQL and vector store data
+   - For Qdrant: backup the `qdrant_data` volume (or Qdrant snapshots if enabled)
+   - For Chroma: backup `data/chroma_db`
 4. **Test Configurations**: Validate source configurations before production
 5. **Update Dependencies**: Keep connectors and dependencies updated
 6. **Document Changes**: Track configuration changes and their impacts
@@ -399,10 +476,3 @@ POST /api/v1/documents/sources/{source_id}/sync
 ```
 
 For complete API documentation, visit: http://localhost:8000/docs
-
-
-
-
-
-
-

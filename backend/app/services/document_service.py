@@ -19,12 +19,12 @@ from loguru import logger
 from app.models.document import Document, DocumentChunk, DocumentSource
 from app.models.persona import DocumentPersonaDetection
 from app.models.user import User
-from app.services.vector_store import VectorStoreService
+from app.services.vector_store import vector_store_service
 from app.services.text_processor import TextProcessor
 from app.services.storage_service import storage_service
 from app.core.config import settings
 from app.core.cache import cache_service
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.persona_service import persona_service
 import json
 import redis
@@ -34,7 +34,7 @@ class DocumentService:
     """Service for managing documents and document processing."""
     
     def __init__(self):
-        self.vector_store = VectorStoreService()
+        self.vector_store = vector_store_service
         self.text_processor = TextProcessor()
         self._vector_store_initialized = False
         self.llm = LLMService()
@@ -42,7 +42,7 @@ class DocumentService:
     async def _ensure_vector_store_initialized(self):
         """Ensure vector store is initialized."""
         if not self._vector_store_initialized:
-            await self.vector_store.initialize()
+            await self.vector_store.initialize(background=True)
             self._vector_store_initialized = True
     
     async def get_documents(
@@ -140,7 +140,7 @@ class DocumentService:
     
     async def get_document(self, document_id: UUID, db: AsyncSession) -> Optional[Document]:
         """
-        Get a document by ID with caching.
+        Get a document by ID.
         
         Args:
             document_id: Document UUID
@@ -149,12 +149,6 @@ class DocumentService:
         Returns:
             Document object or None if not found
         """
-        # Try cache first
-        cache_key = f"document:{document_id}"
-        cached_doc = await cache_service.get(cache_key)
-        if cached_doc is not None:
-            return cached_doc
-        
         # Get from database
         result = await db.execute(
             select(Document)
@@ -167,11 +161,7 @@ class DocumentService:
             .where(Document.id == document_id)
         )
         document = result.scalar_one_or_none()
-        
-        # Cache result if found (TTL: 1 hour)
-        if document:
-            await cache_service.set(cache_key, document, ttl=3600)
-        
+
         return document
     
     async def upload_file(
@@ -335,7 +325,7 @@ class DocumentService:
                         document.content = ""
                     
                     # Process document asynchronously
-                    await self._process_document_async(document, db)
+                    await self._process_document_async(document, db, user_id=owner_user.id if owner_user else None)
                 
                 await db.commit()
                 await db.refresh(document)
@@ -411,8 +401,71 @@ class DocumentService:
             await db.refresh(source)
         
         return source
+
+    async def _get_or_create_agent_notes_source(self, db: AsyncSession) -> DocumentSource:
+        """Get or create the agent-created notes document source."""
+        result = await db.execute(
+            select(DocumentSource).where(DocumentSource.name == "Agent Notes")
+        )
+        source = result.scalar_one_or_none()
+
+        if not source:
+            source = DocumentSource(
+                name="Agent Notes",
+                source_type="file",
+                config={"type": "agent_notes", "description": "Notes created by the in-app agent/tools"},
+            )
+            db.add(source)
+            await db.commit()
+            await db.refresh(source)
+
+        return source
+
+    async def _get_or_create_latex_projects_source(self, db: AsyncSession) -> DocumentSource:
+        """Get or create the LaTeX Studio projects document source."""
+        result = await db.execute(
+            select(DocumentSource).where(DocumentSource.name == "LaTeX Projects")
+        )
+        source = result.scalar_one_or_none()
+
+        if not source:
+            source = DocumentSource(
+                name="LaTeX Projects",
+                source_type="file",
+                config={"type": "latex_projects", "description": "LaTeX Studio projects published into the knowledge base"},
+            )
+            db.add(source)
+            await db.commit()
+            await db.refresh(source)
+
+        return source
+
+    async def _get_or_create_url_ingest_source(self, db: AsyncSession) -> DocumentSource:
+        """Get or create the URL ingestion source."""
+        result = await db.execute(
+            select(DocumentSource).where(DocumentSource.name == "URL Ingest")
+        )
+        source = result.scalar_one_or_none()
+
+        if not source:
+            source = DocumentSource(
+                name="URL Ingest",
+                source_type="web",
+                # Keep this source inactive so periodic web source sync jobs don't try to crawl it.
+                is_active=False,
+                config={"type": "url_ingest", "description": "Ad-hoc URL ingestion into the knowledge base"},
+            )
+            db.add(source)
+            await db.commit()
+            await db.refresh(source)
+        elif source.is_active:
+            # Safety: if it exists and is active, disable to avoid scheduled web syncs.
+            source.is_active = False
+            await db.commit()
+
+        return source
     
-    async def _process_document_async(self, document: Document, db: AsyncSession):
+    async def _process_document_async(self, document: Document, db: AsyncSession, user_id: Optional[UUID] = None):
         """Process document for indexing (should be moved to background task)."""
         try:
             # Ensure vector store is initialized
@@ -488,7 +541,7 @@ class DocumentService:
             if await _get_flag("summarization_enabled") and await _get_flag("auto_summarize_on_process"):
                 try:
                     from app.tasks.summarization_tasks import summarize_document as _summ_task
-                    _summ_task.delay(str(document.id), False)
+                    _summ_task.delay(str(document.id), False, user_id=str(user_id) if user_id else None)
                     logger.info(f"Scheduled auto-summarization for document {document.id}")
                 except Exception as _e:
                     logger.warning(f"Failed to schedule auto-summarization for {document.id}: {_e}")
@@ -640,7 +693,7 @@ class DocumentService:
                 logger.warning(f"Failed to delete document {doc_id} for source {source_id}: {exc}")
         return deleted
     
-    async def reprocess_document(self, document_id: UUID, db: AsyncSession) -> bool:
+    async def reprocess_document(self, document_id: UUID, db: AsyncSession, user_id: Optional[UUID] = None) -> bool:
         """Reprocess a document for indexing."""
         document = await self.get_document(document_id, db)
         if not document:
@@ -659,8 +712,8 @@ class DocumentService:
             await db.commit()
             
             # Reprocess document
-            await self._process_document_async(document, db)
-            
+            await self._process_document_async(document, db, user_id=user_id)
+
             # Invalidate cache (already done in _process_document_async, but ensure it's cleared)
             cache_key = f"document:{document_id}"
             await cache_service.delete(cache_key)
@@ -672,7 +725,14 @@ class DocumentService:
             logger.error(f"Error reprocessing document {document_id}: {e}")
             return False
 
-    async def summarize_document(self, document_id: UUID, db: AsyncSession, force: bool = False, model: Optional[str] = None) -> Optional[str]:
+    async def summarize_document(
+        self,
+        document_id: UUID,
+        db: AsyncSession,
+        force: bool = False,
+        model: Optional[str] = None,
+        user_settings: Optional[UserLLMSettings] = None,
+    ) -> Optional[str]:
         """Generate and store a summary for a document using the LLM.
 
         Args:
@@ -680,6 +740,7 @@ class DocumentService:
             db: session
             force: if True, regenerates even if summary exists
             model: optional model override
+            user_settings: optional user LLM settings for provider preference
 
         Returns:
             The generated summary text, or None if document not found.
@@ -755,6 +816,7 @@ class DocumentService:
                     max_tokens=max_tokens,
                     prefer_deepseek=use_deepseek,
                     task_type="summarization",
+                    user_settings=user_settings,
                 )
                 if use_deepseek:
                     actual_model_used = getattr(_settings, 'DEEPSEEK_MODEL', 'deepseek-chat')
@@ -775,6 +837,7 @@ class DocumentService:
                             max_tokens=max_tokens,
                             prefer_deepseek=False,  # Force local model
                             task_type="summarization",
+                            user_settings=user_settings,
                         )
                         actual_model_used = model or self.llm.default_model
                         logger.info(f"Successfully used local model (Ollama) after DeepSeek failure")

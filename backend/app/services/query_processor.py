@@ -4,10 +4,13 @@ Handles query normalization, expansion, rewriting, and multi-query generation.
 """
 
 import re
-from typing import List, Optional, Dict, Any
+from typing import List, Optional, Dict, Any, TYPE_CHECKING
 from loguru import logger
 
 from app.core.config import settings
+
+if TYPE_CHECKING:
+    from app.services.llm_service import UserLLMSettings
 
 
 class QueryProcessor:
@@ -153,21 +156,23 @@ class QueryProcessor:
         self,
         query: str,
         llm_service: Optional[Any] = None,
-        max_variations: int = 3
+        max_variations: int = 3,
+        user_settings: Optional["UserLLMSettings"] = None,
     ) -> List[str]:
         """
         Generate multiple query variations using LLM or rule-based approach.
-        
+
         Args:
             query: Original query
             llm_service: Optional LLM service for generating variations
             max_variations: Maximum number of variations to generate
-            
+            user_settings: Optional user LLM settings for provider preference
+
         Returns:
             List of query variations including original
         """
         variations = [query]  # Always include original
-        
+
         if llm_service:
             try:
                 # Use LLM to generate variations
@@ -181,6 +186,7 @@ Return only the variations, one per line, without numbering or bullets."""
                     context=None,
                     conversation_history=None,
                     task_type="query_expansion",
+                    user_settings=user_settings,
                 )
                 
                 # Parse variations from response

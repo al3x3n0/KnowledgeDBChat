@@ -102,6 +102,9 @@ class UserPreferencesBase(BaseModel):
         description="Task-specific model overrides: title_generation, summarization, query_expansion, memory_extraction"
     )
 
+    # Paper algorithm agent defaults
+    paper_algo_default_run_demo_check: bool = Field(False, description="Default: run demo check after generating paper algorithm projects (when available)")
+
 class UserPreferencesCreate(UserPreferencesBase):
     """Schema for creating user preferences."""
     user_id: UUID
@@ -125,6 +128,9 @@ class UserPreferencesUpdate(BaseModel):
 
     # Per-task model overrides
     llm_task_models: Optional[Dict[str, str]] = Field(None, description="Task-specific model overrides")
+
+    # Paper algorithm agent defaults
+    paper_algo_default_run_demo_check: Optional[bool] = None
 
 class UserPreferencesResponse(UserPreferencesBase):
     """Schema for user preferences response."""
@@ -172,7 +178,6 @@ class MemoryStatsResponse(BaseModel):
     recent_memories: int  # Last 7 days
     most_accessed_memories: List[MemoryResponse]
     memory_usage_trend: List[Dict[str, Any]]  # Usage over time
-
 
 
 

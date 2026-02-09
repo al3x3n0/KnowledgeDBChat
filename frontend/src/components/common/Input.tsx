@@ -49,8 +49,8 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(({
           ref={ref}
           id={inputId}
           className={clsx(
-            'block w-full rounded-lg border-gray-300 shadow-sm transition-colors duration-200',
-            'focus:border-primary-500 focus:ring-primary-500',
+            'block w-full rounded-md border-gray-300 bg-gray-50 text-gray-900 shadow-none transition-colors duration-200',
+            'focus:border-primary-700 focus:ring-primary-700',
             error && 'border-red-300 focus:border-red-500 focus:ring-red-500',
             leftIcon && 'pl-10',
             rightIcon && 'pr-10',
@@ -80,5 +80,4 @@ const Input = React.forwardRef<HTMLInputElement, InputProps>(({
 Input.displayName = 'Input';
 
 export default Input;
-
 

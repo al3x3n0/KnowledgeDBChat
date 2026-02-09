@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 class ChatSessionCreate(BaseModel):
     """Schema for creating a chat session."""
     title: Optional[str] = None
+    extra_metadata: Optional[Dict[str, Any]] = None
 
 
 class ChatSessionBase(BaseModel):
@@ -18,6 +19,7 @@ class ChatSessionBase(BaseModel):
     id: UUID
     title: Optional[str]
     is_active: bool
+    extra_metadata: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: datetime
     last_message_at: datetime
@@ -38,6 +40,8 @@ class ChatMessageBase(BaseModel):
     source_documents: Optional[List[Dict[str, Any]]]
     context_used: Optional[str]
     search_query: Optional[str]
+    groundedness_score: Optional[float] = None
+    retrieval_trace_id: Optional[UUID] = None
     user_rating: Optional[int]
     user_feedback: Optional[str]
     created_at: datetime
@@ -61,6 +65,12 @@ class ChatSessionResponse(ChatSessionBase):
     messages: Optional[List[ChatMessageResponse]] = []
 
 
+class ChatSessionUpdate(BaseModel):
+    """Schema for updating a chat session."""
+    title: Optional[str] = None
+    extra_metadata: Optional[Dict[str, Any]] = None
+
+
 class ChatQuery(BaseModel):
     """Schema for chat query."""
     message: str = Field(..., min_length=1, max_length=5000)
@@ -73,10 +83,6 @@ class ChatFeedback(BaseModel):
     """Schema for chat feedback."""
     rating: int = Field(..., ge=1, le=5)
     feedback: Optional[str] = Field(None, max_length=1000)
-
-
-
-
 
 
 

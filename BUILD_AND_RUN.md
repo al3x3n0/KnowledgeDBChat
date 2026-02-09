@@ -40,30 +40,30 @@ This guide provides step-by-step instructions for building and running the Knowl
 
 3. **Create data directories**:
    ```bash
-   mkdir -p data/documents data/chroma_db data/logs data/postgres-init
+   mkdir -p data/documents data/embeddings data/chroma_db data/logs data/postgres-init
    ```
 
 4. **Start all services**:
    ```bash
-   docker-compose up -d
+   docker compose up -d
    ```
 
 5. **Wait for services to be ready** (especially Ollama):
    ```bash
    # Check service status
-   docker-compose ps
+   docker compose ps
    
    # View logs
-   docker-compose logs -f
+   docker compose logs -f
    ```
 
 6. **Pull Ollama model** (in a new terminal):
    ```bash
    # Connect to Ollama container
-   docker exec -it knowledge_db_ollama ollama pull llama2
+   docker exec -it knowledge_db_ollama ollama pull llama3.2:1b
    
    # Or use local Ollama if installed
-   ollama pull llama2
+   ollama pull llama3.2:1b
    ```
 
 7. **Run database migrations**:
@@ -86,23 +86,23 @@ This guide provides step-by-step instructions for building and running the Knowl
 
 ```bash
 # Start services
-docker-compose up -d
+docker compose up -d
 
 # Stop services
-docker-compose down
+docker compose down
 
 # View logs
-docker-compose logs -f [service_name]
+docker compose logs -f [service_name]
 
 # Restart a service
-docker-compose restart [service_name]
+docker compose restart [service_name]
 
 # Rebuild after code changes
-docker-compose build [service_name]
-docker-compose up -d [service_name]
+docker compose build [service_name]
+docker compose up -d [service_name]
 
 # Stop and remove volumes (clean slate)
-docker-compose down -v
+docker compose down -v
 ```
 
 ### Production Docker Setup
@@ -111,11 +111,11 @@ For production deployment:
 
 ```bash
 # Use production compose file
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml up -d
 
 # Or build first
-docker-compose -f docker-compose.prod.yml build
-docker-compose -f docker-compose.prod.yml up -d
+docker compose -f docker-compose.prod.yml build
+docker compose -f docker-compose.prod.yml up -d
 ```
 
 ---
@@ -158,7 +158,7 @@ curl -fsSL https://ollama.ai/install.sh | sh
 ollama serve
 
 # In another terminal, pull a model
-ollama pull llama2
+ollama pull llama3.2:1b
 ```
 
 ### Step 2: Backend Setup
@@ -396,23 +396,26 @@ kill -9 <PID>
 #### 5. Docker Issues
 ```bash
 # Check container logs
-docker-compose logs [service_name]
+docker compose logs [service_name]
 
 # Restart specific service
-docker-compose restart [service_name]
+docker compose restart [service_name]
 
 # Rebuild containers
-docker-compose build --no-cache
-docker-compose up -d
+docker compose build --no-cache
+docker compose up -d
 ```
 
 #### 6. Vector Store Issues
 ```bash
-# Check ChromaDB directory permissions
+# Recommended: reset via the admin API (works for Qdrant or Chroma)
+# POST /api/v1/admin/vector-store/reset  (admin auth required)
+
+# If you're using Chroma (VECTOR_STORE_PROVIDER=chroma), data lives on disk:
 ls -la data/chroma_db
 
-# Reset vector store (WARNING: deletes all embeddings)
-rm -rf data/chroma_db/*
+# If you're using Qdrant (VECTOR_STORE_PROVIDER=qdrant), data lives in the qdrant volume:
+docker volume ls | rg qdrant
 ```
 
 #### 7. Module Import Errors
@@ -423,7 +426,7 @@ source venv/bin/activate
 pip install -r requirements.txt --force-reinstall
 
 # Or for Docker
-docker-compose build --no-cache backend
+docker compose build --no-cache backend
 ```
 
 ---
@@ -441,8 +444,8 @@ docker-compose build --no-cache backend
 
 2. **Build and start**:
    ```bash
-   docker-compose -f docker-compose.prod.yml build
-   docker-compose -f docker-compose.prod.yml up -d
+   docker compose -f docker-compose.prod.yml build
+   docker compose -f docker-compose.prod.yml up -d
    ```
 
 3. **Set up reverse proxy** (nginx example):
@@ -534,15 +537,18 @@ make start          # Start all services
 make stop           # Stop all services
 make logs           # View logs
 make health         # Check service health
+make doctor         # Validate env + health
 make test           # Run all tests
+make fmt            # Format backend code
+make lint           # Lint backend code
 make pull-model     # Pull Ollama model
 ```
 
 #### Using Docker Compose
 ```bash
-docker-compose up -d              # Start all services
-docker-compose logs -f           # View logs
-docker-compose restart backend    # Restart backend
+docker compose up -d              # Start all services
+docker compose logs -f           # View logs
+docker compose restart backend    # Restart backend
 ```
 
 #### Backend
@@ -556,7 +562,7 @@ alembic upgrade head              # Run migrations
 ```bash
 npm start                         # Run dev server
 npm run build                     # Build for production
-npm test                          # Run tests
+npm run test:ci                   # Run tests (non-interactive)
 ```
 
 ### Utility Scripts
@@ -585,4 +591,3 @@ make download-models
 5. **Review logs** for any issues: `data/logs/app.log`
 
 For more information, see the main [README.md](README.md).
-

@@ -62,6 +62,8 @@ class ChatMessage(Base):
     source_documents = Column(JSON, nullable=True)  # List of referenced document IDs
     context_used = Column(Text, nullable=True)  # Context that was provided to LLM
     search_query = Column(String(500), nullable=True)  # Query used for document retrieval
+    groundedness_score = Column(Float, nullable=True)  # Heuristic 0..1 groundedness estimate
+    retrieval_trace_id = Column(UUID(as_uuid=True), ForeignKey("retrieval_traces.id", ondelete="SET NULL"), nullable=True, index=True)
     
     # Processing status
     is_processed = Column(Boolean, default=True)

@@ -14,6 +14,9 @@ make start
 # 3. Check health
 make health
 
+# Optional: run env + health checks
+make doctor
+
 # 4. View logs (optional)
 make logs
 ```
@@ -41,7 +44,7 @@ make setup
 
 # 3. Build Docker containers (first time only)
 make build
-# or: docker-compose build
+# or: docker compose build
 ```
 
 #### Launch Services
@@ -49,14 +52,35 @@ make build
 ```bash
 # Start all services
 make start
-# or: docker-compose up -d
+# or: docker compose up -d
 
 # Check status
-docker-compose ps
+docker compose ps
 
 # View logs
 make logs
-# or: docker-compose logs -f
+# or: docker compose logs -f
+```
+
+#### Vector Store: Qdrant (default)
+
+By default, the Docker stack starts Qdrant and the backend uses it:
+`VECTOR_STORE_PROVIDER=qdrant`, `QDRANT_URL=http://qdrant:6333`.
+
+To switch back to embedded Chroma for dev:
+
+```bash
+# (edit backend/.env or set env vars in your shell)
+VECTOR_STORE_PROVIDER=chroma
+```
+
+#### Optional: Enable Docker-based custom tools (unsafe)
+
+By default, the stack does **not** mount the host Docker socket and `docker_container` custom tools are disabled.
+To enable them for local dev only:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.docker-tools.yml up -d
 ```
 
 #### Initialize Database
@@ -64,7 +88,7 @@ make logs
 ```bash
 # Run database migrations
 make db-migrate
-# or: docker-compose exec backend python -c "import asyncio; from app.core.database import create_tables; asyncio.run(create_tables())"
+# or: docker compose exec backend python -c "import asyncio; from app.core.database import create_tables; asyncio.run(create_tables())"
 ```
 
 #### Download Ollama Model (for chat functionality)
@@ -72,7 +96,7 @@ make db-migrate
 ```bash
 # Pull the LLM model
 make pull-model
-# or: docker-compose exec ollama ollama pull llama2
+# or: docker compose exec ollama ollama pull llama3.2:1b
 ```
 
 #### Verify Everything is Running
@@ -81,6 +105,17 @@ make pull-model
 # Check health of all services
 make health
 # or: ./scripts/check_health.sh
+```
+
+#### Troubleshooting: `ModuleNotFoundError` after updates
+
+If you pulled new changes (or switched branches) and the backend fails with errors like `ModuleNotFoundError: No module named ...`,
+rebuild the backend image to pick up updated Python dependencies:
+
+```bash
+docker compose build backend
+# or (slower but most reliable):
+docker compose build --no-cache backend
 ```
 
 ---
@@ -128,7 +163,7 @@ npm start
 make status
 
 # Or manually
-docker-compose ps
+docker compose ps
 ```
 
 ### Check Health Endpoints
@@ -137,8 +172,17 @@ docker-compose ps
 # Backend health
 curl http://localhost:8000/health
 
-# Frontend
+# Nginx (frontend reverse proxy)
+curl http://localhost:3000/health
+
+# Frontend (served via nginx)
 curl http://localhost:3000
+
+# MinIO
+curl http://localhost:9000/minio/health/live
+
+# Video streamer
+curl http://localhost:8080/health
 
 # Ollama
 curl http://localhost:11434/api/tags
@@ -156,7 +200,7 @@ make logs-frontend
 make logs-celery
 
 # Or manually
-docker-compose logs -f [service_name]
+docker compose logs -f [service_name]
 ```
 
 ---
@@ -199,10 +243,10 @@ make health
 ```bash
 # Stop all services
 make stop
-# or: docker-compose down
+# or: docker compose down
 
 # Stop and remove volumes (clean slate)
-docker-compose down -v
+docker compose down -v
 ```
 
 ---
@@ -230,18 +274,18 @@ lsof -i :11434 # Ollama
 make logs-backend
 
 # Database connection issues
-docker-compose logs postgres
+docker compose logs postgres
 
 # Redis issues
-docker-compose logs redis
+docker compose logs redis
 ```
 
 ### Restart a specific service
 
 ```bash
-docker-compose restart backend
-docker-compose restart frontend
-docker-compose restart celery
+docker compose restart backend
+docker compose restart frontend
+docker compose restart celery
 ```
 
 ---
@@ -285,4 +329,3 @@ docker-compose restart celery
 | Pull model | `make pull-model` |
 
 For more details, see [BUILD_AND_RUN.md](BUILD_AND_RUN.md).
-

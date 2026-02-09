@@ -23,7 +23,7 @@ class PaginatedResponse(BaseModel, Generic[T]):
     items: List[T]
     total: int = Field(..., ge=0, description="Total number of items")
     page: int = Field(..., ge=1, description="Current page number (1-indexed)")
-    page_size: int = Field(..., ge=1, le=100, description="Number of items per page")
+    page_size: int = Field(..., ge=1, le=2000, description="Number of items per page")
     total_pages: int = Field(..., ge=0, description="Total number of pages")
     
     @classmethod
@@ -109,4 +109,3 @@ class MetadataResponse(BaseModel, Generic[T]):
     """
     data: T
     metadata: Optional[Dict[str, Any]] = None
-

@@ -4,13 +4,16 @@ Celery tasks for git branch comparison and summaries.
 
 import asyncio
 from datetime import datetime
+from typing import Optional
 from uuid import UUID
 from loguru import logger
+from sqlalchemy import select
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.document import DocumentSource, GitBranchDiff
 from app.services.git_service import GitService
+from app.services.llm_service import UserLLMSettings
 from app.utils.ingestion_state import (
     set_git_compare_task,
     get_git_compare_task,
@@ -22,13 +25,33 @@ from app.utils.ingestion_state import (
 git_service = GitService()
 
 
+async def _load_user_settings(db, user_id: Optional[str]) -> Optional[UserLLMSettings]:
+    """Load user LLM settings from preferences."""
+    if not user_id:
+        return None
+    try:
+        from app.models.memory import UserPreferences
+        result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
+        )
+        user_prefs = result.scalar_one_or_none()
+        if user_prefs:
+            return UserLLMSettings.from_preferences(user_prefs)
+    except Exception as e:
+        logger.debug(f"Could not load user preferences for git compare task: {e}")
+    return None
+
+
 @celery_app.task(bind=True, name="app.tasks.git_compare_tasks.compare_git_branches")
-def compare_git_branches(self, diff_id: str) -> dict:
-    return asyncio.run(_async_compare_git_branches(self, diff_id))
+def compare_git_branches(self, diff_id: str, user_id: Optional[str] = None) -> dict:
+    return asyncio.run(_async_compare_git_branches(self, diff_id, user_id))
 
 
-async def _async_compare_git_branches(task, diff_id: str) -> dict:
+async def _async_compare_git_branches(task, diff_id: str, user_id: Optional[str] = None) -> dict:
     async with create_celery_session()() as db:
+        # Load user settings for LLM provider preference
+        user_settings = await _load_user_settings(db, user_id)
+
         diff = await db.get(GitBranchDiff, UUID(diff_id))
         if not diff:
             raise ValueError("Comparison job not found")
@@ -69,6 +92,7 @@ async def _async_compare_git_branches(task, diff_id: str) -> dict:
                     diff.base_branch,
                     diff.compare_branch,
                     summary,
+                    user_settings=user_settings,
                 )
                 diff.llm_summary = explanation
 

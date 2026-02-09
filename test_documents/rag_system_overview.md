@@ -15,7 +15,7 @@ Retrieval-Augmented Generation (RAG) is a technique that enhances Large Language
    - Generate embeddings
 
 2. **Vector Store**
-   - Store document embeddings in ChromaDB
+   - Store document embeddings in Qdrant (default) or ChromaDB
    - Enable semantic similarity search
    - Support hybrid search (semantic + BM25)
 
@@ -87,5 +87,4 @@ Generates multiple query variations to retrieve more comprehensive results.
 - Personalized retrieval
 - Feedback loop for improvement
 - Multi-language support
-
 

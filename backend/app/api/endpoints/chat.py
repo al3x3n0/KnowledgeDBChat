@@ -20,6 +20,7 @@ from app.services.auth_service import get_current_user
 from sqlalchemy import select
 from app.schemas.chat import (
     ChatSessionCreate,
+    ChatSessionUpdate,
     ChatSessionResponse,
     ChatMessageCreate,
     ChatMessageResponse,
@@ -57,6 +58,7 @@ async def create_chat_session(
         session = await chat_service.create_session(
             user_id=current_user.id,
             title=session_data.title,
+            extra_metadata=session_data.extra_metadata,
             db=db
         )
         # Set messages to empty list for new session (prevents lazy loading issues)
@@ -156,6 +158,42 @@ async def get_chat_session(
         raise HTTPException(status_code=500, detail="Failed to retrieve chat session")
 
 
+@router.patch("/sessions/{session_id}", response_model=ChatSessionResponse)
+async def update_chat_session(
+    session_id: UUID,
+    payload: ChatSessionUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Update a chat session (title and/or extra_metadata)."""
+    try:
+        session = await chat_service.get_session(
+            session_id=session_id,
+            user_id=current_user.id,
+            db=db,
+        )
+        if not session:
+            raise HTTPException(status_code=404, detail="Chat session not found")
+
+        data = payload.model_dump(exclude_unset=True)
+        if "title" in data:
+            session.title = data["title"]
+        if "extra_metadata" in data:
+            session.extra_metadata = data["extra_metadata"]
+
+        await db.commit()
+        await db.refresh(session)
+
+        # Ensure messages are not lazily loaded here
+        session.messages = []
+        return ChatSessionResponse.from_orm(session)
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating chat session: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update chat session")
+
+
 @router.post("/sessions/{session_id}/messages", response_model=ChatMessageResponse)
 @limiter.limit(CHAT_LIMIT)
 async def send_message(
@@ -227,11 +265,11 @@ async def send_message(
 async def websocket_chat(
     websocket: WebSocket,
     session_id: UUID,
-    db: AsyncSession = Depends(get_db)
 ):
     """WebSocket endpoint for real-time chat."""
     # Authenticate WebSocket connection
     from app.utils.websocket_auth import require_websocket_auth
+    from app.core.database import AsyncSessionLocal
     
     try:
         user = await require_websocket_auth(websocket)
@@ -239,9 +277,7 @@ async def websocket_chat(
     except WebSocketDisconnect:
         logger.warning(f"WebSocket authentication failed for session {session_id}")
         return
-    
-    await websocket.accept()
-    
+
     try:
         while True:
             # Receive message from client
@@ -262,34 +298,37 @@ async def websocket_chat(
             })
             
             try:
-                # Verify session belongs to authenticated user
-                session = await chat_service.get_session(
-                    session_id=session_id,
-                    user_id=user.id,
-                    db=db
-                )
-                if not session:
-                    await websocket.send_json({
-                        "type": "error",
-                        "message": "Chat session not found or access denied"
-                    })
-                    continue
+                # Don't hold a DB connection for the lifetime of the WebSocket.
+                # Acquire a session only while doing DB work for a single message.
+                async with AsyncSessionLocal() as db:
+                    # Verify session belongs to authenticated user
+                    session = await chat_service.get_session(
+                        session_id=session_id,
+                        user_id=user.id,
+                        db=db
+                    )
+                    if not session:
+                        await websocket.send_json({
+                            "type": "error",
+                            "message": "Chat session not found or access denied"
+                        })
+                        continue
 
-                # Load user LLM preferences
-                prefs_result = await db.execute(
-                    select(UserPreferences).where(UserPreferences.user_id == user.id)
-                )
-                user_prefs = prefs_result.scalar_one_or_none()
-                user_settings = UserLLMSettings.from_preferences(user_prefs)
+                    # Load user LLM preferences
+                    prefs_result = await db.execute(
+                        select(UserPreferences).where(UserPreferences.user_id == user.id)
+                    )
+                    user_prefs = prefs_result.scalar_one_or_none()
+                    user_settings = UserLLMSettings.from_preferences(user_prefs)
 
-                # Generate response
-                response = await chat_service.generate_response(
-                    session_id=session_id,
-                    query=query,
-                    user_id=user.id,
-                    db=db,
-                    user_settings=user_settings,
-                )
+                    # Generate response
+                    response = await chat_service.generate_response(
+                        session_id=session_id,
+                        query=query,
+                        user_id=user.id,
+                        db=db,
+                        user_settings=user_settings,
+                    )
                 
                 # Send response
                 await websocket.send_json({
@@ -306,6 +345,11 @@ async def websocket_chat(
                 
             except Exception as e:
                 logger.error(f"Error generating response: {e}")
+                try:
+                    async with AsyncSessionLocal() as db:
+                        await db.rollback()
+                except Exception:
+                    pass
                 await websocket.send_json({
                     "type": "error",
                     "message": "Failed to generate response"

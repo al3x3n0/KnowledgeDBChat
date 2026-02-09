@@ -1,14 +1,16 @@
 """
 Authentication service for user management and JWT tokens.
+
+Supports both JWT token authentication and API key authentication for external tools.
 """
 
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Optional, Tuple
 from uuid import UUID
 import hashlib
 import bcrypt
-from fastapi import Depends, HTTPException, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
+from fastapi import Depends, HTTPException, status, Request, Header
+from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials, APIKeyHeader
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from jose import JWTError, jwt
@@ -22,10 +24,14 @@ from app.models.user import User
 
 class AuthService:
     """Service for authentication and authorization."""
-    
+
+    # API key header name
+    API_KEY_HEADER = "X-API-Key"
+
     def __init__(self):
         self.pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-        self.security = HTTPBearer()
+        self.security = HTTPBearer(auto_error=False)  # Don't auto-error to allow API key fallback
+        self.api_key_header = APIKeyHeader(name=self.API_KEY_HEADER, auto_error=False)
     
     def hash_password(self, password: str) -> str:
         """Hash a password using bcrypt."""
@@ -173,38 +179,101 @@ class AuthService:
     
     async def get_current_user(
         self,
-        credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
-        db: AsyncSession = Depends(get_db)
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+        api_key: Optional[str] = Header(None, alias="X-API-Key"),
+        db: AsyncSession = Depends(get_db),
+        request: Request = None,
     ) -> User:
-        """Get current user from JWT token."""
+        """
+        Get current user from JWT token or API key.
+
+        Supports two authentication methods:
+        1. JWT Bearer token: Authorization: Bearer <token>
+        2. API Key: X-API-Key: <api_key>
+        """
         credentials_exception = HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Could not validate credentials",
             headers={"WWW-Authenticate": "Bearer"},
         )
-        
-        try:
-            payload = jwt.decode(
-                credentials.credentials,
-                settings.SECRET_KEY,
-                algorithms=[settings.ALGORITHM]
-            )
-            user_id: str = payload.get("sub")
-            if user_id is None:
-                raise credentials_exception
-        except JWTError:
-            raise credentials_exception
-        
-        user = await self.get_user_by_id(user_id, db)
-        if user is None:
-            raise credentials_exception
-        
-        if not user.is_active:
+
+        # Try API key authentication first (if header is present)
+        if api_key:
+            user = await self._authenticate_with_api_key(api_key, db, request)
+            if user:
+                return user
+            # If API key was provided but invalid, raise error
             raise HTTPException(
-                status_code=status.HTTP_403_FORBIDDEN,
-                detail="User account is disabled"
+                status_code=status.HTTP_401_UNAUTHORIZED,
+                detail="Invalid API key",
             )
-        
+
+        # Try JWT token authentication
+        if credentials:
+            try:
+                payload = jwt.decode(
+                    credentials.credentials,
+                    settings.SECRET_KEY,
+                    algorithms=[settings.ALGORITHM]
+                )
+                user_id: str = payload.get("sub")
+                if user_id is None:
+                    raise credentials_exception
+            except JWTError:
+                raise credentials_exception
+
+            user = await self.get_user_by_id(user_id, db)
+            if user is None:
+                raise credentials_exception
+
+            if not user.is_active:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail="User account is disabled"
+                )
+
+            return user
+
+        # No authentication provided
+        raise credentials_exception
+
+    async def _authenticate_with_api_key(
+        self,
+        api_key: str,
+        db: AsyncSession,
+        request: Optional[Request] = None,
+    ) -> Optional[User]:
+        """Authenticate using an API key."""
+        from app.services.api_key_service import api_key_service
+
+        result = await api_key_service.validate_api_key(db, api_key)
+        if not result:
+            return None
+
+        key_obj, user = result
+
+        # Update usage statistics
+        ip_address = None
+        user_agent = None
+        endpoint = None
+        method = None
+
+        if request:
+            ip_address = request.client.host if request.client else None
+            user_agent = request.headers.get("user-agent")
+            endpoint = str(request.url.path)
+            method = request.method
+
+        await api_key_service.update_usage(
+            db=db,
+            api_key=key_obj,
+            ip_address=ip_address,
+            endpoint=endpoint,
+            method=method,
+            user_agent=user_agent,
+        )
+
+        logger.debug(f"API key authentication successful: {key_obj.key_prefix}... for user {user.username}")
         return user
     
     async def require_admin(
@@ -241,15 +310,88 @@ class AuthService:
 # Global instance for dependency injection
 auth_service = AuthService()
 
+
 async def get_current_user(
-    credentials: HTTPAuthorizationCredentials = Depends(HTTPBearer()),
-    db: AsyncSession = Depends(get_db)
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
 ) -> User:
-    """Dependency for getting current user."""
-    return await auth_service.get_current_user(credentials, db)
+    """
+    Dependency for getting current user.
+
+    Supports both JWT Bearer token and API key authentication:
+    - JWT: Authorization: Bearer <token>
+    - API Key: X-API-Key: <api_key>
+    """
+    return await auth_service.get_current_user(credentials, api_key, db, request)
+
+
+async def get_current_user_optional(
+    credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+    api_key: Optional[str] = Header(None, alias="X-API-Key"),
+    db: AsyncSession = Depends(get_db),
+    request: Request = None,
+) -> Optional[User]:
+    """
+    Dependency for getting current user optionally (returns None if not authenticated).
+
+    Useful for endpoints that work both authenticated and anonymously.
+    """
+    try:
+        return await auth_service.get_current_user(credentials, api_key, db, request)
+    except HTTPException:
+        return None
+
 
 async def require_admin(
     current_user: User = Depends(get_current_user)
 ) -> User:
     """Dependency for requiring admin privileges."""
     return await auth_service.require_admin(current_user)
+
+
+async def require_scope(scope: str):
+    """
+    Factory for creating a dependency that requires a specific API key scope.
+
+    Usage:
+        @router.get("/protected")
+        async def protected_endpoint(user: User = Depends(require_scope("documents"))):
+            ...
+    """
+    async def _require_scope(
+        credentials: Optional[HTTPAuthorizationCredentials] = Depends(HTTPBearer(auto_error=False)),
+        api_key: Optional[str] = Header(None, alias="X-API-Key"),
+        db: AsyncSession = Depends(get_db),
+        request: Request = None,
+    ) -> User:
+        # If using API key, verify scope
+        if api_key:
+            from app.services.api_key_service import api_key_service
+
+            result = await api_key_service.validate_api_key(db, api_key, required_scope=scope)
+            if not result:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"API key lacks required scope: {scope}",
+                )
+            key_obj, user = result
+
+            # Update usage
+            if request:
+                await api_key_service.update_usage(
+                    db=db,
+                    api_key=key_obj,
+                    ip_address=request.client.host if request.client else None,
+                    endpoint=str(request.url.path),
+                    method=request.method,
+                    user_agent=request.headers.get("user-agent"),
+                )
+
+            return user
+
+        # JWT tokens have full access (scopes don't apply)
+        return await auth_service.get_current_user(credentials, api_key, db, request)
+
+    return _require_scope

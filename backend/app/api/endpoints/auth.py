@@ -7,6 +7,8 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Request, status
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.exc import SQLAlchemyError
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from loguru import logger
@@ -26,6 +28,19 @@ from app.schemas.auth import (
 router = APIRouter()
 auth_service = AuthService()
 security = HTTPBearer()
+
+async def get_current_active_user(
+    current_user: User = Depends(auth_service.get_current_user),
+) -> User:
+    """
+    Backwards-compatible dependency used by many endpoints.
+
+    "Active" is enforced by AuthService.get_current_user already; we keep this alias
+    to avoid import churn across endpoints.
+    """
+    if not current_user.is_active:
+        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is disabled")
+    return current_user
 
 
 @router.post("/register", response_model=UserResponse)
@@ -48,6 +63,12 @@ async def register(
     
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+    except SQLAlchemyTimeoutError:
+        # Let global handler return 503 + Retry-After
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Registration DB error: {e}")
+        raise HTTPException(status_code=503, detail="Database is temporarily unavailable")
     except Exception as e:
         logger.error(f"Registration error: {e}")
         raise HTTPException(status_code=500, detail="Registration failed")
@@ -89,6 +110,12 @@ async def login(
     
     except HTTPException:
         raise
+    except SQLAlchemyTimeoutError:
+        # Let global handler return 503 + Retry-After
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Login DB error: {e}")
+        raise HTTPException(status_code=503, detail="Database is temporarily unavailable")
     except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Login failed")
@@ -142,8 +169,11 @@ async def refresh_token(
     
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
+    except SQLAlchemyTimeoutError:
+        raise
+    except SQLAlchemyError as e:
+        logger.error(f"Token refresh DB error: {e}")
+        raise HTTPException(status_code=503, detail="Database is temporarily unavailable")
     except Exception as e:
         logger.error(f"Token refresh error: {e}")
         raise HTTPException(status_code=500, detail="Token refresh failed")
-
-

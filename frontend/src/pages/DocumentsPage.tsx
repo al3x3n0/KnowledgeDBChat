@@ -29,6 +29,8 @@ import {
   UserCircle2,
   MessageSquare,
   Edit,
+  Copy,
+  Link2,
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 
@@ -127,6 +129,11 @@ const initialArxivForm: ArxivFormState = {
 // Type for location state passed from navigation
 interface LocationState {
   highlightChunkId?: string;
+  selectedSourceId?: string;
+  selectedSourceTab?: 'documents' | 'videos' | 'repos' | 'arxiv';
+  selectedDocumentId?: string;
+  initialSeekSeconds?: number;
+  openDocId?: string;
 }
 
 const DocumentsPage: React.FC = () => {
@@ -147,8 +154,10 @@ const DocumentsPage: React.FC = () => {
   
   const [activeTab, setActiveTab] = useState<'documents' | 'videos' | 'repos' | 'arxiv'>('documents');
   const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [selectedSource, setSelectedSource] = useState<string>('');
   const [showUploadModal, setShowUploadModal] = useState(false);
+  const [showIngestUrlModal, setShowIngestUrlModal] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocument | null>(null);
   const [initialSeekSeconds, setInitialSeekSeconds] = useState<number | null>(null);
   const [previousTranscriptId, setPreviousTranscriptId] = useState<string | null>(null);
@@ -169,6 +178,10 @@ const DocumentsPage: React.FC = () => {
   const ingestionWebSockets = React.useRef<Record<string, WebSocket>>({});
   const [sourceProgress, setSourceProgress] = useState<Record<string, { progress?: number; current?: number; total?: number; status?: string; stage?: string; remaining_formatted?: string; canceled?: boolean }>>({});
   const [expandedRepos, setExpandedRepos] = useState<Record<string, boolean>>({});
+  const [highlightIngestionSourceId, setHighlightIngestionSourceId] = useState<string>('');
+  const ingestionCardRefs = React.useRef<Record<string, HTMLDivElement | null>>({});
+  const [highlightRepoGroupSourceId, setHighlightRepoGroupSourceId] = useState<string>('');
+  const repoGroupRefs = React.useRef<Record<string, HTMLDivElement | null>>({});
   const [compareSourceId, setCompareSourceId] = useState<string>('');
   const [compareRepository, setCompareRepository] = useState<string>('');
   const [compareBaseBranch, setCompareBaseBranch] = useState<string>('');
@@ -202,6 +215,46 @@ const DocumentsPage: React.FC = () => {
       },
     }
   );
+
+  useEffect(() => {
+    const state = (location.state as LocationState) || {};
+    const sid = String(state.selectedSourceId || '').trim();
+    if (sid) {
+      setSelectedSource(sid);
+      const tab = state.selectedSourceTab;
+      if (tab === 'documents' || tab === 'videos' || tab === 'repos' || tab === 'arxiv') setActiveTab(tab);
+      else setActiveTab('documents');
+      if (tab === 'repos') {
+        setHighlightIngestionSourceId(sid);
+      }
+    }
+  }, [location.state]);
+
+  useEffect(() => {
+    if (activeTab !== 'repos') return;
+    const sid = String(highlightIngestionSourceId || '').trim();
+    if (!sid) return;
+    const t = window.setTimeout(() => {
+      const el = ingestionCardRefs.current[sid];
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [activeTab, highlightIngestionSourceId]);
+
+  useEffect(() => {
+    if (activeTab !== 'documents') return;
+    const sid = String(highlightRepoGroupSourceId || '').trim();
+    if (!sid) return;
+    const t = window.setTimeout(() => {
+      const el = repoGroupRefs.current[sid];
+      if (el) {
+        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      }
+    }, 350);
+    return () => window.clearTimeout(t);
+  }, [activeTab, highlightRepoGroupSourceId]);
   const personaEditRequestMutation = useMutation(
     ({ personaId, message, documentId }: { personaId: string; message: string; documentId?: string }) =>
       apiClient.requestPersonaEdit(personaId, {
@@ -247,6 +300,37 @@ const DocumentsPage: React.FC = () => {
       .some(e => ext === e.substring(1));
   };
 
+  // If navigation passes a specific document to open, fetch it directly and select it.
+  useEffect(() => {
+    const state = (location.state as LocationState) || {};
+    const docId = String(state.selectedDocumentId || '').trim();
+    if (!docId) return;
+
+    let cancelled = false;
+    apiClient
+      .getDocument(docId)
+      .then((doc) => {
+        if (cancelled) return;
+        setSelectedDocument(doc as any);
+        setActiveTab(isVideoAudio(doc as any) ? 'videos' : 'documents');
+        if (typeof state.initialSeekSeconds === 'number') {
+          setInitialSeekSeconds(state.initialSeekSeconds);
+        }
+        if (state.highlightChunkId) {
+          setTimeout(() => {
+            const el = document.getElementById(`chunk-card-${state.highlightChunkId}`);
+            if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          }, 350);
+        }
+      })
+      .catch(() => {
+        // ignore
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [location.state]);
+
   const { data: personaResponse, isLoading: personasLoading } = useQuery(
     ['personas', 'filters'],
     () => apiClient.listPersonas({ page_size: 100 }),
@@ -257,11 +341,19 @@ const DocumentsPage: React.FC = () => {
     return [...source].sort((a, b) => a.name.localeCompare(b.name));
   }, [personaResponse?.items]);
 
+  // Debounce document search input to avoid spamming requests on every keystroke
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery.trim());
+    }, 350);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
   // Fetch documents
   const { data: allDocuments, isLoading: documentsLoading, refetch: refetchDocuments } = useQuery<KnowledgeDocument[]>(
-    ['documents', searchQuery, selectedSource, ownerPersonaFilter, speakerPersonaFilter],
+    ['documents', debouncedSearchQuery, selectedSource, ownerPersonaFilter, speakerPersonaFilter],
     () => apiClient.getDocuments({
-      search: searchQuery || undefined,
+      search: debouncedSearchQuery || undefined,
       source_id: selectedSource || undefined,
       limit: 100,
       owner_persona_id: ownerPersonaFilter || undefined,
@@ -270,7 +362,16 @@ const DocumentsPage: React.FC = () => {
     }),
     {
       refetchOnWindowFocus: false,
-      refetchInterval: 10000, // Refetch every 10 seconds to catch transcription updates
+      // Poll only when something is actively processing; avoid polling while user is searching.
+      refetchInterval: (data) => {
+        if (debouncedSearchQuery) return false;
+        const docs = data || [];
+        const hasInFlightWork = docs.some((doc) => {
+          const flags = getDocFlags(doc);
+          return flags.isTranscribing || flags.isTranscoding || flags.isSummarizing;
+        });
+        return hasInFlightWork ? 10_000 : false;
+      },
     }
   );
 
@@ -1041,6 +1142,7 @@ const DocumentsPage: React.FC = () => {
       const progress = sourceProgress[sourceId];
       const pending = combinedPendingSourceIds.includes(sourceId);
       const isExpanded = expandedRepos[sourceId] ?? false;
+      const isHighlightedRepoGroup = String(highlightRepoGroupSourceId || '') === String(sourceId);
       const statusText =
         progress?.status ||
         (pending ? 'Queued for ingestion...' : `${fileCount} ${fileCount === 1 ? 'file' : 'files'} ingested`);
@@ -1051,7 +1153,12 @@ const DocumentsPage: React.FC = () => {
       repoGroupComponents.push(
         <div
           key={`repo-group-${sourceId}`}
-          className="bg-white border border-gray-200 rounded-lg p-4"
+          ref={(el) => {
+            repoGroupRefs.current[sourceId] = el;
+          }}
+          className={`bg-white border rounded-lg p-4 ${
+            isHighlightedRepoGroup ? 'border-amber-400 ring-2 ring-amber-200' : 'border-gray-200'
+          }`}
         >
           <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-3">
             <div>
@@ -1736,6 +1843,28 @@ const DocumentsPage: React.FC = () => {
   const activeGitRequests = activeGitStatuses || [];
   const activeGitSources = activeGitRequests.map((entry) => entry.source);
 
+  // If navigated to Repos for a specific source but it's not active anymore, fall back to Documents tab
+  // and expand the repo files (so the user still lands in a relevant view).
+  useEffect(() => {
+    if (activeTab !== 'repos') return;
+    const sid = String(highlightIngestionSourceId || '').trim();
+    if (!sid) return;
+    if (!activeGitStatuses) return; // wait for first fetch
+
+    const isActiveRequest = activeGitRequests.some((r) => String(r?.source?.id) === sid);
+    const isPending = combinedPendingSourceIds.includes(sid);
+    const hasProgress = Boolean(sourceProgress[sid]);
+
+    if (isActiveRequest || isPending || hasProgress) return;
+
+    const t = window.setTimeout(() => {
+      setActiveTab('documents');
+      setExpandedRepos((prev) => ({ ...prev, [sid]: true }));
+      setHighlightRepoGroupSourceId(sid);
+    }, 450);
+    return () => window.clearTimeout(t);
+  }, [activeTab, highlightIngestionSourceId, activeGitStatuses, activeGitRequests, combinedPendingSourceIds, sourceProgress]);
+
   return (
     <div className="h-full flex flex-col">
       {/* Header */}
@@ -1753,6 +1882,15 @@ const DocumentsPage: React.FC = () => {
               >
                 Refresh
               </Button>
+              {activeTab === 'documents' && (
+                <Button
+                  onClick={() => setShowIngestUrlModal(true)}
+                  variant="ghost"
+                  icon={<Link2 className="w-4 h-4" />}
+                >
+                  Ingest URL
+                </Button>
+              )}
               <Button
                 onClick={() => setShowUploadModal(true)}
                 icon={<Upload className="w-4 h-4" />}
@@ -1873,6 +2011,7 @@ const DocumentsPage: React.FC = () => {
                       const syncing = (source as any)?.is_syncing === true;
                       const pendingState = pending || combinedPendingSourceIds.includes(source.id);
                       const isCanceled = progress?.canceled === true;
+                      const isHighlighted = String(highlightIngestionSourceId || '') === String(source.id);
                       let percent = typeof progress?.progress === 'number' ? progress.progress : undefined;
                       if (percent === undefined && progress?.current && progress?.total) {
                         percent = Math.round((progress.current / Math.max(1, progress.total)) * 100);
@@ -1887,7 +2026,15 @@ const DocumentsPage: React.FC = () => {
                             progress?.stage ||
                             (pendingState ? 'Queued for ingestion...' : syncing ? 'Preparing repository...' : 'Waiting for updates...');
                       return (
-                        <div key={source.id} className="p-3 border border-primary-100 rounded-lg bg-primary-50/40">
+                        <div
+                          key={source.id}
+                          ref={(el) => {
+                            ingestionCardRefs.current[source.id] = el;
+                          }}
+                          className={`p-3 border rounded-lg bg-primary-50/40 ${
+                            isHighlighted ? 'border-amber-400 ring-2 ring-amber-200' : 'border-primary-100'
+                          }`}
+                        >
                           <div className="flex items-center justify-between mb-2">
                             <div>
                               <p className="text-sm font-medium text-gray-900">{source.name}</p>
@@ -2392,6 +2539,17 @@ const DocumentsPage: React.FC = () => {
         />
       )}
 
+      {showIngestUrlModal && (
+        <IngestUrlModal
+          isAdmin={user?.role === 'admin'}
+          onClose={() => setShowIngestUrlModal(false)}
+          onSuccess={() => {
+            setShowIngestUrlModal(false);
+            queryClient.invalidateQueries('documents');
+          }}
+        />
+      )}
+
       {/* Document Details Modal */}
       {selectedDocument && (
         <DocumentDetailsModal
@@ -2639,6 +2797,294 @@ const UploadModal: React.FC<UploadModalProps> = ({ onClose, onSuccess }) => {
   );
 };
 
+interface IngestUrlModalProps {
+  isAdmin: boolean;
+  onClose: () => void;
+  onSuccess: () => void;
+}
+
+const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuccess }) => {
+  const [url, setUrl] = useState('');
+  const [tags, setTags] = useState('');
+  const [runInBackground, setRunInBackground] = useState(true);
+  const [followLinks, setFollowLinks] = useState(false);
+  const [onePerPage, setOnePerPage] = useState(false);
+  const [maxPages, setMaxPages] = useState(3);
+  const [maxDepth, setMaxDepth] = useState(1);
+  const [sameDomainOnly, setSameDomainOnly] = useState(true);
+  const [allowPrivateNetworks, setAllowPrivateNetworks] = useState(false);
+  const [jobId, setJobId] = useState<string | null>(null);
+  const [jobProgress, setJobProgress] = useState<{ progress?: number; stage?: string; status?: string; current?: number; total?: number } | null>(null);
+  const progressWsRef = useRef<WebSocket | null>(null);
+
+  useEffect(() => {
+    return () => {
+      try {
+        progressWsRef.current?.close();
+      } catch {}
+      progressWsRef.current = null;
+    };
+  }, []);
+
+  const ingestMutation = useMutation(
+    async () => {
+      const tagList = tags
+        .split(',')
+        .map((t) => t.trim())
+        .filter(Boolean);
+      const payload = {
+        url: url.trim(),
+        tags: tagList.length ? tagList : undefined,
+        follow_links: followLinks,
+        one_document_per_page: onePerPage,
+        max_pages: followLinks ? maxPages : 1,
+        max_depth: followLinks ? maxDepth : 0,
+        same_domain_only: sameDomainOnly,
+        allow_private_networks: allowPrivateNetworks,
+      };
+      if (runInBackground) {
+        return apiClient.ingestUrlAsync(payload as any);
+      }
+      return apiClient.ingestUrl(payload as any);
+    },
+    {
+      onSuccess: (res) => {
+        if (runInBackground) {
+          const id = (res as any)?.job_id;
+          if (!id) {
+            toast.error('Failed to start background ingest job');
+            return;
+          }
+          setJobId(id);
+          setJobProgress({ progress: 1, stage: 'queued', status: 'Job queued…' });
+          toast.success('URL ingest started');
+
+          try {
+            const ws = apiClient.createUrlIngestProgressWebSocket(id);
+            progressWsRef.current = ws;
+            ws.onmessage = (event) => {
+              try {
+                const data = JSON.parse(event.data);
+                if (data.type === 'ingestion_progress') {
+                  const p = data.progress || {};
+                  setJobProgress({
+                    progress: typeof p.progress === 'number' ? p.progress : undefined,
+                    stage: p.stage,
+                    status: p.status,
+                    current: p.current,
+                    total: p.total,
+                  });
+                } else if (data.type === 'ingestion_status') {
+                  const s = data.status || {};
+                  setJobProgress((prev) => ({
+                    ...(prev || {}),
+                    progress: typeof s.progress === 'number' ? s.progress : prev?.progress,
+                    stage: s.stage || prev?.stage,
+                    status: s.status || prev?.status,
+                  }));
+                } else if (data.type === 'ingestion_complete') {
+                  const r = data.result || {};
+                  const created = r?.created?.length || 0;
+                  const updated = r?.updated?.length || 0;
+                  const skipped = r?.skipped?.length || 0;
+                  const errors = r?.errors?.length || 0;
+                  toast.success(`Ingested URL. Created ${created}, updated ${updated}, skipped ${skipped}, errors ${errors}.`);
+                  try {
+                    progressWsRef.current?.close();
+                  } catch {}
+                  progressWsRef.current = null;
+                  onSuccess();
+                } else if (data.type === 'ingestion_error') {
+                  toast.error(data.error || 'URL ingest failed');
+                  try {
+                    progressWsRef.current?.close();
+                  } catch {}
+                  progressWsRef.current = null;
+                }
+              } catch {
+                // ignore invalid payloads
+              }
+            };
+          } catch (e: any) {
+            toast.error(e?.message || 'Failed to open progress WebSocket');
+          }
+        } else {
+          const created = (res as any)?.created?.length || 0;
+          const updated = (res as any)?.updated?.length || 0;
+          const skipped = (res as any)?.skipped?.length || 0;
+          const errors = (res as any)?.errors?.length || 0;
+          toast.success(`Ingested URL. Created ${created}, updated ${updated}, skipped ${skipped}, errors ${errors}.`);
+          onSuccess();
+        }
+      },
+      onError: (err: any) => {
+        const message = err?.response?.data?.detail || err?.message || 'Failed to ingest URL';
+        toast.error(message);
+      },
+    }
+  );
+
+  const canSubmit = url.trim().length > 0 && !ingestMutation.isLoading;
+  const isRunning = ingestMutation.isLoading || !!jobId;
+
+  return (
+    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4">
+      <div className="bg-white rounded-lg shadow-xl max-w-lg w-full p-6">
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-lg font-semibold text-gray-900">Ingest URL</h2>
+          <button onClick={onClose} className="text-gray-400 hover:text-gray-600">
+            <X className="w-5 h-5" />
+          </button>
+        </div>
+
+        <div className="space-y-4">
+          <Input
+            label="URL"
+            placeholder="https://…"
+            value={url}
+            onChange={(e) => setUrl(e.target.value)}
+            disabled={isRunning}
+            fullWidth
+          />
+
+          <Input
+            label="Tags (comma-separated)"
+            placeholder="wiki, portal, onboarding"
+            value={tags}
+            onChange={(e) => setTags(e.target.value)}
+            disabled={isRunning}
+            fullWidth
+          />
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="flex items-center space-x-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={runInBackground}
+                onChange={(e) => setRunInBackground(e.target.checked)}
+                disabled={isRunning}
+              />
+              <span>Run in background (progress)</span>
+            </label>
+          </div>
+
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="flex items-center space-x-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={followLinks}
+                onChange={(e) => setFollowLinks(e.target.checked)}
+                disabled={isRunning}
+              />
+              <span>Follow links</span>
+            </label>
+            <label className="flex items-center space-x-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={onePerPage}
+                onChange={(e) => setOnePerPage(e.target.checked)}
+                disabled={isRunning || !followLinks}
+              />
+              <span>One doc per page</span>
+            </label>
+            <label className="flex items-center space-x-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={sameDomainOnly}
+                onChange={(e) => setSameDomainOnly(e.target.checked)}
+                disabled={isRunning || !followLinks}
+              />
+              <span>Same domain only</span>
+            </label>
+            <label className="flex items-center space-x-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={allowPrivateNetworks}
+                onChange={(e) => setAllowPrivateNetworks(e.target.checked)}
+                disabled={isRunning || !isAdmin}
+              />
+              <span>Allow private networks {isAdmin ? '' : '(admin)'}</span>
+            </label>
+          </div>
+
+          {followLinks && (
+            <div className="grid grid-cols-2 gap-3">
+              <Input
+                label="Max pages"
+                type="number"
+                min={1}
+                max={25}
+                value={String(maxPages)}
+                onChange={(e) => setMaxPages(parseInt(e.target.value || '1', 10))}
+                disabled={isRunning}
+                fullWidth
+              />
+              <Input
+                label="Max depth"
+                type="number"
+                min={0}
+                max={5}
+                value={String(maxDepth)}
+                onChange={(e) => setMaxDepth(parseInt(e.target.value || '0', 10))}
+                disabled={isRunning}
+                fullWidth
+              />
+            </div>
+          )}
+
+          {jobId && (
+            <div className="space-y-2">
+              <div className="text-sm text-gray-700">
+                {jobProgress?.status || 'Working…'}
+                {typeof jobProgress?.current === 'number' && typeof jobProgress?.total === 'number'
+                  ? ` (${jobProgress.current}/${jobProgress.total})`
+                  : ''}
+              </div>
+              <ProgressBar
+                value={typeof jobProgress?.progress === 'number' ? jobProgress.progress : 0}
+                max={100}
+                indeterminate={typeof jobProgress?.progress !== 'number'}
+                showLabel
+              />
+            </div>
+          )}
+        </div>
+
+        <div className="mt-6 flex justify-end space-x-3">
+          <Button variant="ghost" onClick={onClose} disabled={ingestMutation.isLoading}>
+            Close
+          </Button>
+          {jobId ? (
+            <Button
+              variant="danger"
+              onClick={async () => {
+                try {
+                  await apiClient.cancelUrlIngest(jobId);
+                  toast.success('Cancel requested');
+                  try {
+                    progressWsRef.current?.close();
+                  } catch {}
+                  progressWsRef.current = null;
+                  setJobId(null);
+                  setJobProgress(null);
+                } catch (err: any) {
+                  toast.error(err?.response?.data?.detail || err?.message || 'Failed to cancel job');
+                }
+              }}
+            >
+              Stop
+            </Button>
+          ) : (
+            <Button onClick={() => ingestMutation.mutate()} disabled={!canSubmit} icon={<Link2 className="w-4 h-4" />}>
+              {ingestMutation.isLoading ? 'Ingesting…' : runInBackground ? 'Start' : 'Ingest'}
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+};
+
 // Document Details Modal Component
 interface DocumentDetailsModalProps {
   document: KnowledgeDocument;
@@ -2674,6 +3120,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
   const mainPlayerRef = useRef<any>(null);
   const secondaryPlayerRef = useRef<any>(null);
   const transcriptRef = useRef<HTMLDivElement>(null);
+  const navigate = useNavigate();
   const [videoUrl, setVideoUrl] = useState<string | null>(null);
   const [isVideoLoading, setIsVideoLoading] = useState(false);
   const [currentTime, setCurrentTime] = useState(0);
@@ -2691,6 +3138,35 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [audioDurationState, setAudioDurationState] = useState<number | null>(null);
   const queryClient = useQueryClient();
+  const isArxivPaper =
+    (currentDocument as any)?.source?.source_type === 'arxiv' ||
+    Boolean((currentDocument as any)?.extra_metadata?.paper_metadata?.arxiv_id) ||
+    Boolean((currentDocument as any)?.extra_metadata?.doi) ||
+    Boolean((currentDocument as any)?.extra_metadata?.primary_category);
+  const paperMeta = (currentDocument as any)?.extra_metadata?.paper_metadata as any | undefined;
+  const arxivId = paperMeta?.arxiv_id || (currentDocument as any)?.extra_metadata?.arxiv_id || undefined;
+  const doi = paperMeta?.doi || (currentDocument as any)?.extra_metadata?.doi || undefined;
+  const venue = paperMeta?.venue || undefined;
+  const publisher = paperMeta?.publisher || undefined;
+  const year = paperMeta?.year || undefined;
+  const keywords = Array.isArray(paperMeta?.keywords) ? (paperMeta?.keywords as string[]) : [];
+  const bibtex = typeof paperMeta?.bibtex === 'string' ? paperMeta.bibtex : undefined;
+  const authorAffiliations = Array.isArray(paperMeta?.author_affiliations) ? (paperMeta?.author_affiliations as any[]) : [];
+
+  const { data: relatedDocsData, isLoading: relatedDocsLoading } = useQuery(
+    ['relatedDocs', currentDocument.id],
+    () => apiClient.getRelatedDocuments(currentDocument.id, 8),
+    { enabled: Boolean(currentDocument?.id) && isArxivPaper, staleTime: 30000 }
+  );
+  const relatedDocs = (relatedDocsData?.items || []) as Array<{
+    document_id: string;
+    title?: string | null;
+    score?: number;
+    kg_overlap?: number;
+    vector_score?: number;
+    common_entities?: string[];
+    best_chunk_id?: string | null;
+  }>;
 
   // Poll for summary updates while modal is open if no summary yet or summarizing
   React.useEffect(() => {
@@ -2715,6 +3191,16 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
     }
     return () => { cancelled = true; if (timer) clearTimeout(timer); };
   }, [document.id, document.summary]);
+
+  // Scroll to highlighted chunk when provided.
+  React.useEffect(() => {
+    if (!highlightChunkId) return;
+    const timer = setTimeout(() => {
+      const el = window.document.getElementById(`chunk-card-${highlightChunkId}`);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    }, 250);
+    return () => clearTimeout(timer);
+  }, [highlightChunkId, currentDocument?.id, (currentDocument as any)?.chunks?.length]);
   // Track only basic state; player handles loading internally
   
   // Check if document is video/audio
@@ -3276,6 +3762,175 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
         </div>
 
         <div className="space-y-4">
+          {isArxivPaper && (
+            <div className="bg-white border rounded-lg p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-medium text-gray-900">Related papers</div>
+                  <div className="text-xs text-gray-500">KG overlap + embedding similarity</div>
+                </div>
+                <div className="text-xs text-gray-500">{relatedDocsLoading ? 'Loading…' : ''}</div>
+              </div>
+              <div className="mt-3 space-y-2">
+                {relatedDocs.length === 0 && !relatedDocsLoading ? (
+                  <div className="text-sm text-gray-600">No related papers found yet.</div>
+                ) : (
+                  relatedDocs.map((item) => (
+                    <button
+                      key={item.document_id}
+                      type="button"
+                      onClick={() =>
+                        navigate('/documents', {
+                          state: {
+                            openDocId: item.document_id,
+                            highlightChunkId: item.best_chunk_id || undefined,
+                          },
+                        })
+                      }
+                      className="w-full text-left border rounded-lg p-3 hover:bg-gray-50"
+                      title="Open"
+                    >
+                      <div className="flex items-center justify-between gap-3">
+                        <div className="min-w-0">
+                          <div className="font-medium text-gray-900 truncate">{item.title || item.document_id}</div>
+                          {item.common_entities?.length ? (
+                            <div className="text-xs text-gray-600 mt-1 truncate">
+                              Shared: {item.common_entities.slice(0, 6).join(', ')}
+                              {item.common_entities.length > 6 ? '…' : ''}
+                            </div>
+                          ) : null}
+                        </div>
+                        <div className="text-xs text-gray-500 shrink-0">
+                          {typeof item.score === 'number' ? `${Math.round(item.score * 100)}%` : ''}
+                          {typeof item.kg_overlap === 'number' ? ` • KG ${item.kg_overlap}` : ''}
+                        </div>
+                      </div>
+                    </button>
+                  ))
+                )}
+              </div>
+            </div>
+          )}
+          {isArxivPaper && (
+            <div className="bg-white border rounded-lg p-4">
+              <div className="flex items-center justify-between">
+                <div>
+                  <div className="font-medium text-gray-900">Paper metadata</div>
+                  <div className="text-xs text-gray-500">DOI/venue/keywords (from enrichment)</div>
+                </div>
+              </div>
+              <div className="mt-3 grid grid-cols-1 md:grid-cols-2 gap-3 text-sm">
+                <div className="border rounded-lg p-3">
+                  <div className="text-xs text-gray-500">arXiv</div>
+                  {arxivId ? (
+                    <a
+                      className="text-primary-700 hover:text-primary-800 break-all"
+                      href={`https://arxiv.org/abs/${encodeURIComponent(arxivId)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {arxivId}
+                    </a>
+                  ) : (
+                    <div className="text-gray-600">—</div>
+                  )}
+                </div>
+                <div className="border rounded-lg p-3">
+                  <div className="text-xs text-gray-500">DOI</div>
+                  {doi ? (
+                    <a
+                      className="text-primary-700 hover:text-primary-800 break-all"
+                      href={`https://doi.org/${encodeURIComponent(doi)}`}
+                      target="_blank"
+                      rel="noreferrer"
+                    >
+                      {doi}
+                    </a>
+                  ) : (
+                    <div className="text-gray-600">—</div>
+                  )}
+                </div>
+                <div className="border rounded-lg p-3">
+                  <div className="text-xs text-gray-500">Venue</div>
+                  <div className="text-gray-900">{venue || '—'}</div>
+                  {(publisher || year) && (
+                    <div className="text-xs text-gray-500 mt-1">
+                      {publisher ? publisher : ''}
+                      {publisher && year ? ' • ' : ''}
+                      {year ? String(year) : ''}
+                    </div>
+                  )}
+                </div>
+                <div className="border rounded-lg p-3">
+                  <div className="text-xs text-gray-500">Keywords</div>
+                  {keywords.length ? (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {keywords.slice(0, 12).map((k) => (
+                        <span key={k} className="text-xs px-2 py-0.5 rounded bg-gray-100 text-gray-700">
+                          {k}
+                        </span>
+                      ))}
+                      {keywords.length > 12 ? <span className="text-xs text-gray-500">+{keywords.length - 12}</span> : null}
+                    </div>
+                  ) : (
+                    <div className="text-gray-600">—</div>
+                  )}
+                </div>
+                <div className="border rounded-lg p-3 md:col-span-2">
+                  <div className="text-xs text-gray-500">Author affiliations</div>
+                  {authorAffiliations.length ? (
+                    <div className="mt-1 space-y-2">
+                      {authorAffiliations.slice(0, 8).map((a, idx) => (
+                        <div key={`${a?.name || 'author'}-${idx}`} className="text-sm">
+                          <div className="font-medium text-gray-900">{a?.name || 'Unknown author'}</div>
+                          {Array.isArray(a?.affiliations) && a.affiliations.length ? (
+                            <div className="text-xs text-gray-600">
+                              {a.affiliations.slice(0, 3).join(' • ')}
+                              {a.affiliations.length > 3 ? '…' : ''}
+                            </div>
+                          ) : (
+                            <div className="text-xs text-gray-500">—</div>
+                          )}
+                        </div>
+                      ))}
+                      {authorAffiliations.length > 8 ? (
+                        <div className="text-xs text-gray-500">+{authorAffiliations.length - 8} more</div>
+                      ) : null}
+                    </div>
+                  ) : (
+                    <div className="text-gray-600">—</div>
+                  )}
+                </div>
+              </div>
+
+              {bibtex ? (
+                <details className="mt-3">
+                  <summary className="cursor-pointer text-sm text-primary-700 hover:text-primary-800">
+                    BibTeX
+                  </summary>
+                  <div className="mt-2 border rounded-lg p-3 bg-gray-50">
+                    <div className="flex items-center justify-end mb-2">
+                      <button
+                        type="button"
+                        className="inline-flex items-center gap-1 text-xs px-2 py-1 rounded border border-gray-300 hover:bg-white"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(bibtex);
+                            toast.success('BibTeX copied');
+                          } catch {
+                            toast.error('Failed to copy');
+                          }
+                        }}
+                      >
+                        <Copy className="w-3 h-3" /> Copy
+                      </button>
+                    </div>
+                    <pre className="text-xs whitespace-pre-wrap break-words">{bibtex}</pre>
+                  </div>
+                </details>
+              ) : null}
+            </div>
+          )}
           {/* Video/Audio Player with YouTube-style Layout */}
           {document.extra_metadata?.is_transcoding ? (
             <div className="p-6 bg-yellow-50 border border-yellow-200 rounded">
@@ -3291,16 +3946,16 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
                 </h3>
                 <div className="bg-black rounded-lg overflow-hidden">
                   {isVideoLoading ? (
-                    <div className="aspect-video flex items-center justify-center bg-gray-900">
-                      <div className="text-white">Loading player...</div>
+                    <div className="aspect-video flex items-center justify-center bg-black">
+                      <div className="text-gray-800">Loading player...</div>
                     </div>
                   ) : videoUrl ? (
                     <div style={{ position: 'relative', width: '100%', aspectRatio: '16/9' }}>
                       <video id="vjs-player-main" className="video-js vjs-default-skin w-full h-full" playsInline preload="metadata" />
                     </div>
                   ) : (
-                    <div className="aspect-video flex items-center justify-center bg-gray-900">
-                      <div className="text-white">Failed to load media</div>
+                    <div className="aspect-video flex items-center justify-center bg-black">
+                      <div className="text-gray-800">Failed to load media</div>
                     </div>
                   )}
                 </div>
@@ -3403,18 +4058,18 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
                 {document.file_type?.startsWith('video/') ? 'Video Player' : 'Audio Player'}
               </h3>
               <div className="bg-black rounded-lg overflow-hidden">
-                {isVideoLoading ? (
-                  <div className="aspect-video flex items-center justify-center bg-gray-900">
-                    <div className="text-white">Loading player...</div>
-                  </div>
-                ) : videoUrl ? (
+                  {isVideoLoading ? (
+                    <div className="aspect-video flex items-center justify-center bg-black">
+                      <div className="text-gray-800">Loading player...</div>
+                    </div>
+                  ) : videoUrl ? (
                   <video id="vjs-player-secondary" className="video-js vjs-default-skin w-full" playsInline preload="metadata" />
-                ) : (
-                  <div className="aspect-video flex items-center justify-center bg-gray-900">
-                    <div className="text-white">Failed to load media</div>
-                  </div>
-                )}
-              </div>
+                  ) : (
+                    <div className="aspect-video flex items-center justify-center bg-black">
+                      <div className="text-gray-800">Failed to load media</div>
+                    </div>
+                  )}
+                </div>
             </div>
           ) : null}
 

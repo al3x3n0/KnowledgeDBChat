@@ -170,6 +170,10 @@ class ArxivSourceRequest(BaseModel):
     sort_by: Literal["relevance", "lastUpdatedDate", "submittedDate"] = "submittedDate"
     sort_order: Literal["ascending", "descending"] = "descending"
     auto_sync: bool = Field(default=True, description="Start ingestion immediately")
+    auto_summarize: bool = Field(default=True, description="Queue summarization for ingested papers")
+    auto_literature_review: bool = Field(default=False, description="Generate a literature review document after ingestion")
+    auto_enrich_metadata: bool = Field(default=True, description="Enrich papers with BibTeX/DOI metadata after ingestion")
+    topic: Optional[str] = Field(default=None, description="Optional topic label for literature review/reporting")
 
     @field_validator("search_queries", "paper_ids", "categories", mode="after")
     @classmethod
@@ -182,6 +186,11 @@ class ArxivSourceRequest(BaseModel):
     @field_validator("name")
     @classmethod
     def _strip_name(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() if isinstance(value, str) and value.strip() else None
+
+    @field_validator("topic")
+    @classmethod
+    def _strip_topic(cls, value: Optional[str]) -> Optional[str]:
         return value.strip() if isinstance(value, str) and value.strip() else None
 
     @field_validator("paper_ids", mode="after")
@@ -229,3 +238,153 @@ class DocumentStats(BaseModel):
     failed_documents: int
     sources_count: int
     last_sync: Optional[datetime]
+
+
+# =============================================================================
+# Instant URL Ingestion Schemas
+# =============================================================================
+
+class IngestUrlRequest(BaseModel):
+    """Request to scrape a URL and ingest it as document(s)."""
+    url: str = Field(..., description="URL to ingest (http/https)", min_length=1, max_length=2000)
+    title: Optional[str] = Field(default=None, description="Optional title override (single-document mode)")
+    tags: Optional[List[str]] = Field(default=None, description="Optional tags to apply")
+
+    follow_links: bool = Field(default=False, description="Crawl a small link graph from the start page")
+    max_pages: int = Field(default=1, ge=1, le=25, description="Max pages to fetch when crawling")
+    max_depth: int = Field(default=0, ge=0, le=5, description="Max crawl depth")
+    same_domain_only: bool = Field(default=True, description="Only follow links on the same domain")
+    one_document_per_page: bool = Field(default=False, description="Create/update one document per page URL")
+
+    allow_private_networks: bool = Field(
+        default=False,
+        description="Allow private-network hosts (admin only, or allowlisted web sources)",
+    )
+    max_content_chars: int = Field(default=50000, ge=1000, le=500000, description="Max characters per page to ingest")
+
+
+class IngestUrlResponse(BaseModel):
+    """Response after URL ingestion."""
+    action: str = "ingested"
+    root_url: Optional[str] = None
+    total_pages_scraped: int = 0
+    created: List[Dict[str, Any]] = Field(default_factory=list)
+    updated: List[Dict[str, Any]] = Field(default_factory=list)
+    skipped: List[Dict[str, Any]] = Field(default_factory=list)
+    errors: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class IngestUrlJobResponse(BaseModel):
+    """Response after scheduling background URL ingestion."""
+    job_id: str
+    progress_key: str
+
+
+# =============================================================================
+# Instant ArXiv Ingestion Schemas
+# =============================================================================
+
+class InstantArxivIngestRequest(BaseModel):
+    """Request to instantly ingest an arXiv paper for immediate chat."""
+    arxiv_input: str = Field(
+        ...,
+        description="arXiv URL (https://arxiv.org/abs/2401.12345) or paper ID (2401.12345)",
+        min_length=1,
+        max_length=500
+    )
+    auto_summarize: bool = Field(
+        default=False,
+        description="Queue background summarization after ingestion"
+    )
+    auto_enrich: bool = Field(
+        default=False,
+        description="Queue background metadata enrichment (BibTeX, DOI)"
+    )
+
+    @field_validator("arxiv_input")
+    @classmethod
+    def extract_arxiv_id(cls, v: str) -> str:
+        """Extract and validate arXiv ID from URL or raw ID."""
+        import re
+        v = v.strip()
+
+        # Handle various URL formats
+        # https://arxiv.org/abs/2401.12345
+        # https://arxiv.org/pdf/2401.12345.pdf
+        # http://arxiv.org/abs/2401.12345v2
+        # arxiv:2401.12345
+        # 2401.12345
+
+        patterns = [
+            r'arxiv\.org/(?:abs|pdf)/(\d{4}\.\d{4,5}(?:v\d+)?)',  # URL format
+            r'arxiv:(\d{4}\.\d{4,5}(?:v\d+)?)',  # arxiv: prefix
+            r'^(\d{4}\.\d{4,5}(?:v\d+)?)$',  # Raw new-style ID
+            r'arxiv\.org/(?:abs|pdf)/([\w\-\.]+/\d+(?:v\d+)?)',  # Old-style ID in URL
+            r'^([\w\-\.]+/\d+(?:v\d+)?)$',  # Raw old-style ID (e.g., cs.CL/0001234)
+        ]
+
+        for pattern in patterns:
+            match = re.search(pattern, v, re.IGNORECASE)
+            if match:
+                return match.group(1)
+
+        raise ValueError(
+            f"Could not parse arXiv ID from '{v}'. "
+            "Expected format: arXiv URL, 'arxiv:ID', or paper ID like '2401.12345'"
+        )
+
+
+class InstantArxivIngestResponse(BaseModel):
+    """Response after instant arXiv paper ingestion."""
+    document_id: UUID
+    arxiv_id: str
+    title: str
+    authors: List[str]
+    abstract: str
+    categories: List[str]
+    url: str
+    pdf_url: str
+    chunks_created: int
+    ready_for_chat: bool = True
+    background_tasks: List[str] = Field(
+        default_factory=list,
+        description="List of queued background tasks (summarize, enrich)"
+    )
+
+
+class ResearchPresentationRequest(BaseModel):
+    """Request to generate a presentation from research topic."""
+    topic: str = Field(
+        ...,
+        description="Research topic for the presentation",
+        min_length=3,
+        max_length=500
+    )
+    slide_count: int = Field(
+        default=10,
+        ge=5,
+        le=25,
+        description="Number of slides to generate"
+    )
+    include_arxiv: bool = Field(
+        default=True,
+        description="Search arXiv for relevant papers to include"
+    )
+    arxiv_max_papers: int = Field(
+        default=5,
+        ge=0,
+        le=15,
+        description="Maximum arXiv papers to incorporate"
+    )
+    style: str = Field(
+        default="technical",
+        description="Presentation style (professional, technical, casual, modern)"
+    )
+    include_diagrams: bool = Field(
+        default=True,
+        description="Include auto-generated diagrams"
+    )
+    source_document_ids: Optional[List[str]] = Field(
+        default=None,
+        description="Specific document IDs to include as sources"
+    )

@@ -13,32 +13,49 @@ from sqlalchemy.ext.declarative import declarative_base
 from app.core.database import Base
 
 class ConversationMemory(Base):
-    """Stores long-term conversation memories for users."""
+    """Stores long-term conversation memories for users.
+
+    Memory Types:
+    - fact: Factual information learned about user or domain
+    - preference: User preferences and settings
+    - context: Contextual information from conversations
+    - summary: Summarized conversation content
+    - goal: User goals and objectives
+    - constraint: User constraints and limitations
+    - finding: Key finding from agent job analysis
+    - insight: Strategic insight derived from job results
+    - pattern: Recurring pattern identified across jobs
+    - lesson: Lesson learned from job execution
+    """
     __tablename__ = "conversation_memories"
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
     user_id = Column(PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
     session_id = Column(PostgresUUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True, index=True)
-    
+
+    # Agent job source (for job-derived memories)
+    job_id = Column(PostgresUUID(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+
     # Memory content
-    memory_type = Column(String(50), nullable=False, index=True)  # 'fact', 'preference', 'context', 'summary'
+    memory_type = Column(String(50), nullable=False, index=True)  # 'fact', 'preference', 'context', 'summary', 'finding', 'insight', 'pattern', 'lesson'
     content = Column(Text, nullable=False)
     importance_score = Column(Float, default=0.5)  # 0.0 to 1.0, higher = more important
-    
+
     # Context and metadata
     context = Column(JSON, nullable=True)  # Additional context about the memory
     tags = Column(JSON, nullable=True)  # Tags for categorization
     source_message_id = Column(PostgresUUID(as_uuid=True), nullable=True)  # Original message that created this memory
-    
+
     # Memory lifecycle
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     last_accessed_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     access_count = Column(Integer, default=0, nullable=False)
     is_active = Column(Boolean, default=True, nullable=False)
-    
+
     # Relationships
     user = relationship("User", back_populates="memories")
     session = relationship("ChatSession", back_populates="memories")
+    source_job = relationship("AgentJob", back_populates="memories", foreign_keys=[job_id])
     agent_injections = relationship("AgentMemoryInjection", back_populates="memory", cascade="all, delete-orphan")
 
     def __repr__(self):
@@ -96,11 +113,22 @@ class UserPreferences(Base):
     # Per-task model overrides (JSON: {"title_generation": "model", "summarization": "model", ...})
     # Supported tasks: title_generation, summarization, query_expansion, memory_extraction
     llm_task_models = Column(JSON, nullable=True)
+    # Per-task provider overrides (JSON: {"summarization": "deepseek", "chat": "ollama", ...})
+    llm_task_providers = Column(JSON, nullable=True)
 
-    # Agent memory integration settings
+    # Agent memory integration settings (for chat agent)
     enable_agent_memory = Column(Boolean, default=True, nullable=False)  # Inject memories into agent prompts
     memory_injection_types = Column(JSON, default=lambda: ["fact", "preference", "context"], nullable=False)  # Types to inject
     max_injected_memories = Column(Integer, default=5, nullable=False)  # Max memories per turn
+
+    # Autonomous agent job memory settings
+    agent_job_memory_types = Column(JSON, default=lambda: ["finding", "insight", "pattern", "lesson"], nullable=True)  # Memory types for jobs
+    max_job_memories = Column(Integer, default=10, nullable=True)  # Max memories to inject per job
+    auto_extract_job_memories = Column(Boolean, default=True, nullable=True)  # Auto-extract memories from completed jobs
+    share_memories_with_chat = Column(Boolean, default=True, nullable=True)  # Share job memories with chat sessions
+
+    # Paper algorithm agent defaults
+    paper_algo_default_run_demo_check = Column(Boolean, default=False, nullable=False)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -183,8 +211,6 @@ class AgentToolExecution(Base):
 
     def __repr__(self):
         return f"<AgentToolExecution(id={self.id}, tool={self.tool_name}, status={self.status})>"
-
-
 
 
 

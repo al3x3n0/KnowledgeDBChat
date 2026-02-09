@@ -9,7 +9,7 @@ from fastapi.testclient import TestClient
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 from sqlalchemy.pool import StaticPool
 
-from app.main import app
+from main import app
 from app.core.database import Base, get_db
 from app.models.user import User
 from app.services.auth_service import AuthService
@@ -133,4 +133,3 @@ def admin_headers(client: TestClient, admin_user: User) -> dict:
     
     token = response.json()["access_token"]
     return {"Authorization": f"Bearer {token}"}
-

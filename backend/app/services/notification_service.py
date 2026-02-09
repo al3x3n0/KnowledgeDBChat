@@ -33,6 +33,8 @@ class NotificationService:
         NotificationType.SYSTEM_MAINTENANCE: "notify_maintenance",
         NotificationType.SYSTEM_QUOTA_WARNING: "notify_quota_warnings",
         NotificationType.ADMIN_BROADCAST: "notify_admin_broadcasts",
+        NotificationType.RESEARCH_NOTE_CITATION_ISSUE: "notify_research_note_citation_issues",
+        NotificationType.EXPERIMENT_RUN_UPDATE: "notify_experiment_run_updates",
         NotificationType.COLLABORATION_MENTION: "notify_mentions",
         NotificationType.COLLABORATION_SHARE: "notify_shares",
         NotificationType.COLLABORATION_COMMENT: "notify_comments",

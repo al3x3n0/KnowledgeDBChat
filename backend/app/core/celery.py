@@ -13,6 +13,7 @@ celery_app = Celery(
     backend=settings.CELERY_RESULT_BACKEND,
     include=[
         "app.tasks.ingestion_tasks",
+        "app.tasks.url_ingestion_tasks",
         "app.tasks.processing_tasks",
         "app.tasks.sync_tasks",
         "app.tasks.chat_tasks",
@@ -27,6 +28,11 @@ celery_app = Celery(
         "app.tasks.paper_enrichment_tasks",
         "app.tasks.maintenance_tasks",
         "app.tasks.repo_report_tasks",
+        "app.tasks.template_tasks",
+        "app.tasks.agent_job_tasks",
+        "app.tasks.training_tasks",
+        "app.tasks.latex_tasks",
+        "app.tasks.latex_maintenance_tasks",
     ]
 )
 
@@ -38,6 +44,10 @@ celery_app.conf.update(
     timezone="UTC",
     enable_utc=True,
     task_track_started=True,
+    task_routes={
+        # Route only the heavy LaTeX compile task to a dedicated queue by default.
+        "app.tasks.latex_tasks.compile_latex_project_job": {"queue": getattr(settings, "LATEX_COMPILER_CELERY_QUEUE", "latex") or "latex"},
+    },
     task_time_limit=30 * 60,  # 30 minutes
     task_soft_time_limit=25 * 60,  # 25 minutes
     worker_prefetch_multiplier=1,
@@ -75,10 +85,52 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.monitoring_tasks.health_check",
         "schedule": crontab(minute="*/15"),
     },
+
+    # Sync experiment runs from linked agent jobs (every 5 minutes)
+    "sync-experiment-runs": {
+        "task": "app.tasks.monitoring_tasks.sync_experiment_runs",
+        "schedule": crontab(minute="*/5"),
+    },
+
+    # Lint citations in recently-updated research notes (every hour)
+    "lint-research-note-citations": {
+        "task": "app.tasks.monitoring_tasks.lint_recent_research_notes_citations",
+        "schedule": crontab(minute=0),  # Every hour
+    },
     
     # Per-source scheduling scan (every 5 minutes)
     "scan-scheduled-sources": {
         "task": "app.tasks.sync_tasks.scan_scheduled_sources",
+        "schedule": crontab(minute="*/5"),
+    },
+
+    # Process scheduled agent jobs (every 5 minutes)
+    "process-scheduled-agent-jobs": {
+        "task": "app.tasks.agent_job_tasks.process_scheduled_agent_jobs",
+        "schedule": crontab(minute="*/5"),
+    },
+
+    # Check for stalled agent jobs (every 10 minutes)
+    "check-stalled-agent-jobs": {
+        "task": "app.tasks.agent_job_tasks.check_stalled_agent_jobs",
+        "schedule": crontab(minute="*/10"),
+    },
+
+    # Resume paused agent jobs (every 15 minutes)
+    "resume-paused-agent-jobs": {
+        "task": "app.tasks.agent_job_tasks.resume_paused_agent_jobs",
+        "schedule": crontab(minute="*/15"),
+    },
+
+    # Cleanup old agent jobs (weekly on Sunday at 4 AM)
+    "cleanup-old-agent-jobs": {
+        "task": "app.tasks.agent_job_tasks.cleanup_old_agent_jobs",
+        "schedule": crontab(minute=0, hour=4, day_of_week=0),
+    },
+
+    # Fail stale LaTeX compile jobs (every 5 minutes)
+    "fail-stale-latex-compile-jobs": {
+        "task": "app.tasks.latex_maintenance_tasks.fail_stale_latex_compile_jobs",
         "schedule": crontab(minute="*/5"),
     },
 }

@@ -592,7 +592,7 @@ class TextProcessor:
             return [text]
         
         # Generate embeddings for sentences
-        embeddings = self.semantic_model.encode(sentences)
+        embeddings = self.semantic_model.encode(sentences, show_progress_bar=False)
         
         chunks = []
         current_chunk = []

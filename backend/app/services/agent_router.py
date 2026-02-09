@@ -22,6 +22,10 @@ from app.services.llm_service import LLMService
 
 # Capability to intent keyword mapping for faster matching
 CAPABILITY_KEYWORDS = {
+    "paper_search": [
+        "arxiv", "paper", "papers", "preprint", "publication",
+        "literature", "scientific", "research paper", "find papers", "search papers"
+    ],
     "document_search": [
         "search", "find", "look for", "locate", "where is", "documents about",
         "files about", "what documents", "find documents"

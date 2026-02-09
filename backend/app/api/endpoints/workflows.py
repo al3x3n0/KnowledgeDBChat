@@ -622,7 +622,6 @@ async def cancel_execution(
 async def execution_stream(
     websocket: WebSocket,
     execution_id: UUID,
-    db: AsyncSession = Depends(get_db)
 ):
     """
     WebSocket endpoint for real-time execution updates.
@@ -642,6 +641,7 @@ async def execution_stream(
     try:
         # Create Redis connection
         from app.core.config import settings
+        from app.core.database import AsyncSessionLocal
         redis = await aioredis.from_url(
             settings.REDIS_URL,
             encoding="utf-8",
@@ -653,10 +653,11 @@ async def execution_stream(
         await pubsub.subscribe(channel)
 
         # Send initial status
-        result = await db.execute(
-            select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
-        )
-        execution = result.scalar_one_or_none()
+        async with AsyncSessionLocal() as db:
+            result = await db.execute(
+                select(WorkflowExecution).where(WorkflowExecution.id == execution_id)
+            )
+            execution = result.scalar_one_or_none()
 
         if execution:
             await websocket.send_json({
@@ -726,7 +727,8 @@ def _flatten_json_schema(schema: dict) -> List[ToolParameterDetail]:
 
 @router.get("/tools/builtin", response_model=ToolSchemaListResponse)
 async def list_builtin_tools(
-    current_user: User = Depends(get_current_user)
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     List all built-in tools with their parameter schemas.
@@ -739,13 +741,28 @@ async def list_builtin_tools(
     tools = []
     for tool in AGENT_TOOLS:
         schema = tool.get("parameters", {})
-        tools.append(ToolSchemaResponse(
-            name=tool["name"],
-            description=tool.get("description", ""),
-            parameters=schema,
-            parameter_list=_flatten_json_schema(schema),
-            tool_type="builtin"
-        ))
+        try:
+            from app.services.tool_policy_engine import evaluate_tool_policy
+
+            decision = await evaluate_tool_policy(
+                db=db,
+                tool_name=str(tool.get("name") or ""),
+                user=current_user,
+            )
+            if not decision.allowed:
+                continue
+        except Exception:
+            continue
+
+        tools.append(
+            ToolSchemaResponse(
+                name=tool["name"],
+                description=tool.get("description", ""),
+                parameters=schema,
+                parameter_list=_flatten_json_schema(schema),
+                tool_type="builtin",
+            )
+        )
 
     return ToolSchemaListResponse(tools=tools)
 
@@ -1071,3 +1088,179 @@ async def validate_workflow(
         valid=not any(i.severity == "error" for i in issues),
         issues=issues
     )
+
+
+# =============================================================================
+# Workflow Template Endpoints
+# =============================================================================
+
+@router.get("/templates", tags=["workflow-templates"])
+async def list_workflow_templates(
+    category: Optional[str] = Query(None, description="Filter by category"),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    List all available workflow templates.
+
+    Templates are pre-built workflows for common automation tasks:
+    - reporting: Weekly digest, automated reports
+    - research: arXiv paper pipeline, literature review
+    - analysis: Document analysis, batch processing
+    - productivity: Meeting notes, email drafting
+    - maintenance: Health checks, batch summarization
+    """
+    from app.services.workflow_templates import (
+        WORKFLOW_TEMPLATES,
+        get_templates_by_category,
+        get_template_summary,
+        list_template_categories,
+    )
+
+    if category:
+        templates = get_templates_by_category(category)
+        summary = [
+            {
+                "template_id": t["template_id"],
+                "name": t["name"],
+                "description": t["description"],
+                "category": t.get("category", "other"),
+                "trigger_type": t.get("trigger_config", {}).get("type", "manual"),
+                "node_count": len(t.get("nodes", [])),
+            }
+            for t in templates
+        ]
+    else:
+        summary = get_template_summary()
+
+    return {
+        "templates": summary,
+        "categories": list_template_categories(),
+        "total": len(summary)
+    }
+
+
+@router.get("/templates/{template_id}", tags=["workflow-templates"])
+async def get_workflow_template(
+    template_id: str,
+    current_user: User = Depends(get_current_user),
+):
+    """Get details of a specific workflow template."""
+    from app.services.workflow_templates import get_template_by_id
+
+    template = get_template_by_id(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    return template
+
+
+@router.post("/templates/{template_id}/import", tags=["workflow-templates"])
+async def import_workflow_template(
+    template_id: str,
+    name_override: Optional[str] = Query(None, description="Custom name for the workflow"),
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Import a workflow template as a new workflow for the current user.
+
+    This creates a copy of the template as a personal workflow that
+    can be customized and executed.
+    """
+    from app.services.workflow_templates import get_template_by_id
+
+    template = get_template_by_id(template_id)
+    if not template:
+        raise HTTPException(status_code=404, detail="Template not found")
+
+    # Create workflow from template
+    workflow_name = name_override or template["name"]
+
+    # Check for duplicate name
+    existing = await db.execute(
+        select(Workflow).where(
+            Workflow.user_id == current_user.id,
+            Workflow.name == workflow_name
+        )
+    )
+    if existing.scalar_one_or_none():
+        # Append a number to make it unique
+        import time
+        workflow_name = f"{workflow_name} ({int(time.time()) % 10000})"
+
+    workflow = Workflow(
+        user_id=current_user.id,
+        name=workflow_name,
+        description=template.get("description"),
+        is_active=True,
+        trigger_config=template.get("trigger_config", {"type": "manual"})
+    )
+    db.add(workflow)
+    await db.flush()
+
+    # Create nodes
+    for node_data in template.get("nodes", []):
+        node = WorkflowNode(
+            workflow_id=workflow.id,
+            node_id=node_data["node_id"],
+            node_type=node_data["node_type"],
+            builtin_tool=node_data.get("builtin_tool"),
+            config=node_data.get("config", {}),
+            position_x=node_data.get("position_x", 0),
+            position_y=node_data.get("position_y", 0),
+        )
+        db.add(node)
+
+    # Create edges
+    for edge_data in template.get("edges", []):
+        edge = WorkflowEdge(
+            workflow_id=workflow.id,
+            source_node_id=edge_data["source_node_id"],
+            target_node_id=edge_data["target_node_id"],
+            source_handle=edge_data.get("source_handle"),
+            condition=edge_data.get("condition"),
+        )
+        db.add(edge)
+
+    await db.commit()
+    await db.refresh(workflow)
+
+    # Load relationships for response
+    result = await db.execute(
+        select(Workflow)
+        .options(
+            selectinload(Workflow.nodes),
+            selectinload(Workflow.edges)
+        )
+        .where(Workflow.id == workflow.id)
+    )
+    workflow = result.scalar_one()
+
+    return {
+        "message": f"Template '{template['name']}' imported successfully",
+        "workflow": WorkflowResponse(
+            id=workflow.id,
+            name=workflow.name,
+            description=workflow.description,
+            is_active=workflow.is_active,
+            trigger_config=workflow.trigger_config,
+            created_at=workflow.created_at,
+            updated_at=workflow.updated_at,
+            nodes=[{
+                "node_id": n.node_id,
+                "node_type": n.node_type,
+                "tool_id": n.tool_id,
+                "builtin_tool": n.builtin_tool,
+                "config": n.config,
+                "position_x": n.position_x,
+                "position_y": n.position_y,
+            } for n in workflow.nodes],
+            edges=[{
+                "source_node_id": e.source_node_id,
+                "target_node_id": e.target_node_id,
+                "source_handle": e.source_handle,
+                "condition": e.condition,
+            } for e in workflow.edges],
+        ),
+        "template_id": template_id
+    }

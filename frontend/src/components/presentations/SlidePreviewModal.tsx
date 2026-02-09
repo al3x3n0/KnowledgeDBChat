@@ -118,7 +118,7 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
           </p>
           <button
             onClick={onClose}
-            className="px-4 py-2 bg-white text-gray-900 rounded-md hover:bg-gray-100"
+            className="btn-primary"
           >
             Close
           </button>
@@ -130,11 +130,11 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
   return (
     <div className="fixed inset-0 bg-black bg-opacity-95 flex flex-col z-50">
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 bg-gray-900 text-white">
+      <div className="flex items-center justify-between px-4 py-3 bg-gray-50 text-gray-900 border-b border-gray-300">
         <div className="flex items-center">
           <button
             onClick={onClose}
-            className="mr-4 p-1 hover:bg-gray-700 rounded"
+            className="mr-4 p-1 hover:bg-gray-200 rounded"
             title="Close (Esc)"
           >
             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -154,7 +154,7 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
           <button
             onClick={() => setShowNotes(!showNotes)}
             className={`flex items-center px-3 py-1.5 rounded text-sm ${
-              showNotes ? 'bg-blue-600 text-white' : 'bg-gray-700 text-gray-300 hover:bg-gray-600'
+              showNotes ? 'bg-primary-600 text-gray-50' : 'bg-gray-100 text-gray-900 hover:bg-gray-200'
             }`}
             title="Toggle speaker notes"
           >
@@ -172,7 +172,7 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
           {/* Close button */}
           <button
             onClick={onClose}
-            className="p-1.5 hover:bg-gray-700 rounded"
+            className="p-1.5 hover:bg-gray-200 rounded"
             title="Close"
           >
             <svg className="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -191,7 +191,7 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
           className={`flex-shrink-0 p-2 md:p-4 rounded-full mr-2 md:mr-4 transition-colors ${
             currentSlideIndex === 0
               ? 'text-gray-600 cursor-not-allowed'
-              : 'text-white hover:bg-gray-700'
+              : 'text-gray-900 hover:bg-gray-200'
           }`}
           title="Previous slide (Left arrow)"
         >
@@ -218,7 +218,7 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
           className={`flex-shrink-0 p-2 md:p-4 rounded-full ml-2 md:ml-4 transition-colors ${
             currentSlideIndex === totalSlides - 1
               ? 'text-gray-600 cursor-not-allowed'
-              : 'text-white hover:bg-gray-700'
+              : 'text-gray-900 hover:bg-gray-200'
           }`}
           title="Next slide (Right arrow)"
         >
@@ -229,14 +229,14 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
       </div>
 
       {/* Footer with slide indicator and thumbnails */}
-      <div className="bg-gray-900 text-white px-4 py-3">
+      <div className="bg-gray-50 text-gray-900 px-4 py-3 border-t border-gray-300">
         {/* Slide counter */}
         <div className="text-center mb-3">
           <span className="text-lg font-medium">
             {currentSlideIndex + 1} / {totalSlides}
           </span>
           {currentSlide && (
-            <span className="text-gray-400 text-sm ml-2">
+            <span className="text-gray-700 text-sm ml-2">
               - {currentSlide.title}
             </span>
           )}
@@ -251,7 +251,7 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
               className={`flex-shrink-0 w-16 h-10 rounded border-2 transition-all ${
                 index === currentSlideIndex
                   ? 'border-blue-500 ring-2 ring-blue-500 ring-opacity-50'
-                  : 'border-gray-600 hover:border-gray-400'
+                  : 'border-gray-400 hover:border-gray-600'
               }`}
               title={`${index + 1}. ${slide.title}`}
             >
@@ -269,7 +269,7 @@ const SlidePreviewModal: React.FC<SlidePreviewModalProps> = ({
         </div>
 
         {/* Keyboard shortcuts hint */}
-        <div className="text-center text-xs text-gray-500 mt-2">
+        <div className="text-center text-xs text-gray-700 mt-2">
           Use arrow keys to navigate &bull; Press Esc to close
         </div>
       </div>

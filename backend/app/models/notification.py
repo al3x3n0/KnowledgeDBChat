@@ -4,7 +4,7 @@ Notification-related database models.
 
 from datetime import datetime
 from typing import Optional
-from sqlalchemy import Column, String, Text, DateTime, Boolean, ForeignKey, Index
+from sqlalchemy import Column, String, Text, DateTime, Boolean, ForeignKey, Index, Float, Integer
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.orm import relationship
 import uuid
@@ -75,6 +75,15 @@ class NotificationPreferences(Base):
     notify_transcription_complete = Column(Boolean, default=True, nullable=False)
     notify_summarization_complete = Column(Boolean, default=False, nullable=False)
 
+    # Research notes
+    notify_research_note_citation_issues = Column(Boolean, default=True, nullable=False)
+    notify_experiment_run_updates = Column(Boolean, default=True, nullable=False)
+    research_note_citation_coverage_threshold = Column(Float, default=0.7, nullable=False)
+    research_note_citation_notify_cooldown_hours = Column(Integer, default=12, nullable=False)
+    research_note_citation_notify_on_unknown_keys = Column(Boolean, default=True, nullable=False)
+    research_note_citation_notify_on_low_coverage = Column(Boolean, default=True, nullable=False)
+    research_note_citation_notify_on_missing_bibliography = Column(Boolean, default=True, nullable=False)
+
     # System event preferences
     notify_maintenance = Column(Boolean, default=True, nullable=False)
     notify_quota_warnings = Column(Boolean, default=True, nullable=False)
@@ -118,6 +127,10 @@ class NotificationType:
     SYSTEM_MAINTENANCE = "system_maintenance"
     SYSTEM_QUOTA_WARNING = "quota_warning"
     ADMIN_BROADCAST = "admin_broadcast"
+
+    # Research notes
+    RESEARCH_NOTE_CITATION_ISSUE = "research_note_citation_issue"
+    EXPERIMENT_RUN_UPDATE = "experiment_run_update"
 
     # Collaboration events (future-proofing)
     COLLABORATION_MENTION = "mention"

@@ -9,6 +9,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func
 from loguru import logger
 
+from app.core.config import settings
 from app.core.database import get_db
 from app.models.user import User
 from app.models.workflow import UserTool
@@ -88,6 +89,8 @@ async def create_user_tool(
 
         # Validate tool type
         valid_types = ["webhook", "transform", "python", "llm_prompt"]
+        if bool(getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
+            valid_types.append("docker_container")
         if tool_data.tool_type not in valid_types:
             raise HTTPException(
                 status_code=400,

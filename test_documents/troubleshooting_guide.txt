@@ -63,7 +63,7 @@ Solutions:
 Problem: Vector store operations fail
 
 Solutions:
-- Verify ChromaDB is initialized
+- Verify the vector store is initialized (Qdrant by default, or ChromaDB if configured)
 - Check disk space for persistence
 - Ensure embedding model is loaded
 - Verify collection exists
@@ -127,5 +127,4 @@ LOG LOCATIONS
 - Celery: /app/data/logs/celery.log
 - Frontend: Browser console
 - Docker: docker-compose logs
-
 

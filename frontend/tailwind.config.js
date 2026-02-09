@@ -6,29 +6,32 @@ module.exports = {
   theme: {
     extend: {
       colors: {
+        // Terminal theme palette (dark UI, neon accents).
+        // Note: We intentionally invert the usual "50 is light" convention so existing
+        // usage like `bg-gray-50` + `text-gray-900` becomes dark-bg + light-text.
         primary: {
-          50: '#eff6ff',
-          100: '#dbeafe',
-          200: '#bfdbfe',
-          300: '#93c5fd',
-          400: '#60a5fa',
-          500: '#3b82f6',
-          600: '#2563eb',
-          700: '#1d4ed8',
-          800: '#1e40af',
-          900: '#1e3a8a',
+          50: '#07150f',
+          100: '#0a2016',
+          200: '#0e2f20',
+          300: '#12422b',
+          400: '#15623d',
+          500: '#18a161',
+          600: '#19c77b',
+          700: '#2dfc9a',
+          800: '#8dffbf',
+          900: '#d9ffe9',
         },
         gray: {
-          50: '#f9fafb',
-          100: '#f3f4f6',
-          200: '#e5e7eb',
-          300: '#d1d5db',
-          400: '#9ca3af',
-          500: '#6b7280',
-          600: '#4b5563',
-          700: '#374151',
-          800: '#1f2937',
-          900: '#111827',
+          50: '#0b0f10',
+          100: '#0f1516',
+          200: '#162021',
+          300: '#1f2b2c',
+          400: '#415557',
+          500: '#6c8482',
+          600: '#9fb2ac',
+          700: '#c8d6cf',
+          800: '#e7f2ec',
+          900: '#f6fff9',
         }
       },
       fontFamily: {
@@ -62,9 +65,6 @@ module.exports = {
     require('@tailwindcss/typography'),
   ],
 }
-
-
-
 
 
 

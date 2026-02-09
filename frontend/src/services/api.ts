@@ -16,6 +16,7 @@ import {
   DocumentChunk,
   SystemHealth,
   SystemStats,
+  UnsafeExecStatusResponse,
   Memory,
   MemoryStats,
   MemorySummary,
@@ -40,9 +41,25 @@ import {
   NotificationListResponse,
   NotificationPreferences,
   NotificationPreferencesUpdate,
+  SynthesisJob,
+  ResearchNote,
+  ResearchNoteListResponse,
+  ExperimentPlan,
+  ExperimentPlanListResponse,
+  ExperimentPlanGenerateRequest,
+  ExperimentPlanUpdateRequest,
+  ExperimentRun,
+  ExperimentRunListResponse,
+  ExperimentRunCreateRequest,
+  ExperimentRunUpdateRequest,
+  ExperimentRunStartRequest,
+  ExperimentRunStartResponse,
   ArxivSearchResponse,
   ToolAudit,
   LLMUsageSummaryResponse,
+  LLMRoutingSummaryResponse,
+  LLMRoutingExperimentRecommendationResponse,
+  LLMRoutingExperimentListResponse,
   LLMUsageEvent,
   APIKey,
   APIKeyCreate,
@@ -54,6 +71,101 @@ import {
   RepoReportJobCreate,
   RepoReportJobListResponse,
   AvailableSectionsResponse,
+  MCPToolInfo,
+  MCPKeyConfigResponse,
+  MCPKeyConfigUpdate,
+  MCPToolConfigResponse,
+  MCPToolConfigUpdate,
+  MCPSourceAccessResponse,
+  MCPSourceAccessUpdate,
+  AgentJob,
+  AgentJobCreate,
+  AgentJobFromTemplate,
+  AgentJobUpdate,
+  AgentJobListResponse,
+  AgentJobTemplate,
+  AgentJobTemplateListResponse,
+  AgentJobStats,
+  AgentJobCheckpoint,
+  // Chain types
+  AgentJobChainDefinition,
+  AgentJobChainDefinitionCreate,
+  AgentJobChainDefinitionUpdate,
+  AgentJobChainDefinitionListResponse,
+  AgentJobFromChainCreate,
+  AgentJobChainStatus,
+  AgentJobFeedback,
+  AgentJobFeedbackCreate,
+  AgentJobFeedbackListResponse,
+  AgentTaskMemoryGraph,
+  // Research Inbox
+  ResearchInboxItem,
+  ResearchInboxListResponse,
+  ResearchInboxItemUpdateRequest,
+  ResearchInboxStats,
+  ResearchMonitorProfile,
+  CodePatchProposal,
+  PatchPR,
+  PatchPRListResponse,
+  PatchPRCreateRequest,
+  PatchPRFromChainRequest,
+  PatchPRUpdateRequest,
+  PatchPRApproveRequest,
+  PatchPRMergeRequest,
+  PatchPRMergeResponse,
+  ArtifactDraft,
+  ArtifactDraftListResponse,
+  RetrievalTrace,
+  // Training types
+  TrainingDataset,
+  TrainingDatasetCreate,
+  TrainingDatasetListResponse,
+  DatasetType,
+  DatasetSampleCreate,
+  DatasetSamplesResponse,
+  AddSamplesResponse,
+  DatasetValidationResult,
+  DatasetStats,
+  GenerateDatasetRequest,
+  TrainingJob,
+  TrainingJobCreate,
+  TrainingJobListResponse,
+  TrainingJobDetail,
+  TrainingCheckpoint,
+  TrainingStatsResponse,
+  BaseModelInfo,
+  ModelAdapter,
+  ModelAdapterListResponse,
+  ModelAdapterStats,
+  DeploymentStatusResponse,
+  TestAdapterResponse,
+  TrainingEvalTemplatesResponse,
+  TrainingEvalRunResponse,
+  LatexStatusResponse,
+  LatexCompileRequest,
+  LatexCompileResponse,
+  LatexCopilotRequest,
+  LatexCopilotResponse,
+  LatexCopilotFixRequest,
+  LatexCopilotFixResponse,
+  LatexMathCopilotRequest,
+  LatexMathCopilotResponse,
+  LatexCitationsRequest,
+  LatexCitationsResponse,
+  LatexApplyUnifiedDiffRequest,
+  LatexApplyUnifiedDiffResponse,
+  LatexProjectListResponse,
+  LatexProjectResponse,
+  LatexProjectCreateRequest,
+  LatexProjectUpdateRequest,
+  LatexProjectCompileRequest,
+  LatexProjectCompileResponse,
+  LatexProjectPublishRequest,
+  LatexProjectPublishResponse,
+  LatexProjectFileListResponse,
+  LatexProjectFileUploadResponse,
+  LatexCompileJobCreateRequest,
+  LatexCompileJobResponse,
 } from '../types';
 
 const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
@@ -132,15 +244,16 @@ class ApiClient {
     this.client.interceptors.response.use(
       (response) => response,
       (error: AxiosError<ApiErrorResponse>) => {
+        const suppressToast = Boolean((error.config as any)?.suppressToast);
         const status = error.response?.status;
         if (status === 401) {
           this.clearToken();
           toast.error('Session expired. Please login again.');
           window.location.href = '/login';
         } else if (status && status >= 500) {
-          toast.error('Server error. Please try again later.');
+          if (!suppressToast) toast.error('Server error. Please try again later.');
         } else if (error.response?.data) {
-          toast.error(getErrorMessage(error));
+          if (!suppressToast) toast.error(getErrorMessage(error));
         }
         return Promise.reject(error);
       }
@@ -235,15 +348,79 @@ class ApiClient {
     }
   }
 
-  async createChatSession(title?: string): Promise<ChatSession> {
+  async createChatSession(title?: string, extra_metadata?: Record<string, any>): Promise<ChatSession> {
     const response = await this.client.post('/api/v1/chat/sessions', {
       title,
+      extra_metadata,
     });
     return response.data;
   }
 
   async getChatSession(sessionId: string): Promise<ChatSession> {
     const response = await this.client.get(`/api/v1/chat/sessions/${sessionId}`);
+    return response.data;
+  }
+
+  async updateChatSession(
+    sessionId: string,
+    payload: { title?: string | null; extra_metadata?: Record<string, any> | null }
+  ): Promise<ChatSession> {
+    const response = await this.client.patch(`/api/v1/chat/sessions/${sessionId}`, payload);
+    return response.data;
+  }
+
+  // ==================== AI Hub Plugin (Admin) ====================
+  async createAIHubPlugin(payload: {
+    plugin_type: 'dataset_preset' | 'eval_template';
+    plugin: Record<string, any>;
+    overwrite?: boolean;
+  }): Promise<{ ok: boolean; plugin_type: string; plugin_id: string; path: string; overwritten: boolean; warnings?: string[] }> {
+    const response = await this.client.post('/api/v1/admin/ai-hub/plugins/create', payload);
+    return response.data;
+  }
+
+  async getAIHubCustomerProfile(): Promise<{ profile: any | null; raw?: string | null }> {
+    const response = await this.client.get('/api/v1/admin/ai-hub/customer-profile');
+    return response.data;
+  }
+
+  async setAIHubCustomerProfile(payload: { profile: { name: string; keywords: string[]; preferred_workflows: string[]; notes?: string | null } }): Promise<any> {
+    const response = await this.client.post('/api/v1/admin/ai-hub/customer-profile', payload);
+    return response.data;
+  }
+
+  async clearAIHubRecommendationFeedback(profileId: string): Promise<{ ok: boolean; deleted: number }> {
+    const response = await this.client.delete('/api/v1/admin/ai-hub/recommendation-feedback', {
+      params: { profile_id: profileId },
+    });
+    return response.data;
+  }
+
+  async getAIHubRecommendationFeedbackStats(profileId: string, limit: number = 50): Promise<{ profile_id: string; rows: any[] }> {
+    const response = await this.client.get('/api/v1/admin/ai-hub/recommendation-feedback/stats', {
+      params: { profile_id: profileId, limit },
+    });
+    return response.data;
+  }
+
+  async backfillAIHubRecommendationFeedbackProfileId(payload: { profile_id: string; profile_name: string }): Promise<{ ok: boolean; profile_id: string; updated: number }> {
+    const response = await this.client.post('/api/v1/admin/ai-hub/recommendation-feedback/backfill-profile-id', null, {
+      params: payload,
+    });
+    return response.data;
+  }
+
+  // ==================== AI Scientist learning loop ====================
+  async listAIHubRecommendationFeedback(jobId: string): Promise<{ items: any[]; total: number }> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/ai-hub/recommendation-feedback`);
+    return response.data;
+  }
+
+  async submitAIHubRecommendationFeedback(
+    jobId: string,
+    payload: { workflow: 'triage' | 'extraction' | 'literature'; item_type: 'dataset_preset' | 'eval_template'; item_id: string; decision: 'accept' | 'reject'; reason?: string | null }
+  ): Promise<any> {
+    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/ai-hub/recommendation-feedback`, payload);
     return response.data;
   }
 
@@ -303,6 +480,46 @@ class ApiClient {
 
   async getDocument(documentId: string): Promise<Document> {
     const response = await this.client.get(`/api/v1/documents/${documentId}`);
+    return response.data;
+  }
+
+  async ingestUrl(payload: {
+    url: string;
+    title?: string;
+    tags?: string[];
+    follow_links?: boolean;
+    max_pages?: number;
+    max_depth?: number;
+    same_domain_only?: boolean;
+    one_document_per_page?: boolean;
+    allow_private_networks?: boolean;
+    max_content_chars?: number;
+  }): Promise<{
+    action: string;
+    root_url?: string;
+    total_pages_scraped?: number;
+    created?: Array<{ document_id: string; url: string; title?: string }>;
+    updated?: Array<{ document_id: string; url: string; title?: string }>;
+    skipped?: Array<any>;
+    errors?: Array<any>;
+  }> {
+    const response = await this.client.post('/api/v1/documents/ingest-url', payload);
+    return response.data;
+  }
+
+  async ingestUrlAsync(payload: {
+    url: string;
+    title?: string;
+    tags?: string[];
+    follow_links?: boolean;
+    max_pages?: number;
+    max_depth?: number;
+    same_domain_only?: boolean;
+    one_document_per_page?: boolean;
+    allow_private_networks?: boolean;
+    max_content_chars?: number;
+  }): Promise<{ job_id: string; progress_key: string }> {
+    const response = await this.client.post('/api/v1/documents/ingest-url/async', payload);
     return response.data;
   }
 
@@ -712,6 +929,136 @@ class ApiClient {
     return response.data;
   }
 
+  // Agent Builder - Templates
+  async listAgentTemplates(category?: string): Promise<{
+    templates: Array<{
+      template_id: string;
+      name: string;
+      display_name: string;
+      description: string;
+      category: string;
+      capabilities: string[];
+      tool_count: number;
+      use_cases: string[];
+    }>;
+    categories: string[];
+    total: number;
+  }> {
+    const response = await this.client.get('/api/v1/agent/templates', {
+      params: category ? { category } : undefined,
+    });
+    return response.data;
+  }
+
+  async getAgentTemplate(templateId: string): Promise<{
+    template_id: string;
+    name: string;
+    display_name: string;
+    description: string;
+    category: string;
+    system_prompt: string;
+    capabilities: string[];
+    tool_whitelist?: string[];
+    priority: number;
+    use_cases: string[];
+  }> {
+    const response = await this.client.get(`/api/v1/agent/templates/${templateId}`);
+    return response.data;
+  }
+
+  async createAgentFromTemplate(
+    templateId: string,
+    name?: string,
+    displayName?: string
+  ): Promise<{
+    message: string;
+    agent: AgentDefinition;
+    template_id: string;
+  }> {
+    const response = await this.client.post(`/api/v1/agent/templates/${templateId}/create`, null, {
+      params: { name, display_name: displayName },
+    });
+    return response.data;
+  }
+
+  // Agent Builder - Lifecycle
+  async publishAgent(agentId: string): Promise<{
+    message: string;
+    agent_id: string;
+    is_active: boolean;
+    lifecycle_status: string;
+  }> {
+    const response = await this.client.post(`/api/v1/agent/agents/${agentId}/publish`);
+    return response.data;
+  }
+
+  async archiveAgent(agentId: string): Promise<{
+    message: string;
+    agent_id: string;
+    lifecycle_status: string;
+  }> {
+    const response = await this.client.post(`/api/v1/agent/agents/${agentId}/archive`);
+    return response.data;
+  }
+
+  // Agent Builder - Testing
+  async testAgentRouting(
+    agentId: string,
+    message: string
+  ): Promise<{
+    agent: { id: string; name: string; display_name: string };
+    test_message: string;
+    intent_analysis: {
+      detected_capabilities: string[];
+      intent_keywords: string[];
+      score: number;
+    };
+    routing_result: {
+      would_route: boolean;
+      selected_agent: string | null;
+      routing_reason: string;
+    };
+    available_tools: string[];
+    total_tools_available: number;
+  }> {
+    const response = await this.client.post(`/api/v1/agent/agents/${agentId}/test`, null, {
+      params: { message },
+    });
+    return response.data;
+  }
+
+  // Agent Builder - Analytics
+  async getAgentAnalytics(
+    agentId: string,
+    days: number = 30
+  ): Promise<{
+    agent: {
+      id: string;
+      name: string;
+      display_name: string;
+      is_active: boolean;
+    };
+    period_days: number;
+    summary: {
+      total_turns: number;
+      unique_conversations: number;
+      handoffs_received: number;
+      total_tool_calls: number;
+    };
+    tool_usage: Array<{
+      tool_name: string;
+      call_count: number;
+      avg_execution_time_ms: number | null;
+    }>;
+    status_distribution: Record<string, number>;
+    daily_trend: Array<{ date: string; turns: number }>;
+  }> {
+    const response = await this.client.get(`/api/v1/agent/agents/${agentId}/analytics`, {
+      params: { days },
+    });
+    return response.data;
+  }
+
   async mergeKGEntities(sourceId: string, targetId: string): Promise<{ message: string }> {
     const response = await this.client.post('/api/v1/kg/entities/merge', { source_id: sourceId, target_id: targetId });
     return response.data;
@@ -838,6 +1185,44 @@ class ApiClient {
     const response = await this.client.get('/api/v1/usage/llm/events', { params });
     return response.data;
   }
+
+  async getLLMRoutingSummary(params?: {
+    provider?: string;
+    model?: string;
+    task_type?: string;
+    user_id?: string;
+    date_from?: string;
+    date_to?: string;
+    limit?: number;
+    include_unrouted?: boolean;
+  }): Promise<LLMRoutingSummaryResponse> {
+    const response = await this.client.get('/api/v1/usage/llm/routing/summary', { params });
+    return response.data;
+  }
+
+
+  async getLLMRoutingExperimentRecommendation(params: {
+    experiment_id: string;
+    agent_id?: string;
+    user_id?: string;
+    date_from?: string;
+    date_to?: string;
+    limit?: number;
+  }): Promise<LLMRoutingExperimentRecommendationResponse> {
+    const response = await this.client.get('/api/v1/usage/llm/routing/experiments/recommendation', { params });
+    return response.data;
+  }
+
+
+  async listLLMRoutingExperiments(params?: {
+    enabled_only?: boolean;
+    include_system?: boolean;
+    search?: string;
+  }): Promise<LLMRoutingExperimentListResponse> {
+    const response = await this.client.get('/api/v1/usage/llm/routing/experiments', { params });
+    return response.data;
+  }
+
 
   async getKGChunk(
     chunkId: string,
@@ -1175,6 +1560,15 @@ class ApiClient {
     return response.data;
   }
 
+  async searchGitDocumentSources(params?: { q?: string; limit?: number }): Promise<DocumentSource[]> {
+    const searchParams = new URLSearchParams();
+    if (params?.q) searchParams.set('q', params.q);
+    if (typeof params?.limit === 'number') searchParams.set('limit', String(params.limit));
+    const qs = searchParams.toString();
+    const response = await this.client.get(`/api/v1/documents/sources/git-search${qs ? `?${qs}` : ''}`);
+    return response.data;
+  }
+
   async attachPresentationAudio(
     documentId: string,
     file: File,
@@ -1309,6 +1703,11 @@ class ApiClient {
     return response.data;
   }
 
+  async getUnsafeExecAvailability(): Promise<UnsafeExecStatusResponse> {
+    const response = await this.client.get('/api/v1/system/unsafe-exec/status');
+    return response.data;
+  }
+
   async getSystemStats(): Promise<SystemStats> {
     const response = await this.client.get('/api/v1/admin/stats');
     return response.data;
@@ -1346,6 +1745,26 @@ class ApiClient {
 
   async updateFeatureFlags(flags: Partial<{ knowledge_graph_enabled: boolean; summarization_enabled: boolean; auto_summarize_on_process: boolean }>): Promise<{ updated: Record<string, boolean> }>{
     const response = await this.client.post('/api/v1/admin/flags', flags);
+    return response.data;
+  }
+
+  async getUnsafeExecStatus(): Promise<any> {
+    const response = await this.client.get('/api/v1/admin/unsafe-exec/status');
+    return response.data;
+  }
+
+  async updateUnsafeExecConfig(payload: { enabled?: boolean; backend?: 'subprocess' | 'docker'; docker_image?: string }): Promise<any> {
+    const response = await this.client.post('/api/v1/admin/unsafe-exec/config', payload);
+    return response.data;
+  }
+
+  async pullUnsafeExecDockerImage(payload?: { image?: string }): Promise<any> {
+    const response = await this.client.post('/api/v1/admin/unsafe-exec/docker-pull', payload || {});
+    return response.data;
+  }
+
+  async checkUnsafeExecDockerSandbox(payload?: { image?: string }): Promise<any> {
+    const response = await this.client.post('/api/v1/admin/unsafe-exec/docker-check', payload || {});
     return response.data;
   }
 
@@ -1598,6 +2017,23 @@ class ApiClient {
     const wsUrl = `${protocol}//${host}${basePath}?token=${encodeURIComponent(token)}`;
     console.log('Creating ingestion progress WebSocket connection to:', wsUrl);
     return new WebSocket(wsUrl);
+  }
+
+  createUrlIngestProgressWebSocket(jobId: string): WebSocket {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      throw new Error('No authentication token found. Please log in.');
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/api/v1/documents/ingest-url/${jobId}/progress?token=${encodeURIComponent(token)}`;
+    console.log('Creating URL ingest progress WebSocket connection to:', wsUrl);
+    return new WebSocket(wsUrl);
+  }
+
+  async cancelUrlIngest(jobId: string): Promise<{ message: string; job_id: string }> {
+    const response = await this.client.post(`/api/v1/documents/ingest-url/${jobId}/cancel`);
+    return response.data;
   }
 
   async clearSourceError(sourceId: string): Promise<{ message: string }> {
@@ -2025,6 +2461,56 @@ class ApiClient {
     return response.data;
   }
 
+  // ==================== MCP Configuration endpoints ====================
+
+  async listMCPTools(): Promise<MCPToolInfo[]> {
+    const response = await this.client.get('/api/v1/mcp-config/tools');
+    return response.data;
+  }
+
+  async getMCPKeyConfig(keyId: string): Promise<MCPKeyConfigResponse> {
+    const response = await this.client.get(`/api/v1/mcp-config/keys/${keyId}/config`);
+    return response.data;
+  }
+
+  async updateMCPKeyConfig(keyId: string, data: MCPKeyConfigUpdate): Promise<MCPKeyConfigResponse> {
+    const response = await this.client.patch(`/api/v1/mcp-config/keys/${keyId}/config`, data);
+    return response.data;
+  }
+
+  async updateMCPToolConfig(
+    keyId: string,
+    toolName: string,
+    data: MCPToolConfigUpdate
+  ): Promise<MCPToolConfigResponse> {
+    const response = await this.client.put(
+      `/api/v1/mcp-config/keys/${keyId}/tools/${toolName}`,
+      data
+    );
+    return response.data;
+  }
+
+  async listMCPSourceAccess(keyId: string): Promise<MCPSourceAccessResponse[]> {
+    const response = await this.client.get(`/api/v1/mcp-config/keys/${keyId}/sources`);
+    return response.data;
+  }
+
+  async updateMCPSourceAccess(
+    keyId: string,
+    sourceId: string,
+    data: MCPSourceAccessUpdate
+  ): Promise<MCPSourceAccessResponse> {
+    const response = await this.client.put(
+      `/api/v1/mcp-config/keys/${keyId}/sources/${sourceId}`,
+      data
+    );
+    return response.data;
+  }
+
+  async removeMCPSourceAccess(keyId: string, sourceId: string): Promise<void> {
+    await this.client.delete(`/api/v1/mcp-config/keys/${keyId}/sources/${sourceId}`);
+  }
+
   // ==================== Repository Report endpoints ====================
 
   async getRepoReportSections(): Promise<AvailableSectionsResponse> {
@@ -2112,6 +2598,1248 @@ class ApiClient {
     console.log('Creating repo report progress WebSocket connection to:', wsUrl);
     return new WebSocket(wsUrl);
   }
+
+  // ==================== Autonomous Agent Job endpoints ====================
+
+  async createAgentJob(data: AgentJobCreate): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs', data);
+    return response.data;
+  }
+
+  async createAgentJobFromTemplate(data: AgentJobFromTemplate): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/from-template', data);
+    return response.data;
+  }
+
+  // ==================== User Preferences ====================
+
+  async getMyPreferences(): Promise<any> {
+    const response = await this.client.get('/api/v1/users/me/preferences');
+    return response.data;
+  }
+
+  async updateMyPreferences(updates: Record<string, any>): Promise<any> {
+    const response = await this.client.put('/api/v1/users/me/preferences', updates);
+    return response.data;
+  }
+
+  async listAgentJobs(params?: {
+    status?: string;
+    job_type?: string;
+    swarm_only?: boolean;
+    swarm_min_consensus?: number;
+    sort_by?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<AgentJobListResponse> {
+    const response = await this.client.get('/api/v1/agent-jobs', { params });
+    return response.data;
+  }
+
+  async getAgentJob(jobId: string): Promise<AgentJob> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}`);
+    return response.data;
+  }
+
+  async updateAgentJob(jobId: string, data: AgentJobUpdate): Promise<AgentJob> {
+    const response = await this.client.patch(`/api/v1/agent-jobs/${jobId}`, data);
+    return response.data;
+  }
+
+  async deleteAgentJob(jobId: string): Promise<void> {
+    await this.client.delete(`/api/v1/agent-jobs/${jobId}`);
+  }
+
+  async performAgentJobAction(
+    jobId: string,
+    action: 'pause' | 'resume' | 'cancel' | 'restart' | 'generate_summary'
+  ): Promise<AgentJob> {
+    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/action`, { action });
+    return response.data;
+  }
+
+  async getAgentJobStats(): Promise<AgentJobStats> {
+    const response = await this.client.get('/api/v1/agent-jobs/stats');
+    return response.data;
+  }
+
+  async listAgentJobTemplates(category?: string): Promise<AgentJobTemplateListResponse> {
+    const response = await this.client.get('/api/v1/agent-jobs/templates', {
+      params: category ? { category } : undefined,
+    });
+    return response.data;
+  }
+
+  async getAgentJobLog(
+    jobId: string,
+    limit: number = 50,
+    offset: number = 0
+  ): Promise<{ entries: Array<Record<string, any>>; total: number; has_more: boolean }> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/log`, {
+      params: { limit, offset },
+    });
+    return response.data;
+  }
+
+  async getAgentJobCheckpoints(jobId: string): Promise<AgentJobCheckpoint[]> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/checkpoints`);
+    return response.data;
+  }
+
+  // WebSocket for agent job progress
+  createAgentJobProgressWebSocket(jobId: string): WebSocket {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      throw new Error('No authentication token found. Please log in.');
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/api/v1/agent-jobs/${jobId}/progress?token=${encodeURIComponent(token)}`;
+    console.log('Creating agent job progress WebSocket connection to:', wsUrl);
+    return new WebSocket(wsUrl);
+  }
+
+  // ==================== Agent Job Chain Methods ====================
+
+  async listChainDefinitions(): Promise<AgentJobChainDefinitionListResponse> {
+    const response = await this.client.get('/api/v1/agent-jobs/chains');
+    return response.data;
+  }
+
+  async createChainDefinition(data: AgentJobChainDefinitionCreate): Promise<AgentJobChainDefinition> {
+    const response = await this.client.post('/api/v1/agent-jobs/chains', data);
+    return response.data;
+  }
+
+  async getChainDefinition(chainId: string): Promise<AgentJobChainDefinition> {
+    const response = await this.client.get(`/api/v1/agent-jobs/chains/${chainId}`);
+    return response.data;
+  }
+
+  async updateChainDefinition(chainId: string, data: AgentJobChainDefinitionUpdate): Promise<AgentJobChainDefinition> {
+    const response = await this.client.patch(`/api/v1/agent-jobs/chains/${chainId}`, data);
+    return response.data;
+  }
+
+  async deleteChainDefinition(chainId: string): Promise<void> {
+    await this.client.delete(`/api/v1/agent-jobs/chains/${chainId}`);
+  }
+
+  async createJobFromChain(data: AgentJobFromChainCreate): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/from-chain', data);
+    return response.data;
+  }
+
+  async getChainStatus(jobId: string): Promise<AgentJobChainStatus> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/chain-status`);
+    return response.data;
+  }
+
+  async saveAgentJobAsChain(
+    jobId: string,
+    data?: { name?: string; display_name?: string; description?: string }
+  ): Promise<AgentJobChainDefinition> {
+    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/save-as-chain`, data || {});
+    return response.data;
+  }
+
+  // ==================== Agent Job Export Methods ====================
+
+  async exportJobResults(
+    jobId: string,
+    format: 'docx' | 'pdf' | 'pptx',
+    options?: {
+      style?: 'professional' | 'technical' | 'casual';
+      includeLog?: boolean;
+      includeMetadata?: boolean;
+      enhance?: boolean;
+    }
+  ): Promise<Blob> {
+    const params = new URLSearchParams({
+      format,
+      style: options?.style || 'professional',
+      include_log: String(options?.includeLog || false),
+      include_metadata: String(options?.includeMetadata !== false),
+      enhance: String(options?.enhance || false),
+    });
+
+    // Use longer timeout for enhanced exports (LLM processing)
+    const timeout = options?.enhance ? 120000 : 30000;
+
+    const response = await this.client.get(
+      `/api/v1/agent-jobs/${jobId}/export?${params.toString()}`,
+      { responseType: 'blob', timeout }
+    );
+    return response.data;
+  }
+
+  async downloadJobExport(
+    jobId: string,
+    jobName: string,
+    format: 'docx' | 'pdf' | 'pptx',
+    options?: {
+      style?: 'professional' | 'technical' | 'casual';
+      includeLog?: boolean;
+      includeMetadata?: boolean;
+      enhance?: boolean;
+    }
+  ): Promise<void> {
+    const blob = await this.exportJobResults(jobId, format, options);
+
+    // Create download link
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+
+    // Sanitize filename
+    const safeName = jobName.replace(/[^a-zA-Z0-9\s\-_]/g, '').trim().substring(0, 50) || 'agent_job';
+    link.download = `${safeName}_report.${format}`;
+
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  }
+
+  // ============================================================================
+  // Agent Job Memory Methods
+  // ============================================================================
+
+  async getJobMemories(jobId: string): Promise<{
+    job_id: string;
+    memories: Array<{
+      id: string;
+      type: string;
+      content: string;
+      importance_score: number;
+      tags: string[];
+      context: Record<string, any>;
+      access_count: number;
+      created_at: string;
+    }>;
+    total: number;
+  }> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/memories`);
+    return response.data;
+  }
+
+  async submitAgentJobFeedback(
+    jobId: string,
+    payload: AgentJobFeedbackCreate
+  ): Promise<AgentJobFeedback> {
+    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/feedback`, payload);
+    return response.data;
+  }
+
+  async listAgentJobFeedback(jobId: string, limit: number = 50): Promise<AgentJobFeedbackListResponse> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/feedback`, {
+      params: { limit },
+    });
+    return response.data;
+  }
+
+  async extractJobMemories(jobId: string): Promise<{
+    job_id: string;
+    memories_created: number;
+    memories: Array<{
+      id: string;
+      type: string;
+      content: string;
+      importance_score: number;
+      tags: string[];
+    }>;
+  }> {
+    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/memories/extract`);
+    return response.data;
+  }
+
+  async createJobMemory(
+    jobId: string,
+    data: {
+      memory_type: string;
+      content: string;
+      importance?: number;
+      tags?: string;
+    }
+  ): Promise<{
+    id: string;
+    job_id: string;
+    type: string;
+    content: string;
+    importance_score: number;
+    tags: string[];
+    created_at: string;
+  }> {
+    const params = new URLSearchParams({
+      memory_type: data.memory_type,
+      content: data.content,
+      importance: String(data.importance ?? 0.5),
+    });
+    if (data.tags) {
+      params.append('tags', data.tags);
+    }
+    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/memories?${params.toString()}`);
+    return response.data;
+  }
+
+  async deleteJobMemories(jobId: string): Promise<{ job_id: string; deleted_count: number }> {
+    const response = await this.client.delete(`/api/v1/agent-jobs/${jobId}/memories`);
+    return response.data;
+  }
+
+  async getAgentJobMemoryStats(): Promise<{
+    total_memories: number;
+    by_type: Record<string, number>;
+    job_sourced: number;
+    chat_sourced: number;
+    manual: number;
+    most_accessed: Array<{
+      id: string;
+      type: string;
+      content: string;
+      access_count: number;
+    }>;
+    most_important: Array<{
+      id: string;
+      type: string;
+      content: string;
+      importance: number;
+    }>;
+  }> {
+    const response = await this.client.get('/api/v1/agent-jobs/memory/stats');
+    return response.data;
+  }
+
+  async searchAgentJobMemories(
+    query: string,
+    options?: { memoryTypes?: string; limit?: number }
+  ): Promise<{
+    query: string;
+    memories: Array<{
+      id: string;
+      type: string;
+      content: string;
+      importance_score: number;
+      tags: string[];
+      job_id: string | null;
+      access_count: number;
+      created_at: string;
+    }>;
+    total: number;
+  }> {
+    const params = new URLSearchParams({ query });
+    if (options?.memoryTypes) {
+      params.append('memory_types', options.memoryTypes);
+    }
+    if (options?.limit) {
+      params.append('limit', String(options.limit));
+    }
+    const response = await this.client.get(`/api/v1/agent-jobs/memory/search?${params.toString()}`);
+    return response.data;
+  }
+
+  async listAgentLearningFeedback(options?: {
+    scope?: 'user' | 'customer' | 'team';
+    limit?: number;
+  }): Promise<AgentJobFeedbackListResponse> {
+    const response = await this.client.get('/api/v1/agent-jobs/memory/feedback', {
+      params: {
+        scope: options?.scope,
+        limit: options?.limit,
+      },
+    });
+    return response.data;
+  }
+
+  async getAgentTaskMemoryGraph(options?: {
+    limit?: number;
+    minLinkScore?: number;
+    maxEdges?: number;
+  }): Promise<AgentTaskMemoryGraph> {
+    const response = await this.client.get('/api/v1/agent-jobs/memory/graph', {
+      params: {
+        limit: options?.limit,
+        min_link_score: options?.minLinkScore,
+        max_edges: options?.maxEdges,
+      },
+    });
+    return response.data;
+  }
+
+  async getJobMemoryGraph(
+    jobId: string,
+    options?: { neighborDepth?: number; limit?: number }
+  ): Promise<AgentTaskMemoryGraph> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/memories/graph`, {
+      params: {
+        neighbor_depth: options?.neighborDepth,
+        limit: options?.limit,
+      },
+    });
+    return response.data;
+  }
+
+  // ==================== Synthesis ====================
+
+  async createSynthesisJob(data: {
+    job_type: string;
+    title: string;
+    document_ids: string[];
+    description?: string;
+    search_query?: string;
+    topic?: string;
+    options?: Record<string, any>;
+    output_format?: string;
+    output_style?: string;
+  }): Promise<SynthesisJob> {
+    const response = await this.client.post('/api/v1/synthesis', data);
+    return response.data;
+  }
+
+  async listSynthesisJobs(params?: {
+    status?: string;
+    job_type?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<{ jobs: SynthesisJob[]; total: number; page: number; page_size: number }> {
+    const response = await this.client.get('/api/v1/synthesis', { params });
+    return response.data;
+  }
+
+  async getSynthesisJob(jobId: string): Promise<SynthesisJob> {
+    const response = await this.client.get(`/api/v1/synthesis/${jobId}`);
+    return response.data;
+  }
+
+  async deleteSynthesisJob(jobId: string): Promise<{ success: boolean }> {
+    const response = await this.client.delete(`/api/v1/synthesis/${jobId}`);
+    return response.data;
+  }
+
+  async cancelSynthesisJob(jobId: string): Promise<{ success: boolean }> {
+    const response = await this.client.post(`/api/v1/synthesis/${jobId}/cancel`);
+    return response.data;
+  }
+
+  async downloadSynthesisResult(jobId: string, title: string): Promise<void> {
+    const response = await this.client.get(`/api/v1/synthesis/${jobId}/download`, {
+      responseType: 'blob',
+    });
+
+    // Get content type
+    const contentType = response.headers['content-type'];
+    let ext = 'docx';
+    if (contentType?.includes('pdf')) ext = 'pdf';
+    else if (contentType?.includes('presentation')) ext = 'pptx';
+
+    // Create download
+    const blob = new Blob([response.data], { type: contentType });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${title}.${ext}`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  }
+
+  async quickSummary(data: {
+    document_ids: string[];
+    topic?: string;
+    max_length?: number;
+  }): Promise<{
+    topic: string;
+    summary: string;
+    word_count: number;
+    documents_analyzed: number;
+  }> {
+    const response = await this.client.post('/api/v1/synthesis/quick/summary', data);
+    return response.data;
+  }
+
+  async quickCompare(data: {
+    document_ids: string[];
+    topic?: string;
+  }): Promise<{
+    title: string;
+    content: string;
+    word_count: number;
+  }> {
+    const response = await this.client.post('/api/v1/synthesis/quick/compare', data);
+    return response.data;
+  }
+
+  async getSynthesisTypesInfo(): Promise<{
+    types: Array<{
+      value: string;
+      label: string;
+      description: string;
+      max_documents: number;
+      typical_output_length: string;
+    }>;
+    output_formats: string[];
+    output_styles: string[];
+  }> {
+    const response = await this.client.get('/api/v1/synthesis/types/info');
+    return response.data;
+  }
+
+  // ==================== Research Inbox ====================
+
+  async listResearchInboxItems(params?: {
+    status?: string;
+    item_type?: string;
+    customer?: string;
+    q?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<ResearchInboxListResponse> {
+    const response = await this.client.get('/api/v1/research/inbox', { params });
+    return response.data;
+  }
+
+  async getResearchInboxStats(): Promise<ResearchInboxStats> {
+    const response = await this.client.get('/api/v1/research/inbox/stats');
+    return response.data;
+  }
+
+  async updateResearchInboxItem(
+    itemId: string,
+    data: ResearchInboxItemUpdateRequest
+  ): Promise<ResearchInboxItem> {
+    const response = await this.client.patch(`/api/v1/research/inbox/${itemId}`, data);
+    return response.data;
+  }
+
+  async bulkUpdateResearchInboxItems(data: { item_ids: string[] } & ResearchInboxItemUpdateRequest): Promise<{ updated: number }> {
+    const response = await this.client.patch(`/api/v1/research/inbox/bulk`, data);
+    return response.data;
+  }
+
+  async extractReposForInboxItem(itemId: string): Promise<{ item_id: string; repos: any[]; count: number }> {
+    const response = await this.client.post(`/api/v1/research/inbox/${itemId}/extract-repos`);
+    return response.data;
+  }
+
+  async upsertResearchMonitorProfile(data: {
+    customer?: string;
+    muted_tokens?: string[];
+    muted_patterns?: string[];
+    notes?: string;
+    merge_lists?: boolean;
+  }): Promise<ResearchMonitorProfile> {
+    const response = await this.client.post('/api/v1/research/monitor-profiles/upsert', data);
+    return response.data;
+  }
+
+  async listResearchMonitorProfiles(params?: { customer?: string }): Promise<ResearchMonitorProfile[]> {
+    const response = await this.client.get('/api/v1/research/monitor-profiles', { params });
+    return response.data;
+  }
+
+  // ==================== Code Patches ====================
+
+  async getCodePatchProposal(proposalId: string): Promise<CodePatchProposal> {
+    const response = await this.client.get(`/api/v1/code-patches/${proposalId}`);
+    return response.data;
+  }
+
+  async downloadCodePatchProposal(proposalId: string, title: string): Promise<void> {
+    const response = await this.client.get(`/api/v1/code-patches/${proposalId}/download`, {
+      responseType: 'blob',
+    });
+    const blob = new Blob([response.data], { type: 'text/plain' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${title || 'code_patch'}.patch`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  }
+
+  async downloadDocumentSourceZip(sourceId: string, title?: string): Promise<void> {
+    const response = await this.client.get(`/api/v1/documents/sources/${encodeURIComponent(String(sourceId))}/download-zip`, {
+      responseType: 'blob',
+    });
+    const blob = new Blob([response.data], { type: 'application/zip' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = `${title || 'source'}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  }
+
+  async applyCodePatchProposal(proposalId: string): Promise<{
+    proposal_id: string;
+    status: string;
+    applied: any[];
+    errors: any[];
+  }> {
+    const response = await this.client.post(`/api/v1/code-patches/${proposalId}/apply`);
+    return response.data;
+  }
+
+
+
+  // ==================== Patch PRs ====================
+
+  async listPatchPRs(params?: { status?: string; limit?: number; offset?: number }): Promise<PatchPRListResponse> {
+    const response = await this.client.get('/api/v1/patch-prs', { params });
+    return response.data;
+  }
+
+  async getPatchPR(prId: string): Promise<PatchPR> {
+    const response = await this.client.get(`/api/v1/patch-prs/${prId}`);
+    return response.data;
+  }
+
+  async createPatchPR(data: PatchPRCreateRequest): Promise<PatchPR> {
+    const response = await this.client.post('/api/v1/patch-prs', data);
+    return response.data;
+  }
+
+  async createPatchPRFromChain(data: PatchPRFromChainRequest): Promise<PatchPR> {
+    const response = await this.client.post('/api/v1/patch-prs/from-chain', data);
+    return response.data;
+  }
+
+  async updatePatchPR(prId: string, data: PatchPRUpdateRequest): Promise<PatchPR> {
+    const response = await this.client.patch(`/api/v1/patch-prs/${prId}`, data);
+    return response.data;
+  }
+
+  async approvePatchPR(prId: string, data: PatchPRApproveRequest = {}): Promise<PatchPR> {
+    const response = await this.client.post(`/api/v1/patch-prs/${prId}/approve`, data);
+    return response.data;
+  }
+
+  async mergePatchPR(prId: string, data: PatchPRMergeRequest = {}): Promise<PatchPRMergeResponse> {
+    const response = await this.client.post(`/api/v1/patch-prs/${prId}/merge`, data);
+    return response.data;
+  }
+
+  // ==================== Artifact Drafts ====================
+
+  async listArtifactDrafts(params?: {
+    artifact_type?: string;
+    status_filter?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<ArtifactDraftListResponse> {
+    const response = await this.client.get('/api/v1/artifact-drafts', { params });
+    return response.data;
+  }
+
+  async getArtifactDraft(draftId: string): Promise<ArtifactDraft> {
+    const response = await this.client.get(`/api/v1/artifact-drafts/${encodeURIComponent(String(draftId))}`);
+    return response.data;
+  }
+
+  async createArtifactDraftFromPresentation(jobId: string): Promise<ArtifactDraft> {
+    const response = await this.client.post(`/api/v1/artifact-drafts/from-presentation/${encodeURIComponent(String(jobId))}`);
+    return response.data;
+  }
+
+  async createArtifactDraftFromRepoReport(jobId: string): Promise<ArtifactDraft> {
+    const response = await this.client.post(`/api/v1/artifact-drafts/from-repo-report/${encodeURIComponent(String(jobId))}`);
+    return response.data;
+  }
+
+  async submitArtifactDraft(draftId: string, data: { note?: string } = {}): Promise<ArtifactDraft> {
+    const response = await this.client.post(`/api/v1/artifact-drafts/${encodeURIComponent(String(draftId))}/submit`, data);
+    return response.data;
+  }
+
+  async approveArtifactDraft(draftId: string, data: { note?: string } = {}): Promise<ArtifactDraft> {
+    const response = await this.client.post(`/api/v1/artifact-drafts/${encodeURIComponent(String(draftId))}/approve`, data);
+    return response.data;
+  }
+
+  async publishArtifactDraft(draftId: string): Promise<ArtifactDraft> {
+    const response = await this.client.post(`/api/v1/artifact-drafts/${encodeURIComponent(String(draftId))}/publish`);
+    return response.data;
+  }
+
+  async downloadArtifactDraft(draftId: string): Promise<void> {
+    const response = await this.client.get(`/api/v1/artifact-drafts/${encodeURIComponent(String(draftId))}/download`, {
+      responseType: 'blob',
+    });
+    const blob = new Blob([response.data], { type: response.headers['content-type'] || 'application/octet-stream' });
+    const cd = String(response.headers['content-disposition'] || '');
+    const filenameMatch = cd.match(/filename="?([^";]+)"?/i);
+    const filename = filenameMatch?.[1] || 'artifact';
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  }
+
+  // ==================== Retrieval Traces ====================
+
+  async getRetrievalTrace(traceId: string): Promise<RetrievalTrace> {
+    const response = await this.client.get(`/api/v1/retrieval-traces/${encodeURIComponent(String(traceId))}`);
+    return response.data;
+  }
+  // ==================== Research Notes ====================
+
+  async createResearchNote(data: {
+    title: string;
+    content_markdown: string;
+    tags?: string[];
+    source_synthesis_job_id?: string;
+    source_document_ids?: string[];
+  }): Promise<ResearchNote> {
+    const response = await this.client.post('/api/v1/research-notes', data);
+    return response.data;
+  }
+
+  async listResearchNotes(params?: {
+    q?: string;
+    tag?: string;
+    limit?: number;
+    offset?: number;
+    include_attribution_details?: boolean;
+  }): Promise<ResearchNoteListResponse> {
+    const response = await this.client.get('/api/v1/research-notes', { params });
+    return response.data;
+  }
+
+  async getResearchNote(noteId: string): Promise<ResearchNote> {
+    const response = await this.client.get(`/api/v1/research-notes/${noteId}`);
+    return response.data;
+  }
+
+  async updateResearchNote(
+    noteId: string,
+    data: { title?: string; content_markdown?: string; tags?: string[] }
+  ): Promise<ResearchNote> {
+    const response = await this.client.patch(`/api/v1/research-notes/${noteId}`, data);
+    return response.data;
+  }
+
+  async enforceResearchNoteCitations(
+    noteId: string,
+    data?: {
+      policy?: 'sentence' | 'paragraph';
+      update_content?: boolean;
+      append_bibliography?: boolean;
+      max_sources?: number;
+      max_source_chars?: number;
+      max_note_chars?: number;
+      use_vector_snippets?: boolean;
+      chunks_per_source?: number;
+      chunk_max_chars?: number;
+      chunk_query?: string;
+      strict?: boolean;
+      max_uncited_examples?: number;
+      document_ids?: string[];
+    }
+  ): Promise<ResearchNote> {
+    const response = await this.client.post(`/api/v1/research-notes/${noteId}/enforce-citations`, data || {});
+    return response.data;
+  }
+
+  async lintResearchNoteCitations(
+    noteId: string,
+    data?: { max_sources?: number; max_uncited_examples?: number; document_ids?: string[] }
+  ): Promise<ResearchNote> {
+    const response = await this.client.post(`/api/v1/research-notes/${noteId}/lint-citations`, data || {});
+    return response.data;
+  }
+
+  async lintRecentResearchNotes(data?: {
+    window_hours?: number;
+    max_notes?: number;
+    max_sources?: number;
+    max_uncited_examples?: number;
+  }): Promise<{ processed: number; updated: number; skipped: number; missing_sources: number }> {
+    const response = await this.client.post(`/api/v1/research-notes/lint-recent`, data || {});
+    return response.data;
+  }
+
+  async deleteResearchNote(noteId: string): Promise<void> {
+    await this.client.delete(`/api/v1/research-notes/${noteId}`);
+  }
+
+  // ==================== Experiments ====================
+
+  async generateExperimentPlan(data: ExperimentPlanGenerateRequest): Promise<ExperimentPlan> {
+    const response = await this.client.post('/api/v1/experiments/plans/generate', data);
+    return response.data;
+  }
+
+  async listExperimentPlansForNote(noteId: string, limit: number = 20): Promise<ExperimentPlanListResponse> {
+    const response = await this.client.get(`/api/v1/experiments/notes/${noteId}/plans`, { params: { limit } });
+    return response.data;
+  }
+
+  async getExperimentPlan(planId: string): Promise<ExperimentPlan> {
+    const response = await this.client.get(`/api/v1/experiments/plans/${planId}`);
+    return response.data;
+  }
+
+  async updateExperimentPlan(planId: string, data: ExperimentPlanUpdateRequest): Promise<ExperimentPlan> {
+    const response = await this.client.patch(`/api/v1/experiments/plans/${planId}`, data);
+    return response.data;
+  }
+
+  async createExperimentRun(planId: string, data: ExperimentRunCreateRequest): Promise<ExperimentRun> {
+    const response = await this.client.post(`/api/v1/experiments/plans/${planId}/runs`, data);
+    return response.data;
+  }
+
+  async listExperimentRuns(planId: string): Promise<ExperimentRunListResponse> {
+    const response = await this.client.get(`/api/v1/experiments/plans/${planId}/runs`);
+    return response.data;
+  }
+
+  async updateExperimentRun(runId: string, data: ExperimentRunUpdateRequest): Promise<ExperimentRun> {
+    const response = await this.client.patch(`/api/v1/experiments/runs/${runId}`, data);
+    return response.data;
+  }
+
+  async startExperimentRun(runId: string, data: ExperimentRunStartRequest): Promise<ExperimentRunStartResponse> {
+    const response = await this.client.post(`/api/v1/experiments/runs/${runId}/start`, data);
+    return response.data;
+  }
+
+  async syncExperimentRun(runId: string): Promise<{ run: ExperimentRun }> {
+    const response = await this.client.post(`/api/v1/experiments/runs/${runId}/sync`);
+    return response.data;
+  }
+
+  async appendExperimentRunToNote(runId: string): Promise<ResearchNote> {
+    const response = await this.client.post(`/api/v1/experiments/runs/${runId}/append-to-note`);
+    return response.data;
+  }
+
+  // ==================== Training Datasets ====================
+
+  async createTrainingDataset(data: TrainingDatasetCreate): Promise<TrainingDataset> {
+    const response = await this.client.post('/api/v1/training/datasets', data);
+    return response.data;
+  }
+
+  async listTrainingDatasets(params?: {
+    status?: string;
+    dataset_type?: string;
+    include_public?: boolean;
+    page?: number;
+    page_size?: number;
+  }): Promise<TrainingDatasetListResponse> {
+    const response = await this.client.get('/api/v1/training/datasets', { params });
+    return response.data;
+  }
+
+  async getTrainingDataset(datasetId: string): Promise<TrainingDataset> {
+    const response = await this.client.get(`/api/v1/training/datasets/${datasetId}`);
+    return response.data;
+  }
+
+  async updateTrainingDataset(
+    datasetId: string,
+    data: Partial<TrainingDatasetCreate>
+  ): Promise<TrainingDataset> {
+    const response = await this.client.patch(`/api/v1/training/datasets/${datasetId}`, data);
+    return response.data;
+  }
+
+  async deleteTrainingDataset(datasetId: string): Promise<void> {
+    await this.client.delete(`/api/v1/training/datasets/${datasetId}`);
+  }
+
+  async addDatasetSamples(
+    datasetId: string,
+    samples: DatasetSampleCreate[]
+  ): Promise<AddSamplesResponse> {
+    const response = await this.client.post(
+      `/api/v1/training/datasets/${datasetId}/samples`,
+      samples
+    );
+    return response.data;
+  }
+
+  async getDatasetSamples(
+    datasetId: string,
+    params?: {
+      page?: number;
+      page_size?: number;
+      flagged_only?: boolean;
+    }
+  ): Promise<DatasetSamplesResponse> {
+    const response = await this.client.get(`/api/v1/training/datasets/${datasetId}/samples`, {
+      params,
+    });
+    return response.data;
+  }
+
+  async validateDataset(datasetId: string): Promise<DatasetValidationResult> {
+    const response = await this.client.post(`/api/v1/training/datasets/${datasetId}/validate`);
+    return response.data;
+  }
+
+  async exportDataset(datasetId: string): Promise<{ file_path: string; file_size: number }> {
+    const response = await this.client.post(`/api/v1/training/datasets/${datasetId}/export`);
+    return response.data;
+  }
+
+  async getDatasetStats(datasetId: string): Promise<DatasetStats> {
+    const response = await this.client.get(`/api/v1/training/datasets/${datasetId}/stats`);
+    return response.data;
+  }
+
+  async generateDatasetFromDocuments(data: GenerateDatasetRequest): Promise<TrainingDataset> {
+    const response = await this.client.post(
+      '/api/v1/training/datasets/generate-from-documents',
+      data
+    );
+    return response.data;
+  }
+
+  async flagDatasetSample(sampleId: string, reason: string): Promise<{ success: boolean }> {
+    const response = await this.client.post(`/api/v1/training/datasets/${sampleId}/flag`, null, {
+      params: { reason },
+    });
+    return response.data;
+  }
+
+  // ==================== Training Jobs ====================
+
+  async createTrainingJob(data: TrainingJobCreate): Promise<TrainingJob> {
+    const response = await this.client.post('/api/v1/training/jobs', data);
+    return response.data;
+  }
+
+  // WebSocket connection for training job progress
+  createTrainingJobProgressWebSocket(jobId: string): WebSocket {
+    const token = localStorage.getItem('access_token');
+    if (!token) {
+      throw new Error('No authentication token found. Please log in.');
+    }
+    const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const host = window.location.host;
+    const wsUrl = `${protocol}//${host}/api/v1/training/jobs/${jobId}/progress?token=${encodeURIComponent(token)}`;
+    console.log('Creating training job progress WebSocket connection to:', wsUrl);
+    return new WebSocket(wsUrl);
+  }
+
+  async listTrainingJobs(params?: {
+    status?: string;
+    page?: number;
+    page_size?: number;
+  }): Promise<TrainingJobListResponse> {
+    const response = await this.client.get('/api/v1/training/jobs', { params });
+    return response.data;
+  }
+
+  async getTrainingJob(jobId: string): Promise<TrainingJobDetail> {
+    const response = await this.client.get(`/api/v1/training/jobs/${jobId}`);
+    return response.data;
+  }
+
+  async updateTrainingJob(
+    jobId: string,
+    data: Partial<{ name: string; description: string }>
+  ): Promise<TrainingJob> {
+    const response = await this.client.patch(`/api/v1/training/jobs/${jobId}`, data);
+    return response.data;
+  }
+
+  async deleteTrainingJob(jobId: string): Promise<void> {
+    await this.client.delete(`/api/v1/training/jobs/${jobId}`);
+  }
+
+  async startTrainingJob(jobId: string): Promise<TrainingJob> {
+    const response = await this.client.post(`/api/v1/training/jobs/${jobId}/start`);
+    return response.data;
+  }
+
+  async cancelTrainingJob(jobId: string): Promise<TrainingJob> {
+    const response = await this.client.post(`/api/v1/training/jobs/${jobId}/cancel`);
+    return response.data;
+  }
+
+  async getTrainingJobCheckpoints(jobId: string): Promise<{ checkpoints: TrainingCheckpoint[] }> {
+    const response = await this.client.get(`/api/v1/training/jobs/${jobId}/checkpoints`);
+    return response.data;
+  }
+
+  async getTrainingStats(): Promise<TrainingStatsResponse> {
+    const response = await this.client.get('/api/v1/training/jobs/stats');
+    return response.data;
+  }
+
+  async getAvailableBaseModels(): Promise<{ models: BaseModelInfo[] }> {
+    const response = await this.client.get('/api/v1/training/jobs/base-models');
+    return response.data;
+  }
+
+  async getAvailableTrainingBackends(): Promise<{
+    backends: Array<{ name: string; display_name: string; is_available: boolean }>;
+  }> {
+    const response = await this.client.get('/api/v1/training/jobs/backends');
+    return response.data;
+  }
+
+  // ==================== Model Registry ====================
+
+  async listModelAdapters(params?: {
+    status?: string;
+    base_model?: string;
+    is_deployed?: boolean;
+    include_public?: boolean;
+    page?: number;
+    page_size?: number;
+  }): Promise<ModelAdapterListResponse> {
+    const response = await this.client.get('/api/v1/training/models', { params });
+    return response.data;
+  }
+
+  async getModelAdapter(adapterId: string): Promise<ModelAdapter> {
+    const response = await this.client.get(`/api/v1/training/models/${adapterId}`);
+    return response.data;
+  }
+
+  async updateModelAdapter(
+    adapterId: string,
+    data: Partial<{
+      name: string;
+      display_name: string;
+      description: string;
+      is_public: boolean;
+      tags: string[];
+    }>
+  ): Promise<ModelAdapter> {
+    const response = await this.client.patch(`/api/v1/training/models/${adapterId}`, data);
+    return response.data;
+  }
+
+  async deleteModelAdapter(adapterId: string): Promise<void> {
+    await this.client.delete(`/api/v1/training/models/${adapterId}`);
+  }
+
+  async deployModelAdapter(
+    adapterId: string,
+    options?: { custom_name?: string; quantization?: string }
+  ): Promise<ModelAdapter> {
+    const response = await this.client.post(`/api/v1/training/models/${adapterId}/deploy`, options);
+    return response.data;
+  }
+
+  async undeployModelAdapter(adapterId: string): Promise<ModelAdapter> {
+    const response = await this.client.post(`/api/v1/training/models/${adapterId}/undeploy`);
+    return response.data;
+  }
+
+  async getModelDeploymentStatus(adapterId: string): Promise<DeploymentStatusResponse> {
+    const response = await this.client.get(
+      `/api/v1/training/models/${adapterId}/deployment-status`
+    );
+    return response.data;
+  }
+
+  async testModelAdapter(
+    adapterId: string,
+    data: { prompt: string; max_tokens?: number; temperature?: number }
+  ): Promise<TestAdapterResponse> {
+    const response = await this.client.post(`/api/v1/training/models/${adapterId}/test`, data);
+    return response.data;
+  }
+
+  async getModelAdapterStats(): Promise<ModelAdapterStats> {
+    const response = await this.client.get('/api/v1/training/models/stats');
+    return response.data;
+  }
+
+  async getDeployedModels(): Promise<{ models: string[] }> {
+    const response = await this.client.get('/api/v1/training/models/deployed');
+    return response.data;
+  }
+
+  // ==================== AI Hub Evals ====================
+
+  async listTrainingEvalTemplates(): Promise<TrainingEvalTemplatesResponse> {
+    const response = await this.client.get('/api/v1/training/evals/templates/enabled');
+    return response.data;
+  }
+
+  async listAllTrainingEvalTemplates(): Promise<TrainingEvalTemplatesResponse> {
+    const response = await this.client.get('/api/v1/training/evals/templates');
+    return response.data;
+  }
+
+  async runTrainingEval(payload: { adapter_id: string; template_id: string; judge_model?: string | null }): Promise<TrainingEvalRunResponse> {
+    const response = await this.client.post('/api/v1/training/evals/run', payload);
+    return response.data;
+  }
+
+  // ==================== Admin: AI Hub Eval Templates ====================
+
+  async getEnabledAIHubEvalTemplates(): Promise<{ enabled: string[]; raw?: string | null }> {
+    const response = await this.client.get('/api/v1/admin/ai-hub/evals/enabled');
+    return response.data;
+  }
+
+  async setEnabledAIHubEvalTemplates(payload: { enabled?: string[]; raw?: string }): Promise<{ ok: boolean; enabled: string[] }> {
+    const response = await this.client.post('/api/v1/admin/ai-hub/evals/enabled', payload);
+    return response.data;
+  }
+
+  // ==================== AI Hub Dataset Presets ====================
+
+  async listEnabledDatasetPresets(): Promise<{ presets: Array<{ id: string; name: string; description: string; dataset_type: DatasetType }> }> {
+    const response = await this.client.get('/api/v1/training/datasets/presets/enabled');
+    return response.data;
+  }
+
+  async listAllDatasetPresets(): Promise<{ presets: Array<{ id: string; name: string; description: string; dataset_type: DatasetType }> }> {
+    const response = await this.client.get('/api/v1/training/datasets/presets');
+    return response.data;
+  }
+
+  async getEnabledAIHubDatasetPresets(): Promise<{ enabled: string[]; raw?: string | null }> {
+    const response = await this.client.get('/api/v1/admin/ai-hub/datasets/presets/enabled');
+    return response.data;
+  }
+
+  async setEnabledAIHubDatasetPresets(payload: { enabled?: string[]; raw?: string }): Promise<{ ok: boolean; enabled: string[] }> {
+    const response = await this.client.post('/api/v1/admin/ai-hub/datasets/presets/enabled', payload);
+    return response.data;
+  }
+
+  // ==================== LaTeX Studio ====================
+
+  async getLatexStatus(): Promise<LatexStatusResponse> {
+    const response = await this.client.get('/api/v1/latex/status', { suppressToast: true } as any);
+    return response.data;
+  }
+
+  async compileLatex(payload: LatexCompileRequest): Promise<LatexCompileResponse> {
+    const response = await this.client.post('/api/v1/latex/compile', payload);
+    return response.data;
+  }
+
+  async latexCopilotSection(payload: LatexCopilotRequest): Promise<LatexCopilotResponse> {
+    const response = await this.client.post('/api/v1/latex/copilot/section', payload);
+    return response.data;
+  }
+
+  async latexCopilotFix(payload: LatexCopilotFixRequest): Promise<LatexCopilotFixResponse> {
+    const response = await this.client.post('/api/v1/latex/copilot/fix', payload);
+    return response.data;
+  }
+
+  async latexMathCopilot(payload: LatexMathCopilotRequest): Promise<LatexMathCopilotResponse> {
+    const response = await this.client.post('/api/v1/latex/copilot/math', payload);
+    return response.data;
+  }
+
+  async generateLatexCitationsFromDocuments(payload: LatexCitationsRequest): Promise<LatexCitationsResponse> {
+    const response = await this.client.post('/api/v1/latex/citations/from-documents', payload);
+    return response.data;
+  }
+
+  async listLatexProjects(params?: { limit?: number; offset?: number }): Promise<LatexProjectListResponse> {
+    const query = new URLSearchParams();
+    if (params?.limit) query.set('limit', String(params.limit));
+    if (params?.offset) query.set('offset', String(params.offset));
+    const suffix = query.toString() ? `?${query.toString()}` : '';
+    const response = await this.client.get(`/api/v1/latex/projects${suffix}`);
+    return response.data;
+  }
+
+  async createLatexProject(payload: LatexProjectCreateRequest): Promise<LatexProjectResponse> {
+    const response = await this.client.post('/api/v1/latex/projects', payload);
+    return response.data;
+  }
+
+  async getLatexProject(projectId: string): Promise<LatexProjectResponse> {
+    const response = await this.client.get(`/api/v1/latex/projects/${projectId}`);
+    return response.data;
+  }
+
+  async updateLatexProject(projectId: string, payload: LatexProjectUpdateRequest): Promise<LatexProjectResponse> {
+    const response = await this.client.patch(`/api/v1/latex/projects/${projectId}`, payload);
+    return response.data;
+  }
+
+  async applyLatexProjectUnifiedDiff(
+    projectId: string,
+    payload: LatexApplyUnifiedDiffRequest
+  ): Promise<LatexApplyUnifiedDiffResponse> {
+    const response = await this.client.post(`/api/v1/latex/projects/${projectId}/apply-unified-diff`, payload);
+    return response.data;
+  }
+
+  async deleteLatexProject(projectId: string): Promise<void> {
+    await this.client.delete(`/api/v1/latex/projects/${projectId}`);
+  }
+
+  async compileLatexProject(projectId: string, payload: LatexProjectCompileRequest): Promise<LatexProjectCompileResponse> {
+    const response = await this.client.post(`/api/v1/latex/projects/${projectId}/compile`, payload);
+    return response.data;
+  }
+
+  async publishLatexProject(projectId: string, payload: LatexProjectPublishRequest): Promise<LatexProjectPublishResponse> {
+    const response = await this.client.post(`/api/v1/latex/projects/${projectId}/publish`, payload);
+    return response.data;
+  }
+
+  async listLatexProjectFiles(projectId: string): Promise<LatexProjectFileListResponse> {
+    const response = await this.client.get(`/api/v1/latex/projects/${projectId}/files`);
+    return response.data;
+  }
+
+  async uploadLatexProjectFile(projectId: string, file: globalThis.File, replace: boolean = true): Promise<LatexProjectFileUploadResponse> {
+    const data = new FormData();
+    data.append('file', file);
+    data.append('replace', replace ? 'true' : 'false');
+    const response = await this.client.post(`/api/v1/latex/projects/${projectId}/files`, data, {
+      headers: { 'Content-Type': 'multipart/form-data' },
+    });
+    return response.data;
+  }
+
+  async deleteLatexProjectFile(projectId: string, fileId: string): Promise<void> {
+    await this.client.delete(`/api/v1/latex/projects/${projectId}/files/${fileId}`);
+  }
+
+  async createLatexProjectCompileJob(projectId: string, payload: LatexCompileJobCreateRequest): Promise<LatexCompileJobResponse> {
+    const response = await this.client.post(`/api/v1/latex/projects/${projectId}/compile-jobs`, payload);
+    return response.data;
+  }
+
+  async getLatexCompileJob(jobId: string): Promise<LatexCompileJobResponse> {
+    const response = await this.client.get(`/api/v1/latex/compile-jobs/${jobId}`);
+    return response.data;
+  }
+
+  async downloadLatexProjectZip(projectId: string, title?: string): Promise<void> {
+    const response = await this.client.get(`/api/v1/latex/projects/${projectId}/export`, {
+      responseType: 'blob',
+    });
+    const blob = new Blob([response.data], { type: 'application/zip' });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    const safeName = (title || 'latex_project').replace(/[^a-zA-Z0-9\s\-_]/g, '').trim().substring(0, 50) || 'latex_project';
+    link.download = `${safeName}.zip`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  }
+
 }
 
 // Create singleton instance

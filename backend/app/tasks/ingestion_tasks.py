@@ -254,6 +254,48 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
             from datetime import datetime
             source.last_sync = datetime.utcnow()
             await db.commit()
+
+            # Post-ingestion automations (arXiv):
+            # - Queue summarization for ingested papers
+            # - Optionally generate a literature review document
+            try:
+                cfg = source.config or {}
+                if source.source_type == "arxiv" and isinstance(cfg, dict):
+                    auto_summarize = bool(cfg.get("auto_summarize", True))
+                    auto_lit_review = bool(cfg.get("auto_literature_review", False))
+                    auto_enrich = bool(cfg.get("auto_enrich_metadata", True))
+                    # Extract user_id from source config if available
+                    source_user_id = cfg.get("requested_by_user_id") or cfg.get("requestedByUserId")
+
+                    if auto_summarize:
+                        try:
+                            from sqlalchemy import select
+                            from app.models.document import Document as _Doc
+                            from app.tasks.summarization_tasks import summarize_document as _summ_task
+                            docs_result = await db.execute(
+                                select(_Doc.id, _Doc.summary).where(_Doc.source_id == source.id)
+                            )
+                            for doc_id, doc_summary in docs_result.all():
+                                if doc_summary:
+                                    continue
+                                _summ_task.delay(str(doc_id), False, user_id=source_user_id)
+                        except Exception as _e:
+                            logger.warning(f"Failed to queue arXiv summarization for source {source_id}: {_e}")
+
+                    if auto_lit_review:
+                        try:
+                            from app.tasks.research_tasks import generate_literature_review as _lit_task
+                            _lit_task.delay(str(source.id), user_id=source_user_id)
+                        except Exception as _e:
+                            logger.warning(f"Failed to queue literature review for source {source_id}: {_e}")
+                    if auto_enrich:
+                        try:
+                            from app.tasks.paper_enrichment_tasks import enrich_arxiv_source as _enrich_task
+                            _enrich_task.delay(str(source.id), False, 500)
+                        except Exception as _e:
+                            logger.warning(f"Failed to queue metadata enrichment for source {source_id}: {_e}")
+            except Exception:
+                pass
             
             result = {
                 "source_id": source_id,

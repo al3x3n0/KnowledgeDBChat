@@ -36,10 +36,9 @@ describe('Button', () => {
 
   it('applies variant classes correctly', () => {
     const { rerender } = render(<Button variant="primary">Primary</Button>);
-    expect(screen.getByText('Primary')).toHaveClass('bg-blue-600');
+    expect(screen.getByText('Primary')).toHaveClass('bg-primary-600');
     
     rerender(<Button variant="secondary">Secondary</Button>);
-    expect(screen.getByText('Secondary')).toHaveClass('bg-gray-600');
+    expect(screen.getByText('Secondary')).toHaveClass('bg-gray-100');
   });
 });
-

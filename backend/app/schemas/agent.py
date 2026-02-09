@@ -66,6 +66,10 @@ class AgentChatRequest(BaseModel):
         0,
         description="Turn number in the conversation"
     )
+    agent_id: Optional[UUID] = Field(
+        None,
+        description="Optional: force using a specific agent definition (must be active)"
+    )
 
     class Config:
         json_schema_extra = {
@@ -286,6 +290,15 @@ class AgentDefinitionBase(BaseModel):
         default=True,
         description="Whether the agent is active and available for routing"
     )
+    lifecycle_status: str = Field(
+        default="published",
+        description="Lifecycle status: draft, published, archived"
+    )
+
+    routing_defaults: Optional[Dict[str, Any]] = Field(
+        default=None,
+        description="Default LLM routing for this agent (tier/fallback/limits)."
+    )
 
 
 class AgentDefinitionCreate(AgentDefinitionBase):
@@ -302,12 +315,16 @@ class AgentDefinitionUpdate(BaseModel):
     tool_whitelist: Optional[List[str]] = None
     priority: Optional[int] = Field(None, ge=1, le=100)
     is_active: Optional[bool] = None
+    lifecycle_status: Optional[str] = Field(None, description="Lifecycle status: draft, published, archived")
+    routing_defaults: Optional[Dict[str, Any]] = None
 
 
 class AgentDefinitionResponse(AgentDefinitionBase):
     """Response schema for agent definition."""
     id: UUID
     is_system: bool = Field(description="Whether this is a built-in system agent")
+    owner_user_id: Optional[UUID] = None
+    version: int = 1
     created_at: datetime
     updated_at: datetime
 
@@ -335,6 +352,27 @@ class AgentDefinitionListResponse(BaseModel):
     """Response schema for listing agents."""
     agents: List[AgentDefinitionResponse]
     total: int
+
+
+class AgentRoutingPreviewRequest(BaseModel):
+    """Request schema for previewing effective LLM routing."""
+    task_type: str = Field(default="chat")
+    agent_routing_overrides: Optional[Dict[str, Any]] = None
+    job_id: Optional[UUID] = None
+    job_config_overrides: Optional[Dict[str, Any]] = None
+
+
+class AgentRoutingPreviewResponse(BaseModel):
+    """Response schema for previewing effective LLM routing."""
+    agent_id: UUID
+    task_type: str
+    user_llm: Dict[str, Any]
+    routing_agent: Optional[Dict[str, Any]] = None
+    routing_job: Optional[Dict[str, Any]] = None
+    routing_effective: Optional[Dict[str, Any]] = None
+    tier_resolution: Dict[str, Any]
+    attempts: List[Dict[str, Any]]
+    notes: List[str] = []
 
 
 class CapabilityInfo(BaseModel):

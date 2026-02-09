@@ -47,6 +47,24 @@ class LLMPromptToolConfig(BaseModel):
     max_tokens: Optional[int] = Field(None, ge=1, le=32000)
 
 
+class DockerContainerToolConfig(BaseModel):
+    """Configuration for Docker container tools."""
+    image: str = Field(..., description="Docker image name")
+    command: Optional[List[str]] = Field(None, description="Command to run in the container")
+    entrypoint: Optional[List[str]] = Field(None, description="Override entrypoint")
+    input_mode: Literal["stdin", "file", "both"] = Field("stdin", description="Input method")
+    output_mode: Literal["stdout", "file", "both"] = Field("stdout", description="Output method")
+    input_file_path: Optional[str] = Field("/workspace/input.txt", description="Input file path inside container")
+    output_file_path: Optional[str] = Field("/workspace/output.txt", description="Output file path inside container")
+    timeout_seconds: int = Field(300, ge=1, le=3600, description="Execution timeout")
+    memory_limit: str = Field("512m", description="Memory limit (e.g., '512m', '1g')")
+    cpu_limit: float = Field(1.0, ge=0.1, le=8.0, description="CPU limit")
+    environment: Dict[str, str] = Field(default_factory=dict, description="Environment variables")
+    working_dir: str = Field("/workspace", description="Working directory inside container")
+    network_enabled: bool = Field(False, description="Enable network access")
+    user: Optional[str] = Field(None, description="User to run as")
+
+
 # =============================================================================
 # User Tool Schemas
 # =============================================================================
@@ -55,7 +73,7 @@ class UserToolBase(BaseModel):
     """Base schema for user tools."""
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
-    tool_type: Literal["webhook", "transform", "python", "llm_prompt"]
+    tool_type: Literal["webhook", "transform", "python", "llm_prompt", "docker_container"]
     parameters_schema: Dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema for tool input parameters"
@@ -76,7 +94,7 @@ class UserToolUpdate(BaseModel):
     """Schema for updating a user tool."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = None
-    tool_type: Optional[Literal["webhook", "transform", "python", "llm_prompt"]] = None
+    tool_type: Optional[Literal["webhook", "transform", "python", "llm_prompt", "docker_container"]] = None
     parameters_schema: Optional[Dict[str, Any]] = None
     config: Optional[Dict[str, Any]] = None
     is_enabled: Optional[bool] = None

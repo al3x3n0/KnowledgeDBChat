@@ -22,7 +22,7 @@ from app.models.document import Document, DocumentChunk
 from app.core.config import settings
 
 if TYPE_CHECKING:
-    from app.services.llm_service import LLMService
+    from app.services.llm_service import LLMService, UserLLMSettings
 
 
 # Extended entity types for LLM extraction
@@ -286,11 +286,16 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
             logger.warning(f"Failed to parse LLM extraction response: {e}")
             return {"entities": [], "relationships": []}
 
-    async def extract_from_text(self, text: str) -> Dict[str, Any]:
+    async def extract_from_text(
+        self,
+        text: str,
+        user_settings: Optional["UserLLMSettings"] = None,
+    ) -> Dict[str, Any]:
         """Extract entities and relationships from text using LLM.
 
         Args:
             text: The text to extract from (will be truncated if too long)
+            user_settings: Optional user LLM settings for provider preference
 
         Returns:
             Dict with 'entities' and 'relationships' lists
@@ -308,6 +313,7 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
                 query=prompt,
                 temperature=0.1,  # Low temperature for consistent extraction
                 max_tokens=2000,
+                user_settings=user_settings,
             )
             return self._parse_json_response(response)
         except Exception as e:

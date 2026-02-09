@@ -4,7 +4,7 @@ User management API endpoints.
 
 from typing import List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, or_
 from loguru import logger
@@ -19,6 +19,8 @@ from app.schemas.memory import UserPreferencesResponse, UserPreferencesUpdate
 from app.schemas.common import PaginatedResponse
 from app.utils.exceptions import ValidationError
 from app.core.logging import log_error
+from app.services.llm_service import LLMService
+from app.core.config import settings
 
 
 # Supported task types for per-task model configuration
@@ -44,6 +46,10 @@ class LLMSettingsUpdate(BaseModel):
         None,
         description="Per-task model overrides: {task_type: model_name}"
     )
+    llm_task_providers: Optional[dict] = Field(
+        None,
+        description="Per-task provider overrides: {task_type: provider}"
+    )
 
 
 class LLMSettingsResponse(BaseModel):
@@ -55,9 +61,18 @@ class LLMSettingsResponse(BaseModel):
     llm_temperature: Optional[float] = None
     llm_max_tokens: Optional[int] = None
     llm_task_models: Optional[dict] = None  # Per-task model overrides
+    llm_task_providers: Optional[dict] = None  # Per-task provider overrides
 
     class Config:
         from_attributes = True
+
+
+class LLMModelsResponse(BaseModel):
+    provider: str
+    models: List[str] = Field(default_factory=list)
+    default_model: Optional[str] = None
+    error: Optional[str] = None
+
 
 router = APIRouter()
 
@@ -238,6 +253,7 @@ async def get_my_llm_settings(
             llm_temperature=preferences.llm_temperature,
             llm_max_tokens=preferences.llm_max_tokens,
             llm_task_models=preferences.llm_task_models,
+            llm_task_providers=getattr(preferences, "llm_task_providers", None),
         )
     except Exception as e:
         logger.error(f"Error getting LLM settings: {e}")
@@ -278,6 +294,7 @@ async def update_my_llm_settings(
             llm_temperature=preferences.llm_temperature,
             llm_max_tokens=preferences.llm_max_tokens,
             llm_task_models=preferences.llm_task_models,
+            llm_task_providers=getattr(preferences, "llm_task_providers", None),
         )
     except Exception as e:
         logger.error(f"Error updating LLM settings: {e}")
@@ -304,9 +321,49 @@ async def clear_my_llm_settings(
             preferences.llm_temperature = None
             preferences.llm_max_tokens = None
             preferences.llm_task_models = None
+            preferences.llm_task_providers = None
             await db.commit()
 
         return {"message": "LLM settings cleared, using system defaults"}
     except Exception as e:
         logger.error(f"Error clearing LLM settings: {e}")
         raise HTTPException(status_code=500, detail="Failed to clear LLM settings")
+
+
+@router.get("/me/llm-models", response_model=LLMModelsResponse)
+async def list_my_llm_models(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+    provider: Optional[str] = Query(None, description="Provider to list models for (overrides saved preference)"),
+):
+    """
+    List available models for the effective provider.
+
+    Currently supports listing models from Ollama (`/api/tags`) when provider is `ollama`.
+    """
+    try:
+        result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
+        preferences = result.scalar_one_or_none()
+
+        effective_provider = (provider or getattr(preferences, "llm_provider", None) or settings.LLM_PROVIDER or "ollama").lower()
+
+        if effective_provider != "ollama":
+            return LLMModelsResponse(
+                provider=effective_provider,
+                models=[],
+                default_model=None,
+            )
+
+        svc = LLMService()
+        models = await svc.list_available_models()
+        names = sorted({m.get("name") for m in models if isinstance(m, dict) and m.get("name")})
+        return LLMModelsResponse(
+            provider="ollama",
+            models=names,
+            default_model=svc.default_model,
+        )
+    except Exception as e:
+        logger.error(f"Error listing user LLM models: {e}")
+        return LLMModelsResponse(provider="unknown", models=[], default_model=None, error="Failed to list models")

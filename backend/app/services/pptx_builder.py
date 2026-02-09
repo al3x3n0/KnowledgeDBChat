@@ -11,7 +11,7 @@ from loguru import logger
 
 from pptx import Presentation
 from pptx.util import Inches, Pt
-from pptx.dml.color import RgbColor
+from pptx.dml.color import RGBColor
 from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
 
@@ -29,13 +29,13 @@ LAYOUT_MAPPING = {
 }
 
 
-def hex_to_rgb(hex_color: str) -> RgbColor:
-    """Convert hex color string to RgbColor."""
+def hex_to_rgb(hex_color: str) -> RGBColor:
+    """Convert hex color string to RGBColor."""
     hex_color = hex_color.lstrip('#')
     r = int(hex_color[0:2], 16)
     g = int(hex_color[2:4], 16)
     b = int(hex_color[4:6], 16)
-    return RgbColor(r, g, b)
+    return RGBColor(r, g, b)
 
 
 class PPTXBuilder:
@@ -52,10 +52,10 @@ class PPTXBuilder:
     # Built-in style definitions
     STYLES = {
         "professional": {
-            "title_color": RgbColor(0x1a, 0x36, 0x5d),      # Dark blue
-            "accent_color": RgbColor(0x2e, 0x86, 0xab),      # Light blue
-            "text_color": RgbColor(0x33, 0x33, 0x33),        # Dark gray
-            "bg_color": RgbColor(0xff, 0xff, 0xff),          # White
+            "title_color": RGBColor(0x1a, 0x36, 0x5d),      # Dark blue
+            "accent_color": RGBColor(0x2e, 0x86, 0xab),      # Light blue
+            "text_color": RGBColor(0x33, 0x33, 0x33),        # Dark gray
+            "bg_color": RGBColor(0xff, 0xff, 0xff),          # White
             "title_font": "Calibri",
             "body_font": "Calibri",
             "title_size": Pt(44),
@@ -65,10 +65,10 @@ class PPTXBuilder:
             "bullet_size": Pt(18),
         },
         "casual": {
-            "title_color": RgbColor(0x4a, 0x90, 0xd9),      # Sky blue
-            "accent_color": RgbColor(0xff, 0x6b, 0x6b),      # Coral
-            "text_color": RgbColor(0x2d, 0x3a, 0x4a),        # Dark slate
-            "bg_color": RgbColor(0xf8, 0xf9, 0xfa),          # Light gray
+            "title_color": RGBColor(0x4a, 0x90, 0xd9),      # Sky blue
+            "accent_color": RGBColor(0xff, 0x6b, 0x6b),      # Coral
+            "text_color": RGBColor(0x2d, 0x3a, 0x4a),        # Dark slate
+            "bg_color": RGBColor(0xf8, 0xf9, 0xfa),          # Light gray
             "title_font": "Arial Rounded MT Bold",
             "body_font": "Arial",
             "title_size": Pt(48),
@@ -78,10 +78,10 @@ class PPTXBuilder:
             "bullet_size": Pt(20),
         },
         "technical": {
-            "title_color": RgbColor(0x00, 0x7a, 0xcc),      # Tech blue
-            "accent_color": RgbColor(0x28, 0xa7, 0x45),      # Green
-            "text_color": RgbColor(0x24, 0x29, 0x2e),        # GitHub dark
-            "bg_color": RgbColor(0xff, 0xff, 0xff),          # White
+            "title_color": RGBColor(0x00, 0x7a, 0xcc),      # Tech blue
+            "accent_color": RGBColor(0x28, 0xa7, 0x45),      # Green
+            "text_color": RGBColor(0x24, 0x29, 0x2e),        # GitHub dark
+            "bg_color": RGBColor(0xff, 0xff, 0xff),          # White
             "title_font": "Consolas",
             "body_font": "Segoe UI",
             "title_size": Pt(40),
@@ -91,10 +91,10 @@ class PPTXBuilder:
             "bullet_size": Pt(16),
         },
         "modern": {
-            "title_color": RgbColor(0x2c, 0x3e, 0x50),      # Midnight blue
-            "accent_color": RgbColor(0xe7, 0x4c, 0x3c),      # Red
-            "text_color": RgbColor(0x34, 0x49, 0x5e),        # Wet asphalt
-            "bg_color": RgbColor(0xec, 0xf0, 0xf1),          # Clouds
+            "title_color": RGBColor(0x2c, 0x3e, 0x50),      # Midnight blue
+            "accent_color": RGBColor(0xe7, 0x4c, 0x3c),      # Red
+            "text_color": RGBColor(0x34, 0x49, 0x5e),        # Wet asphalt
+            "bg_color": RGBColor(0xec, 0xf0, 0xf1),          # Clouds
             "title_font": "Segoe UI",
             "body_font": "Segoe UI",
             "title_size": Pt(46),
@@ -104,10 +104,10 @@ class PPTXBuilder:
             "bullet_size": Pt(18),
         },
         "minimal": {
-            "title_color": RgbColor(0x00, 0x00, 0x00),      # Black
-            "accent_color": RgbColor(0x95, 0xa5, 0xa6),      # Gray
-            "text_color": RgbColor(0x2c, 0x3e, 0x50),        # Dark blue-gray
-            "bg_color": RgbColor(0xff, 0xff, 0xff),          # White
+            "title_color": RGBColor(0x00, 0x00, 0x00),      # Black
+            "accent_color": RGBColor(0x95, 0xa5, 0xa6),      # Gray
+            "text_color": RGBColor(0x2c, 0x3e, 0x50),        # Dark blue-gray
+            "bg_color": RGBColor(0xff, 0xff, 0xff),          # White
             "title_font": "Helvetica",
             "body_font": "Helvetica",
             "title_size": Pt(42),
@@ -117,10 +117,10 @@ class PPTXBuilder:
             "bullet_size": Pt(16),
         },
         "corporate": {
-            "title_color": RgbColor(0x00, 0x3d, 0x7a),      # Corporate blue
-            "accent_color": RgbColor(0xf5, 0xa6, 0x23),      # Orange
-            "text_color": RgbColor(0x33, 0x33, 0x33),        # Dark gray
-            "bg_color": RgbColor(0xff, 0xff, 0xff),          # White
+            "title_color": RGBColor(0x00, 0x3d, 0x7a),      # Corporate blue
+            "accent_color": RGBColor(0xf5, 0xa6, 0x23),      # Orange
+            "text_color": RGBColor(0x33, 0x33, 0x33),        # Dark gray
+            "bg_color": RGBColor(0xff, 0xff, 0xff),          # White
             "title_font": "Arial",
             "body_font": "Arial",
             "title_size": Pt(44),
@@ -130,10 +130,10 @@ class PPTXBuilder:
             "bullet_size": Pt(18),
         },
         "creative": {
-            "title_color": RgbColor(0x9b, 0x59, 0xb6),      # Purple
-            "accent_color": RgbColor(0x1a, 0xbc, 0x9c),      # Turquoise
-            "text_color": RgbColor(0x2c, 0x3e, 0x50),        # Dark
-            "bg_color": RgbColor(0xfd, 0xfb, 0xf7),          # Off-white
+            "title_color": RGBColor(0x9b, 0x59, 0xb6),      # Purple
+            "accent_color": RGBColor(0x1a, 0xbc, 0x9c),      # Turquoise
+            "text_color": RGBColor(0x2c, 0x3e, 0x50),        # Dark
+            "bg_color": RGBColor(0xfd, 0xfb, 0xf7),          # Off-white
             "title_font": "Georgia",
             "body_font": "Verdana",
             "title_size": Pt(48),
@@ -143,10 +143,10 @@ class PPTXBuilder:
             "bullet_size": Pt(18),
         },
         "dark": {
-            "title_color": RgbColor(0xff, 0xff, 0xff),      # White
-            "accent_color": RgbColor(0x3d, 0xb9, 0xd3),      # Cyan
-            "text_color": RgbColor(0xe0, 0xe0, 0xe0),        # Light gray
-            "bg_color": RgbColor(0x1e, 0x1e, 0x2e),          # Dark background
+            "title_color": RGBColor(0xff, 0xff, 0xff),      # White
+            "accent_color": RGBColor(0x3d, 0xb9, 0xd3),      # Cyan
+            "text_color": RGBColor(0xe0, 0xe0, 0xe0),        # Light gray
+            "bg_color": RGBColor(0x1e, 0x1e, 0x2e),          # Dark background
             "title_font": "Segoe UI",
             "body_font": "Segoe UI",
             "title_size": Pt(44),
@@ -577,7 +577,7 @@ class PPTXBuilder:
             placeholder_frame.paragraphs[0].text = "[Diagram could not be rendered]"
             placeholder_frame.paragraphs[0].font.size = Pt(18)
             placeholder_frame.paragraphs[0].font.italic = True
-            placeholder_frame.paragraphs[0].font.color.rgb = RgbColor(0x99, 0x99, 0x99)
+            placeholder_frame.paragraphs[0].font.color.rgb = RGBColor(0x99, 0x99, 0x99)
             placeholder_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
 
             # Show the diagram description if available
@@ -588,7 +588,7 @@ class PPTXBuilder:
                 desc_frame = desc_box.text_frame
                 desc_frame.paragraphs[0].text = f"Description: {content.diagram_description}"
                 desc_frame.paragraphs[0].font.size = Pt(14)
-                desc_frame.paragraphs[0].font.color.rgb = RgbColor(0x66, 0x66, 0x66)
+                desc_frame.paragraphs[0].font.color.rgb = RGBColor(0x66, 0x66, 0x66)
                 desc_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
 
         # Add speaker notes

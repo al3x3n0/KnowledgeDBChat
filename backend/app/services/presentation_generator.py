@@ -29,12 +29,13 @@ from app.schemas.presentation import (
     SlideContent,
     PresentationJobUpdate,
 )
-from app.services.llm_service import LLMService
-from app.services.vector_store import VectorStore
+from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.vector_store import vector_store_service
 from app.services.mermaid_renderer import get_mermaid_renderer, MermaidRenderError
 from app.services.pptx_builder import PPTXBuilder
 from app.services.storage_service import StorageService
 from app.core.config import settings
+from app.models.memory import UserPreferences
 
 
 class PresentationGenerationError(Exception):
@@ -61,9 +62,29 @@ class PresentationGeneratorService:
 
     def __init__(self):
         self.llm_service = LLMService()
-        self.vector_store = VectorStore()
+        # Use shared singleton so embedding models load once per process.
+        self.vector_store = vector_store_service
         self.storage_service = StorageService()
         self.mermaid_renderer = get_mermaid_renderer()
+
+    async def _load_user_settings(
+        self,
+        user_id: Optional[UUID],
+        db: AsyncSession
+    ) -> Optional[UserLLMSettings]:
+        """Load user LLM settings from preferences."""
+        if not user_id:
+            return None
+        try:
+            result = await db.execute(
+                select(UserPreferences).where(UserPreferences.user_id == user_id)
+            )
+            user_prefs = result.scalar_one_or_none()
+            if user_prefs:
+                return UserLLMSettings.from_preferences(user_prefs)
+        except Exception as e:
+            logger.debug(f"Could not load user preferences: {e}")
+        return None
 
     async def generate_presentation(
         self,
@@ -93,6 +114,13 @@ class PresentationGeneratorService:
             await db.commit()
 
         try:
+            # Load user LLM settings once for the entire generation
+            user_id = getattr(job, "user_id", None)
+            # Expose job/user_id to helper methods for trace persistence (best-effort).
+            self._current_job = job  # type: ignore[attr-defined]
+            self._current_user_id = user_id  # type: ignore[attr-defined]
+            user_settings = await self._load_user_settings(user_id, db)
+
             # Stage 1: Gather context (10%)
             await update_progress(5, "gathering_context")
             context = await self._gather_context(
@@ -110,7 +138,10 @@ class PresentationGeneratorService:
                 context,
                 job.slide_count,
                 job.style,
-                include_diagrams=bool(job.include_diagrams)
+                include_diagrams=bool(job.include_diagrams),
+                user_id=user_id,
+                db=db,
+                user_settings=user_settings,
             )
             job.generated_outline = outline.model_dump()
             await update_progress(20, "outline_generated")
@@ -120,6 +151,7 @@ class PresentationGeneratorService:
             outline = await self._generate_slide_content(
                 outline,
                 context,
+                user_settings=user_settings,
                 progress_callback=lambda p: update_progress(30 + int(p * 0.4), "generating_slides")
             )
             await update_progress(70, "content_generated")
@@ -184,6 +216,12 @@ class PresentationGeneratorService:
         except Exception as e:
             logger.error(f"Presentation generation failed: {e}")
             raise PresentationGenerationError(str(e))
+        finally:
+            try:
+                delattr(self, "_current_job")  # type: ignore[attr-defined]
+                delattr(self, "_current_user_id")  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
     async def _gather_context(
         self,
@@ -203,12 +241,49 @@ class PresentationGeneratorService:
             Combined context string from relevant document chunks
         """
         try:
-            # Search for relevant chunks
-            results = await self.vector_store.search(
+            # Search for relevant chunks (+ trace for observability)
+            results, trace = await self.vector_store.search_with_trace(
                 query=topic,
                 limit=self.MAX_CONTEXT_CHUNKS,
                 document_ids=document_ids if document_ids else None
             )
+            try:
+                from app.models.retrieval_trace import RetrievalTrace
+
+                settings_snapshot = {
+                    "provider": getattr(self.vector_store, "provider", None),
+                    "hybrid_enabled": bool(getattr(settings, "RAG_HYBRID_SEARCH_ENABLED", False)),
+                    "hybrid_alpha": float(getattr(settings, "RAG_HYBRID_SEARCH_ALPHA", 0.0)),
+                    "rerank_enabled": bool(getattr(settings, "RAG_RERANKING_ENABLED", False)),
+                    "rerank_model": getattr(settings, "RAG_RERANKING_MODEL", None),
+                    "max_context_chunks": int(self.MAX_CONTEXT_CHUNKS),
+                }
+                retrieval_trace = RetrievalTrace(
+                    user_id=getattr(self, "_current_user_id", None),  # type: ignore[attr-defined]
+                    trace_type="artifact",
+                    query=topic,
+                    processed_query=topic,
+                    provider=getattr(self.vector_store, "provider", None),
+                    settings_snapshot=settings_snapshot,
+                    trace={
+                        "artifact": {"type": "presentation"},
+                        "document_ids": [str(x) for x in (document_ids or [])],
+                        "vector_store_trace": trace,
+                    },
+                )
+                db.add(retrieval_trace)
+                await db.commit()
+                await db.refresh(retrieval_trace)
+                # Persist on job if we have one attached (best-effort).
+                try:
+                    job = getattr(self, "_current_job", None)  # type: ignore[attr-defined]
+                    if job is not None:
+                        job.retrieval_trace_id = retrieval_trace.id
+                        await db.commit()
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.debug(f"Failed to persist presentation retrieval trace: {e}")
 
             if not results:
                 logger.warning(f"No relevant context found for topic: {topic}")
@@ -244,7 +319,10 @@ class PresentationGeneratorService:
         context: str,
         slide_count: int,
         style: str,
-        include_diagrams: bool = True
+        include_diagrams: bool = True,
+        user_id: Optional[UUID] = None,
+        db: Optional[AsyncSession] = None,
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> PresentationOutline:
         """
         Generate presentation outline using LLM.
@@ -304,9 +382,13 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
 
         try:
             response = await self.llm_service.generate_response(
-                prompt=prompt,
+                query=prompt,
                 temperature=self.LLM_TEMPERATURE_OUTLINE,
-                max_tokens=4000
+                max_tokens=4000,
+                task_type="presentation_outline",
+                user_id=user_id,
+                db=db,
+                user_settings=user_settings,
             )
 
             # Parse JSON from response
@@ -330,6 +412,7 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
         self,
         outline: PresentationOutline,
         context: str,
+        user_settings: Optional[UserLLMSettings] = None,
         progress_callback: Optional[Callable[[float], Any]] = None
     ) -> PresentationOutline:
         """
@@ -341,6 +424,7 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
         Args:
             outline: Initial presentation outline
             context: Document context
+            user_settings: User LLM settings for provider preference
             progress_callback: Progress callback (0.0 to 1.0)
 
         Returns:
@@ -355,11 +439,11 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
 
             if slide.slide_type == "diagram" and slide.diagram_description:
                 # Generate Mermaid code for diagram slides
-                slide = await self._generate_diagram_code(slide, context)
+                slide = await self._generate_diagram_code(slide, context, user_settings)
             elif slide.slide_type in ("content", "summary", "two_column"):
                 # Enhance content slides if needed
                 if len(slide.content) < 3:
-                    slide = await self._enhance_slide_content(slide, context)
+                    slide = await self._enhance_slide_content(slide, context, user_settings)
 
             enhanced_slides.append(slide)
 
@@ -369,7 +453,8 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
     async def _generate_diagram_code(
         self,
         slide: SlideContent,
-        context: str
+        context: str,
+        user_settings: Optional[UserLLMSettings] = None
     ) -> SlideContent:
         """
         Generate Mermaid diagram code for a slide.
@@ -377,6 +462,7 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
         Args:
             slide: Slide with diagram_description
             context: Document context
+            user_settings: User LLM settings for provider preference
 
         Returns:
             Slide with diagram_code populated
@@ -401,9 +487,11 @@ Do NOT include markdown code blocks or any explanation."""
 
         try:
             response = await self.llm_service.generate_response(
-                prompt=prompt,
+                query=prompt,
                 temperature=self.LLM_TEMPERATURE_DIAGRAM,
-                max_tokens=1000
+                max_tokens=1000,
+                task_type="presentation_diagram",
+                user_settings=user_settings,
             )
 
             # Clean the response
@@ -425,7 +513,8 @@ Do NOT include markdown code blocks or any explanation."""
     async def _enhance_slide_content(
         self,
         slide: SlideContent,
-        context: str
+        context: str,
+        user_settings: Optional[UserLLMSettings] = None
     ) -> SlideContent:
         """
         Enhance a content slide with more detailed bullet points.
@@ -433,6 +522,7 @@ Do NOT include markdown code blocks or any explanation."""
         Args:
             slide: Slide to enhance
             context: Document context
+            user_settings: User LLM settings for provider preference
 
         Returns:
             Slide with enhanced content
@@ -457,9 +547,11 @@ Return ONLY a JSON array of bullet point strings, no explanation:
 
         try:
             response = await self.llm_service.generate_response(
-                prompt=prompt,
+                query=prompt,
                 temperature=self.LLM_TEMPERATURE_CONTENT,
-                max_tokens=800
+                max_tokens=800,
+                task_type="presentation_slide",
+                user_settings=user_settings,
             )
 
             # Parse the JSON array
@@ -576,8 +668,8 @@ Return ONLY a JSON array of bullet point strings, no explanation:
         filename = f"{safe_title}_{job_id}.pptx"
         file_path = f"presentations/{job_id}/{filename}"
 
-        await self.storage_service.upload_file(
-            file_path=file_path,
+        await self.storage_service.upload_to_path(
+            object_path=file_path,
             content=pptx_bytes,
             content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
         )

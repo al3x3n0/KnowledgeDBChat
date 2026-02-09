@@ -110,6 +110,7 @@ frontend/.nyc_output/
 *.tmp
 *.temp
 .temp/
+tmp_apply_patch_healthcheck.txt
 
 # IDE files
 *.swp
@@ -124,5 +125,4 @@ frontend/.nyc_output/
 # Backup files
 *.bak
 *.backup
-
 

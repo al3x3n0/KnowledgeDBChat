@@ -3,10 +3,13 @@ Context management service for RAG system.
 Handles context compression, summarization, and token-aware window management.
 """
 
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, TYPE_CHECKING
 from loguru import logger
 
 from app.core.config import settings
+
+if TYPE_CHECKING:
+    from app.services.llm_service import UserLLMSettings
 
 
 class ContextManager:
@@ -98,16 +101,18 @@ class ContextManager:
         self,
         results: List[Dict[str, Any]],
         llm_service: Optional[Any] = None,
-        max_tokens: Optional[int] = None
+        max_tokens: Optional[int] = None,
+        user_settings: Optional["UserLLMSettings"] = None,
     ) -> str:
         """
         Compress context using LLM summarization if available, otherwise truncate.
-        
+
         Args:
             results: List of search results
             llm_service: Optional LLM service for summarization
             max_tokens: Maximum tokens for compressed context
-            
+            user_settings: Optional user LLM settings for provider preference
+
         Returns:
             Compressed context string
         """
@@ -137,7 +142,8 @@ Provide a concise summary that captures the essential information:"""
                     query=summary_prompt,
                     context=None,
                     conversation_history=None,
-                    prefer_deepseek=True  # Route heavy compression to external provider if available
+                    prefer_deepseek=True,  # Route heavy compression to external provider if available
+                    user_settings=user_settings,
                 )
                 
                 compressed_tokens = self.estimate_tokens(compressed)

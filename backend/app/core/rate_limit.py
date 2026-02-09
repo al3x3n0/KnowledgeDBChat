@@ -53,6 +53,13 @@ AUTH_LIMIT = "5/minute"  # Login/register endpoints
 CHAT_LIMIT = "30/minute"  # Chat endpoints
 UPLOAD_LIMIT = "10/hour"  # File upload endpoints
 ADMIN_LIMIT = "200/minute"  # Admin endpoints
+LATEX_COPILOT_LIMIT = "10/minute"  # LLM-backed LaTeX copilot endpoints
+LATEX_COMPILE_LIMIT = "10/minute"  # Server-side TeX compilation endpoints
+LATEX_PROJECT_FILE_UPLOAD_LIMIT = "30/hour"  # Project file upload endpoints
+LATEX_EXPORT_LIMIT = "30/hour"  # Project export (.zip) endpoints
+LATEX_PUBLISH_LIMIT = "10/hour"  # Publishing (stores + indexing)
+LATEX_CITATIONS_LIMIT = "60/minute"  # KB -> BibTeX/thebibliography generation
+LATEX_APPLY_DIFF_LIMIT = "60/minute"  # Apply patch-style diffs to LaTeX projects
 
 
 def get_rate_limit_for_endpoint(path: str) -> str:

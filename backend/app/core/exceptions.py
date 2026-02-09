@@ -7,6 +7,7 @@ from fastapi.responses import JSONResponse
 from fastapi.exceptions import RequestValidationError
 from pydantic import ValidationError
 from loguru import logger
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
 
 from app.utils.exceptions import (
     KnowledgeDBException,
@@ -71,6 +72,17 @@ async def validation_exception_handler(request: Request, exc: RequestValidationE
 
 async def generic_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Handle generic exceptions."""
+    if isinstance(exc, SQLAlchemyTimeoutError):
+        return JSONResponse(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            content={
+                "error": "ServiceUnavailable",
+                "detail": "Database is busy (connection pool exhausted). Please retry in a moment.",
+                "status_code": status.HTTP_503_SERVICE_UNAVAILABLE,
+            },
+            headers={"Retry-After": "3"},
+        )
+
     error_response = {
         "error": exc.__class__.__name__,
         "detail": str(exc),
@@ -83,4 +95,3 @@ async def generic_exception_handler(request: Request, exc: Exception) -> JSONRes
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=error_response
     )
-

@@ -27,11 +27,22 @@ const PresentationsPage = lazy(() => import('./pages/PresentationsPage'));
 const GlobalGraphPage = lazy(() => import('./pages/GlobalGraphPage'));
 const SearchPage = lazy(() => import('./pages/SearchPage'));
 const PapersPage = lazy(() => import('./pages/PapersPage'));
+const LatexStudioPage = lazy(() => import('./pages/LatexStudioPage'));
 const ReadingListsPage = lazy(() => import('./pages/ReadingListsPage'));
 const ReadingListDetailPage = lazy(() => import('./pages/ReadingListDetailPage'));
 const UsagePage = lazy(() => import('./pages/UsagePage'));
+const RoutingObservabilityPage = lazy(() => import('./pages/RoutingObservabilityPage'));
+const RoutingExperimentsPage = lazy(() => import('./pages/RoutingExperimentsPage'));
 const APIKeysPage = lazy(() => import('./pages/APIKeysPage'));
+const MCPConfigPage = lazy(() => import('./pages/MCPConfigPage'));
+const AgentBuilderPage = lazy(() => import('./pages/AgentBuilderPage'));
 const RepoReportsPage = lazy(() => import('./pages/RepoReportsPage'));
+const AutonomousAgentsPage = lazy(() => import('./pages/AutonomousAgentsPage'));
+const PatchPRsPage = lazy(() => import('./pages/PatchPRsPage'));
+const ArtifactDraftsPage = lazy(() => import('./pages/ArtifactDraftsPage'));
+const SynthesisPage = lazy(() => import('./pages/SynthesisPage'));
+const AIHubPage = lazy(() => import('./pages/AIHubPage'));
+const ResearchNotesPage = lazy(() => import('./pages/ResearchNotesPage'));
 
 // Create a client
 const queryClient = new QueryClient({
@@ -155,6 +166,14 @@ const AppRoutes: React.FC = () => {
             }
           />
           <Route
+            path="latex"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <LatexStudioPage />
+              </Suspense>
+            }
+          />
+          <Route
             path="reading-lists"
             element={
               <Suspense fallback={<PageLoader />}>
@@ -202,11 +221,46 @@ const AppRoutes: React.FC = () => {
               </Suspense>
             }
           />
+
+          <Route
+            path="usage/routing"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <RoutingObservabilityPage />
+              </Suspense>
+            }
+          />
+
+          <Route
+            path="usage/experiments"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <RoutingExperimentsPage />
+              </Suspense>
+            }
+          />
+
           <Route
             path="api-keys"
             element={
               <Suspense fallback={<PageLoader />}>
                 <APIKeysPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="mcp-config"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <MCPConfigPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="agent-builder"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <AgentBuilderPage />
               </Suspense>
             }
           />
@@ -275,10 +329,58 @@ const AppRoutes: React.FC = () => {
             }
           />
           <Route
+            path="artifact-drafts"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ArtifactDraftsPage />
+              </Suspense>
+            }
+          />
+          <Route
             path="repo-reports"
             element={
               <Suspense fallback={<PageLoader />}>
                 <RepoReportsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="autonomous-agents"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <AutonomousAgentsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="patch-prs"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <PatchPRsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="synthesis"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <SynthesisPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="ai-hub"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <AIHubPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="research-notes"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ResearchNotesPage />
               </Suspense>
             }
           />

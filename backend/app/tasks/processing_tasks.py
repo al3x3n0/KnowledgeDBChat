@@ -3,7 +3,7 @@ Background tasks for document processing (text extraction, chunking, embedding g
 """
 
 import asyncio
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 from uuid import UUID
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -127,25 +127,26 @@ async def _async_process_document(task, document_id: str) -> Dict[str, Any]:
 
 
 @celery_app.task(bind=True, name="app.tasks.processing_tasks.reprocess_document")
-def reprocess_document(self, document_id: str) -> Dict[str, Any]:
+def reprocess_document(self, document_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
     """
     Reprocess a document (delete old chunks and re-index).
-    
+
     Args:
         document_id: UUID of the document to reprocess
-        
+        user_id: Optional user ID for LLM settings
+
     Returns:
         Dict with processing results
     """
-    return asyncio.run(_async_reprocess_document(self, document_id))
+    return asyncio.run(_async_reprocess_document(self, document_id, user_id))
 
 
-async def _async_reprocess_document(task, document_id: str) -> Dict[str, Any]:
+async def _async_reprocess_document(task, document_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
     """Async implementation of document reprocessing."""
     async with create_celery_session()() as db:
         try:
             logger.info(f"Starting reprocessing of document {document_id}")
-            
+
             task.update_state(
                 state="PROGRESS",
                 meta={
@@ -154,11 +155,11 @@ async def _async_reprocess_document(task, document_id: str) -> Dict[str, Any]:
                     "status": "Deleting existing chunks"
                 }
             )
-            
+
             document_service = DocumentService()
-            
+
             # Reprocess document (deletes old chunks and re-indexes)
-            success = await document_service.reprocess_document(UUID(document_id), db)
+            success = await document_service.reprocess_document(UUID(document_id), db, user_id=UUID(user_id) if user_id else None)
             
             if not success:
                 raise ValueError(f"Document {document_id} not found or reprocessing failed")

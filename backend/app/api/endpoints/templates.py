@@ -6,7 +6,7 @@ import json
 from typing import List, Optional
 from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, Response
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select, func, desc
 from loguru import logger
@@ -218,15 +218,24 @@ async def download_filled_template(
         raise HTTPException(status_code=400, detail="Filled document not available")
 
     try:
-        # Get presigned URL and redirect or stream
-        download_url = await storage_service.get_presigned_download_url(
-            job.filled_file_path
+        # Get file content directly from storage
+        await storage_service.initialize()
+        content = await storage_service.get_file_content(job.filled_file_path)
+
+        # Determine filename
+        filename = job.filled_filename or f"filled_{job.template_filename}"
+
+        return Response(
+            content=content,
+            media_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Content-Length": str(len(content)),
+            }
         )
 
-        # Return redirect to presigned URL
-        from fastapi.responses import RedirectResponse
-        return RedirectResponse(url=download_url)
-
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Filled document file not found in storage")
     except Exception as e:
         logger.error(f"Failed to download filled template: {e}")
         raise HTTPException(status_code=500, detail="Failed to download file")
@@ -364,14 +373,10 @@ async def template_job_progress(
     await websocket.accept()
 
     try:
-        # Verify token (simplified - in production use proper auth)
-        from app.services.auth_service import verify_token
-        try:
-            user_data = verify_token(token)
-            if not user_data:
-                await websocket.close(code=4001, reason="Invalid token")
-                return
-        except Exception:
+        # Verify token using websocket auth utility
+        from app.utils.websocket_auth import authenticate_websocket
+        user = await authenticate_websocket(websocket, token)
+        if not user:
             await websocket.close(code=4001, reason="Invalid token")
             return
 

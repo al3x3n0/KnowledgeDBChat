@@ -19,6 +19,8 @@ import {
   ChevronDown,
   ChevronRight,
   Search,
+  Download,
+  Globe,
   FileText,
   Trash2,
   Upload,
@@ -58,6 +60,8 @@ const controlNodes: NodePaletteItem[] = [
 // Built-in tool nodes
 const builtinTools: { name: string; label: string; icon: React.ReactNode; description: string }[] = [
   { name: 'search_documents', label: 'Search Documents', icon: <Search className="w-4 h-4" />, description: 'Search knowledge base' },
+  { name: 'web_scrape', label: 'Web Scrape', icon: <Globe className="w-4 h-4" />, description: 'Scrape a wiki/portal page' },
+  { name: 'ingest_url', label: 'Ingest URL', icon: <Download className="w-4 h-4" />, description: 'Scrape + save as document(s)' },
   { name: 'get_document_details', label: 'Get Document', icon: <FileText className="w-4 h-4" />, description: 'Get document details' },
   { name: 'summarize_document', label: 'Summarize', icon: <FileText className="w-4 h-4" />, description: 'Summarize a document' },
   { name: 'list_recent_documents', label: 'Recent Docs', icon: <List className="w-4 h-4" />, description: 'List recent documents' },

@@ -15,6 +15,21 @@ class Settings(BaseSettings):
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/knowledge_db"
     REDIS_URL: str = "redis://localhost:6379/0"
+
+    # Database pool tuning (async engine)
+    DB_POOL_SIZE: int = 20
+    DB_MAX_OVERFLOW: int = 40
+    DB_POOL_TIMEOUT_SECONDS: int = 10
+    DB_POOL_RECYCLE_SECONDS: int = 300
+    # Backpressure: limit concurrent DB sessions per API instance
+    DB_SESSION_CONCURRENCY_LIMIT: Optional[int] = None  # default: pool_size + max_overflow
+    DB_SESSION_ACQUIRE_TIMEOUT_SECONDS: int = 2
+
+    # Celery task DB pool tuning (fresh engine per task invocation)
+    CELERY_DB_USE_NULLPOOL: bool = True
+    CELERY_DB_POOL_SIZE: int = 2
+    CELERY_DB_MAX_OVERFLOW: int = 5
+    CELERY_DB_POOL_TIMEOUT_SECONDS: int = 10
     
     # LLM Configuration
     # Provider can be 'ollama' (local) or 'deepseek' (external OpenAI-compatible API)
@@ -37,6 +52,15 @@ class Settings(BaseSettings):
     # ChromaDB
     CHROMA_PERSIST_DIRECTORY: str = "./data/chroma_db"
     CHROMA_COLLECTION_NAME: str = "knowledge_base"
+
+    # Vector store provider
+    # Supported: "chroma" (embedded), "qdrant" (service)
+    VECTOR_STORE_PROVIDER: str = "qdrant"
+
+    # Qdrant (when VECTOR_STORE_PROVIDER="qdrant")
+    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_API_KEY: Optional[str] = None
+    QDRANT_COLLECTION_NAME: str = "knowledge_base"
     
     # Security
     SECRET_KEY: str = "your-secret-key-change-in-production"
@@ -81,6 +105,9 @@ class Settings(BaseSettings):
     MAX_RESPONSE_LENGTH: int = 1000
     TEMPERATURE: float = 0.7
     TOP_P: float = 0.9
+
+    # Backpressure (global concurrency caps)
+    LLM_MAX_CONCURRENCY: int = 4
     
     # Document Processing
     CHUNK_SIZE: int = 1000
@@ -100,6 +127,21 @@ class Settings(BaseSettings):
     KG_EXTRACTION_MODEL: Optional[str] = None  # Model for KG extraction (None = use default)
     KG_EXTRACTION_BATCH_SIZE: int = 3  # Chunks to batch per LLM call
     KG_EXTRACTION_MAX_TEXT_LENGTH: int = 3000  # Max chars per extraction call
+
+    # Unsafe code execution (disabled by default)
+    # Enables running generated demo scripts for "paper algorithm" projects.
+    # WARNING: This executes untrusted code. Only enable in an isolated sandbox environment.
+    ENABLE_UNSAFE_CODE_EXECUTION: bool = False
+    UNSAFE_CODE_EXEC_TIMEOUT_SECONDS: int = 10
+    UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS: int = 20000
+    UNSAFE_CODE_EXEC_MAX_STDERR_CHARS: int = 20000
+    UNSAFE_CODE_EXEC_MAX_MEMORY_MB: int = 512
+    # Execution backend: 'subprocess' (best-effort local) or 'docker' (recommended).
+    UNSAFE_CODE_EXEC_BACKEND: str = "subprocess"
+    # Docker backend settings (only used when UNSAFE_CODE_EXEC_BACKEND='docker')
+    UNSAFE_CODE_EXEC_DOCKER_IMAGE: str = "python:3.11-slim"
+    UNSAFE_CODE_EXEC_DOCKER_CPUS: float = 1.0
+    UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT: int = 128
 
     # RAG Knowledge Graph Integration
     RAG_KG_CONTEXT_ENABLED: bool = True  # Inject KG context into chat responses
@@ -126,6 +168,20 @@ class Settings(BaseSettings):
     KROKI_FALLBACK_URL: str = "https://kroki.io"  # External fallback
     KROKI_USE_FALLBACK: bool = True  # Fall back to external if local fails
 
+    # LaTeX Studio
+    # Security note: compiling arbitrary TeX on the server can be dangerous (file reads, resource usage).
+    # Keep disabled by default; enable only in trusted environments.
+    LATEX_COMPILER_ENABLED: bool = False
+    LATEX_COMPILER_ADMIN_ONLY: bool = True
+    LATEX_COMPILER_TIMEOUT_SECONDS: int = 20
+    LATEX_COMPILER_MAX_SOURCE_CHARS: int = 200000
+    LATEX_PROJECT_MAX_FILE_SIZE: int = 25 * 1024 * 1024  # 25MB per asset
+    LATEX_COMPILER_RUN_BIBTEX: bool = True
+    LATEX_COMPILER_USE_CELERY: bool = False
+    LATEX_COMPILER_CELERY_QUEUE: str = "latex"
+    LATEX_COMPILER_JOB_QUEUED_STALE_SECONDS: int = 10 * 60
+    LATEX_COMPILER_JOB_RUNNING_STALE_SECONDS: int = 5 * 60
+
     # MinIO Object Storage
     MINIO_ENDPOINT: str = "localhost:9000"
     MINIO_ACCESS_KEY: str = "minioadmin"
@@ -134,6 +190,49 @@ class Settings(BaseSettings):
     MINIO_USE_SSL: bool = False
     MINIO_PRESIGNED_URL_EXPIRY: int = 3600  # 1 hour in seconds
     MINIO_PROXY_BASE_URL: Optional[str] = None  # Base URL for nginx proxy (e.g., "http://localhost:3000/minio")
+
+    # Secrets vault
+    SECRETS_ENCRYPTION_KEY: Optional[str] = None  # Optional Fernet key (urlsafe base64, 32 bytes)
+
+    # Agent governance
+    AGENT_REQUIRE_TOOL_APPROVAL: bool = True
+    AGENT_DANGEROUS_TOOLS: List[str] = [
+        "delete_document",
+        "batch_delete_documents",
+        "delete_entity",
+        "merge_entities",
+        "run_custom_tool",
+    ]
+    # If enabled, autonomous agent jobs may directly apply code patches to the KB (writes).
+    # Strongly recommended to keep disabled and use PatchPR review/merge instead.
+    AGENT_KB_PATCH_APPLY_ENABLED: bool = False
+
+    # Custom tools
+    # Docker-based tools require access to a Docker daemon (often via host docker socket).
+    # Keep disabled by default for safety.
+    CUSTOM_TOOL_DOCKER_ENABLED: bool = False
+
+    # AI Hub Training Configuration
+    TRAINING_ENABLED: bool = True
+    TRAINING_MAX_CONCURRENT_JOBS: int = 2
+    TRAINING_DEFAULT_BACKEND: str = "local"  # local, modal, runpod
+    TRAINING_LOCAL_DEVICE: str = "auto"  # cuda, cpu, mps, auto
+    TRAINING_LOCAL_MAX_GPU_MEMORY_GB: float = 24.0
+    TRAINING_CHECKPOINT_INTERVAL_STEPS: int = 100
+    TRAINING_OUTPUT_DIR: str = "./data/training_outputs"
+    AI_HUB_EVAL_TEMPLATES_DIR: Optional[str] = None  # Optional override for eval template "plugins"
+    AI_HUB_EVAL_ENABLED_TEMPLATE_IDS: Optional[str] = None  # Comma-separated template IDs allowed for non-admin users
+    AI_HUB_DATASET_PRESETS_DIR: Optional[str] = None  # Optional override for dataset preset "plugins"
+    AI_HUB_DATASET_ENABLED_PRESET_IDS: Optional[str] = None  # Comma-separated preset IDs allowed for non-admin users
+
+    # Cloud Training (future - optional)
+    MODAL_API_KEY: Optional[str] = None
+    RUNPOD_API_KEY: Optional[str] = None
+
+    # Dataset Limits
+    DATASET_MAX_SIZE_MB: int = 500
+    DATASET_MAX_SAMPLES: int = 100000
+    DATASET_MAX_TOKEN_COUNT: int = 50000000  # 50M tokens
     
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
@@ -154,6 +253,26 @@ class Settings(BaseSettings):
         case_sensitive = True
 
     # Validators
+    @field_validator("OLLAMA_BASE_URL", mode="before")
+    @classmethod
+    def default_ollama_base_url_for_docker(cls, v):
+        # Prefer explicit env var (including docker-compose `environment:` entries).
+        env_val = os.getenv("OLLAMA_BASE_URL")
+        if env_val:
+            return env_val
+
+        # If value is localhost but we're running inside Docker, localhost points at the container.
+        # Default to the docker-compose service name `ollama`.
+        try:
+            in_docker = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+        except Exception:
+            in_docker = False
+
+        if in_docker and isinstance(v, str) and ("localhost:11434" in v or "127.0.0.1:11434" in v):
+            return "http://ollama:11434"
+
+        return v
+
     @field_validator("CELERY_BROKER_URL", mode="before")
     @classmethod
     def default_celery_broker_from_redis(cls, v):

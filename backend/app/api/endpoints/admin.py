@@ -26,15 +26,33 @@ from app.utils.ingestion_state import (
     set_ingestion_cancel_flag,
     set_force_full_flag,
 )
-from app.services.vector_store import VectorStoreService
+from app.services.vector_store import vector_store_service
 from app.schemas.admin import (
     SystemStatsResponse,
     HealthCheckResponse,
     TaskTriggerResponse
 )
-from app.core.feature_flags import get_flags as get_feature_flags, set_flag as set_feature_flag, set_str as set_feature_str
+from app.core.feature_flags import get_flags as get_feature_flags, set_flag as set_feature_flag, set_str as set_feature_str, get_str as get_feature_str
 from app.services.llm_service import LLMService
 from fastapi import WebSocket, WebSocketDisconnect
+from pathlib import Path
+import json
+import re
+
+from app.schemas.ai_hub_plugins import CreateAIHubPluginRequest, CreateAIHubPluginResponse
+from app.schemas.customer_profile import (
+    CustomerProfile,
+    CustomerProfileGetResponse,
+    CustomerProfileSetRequest,
+    CustomerProfileSetResponse,
+)
+from app.models.ai_hub_recommendation_feedback import AIHubRecommendationFeedback
+from sqlalchemy import delete, select, func, update, case
+from app.schemas.ai_hub_feedback_admin import (
+    AIHubFeedbackStatsResponse,
+    AIHubFeedbackStatsRow,
+    AIHubFeedbackBackfillResponse,
+)
 
 router = APIRouter()
 
@@ -67,7 +85,8 @@ async def get_system_health(
         
         # Wait for result with timeout
         try:
-            result = task.get(timeout=30)  # Wait up to 30 seconds
+            # Keep this very short; UI should load even if Celery/LLM are still warming up.
+            result = task.get(timeout=2)  # Wait up to 2 seconds
             return HealthCheckResponse(**result)
         except Exception as task_error:
             # If task fails or times out, return basic health check
@@ -81,7 +100,8 @@ async def get_system_health(
                 "services": {
                     "celery": {
                         "status": "unhealthy",
-                        "error": "Health check task failed or timed out"
+                        "error": "Health check task failed or timed out",
+                        "task_id": getattr(task, "id", None),
                     }
                 }
             }
@@ -139,7 +159,8 @@ async def get_system_stats(
         # Trigger stats generation task
         task = generate_stats.delay()
         try:
-            result = task.get(timeout=30)  # Wait up to 30 seconds
+            # Keep this very short; fallback computes quickly without relying on Celery.
+            result = task.get(timeout=2)  # Wait up to 2 seconds
             return SystemStatsResponse(**result)
         except Exception as task_error:
             logger.warning(f"Stat task failed or timed out, falling back to direct computation: {task_error}")
@@ -177,13 +198,266 @@ async def update_flags(
     try:
         updated = {}
         for name, val in flags.items():
-            if name in {"knowledge_graph_enabled", "summarization_enabled", "auto_summarize_on_process"}:
+            if name in {"knowledge_graph_enabled", "summarization_enabled", "auto_summarize_on_process", "unsafe_code_execution_enabled"}:
                 ok = await set_feature_flag(name, bool(val))
                 updated[name] = ok
         return {"updated": updated}
     except Exception as e:
         logger.error(f"Error updating flags: {e}")
         raise HTTPException(status_code=500, detail="Failed to update flags")
+
+
+@router.get("/unsafe-exec/status")
+async def get_unsafe_exec_status(current_user: User = Depends(require_admin)):
+    """
+    Admin: return effective unsafe-code-execution settings + Docker availability checks.
+
+    Uses Redis-backed feature flag overrides when present.
+    """
+    import asyncio
+    import subprocess
+
+    from app.core.config import settings
+
+    flags = await get_feature_flags()
+    enabled = bool(flags.get("unsafe_code_execution_enabled", False))
+    backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess")
+    backend = str(backend or "subprocess").strip().lower()
+    if backend not in {"subprocess", "docker"}:
+        backend = "subprocess"
+    docker_image = (await get_feature_str("unsafe_code_exec_docker_image")) or getattr(
+        settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim"
+    )
+    docker_image = str(docker_image or "python:3.11-slim").strip()
+
+    docker_available = False
+    docker_version = None
+    docker_image_present = None
+
+    async def _run(cmd: list[str], timeout: float = 2.0) -> tuple[int, str, str]:
+        def _do():
+            p = subprocess.run(cmd, capture_output=True, text=True)
+            return p.returncode, p.stdout or "", p.stderr or ""
+
+        return await asyncio.wait_for(asyncio.to_thread(_do), timeout=timeout)
+
+    try:
+        code, out, err = await _run(["docker", "version", "--format", "{{.Server.Version}}"], timeout=2.0)
+        docker_available = code == 0
+        docker_version = (out.strip() or err.strip() or None) if docker_available else None
+    except Exception:
+        docker_available = False
+        docker_version = None
+
+    if docker_available:
+        try:
+            code, _out, _err = await _run(["docker", "image", "inspect", docker_image], timeout=2.0)
+            docker_image_present = code == 0
+        except Exception:
+            docker_image_present = None
+
+    return {
+        "enabled": bool(enabled),
+        "backend": backend,
+        "docker": {
+            "available": docker_available,
+            "server_version": docker_version,
+            "image": docker_image,
+            "image_present": docker_image_present,
+        },
+        "limits": {
+            "timeout_seconds": int(getattr(settings, "UNSAFE_CODE_EXEC_TIMEOUT_SECONDS", 10)),
+            "max_memory_mb": int(getattr(settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)),
+            "docker_cpus": float(getattr(settings, "UNSAFE_CODE_EXEC_DOCKER_CPUS", 1.0)),
+            "docker_pids_limit": int(getattr(settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128)),
+        },
+        "notes": [
+            "Unsafe execution is disabled by default.",
+            "Use Docker backend for safer isolation where possible.",
+        ],
+    }
+
+
+@router.post("/unsafe-exec/config")
+async def set_unsafe_exec_config(payload: dict, current_user: User = Depends(require_admin)):
+    """
+    Admin: set Redis-backed runtime overrides for unsafe execution.
+
+    Supported keys:
+      - enabled (bool) -> unsafe_code_execution_enabled flag
+      - backend ('subprocess'|'docker') -> unsafe_code_exec_backend str
+      - docker_image (str) -> unsafe_code_exec_docker_image str
+    """
+    try:
+        updated: dict[str, bool] = {}
+        if "enabled" in payload:
+            ok = await set_feature_flag("unsafe_code_execution_enabled", bool(payload.get("enabled")))
+            updated["enabled"] = bool(ok)
+        if "backend" in payload:
+            backend = str(payload.get("backend") or "").strip().lower()
+            if backend not in {"subprocess", "docker"}:
+                raise HTTPException(status_code=400, detail="Invalid backend")
+            ok = await set_feature_str("unsafe_code_exec_backend", backend)
+            updated["backend"] = bool(ok)
+        if "docker_image" in payload:
+            image = str(payload.get("docker_image") or "").strip()
+            if not image:
+                raise HTTPException(status_code=400, detail="docker_image cannot be empty")
+            ok = await set_feature_str("unsafe_code_exec_docker_image", image)
+            updated["docker_image"] = bool(ok)
+        return {"updated": updated}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error updating unsafe exec config: {e}")
+        raise HTTPException(status_code=500, detail="Failed to update unsafe exec config")
+
+
+@router.post("/unsafe-exec/docker-pull")
+async def pull_unsafe_exec_docker_image(payload: dict, current_user: User = Depends(require_admin)):
+    """
+    Admin: pull the configured Docker image used for unsafe demo runs.
+
+    Payload:
+      - image (optional str): overrides effective image for this pull only.
+    """
+    import asyncio
+    import subprocess
+
+    from app.core.config import settings
+
+    try:
+        backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess")
+        backend = str(backend or "subprocess").strip().lower()
+        if backend != "docker":
+            raise HTTPException(status_code=400, detail="Unsafe exec backend is not set to docker")
+
+        image = str(payload.get("image") or "").strip() if isinstance(payload, dict) else ""
+        if not image:
+            image = (await get_feature_str("unsafe_code_exec_docker_image")) or getattr(
+                settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim"
+            )
+            image = str(image or "python:3.11-slim").strip()
+        if not image:
+            raise HTTPException(status_code=400, detail="Docker image cannot be empty")
+
+        def _pull():
+            return subprocess.run(["docker", "pull", image], capture_output=True, text=True)
+
+        try:
+            proc = await asyncio.wait_for(asyncio.to_thread(_pull), timeout=180.0)
+        except asyncio.TimeoutError:
+            return {"image": image, "status": "timeout", "stdout": "", "stderr": "", "exit_code": None}
+        except FileNotFoundError:
+            raise HTTPException(status_code=400, detail="Docker is not available on this server")
+
+        stdout = (proc.stdout or "")[-20000:]
+        stderr = (proc.stderr or "")[-20000:]
+        return {
+            "image": image,
+            "status": "ok" if proc.returncode == 0 else "error",
+            "exit_code": int(proc.returncode),
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error pulling docker image: {e}")
+        raise HTTPException(status_code=500, detail="Failed to pull docker image")
+
+
+@router.post("/unsafe-exec/docker-check")
+async def check_unsafe_exec_docker_sandbox(payload: dict, current_user: User = Depends(require_admin)):
+    """
+    Admin: run a short sandboxed docker command to validate the configured image can execute python.
+
+    Payload:
+      - image (optional str): overrides effective image for this check only.
+    """
+    import asyncio
+    import subprocess
+    import tempfile
+    from pathlib import Path
+
+    from app.core.config import settings
+
+    try:
+        backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess")
+        backend = str(backend or "subprocess").strip().lower()
+        if backend != "docker":
+            raise HTTPException(status_code=400, detail="Unsafe exec backend is not set to docker")
+
+        image = str(payload.get("image") or "").strip() if isinstance(payload, dict) else ""
+        if not image:
+            image = (await get_feature_str("unsafe_code_exec_docker_image")) or getattr(
+                settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim"
+            )
+            image = str(image or "python:3.11-slim").strip()
+        if not image:
+            raise HTTPException(status_code=400, detail="Docker image cannot be empty")
+
+        mem_mb = int(getattr(settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512))
+        cpus = float(getattr(settings, "UNSAFE_CODE_EXEC_DOCKER_CPUS", 1.0) or 1.0)
+        pids = int(getattr(settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128))
+
+        with tempfile.TemporaryDirectory(prefix="unsafe_docker_check_") as tmp:
+            Path(tmp, "demo.py").write_text("print('OK')\n", encoding="utf-8")
+
+            cmd = [
+                "docker",
+                "run",
+                "--rm",
+                "--network",
+                "none",
+                "--cap-drop",
+                "ALL",
+                "--security-opt",
+                "no-new-privileges",
+                "--pids-limit",
+                str(max(32, min(pids, 1024))),
+                "--memory",
+                f"{max(64, min(mem_mb, 4096))}m",
+                "--cpus",
+                str(max(0.25, min(cpus, 4.0))),
+                "--user",
+                "65534:65534",
+                "-v",
+                f"{tmp}:/work:ro",
+                "-w",
+                "/work",
+                image,
+                "python",
+                "-I",
+                "-S",
+                "demo.py",
+            ]
+
+            def _run():
+                return subprocess.run(cmd, capture_output=True, text=True)
+
+            try:
+                proc = await asyncio.wait_for(asyncio.to_thread(_run), timeout=20.0)
+            except asyncio.TimeoutError:
+                return {"image": image, "status": "timeout", "stdout": "", "stderr": "", "exit_code": None}
+            except FileNotFoundError:
+                raise HTTPException(status_code=400, detail="Docker is not available on this server")
+
+        stdout = (proc.stdout or "")[-5000:]
+        stderr = (proc.stderr or "")[-5000:]
+        ok = proc.returncode == 0 and "OK" in stdout
+        return {
+            "image": image,
+            "status": "ok" if ok else "error",
+            "exit_code": int(proc.returncode),
+            "stdout": stdout,
+            "stderr": stderr,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error checking docker sandbox: {e}")
+        raise HTTPException(status_code=500, detail="Failed to check docker sandbox")
 
 
 @router.get("/llm/models")
@@ -213,6 +487,351 @@ async def switch_llm_model(model_name: str, current_user: User = Depends(require
     except Exception as e:
         logger.error(f"Error switching LLM model: {e}")
         raise HTTPException(status_code=500, detail="Failed to switch LLM model")
+
+
+@router.get("/llm/routing")
+async def get_llm_routing_settings(current_user: User = Depends(require_admin)):
+    """Get tier routing settings (runtime feature strings)."""
+    keys = [
+        "llm_default_model",
+        "llm_provider_fast",
+        "llm_model_fast",
+        "llm_provider_balanced",
+        "llm_model_balanced",
+        "llm_provider_deep",
+        "llm_model_deep",
+    ]
+    out = {}
+    for k in keys:
+        try:
+            out[k] = await get_feature_str(k)
+        except Exception:
+            out[k] = None
+    return out
+
+
+@router.post("/llm/routing")
+async def set_llm_routing_settings(payload: dict, current_user: User = Depends(require_admin)):
+    """Set tier routing settings (runtime feature strings)."""
+    allowed = {
+        "llm_default_model",
+        "llm_provider_fast",
+        "llm_model_fast",
+        "llm_provider_balanced",
+        "llm_model_balanced",
+        "llm_provider_deep",
+        "llm_model_deep",
+    }
+    updated = {}
+    for k, v in (payload or {}).items():
+        if k not in allowed:
+            continue
+        try:
+            ok = await set_feature_str(k, str(v or "").strip())
+            updated[k] = bool(ok)
+        except Exception:
+            updated[k] = False
+    return {"updated": updated}
+
+
+@router.get("/ai-hub/evals/enabled")
+async def get_enabled_ai_hub_eval_templates(current_user: User = Depends(require_admin)):
+    """
+    Get the enabled AI Hub eval template IDs (admin).
+    Stored in Redis feature flag key `ai_hub_enabled_eval_templates` as CSV.
+    """
+    raw = await get_feature_str("ai_hub_enabled_eval_templates")
+    enabled = [x.strip() for x in (raw or "").split(",") if x and x.strip()]
+    return {"enabled": enabled, "raw": raw}
+
+
+@router.post("/ai-hub/evals/enabled")
+async def set_enabled_ai_hub_eval_templates(
+    payload: dict,
+    current_user: User = Depends(require_admin),
+):
+    """
+    Set enabled AI Hub eval template IDs (admin).
+    Payload supports either:
+      - {"enabled": ["id1", "id2"]}
+      - {"raw": "id1,id2"}
+    """
+    enabled = payload.get("enabled")
+    raw = payload.get("raw")
+
+    if isinstance(enabled, list):
+        cleaned = [str(x).strip() for x in enabled if str(x).strip()]
+        raw = ",".join(cleaned)
+    elif isinstance(raw, str):
+        cleaned = [x.strip() for x in raw.split(",") if x and x.strip()]
+        raw = ",".join(cleaned)
+    elif enabled is None and raw is None:
+        raise HTTPException(status_code=400, detail="Missing 'enabled' or 'raw'")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    ok = await set_feature_str("ai_hub_enabled_eval_templates", raw or "")
+    if not ok:
+        raise HTTPException(status_code=400, detail="Failed to update setting")
+    return {"ok": True, "enabled": [x for x in (raw or "").split(",") if x]}
+
+
+@router.get("/ai-hub/datasets/presets/enabled")
+async def get_enabled_ai_hub_dataset_presets(current_user: User = Depends(require_admin)):
+    """
+    Get the enabled AI Hub dataset preset IDs (admin).
+    Stored in Redis feature flag key `ai_hub_enabled_dataset_presets` as CSV.
+    """
+    raw = await get_feature_str("ai_hub_enabled_dataset_presets")
+    enabled = [x.strip() for x in (raw or "").split(",") if x and x.strip()]
+    return {"enabled": enabled, "raw": raw}
+
+
+@router.post("/ai-hub/datasets/presets/enabled")
+async def set_enabled_ai_hub_dataset_presets(
+    payload: dict,
+    current_user: User = Depends(require_admin),
+):
+    """
+    Set enabled AI Hub dataset preset IDs (admin).
+    Payload supports either:
+      - {"enabled": ["id1", "id2"]}
+      - {"raw": "id1,id2"}
+    """
+    enabled = payload.get("enabled")
+    raw = payload.get("raw")
+
+    if isinstance(enabled, list):
+        cleaned = [str(x).strip() for x in enabled if str(x).strip()]
+        raw = ",".join(cleaned)
+    elif isinstance(raw, str):
+        cleaned = [x.strip() for x in raw.split(",") if x and x.strip()]
+        raw = ",".join(cleaned)
+    elif enabled is None and raw is None:
+        raise HTTPException(status_code=400, detail="Missing 'enabled' or 'raw'")
+    else:
+        raise HTTPException(status_code=400, detail="Invalid payload")
+
+    ok = await set_feature_str("ai_hub_enabled_dataset_presets", raw or "")
+    if not ok:
+        raise HTTPException(status_code=400, detail="Failed to update setting")
+    return {"ok": True, "enabled": [x for x in (raw or "").split(",") if x]}
+
+def _normalize_profile_keywords(keywords: list[str]) -> list[str]:
+    out: list[str] = []
+    for k in keywords or []:
+        s = str(k).strip()
+        if not s:
+            continue
+        out.append(s.lower())
+    # Preserve order but remove duplicates
+    seen = set()
+    uniq: list[str] = []
+    for k in out:
+        if k in seen:
+            continue
+        seen.add(k)
+        uniq.append(k)
+    return uniq[:100]
+
+
+@router.get("/ai-hub/customer-profile", response_model=CustomerProfileGetResponse)
+async def get_ai_hub_customer_profile(current_user: User = Depends(require_admin)):
+    """
+    Get the deployment-level customer profile used by AI Scientist.
+    Stored in Redis feature flag key `ai_hub_customer_profile` as JSON.
+    """
+    raw = await get_feature_str("ai_hub_customer_profile")
+    if not raw:
+        return CustomerProfileGetResponse(profile=None, raw=raw)
+    try:
+        data = json.loads(raw)
+        profile = CustomerProfile.model_validate(data)
+        # Normalize keywords for consistency
+        profile.keywords = _normalize_profile_keywords(profile.keywords)
+        return CustomerProfileGetResponse(profile=profile, raw=raw)
+    except Exception:
+        # Keep raw for debugging even if schema changed
+        return CustomerProfileGetResponse(profile=None, raw=raw)
+
+
+@router.post("/ai-hub/customer-profile", response_model=CustomerProfileSetResponse)
+async def set_ai_hub_customer_profile(
+    payload: CustomerProfileSetRequest,
+    current_user: User = Depends(require_admin),
+):
+    """
+    Set the deployment-level customer profile used by AI Scientist (admin).
+    """
+    from uuid import uuid4
+
+    profile = payload.profile
+    if profile.id is None:
+        profile.id = uuid4()
+    profile.keywords = _normalize_profile_keywords(profile.keywords)
+    raw = json.dumps(profile.model_dump(), ensure_ascii=False)
+    ok = await set_feature_str("ai_hub_customer_profile", raw)
+    if not ok:
+        raise HTTPException(status_code=400, detail="Failed to update setting")
+    return CustomerProfileSetResponse(ok=True, profile=profile, raw=raw)
+
+
+@router.delete("/ai-hub/recommendation-feedback")
+async def clear_ai_hub_recommendation_feedback(
+    profile_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Clear stored AI Scientist learning feedback for a given customer profile (admin).
+    This is useful during pilots/experiments when you want to reset the learning loop.
+    """
+    res = await db.execute(
+        delete(AIHubRecommendationFeedback).where(AIHubRecommendationFeedback.customer_profile_id == profile_id)
+    )
+    await db.commit()
+    deleted = int(getattr(res, "rowcount", 0) or 0)
+    return {"ok": True, "deleted": deleted}
+
+
+@router.get("/ai-hub/recommendation-feedback/stats", response_model=AIHubFeedbackStatsResponse)
+async def get_ai_hub_recommendation_feedback_stats(
+    profile_id: UUID,
+    limit: int = 50,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Aggregate accept/reject counts by (item_type, item_id) for a given customer profile (admin).
+    """
+    limit = max(1, min(int(limit or 50), 200))
+    res = await db.execute(
+        select(
+            AIHubRecommendationFeedback.item_type,
+            AIHubRecommendationFeedback.item_id,
+            func.sum(case((AIHubRecommendationFeedback.decision == "accept", 1), else_=0)).label("accepts"),
+            func.sum(case((AIHubRecommendationFeedback.decision == "reject", 1), else_=0)).label("rejects"),
+        )
+        .where(AIHubRecommendationFeedback.customer_profile_id == profile_id)
+        .group_by(AIHubRecommendationFeedback.item_type, AIHubRecommendationFeedback.item_id)
+        .order_by(
+            (
+                func.sum(case((AIHubRecommendationFeedback.decision == "accept", 1), else_=0))
+                - func.sum(case((AIHubRecommendationFeedback.decision == "reject", 1), else_=0))
+            ).desc()
+        )
+        .limit(limit)
+    )
+    rows = []
+    for item_type, item_id, accepts, rejects in res.all():
+        a = int(accepts or 0)
+        r = int(rejects or 0)
+        rows.append(AIHubFeedbackStatsRow(item_type=item_type, item_id=item_id, accepts=a, rejects=r, net=a - r))
+    return AIHubFeedbackStatsResponse(profile_id=profile_id, rows=rows)
+
+
+@router.post("/ai-hub/recommendation-feedback/backfill-profile-id", response_model=AIHubFeedbackBackfillResponse)
+async def backfill_ai_hub_feedback_profile_id(
+    profile_id: UUID,
+    profile_name: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Backfill `customer_profile_id` on legacy feedback rows using `customer_profile_name`.
+
+    This is safe to run multiple times. Only updates rows where customer_profile_id IS NULL.
+    """
+    name = (profile_name or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="profile_name required")
+    res = await db.execute(
+        update(AIHubRecommendationFeedback)
+        .where(
+            AIHubRecommendationFeedback.customer_profile_id.is_(None),
+            AIHubRecommendationFeedback.customer_profile_name == name,
+        )
+        .values(customer_profile_id=profile_id)
+    )
+    await db.commit()
+    return AIHubFeedbackBackfillResponse(ok=True, profile_id=profile_id, updated=int(getattr(res, "rowcount", 0) or 0))
+
+
+def _safe_plugin_id(raw: str) -> str:
+    val = (raw or "").strip()
+    if not val:
+        raise HTTPException(status_code=400, detail="Plugin id is required")
+    # Conservative: lowercase letters, digits, underscores, dashes, dots.
+    if not re.fullmatch(r"[a-z0-9][a-z0-9_.-]{1,127}", val):
+        raise HTTPException(status_code=400, detail="Invalid plugin id format")
+    return val
+
+
+@router.post("/ai-hub/plugins/create", response_model=CreateAIHubPluginResponse)
+async def create_ai_hub_plugin(
+    payload: CreateAIHubPluginRequest,
+    current_user: User = Depends(require_admin),
+):
+    """
+    Create (persist) an AI Hub plugin JSON file on disk (admin).
+
+    This makes AI Scientist recommendations actionable:
+    - dataset presets: backend/app/plugins/ai_hub/dataset_presets/<id>.json
+    - eval templates: backend/app/plugins/ai_hub/eval_templates/<id>.json
+    """
+    plugin = payload.plugin or {}
+    plugin_id = _safe_plugin_id(str(plugin.get("id") or ""))
+
+    warnings: list[str] = []
+
+    if payload.plugin_type == "dataset_preset":
+        required = ["id", "name", "description", "dataset_type", "generation_prompt"]
+        missing = [k for k in required if not plugin.get(k)]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {', '.join(missing)}")
+        base_dir = (
+            Path(settings.AI_HUB_DATASET_PRESETS_DIR)
+            if getattr(settings, "AI_HUB_DATASET_PRESETS_DIR", None)
+            else Path(__file__).resolve().parents[2] / "plugins" / "ai_hub" / "dataset_presets"
+        )
+    else:
+        required = ["id", "name", "description", "version", "rubric", "cases"]
+        missing = [k for k in required if plugin.get(k) is None]
+        if missing:
+            raise HTTPException(status_code=400, detail=f"Missing required fields: {', '.join(missing)}")
+        if not isinstance(plugin.get("cases"), list) or len(plugin.get("cases") or []) == 0:
+            warnings.append("Eval template has no cases; add at least 1 case for useful scoring.")
+        base_dir = (
+            Path(settings.AI_HUB_EVAL_TEMPLATES_DIR)
+            if getattr(settings, "AI_HUB_EVAL_TEMPLATES_DIR", None)
+            else Path(__file__).resolve().parents[2] / "plugins" / "ai_hub" / "eval_templates"
+        )
+
+    base_dir.mkdir(parents=True, exist_ok=True)
+    path = base_dir / f"{plugin_id}.json"
+
+    overwritten = False
+    if path.exists():
+        if not payload.overwrite:
+            raise HTTPException(status_code=409, detail="Plugin already exists (set overwrite=true to replace)")
+        overwritten = True
+
+    # Enforce that the filename is derived from the plugin id to prevent path traversal.
+    try:
+        serialized = json.dumps(plugin, ensure_ascii=False, indent=2)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Plugin JSON is not serializable")
+
+    path.write_text(serialized.strip() + "\n", encoding="utf-8")
+
+    return CreateAIHubPluginResponse(
+        ok=True,
+        plugin_type=payload.plugin_type,
+        plugin_id=plugin_id,
+        path=str(path),
+        overwritten=overwritten,
+        warnings=warnings or None,
+    )
 
 
 @router.post("/sync/all", response_model=TaskTriggerResponse)
@@ -512,11 +1131,9 @@ async def reset_vector_store(
 ):
     """Reset the vector store (delete all embeddings)."""
     try:
-        vector_store = VectorStoreService()
-        if not vector_store._initialized:
-            await vector_store.initialize()
-        
-        await vector_store.reset_collection()
+        await vector_store_service.initialize()
+         
+        await vector_store_service.reset_collection()
         
         # Reset processing status for all documents
         from sqlalchemy import update
@@ -554,11 +1171,9 @@ async def get_vector_store_stats(
         - available_models: List of available embedding models
     """
     try:
-        vector_store = VectorStoreService()
-        if not vector_store._initialized:
-            await vector_store.initialize()
-        
-        stats = await vector_store.get_collection_stats()
+        await vector_store_service.initialize()
+         
+        stats = await vector_store_service.get_collection_stats()
         return stats
     
     except Exception as e:
@@ -585,16 +1200,14 @@ async def switch_embedding_model(
         Changing models requires reprocessing all documents for best results.
     """
     try:
-        vector_store = VectorStoreService()
-        if not vector_store._initialized:
-            await vector_store.initialize()
-        
-        success = await vector_store.switch_embedding_model(model_name)
-        
+        await vector_store_service.initialize()
+         
+        success = await vector_store_service.switch_embedding_model(model_name)
+         
         if success:
             return {
                 "message": f"Switched to embedding model: {model_name}",
-                "current_model": vector_store.get_current_model(),
+                "current_model": vector_store_service.get_current_model(),
                 "warning": "Existing documents should be reprocessed for consistency"
             }
         else:

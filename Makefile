@@ -1,4 +1,10 @@
-.PHONY: help setup build start stop restart logs test clean
+.PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint
+
+# Prefer legacy `docker-compose` if installed, otherwise use `docker compose`.
+DC ?= $(shell command -v docker-compose >/dev/null 2>&1 && echo docker-compose || echo "docker compose")
+
+# Default Ollama model to pull (override with `make pull-model MODEL=...`).
+MODEL ?= llama3.2:1b
 
 help: ## Show this help message
 	@echo "Knowledge Database Chat - Makefile Commands"
@@ -10,7 +16,7 @@ help: ## Show this help message
 
 setup: ## Initial setup - create directories and copy env files
 	@echo "🚀 Setting up Knowledge Database Chat..."
-	@mkdir -p data/documents data/chroma_db data/logs data/postgres-init
+	@mkdir -p data/documents data/embeddings data/chroma_db data/logs data/postgres-init
 	@if [ ! -f backend/.env ]; then \
 		cp backend/env.example backend/.env; \
 		echo "✅ Created backend/.env"; \
@@ -22,72 +28,93 @@ setup: ## Initial setup - create directories and copy env files
 	@echo "✅ Setup complete!"
 
 build: ## Build Docker containers
-	docker-compose build
+	$(DC) build
 
 start: ## Start all services
-	docker-compose up -d
+	$(DC) up -d
 	@echo "✅ Services started. Use 'make logs' to view logs."
 
 stop: ## Stop all services
-	docker-compose down
+	$(DC) down
 
 restart: ## Restart all services
-	docker-compose restart
+	$(DC) restart
 
 logs: ## View logs from all services
-	docker-compose logs -f
+	$(DC) logs -f
 
 logs-backend: ## View backend logs only
-	docker-compose logs -f backend
+	$(DC) logs -f backend
 
 logs-frontend: ## View frontend logs only
-	docker-compose logs -f frontend
+	$(DC) logs -f frontend
 
 logs-celery: ## View Celery worker logs
-	docker-compose logs -f celery
+	$(DC) logs -f celery
 
 shell-backend: ## Open shell in backend container
-	docker-compose exec backend /bin/bash
+	$(DC) exec backend /bin/bash
 
 shell-frontend: ## Open shell in frontend container
-	docker-compose exec frontend /bin/sh
+	$(DC) exec frontend /bin/sh
 
 db-migrate: ## Run database migrations
-	docker-compose exec backend python -c "import asyncio; from app.core.database import create_tables; asyncio.run(create_tables())"
+	$(DC) exec backend python -c "import asyncio; from app.core.database import create_tables; asyncio.run(create_tables())"
 
 db-shell: ## Open PostgreSQL shell
-	docker-compose exec postgres psql -U user -d knowledge_db
+	$(DC) exec postgres psql -U user -d knowledge_db
 
 redis-shell: ## Open Redis CLI
-	docker-compose exec redis redis-cli
+	$(DC) exec redis redis-cli
 
 test-backend: ## Run backend tests
-	docker-compose exec backend pytest
+	$(DC) exec backend pytest
 
-test-frontend: ## Run frontend tests
-	docker-compose exec frontend npm test
+test-frontend: ## Run frontend tests (non-interactive)
+	$(DC) exec frontend npm run test:ci
+
+test-frontend-watch: ## Run frontend tests (watch mode)
+	$(DC) exec frontend npm test
 
 test: test-backend test-frontend ## Run all tests
 
 pull-model: ## Pull default Ollama model
-	docker-compose exec ollama ollama pull llama2
+	$(DC) exec ollama ollama pull $(MODEL)
 
 download-models: ## Download all necessary models (Ollama, embeddings, reranking)
 	python scripts/download_models.py
 
+validate-env: ## Validate backend environment variables
+	python3 scripts/validate_env.py
+
+check-health: ## Run local health checks (Docker + services)
+	bash scripts/check_health.sh
+
+doctor: validate-env check-health ## Validate env + health checks
+
+fmt-backend: ## Format backend code (black + isort)
+	$(DC) exec backend black .
+	$(DC) exec backend isort .
+
+lint-backend: ## Lint backend code (flake8)
+	$(DC) exec backend flake8
+
+fmt: fmt-backend ## Run formatters
+
+lint: lint-backend ## Run linters
+
 clean: ## Remove containers, volumes, and images
-	docker-compose down -v
-	@echo "⚠️  All data will be lost. Continue? [y/N]"
+	@echo "⚠️  This will remove containers, volumes, and images (all data will be lost). Continue? [y/N]"
 	@read -r confirm && [ "$$confirm" = "y" ] || exit 1
-	docker-compose down -v --rmi all
+	$(DC) down -v --rmi all
 
 clean-data: ## Remove only data volumes (keeps images)
-	docker-compose down -v
-	@echo "⚠️  All data will be lost. Continue? [y/N]"
+	@echo "⚠️  This will remove containers and volumes (all data will be lost). Continue? [y/N]"
 	@read -r confirm && [ "$$confirm" = "y" ] || exit 1
+	$(DC) down -v
 
 status: ## Show status of all services
-	docker-compose ps
+	$(DC) ps
 
 health: ## Check health of all services
 	@echo "Checking service health..."
@@ -95,24 +122,32 @@ health: ## Check health of all services
 	@echo "Backend API:"
 	@curl -s http://localhost:8000/health || echo "❌ Backend not responding"
 	@echo ""
+	@echo "Nginx:"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3000/health || echo "❌ Nginx not responding"
+	@echo ""
 	@echo "Frontend:"
 	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3000 || echo "❌ Frontend not responding"
 	@echo ""
 	@echo "PostgreSQL:"
-	@docker-compose exec -T postgres pg_isready -U user || echo "❌ PostgreSQL not ready"
+	@$(DC) exec -T postgres pg_isready -U user || echo "❌ PostgreSQL not ready"
 	@echo ""
 	@echo "Redis:"
-	@docker-compose exec -T redis redis-cli ping || echo "❌ Redis not responding"
+	@$(DC) exec -T redis redis-cli ping || echo "❌ Redis not responding"
+	@echo ""
+	@echo "MinIO:"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:9000/minio/health/live || echo "❌ MinIO not responding"
+	@echo ""
+	@echo "Video streamer:"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:8080/health || echo "❌ Video streamer not responding"
 	@echo ""
 	@echo "Ollama:"
 	@curl -s http://localhost:11434/api/tags > /dev/null && echo "✅ Ollama is running" || echo "❌ Ollama not responding"
 
 dev-backend: ## Start backend in development mode (manual setup)
-	cd backend && source venv/bin/activate && uvicorn main:app --reload
+	cd backend && . venv/bin/activate && uvicorn main:app --reload
 
 dev-frontend: ## Start frontend in development mode (manual setup)
 	cd frontend && npm start
 
 dev-celery: ## Start Celery worker in development mode (manual setup)
-	cd backend && source venv/bin/activate && celery -A app.core.celery worker --loglevel=info
-
+	cd backend && . venv/bin/activate && celery -A app.core.celery worker --loglevel=info

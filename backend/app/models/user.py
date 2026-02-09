@@ -68,6 +68,9 @@ class User(Base):
     # Repository report relationships
     repo_report_jobs = relationship("RepoReportJob", back_populates="user", cascade="all, delete-orphan")
 
+    # Synthesis job relationships
+    synthesis_jobs = relationship("SynthesisJob", back_populates="user", cascade="all, delete-orphan")
+
     def __repr__(self):
         return f"<User(id={self.id}, username='{self.username}', email='{self.email}')>"
     

@@ -27,6 +27,17 @@ services:
     networks:
       - knowledge_net
 
+  # Qdrant Vector Database (default; set VECTOR_STORE_PROVIDER=chroma to use embedded ChromaDB)
+  qdrant:
+    image: qdrant/qdrant:latest
+    container_name: knowledge_db_qdrant
+    ports:
+      - "6333:6333"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    networks:
+      - knowledge_net
+
   # MinIO for object storage
   minio:
     image: minio/minio:latest
@@ -64,6 +75,10 @@ services:
       - OLLAMA_BASE_URL=http://ollama:11434
       - DEFAULT_MODEL=llama3.2:1b  # Force smallest model for Mac
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db
+      # Vector store: "qdrant" (default) or "chroma"
+      - VECTOR_STORE_PROVIDER=qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION_NAME=knowledge_base
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -71,12 +86,23 @@ services:
       - MINIO_USE_SSL=false
       - MINIO_PRESIGNED_URL_EXPIRY=3600
       - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      - CHROMA_TELEMETRY_ENABLED=false
       - SECRET_KEY=your-secret-key-here  # Must match JWT_SECRET in video-streamer
+      # Backpressure / pool tuning for dev stability (avoid exhausting Postgres connections)
+      - DB_POOL_SIZE=10
+      - DB_MAX_OVERFLOW=10
+      - DB_POOL_TIMEOUT_SECONDS=5
+      - DB_SESSION_ACQUIRE_TIMEOUT_SECONDS=2
+      # Kroki for local Mermaid diagram rendering
+      - KROKI_URL=http://kroki:8000
       # Transcription configuration
-      - WHISPER_MODEL_SIZE=small
+      - WHISPER_MODEL_SIZE=medium
       - WHISPER_DEVICE=auto
       - TRANSCRIPTION_LANGUAGE=ru
-      - PRELOAD_WHISPER_MODEL=true  # Preload model on container startup
+      # Don't block API startup on large model downloads; preload can be enabled when needed.
+      - PRELOAD_WHISPER_MODEL=false
+      # Run migrations in the background so the API can start serving immediately.
+      - RUN_ALEMBIC_MIGRATIONS=true
     ports:
       - "8000:8000"
     volumes:
@@ -87,10 +113,11 @@ services:
     depends_on:
       - postgres
       - redis
+      - qdrant
       - minio
     networks:
       - knowledge_net
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-include "main.py"
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -124,6 +151,23 @@ services:
       - knowledge_net
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8080/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 10s
+
+  # Kroki for local diagram rendering (Mermaid, PlantUML, etc.)
+  kroki:
+    image: yuzutech/kroki:latest
+    container_name: knowledge_db_kroki
+    ports:
+      - "8001:8000"
+    networks:
+      - knowledge_net
+    environment:
+      - KROKI_MAX_URI_LENGTH=8000
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -225,6 +269,10 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      # Vector store: "qdrant" (default) or "chroma"
+      - VECTOR_STORE_PROVIDER=qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION_NAME=knowledge_base
       - MINIO_ENDPOINT=minio:9000
       - MINIO_ACCESS_KEY=minioadmin
       - MINIO_SECRET_KEY=minioadmin
@@ -232,11 +280,22 @@ services:
       - MINIO_USE_SSL=false
       - MINIO_PRESIGNED_URL_EXPIRY=3600
       - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      - CHROMA_TELEMETRY_ENABLED=false
+      # Kroki for local Mermaid diagram rendering
+      - KROKI_URL=http://kroki:8000
       # Transcription configuration
-      - WHISPER_MODEL_SIZE=small
+      - WHISPER_MODEL_SIZE=base
       - WHISPER_DEVICE=auto
       - TRANSCRIPTION_LANGUAGE=ru
-      - PRELOAD_WHISPER_MODEL=true  # Preload model on container startup
+      # Avoid blocking worker startup on model downloads; enable if you want warm transcriptions.
+      - PRELOAD_WHISPER_MODEL=false
+      # Only the API service should run migrations.
+      - RUN_ALEMBIC_MIGRATIONS=false
+      # Prevent OpenBLAS hangs in forked Celery workers while allowing parallelism
+      - OPENBLAS_MAIN_FREE=1
+      - GOTO_NUM_THREADS=4
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
     volumes:
       - ./data:/app/data
       - ./backend:/app
@@ -245,10 +304,22 @@ services:
     depends_on:
       - postgres
       - redis
+      - qdrant
       - minio
+      - kroki
     networks:
       - knowledge_net
     command: celery -A app.core.celery worker --loglevel=info
+    # Increase container memory (compose-only) and shared memory to handle larger models
+    mem_limit: 6g
+    shm_size: 2gb
+    # Optional Swarm-style limits (ignored by plain compose but useful if deployed via Swarm)
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+        reservations:
+          memory: 2G
     healthcheck:
       test: ["CMD", "celery", "-A", "app.core.celery", "inspect", "ping"]
       interval: 30s
@@ -256,15 +327,58 @@ services:
       retries: 3
       start_period: 40s
 
+  # Dedicated Celery worker for LaTeX compilation (recommended to isolate heavy/unsafe workloads)
+  celery_latex:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.latex-worker
+    image: knowledge_db_latex_worker:latest
+    container_name: knowledge_db_celery_latex
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET_NAME=documents
+      - MINIO_USE_SSL=false
+      - MINIO_PRESIGNED_URL_EXPIRY=3600
+      - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      - CHROMA_TELEMETRY_ENABLED=false
+      - RUN_ALEMBIC_MIGRATIONS=false
+      - PYTHONDONTWRITEBYTECODE=1
+      - OPENBLAS_MAIN_FREE=1
+      - GOTO_NUM_THREADS=1
+      - OMP_NUM_THREADS=1
+      - MKL_NUM_THREADS=1
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    networks:
+      - knowledge_net
+    command: celery -A app.core.celery_latex worker -Q latex --loglevel=info --concurrency=1
+    mem_limit: 2g
+    shm_size: 512mb
+    pids_limit: 256
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+
 volumes:
   postgres_data:
   redis_data:
   ollama_data:
   minio_data:
   whisper_models:  # Persistent storage for Whisper models
+  qdrant_data:
 
 networks:
   knowledge_net:
     driver: bridge
-
-

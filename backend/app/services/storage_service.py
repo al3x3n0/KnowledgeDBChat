@@ -238,7 +238,49 @@ class MinIOStorageService:
         except Exception as e:
             logger.error(f"Failed to upload file to MinIO: {e}")
             raise
-    
+
+    async def upload_to_path(
+        self,
+        object_path: str,
+        content: bytes,
+        content_type: Optional[str] = None
+    ) -> str:
+        """
+        Upload content to a specific object path in MinIO.
+
+        Unlike upload_file(), this method allows specifying an arbitrary
+        object path rather than constructing one from document_id/filename.
+
+        Args:
+            object_path: Full object path in MinIO (e.g., "presentations/job-id/file.pptx")
+            content: File content as bytes
+            content_type: Optional MIME type
+
+        Returns:
+            The object path in MinIO
+        """
+        try:
+            await self.initialize()
+            client = self._get_client()
+
+            client.put_object(
+                bucket_name=settings.MINIO_BUCKET_NAME,
+                object_name=object_path,
+                data=BytesIO(content),
+                length=len(content),
+                content_type=content_type or "application/octet-stream"
+            )
+
+            logger.info(f"Uploaded file to MinIO: {object_path}")
+            return object_path
+
+        except S3Error as e:
+            logger.error(f"MinIO S3Error during upload: {e}")
+            raise
+        except Exception as e:
+            logger.error(f"Failed to upload file to MinIO: {e}")
+            raise
+
     def _rewrite_presigned_url_for_proxy(self, url: str) -> str:
         """
         Rewrite MinIO presigned URL to use nginx proxy.
@@ -341,7 +383,24 @@ class MinIOStorageService:
         except Exception as e:
             logger.error(f"Failed to generate presigned URL for path '{object_path}': {e}")
             raise
-    
+
+    async def get_presigned_url(
+        self,
+        file_path: str,
+        expires_in: Optional[int] = None
+    ) -> str:
+        """
+        Convenience alias for get_presigned_download_url.
+
+        Args:
+            file_path: Path to object in MinIO
+            expires_in: URL expiry time in seconds
+
+        Returns:
+            Presigned URL string
+        """
+        return await self.get_presigned_download_url(file_path, expires_in)
+
     async def delete_file(self, object_path: str) -> bool:
         """
         Delete file from MinIO.
@@ -430,13 +489,61 @@ class MinIOStorageService:
             logger.error(f"Failed to download file from MinIO: {e}", exc_info=True)
             return False
     
+    async def get_file_content(self, object_path: str) -> bytes:
+        """
+        Get file content from MinIO as bytes.
+
+        Args:
+            object_path: Path to object in MinIO
+
+        Returns:
+            File content as bytes
+
+        Raises:
+            FileNotFoundError: If file does not exist
+            Exception: For other errors
+        """
+        try:
+            await self.initialize()
+            client = self._get_client()
+
+            # Sanitize and normalize the path
+            sanitized_path = self._sanitize_object_path(object_path)
+
+            # Remove 'documents/' prefix if present
+            if sanitized_path.startswith('documents/'):
+                sanitized_path = sanitized_path[10:]
+
+            response = client.get_object(
+                bucket_name=settings.MINIO_BUCKET_NAME,
+                object_name=sanitized_path
+            )
+            try:
+                content = response.read()
+            finally:
+                response.close()
+                response.release_conn()
+
+            logger.debug(f"Retrieved file content from MinIO: {sanitized_path} ({len(content)} bytes)")
+            return content
+
+        except S3Error as e:
+            if e.code == "NoSuchKey":
+                logger.warning(f"File not found in MinIO: {object_path}")
+                raise FileNotFoundError(f"File not found: {object_path}")
+            logger.error(f"MinIO S3Error during get: {e}", exc_info=True)
+            raise
+        except Exception as e:
+            logger.error(f"Failed to get file from MinIO: {e}", exc_info=True)
+            raise
+
     async def file_exists(self, object_path: str) -> bool:
         """
         Check if file exists in MinIO.
-        
+
         Args:
             object_path: Path to object in MinIO (may or may not include 'documents/' prefix)
-            
+
         Returns:
             True if file exists, False otherwise
         """

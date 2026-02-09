@@ -184,9 +184,9 @@ async def _generate_repo_report_async(job_id: str, user_id: str):
             filename = f"{job.repo_name.replace('/', '_')}_{job.id}.{file_extension}"
             file_path = f"repo_reports/{user_id}/{filename}"
 
-            await storage.upload_file(
-                file_path=file_path,
-                data=file_bytes,
+            await storage.upload_to_path(
+                object_path=file_path,
+                content=file_bytes,
                 content_type=content_type
             )
 

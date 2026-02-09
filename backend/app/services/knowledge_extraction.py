@@ -314,6 +314,9 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
                 temperature=0.1,  # Low temperature for consistent extraction
                 max_tokens=2000,
                 user_settings=user_settings,
+                task_type="knowledge_extraction",
+                # System default for KG extraction; user_settings can still override.
+                model=getattr(settings, "KG_EXTRACTION_MODEL", None) or None,
             )
             return self._parse_json_response(response)
         except Exception as e:
@@ -415,7 +418,8 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
         db: AsyncSession,
         document: Document,
         chunk: DocumentChunk,
-        rule_extractor: Optional[KnowledgeExtractor] = None
+        rule_extractor: Optional[KnowledgeExtractor] = None,
+        user_settings: Optional["UserLLMSettings"] = None,
     ) -> Tuple[int, int]:
         """Extract entities and relations from a chunk using LLM and persist.
 
@@ -429,7 +433,7 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
                 return (0, 0)
 
             # Extract using LLM
-            extraction_result = await self.extract_from_text(text)
+            extraction_result = await self.extract_from_text(text, user_settings=user_settings)
 
             raw_entities = extraction_result.get("entities", [])
             raw_relations = extraction_result.get("relationships", [])
@@ -559,4 +563,3 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
 # Global instances
 extractor = KnowledgeExtractor()
 llm_extractor = LLMKnowledgeExtractor()
-

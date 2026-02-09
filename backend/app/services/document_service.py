@@ -514,10 +514,31 @@ class DocumentService:
             from app.core.feature_flags import get_flag as _get_flag
             if await _get_flag("knowledge_graph_enabled"):
                 try:
-                    from app.services.knowledge_extraction import extractor as kg_extractor
+                    from app.services.knowledge_extraction import extractor as rule_extractor, llm_extractor
+                    from app.models.memory import UserPreferences
+                    from app.services.llm_service import UserLLMSettings
+
+                    # Best-effort: use per-user LLM settings for KG ingestion when a user_id is available.
+                    effective_user_settings = None
+                    if user_id is not None:
+                        try:
+                            prefs_result = await db.execute(
+                                select(UserPreferences).where(UserPreferences.user_id == user_id)
+                            )
+                            user_prefs = prefs_result.scalar_one_or_none()
+                            effective_user_settings = UserLLMSettings.from_preferences(user_prefs)
+                        except Exception as _pref_err:
+                            logger.warning(f"Failed to load user LLM settings for KG ingestion: {_pref_err}")
+
+                    use_llm = bool(getattr(settings, "KG_LLM_EXTRACTION_ENABLED", False))
                     total_mentions, total_relations = 0, 0
                     for ch in document_chunks:
-                        m, r = await kg_extractor.index_chunk(db, document, ch)
+                        if use_llm:
+                            m, r = await llm_extractor.index_chunk(
+                                db, document, ch, rule_extractor=rule_extractor, user_settings=effective_user_settings
+                            )
+                        else:
+                            m, r = await rule_extractor.index_chunk(db, document, ch)
                         total_mentions += m
                         total_relations += r
                     await db.commit()

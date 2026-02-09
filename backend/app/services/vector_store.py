@@ -302,6 +302,58 @@ class VectorStoreService:
         if not conditions:
             return None
         return Filter(must=conditions)
+
+    def _qdrant_query_points(
+        self,
+        *,
+        collection_name: str,
+        query_embedding: list[float],
+        qfilter: Any,
+        limit: int,
+    ) -> list[Any]:
+        """
+        Version-tolerant Qdrant search.
+
+        Newer qdrant-client versions expose `query_points(...)` and remove `search(...)`.
+        Older versions use `search(...)`.
+        """
+        if self.qdrant_client is None:
+            raise RuntimeError("Qdrant client is not initialized")
+
+        client = self.qdrant_client
+
+        # New API (qdrant-client >= ~1.8/1.9+): query_points returns QueryResponse(points=[...])
+        query_points = getattr(client, "query_points", None)
+        if callable(query_points):
+            resp = query_points(
+                collection_name=collection_name,
+                query=query_embedding,
+                query_filter=qfilter,
+                limit=int(limit),
+                with_payload=True,
+                with_vectors=False,
+            )
+            points = getattr(resp, "points", None)
+            if isinstance(points, list):
+                return points
+            # Some clients may return the points list directly.
+            if isinstance(resp, list):
+                return resp
+            return []
+
+        # Legacy API: search returns list[ScoredPoint]
+        search = getattr(client, "search", None)
+        if callable(search):
+            return search(
+                collection_name=collection_name,
+                query_vector=query_embedding,
+                query_filter=qfilter,
+                limit=int(limit),
+                with_payload=True,
+                with_vectors=False,
+            )
+
+        raise RuntimeError("Unsupported qdrant-client: missing query_points/search methods")
     
     def _generate_embedding_id(self, document_id: UUID, chunk_index: int) -> str:
         """Generate a unique embedding ID for a document chunk."""
@@ -897,13 +949,11 @@ class VectorStoreService:
             collection_name = settings.QDRANT_COLLECTION_NAME
 
             hits = await asyncio.to_thread(
-                self.qdrant_client.search,
+                self._qdrant_query_points,
                 collection_name=collection_name,
-                query_vector=query_embedding,
-                query_filter=qfilter,
+                query_embedding=query_embedding,
+                qfilter=qfilter,
                 limit=limit,
-                with_payload=True,
-                with_vectors=False,
             )
 
             for hit in hits:
@@ -1004,13 +1054,11 @@ class VectorStoreService:
             collection_name = settings.QDRANT_COLLECTION_NAME
 
             hits = await asyncio.to_thread(
-                self.qdrant_client.search,
+                self._qdrant_query_points,
                 collection_name=collection_name,
-                query_vector=query_embedding,
-                query_filter=qfilter,
+                query_embedding=query_embedding,
+                qfilter=qfilter,
                 limit=limit,
-                with_payload=True,
-                with_vectors=False,
             )
 
             for hit in hits:

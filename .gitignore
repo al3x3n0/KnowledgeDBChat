@@ -67,9 +67,13 @@ out/
 /data/documents/*
 /data/chroma_db/*
 /data/logs/*
+/data/hf_cache/*
+/data/test/hf_cache/*
 !/data/documents/.gitkeep
 !/data/chroma_db/.gitkeep
 !/data/logs/.gitkeep
+!/data/hf_cache/.gitkeep
+!/data/test/hf_cache/.gitkeep
 
 # Database
 *.db
@@ -125,4 +129,3 @@ tmp_apply_patch_healthcheck.txt
 # Backup files
 *.bak
 *.backup
-

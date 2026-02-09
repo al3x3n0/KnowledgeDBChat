@@ -71,6 +71,8 @@ services:
     volumes:
       - ./data/test:/app/data
       - ./backend:/app
+      # Bind-mount HF cache to host FS to avoid filling container layer during tests
+      - ./data/test/hf_cache:/root/.cache/huggingface
     depends_on:
       postgres_test:
         condition: service_healthy
@@ -120,6 +122,8 @@ services:
     volumes:
       - ./data/test:/app/data
       - ./backend:/app
+      # Bind-mount HF cache to host FS to avoid filling container layer during tests
+      - ./data/test/hf_cache:/root/.cache/huggingface
     depends_on:
       postgres_test:
         condition: service_healthy

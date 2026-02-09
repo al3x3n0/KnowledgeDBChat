@@ -110,6 +110,8 @@ services:
       - ./backend:/app
       # Mount Whisper model cache directory
       - whisper_models:/root/.cache/knowledge_db_transcriber
+      # Bind-mount HF cache to host FS to avoid filling container layer (common on Docker Desktop)
+      - ./data/hf_cache:/root/.cache/huggingface
     depends_on:
       - postgres
       - redis
@@ -301,6 +303,8 @@ services:
       - ./backend:/app
       # Mount Whisper model cache directory (shared with backend)
       - whisper_models:/root/.cache/knowledge_db_transcriber
+      # Bind-mount HF cache to host FS to avoid filling container layer (common on Docker Desktop)
+      - ./data/hf_cache:/root/.cache/huggingface
     depends_on:
       - postgres
       - redis

@@ -31,6 +31,16 @@ LLM_TASK_TYPES = [
     "query_expansion",
     "memory_extraction",
     "workflow_synthesis",
+    # Agent / jobs
+    "code_agent",
+    "research_engineer_scientist",
+    "latex_reviewer_critic",
+    # Knowledge graph / extraction
+    "knowledge_extraction",
+    # Presentation generation
+    "presentation_outline",
+    "presentation_diagram",
+    "presentation_slide",
 ]
 
 

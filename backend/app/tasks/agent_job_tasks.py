@@ -439,7 +439,8 @@ def generate_job_summary(job_id: str):
     logger.info(f"Generating summary for agent job {job_id}")
 
     async def _generate_summary():
-        from app.services.llm_service import LLMService
+        from app.services.llm_service import LLMService, UserLLMSettings
+        from app.models.memory import UserPreferences
 
         job_uuid = UUID(job_id)
         session_factory = create_celery_session()
@@ -456,6 +457,14 @@ def generate_job_summary(job_id: str):
 
             # Generate summary using LLM
             llm_service = LLMService()
+            # Best-effort: apply per-user LLM settings (provider/model/custom URL, etc.)
+            user_settings = None
+            try:
+                prefs_res = await db.execute(select(UserPreferences).where(UserPreferences.user_id == job.user_id))
+                prefs = prefs_res.scalar_one_or_none()
+                user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
+            except Exception:
+                user_settings = None
 
             summary_prompt = f"""Generate a concise summary of this completed autonomous agent job:
 
@@ -477,6 +486,10 @@ Provide a 2-3 sentence summary of what was accomplished."""
                 summary = await llm_service.generate_response(
                     system_prompt="You are a helpful assistant that summarizes research and analysis results.",
                     user_message=summary_prompt,
+                    user_settings=user_settings,
+                    task_type="summarization",
+                    user_id=job.user_id,
+                    db=db,
                 )
 
                 # Store summary in results

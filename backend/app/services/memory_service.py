@@ -716,7 +716,8 @@ class MemoryService:
             """
 
             return await self.llm_service.generate_response(
-                prompt,
+                query=prompt,
+                task_type="summarization",
                 user_settings=user_settings,
             )
             
@@ -778,5 +779,4 @@ class MemoryService:
             
         except Exception:
             return 0.0
-
 

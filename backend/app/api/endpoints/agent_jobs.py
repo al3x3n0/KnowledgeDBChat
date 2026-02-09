@@ -1427,13 +1427,24 @@ async def export_job_results(
     try:
         exporter = JobResultsExporter(style=style)
         if enhance:
+            # Apply per-user LLM settings to enhanced export generation.
+            user_settings = None
+            try:
+                from app.models.memory import UserPreferences
+                from app.services.llm_service import UserLLMSettings
+                prefs_res = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+                prefs = prefs_res.scalar_one_or_none()
+                user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
+            except Exception:
+                user_settings = None
             # Use async LLM-enhanced export
             file_bytes = await exporter.export_enhanced(
                 job=job,
                 format=format,
                 include_log=include_log,
                 include_metadata=include_metadata,
-                user_id=str(current_user.id),
+                user_id=current_user.id,
+                user_settings=user_settings,
             )
         else:
             # Use standard export

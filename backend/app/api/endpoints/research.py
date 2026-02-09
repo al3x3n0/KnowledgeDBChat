@@ -16,9 +16,10 @@ from app.core.database import get_db
 from app.models.document import Document
 from app.models.document import DocumentSource
 from app.models.user import User
+from app.models.memory import UserPreferences
 from app.services.auth_service import get_current_user
 from app.services.arxiv_search_service import ArxivSearchService
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, UserLLMSettings
 
 router = APIRouter()
 
@@ -88,6 +89,7 @@ class ArxivTranslateQueryResponse(BaseModel):
 async def translate_arxiv_query(
     payload: ArxivTranslateQueryRequest,
     current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Translate a natural language request into arXiv API query syntax.
@@ -124,12 +126,21 @@ async def translate_arxiv_query(
 
     try:
         llm = LLMService()
+        # Use per-user LLM settings for query translation.
+        user_settings = None
+        try:
+            prefs_res = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+            prefs = prefs_res.scalar_one_or_none()
+            user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
+        except Exception:
+            user_settings = None
         raw = await llm.generate_response(
             query=prompt,
             context=None,
             temperature=0.1,
             max_tokens=120,
             task_type="query_expansion",
+            user_settings=user_settings,
         )
         query = (raw or "").strip().strip('"').strip()
         # Basic sanitation

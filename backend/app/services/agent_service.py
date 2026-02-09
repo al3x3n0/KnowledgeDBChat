@@ -1010,7 +1010,7 @@ Your response (JSON array only):"""
             elif tool_name == "list_all_tags":
                 result = await self._tool_list_all_tags(db)
             elif tool_name == "compare_documents":
-                result = await self._tool_compare_documents(tool_input, db)
+                result = await self._tool_compare_documents(tool_input, user_id, db)
             elif tool_name == "start_template_fill":
                 result = await self._tool_start_template_fill(tool_input, user_id, db)
             elif tool_name == "list_template_jobs":
@@ -1019,7 +1019,7 @@ Your response (JSON array only):"""
                 result = await self._tool_get_template_job_status(tool_input, user_id, db)
             # RAG / Q&A Tools
             elif tool_name == "answer_question":
-                result = await self._tool_answer_question(tool_input, db)
+                result = await self._tool_answer_question(tool_input, user_id, db)
             # Document Content Tools
             elif tool_name == "read_document_content":
                 result = await self._tool_read_document_content(tool_input, db)
@@ -2520,6 +2520,7 @@ Your response:"""
     async def _tool_compare_documents(
         self,
         params: Dict[str, Any],
+        user_id: UUID,
         db: AsyncSession
     ) -> Dict[str, Any]:
         """Compare two documents for similarities and differences."""
@@ -2636,7 +2637,9 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
                 query=comparison_prompt,
                 temperature=0.3,
                 max_tokens=200,
-                task_type="summarization"
+                task_type="summarization",
+                user_id=user_id,
+                db=db,
             )
             result["comparison_summary"] = summary.strip()
 
@@ -2832,6 +2835,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
     async def _tool_answer_question(
         self,
         params: Dict[str, Any],
+        user_id: UUID,
         db: AsyncSession
     ) -> Dict[str, Any]:
         """Answer a question using RAG (Retrieval-Augmented Generation)."""
@@ -2895,7 +2899,10 @@ Answer:"""
 
             answer = await self.llm_service.generate_response(
                 query=prompt,
-                max_tokens=1000
+                max_tokens=1000,
+                task_type="chat",
+                user_id=user_id,
+                db=db,
             )
 
             # Determine confidence based on search scores

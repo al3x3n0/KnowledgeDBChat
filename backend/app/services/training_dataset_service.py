@@ -445,6 +445,17 @@ class TrainingDatasetService:
         sample_index = 0
         total_tokens = 0
 
+        # Apply per-user LLM settings (provider/model/api_url/etc.) for dataset generation.
+        user_settings = None
+        try:
+            from app.models.memory import UserPreferences
+            from app.services.llm_service import UserLLMSettings
+            prefs_res = await db.execute(select(UserPreferences).where(UserPreferences.user_id == user_id))
+            prefs = prefs_res.scalar_one_or_none()
+            user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
+        except Exception:
+            user_settings = None
+
         for doc in documents:
             # Generate samples from document
             try:
@@ -467,6 +478,7 @@ class TrainingDatasetService:
                     doc,
                     request.samples_per_document,
                     generation_prompt,
+                    user_settings=user_settings,
                 )
 
                 for sample_data in samples:
@@ -505,6 +517,8 @@ class TrainingDatasetService:
         document: Document,
         num_samples: int,
         custom_prompt: Optional[str] = None,
+        *,
+        user_settings: Optional["UserLLMSettings"] = None,
     ) -> List[Dict[str, str]]:
         """Generate training samples from a document using LLM."""
         # Get document content (from summary or chunks)
@@ -534,6 +548,8 @@ Generate exactly {num_samples} training samples. Output only valid JSON array.""
                 prompt=prompt,
                 max_tokens=2000,
                 temperature=0.7,
+                task_type="summarization",
+                user_settings=user_settings,
             )
 
             # Parse JSON from response

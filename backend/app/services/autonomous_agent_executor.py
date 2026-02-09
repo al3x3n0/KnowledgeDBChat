@@ -12253,6 +12253,9 @@ Provide structured insights in JSON format:
                                 system_prompt="You are a research paper analyst. Extract structured insights.",
                                 user_message=prompt,
                                 routing=self._llm_routing_from_job_config(job.config),
+                                task_type="summarization",
+                                user_id=job.user_id,
+                                db=db,
                             )
                             insights = json.loads(response)
                             result["success"] = True
@@ -12582,6 +12585,9 @@ Suggest the single best next action and explain why."""
                         system_prompt="You are a research planning assistant.",
                         user_message=prompt,
                         routing=self._llm_routing_from_job_config(job.config),
+                        task_type="research_engineer_scientist",
+                        user_id=job.user_id,
+                        db=db,
                     )
                     result["success"] = True
                     result["data"] = {"suggestion": suggestion}

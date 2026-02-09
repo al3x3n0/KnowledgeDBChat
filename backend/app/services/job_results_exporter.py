@@ -7,7 +7,7 @@ Supports optional LLM-enhanced content generation for executive summaries and in
 
 from datetime import datetime
 from io import BytesIO
-from typing import Dict, List, Any, Optional, Literal
+from typing import Dict, List, Any, Optional, Literal, TYPE_CHECKING
 from uuid import UUID
 import json
 import asyncio
@@ -19,6 +19,9 @@ from app.services.docx_builder import DOCXBuilder
 from app.services.pdf_builder import PDFBuilder
 from app.services.pptx_builder import PPTXBuilder
 from app.schemas.presentation import PresentationOutline, SlideContent
+
+if TYPE_CHECKING:
+    from app.services.llm_service import UserLLMSettings
 
 
 ExportFormat = Literal["docx", "pdf", "pptx"]
@@ -146,6 +149,7 @@ class JobResultsExporter:
         include_log: bool = False,
         include_metadata: bool = True,
         user_id: Optional[UUID] = None,
+        user_settings: Optional["UserLLMSettings"] = None,
     ) -> bytes:
         """
         Export job results with LLM-enhanced content (async).
@@ -167,7 +171,7 @@ class JobResultsExporter:
             File content as bytes
         """
         # Generate LLM-enhanced content
-        enhanced_content = await self._generate_enhanced_content(job, user_id)
+        enhanced_content = await self._generate_enhanced_content(job, user_id, user_settings=user_settings)
 
         if format == "docx":
             return self._export_to_docx_enhanced(job, enhanced_content, include_log, include_metadata)
@@ -182,6 +186,8 @@ class JobResultsExporter:
         self,
         job: AgentJob,
         user_id: Optional[UUID] = None,
+        *,
+        user_settings: Optional["UserLLMSettings"] = None,
     ) -> Dict[str, Any]:
         """
         Generate LLM-enhanced content for the export.
@@ -224,6 +230,7 @@ class JobResultsExporter:
                 temperature=0.7,
                 max_tokens=500,
                 task_type="summarization",
+                user_settings=user_settings,
             )
             logger.debug("Generated executive summary")
 
@@ -244,6 +251,7 @@ class JobResultsExporter:
                     temperature=0.7,
                     max_tokens=600,
                     task_type="summarization",
+                    user_settings=user_settings,
                 )
                 logger.debug("Generated key insights")
 
@@ -265,6 +273,7 @@ class JobResultsExporter:
                 temperature=0.7,
                 max_tokens=500,
                 task_type="summarization",
+                user_settings=user_settings,
             )
             logger.debug("Generated recommendations")
 

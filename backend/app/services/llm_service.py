@@ -29,7 +29,8 @@ from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_excep
 _LLM_SEMAPHORE = asyncio.Semaphore(settings.LLM_MAX_CONCURRENCY)
 
 
-# Supported task types for per-task model configuration
+# Supported task types for per-task model configuration.
+# Keep this list in sync with `backend/app/api/endpoints/users.py`.
 LLM_TASK_TYPES = [
     "chat",
     "title_generation",
@@ -37,6 +38,16 @@ LLM_TASK_TYPES = [
     "query_expansion",
     "memory_extraction",
     "workflow_synthesis",
+    # Agent / jobs
+    "code_agent",
+    "research_engineer_scientist",
+    "latex_reviewer_critic",
+    # Knowledge graph / extraction
+    "knowledge_extraction",
+    # Presentation generation
+    "presentation_outline",
+    "presentation_diagram",
+    "presentation_slide",
 ]
 
 
@@ -145,7 +156,7 @@ class LLMService:
 
     async def generate_response(
         self,
-        query: str,
+        query: Optional[str] = None,
         context: Optional[str] = None,
         conversation_history: Optional[str] = None,
         memory_context: Optional[str] = None,
@@ -163,6 +174,11 @@ class LLMService:
         provider: Optional[str] = None,
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        # Back-compat aliases used in parts of the codebase.
+        # Prefer `query=` + `context=` + `task_type=`.
+        system_prompt: Optional[str] = None,
+        user_message: Optional[str] = None,
+        prompt: Optional[str] = None,
     ) -> str:
         """Generate a response using the configured LLM.
 
@@ -173,6 +189,30 @@ class LLMService:
 
         If a tier attempt fails with `LLMServiceError`, the next tier is tried.
         """
+
+        # Normalize legacy call styles.
+        if query is None:
+            query = prompt or user_message
+        if query is None:
+            raise TypeError("generate_response requires `query` (or `prompt` / `user_message`).")
+
+        # Best-effort: if a DB session and user_id are provided, auto-load per-user LLM preferences.
+        # This keeps user settings applied even when call sites don't explicitly pass `user_settings=`.
+        if user_settings is None and user_id is not None and db is not None:
+            try:
+                from uuid import UUID as _UUID
+                from sqlalchemy import select as _select
+                from app.models.memory import UserPreferences as _UserPreferences
+
+                uid = user_id
+                if isinstance(uid, str):
+                    uid = _UUID(uid)
+                prefs_res = await db.execute(_select(_UserPreferences).where(_UserPreferences.user_id == uid))
+                prefs = prefs_res.scalar_one_or_none()
+                if prefs is not None:
+                    user_settings = UserLLMSettings.from_preferences(prefs)
+            except Exception:
+                pass
 
         routing_origin = None
         if isinstance(routing, dict):
@@ -241,6 +281,7 @@ class LLMService:
                     provider_override=attempt_provider,
                     api_url_override=api_url,
                     api_key_override=api_key,
+                    system_prompt=system_prompt,
                     routing_meta={
                         "tier": attempt_tier,
                         "attempt": idx + 1,
@@ -290,6 +331,7 @@ class LLMService:
         provider_override: Optional[str] = None,
         api_url_override: Optional[str] = None,
         api_key_override: Optional[str] = None,
+        system_prompt: Optional[str] = None,
         routing_meta: Optional[Dict[str, Any]] = None,
         timeout_seconds: Optional[int] = None,
         max_tokens_cap: Optional[int] = None,
@@ -403,6 +445,7 @@ class LLMService:
                         conversation_history=conversation_history,
                         memory_context=memory_context,
                         kg_context=kg_context,
+                        system_prompt=system_prompt,
                     )
                     input_chars = sum(len(m.get("content") or "") for m in messages)
                     result, meta = await self._make_openai_compatible_request(
@@ -439,6 +482,7 @@ class LLMService:
                         conversation_history=conversation_history,
                         memory_context=memory_context,
                         kg_context=kg_context,
+                        system_prompt=system_prompt,
                     )
                     input_chars = sum(len(m.get("content") or "") for m in messages)
                     api_key = effective_api_key or settings.DEEPSEEK_API_KEY
@@ -468,7 +512,14 @@ class LLMService:
                 # Default to Ollama
                 provider_used = "ollama"
                 model_used = model
-                prompt = self._build_prompt(query, context, conversation_history, memory_context, kg_context)
+                prompt = self._build_prompt(
+                    query,
+                    context,
+                    conversation_history,
+                    memory_context,
+                    kg_context,
+                    system_prompt=system_prompt,
+                )
                 input_chars = len(prompt or "")
                 ollama_url = effective_api_url or self.base_url
                 result, meta = await self._make_ollama_request(
@@ -534,6 +585,7 @@ class LLMService:
         conversation_history: Optional[str] = None,
         memory_context: Optional[str] = None,
         kg_context: Optional[str] = None,
+        system_prompt: Optional[str] = None,
     ) -> str:
         """
         Build the complete prompt for the LLM.
@@ -551,7 +603,7 @@ class LLMService:
         prompt_parts = []
 
         # System instruction
-        system_instruction = """You are a helpful AI assistant for an organizational knowledge base. Your role is to answer questions based on the provided context from internal documents and previous conversation history.
+        system_instruction = system_prompt or """You are a helpful AI assistant for an organizational knowledge base. Your role is to answer questions based on the provided context from internal documents and previous conversation history.
 
 Guidelines:
 1. Answer questions accurately based on the provided context
@@ -599,9 +651,10 @@ Citation format:
         conversation_history: Optional[str] = None,
         memory_context: Optional[str] = None,
         kg_context: Optional[str] = None,
+        system_prompt: Optional[str] = None,
     ) -> List[Dict[str, str]]:
         """Build OpenAI-style chat messages for chat completion APIs."""
-        system_instruction = (
+        system_instruction = system_prompt or (
             "You are a helpful AI assistant for an organizational knowledge base. "
             "Answer based on provided context and prior conversation. Cite sources when relevant. "
             "Use knowledge graph context to understand entity relationships. "

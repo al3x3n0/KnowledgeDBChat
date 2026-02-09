@@ -26,6 +26,13 @@
     @apply bg-gray-50 text-gray-900 font-mono;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
+
+  /* Prevent inputs from inheriting `text-white` from parent containers. */
+  input,
+  textarea,
+  select {
+    @apply text-gray-900 placeholder-gray-400;
+  }
   
   html {
     @apply scroll-smooth;

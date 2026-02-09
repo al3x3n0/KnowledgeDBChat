@@ -224,7 +224,8 @@ Return only the variations, one per line, without numbering or bullets."""
         self,
         query: str,
         llm_service: Optional[Any] = None,
-        num_queries: int = 3
+        num_queries: int = 3,
+        user_settings: Optional["UserLLMSettings"] = None,
     ) -> List[str]:
         """
         Generate multiple query variations for improved recall.
@@ -238,7 +239,12 @@ Return only the variations, one per line, without numbering or bullets."""
         Returns:
             List of query variations
         """
-        variations = await self.generate_query_variations(query, llm_service, num_queries - 1)
+        variations = await self.generate_query_variations(
+            query,
+            llm_service,
+            num_queries - 1,
+            user_settings=user_settings,
+        )
         
         # Ensure we have the requested number
         while len(variations) < num_queries:
@@ -334,4 +340,3 @@ Return only the variations, one per line, without numbering or bullets."""
             'intent': intent,
             'cleaned': self.clean_query(query)
         }
-

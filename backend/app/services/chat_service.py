@@ -368,7 +368,8 @@ class ChatService:
                     query_variations = await self.query_processor.generate_multi_queries(
                         search_query,
                         llm_service=self.llm_service,
-                        num_queries=3
+                        num_queries=3,
+                        user_settings=effective_user_settings,
                     )
                     
                     # Search with all variations

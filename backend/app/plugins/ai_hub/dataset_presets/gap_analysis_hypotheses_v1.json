@@ -1,0 +1,7 @@
+{
+  "id": "gap_analysis_hypotheses_v1",
+  "name": "Gap Analysis & Hypotheses (v1)",
+  "description": "Generate gap analyses and falsifiable hypotheses from papers/specs.",
+  "dataset_type": "instruction",
+  "generation_prompt": "You are generating training data for a research assistant.\nGenerate {num} instruction/answer pairs from the document that perform gap analysis and propose novel hypotheses.\nEach answer must include: Summary of prior art, Key assumptions, Identified gaps, Hypotheses (falsifiable), Proposed experiments, Threats to validity.\nTailor hypotheses/experiments to the document domain and be specific about what evidence would support or refute each hypothesis.\nOutput as JSON array with 'instruction' and 'output' fields only."
+}

@@ -1,0 +1,27 @@
+{
+  "id": "extraction_quality_v1",
+  "name": "Evidence Extraction Quality (v1)",
+  "description": "Lightweight eval for extracting structured experimental details (configs, results, constraints) from research text with minimal hallucination.",
+  "version": 1,
+  "judge_preamble": "You are an evaluator for a research assistant that extracts structured experiment details from text. Prefer faithful extraction over speculation. Penalize hallucinated values.",
+  "rubric": {
+    "scale": "1-5",
+    "criteria": [
+      "Fidelity: extracted facts match the provided text (no hallucinated values).",
+      "Coverage: captures required fields and key constraints mentioned in the text.",
+      "Traceability: cites short evidence quotes/snippets for each major field (or marks unknown).",
+      "Structure: output is valid JSON and uses the requested schema."
+    ]
+  },
+  "cases": [
+    {
+      "id": "extract_001",
+      "prompt": "Extract the experiment into JSON with fields: {\"task\", \"hardware\", \"software\", \"workload\", \"metrics\", \"results\", \"controls\", \"notes\", \"evidence\"} where \"evidence\" is a map from field name to a short quote.\n\nTEXT:\nWe evaluated the change on a dual-socket server with Intel Xeon Gold 6230 (Cascade Lake), 192GB RAM. The kernel was Linux 6.6. We compiled with GCC 13.2 using -O3.\nWorkload: a Monte Carlo simulation (10^8 iterations). We pinned to a single NUMA node and disabled turbo.\nMetric: runtime (seconds), averaged over 10 runs; we report mean and stddev.\nResult: baseline 12.4s ±0.2; patched 11.1s ±0.1 (~10.5% speedup).\nControl: Verified identical input seeds and CPU affinity; collected perf stat for cycles/instructions.\n"
+    },
+    {
+      "id": "extract_002",
+      "prompt": "Extract into JSON with fields: {\"claim\", \"setup\", \"table\", \"confounders\", \"recommended_followups\", \"evidence\"}. \"table\" must include columns and rows.\n\nTEXT:\nClaim: The new scheduling heuristic reduces tail latency.\nSetup: 3-node cluster, 25GbE, client load 5k req/s. We used Ubuntu 22.04 and OpenJDK 21. GC was G1.\nTable 1 (p99 latency, ms):\n- Baseline: 42.1\n- New heuristic: 34.8\nWe did not isolate NIC offload settings and did not report CPU frequencies.\nFollow-ups: rerun with fixed CPU governor; report NIC offload and IRQ pinning; include median and p50.\n"
+    }
+  ]
+}
+

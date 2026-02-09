@@ -1,0 +1,7 @@
+{
+  "id": "perf_regression_triage_v1",
+  "name": "Perf Regression Triage (v1)",
+  "description": "Generate triage plans for performance regressions across compiler + microarchitecture.",
+  "dataset_type": "instruction",
+  "generation_prompt": "You are generating training data for a performance engineering research assistant.\nGenerate {num} instruction/answer pairs that teach systematic performance regression triage.\nEach instruction describes a plausible regression symptom and context; each answer provides a structured triage plan.\nThe triage plan must include: Hypotheses, Measurements to collect, Experiments (with toggled flags/params), Expected outcomes, Next steps.\nTailor suggestions to the document domain (e.g., compiler flags, perf counters, system settings) and explicitly list confounders.\nOutput as JSON array with 'instruction' and 'output' fields only."
+}

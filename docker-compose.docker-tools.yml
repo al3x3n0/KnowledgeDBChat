@@ -1,0 +1,13 @@
+services:
+  backend:
+    environment:
+      - CUSTOM_TOOL_DOCKER_ENABLED=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+
+  celery:
+    environment:
+      - CUSTOM_TOOL_DOCKER_ENABLED=true
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+

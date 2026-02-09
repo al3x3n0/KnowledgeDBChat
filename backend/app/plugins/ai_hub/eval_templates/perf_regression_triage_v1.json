@@ -1,0 +1,34 @@
+{
+  "id": "perf_regression_triage_v1",
+  "name": "Perf Regression Triage (v1)",
+  "description": "Lightweight eval for compiler/CPU perf regression triage reasoning (hypotheses, measurements, experiments).",
+  "version": 1,
+  "rubric": {
+    "scale": "1-5",
+    "criteria": [
+      "Actionability: suggests concrete next steps (counters, flags, experiments).",
+      "Scientific rigor: controls, confounders, baselines, reproducibility.",
+      "Compiler + microarchitecture awareness: relevant details and interactions.",
+      "Clarity: structured plan and prioritization."
+    ]
+  },
+  "cases": [
+    {
+      "id": "triage_001",
+      "prompt": "A tight loop became 12% slower after switching from clang-16 to clang-18 on the same Ice Lake server. Provide a triage plan."
+    },
+    {
+      "id": "triage_002",
+      "prompt": "A regression appears only with -O3 and disappears with -fno-vectorize. Provide hypotheses and experiments."
+    },
+    {
+      "id": "triage_003",
+      "prompt": "Performance regresses only on Zen 4 but not on Skylake. Provide a structured investigation plan."
+    },
+    {
+      "id": "triage_004",
+      "prompt": "A workload slows down with PGO enabled. Provide measurements and experiments to isolate root cause."
+    }
+  ]
+}
+

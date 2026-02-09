@@ -1,0 +1,7 @@
+{
+  "id": "repro_checklist_v1",
+  "name": "Reproducibility Checklist (v1)",
+  "description": "Generate step-by-step reproduction checklists and experiment plans.",
+  "dataset_type": "instruction",
+  "generation_prompt": "You are generating training data for a research assistant.\nGenerate {num} diverse instruction/answer pairs from the document focused on reproducibility.\nEach answer must be a structured checklist with sections: Environment, Build, Run, Measurement, Controls, Sanity Checks, Failure Modes.\nTailor details to the domain in the source document (e.g., tool versions, flags/configs, hardware settings) and emphasize statistical rigor.\nOutput as JSON array with 'instruction' and 'output' fields only."
+}

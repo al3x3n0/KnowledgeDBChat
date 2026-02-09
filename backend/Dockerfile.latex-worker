@@ -1,0 +1,38 @@
+FROM python:3.11-slim-bookworm
+
+# Dedicated LaTeX compilation worker image (TeX Live).
+# Keep this separate from the API image to isolate heavy/system deps.
+
+WORKDIR /app
+
+ENV DEBIAN_FRONTEND=noninteractive
+ENV HOME=/tmp
+ENV PYTHONDONTWRITEBYTECODE=1
+
+# System deps + TeX Live (pdflatex + bibtex + common packages)
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    build-essential \
+    curl \
+    git \
+    ca-certificates \
+    texlive-latex-base \
+    texlive-latex-recommended \
+    texlive-latex-extra \
+    texlive-fonts-recommended \
+    texlive-bibtex-extra \
+    texlive-pictures \
+    && rm -rf /var/lib/apt/lists/*
+
+# Python deps
+COPY requirements.latex-worker.txt .
+RUN pip install --no-cache-dir -r requirements.latex-worker.txt
+
+# App code (Celery worker uses the same codebase)
+COPY . .
+
+# Create non-root user for safer execution
+RUN useradd -m -u 10001 appuser && chown -R appuser:appuser /app
+USER appuser
+
+# Default command (compose overrides as needed)
+CMD ["celery", "-A", "app.core.celery_latex", "worker", "-Q", "latex", "--loglevel=info", "--concurrency=1"]

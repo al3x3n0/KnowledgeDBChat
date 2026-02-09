@@ -1,0 +1,27 @@
+{
+  "id": "literature_triage_v1",
+  "name": "Literature Triage (v1)",
+  "description": "Lightweight eval for triaging research papers/notes: relevance, novelty signals, and actionable follow-ups.",
+  "version": 1,
+  "judge_preamble": "You are an evaluator for a research assistant that helps triage papers. Prefer clear decisions with explicit reasons, uncertainty handling, and next steps.",
+  "rubric": {
+    "scale": "1-5",
+    "criteria": [
+      "Decision quality: makes a clear triage call (read/skip/skim) with rationale.",
+      "Relevance: correctly maps the paper to plausible user goals and highlights why it matters (or not).",
+      "Novelty signals: identifies what is new vs. incremental and flags missing comparisons.",
+      "Actionability: proposes concrete next steps (questions to answer, experiments, related work to check)."
+    ]
+  },
+  "cases": [
+    {
+      "id": "triage_paper_001",
+      "prompt": "You are triaging a paper for a systems/performance research team. Provide: (1) read/skim/skip decision, (2) 3 key claims, (3) 3 risks/unknowns, (4) suggested follow-ups.\n\nABSTRACT:\nWe introduce CacheSight, a profiling method that infers cache miss sources by combining sampled hardware counters with binary-level control-flow graphs. Across 18 workloads, CacheSight identifies the top-3 miss-generating code regions with 0.82 precision and reduces investigation time by 35% compared to manual counter inspection. We integrate with existing profilers and evaluate overhead under 2%.\n"
+    },
+    {
+      "id": "triage_paper_002",
+      "prompt": "Triage the following note for an applied research team. Provide: decision + rationale + what would convince you.\n\nNOTE:\nWe propose replacing the current ranking feature in our internal search with a learned reranker trained on click logs. Early offline tests on a 2-week sample show +3.2% NDCG@10 but the dataset may be biased due to seasonal traffic and missing negative examples. Inference latency target is <15ms at p95, but the prototype currently hits 28ms.\n"
+    }
+  ]
+}
+

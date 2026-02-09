@@ -1644,7 +1644,8 @@ const DocumentsPage: React.FC = () => {
             <Button
               variant="ghost"
               size="sm"
-              icon={<Eye className="w-4 h-4 text-gray-700" />}
+              className="text-gray-200"
+              icon={<Eye className="w-4 h-4" />}
               onClick={() => {
                 if (document.extra_metadata?.is_transcoding) {
                   toast.error('Video is converting to MP4. Please wait.');
@@ -1660,7 +1661,8 @@ const DocumentsPage: React.FC = () => {
             <Button
               variant="ghost"
               size="sm"
-              icon={<Network className="w-4 h-4 text-gray-700" />}
+              className="text-gray-200"
+              icon={<Network className="w-4 h-4" />}
               onClick={() => navigate(`/documents/${document.id}/graph`)}
               disabled={document.extra_metadata?.is_transcoding === true}
             >
@@ -1670,7 +1672,8 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                icon={<FileText className="w-4 h-4 text-gray-700" />}
+                className="text-gray-200"
+                icon={<FileText className="w-4 h-4" />}
                 onClick={() => {
                   const tId = document.extra_metadata?.transcript_document_id as string;
                   const tDoc = (allDocuments || []).find((d) => d.id === tId);
@@ -1690,7 +1693,8 @@ const DocumentsPage: React.FC = () => {
                 <Button
                   variant="ghost"
                   size="sm"
-                  icon={<Play className="w-4 h-4 text-gray-700" />}
+                  className="text-gray-200"
+                  icon={<Play className="w-4 h-4" />}
                   onClick={() => {
                     const vId = document.extra_metadata?.parent_document_id as string;
                     const vDoc = (allDocuments || []).find((d) => d.id === vId);
@@ -1713,7 +1717,8 @@ const DocumentsPage: React.FC = () => {
                 <Button
                   variant="ghost"
                   size="sm"
-                  icon={<RefreshCw className="w-4 h-4 text-gray-700" />}
+                  className="text-gray-200"
+                  icon={<RefreshCw className="w-4 h-4" />}
                   onClick={async () => {
                     try {
                       const res = await apiClient.transcribeDocument(document.id);
@@ -1732,7 +1737,8 @@ const DocumentsPage: React.FC = () => {
             <Button
               variant="ghost"
               size="sm"
-              icon={<Sparkles className="w-4 h-4 text-gray-700" />}
+              className="text-gray-200"
+              icon={<Sparkles className="w-4 h-4" />}
               onClick={() => summarizeMutation.mutate(document.id)}
               disabled={document.extra_metadata?.is_transcoding === true || getDocFlags(document).isSummarizing}
             >
@@ -1742,7 +1748,8 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                icon={<ExternalLink className="w-4 h-4 text-gray-700" />}
+                className="text-gray-200"
+                icon={<ExternalLink className="w-4 h-4" />}
                 onClick={() => window.open(document.url, '_blank')}
                 disabled={document.extra_metadata?.is_transcoding === true}
               >
@@ -1753,7 +1760,8 @@ const DocumentsPage: React.FC = () => {
               <Button
                 variant="ghost"
                 size="sm"
-                icon={<Download className="w-4 h-4 text-gray-700" />}
+                className="text-gray-200"
+                icon={<Download className="w-4 h-4" />}
                 onClick={async () => {
                   if (document.extra_metadata?.is_transcoding) {
                     toast.error('Video is converting to MP4. Please wait.');

@@ -242,7 +242,7 @@ Real-time communication for:
 ### Starting Development
 ```bash
 cd frontend
-npm install
+npm install --legacy-peer-deps
 npm start
 ```
 
@@ -255,6 +255,8 @@ npm run build
 ```bash
 npx tsc --noEmit
 ```
+
+The current frontend stack keeps `react-scripts@5` while using a newer TypeScript compiler and explicit Jest/testing-library typings. Use `npm install --legacy-peer-deps` when refreshing `node_modules` so the local environment matches the checked-in lockfile and `tsc --noEmit` continues to work.
 
 ### Code Organization
 - Components are modular and reusable
@@ -410,7 +412,6 @@ CMD ["nginx", "-g", "daemon off;"]
 ---
 
 The frontend provides a complete, production-ready interface for the Knowledge Database system with modern UX patterns, real-time communication, and comprehensive admin functionality.
-
 
 
 

@@ -27,6 +27,12 @@ class ResearchMonitorProfile(Base):
 
     # Token scores learned from triage (positive favors, negative suppresses)
     token_scores = Column(JSON, nullable=True)
+    phrase_scores = Column(JSON, nullable=True)
+    recommendation_scores = Column(JSON, nullable=True)
+    source_type_scores = Column(JSON, nullable=True)
+    outcome_counters = Column(JSON, nullable=True)
+    customer_budget_config = Column(JSON, nullable=True)
+    customer_rebalance_history = Column(JSON, nullable=True)
 
     # Optional explicit mutes (tokens/patterns) set by user later
     muted_tokens = Column(JSON, nullable=True)
@@ -41,4 +47,3 @@ class ResearchMonitorProfile(Base):
         UniqueConstraint("user_id", "customer", name="uq_research_monitor_profile_user_customer"),
         Index("ix_research_monitor_profiles_user_customer", "user_id", "customer"),
     )
-

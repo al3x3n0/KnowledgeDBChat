@@ -5,11 +5,11 @@
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useQuery, useQueryClient } from 'react-query';
-import { ExternalLink, FileText, Loader2, Search, Wand2 } from 'lucide-react';
+import { BrainCircuit, ExternalLink, FileText, FlaskConical, Loader2, Search, StickyNote, Wand2 } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import { apiClient } from '../services/api';
-import { ArxivPaper } from '../types';
+import { ArxivPaper, PaperExtractionJob, ResearchPaper } from '../types';
 import ProgressBar from '../components/common/ProgressBar';
 
 const PAGE_SIZE = 10;
@@ -54,7 +54,12 @@ const PapersPage: React.FC = () => {
   );
   const [generateReview, setGenerateReview] = useState(searchParams.get('review') === '1');
   const [reviewTopic, setReviewTopic] = useState(searchParams.get('topic') || '');
+  const [reviewTopicDraft, setReviewTopicDraft] = useState(searchParams.get('topic') || '');
+  const [reviewTopicDrafts, setReviewTopicDrafts] = useState<Record<string, string>>({});
   const [isTranslating, setIsTranslating] = useState(false);
+  const [selectedExtractedPaperId, setSelectedExtractedPaperId] = useState<string | null>(null);
+  const [actioningPaperId, setActioningPaperId] = useState<string | null>(null);
+  const [selectedHypothesisPaperIds, setSelectedHypothesisPaperIds] = useState<string[]>([]);
 
   const translateIfNeeded = useCallback(async (rawText: string) => {
     const text = rawText.trim();
@@ -127,6 +132,65 @@ const PapersPage: React.FC = () => {
   const imports: ArxivImportItem[] = useMemo(
     () => (importsData?.items || []) as ArxivImportItem[],
     [importsData?.items]
+  );
+
+  const { data: extractedPapersData, isFetching: isExtractedPapersFetching } = useQuery(
+    ['research-papers'],
+    () => apiClient.listResearchPapers({ limit: 500, offset: 0 }),
+    { refetchInterval: 5000, staleTime: 3000 }
+  );
+
+  const { data: extractionJobsData } = useQuery(
+    ['paper-extraction-jobs'],
+    () => apiClient.listPaperExtractionJobs(),
+    { refetchInterval: 5000, staleTime: 3000 }
+  );
+
+  const extractedPapers = useMemo(() => extractedPapersData?.items || [], [extractedPapersData?.items]);
+  const extractionJobs = useMemo(() => extractionJobsData || [], [extractionJobsData]);
+
+  const paperByArxivId = useMemo(() => {
+    const map = new Map<string, ResearchPaper>();
+    for (const paper of extractedPapers) map.set(paper.arxiv_id, paper);
+    return map;
+  }, [extractedPapers]);
+
+  const papersBySourceId = useMemo(() => {
+    const map = new Map<string, ResearchPaper[]>();
+    for (const paper of extractedPapers) {
+      const sourceId = String(paper.source_id || '').trim();
+      if (!sourceId) continue;
+      const current = map.get(sourceId) || [];
+      current.push(paper);
+      map.set(sourceId, current);
+    }
+    return map;
+  }, [extractedPapers]);
+
+  const latestJobBySourceId = useMemo(() => {
+    const map = new Map<string, PaperExtractionJob>();
+    for (const job of extractionJobs) {
+      const sourceId = String(job.source_id || '').trim();
+      if (!sourceId || map.has(sourceId)) continue;
+      map.set(sourceId, job);
+    }
+    return map;
+  }, [extractionJobs]);
+
+  const importSourceIdByPaperId = useMemo(() => {
+    const map = new Map<string, string>();
+    for (const imp of imports) {
+      for (const paperId of imp.display?.paper_ids || []) {
+        if (!map.has(paperId)) map.set(paperId, imp.id);
+      }
+    }
+    return map;
+  }, [imports]);
+
+  const { data: selectedExtractedPaper, isFetching: isSelectedExtractedPaperFetching } = useQuery(
+    ['research-paper', selectedExtractedPaperId],
+    () => apiClient.getResearchPaper(String(selectedExtractedPaperId)),
+    { enabled: Boolean(selectedExtractedPaperId), staleTime: 3000 }
   );
 
   useEffect(() => {
@@ -202,6 +266,86 @@ const PapersPage: React.FC = () => {
     };
   }, [imports, queryClient]);
 
+  const refreshExtractionData = useCallback(() => {
+    queryClient.invalidateQueries('research-papers');
+    queryClient.invalidateQueries('paper-extraction-jobs');
+    queryClient.invalidateQueries('arxivImports');
+  }, [queryClient]);
+
+  const queueSourceExtraction = useCallback(async (sourceId: string, force = false) => {
+    setActioningSourceId(sourceId);
+    try {
+      const jobs = await apiClient.extractResearchPapers({ source_id: sourceId, force, limit: 200 });
+      toast.success(`Queued ${jobs.length} extraction job${jobs.length === 1 ? '' : 's'}`);
+      refreshExtractionData();
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || 'Failed to queue extraction');
+    } finally {
+      setActioningSourceId(null);
+    }
+  }, [refreshExtractionData]);
+
+  const saveSelectedPaperAsNote = useCallback(async () => {
+    if (!selectedExtractedPaper) return;
+    setActioningPaperId(selectedExtractedPaper.id);
+    try {
+      const note = await apiClient.saveResearchPaperAsNote(selectedExtractedPaper.id, {
+        title: `Paper Extraction: ${selectedExtractedPaper.title}`,
+        tags: ['paper-extraction', 'arxiv'],
+      });
+      toast.success('Research note created');
+      navigate(`/research-notes?note=${encodeURIComponent(note.id)}`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || 'Failed to save note');
+    } finally {
+      setActioningPaperId(null);
+    }
+  }, [navigate, selectedExtractedPaper]);
+
+  const toggleHypothesisPaper = useCallback((paperId: string) => {
+    setSelectedHypothesisPaperIds((current) =>
+      current.includes(paperId) ? current.filter((id) => id !== paperId) : [...current, paperId]
+    );
+  }, []);
+
+  const generateHypothesesFromPapers = useCallback(async () => {
+    if (selectedHypothesisPaperIds.length === 0) {
+      toast.error('Select at least one extracted paper');
+      return;
+    }
+
+    const selectedPapers = extractedPapers.filter((paper) => selectedHypothesisPaperIds.includes(paper.id));
+    const paperTitles = selectedPapers.map((paper) => paper.title).slice(0, 3);
+    const title =
+      selectedPapers.length === 1
+        ? `Hypotheses: ${selectedPapers[0].title}`
+        : `Hypotheses: ${paperTitles.join(', ')}${selectedPapers.length > 3 ? '…' : ''}`;
+
+    setActioningPaperId('generate-hypotheses');
+    try {
+      const job = await apiClient.createSynthesisJob({
+        job_type: 'gap_analysis_hypotheses',
+        title,
+        document_ids: [],
+        paper_ids: selectedHypothesisPaperIds,
+        topic: reviewTopic.trim() || submittedQuery.trim() || undefined,
+        output_format: 'markdown',
+        output_style: 'technical',
+        options: {
+          domain: 'compilers and microarchitecture',
+          desired_outcomes: 'Cross-paper hypotheses and next-step experiments grounded in extracted claims.',
+          include_bibliography: true,
+        },
+      });
+      toast.success('Hypothesis job created');
+      navigate(`/synthesis?job=${encodeURIComponent(job.id)}`);
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Failed to create hypothesis job');
+    } finally {
+      setActioningPaperId(null);
+    }
+  }, [extractedPapers, navigate, reviewTopic, selectedHypothesisPaperIds, submittedQuery]);
+
   return (
     <div className="p-6 max-w-5xl mx-auto">
       <div className="mb-6">
@@ -219,6 +363,19 @@ const PapersPage: React.FC = () => {
             <div className="text-sm text-gray-600">Recently added arXiv imports into your Knowledge DB</div>
           </div>
           <div className="flex items-center gap-3">
+            <button
+              type="button"
+              disabled={selectedHypothesisPaperIds.length === 0 || actioningPaperId === 'generate-hypotheses'}
+              onClick={() => void generateHypothesesFromPapers()}
+              className="text-sm px-3 py-2 rounded-lg bg-rose-600 text-white hover:bg-rose-700 disabled:opacity-50"
+              title="Create a gap-analysis hypothesis synthesis from selected extracted papers"
+            >
+              {actioningPaperId === 'generate-hypotheses' ? (
+                <Loader2 className="w-4 h-4 animate-spin" />
+              ) : (
+                `Generate Hypotheses${selectedHypothesisPaperIds.length ? ` (${selectedHypothesisPaperIds.length})` : ''}`
+              )}
+            </button>
             {highlightSourceId && (
               <div className="flex items-center gap-2">
                 <div className="text-xs text-gray-600">
@@ -239,7 +396,7 @@ const PapersPage: React.FC = () => {
               </div>
             )}
             <div className="text-xs text-gray-500">
-              {isImportsFetching ? 'Refreshing…' : ''}
+              {isImportsFetching ? 'Refreshing imports…' : isExtractedPapersFetching ? 'Refreshing extractions…' : ''}
             </div>
           </div>
         </div>
@@ -255,7 +412,8 @@ const PapersPage: React.FC = () => {
                 'Queued';
               const progress = progressBySourceId[imp.id];
 
-	              const isHighlighted = highlightSourceId && String(imp.id) === String(highlightSourceId);
+              const extractedForSource = papersBySourceId.get(imp.id) || [];
+              const isHighlighted = highlightSourceId && String(imp.id) === String(highlightSourceId);
 	              return (
 	                <div
                     id={`arxiv-import-${imp.id}`}
@@ -280,6 +438,28 @@ const PapersPage: React.FC = () => {
 	                          Documents: {imp.document_count}
 	                        </div>
 	                      )}
+                        {(latestJobBySourceId.get(imp.id) || papersBySourceId.get(imp.id)?.length) ? (
+                          <div className="text-xs text-gray-600 mt-1">
+                            Extraction: {latestJobBySourceId.get(imp.id)?.status || 'completed'}
+                            {papersBySourceId.get(imp.id)?.length ? ` • ${papersBySourceId.get(imp.id)?.length} extracted` : ''}
+                          </div>
+                        ) : null}
+                        {extractedForSource.length > 0 && (
+                          <div className="mt-2 flex flex-wrap gap-2">
+                            {extractedForSource.map((paper) => (
+                              <label key={paper.id} className="inline-flex items-center gap-2 text-xs text-gray-700 bg-gray-50 border border-gray-200 rounded-full px-2 py-1">
+                                <input
+                                  type="checkbox"
+                                  checked={selectedHypothesisPaperIds.includes(paper.id)}
+                                  onChange={() => toggleHypothesisPaper(paper.id)}
+                                  aria-label={`Select paper ${paper.title} for hypothesis generation`}
+                                  className="rounded border-gray-300"
+                                />
+                                <span className="truncate max-w-[220px]">{paper.title}</span>
+                              </label>
+                            ))}
+                          </div>
+                        )}
 	                    </div>
 	                    <div className="flex items-center gap-2">
 	                      {imp.review_document_id && (
@@ -292,6 +472,25 @@ const PapersPage: React.FC = () => {
 	                          Open Review
 	                        </button>
 	                      )}
+                        <button
+                          type="button"
+                          disabled={actioningSourceId === imp.id}
+                          onClick={() => void queueSourceExtraction(imp.id, false)}
+                          className="text-sm px-3 py-2 rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                          title="Extract structured paper metadata and claims for this import"
+                        >
+                          {actioningSourceId === imp.id ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Extract Structure'}
+                        </button>
+                        {(papersBySourceId.get(imp.id) || []).length > 0 && (
+                          <button
+                            type="button"
+                            onClick={() => setSelectedExtractedPaperId((papersBySourceId.get(imp.id) || [])[0].id)}
+                            className="text-sm px-3 py-2 rounded-lg border border-gray-300 hover:bg-gray-50"
+                            title="Open extracted paper structure"
+                          >
+                            Open Extracted
+                          </button>
+                        )}
                         <button
                           type="button"
                           disabled={actioningSourceId === imp.id}
@@ -315,10 +514,10 @@ const PapersPage: React.FC = () => {
                           type="button"
                           disabled={actioningSourceId === imp.id}
                           onClick={async () => {
-                            const topic = window.prompt('Literature review topic (optional)', imp.name) || '';
                             setActioningSourceId(imp.id);
                             try {
-                              await apiClient.generateReviewForArxivImport(imp.id, { topic: topic.trim() || null });
+                              const topic = String(reviewTopicDrafts[imp.id] || imp.name || '').trim();
+                              await apiClient.generateReviewForArxivImport(imp.id, { topic: topic || null });
                               toast.success('Queued literature review');
                               queryClient.invalidateQueries('arxivImports');
                             } catch (e: any) {
@@ -332,6 +531,13 @@ const PapersPage: React.FC = () => {
                         >
                           {actioningSourceId === imp.id ? <Loader2 className="w-4 h-4 animate-spin" /> : 'Generate Review'}
                         </button>
+                        <input
+                          type="text"
+                          value={reviewTopicDrafts[imp.id] ?? imp.name}
+                          onChange={(e) => setReviewTopicDrafts((current) => ({ ...current, [imp.id]: e.target.value }))}
+                          placeholder="Review topic"
+                          className="text-sm px-3 py-2 rounded-lg border border-gray-300 hover:bg-gray-50"
+                        />
                         <button
                           type="button"
                           disabled={actioningSourceId === imp.id}
@@ -536,13 +742,22 @@ const PapersPage: React.FC = () => {
               <span>Generate review</span>
             </label>
             {generateReview && (
-              <input
-                type="text"
-                value={reviewTopic}
-                onChange={(e) => setReviewTopic(e.target.value)}
-                placeholder="Topic label (optional)"
-                className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500"
-              />
+              <div className="flex items-center gap-2">
+                <input
+                  type="text"
+                  value={reviewTopicDraft}
+                  onChange={(e) => setReviewTopicDraft(e.target.value)}
+                  placeholder="Topic label (optional)"
+                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-primary-500 min-w-[260px]"
+                />
+                <button
+                  type="button"
+                  onClick={() => setReviewTopic(reviewTopicDraft)}
+                  className="px-3 py-2 border border-gray-300 rounded-lg text-sm hover:bg-gray-50"
+                >
+                  Apply topic
+                </button>
+              </div>
             )}
             <span className="text-sm text-gray-600">Sort by:</span>
             <select
@@ -601,6 +816,41 @@ const PapersPage: React.FC = () => {
                   </div>
                 </div>
                 <div className="flex items-center gap-2 shrink-0">
+                  {paperByArxivId.get(paper.id) && (
+                    <div className="inline-flex items-center gap-2">
+                      <label className="inline-flex items-center gap-1 px-2 py-2 text-sm rounded-lg border border-gray-300 bg-white">
+                        <input
+                          type="checkbox"
+                          checked={selectedHypothesisPaperIds.includes(String(paperByArxivId.get(paper.id)?.id))}
+                          onChange={() => toggleHypothesisPaper(String(paperByArxivId.get(paper.id)?.id))}
+                          aria-label={`Select paper ${paper.title} for hypothesis generation`}
+                          className="rounded border-gray-300"
+                        />
+                        <span>Select</span>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => setSelectedExtractedPaperId(String(paperByArxivId.get(paper.id)?.id))}
+                        className="inline-flex items-center gap-1 px-3 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50"
+                        title="Open extracted paper structure"
+                      >
+                        <BrainCircuit className="w-4 h-4" />
+                        Extracted
+                      </button>
+                    </div>
+                  )}
+                  {!paperByArxivId.get(paper.id) && importSourceIdByPaperId.get(paper.id) && (
+                    <button
+                      type="button"
+                      disabled={actioningSourceId === importSourceIdByPaperId.get(paper.id)}
+                      onClick={() => void queueSourceExtraction(String(importSourceIdByPaperId.get(paper.id)), false)}
+                      className="inline-flex items-center gap-1 px-3 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                      title="Extract structured paper data from the imported document"
+                    >
+                      <FlaskConical className="w-4 h-4" />
+                      Extract
+                    </button>
+                  )}
                   <button
                     type="button"
                     onClick={async () => {
@@ -690,6 +940,145 @@ const PapersPage: React.FC = () => {
           >
             Next
           </button>
+        </div>
+      )}
+
+      {selectedExtractedPaperId && (
+        <div className="fixed inset-0 z-50 bg-black/30 flex justify-end">
+          <div className="h-full w-full max-w-2xl bg-white shadow-2xl overflow-y-auto">
+            <div className="sticky top-0 bg-white border-b px-6 py-4 flex items-start justify-between gap-4">
+              <div>
+                <div className="text-sm text-gray-500">Extracted paper</div>
+                <div className="text-xl font-semibold text-gray-900">
+                  {selectedExtractedPaper?.title || 'Loading…'}
+                </div>
+                {selectedExtractedPaper?.arxiv_id && (
+                  <div className="text-sm text-gray-600 mt-1">arXiv ID: {selectedExtractedPaper.arxiv_id}</div>
+                )}
+              </div>
+              <button
+                type="button"
+                onClick={() => setSelectedExtractedPaperId(null)}
+                className="px-3 py-2 rounded-lg border border-gray-300 hover:bg-gray-50"
+              >
+                Close
+              </button>
+            </div>
+
+            <div className="p-6 space-y-6">
+              {isSelectedExtractedPaperFetching && !selectedExtractedPaper ? (
+                <div className="text-sm text-gray-600 flex items-center gap-2">
+                  <Loader2 className="w-4 h-4 animate-spin" /> Loading extracted paper…
+                </div>
+              ) : selectedExtractedPaper ? (
+                <>
+                  <div className="flex items-center gap-3 flex-wrap">
+                    <span className="px-2 py-1 rounded bg-gray-100 text-gray-700 text-xs">
+                      {selectedExtractedPaper.extraction_status}
+                    </span>
+                    {selectedExtractedPaper.latest_job?.status && (
+                      <span className="px-2 py-1 rounded bg-blue-50 text-blue-700 text-xs">
+                        Job {selectedExtractedPaper.latest_job.status}
+                      </span>
+                    )}
+                    {selectedExtractedPaper.paper_url && (
+                      <a
+                        href={selectedExtractedPaper.paper_url}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-sm text-primary-700 hover:text-primary-800"
+                      >
+                        Open paper <ExternalLink className="w-4 h-4 inline" />
+                      </a>
+                    )}
+                  </div>
+
+                  {selectedExtractedPaper.summary && (
+                    <section>
+                      <h3 className="font-semibold text-gray-900 mb-2">Summary</h3>
+                      <p className="text-sm text-gray-700 whitespace-pre-wrap">{selectedExtractedPaper.summary}</p>
+                    </section>
+                  )}
+
+                  {([
+                    ['Mechanisms', selectedExtractedPaper.mechanisms],
+                    ['Assumptions', selectedExtractedPaper.assumptions],
+                    ['Benchmarks', selectedExtractedPaper.benchmarks],
+                    ['Metrics', selectedExtractedPaper.metrics],
+                    ['Limitations', selectedExtractedPaper.limitations],
+                  ] as Array<[string, string[] | null | undefined]>).map(([label, items]) => (
+                    items && items.length > 0 ? (
+                      <section key={label}>
+                        <h3 className="font-semibold text-gray-900 mb-2">{label}</h3>
+                        <div className="flex flex-wrap gap-2">
+                          {items.map((item) => (
+                            <span key={`${label}-${item}`} className="px-2 py-1 rounded-full bg-amber-50 text-amber-900 border border-amber-200 text-xs">
+                              {item}
+                            </span>
+                          ))}
+                        </div>
+                      </section>
+                    ) : null
+                  ))}
+
+                  <section>
+                    <div className="flex items-center justify-between gap-3 mb-3">
+                      <h3 className="font-semibold text-gray-900">Claims</h3>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          disabled={actioningPaperId === selectedExtractedPaper.id}
+                          onClick={async () => {
+                            setActioningPaperId(selectedExtractedPaper.id);
+                            try {
+                              await apiClient.reextractResearchPaper(selectedExtractedPaper.id);
+                              toast.success('Re-extraction queued');
+                              refreshExtractionData();
+                            } catch (e: any) {
+                              toast.error(e?.response?.data?.detail || 'Failed to queue re-extraction');
+                            } finally {
+                              setActioningPaperId(null);
+                            }
+                          }}
+                          className="inline-flex items-center gap-1 px-3 py-2 text-sm rounded-lg border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                        >
+                          <FlaskConical className="w-4 h-4" />
+                          Re-extract
+                        </button>
+                        <button
+                          type="button"
+                          disabled={actioningPaperId === selectedExtractedPaper.id}
+                          onClick={() => void saveSelectedPaperAsNote()}
+                          className="inline-flex items-center gap-1 px-3 py-2 text-sm rounded-lg bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                        >
+                          <StickyNote className="w-4 h-4" />
+                          Save as Note
+                        </button>
+                      </div>
+                    </div>
+                    <div className="space-y-3">
+                      {selectedExtractedPaper.claims.map((claim) => (
+                        <div key={claim.id} className="border rounded-lg p-3">
+                          <div className="flex items-start justify-between gap-3">
+                            <div className="text-sm text-gray-900">{claim.statement}</div>
+                            <div className="text-[11px] text-gray-500 whitespace-nowrap">
+                              {claim.kind} • {claim.target_layer}
+                              {typeof claim.confidence === 'number' ? ` • ${(claim.confidence * 100).toFixed(0)}%` : ''}
+                            </div>
+                          </div>
+                          {claim.evidence_summary && (
+                            <div className="text-xs text-gray-600 mt-2">Evidence: {claim.evidence_summary}</div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  </section>
+                </>
+              ) : (
+                <div className="text-sm text-red-600">Failed to load extracted paper.</div>
+              )}
+            </div>
+          </div>
         </div>
       )}
     </div>

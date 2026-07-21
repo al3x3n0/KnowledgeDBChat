@@ -3,7 +3,7 @@
  */
 
 import React, { useState, useEffect, useRef } from 'react';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, useLocation } from 'react-router-dom';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import {
   Plus,
@@ -20,6 +20,9 @@ import {
   Loader2,
   Eye,
   Sparkles,
+  Network,
+  ChevronDown,
+  ChevronUp,
   X
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
@@ -27,7 +30,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { apiClient } from '../services/api';
-import { ChatSession, ChatMessage, WebSocketMessage } from '../types';
+import { ChatSession, ChatMessage, RetrievalTrace, WebSocketMessage } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
@@ -39,6 +42,7 @@ import toast from 'react-hot-toast';
 const ChatPage: React.FC = () => {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
   const queryClient = useQueryClient();
   
@@ -49,6 +53,18 @@ const ChatPage: React.FC = () => {
   const inputRef = useRef<HTMLInputElement>(null);
   const [deleteConfirmOpen, setDeleteConfirmOpen] = useState(false);
   const [sessionToDelete, setSessionToDelete] = useState<string | null>(null);
+
+  // Allow other pages (e.g., Context Pack) to prefill the input via navigation state.
+  useEffect(() => {
+    const st = (location as any)?.state as { prefillMessage?: string } | undefined;
+    const prefill = (st?.prefillMessage || '').toString();
+    if (!prefill) return;
+    setMessage((prev) => (prev && prev.trim().length ? prev : prefill));
+    // Clear state to avoid re-applying on re-render/back-forward.
+    // Note: no reliable way to clear location.state without a navigation. We just
+    // apply once on mount.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Fetch chat sessions
   const { data: sessions, isLoading: sessionsLoading, error: sessionsError } = useQuery(
@@ -535,6 +551,10 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   const [downloadingDocs, setDownloadingDocs] = React.useState<Set<string>>(new Set());
+  const [kgOpen, setKgOpen] = React.useState(false);
+  const [kgLoading, setKgLoading] = React.useState(false);
+  const [kgTrace, setKgTrace] = React.useState<RetrievalTrace | null>(null);
+  const [kgError, setKgError] = React.useState<string | null>(null);
   const sourceDocs = (message.source_documents || []) as Array<{
     id: string;
     title?: string;
@@ -562,6 +582,17 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
         highlightChunkId: chunkId
       }
     });
+  };
+
+  const handleOpenGlobalKG = (name: string, id?: string) => {
+    const params = new URLSearchParams();
+    if (name) params.set('search', name);
+    if (id) params.set('sel', id);
+    navigate(`/kg/global?${params.toString()}`);
+  };
+
+  const handleOpenDocumentGraph = (docId: string) => {
+    navigate(`/documents/${encodeURIComponent(docId)}/graph`);
   };
 
   const handleDownload = async (docId: string, downloadUrl?: string) => {
@@ -597,6 +628,30 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
       });
     }
   };
+
+  const toggleKG = async () => {
+    const next = !kgOpen;
+    setKgOpen(next);
+    if (!next) return;
+    if (!isAssistant || !message.retrieval_trace_id) return;
+    if (kgTrace || kgLoading) return;
+
+    try {
+      setKgError(null);
+      setKgLoading(true);
+      const trace = await apiClient.getRetrievalTrace(message.retrieval_trace_id);
+      setKgTrace(trace);
+    } catch (e: any) {
+      setKgError(e?.message || 'Failed to load retrieval trace');
+    } finally {
+      setKgLoading(false);
+    }
+  };
+
+  const kgPack = React.useMemo(() => {
+    const t: any = kgTrace?.trace;
+    return t?.kg_context_pack || null;
+  }, [kgTrace]);
 
   return (
     <div className={`flex items-start space-x-3 ${isUser ? 'flex-row-reverse space-x-reverse' : ''}`}>
@@ -724,6 +779,179 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
                 </div>
               </div>
             ))}
+          </div>
+        )}
+
+        {/* KG context pack (debug/inspection) */}
+        {isAssistant && message.retrieval_trace_id && (
+          <div className="mt-2">
+            <button
+              type="button"
+              onClick={toggleKG}
+              className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50 inline-flex items-center gap-1"
+              title="View KG context pack grounded in retrieved sources"
+            >
+              <span>KG context pack</span>
+              {kgOpen ? <ChevronUp className="w-3 h-3" /> : <ChevronDown className="w-3 h-3" />}
+            </button>
+
+            {kgOpen && (
+              <div className="mt-2 text-xs bg-gray-50 border border-gray-200 rounded p-2">
+                {kgLoading && <div className="text-gray-600">Loading…</div>}
+                {!kgLoading && kgError && <div className="text-red-600">{kgError}</div>}
+                {!kgLoading && !kgError && !kgPack && (
+                  <div className="text-gray-600">No KG context pack in trace.</div>
+                )}
+                {!kgLoading && !kgError && kgPack && (
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <div className="text-gray-700">
+                        <span className="font-medium">Stats:</span>{' '}
+                        {JSON.stringify(kgPack.stats || {})}
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <button
+                          type="button"
+                          className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
+                          onClick={() => {
+                            if (message.retrieval_trace_id) navigate(`/context-packs/${encodeURIComponent(String(message.retrieval_trace_id))}`);
+                          }}
+                          title="Open full context pack page"
+                        >
+                          Open
+                        </button>
+                        <button
+                          type="button"
+                          className="text-xs px-2 py-1 rounded border border-gray-300 hover:bg-gray-50"
+                          onClick={async () => {
+                            try {
+                              const ctx = (kgTrace?.trace as any)?.kg_context_pack?.kg_context;
+                              const text = typeof ctx === 'string' ? ctx : JSON.stringify(kgPack, null, 2);
+                              await navigator.clipboard.writeText(text);
+                              toast.success('Copied KG context');
+                            } catch {
+                              toast.error('Copy failed');
+                            }
+                          }}
+                          title="Copy KG context to clipboard"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="font-medium text-gray-700">Entities</div>
+                      <div className="mt-1 space-y-1">
+                        {(kgPack.entities || []).slice(0, 20).map((e: any) => (
+                          <div key={String(e.id)} className="bg-white border border-gray-200 rounded px-2 py-1">
+                            <div className="flex items-center justify-between gap-2">
+                              <div className="truncate">
+                                <button
+                                  type="button"
+                                  className="font-medium text-primary-700 hover:text-primary-900 hover:underline"
+                                  onClick={() => handleOpenGlobalKG(String(e.name || ''), String(e.id || ''))}
+                                  title="Open in Global KG"
+                                >
+                                  {e.name}
+                                </button>{' '}
+                                <span className="text-gray-500">({e.type})</span>
+                              </div>
+                              {(typeof e.mention_count === 'number' || typeof e.document_count === 'number') && (
+                                <div className="text-gray-500 shrink-0">
+                                  {typeof e.mention_count === 'number' ? `${e.mention_count} mentions` : ''}
+                                  {typeof e.document_count === 'number' ? ` · ${e.document_count} docs` : ''}
+                                </div>
+                              )}
+                            </div>
+                            {Array.isArray(e.evidence) && e.evidence.length > 0 && (
+                              <div className="mt-1 space-y-1">
+                                {e.evidence.slice(0, 2).map((ev: any, idx: number) => (
+                                  <div key={idx} className="flex items-start gap-2">
+                                    <div className="text-gray-600 line-clamp-2 flex-1">
+                                      evidence: {String(ev?.text || '')}
+                                    </div>
+                                    {ev?.document_id && (
+                                      <div className="flex items-center gap-1 shrink-0">
+                                        <button
+                                          type="button"
+                                          className="text-primary-700 hover:text-primary-900 p-1 rounded hover:bg-primary-50"
+                                          title="Open document at evidence"
+                                          onClick={() => handleViewSource(String(ev.document_id), ev?.chunk_id ? String(ev.chunk_id) : undefined)}
+                                        >
+                                          <Eye className="w-3 h-3" />
+                                        </button>
+                                        <button
+                                          type="button"
+                                          className="text-primary-700 hover:text-primary-900 p-1 rounded hover:bg-primary-50"
+                                          title="Open document knowledge graph"
+                                          onClick={() => handleOpenDocumentGraph(String(ev.document_id))}
+                                        >
+                                          <Network className="w-3 h-3" />
+                                        </button>
+                                      </div>
+                                    )}
+                                  </div>
+                                ))}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+
+                    <div>
+                      <div className="font-medium text-gray-700">Relationships</div>
+                      <div className="mt-1 space-y-1">
+                        {(kgPack.relationships || []).slice(0, 40).map((r: any) => (
+                          <div key={String(r.id)} className="bg-white border border-gray-200 rounded px-2 py-1">
+                            <div className="text-gray-800">
+                              <button
+                                type="button"
+                                className="font-mono text-primary-700 hover:text-primary-900 hover:underline"
+                                title="Open source in Global KG"
+                                onClick={() => {
+                                  const src = (kgPack.entities || []).find((e: any) => String(e.id) === String(r.source));
+                                  handleOpenGlobalKG(String(src?.name || ''), String(r.source || ''));
+                                }}
+                              >
+                                {String(
+                                  (kgPack.entities || []).find((e: any) => String(e.id) === String(r.source))?.name ||
+                                    String(r.source).slice(0, 8)
+                                )}
+                              </button>{' '}
+                              <span className="text-gray-500">--[{r.type}]--&gt;</span>{' '}
+                              <button
+                                type="button"
+                                className="font-mono text-primary-700 hover:text-primary-900 hover:underline"
+                                title="Open target in Global KG"
+                                onClick={() => {
+                                  const tgt = (kgPack.entities || []).find((e: any) => String(e.id) === String(r.target));
+                                  handleOpenGlobalKG(String(tgt?.name || ''), String(r.target || ''));
+                                }}
+                              >
+                                {String(
+                                  (kgPack.entities || []).find((e: any) => String(e.id) === String(r.target))?.name ||
+                                    String(r.target).slice(0, 8)
+                                )}
+                              </button>{' '}
+                              {typeof r.confidence === 'number' && (
+                                <span className="text-gray-500">({(r.confidence * 100).toFixed(0)}%)</span>
+                              )}
+                            </div>
+                            {r.evidence && (
+                              <div className="mt-1 text-gray-600 line-clamp-2">
+                                evidence: {String(r.evidence)}
+                              </div>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
           </div>
         )}
 

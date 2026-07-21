@@ -379,13 +379,17 @@ const DocumentsPage: React.FC = () => {
   );
 
   // Filter documents based on active tab
-  const documents: KnowledgeDocument[] = allDocuments?.filter(doc => {
-    if (activeTab === 'videos') {
-      return isVideoAudio(doc);
-    } else {
-      return !isVideoAudio(doc);
-    }
-  }) || [];
+  const documents: KnowledgeDocument[] = useMemo(
+    () =>
+      (allDocuments?.filter((doc) => {
+        if (activeTab === 'videos') {
+          return isVideoAudio(doc);
+        } else {
+          return !isVideoAudio(doc);
+        }
+      }) || []),
+    [allDocuments, activeTab]
+  );
 
   const handlePersonaFilter = (personaId: string, role: 'owner' | 'speaker' = 'owner') => {
     if (!personaId) return;
@@ -562,12 +566,15 @@ const DocumentsPage: React.FC = () => {
       }
     });
     
-    // Cleanup on unmount
+  }, [documents, queryClient, docStatus]);
+
+  // Cleanup transcription progress sockets on unmount
+  useEffect(() => {
     return () => {
-      Object.values(transcriptionWebSockets.current).forEach(ws => ws.close());
+      Object.values(transcriptionWebSockets.current).forEach((ws) => ws.close());
       transcriptionWebSockets.current = {};
     };
-  }, [documents, queryClient]);
+  }, []);
 
   // Connect WebSocket for summarization progress on documents
   useEffect(() => {
@@ -669,11 +676,15 @@ const DocumentsPage: React.FC = () => {
       }
     });
 
+  }, [documents, queryClient, docSumStatus]);
+
+  // Cleanup summarization progress sockets on unmount
+  useEffect(() => {
     return () => {
-      Object.values(summarizationWebSockets.current).forEach(ws => ws.close());
+      Object.values(summarizationWebSockets.current).forEach((ws) => ws.close());
       summarizationWebSockets.current = {};
     };
-  }, [documents, queryClient, docSumStatus]);
+  }, []);
 
   // Open document modal based on navigation state
   useEffect(() => {
@@ -1433,6 +1444,7 @@ const DocumentsPage: React.FC = () => {
     onRequestPersonaEdit?: (persona: Persona, document: KnowledgeDocument) => void;
   }) {
     const ownerPersona = document.owner_persona;
+    const { isTranscoding, isTranscribing, isSummarizing } = getDocFlags(document);
     // Button variant styles are tuned for the app-wide inverted-gray theme; override here for
     // document-card actions so they look intentional and stay readable on white cards.
     const actionBtnClass =
@@ -1460,7 +1472,7 @@ const DocumentsPage: React.FC = () => {
             </div>
 
             {/* Progress bar for transcription/transcoding */}
-            {(document.extra_metadata?.is_transcribing || document.extra_metadata?.is_transcoding) &&
+            {(isTranscribing || isTranscoding) &&
               getProgressPercentage(document) !== null && (
                 <div className="mt-2">
                   <div className="flex items-center justify-between mb-1">
@@ -1494,7 +1506,7 @@ const DocumentsPage: React.FC = () => {
                     })()}
                   </div>
                   {/* Live transcript preview toggle - only for transcribing */}
-                  {document.extra_metadata?.is_transcribing && (
+                  {isTranscribing && (
                     <div className="mt-2">
                       <button
                         className="text-xs text-primary-700 hover:text-primary-800"
@@ -1653,14 +1665,14 @@ const DocumentsPage: React.FC = () => {
               className={actionBtnClass}
               icon={<Eye className="w-4 h-4" />}
               onClick={() => {
-                if (document.extra_metadata?.is_transcoding) {
+                if (isTranscoding) {
                   toast.error('Video is converting to MP4. Please wait.');
                   return;
                 }
                 setInitialSeekSeconds(null);
                 setSelectedDocument(document);
               }}
-              disabled={document.extra_metadata?.is_transcoding === true}
+              disabled={isTranscoding}
             >
               View
             </Button>
@@ -1670,7 +1682,7 @@ const DocumentsPage: React.FC = () => {
               className={actionBtnClass}
               icon={<Network className="w-4 h-4" />}
               onClick={() => navigate(`/documents/${document.id}/graph`)}
-              disabled={document.extra_metadata?.is_transcoding === true}
+              disabled={isTranscoding}
             >
               Graph
             </Button>
@@ -1717,9 +1729,8 @@ const DocumentsPage: React.FC = () => {
                 </Button>
               )}
             {isVideoAudio(document) &&
-              (docStatus[document.id]?.failed || !!document.extra_metadata?.transcription_error) &&
-              !document.extra_metadata?.is_transcribing &&
-              !document.extra_metadata?.is_transcoding && (
+              !isTranscribing &&
+              !isTranscoding && (
                 <Button
                   variant="ghost"
                   size="sm"
@@ -1727,17 +1738,36 @@ const DocumentsPage: React.FC = () => {
                   icon={<RefreshCw className="w-4 h-4" />}
                   onClick={async () => {
                     try {
+                      // Optimistic status so WS subscription starts immediately on manual run/rerun
+                      setDocStatus((prev) => ({
+                        ...prev,
+                        [document.id]: {
+                          ...(prev[document.id] || {}),
+                          is_transcoding: false,
+                          is_transcribing: true,
+                          is_transcribed: false,
+                          failed: false,
+                          error: undefined,
+                        },
+                      }));
                       const res = await apiClient.transcribeDocument(document.id);
                       toast.success(res.message || 'Transcription scheduled');
                       queryClient.invalidateQueries('documents');
                     } catch (e: any) {
+                      setDocStatus((prev) => ({
+                        ...prev,
+                        [document.id]: {
+                          ...(prev[document.id] || {}),
+                          is_transcribing: false,
+                        },
+                      }));
                       toast.error(
                         e?.response?.data?.detail || e?.message || 'Failed to schedule transcription'
                       );
                     }
                   }}
                 >
-                  Retry Transcription
+                  {document.extra_metadata?.transcript_document_id ? 'Rerun Transcript' : 'Run Transcript'}
                 </Button>
               )}
             <Button
@@ -1746,7 +1776,7 @@ const DocumentsPage: React.FC = () => {
               className={actionBtnClass}
               icon={<Sparkles className="w-4 h-4" />}
               onClick={() => summarizeMutation.mutate(document.id)}
-              disabled={document.extra_metadata?.is_transcoding === true || getDocFlags(document).isSummarizing}
+              disabled={isTranscoding || isSummarizing}
             >
               Summarize
             </Button>
@@ -1757,7 +1787,7 @@ const DocumentsPage: React.FC = () => {
                 className={actionBtnClass}
                 icon={<ExternalLink className="w-4 h-4" />}
                 onClick={() => window.open(document.url, '_blank')}
-                disabled={document.extra_metadata?.is_transcoding === true}
+                disabled={isTranscoding}
               >
                 Open
               </Button>
@@ -1769,7 +1799,7 @@ const DocumentsPage: React.FC = () => {
                 className={actionBtnClass}
                 icon={<Download className="w-4 h-4" />}
                 onClick={async () => {
-                  if (document.extra_metadata?.is_transcoding) {
+                  if (isTranscoding) {
                     toast.error('Video is converting to MP4. Please wait.');
                     return;
                   }
@@ -1800,7 +1830,7 @@ const DocumentsPage: React.FC = () => {
                     toast.error('Failed to generate download URL');
                   }
                 }}
-                disabled={document.extra_metadata?.is_transcoding === true}
+                disabled={isTranscoding}
               >
                 Download
               </Button>
@@ -1812,7 +1842,7 @@ const DocumentsPage: React.FC = () => {
                 className={actionBtnClass}
                 icon={<Edit className="w-4 h-4" />}
                 onClick={() => handleEditDocument(document)}
-                disabled={document.extra_metadata?.is_transcoding === true}
+                disabled={isTranscoding}
               >
                 Edit
               </Button>
@@ -1823,7 +1853,7 @@ const DocumentsPage: React.FC = () => {
               className={dangerBtnClass}
               icon={<Trash2 className="w-4 h-4" />}
               onClick={() => handleDeleteDocument(document.id)}
-              disabled={document.extra_metadata?.is_transcoding === true}
+              disabled={isTranscoding}
               loading={deleteDocumentMutation.isLoading}
             >
               Delete
@@ -2828,6 +2858,8 @@ const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuc
   const [url, setUrl] = useState('');
   const [tags, setTags] = useState('');
   const [runInBackground, setRunInBackground] = useState(true);
+  const [ingestMode, setIngestMode] = useState<"auto" | "web" | "youtube">("auto");
+  const [youtubeAudioOnly, setYoutubeAudioOnly] = useState(true);
   const [followLinks, setFollowLinks] = useState(false);
   const [onePerPage, setOnePerPage] = useState(false);
   const [maxPages, setMaxPages] = useState(3);
@@ -2847,6 +2879,10 @@ const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuc
     };
   }, []);
 
+  const isYoutubeUrl = /(?:youtube\.com|youtu\.be)/i.test(url.trim());
+  const isYouTubeMode = ingestMode === "youtube" || (ingestMode === "auto" && isYoutubeUrl);
+  const isWebMode = !isYouTubeMode;
+
   const ingestMutation = useMutation(
     async () => {
       const tagList = tags
@@ -2856,12 +2892,14 @@ const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuc
       const payload = {
         url: url.trim(),
         tags: tagList.length ? tagList : undefined,
-        follow_links: followLinks,
-        one_document_per_page: onePerPage,
-        max_pages: followLinks ? maxPages : 1,
-        max_depth: followLinks ? maxDepth : 0,
-        same_domain_only: sameDomainOnly,
-        allow_private_networks: allowPrivateNetworks,
+        ingest_mode: ingestMode,
+        youtube_audio_only: youtubeAudioOnly,
+        follow_links: isWebMode ? followLinks : false,
+        one_document_per_page: isWebMode ? onePerPage : false,
+        max_pages: isWebMode && followLinks ? maxPages : 1,
+        max_depth: isWebMode && followLinks ? maxDepth : 0,
+        same_domain_only: isWebMode ? sameDomainOnly : true,
+        allow_private_networks: isWebMode ? allowPrivateNetworks : false,
       };
       if (runInBackground) {
         return apiClient.ingestUrlAsync(payload as any);
@@ -2977,6 +3015,37 @@ const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuc
             fullWidth
           />
 
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">Ingest mode</label>
+            <select
+              className="w-full rounded-md border border-gray-300 px-3 py-2 text-sm"
+              value={ingestMode}
+              onChange={(e) => setIngestMode(e.target.value as "auto" | "web" | "youtube")}
+              disabled={isRunning}
+            >
+              <option value="auto">Auto (detect YouTube)</option>
+              <option value="web">Web pages (crawl text)</option>
+              <option value="youtube">YouTube media</option>
+            </select>
+            <p className="mt-1 text-xs text-gray-500">
+              {isYouTubeMode
+                ? "YouTube mode will download media and queue transcription."
+                : "Web mode will scrape page content and optional linked pages."}
+            </p>
+          </div>
+
+          {isYouTubeMode && (
+            <label className="flex items-center space-x-2 text-sm text-gray-700">
+              <input
+                type="checkbox"
+                checked={youtubeAudioOnly}
+                onChange={(e) => setYoutubeAudioOnly(e.target.checked)}
+                disabled={isRunning}
+              />
+              <span>Download audio only (faster transcription)</span>
+            </label>
+          )}
+
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="flex items-center space-x-2 text-sm text-gray-700">
               <input
@@ -2995,7 +3064,7 @@ const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuc
                 type="checkbox"
                 checked={followLinks}
                 onChange={(e) => setFollowLinks(e.target.checked)}
-                disabled={isRunning}
+                disabled={isRunning || !isWebMode}
               />
               <span>Follow links</span>
             </label>
@@ -3004,7 +3073,7 @@ const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuc
                 type="checkbox"
                 checked={onePerPage}
                 onChange={(e) => setOnePerPage(e.target.checked)}
-                disabled={isRunning || !followLinks}
+                disabled={isRunning || !isWebMode || !followLinks}
               />
               <span>One doc per page</span>
             </label>
@@ -3013,7 +3082,7 @@ const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuc
                 type="checkbox"
                 checked={sameDomainOnly}
                 onChange={(e) => setSameDomainOnly(e.target.checked)}
-                disabled={isRunning || !followLinks}
+                disabled={isRunning || !isWebMode || !followLinks}
               />
               <span>Same domain only</span>
             </label>
@@ -3022,13 +3091,13 @@ const IngestUrlModal: React.FC<IngestUrlModalProps> = ({ isAdmin, onClose, onSuc
                 type="checkbox"
                 checked={allowPrivateNetworks}
                 onChange={(e) => setAllowPrivateNetworks(e.target.checked)}
-                disabled={isRunning || !isAdmin}
+                disabled={isRunning || !isWebMode || !isAdmin}
               />
               <span>Allow private networks {isAdmin ? '' : '(admin)'}</span>
             </label>
           </div>
 
-          {followLinks && (
+          {isWebMode && followLinks && (
             <div className="grid grid-cols-2 gap-3">
               <Input
                 label="Max pages"

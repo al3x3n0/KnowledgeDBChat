@@ -166,6 +166,7 @@ const Layout: React.FC = () => {
         defaultCollapsed: false,
         items: [
           { name: 'Autonomous Jobs', to: '/autonomous-agents', icon: Zap },
+          { name: 'Control Plane', to: '/agent-control-plane', icon: Activity },
           { name: 'Workflows', to: '/workflows', icon: Workflow },
           { name: 'Agent Builder', to: '/agent-builder', icon: Bot },
           { name: 'Tools', to: '/tools', icon: Wrench },
@@ -508,7 +509,7 @@ const Layout: React.FC = () => {
       </div>
 
       {/* Main content */}
-      <div className="flex-1 flex flex-col overflow-hidden">
+      <div className="flex-1 flex flex-col overflow-hidden min-h-0">
         {/* Top navigation */}
         <header className="bg-white shadow-sm border-b border-gray-200 h-16 flex items-center justify-between px-4 md:px-6">
           <button
@@ -530,9 +531,11 @@ const Layout: React.FC = () => {
         </header>
 
         {/* Page content */}
-        <main className="flex-1 overflow-auto">
+        <main className="flex-1 min-h-0 overflow-hidden flex flex-col">
           {degradedBanner}
-          <Outlet />
+          <div className="flex-1 h-full min-h-0 overflow-auto flex flex-col">
+            <Outlet />
+          </div>
         </main>
       </div>
 

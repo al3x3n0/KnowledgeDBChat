@@ -9,6 +9,7 @@ from app.mcp.tools.documents import DocumentsTool
 from app.mcp.tools.chat import ChatTool
 from app.mcp.tools.generation import GenerationTool
 from app.mcp.tools.web_scrape import WebScrapeTool
+from app.mcp.tools.docker_execute import DockerExecuteTool
 
 __all__ = [
     "SearchTool",
@@ -16,4 +17,5 @@ __all__ = [
     "ChatTool",
     "GenerationTool",
     "WebScrapeTool",
+    "DockerExecuteTool",
 ]

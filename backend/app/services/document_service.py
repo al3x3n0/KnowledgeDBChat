@@ -306,8 +306,15 @@ class DocumentService:
                                 "is_transcribing": True,
                                 "is_transcribed": False,
                             })
-                            transcribe_document.delay(str(document.id))
-                            logger.info(f"Triggered transcription task for document {document.id}")
+                            transcribe_document.apply_async(
+                                args=[str(document.id)],
+                                soft_time_limit=5 * 60 * 60,
+                                time_limit=6 * 60 * 60,
+                            )
+                            logger.info(
+                                f"Triggered transcription task for document {document.id} "
+                                f"with soft_limit={5 * 60 * 60}s hard_limit={6 * 60 * 60}s"
+                            )
                         except Exception as e:
                             logger.error(f"Failed to dispatch transcription task: {e}")
                 else:
@@ -639,35 +646,40 @@ class DocumentService:
                 # Continue with deletion even if vector store delete fails
             
             # Step 3: Delete chunks from database explicitly (in addition to cascade)
+            # Use a nested transaction so SQL errors here don't poison the outer delete transaction.
             try:
                 from app.models.document import DocumentChunk
                 from sqlalchemy import delete
-                
-                delete_chunks_stmt = delete(DocumentChunk).where(
-                    DocumentChunk.document_id == document_id
-                )
-                result = await db.execute(delete_chunks_stmt)
-                deleted_chunks = result.rowcount
+
+                async with db.begin_nested():
+                    delete_chunks_stmt = delete(DocumentChunk).where(
+                        DocumentChunk.document_id == document_id
+                    )
+                    result = await db.execute(delete_chunks_stmt)
+                    deleted_chunks = result.rowcount
                 logger.info(f"Deleted {deleted_chunks} chunks from database for document {document_id}")
             except Exception as e:
                 logger.warning(f"Failed to delete chunks from database for document {document_id}: {e}")
                 # Continue with deletion even if chunk delete fails
-            
+
             # Step 3.5: Delete or update upload sessions that reference this document
+            # Keep this optional table interaction isolated in a savepoint.
             try:
                 from app.models.upload_session import UploadSession
-                
-                # Find upload sessions that reference this document
-                upload_sessions_result = await db.execute(
-                    select(UploadSession).where(UploadSession.document_id == document_id)
-                )
-                upload_sessions = upload_sessions_result.scalars().all()
-                
-                if upload_sessions:
-                    logger.info(f"Found {len(upload_sessions)} upload session(s) referencing document {document_id}")
-                    # Delete the upload sessions (they're just tracking records)
-                    for session in upload_sessions:
-                        await db.delete(session)
+
+                async with db.begin_nested():
+                    # Find upload sessions that reference this document
+                    upload_sessions_result = await db.execute(
+                        select(UploadSession).where(UploadSession.document_id == document_id)
+                    )
+                    upload_sessions = upload_sessions_result.scalars().all()
+
+                    if upload_sessions:
+                        logger.info(f"Found {len(upload_sessions)} upload session(s) referencing document {document_id}")
+                        # Delete the upload sessions (they're just tracking records)
+                        for session in upload_sessions:
+                            await db.delete(session)
+                if 'upload_sessions' in locals() and upload_sessions:
                     logger.info(f"Deleted {len(upload_sessions)} upload session(s) for document {document_id}")
             except Exception as e:
                 logger.warning(f"Failed to delete upload sessions for document {document_id}: {e}")

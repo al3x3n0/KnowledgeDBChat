@@ -33,6 +33,7 @@ class ResearchNote(Base):
 
     tags = Column(JSON, nullable=True)  # list[str]
     attribution = Column(JSON, nullable=True)  # citation enforcement report + generated markdown (optional)
+    structured_payload = Column(JSON, nullable=True)
 
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)

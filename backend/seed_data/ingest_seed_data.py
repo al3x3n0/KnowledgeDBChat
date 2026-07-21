@@ -105,9 +105,23 @@ async def main():
             existing_doc = result.scalar_one_or_none()
 
             if existing_doc:
+                # If content is unchanged we can skip only when the doc was already processed
+                # and embeddings exist. This avoids a footgun where a previous run created DB
+                # rows but failed to upsert to the vector store.
                 if existing_doc.content_hash == content_hash:
-                    print(f"  → Unchanged, skipping")
-                    continue
+                    if existing_doc.is_processed:
+                        # Best-effort check for missing embeddings.
+                        chunks_res = await db.execute(
+                            select(DocumentChunk).where(DocumentChunk.document_id == existing_doc.id)
+                        )
+                        old_chunks = chunks_res.scalars().all()
+                        missing = [c for c in old_chunks if not c.embedding_id]
+                        if not missing:
+                            print(f"  → Unchanged, skipping")
+                            continue
+
+                    print("  → Content unchanged but embeddings missing; reprocessing")
+                    document = existing_doc
                 else:
                     # Update existing document
                     print(f"  → Updating existing document")
@@ -116,13 +130,16 @@ async def main():
                     existing_doc.content_hash = content_hash
                     document = existing_doc
 
-                    # Delete old chunks
-                    for chunk in document.chunks:
-                        await db.delete(chunk)
-                    await db.commit()
+                # Clear existing chunks and vector store entries (idempotent).
+                chunks_res = await db.execute(
+                    select(DocumentChunk).where(DocumentChunk.document_id == document.id)
+                )
+                for chunk in chunks_res.scalars().all():
+                    await db.delete(chunk)
+                await db.commit()
 
-                    # Delete from vector store
-                    await vector_store_service.delete_document_chunks(document.id)
+                await vector_store_service.delete_document_chunks(document.id)
+                document.is_processed = False
             else:
                 # Create new document
                 document = Document(

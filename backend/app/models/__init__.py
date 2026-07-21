@@ -25,6 +25,7 @@ from .export_job import ExportJob
 from .repo_report import RepoReportJob
 from .artifact_draft import ArtifactDraft
 from .retrieval_trace import RetrievalTrace
+from .llm_call_snapshot import LLMCallSnapshot
 from .agent_job import (
     AgentJob,
     AgentJobCheckpoint,
@@ -36,9 +37,12 @@ from .agent_job import (
 )
 from .synthesis_job import SynthesisJob, SynthesisJobType, SynthesisJobStatus
 from .research_note import ResearchNote
+from .research_paper import ResearchPaper, PaperClaim, PaperExtractionJob
 from .experiment import ExperimentPlan, ExperimentRun
 from .research_inbox import ResearchInboxItem
 from .research_monitor_profile import ResearchMonitorProfile
+from .domain_research_profile import DomainResearchProfile
+from .research_portfolio import ResearchPortfolio
 from .code_patch_proposal import CodePatchProposal
 from .patch_pr import PatchPR
 from .training_dataset import (
@@ -63,6 +67,13 @@ from .model_registry import (
 from .ai_hub_recommendation_feedback import AIHubRecommendationFeedback
 from .latex_project import LatexProject
 from .latex_project_file import LatexProjectFile
+from .coding_backlog import CodingBacklogItem
+from .coding_swarm_profile import CodingSwarmProfile
+from .scientific_sandbox_profile import ScientificSandboxProfile
+from .benchmark import BenchmarkSuite, BenchmarkCase, BenchmarkBaseline
+from .autonomy_decision_event import AutonomyDecisionEvent
+from .autonomy_decision_trace_view import AutonomyDecisionTraceView
+from .agent_control_plane_view import AgentControlPlaneView
 
 __all__ = [
     "Document",
@@ -116,6 +127,7 @@ __all__ = [
     "RepoReportJob",
     "ArtifactDraft",
     "RetrievalTrace",
+    "LLMCallSnapshot",
     # Autonomous agent job models
     "AgentJob",
     "AgentJobCheckpoint",
@@ -130,10 +142,15 @@ __all__ = [
     "SynthesisJobStatus",
     # Research notes
     "ResearchNote",
+    "ResearchPaper",
+    "PaperClaim",
+    "PaperExtractionJob",
     "ExperimentPlan",
     "ExperimentRun",
     "ResearchInboxItem",
     "ResearchMonitorProfile",
+    "DomainResearchProfile",
+    "ResearchPortfolio",
     "CodePatchProposal",
     "PatchPR",
     # Training dataset models
@@ -155,4 +172,13 @@ __all__ = [
     "AIHubRecommendationFeedback",
     "LatexProject",
     "LatexProjectFile",
+    "CodingBacklogItem",
+    "CodingSwarmProfile",
+    "ScientificSandboxProfile",
+    "BenchmarkSuite",
+    "BenchmarkCase",
+    "BenchmarkBaseline",
+    "AutonomyDecisionEvent",
+    "AutonomyDecisionTraceView",
+    "AgentControlPlaneView",
 ]

@@ -96,6 +96,17 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
                     "items": {"type": "string"},
                     "description": "Tags to attach to created/updated documents (optional)"
                 },
+                "ingest_mode": {
+                    "type": "string",
+                    "enum": ["auto", "web", "youtube"],
+                    "description": "Ingestion mode; auto routes YouTube URLs to media download + transcription",
+                    "default": "auto"
+                },
+                "youtube_audio_only": {
+                    "type": "boolean",
+                    "description": "When ingesting YouTube, prefer audio-only stream for faster transcription",
+                    "default": True
+                },
                 "follow_links": {
                     "type": "boolean",
                     "description": "Whether to crawl links from the page (bounded by max_pages/max_depth)",
@@ -910,6 +921,25 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
                 "trigger_config": {
                     "type": "object",
                     "description": "Optional trigger configuration (manual, schedule, event, webhook)"
+                },
+                "synthesize_custom_tools": {
+                    "type": "boolean",
+                    "description": "Allow generating custom tool drafts alongside the workflow (including docker_container tools)",
+                    "default": False
+                },
+                "preferred_tool_type": {
+                    "type": "string",
+                    "enum": ["webhook", "transform", "python", "llm_prompt", "docker_container"],
+                    "description": "Bias synthesized custom tools toward this type"
+                },
+                "expose_workflow_as_tool": {
+                    "type": "boolean",
+                    "description": "Also generate a workflow_runner tool draft wrapping this workflow",
+                    "default": False
+                },
+                "workflow_tool_name": {
+                    "type": "string",
+                    "description": "Optional custom name for the synthesized workflow_runner tool"
                 }
             },
             "required": ["description"]
@@ -937,6 +967,25 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
                 "trigger_config": {
                     "type": "object",
                     "description": "Optional trigger configuration (manual, schedule, event, webhook)"
+                },
+                "synthesize_custom_tools": {
+                    "type": "boolean",
+                    "description": "Generate and persist custom tools from the description (supports docker_container)",
+                    "default": False
+                },
+                "preferred_tool_type": {
+                    "type": "string",
+                    "enum": ["webhook", "transform", "python", "llm_prompt", "docker_container"],
+                    "description": "Bias synthesized custom tools toward this type"
+                },
+                "expose_workflow_as_tool": {
+                    "type": "boolean",
+                    "description": "Create a workflow_runner custom tool for the saved workflow",
+                    "default": False
+                },
+                "workflow_tool_name": {
+                    "type": "string",
+                    "description": "Optional name for the created workflow_runner tool"
                 }
             },
             "required": ["description"]
@@ -1630,6 +1679,25 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
 # =========================================================================
 AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
     {
+        "name": "project_bootstrap",
+        "description": "Build a lightweight project profile from ingested repository files (stack, key files, test paths, and suggested commands).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_id": {
+                    "type": "string",
+                    "description": "Optional document source UUID to scope profiling"
+                },
+                "max_files": {
+                    "type": "integer",
+                    "description": "Maximum source files to sample (default: 400, max: 2000)",
+                    "default": 400
+                }
+            },
+            "required": []
+        }
+    },
+    {
         "name": "add_to_reading_list",
         "description": "Add papers or documents to a reading list for later review. Creates a new reading list if it doesn't exist.",
         "parameters": {
@@ -2271,7 +2339,1306 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
             },
             "required": ["arxiv_ids"]
         }
-    }
+    },
+    # ── Structured Reasoning Tools ──────────────────────────────────
+    {
+        "name": "reflect",
+        "description": "Self-reflect on current progress, approach quality, and potential blind spots. Stores reflection in state for future reference.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {
+                    "type": "string",
+                    "description": "What to reflect on (e.g., 'search strategy', 'evidence quality', 'goal alignment')"
+                },
+                "assessment": {
+                    "type": "string",
+                    "description": "Your self-assessment of the topic"
+                },
+                "blind_spots": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Identified blind spots or assumptions"
+                },
+                "suggested_corrections": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Corrective actions to consider"
+                }
+            },
+            "required": ["topic", "assessment"]
+        }
+    },
+    {
+        "name": "hypothesize",
+        "description": "Formulate and track a hypothesis. Hypotheses can later be confirmed, refuted, or updated with evidence.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "hypothesis": {
+                    "type": "string",
+                    "description": "The hypothesis statement"
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Why this hypothesis is plausible"
+                },
+                "testable_predictions": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Observable predictions if the hypothesis is true"
+                },
+                "status": {
+                    "type": "string",
+                    "enum": ["proposed", "testing", "supported", "refuted", "inconclusive"],
+                    "description": "Current status of the hypothesis"
+                },
+                "hypothesis_id": {
+                    "type": "string",
+                    "description": "ID of existing hypothesis to update (leave empty for new)"
+                }
+            },
+            "required": ["hypothesis"]
+        }
+    },
+    {
+        "name": "weigh_evidence",
+        "description": "Score and record evidence for or against a claim or hypothesis. Maintains a running evidence ledger.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "claim": {
+                    "type": "string",
+                    "description": "The claim being evaluated"
+                },
+                "hypothesis_id": {
+                    "type": "string",
+                    "description": "Link to a tracked hypothesis (optional)"
+                },
+                "evidence_for": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "statement": {"type": "string"},
+                            "source_document_id": {"type": "string"},
+                            "strength": {"type": "number", "description": "0.0-1.0"}
+                        }
+                    },
+                    "description": "Evidence supporting the claim"
+                },
+                "evidence_against": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "statement": {"type": "string"},
+                            "source_document_id": {"type": "string"},
+                            "strength": {"type": "number"}
+                        }
+                    },
+                    "description": "Evidence against the claim"
+                },
+                "verdict": {
+                    "type": "string",
+                    "enum": ["strongly_supported", "weakly_supported", "neutral", "weakly_refuted", "strongly_refuted"],
+                    "description": "Overall assessment"
+                }
+            },
+            "required": ["claim", "verdict"]
+        }
+    },
+    {
+        "name": "critique_plan",
+        "description": "Challenge the current execution plan. Identify weaknesses, missing steps, or questionable assumptions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "plan_summary": {
+                    "type": "string",
+                    "description": "Summary of the plan being critiqued"
+                },
+                "weaknesses": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Identified weaknesses in the plan"
+                },
+                "missing_steps": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Steps the plan is missing"
+                },
+                "assumptions_challenged": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Assumptions that should be questioned"
+                },
+                "severity": {
+                    "type": "string",
+                    "enum": ["minor", "moderate", "major"],
+                    "description": "How severe the critique is"
+                }
+            },
+            "required": ["plan_summary", "weaknesses"]
+        }
+    },
+    # ── Multi-Agent Coordination Tools ──────────────────────────────
+    {
+        "name": "delegate_subtask",
+        "description": "Spawn a child agent job to work on a specific subtask. The child runs asynchronously as a background task.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Name for the subtask job"
+                },
+                "goal": {
+                    "type": "string",
+                    "description": "Goal for the child agent job"
+                },
+                "job_type": {
+                    "type": "string",
+                    "enum": ["research", "analysis", "synthesis", "custom"],
+                    "description": "Type of job for the child agent"
+                },
+                "config": {
+                    "type": "object",
+                    "description": "Job-specific config to pass to child"
+                },
+                "max_iterations": {
+                    "type": "integer",
+                    "description": "Max iterations for child (capped at parent's remaining)"
+                },
+                "share_findings": {
+                    "type": "boolean",
+                    "description": "Share parent findings with child (default: true)"
+                },
+                "wait": {
+                    "type": "boolean",
+                    "description": "If true, poll for completion (blocks up to 60s)"
+                }
+            },
+            "required": ["name", "goal"]
+        }
+    },
+    {
+        "name": "wait_for_subtask",
+        "description": "Check status or wait for a delegated subtask to complete. Returns current status and results if available.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subtask_job_id": {
+                    "type": "string",
+                    "description": "Job ID of the delegated subtask"
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "How long to poll (max 120, default 30)"
+                }
+            },
+            "required": ["subtask_job_id"]
+        }
+    },
+    {
+        "name": "share_findings",
+        "description": "Push findings to sibling agent jobs (those sharing the same parent). Used for coordination in multi-agent workflows.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "findings": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "title": {"type": "string"},
+                            "content": {"type": "string"},
+                            "category": {"type": "string"}
+                        }
+                    },
+                    "description": "Findings to share with siblings"
+                },
+                "target_job_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Specific sibling job IDs (optional, shares with all siblings if empty)"
+                }
+            },
+            "required": ["findings"]
+        }
+    },
+    {
+        "name": "request_review",
+        "description": "Ask another agent job or a human operator to review the current work. Creates a review checkpoint.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "review_type": {
+                    "type": "string",
+                    "enum": ["peer_agent", "human"],
+                    "description": "Whether to request review from a peer agent or human"
+                },
+                "content_to_review": {
+                    "type": "string",
+                    "description": "The content or summary to be reviewed"
+                },
+                "review_criteria": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Criteria for the reviewer to evaluate"
+                },
+                "reviewer_job_id": {
+                    "type": "string",
+                    "description": "Specific sibling job to request review from (for peer_agent type)"
+                }
+            },
+            "required": ["content_to_review"]
+        }
+    },
+    # ── Code & Execution Tools ──────────────────────────────────────
+    {
+        "name": "execute_python",
+        "description": "Run Python code in a sandboxed environment with whitelisted imports. Output via 'result' variable.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code to execute"
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Execution timeout in seconds (max 30, default 10)"
+                }
+            },
+            "required": ["code"]
+        }
+    },
+    {
+        "name": "execute_data_pipeline",
+        "description": "Process data with pandas/numpy operations in a Docker sandbox. Pass data via 'input_data' variable, output via 'result' variable.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Python code using pandas/numpy for data processing"
+                },
+                "input_data": {
+                    "type": "object",
+                    "description": "Data to process (passed as dict to the code)"
+                },
+                "input_document_ids": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Document IDs whose content should be loaded as input"
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Execution timeout (max 300, default 60)"
+                }
+            },
+            "required": ["code"]
+        }
+    },
+    {
+        "name": "write_and_run_script",
+        "description": "Write a Python script, execute it in a Docker sandbox, and return the results. For multi-file or complex logic.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "script_name": {
+                    "type": "string",
+                    "description": "Filename for the script (e.g., 'analysis.py')"
+                },
+                "script_content": {
+                    "type": "string",
+                    "description": "Full script content"
+                },
+                "requirements": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "pip packages to install from whitelist (pandas, numpy, scipy, etc.)"
+                },
+                "arguments": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Command-line arguments to pass to the script"
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Execution timeout (max 300, default 120)"
+                },
+                "input_data": {
+                    "type": "object",
+                    "description": "Data passed as /workspace/input.json"
+                }
+            },
+            "required": ["script_name", "script_content"]
+        }
+    },
+
+    # ==================== Autonomous Coding Tools ====================
+    {
+        "name": "clone_and_index_repo",
+        "description": "Clone a git repository into a temporary coding workspace and index its file tree. Returns a workspace_id for subsequent file operations.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_id": {"type": "string", "description": "UUID of a git DocumentSource in KB (preferred)"},
+                "repo_url": {"type": "string", "description": "Git clone URL (alternative to source_id, requires code execution enabled)"},
+                "branch": {"type": "string", "description": "Branch to check out (default: main/master)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "browse_repo_files",
+        "description": "List files and directories in the coding workspace with optional glob filtering.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional if only one workspace)"},
+                "path": {"type": "string", "description": "Directory path to list (default: root)", "default": "."},
+                "glob_pattern": {"type": "string", "description": "Glob pattern to filter (e.g., '**/*.py')"},
+                "max_results": {"type": "integer", "description": "Max files to return (default 200)", "default": 200},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "read_file",
+        "description": "Read file contents from the coding workspace, optionally limited to a line range.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional if only one workspace)"},
+                "path": {"type": "string", "description": "Relative file path in workspace"},
+                "start_line": {"type": "integer", "description": "Start line (1-based, optional)"},
+                "end_line": {"type": "integer", "description": "End line (1-based, optional)"},
+                "max_chars": {"type": "integer", "description": "Max chars to return (default 20000)", "default": 20000},
+            },
+            "required": ["path"]
+        }
+    },
+    {
+        "name": "write_file",
+        "description": "Write or overwrite a file in the coding workspace.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional if only one workspace)"},
+                "path": {"type": "string", "description": "Relative file path"},
+                "content": {"type": "string", "description": "Full file content to write"},
+                "create_dirs": {"type": "boolean", "description": "Create parent directories if missing (default true)", "default": True},
+            },
+            "required": ["path", "content"]
+        }
+    },
+    {
+        "name": "apply_patch",
+        "description": "Apply a unified diff to files in the coding workspace. Supports fuzzy hunk matching.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional if only one workspace)"},
+                "diff": {"type": "string", "description": "Unified diff text"},
+                "dry_run": {"type": "boolean", "description": "Validate patch without applying (default false)", "default": False},
+            },
+            "required": ["diff"]
+        }
+    },
+    {
+        "name": "run_command",
+        "description": "Run a shell command in the coding workspace. Gated by unsafe_code_execution_enabled feature flag.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional if only one workspace)"},
+                "command": {"type": "string", "description": "Shell command to execute"},
+                "timeout_seconds": {"type": "integer", "description": "Execution timeout in seconds (max 120, default 30)", "default": 30},
+                "env": {"type": "object", "description": "Additional environment variables"},
+            },
+            "required": ["command"]
+        }
+    },
+    {
+        "name": "search_code",
+        "description": "Search for text patterns in workspace files using regex (grep-like).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional if only one workspace)"},
+                "pattern": {"type": "string", "description": "Regex pattern to search for"},
+                "path": {"type": "string", "description": "Subdirectory to search in (default: root)", "default": "."},
+                "file_glob": {"type": "string", "description": "Glob to limit files (e.g., '*.py')"},
+                "max_results": {"type": "integer", "description": "Max matches to return (default 50)", "default": 50},
+                "context_lines": {"type": "integer", "description": "Lines of context around each match (default 2)", "default": 2},
+            },
+            "required": ["pattern"]
+        }
+    },
+    {
+        "name": "get_workspace_status",
+        "description": "Show modified, added, and deleted files in the coding workspace compared to original state.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional if only one workspace)"},
+                "show_diff_summary": {"type": "boolean", "description": "Include change statistics (default true)", "default": True},
+            },
+            "required": []
+        }
+    },
+
+    # ==================== Document Authoring Tools ====================
+    {
+        "name": "plan_document",
+        "description": "Create a structured document outline with sections and subsections. Stores the plan in document workspace state for subsequent write_section calls.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Document title"},
+                "abstract": {"type": "string", "description": "Document abstract or summary"},
+                "doc_type": {"type": "string", "enum": ["research_report", "technical_doc", "executive_brief", "design_doc", "tutorial", "decision_memo"], "description": "Document type (default: research_report)", "default": "research_report"},
+                "sections": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "id": {"type": "string", "description": "Section identifier"},
+                            "title": {"type": "string", "description": "Section title"},
+                            "description": {"type": "string", "description": "What this section should cover"},
+                        },
+                        "required": ["id", "title"]
+                    },
+                    "description": "List of document sections"
+                },
+                "style": {"type": "string", "enum": ["academic", "professional", "technical", "informal"], "description": "Writing style (default: professional)", "default": "professional"},
+            },
+            "required": ["title", "sections"]
+        }
+    },
+    {
+        "name": "write_section",
+        "description": "Write content for a specific document section, optionally using RAG search for KB context and citations.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section_id": {"type": "string", "description": "Section ID from the document plan"},
+                "content": {"type": "string", "description": "Section content in markdown"},
+                "search_query": {"type": "string", "description": "Optional query to search KB for relevant context before writing"},
+                "citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ref_id": {"type": "string", "description": "Citation reference ID (e.g., [1])"},
+                            "document_id": {"type": "string", "description": "KB document UUID"},
+                            "title": {"type": "string", "description": "Source title"},
+                            "excerpt": {"type": "string", "description": "Relevant excerpt from source"},
+                        },
+                        "required": ["ref_id", "document_id", "title"]
+                    },
+                    "description": "Citations for this section"
+                },
+            },
+            "required": ["section_id", "content"]
+        }
+    },
+    {
+        "name": "revise_section",
+        "description": "Rewrite a previously written document section with specific feedback or corrections.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section_id": {"type": "string", "description": "Section ID to revise"},
+                "feedback": {"type": "string", "description": "Specific feedback or revision instructions"},
+                "new_content": {"type": "string", "description": "Revised section content in markdown"},
+                "additional_citations": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "ref_id": {"type": "string"},
+                            "document_id": {"type": "string"},
+                            "title": {"type": "string"},
+                            "excerpt": {"type": "string"},
+                        }
+                    },
+                    "description": "Additional citations to add"
+                },
+            },
+            "required": ["section_id", "new_content"]
+        }
+    },
+    {
+        "name": "assemble_document",
+        "description": "Combine all written sections into a final document with table of contents and references.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "include_toc": {"type": "boolean", "description": "Include table of contents (default true)", "default": True},
+                "include_references": {"type": "boolean", "description": "Include references section (default true)", "default": True},
+                "include_abstract": {"type": "boolean", "description": "Include abstract (default true)", "default": True},
+                "section_order": {"type": "array", "items": {"type": "string"}, "description": "Custom section ordering by ID (optional, uses plan order by default)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "export_document",
+        "description": "Export the assembled document to DOCX, PDF, PPTX, or LaTeX format. Optionally persist to the knowledge base.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "format": {"type": "string", "enum": ["docx", "pdf", "pptx", "latex"], "description": "Export format"},
+                "persist_to_kb": {"type": "boolean", "description": "Also save the document to the knowledge base (default false)", "default": False},
+                "latex_project_id": {"type": "string", "description": "Existing LaTeX project to export into (latex format only)"},
+            },
+            "required": ["format"]
+        }
+    },
+    {
+        "name": "insert_figure",
+        "description": "Insert a chart, table, or diagram into a document section.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "section_id": {"type": "string", "description": "Section to insert figure into"},
+                "figure_type": {"type": "string", "enum": ["chart", "table", "diagram", "flowchart"], "description": "Type of figure"},
+                "caption": {"type": "string", "description": "Figure caption"},
+                "data": {"type": "object", "description": "Data for chart or table generation"},
+                "diagram_spec": {"type": "string", "description": "Mermaid or PlantUML spec for diagram generation"},
+            },
+            "required": ["section_id", "figure_type", "caption"]
+        }
+    },
+    # ==================== Workspace Artifact Retrieval ====================
+    {
+        "name": "get_workspace_artifact_url",
+        "description": "Get a download URL for a file persisted from a previous job's coding workspace. Use this to access code or documents saved by earlier jobs.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "The job ID whose workspace was persisted"},
+                "file_path": {"type": "string", "description": "Relative file path within the persisted workspace"},
+            },
+            "required": ["job_id", "file_path"]
+        }
+    },
+    # ==================== Memory Tools ====================
+    {
+        "name": "create_memory",
+        "description": "Store a persistent memory for the current user. Use this to save important facts, insights, decisions, or context that should be available to future jobs.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "content": {"type": "string", "description": "Memory content (concise, factual, and actionable)"},
+                "importance": {"type": "number", "description": "Importance score 0.0-1.0 (default 0.5)"},
+                "category": {
+                    "type": "string",
+                    "enum": ["fact", "preference", "context", "summary", "goal", "constraint"],
+                    "description": "Memory category (default: fact)",
+                },
+                "metadata": {"type": "object", "description": "Optional metadata key-value pairs"},
+            },
+            "required": ["content"]
+        }
+    },
+    {
+        "name": "search_memories",
+        "description": "Search the user's stored memories using semantic similarity. Returns ranked results matching the query.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query for finding relevant memories"},
+                "limit": {"type": "integer", "description": "Max results (default 10, max 50)"},
+                "category_filter": {
+                    "type": "string",
+                    "enum": ["fact", "preference", "context", "summary", "goal", "constraint"],
+                    "description": "Filter by memory category (optional)",
+                },
+                "min_importance": {"type": "number", "description": "Minimum importance score filter (0.0-1.0)"},
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "recall_memories",
+        "description": "Recall memories related to a topic using broad semantic matching. Similar to search_memories but without filters, useful for open-ended context gathering.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "topic": {"type": "string", "description": "Topic to recall memories about"},
+                "limit": {"type": "integer", "description": "Max results (default 10)"},
+            },
+            "required": ["topic"]
+        }
+    },
+    {
+        "name": "get_memory_stats",
+        "description": "Get statistics about the user's memory store including counts by type, recent activity, and most accessed memories.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    # ==================== Symbol-aware Code Retrieval ====================
+    {
+        "name": "retrieve_repo_symbols",
+        "description": "Search for code symbols (functions, classes, methods) in the coding workspace. Returns ranked matches with file locations and line numbers.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query (function names, class names, keywords)"},
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional, uses active workspace)"},
+                "language_filter": {
+                    "type": "string",
+                    "enum": ["python", "typescript", "javascript"],
+                    "description": "Filter by programming language (optional)",
+                },
+                "max_results": {"type": "integer", "description": "Max symbols to return (default 20)"},
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "get_symbol_context",
+        "description": "Get a symbol's full definition, surrounding code context, and related symbols in the same file.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol_name": {"type": "string", "description": "Name of the symbol (function, class, method)"},
+                "file_path": {"type": "string", "description": "File path containing the symbol"},
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional, uses active workspace)"},
+            },
+            "required": ["symbol_name", "file_path"]
+        }
+    },
+    {
+        "name": "find_tests_for_symbol",
+        "description": "Find test files and test functions that reference or cover a given code symbol.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol_name": {"type": "string", "description": "Name of the symbol to find tests for"},
+                "workspace_id": {"type": "string", "description": "Workspace ID (optional, uses active workspace)"},
+            },
+            "required": ["symbol_name"]
+        }
+    },
+    # ── Workflow orchestration tools ──────────────────────────────
+    {
+        "name": "list_available_workflows",
+        "description": "List DAG workflows available to the current user. Returns workflow IDs, names, and descriptions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "is_active": {"type": "boolean", "description": "Filter by active status (default true)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "execute_workflow",
+        "description": "Launch a DAG workflow by ID. The workflow executes its node graph and returns an execution ID for status tracking.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "workflow_id": {"type": "string", "description": "UUID of the workflow to execute"},
+                "trigger_data": {"type": "object", "description": "Data to pass as trigger context"},
+                "inputs": {"type": "object", "description": "Initial context variables for the workflow"},
+            },
+            "required": ["workflow_id"]
+        }
+    },
+    {
+        "name": "get_workflow_status",
+        "description": "Check the status of a workflow execution by its execution ID.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "execution_id": {"type": "string", "description": "UUID of the workflow execution to check"},
+            },
+            "required": ["execution_id"]
+        }
+    },
+    # ── Agent-to-agent communication tools ────────────────────────
+    {
+        "name": "send_message_to_agent",
+        "description": "Send a message to another agent job. The target agent can read it via read_agent_messages. Works across any jobs owned by the same user.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target_job_id": {"type": "string", "description": "UUID of the target agent job"},
+                "message": {"type": "string", "description": "Message content to send"},
+                "category": {"type": "string", "description": "Optional category tag (e.g. 'question', 'finding', 'request')"},
+            },
+            "required": ["target_job_id", "message"]
+        }
+    },
+    {
+        "name": "read_agent_messages",
+        "description": "Read messages sent to this agent by other agent jobs. Returns messages from the specified index onward.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "since_index": {"type": "integer", "description": "Start reading from this message index (default 0)"},
+            },
+            "required": []
+        }
+    },
+    # ── Research tools ────────────────────────────────────────────
+    {
+        "name": "search_web",
+        "description": "Search the web using DuckDuckGo. Returns titles, URLs, and snippets for the top results.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query"},
+                "max_results": {"type": "integer", "description": "Maximum results to return (default 5, max 10)"},
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "summarize_url",
+        "description": "Fetch content from a URL and produce an LLM-generated summary. Optionally focus the summary on a specific topic.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch and summarize"},
+                "focus": {"type": "string", "description": "Optional focus topic for the summary"},
+            },
+            "required": ["url"]
+        }
+    },
+    {
+        "name": "fetch_url_content",
+        "description": "Fetch and extract text content from a URL. Returns raw text without summarization.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "url": {"type": "string", "description": "URL to fetch"},
+                "max_chars": {"type": "integer", "description": "Maximum characters to return (default 50000)"},
+            },
+            "required": ["url"]
+        }
+    },
+    # ── Notification/alerting tools ───────────────────────────────
+    {
+        "name": "send_notification",
+        "description": "Send an in-app notification to the job owner. Delivered via WebSocket push and visible in the notification bell.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Notification title"},
+                "message": {"type": "string", "description": "Notification message body"},
+                "priority": {"type": "string", "description": "Priority level: low, normal, high, urgent (default normal)"},
+                "action_url": {"type": "string", "description": "Optional URL for click-through action"},
+            },
+            "required": ["title", "message"]
+        }
+    },
+    {
+        "name": "send_email_alert",
+        "description": "Send an email alert to the job owner. Falls back to in-app notification if SMTP is not configured.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subject": {"type": "string", "description": "Email subject line"},
+                "body": {"type": "string", "description": "Email body text"},
+                "priority": {"type": "string", "description": "Priority level: low, normal, high, urgent (default normal)"},
+            },
+            "required": ["subject", "body"]
+        }
+    },
+    # ── Data Visualization Tools ──────────────────────────────────────
+    {
+        "name": "create_chart",
+        "description": "Generate a data chart (bar, line, pie, scatter, histogram, heatmap, box, area) from structured data. The chart is rendered as an image and persisted to storage. Returns a download URL.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "chart_type": {"type": "string", "description": "Chart type: bar, line, pie, scatter, histogram, heatmap, box, or area"},
+                "data": {"type": "object", "description": "Chart data object. For most charts: {labels: [...], values: [...]} or {labels: [...], datasets: [{label, values}, ...]}. For heatmap: {labels: [...], matrix: [[...]]}. For scatter: {points: [{x, y}, ...]}"},
+                "title": {"type": "string", "description": "Chart title (optional)"},
+                "x_label": {"type": "string", "description": "X-axis label (optional)"},
+                "y_label": {"type": "string", "description": "Y-axis label (optional)"},
+                "format": {"type": "string", "description": "Output format: png or svg (default png)"},
+            },
+            "required": ["chart_type", "data"]
+        }
+    },
+    {
+        "name": "render_diagram",
+        "description": "Render diagram source code (Mermaid or Graphviz) to an image and persist to storage. Returns a download URL. Use this after generate_diagram to produce a viewable image.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "diagram_code": {"type": "string", "description": "The diagram source code (Mermaid or Graphviz DOT syntax)"},
+                "diagram_type": {"type": "string", "description": "Diagram language: mermaid or graphviz (default mermaid)"},
+                "format": {"type": "string", "description": "Output format: png or svg (default png)"},
+            },
+            "required": ["diagram_code"]
+        }
+    },
+    # ── Knowledge Graph Tools ─────────────────────────────────────────
+    {
+        "name": "query_kg_entities",
+        "description": "Search for entities in the knowledge graph by name or keyword. Returns matching entities with their types and descriptions.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "query": {"type": "string", "description": "Search query to match against entity names and descriptions"},
+                "entity_type": {"type": "string", "description": "Filter by entity type (e.g. person, org, location, product)"},
+                "limit": {"type": "integer", "description": "Maximum number of results (default 20, max 100)"},
+            },
+            "required": ["query"]
+        }
+    },
+    {
+        "name": "get_entity_context",
+        "description": "Get a knowledge graph entity with all its relationships and connected entities. Useful for understanding how an entity relates to others.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity_id": {"type": "string", "description": "UUID of the entity to get context for"},
+            },
+            "required": ["entity_id"]
+        }
+    },
+    {
+        "name": "create_kg_entity",
+        "description": "Create a new entity in the knowledge graph. Use this to add discovered concepts, people, organizations, or other entities during research.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Canonical name for the entity"},
+                "entity_type": {"type": "string", "description": "Entity type: person, org, location, product, concept, technology, event, or other"},
+                "description": {"type": "string", "description": "Brief description of the entity"},
+            },
+            "required": ["name", "entity_type"]
+        }
+    },
+    {
+        "name": "create_kg_relationship",
+        "description": "Create a relationship between two entities in the knowledge graph. Both entities must already exist.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source_entity_id": {"type": "string", "description": "UUID of the source entity"},
+                "target_entity_id": {"type": "string", "description": "UUID of the target entity"},
+                "relation_type": {"type": "string", "description": "Type of relationship (e.g. works_at, authored, related_to, part_of)"},
+                "confidence": {"type": "number", "description": "Confidence score 0.0-1.0 (default 0.8)"},
+                "evidence": {"type": "string", "description": "Evidence or reason for this relationship"},
+            },
+            "required": ["source_entity_id", "target_entity_id", "relation_type"]
+        }
+    },
+    {
+        "name": "query_kg_graph",
+        "description": "Query the global knowledge graph with filters. Returns nodes and edges for visualization or analysis. Useful for exploring the broader knowledge structure.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "entity_types": {"type": "array", "items": {"type": "string"}, "description": "Filter by entity types (e.g. [\"person\", \"org\"])"},
+                "relation_types": {"type": "array", "items": {"type": "string"}, "description": "Filter by relationship types"},
+                "min_confidence": {"type": "number", "description": "Minimum confidence threshold (0.0-1.0)"},
+                "search": {"type": "string", "description": "Text search filter on entity names"},
+                "limit_nodes": {"type": "integer", "description": "Maximum number of nodes to return (default 50, max 200)"},
+            },
+            "required": []
+        }
+    },
+    # ── Scheduling Tools ──────────────────────────────────────────────
+    {
+        "name": "schedule_job",
+        "description": "Schedule a new agent job for future execution. Supports one-time runs at a specific datetime or recurring runs with a cron expression. The scheduled job will be picked up automatically by the scheduler.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "The goal/task description for the scheduled job"},
+                "job_type": {"type": "string", "description": "Job type: research, monitor, analysis, synthesis, coding (default research)"},
+                "schedule_type": {"type": "string", "description": "Schedule type: once (run at specific time) or recurring (cron-based)"},
+                "run_at": {"type": "string", "description": "ISO datetime for one-time execution (required if schedule_type=once)"},
+                "cron": {"type": "string", "description": "Cron expression for recurring execution (required if schedule_type=recurring), e.g. '0 9 * * 1' for every Monday at 9am"},
+                "config": {"type": "object", "description": "Optional job configuration (max_iterations, tool overrides, etc.)"},
+            },
+            "required": ["goal", "schedule_type"]
+        }
+    },
+    {
+        "name": "cancel_scheduled_job",
+        "description": "Cancel a scheduled or recurring agent job. Prevents future executions and marks the job as cancelled.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "UUID of the scheduled job to cancel"},
+            },
+            "required": ["job_id"]
+        }
+    },
+    # ── Document Authoring Enhancements ───────────────────────────────
+    {
+        "name": "list_documents_by_tag",
+        "description": "List documents matching specified tags. Supports matching any tag (OR) or all tags (AND). Useful for finding related documents for synthesis or analysis.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags to search for"},
+                "match_all": {"type": "boolean", "description": "If true, documents must have ALL specified tags (AND). If false (default), documents matching ANY tag are returned (OR)"},
+                "limit": {"type": "integer", "description": "Maximum number of results (default 20, max 100)"},
+            },
+            "required": ["tags"]
+        }
+    },
+    {
+        "name": "merge_documents",
+        "description": "Merge content from multiple documents into a single new document. Each source document becomes a section with its title as heading. Useful for creating comprehensive reports from multiple sources.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_ids": {"type": "array", "items": {"type": "string"}, "description": "UUIDs of documents to merge (max 20)"},
+                "title": {"type": "string", "description": "Title for the merged document"},
+                "separator": {"type": "string", "description": "Separator between document sections (default '\\n\\n---\\n\\n')"},
+                "tags": {"type": "array", "items": {"type": "string"}, "description": "Tags for the merged document"},
+            },
+            "required": ["document_ids", "title"]
+        }
+    },
+    # ── Agent Self-Reflection Tools ───────────────────────────────────
+    {
+        "name": "get_job_history",
+        "description": "Query past agent job runs for the same user. Useful for learning from previous attempts, avoiding repeated mistakes, and understanding what has been done before.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_type": {"type": "string", "description": "Filter by job type (research, monitor, analysis, synthesis, coding)"},
+                "status": {"type": "string", "description": "Filter by status (completed, failed, cancelled)"},
+                "limit": {"type": "integer", "description": "Maximum number of results (default 10, max 50)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_job_metrics",
+        "description": "Get detailed metrics for a specific job including resource usage, timing, error rates, and per-tool usage breakdown. Defaults to the current job if no job_id is provided.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "job_id": {"type": "string", "description": "UUID of the job to get metrics for (defaults to current job)"},
+            },
+            "required": []
+        }
+    },
+    # ── Tool Usage Analytics ──────────────────────────────────────────
+    {
+        "name": "get_tool_usage_stats",
+        "description": "Get aggregated tool usage statistics across recent jobs. Shows which tools are used most, success/failure rates, and trends. Useful for optimizing tool selection strategies.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "days": {"type": "integer", "description": "Number of days to analyze (default 7, max 30)"},
+                "tool_name": {"type": "string", "description": "Filter to a specific tool (optional)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "get_tool_failure_analysis",
+        "description": "Analyze failure patterns for a specific tool. Groups errors by pattern, shows frequency and examples. Useful for understanding why a tool is failing and how to work around issues.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "tool_name": {"type": "string", "description": "Name of the tool to analyze failures for"},
+                "days": {"type": "integer", "description": "Number of days to analyze (default 7, max 30)"},
+            },
+            "required": ["tool_name"]
+        }
+    },
+    # ── Batch Processing Tools ────────────────────────────────────────
+    {
+        "name": "batch_search",
+        "description": "Run multiple search queries against the knowledge base in a single call. Returns results grouped by query with optional deduplication. Much more efficient than calling search_documents multiple times.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "queries": {"type": "array", "items": {"type": "string"}, "description": "List of search queries to execute (max 10)"},
+                "limit_per_query": {"type": "integer", "description": "Maximum results per query (default 5, max 20)"},
+                "source_id": {"type": "string", "description": "Optional source ID to filter results"},
+                "deduplicate": {"type": "boolean", "description": "Remove duplicate documents across queries (default true)"},
+            },
+            "required": ["queries"]
+        }
+    },
+    {
+        "name": "batch_summarize",
+        "description": "Get summaries for multiple documents in a single call. Returns existing pre-generated summaries immediately. Use generate_missing=true to generate summaries for documents that don't have one (slower, uses LLM).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_ids": {"type": "array", "items": {"type": "string"}, "description": "UUIDs of documents to summarize (max 20)"},
+                "generate_missing": {"type": "boolean", "description": "If true, generate summaries for documents that lack one (default false)"},
+            },
+            "required": ["document_ids"]
+        }
+    },
+    # ── Conditional Execution Tools ──
+    {
+        "name": "evaluate_condition",
+        "description": "Evaluate a structured condition against current job state. Returns a boolean result with context data. Use to check findings count, category presence, document count, search coverage, action count, or progress level before deciding next steps.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "condition": {"type": "string", "enum": ["findings_count", "findings_has_category", "documents_count", "search_has_results", "actions_count", "progress_above"], "description": "The condition type to evaluate"},
+                "threshold": {"type": "integer", "description": "Minimum value for the condition to be met (default 1)"},
+                "category": {"type": "string", "description": "Finding category to check (for findings_has_category)"},
+                "query": {"type": "string", "description": "Search query to test (for search_has_results)"},
+                "source_id": {"type": "string", "description": "Optional source ID filter (for documents_count, search_has_results)"},
+            },
+            "required": ["condition"]
+        }
+    },
+    {
+        "name": "count_findings",
+        "description": "Count accumulated research findings with optional filtering by category and confidence threshold. Returns totals grouped by category.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "category": {"type": "string", "description": "Only count findings of this category"},
+                "min_confidence": {"type": "number", "description": "Minimum confidence score to include (default 0.0)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "check_goal_status",
+        "description": "Get current job progress, iteration budget remaining, resource usage, and plan status. Use to decide whether to continue, wrap up, or change strategy.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    # ── Context Window Management Tools ──
+    {
+        "name": "compress_history",
+        "description": "Summarize past action history into a condensed narrative using LLM. The compressed summary persists across iterations so the agent retains awareness of earlier work. Use when action history is getting long and you want to preserve context without losing track of what was done.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "keep_last": {"type": "integer", "description": "Number of recent actions to keep verbatim (default 5, max 20)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "summarize_findings",
+        "description": "Synthesize accumulated research findings into a coherent summary using LLM. Optionally consolidate findings into a single synthesized finding to reduce clutter. Can filter by category to synthesize specific finding types.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "consolidate": {"type": "boolean", "description": "If true, replace target findings with one synthesized finding (default false)"},
+                "category": {"type": "string", "description": "Only summarize findings of this category"},
+            },
+            "required": []
+        }
+    },
+    # ── Agent Collaboration Protocol Tools ──
+    {
+        "name": "create_handoff",
+        "description": "Create a structured handoff to spawn a child agent job with a typed contract specifying what the child should produce. The child will see the contract in its system prompt. Use instead of delegate_subtask when you need structured output expectations.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "goal": {"type": "string", "description": "The child agent's goal"},
+                "job_type": {"type": "string", "enum": ["research", "analysis", "synthesis", "custom"], "description": "Job type for the child (default research)"},
+                "context": {"type": "string", "description": "Situation briefing — what the child needs to know about the current state"},
+                "expected_outputs": {"type": "array", "items": {"type": "string"}, "description": "What the child must produce (e.g., summary, key_findings, recommendations)"},
+                "share_findings": {"type": "boolean", "description": "Share current findings with the child (default true)"},
+                "max_iterations": {"type": "integer", "description": "Maximum iterations for the child job (default 10, max 20)"},
+            },
+            "required": ["goal", "expected_outputs"]
+        }
+    },
+    {
+        "name": "get_sibling_status",
+        "description": "Check status, progress, and optionally findings of sibling agent jobs (jobs with the same parent). Use to coordinate with peer agents running in parallel.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "include_findings": {"type": "boolean", "description": "Also return finding titles from siblings (default false)"},
+            },
+            "required": []
+        }
+    },
+    {
+        "name": "broadcast_to_siblings",
+        "description": "Send a message to all sibling agent jobs at once. Use for coordination announcements, status updates, or sharing discoveries with all peer agents.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "message": {"type": "string", "description": "The message to broadcast"},
+                "category": {"type": "string", "description": "Message category (default broadcast)"},
+            },
+            "required": ["message"]
+        }
+    },
+    # ── Prompt Template Management Tools ──
+    {
+        "name": "switch_strategy",
+        "description": "Change the agent's role/skill profile mid-run. Different roles prioritize different tools and approaches: researcher (discovery), critic (challenge/validate), synthesizer (combine/summarize), verifier (check/test), coder (code changes), author (document writing). The new profile takes effect on the next thinking step.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "role": {"type": "string", "enum": ["researcher", "critic", "synthesizer", "verifier", "coder", "author"], "description": "The role to switch to"},
+                "reason": {"type": "string", "description": "Why switching strategy (logged for transparency)"},
+            },
+            "required": ["role"]
+        }
+    },
+    {
+        "name": "set_focus_directive",
+        "description": "Set a custom focus directive that gets injected into the system prompt on every subsequent iteration. Use to steer attention toward specific aspects (e.g., contradictions, recent papers, practical applications).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "directive": {"type": "string", "description": "The focus instruction (e.g., 'Prioritize finding contradictions between sources')"},
+                "append": {"type": "boolean", "description": "If true, append to existing directive; if false, replace (default false)"},
+            },
+            "required": ["directive"]
+        }
+    },
+    {
+        "name": "get_available_strategies",
+        "description": "List all available role profiles with their descriptions, tool preferences, and guidance. Use before switch_strategy to understand available options.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    # ── Agent Output Formatting Tools ──
+    {
+        "name": "format_as_table",
+        "description": "Convert data into a formatted markdown table, stored as an artifact. Use source='findings' to auto-extract from accumulated findings, or provide custom columns and rows.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Table title"},
+                "columns": {"type": "array", "items": {"type": "string"}, "description": "Column headers (required for custom source)"},
+                "rows": {"type": "array", "items": {"type": "array", "items": {"type": "string"}}, "description": "Row data — each inner array matches columns (required for custom source)"},
+                "source": {"type": "string", "enum": ["findings", "custom"], "description": "Data source: 'findings' auto-extracts from state, 'custom' uses columns/rows (default custom)"},
+                "finding_fields": {"type": "array", "items": {"type": "string"}, "description": "Which finding fields to use as columns when source=findings (default: title, category, confidence)"},
+            },
+            "required": ["title"]
+        }
+    },
+    {
+        "name": "format_as_report",
+        "description": "Compile findings, progress reports, and custom sections into a structured markdown report. Optionally persist to the knowledge base as a document.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "title": {"type": "string", "description": "Report title"},
+                "sections": {"type": "array", "items": {"type": "object", "properties": {"heading": {"type": "string"}, "content": {"type": "string"}}}, "description": "Custom report sections"},
+                "include_findings": {"type": "boolean", "description": "Include accumulated findings (default true)"},
+                "include_progress": {"type": "boolean", "description": "Include progress report history (default true)"},
+                "executive_summary": {"type": "string", "description": "Executive summary text"},
+                "persist": {"type": "boolean", "description": "Save as a document in the knowledge base (default false)"},
+            },
+            "required": ["title"]
+        }
+    },
+    {
+        "name": "set_output_schema",
+        "description": "Define or update a structured JSON output for the final job results. Set key-value pairs that will be included in job.results['structured_output'] at completion. Use to build structured output progressively throughout execution.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "schema": {"type": "object", "description": "Key-value pairs to set in the structured output"},
+                "merge": {"type": "boolean", "description": "If true, merge with existing schema; if false, replace (default true)"},
+            },
+            "required": ["schema"]
+        }
+    },
+    # ── Multi-Modal Ingestion ──────────────────────────────────────────
+    {
+        "name": "transcribe_document",
+        "description": "Trigger Whisper transcription on an existing audio or video document in the knowledge base. Creates a linked transcript document asynchronously. Check the document's extra_metadata for transcription status afterwards.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "UUID of the audio/video document to transcribe"},
+                "language": {"type": "string", "description": "Language code (e.g. 'en', 'ru') or 'auto' for detection (default 'auto')"},
+            },
+            "required": ["document_id"]
+        }
+    },
+    {
+        "name": "analyze_image",
+        "description": "Analyze an image document using a vision-capable LLM. Downloads the image and sends it to the model with a custom prompt. Useful for describing images, extracting text (OCR), identifying diagrams, or visual analysis.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "UUID of the image document to analyze"},
+                "prompt": {"type": "string", "description": "Analysis prompt (default: describe the image in detail)"},
+                "model": {"type": "string", "description": "Vision model override (e.g. 'llava', 'llava:13b'). Defaults to configured VISION_MODEL."},
+            },
+            "required": ["document_id"]
+        }
+    },
+    {
+        "name": "get_media_info",
+        "description": "Get media-specific metadata for a document. For audio/video: duration, codec, bitrate, dimensions. For images: width, height, format, color mode. Also includes transcription status.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "document_id": {"type": "string", "description": "UUID of the media document to inspect"},
+            },
+            "required": ["document_id"]
+        }
+    },
+    # ── Workspace Snapshot ─────────────────────────────────────────────
+    {
+        "name": "capture_snapshot",
+        "description": "Capture a named snapshot of current workspace state metrics (findings count, progress, tool stats, etc.) for later comparison or drift detection.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {"type": "string", "description": "Snapshot label (e.g. 'after_search', 'before_synthesis')"},
+                "keys": {"type": "array", "items": {"type": "string"}, "description": "Additional state keys to capture beyond default metrics"},
+            },
+            "required": ["name"]
+        }
+    },
+    {
+        "name": "compare_snapshots",
+        "description": "Compare two named snapshots and return a structured diff showing what changed between them (findings delta, progress change, new tools used, etc.).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "snapshot_a": {"type": "string", "description": "Name of the earlier snapshot"},
+                "snapshot_b": {"type": "string", "description": "Name of the later snapshot"},
+            },
+            "required": ["snapshot_a", "snapshot_b"]
+        }
+    },
+    {
+        "name": "detect_drift",
+        "description": "Compare current state against a named baseline snapshot and flag significant changes or problems (stalling, progress regression, high tool failure rates).",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "baseline": {"type": "string", "description": "Name of the baseline snapshot to compare against"},
+                "thresholds": {"type": "object", "description": "Custom thresholds for drift alerts (e.g. {\"stalled_iterations\": 3, \"goal_progress_drop\": 10})"},
+            },
+            "required": ["baseline"]
+        }
+    },
 ]
 
 # Combine all tools

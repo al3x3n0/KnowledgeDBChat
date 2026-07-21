@@ -29,6 +29,16 @@ from app.services.document_service import DocumentService
 from app.services.vector_store import vector_store_service
 from app.services.agent_tools import AGENT_TOOLS, get_tools_description, validate_tool_params
 from app.services.agent_router import AgentRouter
+from app.services.agent_tool_dispatch import (
+    AgentToolExecutionContext,
+    AgentToolRegistry,
+    build_agent_service_analytics_content_provider,
+    build_agent_service_chat_core_provider,
+    build_agent_service_document_provider,
+    build_agent_service_knowledge_graph_provider,
+    build_agent_service_research_provider,
+    build_agent_service_workflow_provider,
+)
 from app.services.agent_memory_integration import AgentMemoryIntegration
 from app.services.memory_service import MemoryService
 from app.services.arxiv_search_service import ArxivSearchService
@@ -68,6 +78,16 @@ class AgentService:
         self.memory_service = MemoryService()
         self.router = AgentRouter(self.llm_service)
         self.memory_integration = AgentMemoryIntegration(self.memory_service)
+        self.tool_registry = AgentToolRegistry(
+            [
+                build_agent_service_document_provider(self),
+                build_agent_service_workflow_provider(self),
+                build_agent_service_knowledge_graph_provider(self),
+                build_agent_service_research_provider(self),
+                build_agent_service_analytics_content_provider(self),
+                build_agent_service_chat_core_provider(self),
+            ]
+        )
         self._vector_store_initialized = False
         self._agents_loaded = False
         self._vector_store_init_lock = asyncio.Lock()
@@ -964,152 +984,22 @@ Your response (JSON array only):"""
                     tool_call.tool_output = {"error": "tool_whitelist_check_failed", "message": audit.error}
                     return tool_call
 
-            if tool_name == "search_documents":
-                result = await self._tool_search_documents(tool_input, db)
-            elif tool_name == "get_document_details":
-                result = await self._tool_get_document_details(tool_input, db)
-            elif tool_name == "summarize_document":
-                result = await self._tool_summarize_document(tool_input, db)
-            elif tool_name == "delete_document":
-                result = await self._tool_delete_document(tool_input, db)
-            elif tool_name == "list_recent_documents":
-                result = await self._tool_list_recent_documents(tool_input, db)
-            elif tool_name == "list_document_sources":
-                result = await self._tool_list_document_sources(tool_input, db)
-            elif tool_name == "list_documents_by_source":
-                result = await self._tool_list_documents_by_source(tool_input, db)
-            elif tool_name == "web_scrape":
-                result = await self._tool_web_scrape(tool_input, user_id, db)
-            elif tool_name == "request_file_upload":
-                result = {
-                    "action": "upload_requested",
-                    "message": "Please select a file to upload using the upload button.",
-                    "suggested_title": tool_input.get("suggested_title"),
-                    "suggested_tags": tool_input.get("suggested_tags", [])
-                }
-            elif tool_name == "create_document_from_text":
-                result = await self._tool_create_document_from_text(tool_input, user_id, db)
-            elif tool_name == "ingest_url":
-                result = await self._tool_ingest_url(tool_input, user_id, db)
-            elif tool_name == "find_similar_documents":
-                result = await self._tool_find_similar_documents(tool_input, db)
-            elif tool_name == "search_documents_by_author":
-                result = await self._tool_search_documents_by_author(tool_input, db)
-            elif tool_name == "update_document_tags":
-                result = await self._tool_update_document_tags(tool_input, db)
-            elif tool_name == "get_knowledge_base_stats":
-                result = await self._tool_get_knowledge_base_stats(db)
-            elif tool_name == "batch_delete_documents":
-                result = await self._tool_batch_delete_documents(tool_input, db)
-            elif tool_name == "batch_summarize_documents":
-                result = await self._tool_batch_summarize_documents(tool_input, db)
-            elif tool_name == "search_by_tags":
-                result = await self._tool_search_by_tags(tool_input, db)
-            elif tool_name == "search_documents_by_tag":
-                result = await self._tool_search_by_tags(tool_input, db)
-            elif tool_name == "list_all_tags":
-                result = await self._tool_list_all_tags(db)
-            elif tool_name == "compare_documents":
-                result = await self._tool_compare_documents(tool_input, user_id, db)
-            elif tool_name == "start_template_fill":
-                result = await self._tool_start_template_fill(tool_input, user_id, db)
-            elif tool_name == "list_template_jobs":
-                result = await self._tool_list_template_jobs(tool_input, user_id, db)
-            elif tool_name == "get_template_job_status":
-                result = await self._tool_get_template_job_status(tool_input, user_id, db)
-            # RAG / Q&A Tools
-            elif tool_name == "answer_question":
-                result = await self._tool_answer_question(tool_input, user_id, db)
-            # Document Content Tools
-            elif tool_name == "read_document_content":
-                result = await self._tool_read_document_content(tool_input, db)
-            # Knowledge Graph Tools
-            elif tool_name == "search_entities":
-                result = await self._tool_search_entities(tool_input, db)
-            elif tool_name == "get_entity_relationships":
-                result = await self._tool_get_entity_relationships(tool_input, db)
-            elif tool_name == "find_documents_by_entity":
-                result = await self._tool_find_documents_by_entity(tool_input, db)
-            elif tool_name == "get_document_knowledge_graph":
-                result = await self._tool_get_document_knowledge_graph(tool_input, db)
-            elif tool_name == "get_global_knowledge_graph":
-                result = await self._tool_get_global_knowledge_graph(tool_input, db)
-            elif tool_name == "get_entity_mentions":
-                result = await self._tool_get_entity_mentions(tool_input, db)
-            elif tool_name == "get_kg_stats":
-                result = await self._tool_get_kg_stats(db)
-            elif tool_name == "rebuild_document_knowledge_graph":
-                result = await self._tool_rebuild_document_knowledge_graph(tool_input, user_id, db)
-            elif tool_name == "merge_entities":
-                result = await self._tool_merge_entities(tool_input, user_id, db)
-            elif tool_name == "delete_entity":
-                result = await self._tool_delete_entity(tool_input, user_id, db)
-            elif tool_name == "generate_diagram":
-                result = await self._tool_generate_diagram(tool_input, user_id, db)
-            # Workflow and Custom Tool Integration
-            elif tool_name == "run_workflow":
-                result = await self._tool_run_workflow(tool_input, user_id, db)
-            elif tool_name == "propose_workflow_from_description":
-                result = await self._tool_propose_workflow_from_description(tool_input, user_id, db)
-            elif tool_name == "create_workflow_from_description":
-                result = await self._tool_create_workflow_from_description(tool_input, user_id, db)
-            elif tool_name == "list_workflows":
-                result = await self._tool_list_workflows(tool_input, user_id, db)
-            elif tool_name == "run_custom_tool":
-                result = await self._tool_run_custom_tool(tool_input, user_id, db)
-            elif tool_name == "search_arxiv":
-                result = await self._tool_search_arxiv(tool_input)
-            elif tool_name == "ingest_arxiv_papers":
-                result = await self._tool_ingest_arxiv_papers(tool_input, user_id, db)
-            elif tool_name == "literature_review_arxiv":
-                result = await self._tool_literature_review_arxiv(tool_input, user_id, db)
-            elif tool_name == "summarize_documents_in_source":
-                result = await self._tool_summarize_documents_in_source(tool_input, user_id, db)
-            elif tool_name == "enrich_arxiv_metadata_for_source":
-                result = await self._tool_enrich_arxiv_metadata_for_source(tool_input, user_id, db)
-            elif tool_name == "generate_literature_review_for_source":
-                result = await self._tool_generate_literature_review_for_source(tool_input, user_id, db)
-            elif tool_name == "generate_slides_for_source":
-                result = await self._tool_generate_slides_for_source(tool_input, user_id, db)
-            elif tool_name == "list_custom_tools":
-                result = await self._tool_list_custom_tools(tool_input, user_id, db)
-            # Agent Collaboration Tools
-            elif tool_name == "delegate_to_agent":
-                result = await self._tool_delegate_to_agent(tool_input, user_id, db)
-            elif tool_name == "list_available_agents":
-                result = await self._tool_list_available_agents(db)
-            # Data Analysis & Visualization Tools
-            elif tool_name == "get_collection_statistics":
-                result = await self._tool_get_collection_statistics(tool_input, db)
-            elif tool_name == "get_source_analytics":
-                result = await self._tool_get_source_analytics(tool_input, db)
-            elif tool_name == "get_trending_topics":
-                result = await self._tool_get_trending_topics(tool_input, db)
-            elif tool_name == "generate_chart_data":
-                result = await self._tool_generate_chart_data(tool_input, db)
-            elif tool_name == "export_data":
-                result = await self._tool_export_data(tool_input, db)
-            # Advanced Search Tools
-            elif tool_name == "faceted_search":
-                result = await self._tool_faceted_search(tool_input, db)
-            elif tool_name == "get_search_suggestions":
-                result = await self._tool_get_search_suggestions(tool_input, db)
-            elif tool_name == "get_related_searches":
-                result = await self._tool_get_related_searches(tool_input, db)
-            # Content Generation Tools
-            elif tool_name == "draft_email":
-                result = await self._tool_draft_email(tool_input, db)
-            elif tool_name == "generate_meeting_notes":
-                result = await self._tool_generate_meeting_notes(tool_input, db)
-            elif tool_name == "generate_documentation":
-                result = await self._tool_generate_documentation(tool_input, db)
-            elif tool_name == "generate_executive_summary":
-                result = await self._tool_generate_executive_summary(tool_input, db)
-            elif tool_name == "generate_report":
-                result = await self._tool_generate_report(tool_input, db)
-            # GitLab Architecture Tools
-            elif tool_name == "generate_gitlab_architecture":
-                result = await self._tool_generate_gitlab_architecture(tool_input, user_id, db)
+            handled, handled_result = await self.tool_registry.try_execute(
+                tool_name,
+                tool_input,
+                AgentToolExecutionContext(
+                    mode="chat",
+                    db=db,
+                    service=self,
+                    user_id=user_id,
+                    extra={
+                        "conversation_id": conversation_id,
+                        "agent_definition_id": agent_definition_id,
+                    },
+                ),
+            )
+            if handled:
+                result = handled_result
             else:
                 raise ValueError(f"Unknown tool: {tool_name}")
 
@@ -2110,6 +2000,8 @@ Your response:"""
             url=(params.get("url") or ""),
             title=(params.get("title") or None),
             tags=params.get("tags"),
+            ingest_mode=str(params.get("ingest_mode", "auto")),
+            youtube_audio_only=bool(params.get("youtube_audio_only", True)),
             follow_links=bool(params.get("follow_links", False)),
             max_pages=int(params.get("max_pages", 1)),
             max_depth=int(params.get("max_depth", 0)),
@@ -3794,24 +3686,75 @@ Generate the Mermaid diagram code:"""
         name = params.get("name")
         is_active = params.get("is_active")
         trigger_config = params.get("trigger_config")
+        synthesize_custom_tools = bool(params.get("synthesize_custom_tools", False))
+        preferred_tool_type = params.get("preferred_tool_type")
+        expose_workflow_as_tool = bool(params.get("expose_workflow_as_tool", False))
+        workflow_tool_name = params.get("workflow_tool_name")
 
         if not description:
             return {"error": "Description is required to generate a workflow"}
 
         service = WorkflowSynthesisService()
         try:
-            workflow_data, warnings = await service.synthesize(
+            bundle = await service.synthesize_bundle(
                 description=description,
                 name=name,
                 trigger_config=trigger_config,
                 is_active=is_active,
                 user_id=user_id,
                 db=db,
+                synthesize_custom_tools=synthesize_custom_tools,
+                preferred_tool_type=preferred_tool_type,
+                expose_workflow_as_tool=expose_workflow_as_tool,
+                workflow_tool_name=workflow_tool_name,
             )
         except Exception as exc:
             return {"error": f"Failed to synthesize workflow: {str(exc)}"}
 
         try:
+            workflow_data = bundle.workflow
+            warnings = list(bundle.warnings or [])
+
+            # Create synthesized custom tools first (if requested), then map node hints to tool IDs.
+            created_tools: Dict[str, Any] = {}
+            if synthesize_custom_tools:
+                from app.models.workflow import UserTool
+                for draft in bundle.custom_tools or []:
+                    tool_name = str((draft or {}).get("name") or "").strip()
+                    if not tool_name:
+                        continue
+                    tool_type = str((draft or {}).get("tool_type") or "").strip()
+                    if tool_type == "docker_container" and not bool(getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
+                        warnings.append(
+                            f"Skipped synthesized docker tool '{tool_name}' because CUSTOM_TOOL_DOCKER_ENABLED=false."
+                        )
+                        continue
+                    # De-duplicate by name for this user.
+                    existing_tool_result = await db.execute(
+                        select(UserTool).where(
+                            UserTool.user_id == user_id,
+                            func.lower(UserTool.name) == func.lower(tool_name),
+                        )
+                    )
+                    existing_tool = existing_tool_result.scalar_one_or_none()
+                    if existing_tool:
+                        created_tools[tool_name.lower()] = existing_tool
+                        warnings.append(f"Reused existing tool '{tool_name}'.")
+                        continue
+
+                    t = UserTool(
+                        user_id=user_id,
+                        name=tool_name,
+                        description=(draft or {}).get("description"),
+                        tool_type=tool_type,
+                        parameters_schema=(draft or {}).get("parameters_schema") or {},
+                        config=(draft or {}).get("config") or {},
+                        is_enabled=bool((draft or {}).get("is_enabled", True)),
+                    )
+                    db.add(t)
+                    await db.flush()
+                    created_tools[tool_name.lower()] = t
+
             workflow = Workflow(
                 user_id=user_id,
                 name=workflow_data.name,
@@ -3823,11 +3766,16 @@ Generate the Mermaid diagram code:"""
             await db.flush()
 
             for node_data in workflow_data.nodes:
+                node_tool_id = node_data.tool_id
+                if (not node_tool_id) and (not node_data.builtin_tool):
+                    tool_name_hint = str((node_data.config or {}).get("tool_name_hint") or "").strip().lower()
+                    if tool_name_hint and tool_name_hint in created_tools:
+                        node_tool_id = created_tools[tool_name_hint].id
                 node = WorkflowNode(
                     workflow_id=workflow.id,
                     node_id=node_data.node_id,
                     node_type=node_data.node_type,
-                    tool_id=node_data.tool_id,
+                    tool_id=node_tool_id,
                     builtin_tool=node_data.builtin_tool,
                     config=node_data.config,
                     position_x=node_data.position_x,
@@ -3845,6 +3793,42 @@ Generate the Mermaid diagram code:"""
                 )
                 db.add(edge)
 
+            workflow_tool_id = None
+            if expose_workflow_as_tool:
+                from app.models.workflow import UserTool
+                workflow_tool_draft = bundle.workflow_tool or {}
+                workflow_tool_final_name = str(
+                    workflow_tool_name
+                    or workflow_tool_draft.get("name")
+                    or f"run_{workflow.name}"
+                ).strip()[:100]
+                if not workflow_tool_final_name:
+                    workflow_tool_final_name = f"run_{workflow.name}"[:100]
+
+                existing_tool_result = await db.execute(
+                    select(UserTool).where(
+                        UserTool.user_id == user_id,
+                        func.lower(UserTool.name) == func.lower(workflow_tool_final_name),
+                    )
+                )
+                existing_tool = existing_tool_result.scalar_one_or_none()
+                if existing_tool:
+                    workflow_tool_id = existing_tool.id
+                    warnings.append(f"Workflow tool '{workflow_tool_final_name}' already exists; reused.")
+                else:
+                    workflow_tool = UserTool(
+                        user_id=user_id,
+                        name=workflow_tool_final_name,
+                        description=str(workflow_tool_draft.get("description") or f"Run workflow '{workflow.name}'"),
+                        tool_type="workflow_runner",
+                        parameters_schema=workflow_tool_draft.get("parameters_schema") or {"type": "object", "properties": {}},
+                        config={"workflow_id": str(workflow.id)},
+                        is_enabled=bool(workflow_tool_draft.get("is_enabled", True)),
+                    )
+                    db.add(workflow_tool)
+                    await db.flush()
+                    workflow_tool_id = workflow_tool.id
+
             await db.commit()
 
             return {
@@ -3852,6 +3836,15 @@ Generate the Mermaid diagram code:"""
                 "workflow_name": workflow.name,
                 "node_count": len(workflow_data.nodes),
                 "edge_count": len(workflow_data.edges),
+                "created_custom_tools": [
+                    {
+                        "id": str(t.id),
+                        "name": t.name,
+                        "tool_type": t.tool_type,
+                    }
+                    for t in created_tools.values()
+                ] if created_tools else [],
+                "workflow_tool_id": str(workflow_tool_id) if workflow_tool_id else None,
                 "warnings": warnings,
                 "message": f"Workflow '{workflow.name}' created"
             }
@@ -3873,27 +3866,37 @@ Generate the Mermaid diagram code:"""
         name = params.get("name")
         is_active = params.get("is_active")
         trigger_config = params.get("trigger_config")
+        synthesize_custom_tools = bool(params.get("synthesize_custom_tools", False))
+        preferred_tool_type = params.get("preferred_tool_type")
+        expose_workflow_as_tool = bool(params.get("expose_workflow_as_tool", False))
+        workflow_tool_name = params.get("workflow_tool_name")
 
         if not description:
             return {"error": "Description is required to generate a workflow"}
 
         service = WorkflowSynthesisService()
         try:
-            workflow_data, warnings = await service.synthesize(
+            bundle = await service.synthesize_bundle(
                 description=description,
                 name=name,
                 trigger_config=trigger_config,
                 is_active=is_active,
                 user_id=user_id,
                 db=db,
+                synthesize_custom_tools=synthesize_custom_tools,
+                preferred_tool_type=preferred_tool_type,
+                expose_workflow_as_tool=expose_workflow_as_tool,
+                workflow_tool_name=workflow_tool_name,
             )
         except Exception as exc:
             return {"error": f"Failed to synthesize workflow: {str(exc)}"}
 
         return {
-            "workflow": workflow_data.model_dump(),
-            "warnings": warnings,
-            "message": f"Draft workflow '{workflow_data.name}' generated for review"
+            "workflow": bundle.workflow.model_dump(),
+            "warnings": bundle.warnings,
+            "custom_tools": bundle.custom_tools,
+            "workflow_tool": bundle.workflow_tool,
+            "message": f"Draft workflow '{bundle.workflow.name}' generated for review"
         }
 
     async def _tool_list_workflows(

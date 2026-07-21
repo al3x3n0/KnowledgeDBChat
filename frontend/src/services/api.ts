@@ -52,10 +52,17 @@ import {
   ExperimentRun,
   ExperimentRunListResponse,
   ExperimentRunCreateRequest,
+  ExperimentRunActionRequest,
+  ExperimentRunActionResponse,
   ExperimentRunUpdateRequest,
   ExperimentRunStartRequest,
   ExperimentRunStartResponse,
+  BenchmarkSuite,
+  BenchmarkSuiteListResponse,
   ArxivSearchResponse,
+  ResearchPaper,
+  ResearchPaperListResponse,
+  PaperExtractionJob,
   ToolAudit,
   LLMUsageSummaryResponse,
   LLMRoutingSummaryResponse,
@@ -86,8 +93,35 @@ import {
   AgentJobListResponse,
   AgentJobTemplate,
   AgentJobTemplateListResponse,
+  AgentJobQuickStartBugTriageSwarmRequest,
+  AgentJobQuickStartBuildBreakSwarmRequest,
+  AgentJobQuickStartClaudeBackendRequest,
+  AgentJobQuickStartDomainResearchRequest,
+  AgentJobPromoteDomainResearchRequest,
+  AgentJobPromoteDomainResearchResponse,
+  AgentJobQuickStartFrontendRegressionSwarmRequest,
+  AgentJobQuickStartRepoBugTriageRequest,
+  AgentJobQuickStartRoleWorkflowRequest,
+  AgentJobRelaunchLineage,
   AgentJobStats,
+  AgentJobSwarmAnalytics,
+  AgentJobSwarmOutcomeAnalytics,
   AgentJobCheckpoint,
+  AgentDecisionTraceActionRequest,
+  AgentDecisionTraceActionResponse,
+  AgentDecisionTraceAnalyticsResponse,
+  AgentDecisionTraceResponse,
+  AgentDecisionTraceView,
+  AgentDecisionTraceViewCreateRequest,
+  AgentDecisionTraceViewListResponse,
+  AgentDecisionTraceViewUpdateRequest,
+  AgentCheckpointQueueResponse,
+  AgentCheckpointQueueBulkActionRequest,
+  AgentCheckpointQueueBulkActionResponse,
+  AgentCheckpointQueueBulkFollowUpActionRequest,
+  AgentCheckpointQueueBulkFollowUpActionResponse,
+  AgentCheckpointQueueFollowUpActionRequest,
+  AgentCheckpointQueueFollowUpActionResponse,
   // Chain types
   AgentJobChainDefinition,
   AgentJobChainDefinitionCreate,
@@ -98,12 +132,71 @@ import {
   AgentJobFeedback,
   AgentJobFeedbackCreate,
   AgentJobFeedbackListResponse,
+  AgentJobMemory,
+  CodingBacklogItem,
+  CodingBacklogActionRequest,
+  CodingBacklogItemCreate,
+  CodingBacklogItemUpdate,
+  CodingBacklogItemListResponse,
+  CodingSwarmProfile,
+  CodingSwarmProfileCreate,
+  CodingSwarmProfileListResponse,
+  CodingSwarmProfileUpdate,
+  DomainResearchProfile,
+  DomainResearchProfileActionRequest,
+  DomainResearchProfileCreate,
+  DomainResearchProfileListResponse,
+  DomainResearchProfileUpdate,
+  ResearchOpportunityActionRequest,
+  ResearchPortfolio,
+  ResearchPortfolioActionRequest,
+  ResearchPortfolioCreate,
+  ResearchPortfolioListResponse,
+  ResearchPortfolioUpdate,
+  ScientificSandboxProfile,
+  ScientificSandboxProfileCreate,
+  ScientificSandboxProfileListResponse,
+  ScientificSandboxProfileUpdate,
+  AgentJobMemoryListResponse,
+  AgentJobMemoryDeleteResponse,
+  AgentJobMemoryStatsResponse,
+  AgentJobMemorySearchResponse,
+  AgentJobMemoryExtractResponse,
   AgentTaskMemoryGraph,
+  AgentControlRunDetail,
+  AgentControlRunListResponse,
+  AgentControlRunBulkReviewActionRequest,
+  AgentControlRunBulkReviewActionResponse,
+  AgentControlRunReviewActionRequest,
+  AgentControlRunReviewActionResponse,
+  AgentControlRunView,
+  AgentControlRunViewCreateRequest,
+  AgentControlRunReviewListResponse,
+  AgentControlRunViewListResponse,
+  AgentControlRunViewUpdateRequest,
   // Research Inbox
   ResearchInboxItem,
+  ResearchInboxBulkFollowUpRelaunchRequest,
+  ResearchInboxBulkFollowUpRelaunchResponse,
   ResearchInboxListResponse,
   ResearchInboxItemUpdateRequest,
   ResearchInboxStats,
+  ResearchMonitorAnalyticsResponse,
+  ResearchMonitorCustomerBudgetUpdateRequest,
+  ResearchMonitorCustomerBudgetUpdateResponse,
+  ResearchMonitorCustomerRebalanceApplyRequest,
+  ResearchMonitorCustomerRebalanceApplyResponse,
+  ResearchMonitorCustomerRebalanceEvaluationDetail,
+  ResearchMonitorCustomerRebalancePreview,
+  ResearchMonitorCustomerRebalancePreviewRequest,
+  ResearchMonitorBudgetUpdateRequest,
+  ResearchMonitorBudgetUpdateResponse,
+  ResearchMonitorPolicyRollbackRequest,
+  ResearchMonitorPolicyEvaluationDetail,
+  ResearchMonitorPolicySimulationRequest,
+  ResearchMonitorPolicySimulationResponse,
+  ResearchMonitorPolicyUpdateRequest,
+  ResearchMonitorPolicyUpdateResponse,
   ResearchMonitorProfile,
   CodePatchProposal,
   PatchPR,
@@ -117,6 +210,7 @@ import {
   ArtifactDraft,
   ArtifactDraftListResponse,
   RetrievalTrace,
+  InstantArxivIngestResponse,
   // Training types
   TrainingDataset,
   TrainingDatasetCreate,
@@ -169,7 +263,12 @@ import {
   LatexCompileJobResponse,
 } from '../types';
 
-const API_BASE_URL = process.env.REACT_APP_API_URL || 'http://localhost:8000';
+const runtimeEnv =
+  typeof globalThis !== 'undefined' && (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
+    ? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process!.env!
+    : {};
+
+const API_BASE_URL = runtimeEnv.REACT_APP_API_URL || 'http://localhost:8000';
 
 // API error response structure from backend
 interface ApiErrorResponse {
@@ -488,6 +587,8 @@ class ApiClient {
     url: string;
     title?: string;
     tags?: string[];
+    ingest_mode?: "auto" | "web" | "youtube";
+    youtube_audio_only?: boolean;
     follow_links?: boolean;
     max_pages?: number;
     max_depth?: number;
@@ -512,6 +613,8 @@ class ApiClient {
     url: string;
     title?: string;
     tags?: string[];
+    ingest_mode?: "auto" | "web" | "youtube";
+    youtube_audio_only?: boolean;
     follow_links?: boolean;
     max_pages?: number;
     max_depth?: number;
@@ -708,6 +811,19 @@ class ApiClient {
     return response.data;
   }
 
+  async ingestArxivInstant(payload: {
+    arxiv_input: string;
+    auto_summarize?: boolean;
+    auto_enrich?: boolean;
+  }): Promise<InstantArxivIngestResponse> {
+    const response = await this.client.post('/api/v1/documents/ingest-arxiv-instant', {
+      arxiv_input: payload.arxiv_input,
+      auto_summarize: payload.auto_summarize ?? true,
+      auto_enrich: payload.auto_enrich ?? true,
+    });
+    return response.data;
+  }
+
   async summarizeArxivImport(
     sourceId: string,
     payload?: { force?: boolean; limit?: number; only_missing?: boolean }
@@ -753,6 +869,47 @@ class ApiClient {
       force: payload?.force ?? false,
       limit: payload?.limit ?? 500,
     });
+    return response.data;
+  }
+
+  async listResearchPapers(params?: {
+    source_id?: string;
+    arxiv_id?: string;
+    arxiv_ids?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<ResearchPaperListResponse> {
+    const response = await this.client.get('/api/v1/research/papers', { params });
+    return response.data;
+  }
+
+  async getResearchPaper(paperId: string): Promise<ResearchPaper> {
+    const response = await this.client.get(`/api/v1/research/papers/${paperId}`);
+    return response.data;
+  }
+
+  async listPaperExtractionJobs(params?: { source_id?: string }): Promise<PaperExtractionJob[]> {
+    const response = await this.client.get('/api/v1/research/papers/jobs', { params });
+    return response.data;
+  }
+
+  async extractResearchPapers(data: {
+    document_ids?: string[];
+    source_id?: string;
+    force?: boolean;
+    limit?: number;
+  }): Promise<PaperExtractionJob[]> {
+    const response = await this.client.post('/api/v1/research/papers/extract', data);
+    return response.data;
+  }
+
+  async reextractResearchPaper(paperId: string): Promise<PaperExtractionJob> {
+    const response = await this.client.post(`/api/v1/research/papers/${paperId}/reextract`);
+    return response.data;
+  }
+
+  async saveResearchPaperAsNote(paperId: string, data?: { title?: string; tags?: string[] }): Promise<{ id: string; title: string }> {
+    const response = await this.client.post(`/api/v1/research/papers/${paperId}/save-as-note`, data || {});
     return response.data;
   }
 
@@ -1070,6 +1227,11 @@ class ApiClient {
     return response.data;
   }
 
+  async inferKGEntityType(entityId: string): Promise<{ entity_type: string; confidence?: number | null }> {
+    const response = await this.client.post(`/api/v1/kg/entity/${entityId}/infer-type`);
+    return response.data;
+  }
+
   async updateKGEntity(
     entityId: string,
     data: Partial<{ canonical_name: string; entity_type: string; description: string | null; properties: string | null }>
@@ -1136,6 +1298,11 @@ class ApiClient {
   // Users (admin)
   async searchUsers(search: string, page: number = 1, page_size: number = 10): Promise<{ items: Array<User>; total: number; page: number; page_size: number }>{
     const response = await this.client.get('/api/v1/users/', { params: { search, page, page_size } });
+    return response.data;
+  }
+
+  async listCollaborationUsers(search: string = '', page: number = 1, page_size: number = 50): Promise<{ items: Array<User>; total: number; page: number; page_size: number }>{
+    const response = await this.client.get('/api/v1/users/collaboration', { params: { search, page, page_size } });
     return response.data;
   }
 
@@ -1248,6 +1415,20 @@ class ApiClient {
     return response.data;
   }
 
+  async getKGTypes(): Promise<{ entity_types: string[]; relation_types: string[] }> {
+    const response = await this.client.get('/api/v1/kg/types');
+    return response.data;
+  }
+
+  async resolveKGTypes(payload: {
+    query: string;
+    entity_types: string[];
+    relation_types: string[];
+  }): Promise<{ entity_types: string[] | null; relation_types: string[] | null }> {
+    const response = await this.client.post('/api/v1/kg/resolve-types', payload);
+    return response.data;
+  }
+
   async getKGRelationship(relId: string): Promise<KGRelationshipDetail> {
     const response = await this.client.get(`/api/v1/kg/relationship/${relId}`);
     return response.data;
@@ -1272,7 +1453,7 @@ class ApiClient {
     // Use video streamer for video/audio files
     if (useVideoStreamer) {
       // 1) Prefer explicit env override
-      const envVideoBase = (process.env.REACT_APP_VIDEO_STREAM_URL || '').replace(/\/$/, '');
+      const envVideoBase = (runtimeEnv.REACT_APP_VIDEO_STREAM_URL || '').replace(/\/$/, '');
       if (envVideoBase) {
         const url = envVideoBase.match(/\/stream$/)
           ? `${envVideoBase}/${documentId}`
@@ -1774,6 +1955,53 @@ class ApiClient {
     return response.data;
   }
 
+  async getWhisperStatus(): Promise<{
+    transcription_available: boolean;
+    selected_model_size: string;
+    selected_device: string;
+    available_model_sizes: string[];
+    available_devices: string[];
+    cache_dir: string;
+    models: Array<{ name: string; downloaded: boolean; files?: string[]; total_bytes?: number }>;
+    runtime_override?: { model_size?: string | null; device?: string | null };
+    service_initialized?: boolean;
+    loaded_model_size?: string | null;
+    loaded_device?: string | null;
+  }> {
+    const response = await this.client.get('/api/v1/admin/whisper/status');
+    return response.data;
+  }
+
+  async updateWhisperConfig(payload: { model_size?: string; device?: 'auto' | 'cpu' | 'cuda'; reinitialize?: boolean }): Promise<any> {
+    const response = await this.client.post('/api/v1/admin/whisper/config', payload);
+    return response.data;
+  }
+
+  async downloadWhisperModel(payload?: { model_size?: string; device?: 'auto' | 'cpu' | 'cuda' }): Promise<any> {
+    const response = await this.client.post('/api/v1/admin/whisper/download', payload || {});
+    return response.data;
+  }
+
+  async startWhisperDownload(payload?: { model_size?: string; device?: 'auto' | 'cpu' | 'cuda' }): Promise<{ task_id: string; status: string }> {
+    const response = await this.client.post('/api/v1/admin/whisper/download/start', payload || {});
+    return response.data;
+  }
+
+  async getWhisperDownloadStatus(taskId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/admin/whisper/download/${encodeURIComponent(String(taskId))}`);
+    return response.data;
+  }
+
+  async startOllamaPull(modelName: string): Promise<{ task_id: string; status: string }> {
+    const response = await this.client.post('/api/v1/admin/llm/ollama-pull/start', { model_name: modelName });
+    return response.data;
+  }
+
+  async getOllamaPullStatus(taskId: string): Promise<any> {
+    const response = await this.client.get(`/api/v1/admin/llm/ollama-pull/${encodeURIComponent(String(taskId))}`);
+    return response.data;
+  }
+
   async triggerFullSync(): Promise<{ task_id: string; message: string; status: string }> {
     const response = await this.client.post('/api/v1/admin/sync/all');
     return response.data;
@@ -1864,6 +2092,16 @@ class ApiClient {
 
   async getMemoryStats(): Promise<MemoryStats> {
     const response = await this.client.get('/api/v1/memory/stats/overview');
+    return response.data;
+  }
+
+  async getMemoryPreferences(): Promise<any> {
+    const response = await this.client.get('/api/v1/memory/preferences');
+    return response.data;
+  }
+
+  async updateMemoryPreferences(updates: Record<string, any>): Promise<any> {
+    const response = await this.client.put('/api/v1/memory/preferences', updates);
     return response.data;
   }
 
@@ -2183,6 +2421,10 @@ class ApiClient {
     name?: string;
     is_active?: boolean;
     trigger_config?: Record<string, any>;
+    synthesize_custom_tools?: boolean;
+    preferred_tool_type?: 'webhook' | 'transform' | 'python' | 'llm_prompt' | 'docker_container';
+    expose_workflow_as_tool?: boolean;
+    workflow_tool_name?: string;
   }): Promise<{
     workflow: {
       name: string;
@@ -2206,6 +2448,22 @@ class ApiClient {
       }>;
     };
     warnings: string[];
+    custom_tools?: Array<{
+      name: string;
+      description?: string;
+      tool_type: 'webhook' | 'transform' | 'python' | 'llm_prompt' | 'docker_container' | 'workflow_runner';
+      parameters_schema: Record<string, any>;
+      config: Record<string, any>;
+      is_enabled: boolean;
+    }>;
+    workflow_tool?: {
+      name: string;
+      description?: string;
+      tool_type: 'workflow_runner';
+      parameters_schema: Record<string, any>;
+      config: Record<string, any>;
+      is_enabled: boolean;
+    } | null;
   }> {
     const response = await this.client.post('/api/v1/workflows/synthesize', payload);
     return response.data;
@@ -2632,8 +2890,12 @@ class ApiClient {
   async listAgentJobs(params?: {
     status?: string;
     job_type?: string;
+    launch_mode?: string;
+    relaunch_from_job_id?: string;
+    has_relaunch_children?: boolean;
     swarm_only?: boolean;
     swarm_min_consensus?: number;
+    visibility_scope?: 'mine' | 'shared' | 'all' | string;
     sort_by?: string;
     page?: number;
     page_size?: number;
@@ -2644,6 +2906,24 @@ class ApiClient {
 
   async getAgentJob(jobId: string): Promise<AgentJob> {
     const response = await this.client.get(`/api/v1/agent-jobs/${jobId}`);
+    return response.data;
+  }
+
+  async promoteDomainResearchAgentJob(
+    jobId: string,
+    data: AgentJobPromoteDomainResearchRequest
+  ): Promise<AgentJobPromoteDomainResearchResponse> {
+    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/promote-domain-research`, data);
+    return response.data;
+  }
+
+  async getAgentJobRelaunchLineage(
+    jobId: string,
+    options?: { ancestor_limit?: number; descendant_limit?: number }
+  ): Promise<AgentJobRelaunchLineage> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/relaunch-lineage`, {
+      params: options,
+    });
     return response.data;
   }
 
@@ -2658,9 +2938,32 @@ class ApiClient {
 
   async performAgentJobAction(
     jobId: string,
-    action: 'pause' | 'resume' | 'cancel' | 'restart' | 'generate_summary'
+    action:
+      | 'pause'
+      | 'resume'
+      | 'cancel'
+      | 'restart'
+      | 'relaunch'
+      | 'generate_summary'
+      | 'approve'
+      | 'reject'
+      | 'edit'
+      | 'skip'
+      | 'launch_tie_breaker'
+      | 'promote_swarm_candidate'
+      | 'assign_swarm_review'
+      | 'clear_swarm_assignment'
+      | 'update_swarm_review_note',
+    options?: {
+      checkpoint_note?: string;
+      checkpoint_action_patch?: Record<string, any>;
+      action_payload?: Record<string, any>;
+    }
   ): Promise<AgentJob> {
-    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/action`, { action });
+    const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/action`, {
+      action,
+      ...(options || {}),
+    });
     return response.data;
   }
 
@@ -2669,10 +2972,400 @@ class ApiClient {
     return response.data;
   }
 
-  async listAgentJobTemplates(category?: string): Promise<AgentJobTemplateListResponse> {
-    const response = await this.client.get('/api/v1/agent-jobs/templates', {
-      params: category ? { category } : undefined,
+  async getAgentCheckpointQueue(params?: {
+    item_type?: string;
+    status?: string;
+    customer?: string;
+    job_type?: string;
+    sla_bucket?: string;
+    escalation_level?: string;
+    overdue_only?: boolean;
+    sort_by?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AgentCheckpointQueueResponse> {
+    const response = await this.client.get('/api/v1/agent-jobs/checkpoint-queue', {
+      params,
     });
+    return response.data;
+  }
+
+  async getAgentDecisionTrace(params?: {
+    source_kind?: string;
+    decision_type?: string;
+    customer?: string;
+    status?: string;
+    severity?: string;
+    actor_mode?: string;
+    triage_status?: string;
+    assigned_to_user_id?: string;
+    unassigned_only?: boolean;
+    escalation_state?: string;
+    pinned?: boolean;
+    actionable_only?: boolean;
+    start_at?: string;
+    end_at?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<AgentDecisionTraceResponse> {
+    const response = await this.client.get('/api/v1/agent-jobs/decision-trace', {
+      params,
+    });
+    return response.data;
+  }
+
+  async getAgentDecisionTraceAnalytics(params?: {
+    source_kind?: string;
+    decision_type?: string;
+    customer?: string;
+    status?: string;
+    severity?: string;
+    actor_mode?: string;
+    triage_status?: string;
+    assigned_to_user_id?: string;
+    unassigned_only?: boolean;
+    escalation_state?: string;
+    pinned?: boolean;
+    actionable_only?: boolean;
+    start_at?: string;
+    end_at?: string;
+    days?: number;
+  }): Promise<AgentDecisionTraceAnalyticsResponse> {
+    const response = await this.client.get('/api/v1/agent-jobs/decision-trace/analytics', {
+      params,
+    });
+    return response.data;
+  }
+
+  async downloadAgentDecisionTraceExport(params?: {
+    format?: 'json' | 'csv';
+    source_kind?: string;
+    decision_type?: string;
+    customer?: string;
+    status?: string;
+    severity?: string;
+    actor_mode?: string;
+    triage_status?: string;
+    assigned_to_user_id?: string;
+    unassigned_only?: boolean;
+    escalation_state?: string;
+    pinned?: boolean;
+    actionable_only?: boolean;
+    start_at?: string;
+    end_at?: string;
+  }): Promise<void> {
+    const response = await this.client.get('/api/v1/agent-jobs/decision-trace/export', {
+      params,
+      responseType: 'blob',
+    });
+    const contentDisposition = response.headers['content-disposition'] || response.headers['Content-Disposition'];
+    let filename = `decision_trace_export.${params?.format || 'json'}`;
+    if (contentDisposition) {
+      const filenameMatch = contentDisposition.match(/filename[^;=\n]*=((['"]).*?\2|[^;\n]*)/);
+      if (filenameMatch && filenameMatch[1]) {
+        filename = filenameMatch[1].replace(/['"]/g, '');
+      }
+    }
+    const blob = new Blob([response.data], {
+      type: params?.format === 'csv' ? 'text/csv;charset=utf-8' : 'application/json',
+    });
+    const url = window.URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    window.URL.revokeObjectURL(url);
+  }
+
+  async actionAgentDecisionTraceEvent(
+    eventId: string,
+    data: AgentDecisionTraceActionRequest
+  ): Promise<AgentDecisionTraceActionResponse> {
+    const response = await this.client.post(`/api/v1/agent-jobs/decision-trace/${eventId}/action`, data);
+    return response.data;
+  }
+
+  async listAgentDecisionTraceViews(): Promise<AgentDecisionTraceViewListResponse> {
+    const response = await this.client.get('/api/v1/agent-jobs/decision-trace/views');
+    return response.data;
+  }
+
+  async createAgentDecisionTraceView(data: AgentDecisionTraceViewCreateRequest): Promise<AgentDecisionTraceView> {
+    const response = await this.client.post('/api/v1/agent-jobs/decision-trace/views', data);
+    return response.data;
+  }
+
+  async updateAgentDecisionTraceView(
+    viewId: string,
+    data: AgentDecisionTraceViewUpdateRequest
+  ): Promise<AgentDecisionTraceView> {
+    const response = await this.client.patch(`/api/v1/agent-jobs/decision-trace/views/${viewId}`, data);
+    return response.data;
+  }
+
+  async deleteAgentDecisionTraceView(viewId: string): Promise<void> {
+    await this.client.delete(`/api/v1/agent-jobs/decision-trace/views/${viewId}`);
+  }
+
+  async bulkActionAgentCheckpointQueue(
+    data: AgentCheckpointQueueBulkActionRequest
+  ): Promise<AgentCheckpointQueueBulkActionResponse> {
+    const response = await this.client.post('/api/v1/agent-jobs/checkpoint-queue/bulk-action', data);
+    return response.data;
+  }
+
+  async actionAgentCheckpointQueueFollowUp(
+    data: AgentCheckpointQueueFollowUpActionRequest
+  ): Promise<AgentCheckpointQueueFollowUpActionResponse> {
+    const response = await this.client.post('/api/v1/agent-jobs/checkpoint-queue/follow-up-action', data);
+    return response.data;
+  }
+
+  async bulkActionAgentCheckpointQueueFollowUp(
+    data: AgentCheckpointQueueBulkFollowUpActionRequest
+  ): Promise<AgentCheckpointQueueBulkFollowUpActionResponse> {
+    const response = await this.client.post('/api/v1/agent-jobs/checkpoint-queue/follow-up-bulk-action', data);
+    return response.data;
+  }
+
+  async listAgentJobTemplates(
+    category?: string,
+    options?: {
+      recommend_goal?: string;
+      recommend_scope?: string;
+    }
+  ): Promise<AgentJobTemplateListResponse> {
+    const params: Record<string, string> = {};
+    if (category) params.category = category;
+    if (options?.recommend_goal) params.recommend_goal = options.recommend_goal;
+    if (options?.recommend_scope) params.recommend_scope = options.recommend_scope;
+    const response = await this.client.get('/api/v1/agent-jobs/templates', {
+      params: Object.keys(params).length > 0 ? params : undefined,
+    });
+    return response.data;
+  }
+
+  async quickStartClaudeBackendJob(data: AgentJobQuickStartClaudeBackendRequest): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/quick-start/claude-backend', data);
+    return response.data;
+  }
+
+  async quickStartDomainResearchJob(data: AgentJobQuickStartDomainResearchRequest): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/quick-start/domain-research', data);
+    return response.data;
+  }
+
+  async listDomainResearchProfiles(params?: {
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<DomainResearchProfileListResponse> {
+    const response = await this.client.get('/api/v1/domain-research-profiles', { params });
+    return response.data;
+  }
+
+  async createDomainResearchProfile(data: DomainResearchProfileCreate): Promise<DomainResearchProfile> {
+    const response = await this.client.post('/api/v1/domain-research-profiles', data);
+    return response.data;
+  }
+
+  async updateDomainResearchProfile(profileId: string, data: DomainResearchProfileUpdate): Promise<DomainResearchProfile> {
+    const response = await this.client.patch(`/api/v1/domain-research-profiles/${profileId}`, data);
+    return response.data;
+  }
+
+  async performDomainResearchProfileAction(
+    profileId: string,
+    payload: DomainResearchProfileActionRequest
+  ): Promise<DomainResearchProfile> {
+    const response = await this.client.post(`/api/v1/domain-research-profiles/${profileId}/action`, payload);
+    return response.data;
+  }
+
+  async actOnDomainResearchOpportunity(
+    profileId: string,
+    opportunityId: string,
+    payload: ResearchOpportunityActionRequest
+  ): Promise<DomainResearchProfile> {
+    const response = await this.client.post(
+      `/api/v1/domain-research-profiles/${profileId}/opportunities/${opportunityId}/action`,
+      payload
+    );
+    return response.data;
+  }
+
+  async listResearchPortfolios(params?: {
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<ResearchPortfolioListResponse> {
+    const response = await this.client.get('/api/v1/research-portfolios', { params });
+    return response.data;
+  }
+
+  async createResearchPortfolio(data: ResearchPortfolioCreate): Promise<ResearchPortfolio> {
+    const response = await this.client.post('/api/v1/research-portfolios', data);
+    return response.data;
+  }
+
+  async listScientificSandboxProfiles(params?: {
+    include_disabled?: boolean;
+  }): Promise<ScientificSandboxProfileListResponse> {
+    const response = await this.client.get('/api/v1/scientific-sandbox-profiles', { params });
+    return response.data;
+  }
+
+  async getScientificSandboxProfile(profileId: string): Promise<ScientificSandboxProfile> {
+    const response = await this.client.get(`/api/v1/scientific-sandbox-profiles/${profileId}`);
+    return response.data;
+  }
+
+  async createScientificSandboxProfile(data: ScientificSandboxProfileCreate): Promise<ScientificSandboxProfile> {
+    const response = await this.client.post('/api/v1/scientific-sandbox-profiles', data);
+    return response.data;
+  }
+
+  async updateScientificSandboxProfile(
+    profileId: string,
+    data: ScientificSandboxProfileUpdate
+  ): Promise<ScientificSandboxProfile> {
+    const response = await this.client.patch(`/api/v1/scientific-sandbox-profiles/${profileId}`, data);
+    return response.data;
+  }
+
+  async deleteScientificSandboxProfile(profileId: string): Promise<void> {
+    await this.client.delete(`/api/v1/scientific-sandbox-profiles/${profileId}`);
+  }
+
+  async updateResearchPortfolio(portfolioId: string, data: ResearchPortfolioUpdate): Promise<ResearchPortfolio> {
+    const response = await this.client.patch(`/api/v1/research-portfolios/${portfolioId}`, data);
+    return response.data;
+  }
+
+  async performResearchPortfolioAction(
+    portfolioId: string,
+    payload: ResearchPortfolioActionRequest
+  ): Promise<ResearchPortfolio> {
+    const response = await this.client.post(`/api/v1/research-portfolios/${portfolioId}/action`, payload);
+    return response.data;
+  }
+
+  async actOnResearchPortfolioOpportunity(
+    portfolioId: string,
+    opportunityId: string,
+    payload: ResearchOpportunityActionRequest
+  ): Promise<ResearchPortfolio> {
+    const response = await this.client.post(
+      `/api/v1/research-portfolios/${portfolioId}/opportunities/${opportunityId}/action`,
+      payload
+    );
+    return response.data;
+  }
+
+  async quickStartRepoBugTriageJob(data: AgentJobQuickStartRepoBugTriageRequest): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/quick-start/repo-bug-triage', data);
+    return response.data;
+  }
+
+  async quickStartBugTriageSwarmJob(data: AgentJobQuickStartBugTriageSwarmRequest): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/quick-start/bug-triage-swarm', data);
+    return response.data;
+  }
+
+  async quickStartBuildBreakSwarmJob(data: AgentJobQuickStartBuildBreakSwarmRequest): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/quick-start/build-break-swarm', data);
+    return response.data;
+  }
+
+  async quickStartFrontendRegressionSwarmJob(
+    data: AgentJobQuickStartFrontendRegressionSwarmRequest
+  ): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/quick-start/frontend-regression-swarm', data);
+    return response.data;
+  }
+
+  async quickStartRoleWorkflowJob(data: AgentJobQuickStartRoleWorkflowRequest): Promise<AgentJob> {
+    const response = await this.client.post('/api/v1/agent-jobs/quick-start/role-workflow', data);
+    return response.data;
+  }
+
+  async getAgentJobSwarmAnalytics(params?: {
+    source_id?: string;
+    preset_key?: string;
+    visibility_scope?: 'mine' | 'shared' | 'all' | string;
+    date_from?: string;
+    date_to?: string;
+  }): Promise<AgentJobSwarmAnalytics> {
+    const response = await this.client.get('/api/v1/agent-jobs/swarm-analytics', { params });
+    return response.data;
+  }
+
+  async getAgentJobSwarmOutcomeAnalytics(params?: {
+    source_id?: string;
+    preset_key?: string;
+    terminal_outcome?: string;
+    promotion_mode?: string;
+    visibility_scope?: 'mine' | 'shared' | 'all' | string;
+    date_from?: string;
+    date_to?: string;
+  }): Promise<AgentJobSwarmOutcomeAnalytics> {
+    const response = await this.client.get('/api/v1/agent-jobs/swarm-outcomes', { params });
+    return response.data;
+  }
+
+  async listCodingSwarmProfiles(params?: {
+    source_id?: string;
+    preset_key?: string;
+    visibility_scope?: 'mine' | 'shared' | 'all' | string;
+    limit?: number;
+    offset?: number;
+  }): Promise<CodingSwarmProfileListResponse> {
+    const response = await this.client.get('/api/v1/coding-swarm-profiles', { params });
+    return response.data;
+  }
+
+  async createCodingSwarmProfile(data: CodingSwarmProfileCreate): Promise<CodingSwarmProfile> {
+    const response = await this.client.post('/api/v1/coding-swarm-profiles', data);
+    return response.data;
+  }
+
+  async updateCodingSwarmProfile(profileId: string, data: CodingSwarmProfileUpdate): Promise<CodingSwarmProfile> {
+    const response = await this.client.patch(`/api/v1/coding-swarm-profiles/${profileId}`, data);
+    return response.data;
+  }
+
+  async deleteCodingSwarmProfile(profileId: string): Promise<void> {
+    await this.client.delete(`/api/v1/coding-swarm-profiles/${profileId}`);
+  }
+
+  async listCodingBacklogItems(params?: {
+    status?: string;
+    visibility_scope?: 'mine' | 'shared' | 'all' | string;
+    assigned_user_id?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<CodingBacklogItemListResponse> {
+    const response = await this.client.get('/api/v1/coding-backlog', { params });
+    return response.data;
+  }
+
+  async createCodingBacklogItem(data: CodingBacklogItemCreate): Promise<CodingBacklogItem> {
+    const response = await this.client.post('/api/v1/coding-backlog', data);
+    return response.data;
+  }
+
+  async updateCodingBacklogItem(itemId: string, data: CodingBacklogItemUpdate): Promise<CodingBacklogItem> {
+    const response = await this.client.patch(`/api/v1/coding-backlog/${itemId}`, data);
+    return response.data;
+  }
+
+  async performCodingBacklogAction(
+    itemId: string,
+    payload: CodingBacklogActionRequest
+  ): Promise<CodingBacklogItem> {
+    const response = await this.client.post(`/api/v1/coding-backlog/${itemId}/action`, payload);
     return response.data;
   }
 
@@ -2682,6 +3375,24 @@ class ApiClient {
     offset: number = 0
   ): Promise<{ entries: Array<Record<string, any>>; total: number; has_more: boolean }> {
     const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/log`, {
+      params: { limit, offset },
+    });
+    return response.data;
+  }
+
+  async getAgentJobStepEvents(
+    jobId: string,
+    limit: number = 100,
+    offset: number = 0
+  ): Promise<{
+    items: Array<Record<string, any>>;
+    total: number;
+    offset: number;
+    limit: number;
+    has_more: boolean;
+    source: string;
+  }> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/step-events`, {
       params: { limit, offset },
     });
     return response.data;
@@ -2811,20 +3522,7 @@ class ApiClient {
   // Agent Job Memory Methods
   // ============================================================================
 
-  async getJobMemories(jobId: string): Promise<{
-    job_id: string;
-    memories: Array<{
-      id: string;
-      type: string;
-      content: string;
-      importance_score: number;
-      tags: string[];
-      context: Record<string, any>;
-      access_count: number;
-      created_at: string;
-    }>;
-    total: number;
-  }> {
+  async getJobMemories(jobId: string): Promise<AgentJobMemoryListResponse> {
     const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/memories`);
     return response.data;
   }
@@ -2844,17 +3542,7 @@ class ApiClient {
     return response.data;
   }
 
-  async extractJobMemories(jobId: string): Promise<{
-    job_id: string;
-    memories_created: number;
-    memories: Array<{
-      id: string;
-      type: string;
-      content: string;
-      importance_score: number;
-      tags: string[];
-    }>;
-  }> {
+  async extractJobMemories(jobId: string): Promise<AgentJobMemoryExtractResponse> {
     const response = await this.client.post(`/api/v1/agent-jobs/${jobId}/memories/extract`);
     return response.data;
   }
@@ -2867,15 +3555,7 @@ class ApiClient {
       importance?: number;
       tags?: string;
     }
-  ): Promise<{
-    id: string;
-    job_id: string;
-    type: string;
-    content: string;
-    importance_score: number;
-    tags: string[];
-    created_at: string;
-  }> {
+  ): Promise<AgentJobMemory> {
     const params = new URLSearchParams({
       memory_type: data.memory_type,
       content: data.content,
@@ -2888,30 +3568,12 @@ class ApiClient {
     return response.data;
   }
 
-  async deleteJobMemories(jobId: string): Promise<{ job_id: string; deleted_count: number }> {
+  async deleteJobMemories(jobId: string): Promise<AgentJobMemoryDeleteResponse> {
     const response = await this.client.delete(`/api/v1/agent-jobs/${jobId}/memories`);
     return response.data;
   }
 
-  async getAgentJobMemoryStats(): Promise<{
-    total_memories: number;
-    by_type: Record<string, number>;
-    job_sourced: number;
-    chat_sourced: number;
-    manual: number;
-    most_accessed: Array<{
-      id: string;
-      type: string;
-      content: string;
-      access_count: number;
-    }>;
-    most_important: Array<{
-      id: string;
-      type: string;
-      content: string;
-      importance: number;
-    }>;
-  }> {
+  async getAgentJobMemoryStats(): Promise<AgentJobMemoryStatsResponse> {
     const response = await this.client.get('/api/v1/agent-jobs/memory/stats');
     return response.data;
   }
@@ -2919,20 +3581,7 @@ class ApiClient {
   async searchAgentJobMemories(
     query: string,
     options?: { memoryTypes?: string; limit?: number }
-  ): Promise<{
-    query: string;
-    memories: Array<{
-      id: string;
-      type: string;
-      content: string;
-      importance_score: number;
-      tags: string[];
-      job_id: string | null;
-      access_count: number;
-      created_at: string;
-    }>;
-    total: number;
-  }> {
+  ): Promise<AgentJobMemorySearchResponse> {
     const params = new URLSearchParams({ query });
     if (options?.memoryTypes) {
       params.append('memory_types', options.memoryTypes);
@@ -2985,12 +3634,85 @@ class ApiClient {
     return response.data;
   }
 
+  async getAgentControlRuns(params?: {
+    source_type?: string;
+    has_operator_review?: boolean;
+    review_type?: string;
+    review_status?: string;
+    limit?: number;
+  }): Promise<AgentControlRunListResponse> {
+    const response = await this.client.get('/api/v1/agent-control-plane/runs', { params });
+    return response.data;
+  }
+
+  async getAgentControlRun(runId: string): Promise<AgentControlRunDetail> {
+    const response = await this.client.get(`/api/v1/agent-control-plane/runs/${runId}`);
+    return response.data;
+  }
+
+  async getAgentControlReviews(params?: {
+    source_type?: string;
+    has_operator_review?: boolean;
+    review_type?: string;
+    review_status?: string;
+    queue_status?: string;
+    queue_customer?: string;
+    queue_sla?: string;
+    queue_escalation?: string;
+    queue_health_drilldown?: string;
+    queue_preset?: string;
+    sort?: 'priority' | 'created_at_desc' | 'age_desc';
+    offset?: number;
+    limit?: number;
+  }): Promise<AgentControlRunReviewListResponse> {
+    const response = await this.client.get('/api/v1/agent-control-plane/reviews', { params });
+    return response.data;
+  }
+
+  async actOnAgentControlReview(data: AgentControlRunReviewActionRequest): Promise<AgentControlRunReviewActionResponse> {
+    const response = await this.client.post('/api/v1/agent-control-plane/reviews/action', data);
+    return response.data;
+  }
+
+  async bulkActOnAgentControlReview(data: AgentControlRunBulkReviewActionRequest): Promise<AgentControlRunBulkReviewActionResponse> {
+    const response = await this.client.post('/api/v1/agent-control-plane/reviews/bulk-action', data);
+    return response.data;
+  }
+
+  async listAgentControlRunViews(): Promise<AgentControlRunViewListResponse> {
+    const response = await this.client.get('/api/v1/agent-control-plane/views');
+    return response.data;
+  }
+
+  async createAgentControlRunView(data: AgentControlRunViewCreateRequest): Promise<AgentControlRunView> {
+    const response = await this.client.post('/api/v1/agent-control-plane/views', data);
+    return response.data;
+  }
+
+  async updateAgentControlRunView(
+    viewId: string,
+    data: AgentControlRunViewUpdateRequest
+  ): Promise<AgentControlRunView> {
+    const response = await this.client.patch(`/api/v1/agent-control-plane/views/${viewId}`, data);
+    return response.data;
+  }
+
+  async deleteAgentControlRunView(viewId: string): Promise<void> {
+    await this.client.delete(`/api/v1/agent-control-plane/views/${viewId}`);
+  }
+
   // ==================== Synthesis ====================
 
   async createSynthesisJob(data: {
     job_type: string;
     title: string;
     document_ids: string[];
+    paper_ids?: string[];
+    research_note_id?: string;
+    experiment_run_ids?: string[];
+    primary_run_id?: string;
+    comparison_run_id?: string;
+    source_id?: string;
     description?: string;
     search_query?: string;
     topic?: string;
@@ -3097,6 +3819,7 @@ class ApiClient {
     status?: string;
     item_type?: string;
     customer?: string;
+    job_id?: string;
     q?: string;
     limit?: number;
     offset?: number;
@@ -3128,6 +3851,18 @@ class ApiClient {
     return response.data;
   }
 
+  async relaunchInboxFollowUp(itemId: string, data?: { operator_note?: string }): Promise<ResearchInboxItem> {
+    const response = await this.client.post(`/api/v1/research/inbox/${itemId}/relaunch-follow-up`, data || {});
+    return response.data;
+  }
+
+  async bulkRelaunchInboxFollowUp(
+    data: ResearchInboxBulkFollowUpRelaunchRequest
+  ): Promise<ResearchInboxBulkFollowUpRelaunchResponse> {
+    const response = await this.client.post('/api/v1/research/inbox/follow-up-bulk-relaunch', data);
+    return response.data;
+  }
+
   async upsertResearchMonitorProfile(data: {
     customer?: string;
     muted_tokens?: string[];
@@ -3141,6 +3876,84 @@ class ApiClient {
 
   async listResearchMonitorProfiles(params?: { customer?: string }): Promise<ResearchMonitorProfile[]> {
     const response = await this.client.get('/api/v1/research/monitor-profiles', { params });
+    return response.data;
+  }
+
+  async getResearchMonitorAnalytics(params?: { customer?: string }): Promise<ResearchMonitorAnalyticsResponse> {
+    const response = await this.client.get('/api/v1/research/monitor-profiles/analytics', { params });
+    return response.data;
+  }
+
+  async updateResearchMonitorPolicy(
+    monitorJobId: string,
+    data: ResearchMonitorPolicyUpdateRequest
+  ): Promise<ResearchMonitorPolicyUpdateResponse> {
+    const response = await this.client.post(`/api/v1/research/monitor-profiles/${monitorJobId}/policy`, data);
+    return response.data;
+  }
+
+  async rollbackResearchMonitorPolicy(
+    monitorJobId: string,
+    data: ResearchMonitorPolicyRollbackRequest
+  ): Promise<ResearchMonitorPolicyUpdateResponse> {
+    const response = await this.client.post(`/api/v1/research/monitor-profiles/${monitorJobId}/policy/rollback`, data);
+    return response.data;
+  }
+
+  async simulateResearchMonitorPolicy(
+    monitorJobId: string,
+    data: ResearchMonitorPolicySimulationRequest
+  ): Promise<ResearchMonitorPolicySimulationResponse> {
+    const response = await this.client.post(`/api/v1/research/monitor-profiles/${monitorJobId}/policy/simulate`, data);
+    return response.data;
+  }
+
+  async getResearchMonitorPolicyEvaluation(
+    monitorJobId: string,
+    historyEntryId: string
+  ): Promise<ResearchMonitorPolicyEvaluationDetail> {
+    const response = await this.client.get(
+      `/api/v1/research/monitor-profiles/${monitorJobId}/policy-history/${historyEntryId}/evaluation`
+    );
+    return response.data;
+  }
+
+  async updateResearchMonitorBudget(
+    monitorJobId: string,
+    data: ResearchMonitorBudgetUpdateRequest
+  ): Promise<ResearchMonitorBudgetUpdateResponse> {
+    const response = await this.client.post(`/api/v1/research/monitor-profiles/${monitorJobId}/budget`, data);
+    return response.data;
+  }
+
+  async updateResearchMonitorCustomerBudget(
+    data: ResearchMonitorCustomerBudgetUpdateRequest
+  ): Promise<ResearchMonitorCustomerBudgetUpdateResponse> {
+    const response = await this.client.post('/api/v1/research/monitor-profiles/customer-budget', data);
+    return response.data;
+  }
+
+  async previewResearchMonitorCustomerRebalance(
+    data: ResearchMonitorCustomerRebalancePreviewRequest
+  ): Promise<ResearchMonitorCustomerRebalancePreview> {
+    const response = await this.client.post('/api/v1/research/monitor-profiles/customer-rebalance/preview', data);
+    return response.data;
+  }
+
+  async applyResearchMonitorCustomerRebalance(
+    data: ResearchMonitorCustomerRebalanceApplyRequest
+  ): Promise<ResearchMonitorCustomerRebalanceApplyResponse> {
+    const response = await this.client.post('/api/v1/research/monitor-profiles/customer-rebalance/apply', data);
+    return response.data;
+  }
+
+  async getResearchMonitorCustomerRebalanceEvaluation(
+    customer: string,
+    historyEntryId: string
+  ): Promise<ResearchMonitorCustomerRebalanceEvaluationDetail> {
+    const response = await this.client.get(
+      `/api/v1/research/monitor-profiles/customer-rebalance/${encodeURIComponent(customer)}/history/${historyEntryId}/evaluation`
+    );
     return response.data;
   }
 
@@ -3304,8 +4117,26 @@ class ApiClient {
     tags?: string[];
     source_synthesis_job_id?: string;
     source_document_ids?: string[];
+    structured_payload?: Record<string, any>;
   }): Promise<ResearchNote> {
     const response = await this.client.post('/api/v1/research-notes', data);
+    return response.data;
+  }
+
+  async saveSynthesisJobAsResearchNote(jobId: string, data?: {
+    title?: string;
+    tags?: string[];
+    target_note_id?: string;
+  }): Promise<ResearchNote> {
+    const response = await this.client.post(`/api/v1/synthesis/${jobId}/save-as-note`, data || {});
+    return response.data;
+  }
+
+  async reviewSynthesisJob(jobId: string, data: {
+    outcome_status: 'dismissed' | string;
+    outcome_note?: string;
+  }): Promise<SynthesisJob> {
+    const response = await this.client.post(`/api/v1/synthesis/${jobId}/review`, data);
     return response.data;
   }
 
@@ -3327,7 +4158,7 @@ class ApiClient {
 
   async updateResearchNote(
     noteId: string,
-    data: { title?: string; content_markdown?: string; tags?: string[] }
+    data: { title?: string; content_markdown?: string; tags?: string[]; structured_payload?: Record<string, any> }
   ): Promise<ResearchNote> {
     const response = await this.client.patch(`/api/v1/research-notes/${noteId}`, data);
     return response.data;
@@ -3384,6 +4215,16 @@ class ApiClient {
     return response.data;
   }
 
+  async listBenchmarkSuites(trackType: string = 'compiler'): Promise<BenchmarkSuiteListResponse> {
+    const response = await this.client.get('/api/v1/experiments/benchmark-suites', { params: { track_type: trackType } });
+    return response.data;
+  }
+
+  async getBenchmarkSuite(suiteId: string): Promise<BenchmarkSuite> {
+    const response = await this.client.get(`/api/v1/experiments/benchmark-suites/${suiteId}`);
+    return response.data;
+  }
+
   async listExperimentPlansForNote(noteId: string, limit: number = 20): Promise<ExperimentPlanListResponse> {
     const response = await this.client.get(`/api/v1/experiments/notes/${noteId}/plans`, { params: { limit } });
     return response.data;
@@ -3421,6 +4262,11 @@ class ApiClient {
 
   async syncExperimentRun(runId: string): Promise<{ run: ExperimentRun }> {
     const response = await this.client.post(`/api/v1/experiments/runs/${runId}/sync`);
+    return response.data;
+  }
+
+  async performExperimentRunAction(runId: string, data: ExperimentRunActionRequest): Promise<ExperimentRunActionResponse> {
+    const response = await this.client.post(`/api/v1/experiments/runs/${runId}/action`, data);
     return response.data;
   }
 

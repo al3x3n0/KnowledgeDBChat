@@ -169,6 +169,7 @@ class SearchService:
                 "id": metadata.get("document_id", item.get("id")),
                 "title": metadata.get("title", "Unknown"),
                 "source": metadata.get("source_name", metadata.get("source", "Unknown")),
+                "source_id": metadata.get("source_id"),
                 "source_type": metadata.get("source_type", metadata.get("source", "unknown")),
                 "file_type": metadata.get("file_type"),
                 "author": metadata.get("author"),

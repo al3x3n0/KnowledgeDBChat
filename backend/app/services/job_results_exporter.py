@@ -16,6 +16,7 @@ from loguru import logger
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.docx_builder import DOCXBuilder
+from app.services.operator_interventions import derive_operator_interventions_with_outcomes
 from app.services.pdf_builder import PDFBuilder
 from app.services.pptx_builder import PPTXBuilder
 from app.schemas.presentation import PresentationOutline, SlideContent
@@ -490,22 +491,75 @@ class JobResultsExporter:
 
         # Job metadata
         if include_metadata:
+            extraction = self._get_memory_extraction_summary(job)
+            experiment = self._get_experiment_run_summary(job)
+            interventions = self._get_operator_intervention_summary(job)
+            metadata_rows = [
+                ["Job ID", str(job.id)],
+                ["Job Type", job.job_type],
+                ["Status", job.status],
+                ["Progress", f"{job.progress}%"],
+                ["Iterations", f"{job.iteration}/{job.max_iterations}"],
+                ["Tool Calls", f"{job.tool_calls_used}/{job.max_tool_calls}"],
+                ["LLM Calls", f"{job.llm_calls_used}/{job.max_llm_calls}"],
+                ["Created", job.created_at.strftime("%Y-%m-%d %H:%M:%S") if job.created_at else "N/A"],
+                ["Started", job.started_at.strftime("%Y-%m-%d %H:%M:%S") if job.started_at else "N/A"],
+                ["Completed", job.completed_at.strftime("%Y-%m-%d %H:%M:%S") if job.completed_at else "N/A"],
+            ]
+            if extraction.get("status"):
+                metadata_rows.extend([
+                    ["Memory Extraction", str(extraction.get("status") or "").upper()],
+                    ["Memories Created", str(extraction.get("created_count", 0))],
+                    ["Duplicates Skipped", str(extraction.get("skipped_duplicates", 0))],
+                    ["Parsed Candidates", str(extraction.get("parsed_count", 0))],
+                ])
+                if extraction.get("is_relaunch_chain"):
+                    metadata_rows.append(["Relaunch Dedup Scope", "Enabled"])
+                if extraction.get("relaunch_root_job_id"):
+                    metadata_rows.append(["Relaunch Root Job", str(extraction.get("relaunch_root_job_id"))])
+            if experiment.get("final_phase"):
+                metadata_rows.append(["Experiment Final Phase", str(experiment.get("final_phase"))])
+            if experiment.get("source_name"):
+                metadata_rows.append(["Experiment Source", str(experiment.get("source_name"))])
+            if experiment.get("source_id"):
+                metadata_rows.append(["Experiment Source ID", str(experiment.get("source_id"))])
+            if experiment.get("bootstrap_attempted"):
+                metadata_rows.append([
+                    "Experiment Bootstrap",
+                    "OK" if experiment.get("bootstrap_ok") is True else "ATTEMPTED",
+                ])
+            if experiment.get("fallback_attempted"):
+                metadata_rows.append([
+                    "Experiment Fallback",
+                    "OK" if experiment.get("fallback_ok") is True else "ATTEMPTED",
+                ])
+            if experiment.get("recovery_open"):
+                metadata_rows.append(["Experiment Recovery", "OPEN"])
+            if experiment.get("reason"):
+                metadata_rows.append(["Recovery Reason", str(experiment.get("reason"))])
+            if experiment.get("recommended_action"):
+                metadata_rows.append(["Recovery Next Action", str(experiment.get("recommended_action"))])
+            if interventions.get("count"):
+                metadata_rows.append(["Operator Interventions", str(interventions.get("count"))])
+            if interventions.get("latest_action"):
+                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
+                latest_before = str(interventions.get("latest_status_before") or "").strip()
+                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_value = latest_action
+                if latest_before or latest_after:
+                    latest_value += f" ({latest_before or '?'} -> {latest_after or '?'})"
+                metadata_rows.append(["Latest Intervention", latest_value])
+            if interventions.get("latest_outcome"):
+                metadata_rows.append(["Latest Intervention Outcome", str(interventions.get("latest_outcome")).upper()])
+            if interventions.get("latest_outcome_reason"):
+                metadata_rows.append(["Latest Intervention Outcome Reason", str(interventions.get("latest_outcome_reason"))])
+            if interventions.get("latest_note"):
+                metadata_rows.append(["Latest Intervention Note", str(interventions.get("latest_note"))])
             content.append({"type": "heading", "level": 1, "text": "Job Details"})
             content.append({
                 "type": "table",
                 "headers": ["Property", "Value"],
-                "rows": [
-                    ["Job ID", str(job.id)],
-                    ["Job Type", job.job_type],
-                    ["Status", job.status],
-                    ["Progress", f"{job.progress}%"],
-                    ["Iterations", f"{job.iteration}/{job.max_iterations}"],
-                    ["Tool Calls", f"{job.tool_calls_used}/{job.max_tool_calls}"],
-                    ["LLM Calls", f"{job.llm_calls_used}/{job.max_llm_calls}"],
-                    ["Created", job.created_at.strftime("%Y-%m-%d %H:%M:%S") if job.created_at else "N/A"],
-                    ["Started", job.started_at.strftime("%Y-%m-%d %H:%M:%S") if job.started_at else "N/A"],
-                    ["Completed", job.completed_at.strftime("%Y-%m-%d %H:%M:%S") if job.completed_at else "N/A"],
-                ]
+                "rows": metadata_rows
             })
 
         # Results section
@@ -523,10 +577,50 @@ class JobResultsExporter:
                 stats_items.append(f"Papers found: {job.results['papers_found']}")
             if "papers_analyzed" in job.results:
                 stats_items.append(f"Papers analyzed: {job.results['papers_analyzed']}")
+            extraction = self._get_memory_extraction_summary(job)
+            experiment = self._get_experiment_run_summary(job)
+            interventions = self._get_operator_intervention_summary(job)
+            if extraction.get("status"):
+                stats_items.append(
+                    f"Memory extraction: {str(extraction.get('status') or '').upper()} "
+                    f"(created {int(extraction.get('created_count', 0) or 0)}, "
+                    f"dedup skipped {int(extraction.get('skipped_duplicates', 0) or 0)})"
+                )
+            if experiment.get("final_phase"):
+                stats_items.append(f"Experiment final phase: {experiment['final_phase']}")
+            if experiment.get("recovery_open"):
+                stats_items.append(
+                    f"Experiment recovery: OPEN ({int(experiment.get('failed_command_count', 0) or 0)} failed commands)"
+                )
+            elif experiment.get("fallback_attempted"):
+                stats_items.append(
+                    f"Experiment fallback: {'OK' if experiment.get('fallback_ok') is True else 'ATTEMPTED'}"
+                )
+            if experiment.get("reason"):
+                stats_items.append(f"Recovery reason: {experiment['reason']}")
+            if experiment.get("recommended_action"):
+                stats_items.append(f"Recovery next action: {experiment['recommended_action']}")
+            if interventions.get("count"):
+                stats_items.append(f"Operator interventions: {int(interventions.get('count', 0) or 0)}")
+            if interventions.get("latest_action"):
+                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
+                latest_before = str(interventions.get("latest_status_before") or "").strip()
+                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_line = f"Latest intervention: {latest_action}"
+                if latest_before or latest_after:
+                    latest_line += f" ({latest_before or '?'} -> {latest_after or '?'})"
+                stats_items.append(latest_line)
+            if interventions.get("latest_outcome"):
+                stats_items.append(f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}")
+            if interventions.get("latest_outcome_reason"):
+                stats_items.append(f"Intervention outcome reason: {interventions['latest_outcome_reason']}")
 
             if stats_items:
                 content.append({"type": "heading", "level": 2, "text": "Statistics"})
                 content.append({"type": "bullet_list", "items": stats_items})
+            if interventions.get("recent_items"):
+                content.append({"type": "heading", "level": 2, "text": "Recent Operator Interventions"})
+                content.append({"type": "bullet_list", "items": list(interventions.get("recent_items") or [])})
 
             # Key findings
             findings = job.results.get("findings", [])
@@ -685,17 +779,57 @@ class JobResultsExporter:
 
         # Statistics slide
         if include_metadata:
+            extraction = self._get_memory_extraction_summary(job)
+            experiment = self._get_experiment_run_summary(job)
+            interventions = self._get_operator_intervention_summary(job)
+            stat_content = [
+                f"Job Type: {job.job_type}",
+                f"Iterations: {job.iteration}/{job.max_iterations}",
+                f"Tool Calls: {job.tool_calls_used}/{job.max_tool_calls}",
+                f"LLM Calls: {job.llm_calls_used}/{job.max_llm_calls}",
+                f"Duration: {self._calculate_duration(job)}",
+            ]
+            if extraction.get("status"):
+                stat_content.append(
+                    f"Memory extraction: {str(extraction.get('status') or '').upper()} "
+                    f"(created {int(extraction.get('created_count', 0) or 0)}, "
+                    f"dedup skipped {int(extraction.get('skipped_duplicates', 0) or 0)})"
+                )
+            if experiment.get("final_phase"):
+                stat_content.append(f"Experiment final phase: {experiment['final_phase']}")
+            if experiment.get("recovery_open"):
+                stat_content.append(
+                    f"Experiment recovery: OPEN ({int(experiment.get('failed_command_count', 0) or 0)} failed commands)"
+                )
+            elif experiment.get("fallback_attempted"):
+                stat_content.append(
+                    f"Experiment fallback: {'OK' if experiment.get('fallback_ok') is True else 'ATTEMPTED'}"
+                )
+            if experiment.get("reason"):
+                stat_content.append(f"Recovery reason: {experiment['reason']}")
+            if experiment.get("recommended_action"):
+                stat_content.append(f"Recovery next action: {experiment['recommended_action']}")
+            if interventions.get("count"):
+                stat_content.append(f"Operator interventions: {int(interventions.get('count', 0) or 0)}")
+            if interventions.get("latest_action"):
+                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
+                latest_before = str(interventions.get("latest_status_before") or "").strip()
+                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_line = f"Latest intervention: {latest_action}"
+                if latest_before or latest_after:
+                    latest_line += f" ({latest_before or '?'} -> {latest_after or '?'})"
+                stat_content.append(latest_line)
+            if interventions.get("latest_outcome"):
+                stat_content.append(f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}")
+            if interventions.get("latest_outcome_reason"):
+                stat_content.append(f"Intervention outcome reason: {interventions['latest_outcome_reason']}")
+            for item in list(interventions.get("recent_items") or [])[:3]:
+                stat_content.append(f"Intervention timeline: {str(item)}")
             slides.append(SlideContent(
                 slide_number=slide_num,
                 slide_type="content",
                 title="Job Statistics",
-                content=[
-                    f"Job Type: {job.job_type}",
-                    f"Iterations: {job.iteration}/{job.max_iterations}",
-                    f"Tool Calls: {job.tool_calls_used}/{job.max_tool_calls}",
-                    f"LLM Calls: {job.llm_calls_used}/{job.max_llm_calls}",
-                    f"Duration: {self._calculate_duration(job)}",
-                ],
+                content=stat_content,
                 notes="Resource usage and execution statistics.",
             ))
             slide_num += 1
@@ -843,6 +977,143 @@ class JobResultsExporter:
 
         return points
 
+    def _get_memory_extraction_summary(self, job: AgentJob) -> Dict[str, Any]:
+        """Extract normalized memory-extraction summary from job results."""
+        results = job.results if isinstance(job.results, dict) else {}
+        execution = (
+            results.get("execution_strategy")
+            if isinstance(results.get("execution_strategy"), dict)
+            else {}
+        )
+        persistence = (
+            execution.get("memory_persistence")
+            if isinstance(execution.get("memory_persistence"), dict)
+            else {}
+        )
+        extraction = (
+            persistence.get("extraction")
+            if isinstance(persistence.get("extraction"), dict)
+            else {}
+        )
+        if not extraction:
+            return {}
+
+        return {
+            "status": str(extraction.get("status") or "").strip().lower(),
+            "created_count": int(extraction.get("created_count", 0) or 0),
+            "skipped_duplicates": int(extraction.get("skipped_duplicates", 0) or 0),
+            "parsed_count": int(extraction.get("parsed_count", 0) or 0),
+            "candidate_count": int(extraction.get("candidate_count", 0) or 0),
+            "is_relaunch_chain": bool(extraction.get("is_relaunch_chain", False)),
+            "relaunch_root_job_id": str(extraction.get("relaunch_root_job_id") or "").strip(),
+        }
+
+    def _get_experiment_run_summary(self, job: AgentJob) -> Dict[str, Any]:
+        """Extract normalized experiment-run recovery summary from job results."""
+        results = job.results if isinstance(job.results, dict) else {}
+        experiment = results.get("experiment_run") if isinstance(results.get("experiment_run"), dict) else {}
+        if not experiment:
+            return {}
+
+        execution = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
+        execution_graph = (
+            execution.get("execution_graph") if isinstance(execution.get("execution_graph"), dict) else {}
+        )
+        graph_health = execution_graph.get("graph_health") if isinstance(execution_graph.get("graph_health"), dict) else {}
+        reasons = graph_health.get("reasons") if isinstance(graph_health.get("reasons"), list) else []
+        recommended_actions = (
+            execution_graph.get("recommended_actions")
+            if isinstance(execution_graph.get("recommended_actions"), list)
+            else []
+        )
+        failed_commands = experiment.get("failed_commands") if isinstance(experiment.get("failed_commands"), list) else []
+        verification_commands = (
+            experiment.get("verification_commands")
+            if isinstance(experiment.get("verification_commands"), list)
+            else []
+        )
+        fallback_attempted = bool(experiment.get("fallback_attempted"))
+        fallback_ok = experiment.get("fallback_ok")
+        recovery_open = bool(fallback_attempted and failed_commands and fallback_ok is not True)
+
+        return {
+            "final_phase": str(experiment.get("final_phase") or "").strip(),
+            "bootstrap_attempted": bool(experiment.get("bootstrap_attempted")),
+            "bootstrap_ok": experiment.get("bootstrap_ok"),
+            "fallback_attempted": fallback_attempted,
+            "fallback_ok": fallback_ok,
+            "source_name": str(experiment.get("source_name") or "").strip(),
+            "source_id": str(experiment.get("source_id") or "").strip(),
+            "failed_command_count": len(failed_commands),
+            "verification_command_count": len(verification_commands),
+            "recovery_open": recovery_open,
+            "reason": next((str(item).strip() for item in reasons if str(item).strip()), ""),
+            "recommended_action": next(
+                (str(item).strip() for item in recommended_actions if str(item).strip()),
+                "",
+            ),
+        }
+
+    def _get_operator_intervention_summary(self, job: AgentJob) -> Dict[str, Any]:
+        """Extract normalized operator intervention summary from job results."""
+        results = job.results if isinstance(job.results, dict) else {}
+        execution = (
+            results.get("execution_strategy")
+            if isinstance(results.get("execution_strategy"), dict)
+            else {}
+        )
+        rows = (
+            execution.get("operator_interventions")
+            if isinstance(execution.get("operator_interventions"), list)
+            else []
+        )
+        entries = derive_operator_interventions_with_outcomes(
+            [row for row in rows if isinstance(row, dict)],
+            current_status=getattr(job, "status", None),
+            completed_at=getattr(job, "completed_at", None),
+            status_values={
+                "completed": AgentJobStatus.COMPLETED.value,
+                "failed": AgentJobStatus.FAILED.value,
+                "cancelled": AgentJobStatus.CANCELLED.value,
+                "pending": AgentJobStatus.PENDING.value,
+                "running": AgentJobStatus.RUNNING.value,
+                "paused": AgentJobStatus.PAUSED.value,
+            },
+        )
+        if not entries:
+            return {}
+
+        latest = entries[-1]
+        recent_items: List[str] = []
+        for row in entries[-3:]:
+            action = str(row.get("action") or "").strip().lower().replace("_", " ")
+            if not action:
+                continue
+            before = str(row.get("job_status_before") or "").strip().lower()
+            after = str(row.get("job_status_after") or "").strip().lower()
+            note = str(row.get("note") or "").strip()
+            line = action
+            if before or after:
+                line += f" ({before or '?'} -> {after or '?'})"
+            if note:
+                line += f": {note}"
+            outcome = str(row.get("outcome_status") or "").strip().lower().replace("_", " ")
+            if outcome:
+                line += f" [{outcome}]"
+            recent_items.append(line)
+        return {
+            "count": len(entries),
+            "latest_action": str(latest.get("action") or "").strip().lower(),
+            "latest_status_before": str(latest.get("job_status_before") or "").strip().lower(),
+            "latest_status_after": str(latest.get("job_status_after") or "").strip().lower(),
+            "latest_note": str(latest.get("note") or "").strip(),
+            "latest_outcome": str(latest.get("outcome_status") or "").strip().lower(),
+            "latest_outcome_reason": str(latest.get("outcome_reason") or "").strip(),
+            "latest_actor_user_id": str(latest.get("actor_user_id") or "").strip(),
+            "latest_at": str(latest.get("at") or "").strip(),
+            "recent_items": recent_items,
+        }
+
     def _build_document_content(
         self,
         job: AgentJob,
@@ -875,22 +1146,75 @@ class JobResultsExporter:
 
         # Job metadata
         if include_metadata:
+            extraction = self._get_memory_extraction_summary(job)
+            experiment = self._get_experiment_run_summary(job)
+            interventions = self._get_operator_intervention_summary(job)
+            metadata_rows = [
+                ["Job ID", str(job.id)],
+                ["Job Type", job.job_type],
+                ["Status", job.status],
+                ["Progress", f"{job.progress}%"],
+                ["Iterations", f"{job.iteration}/{job.max_iterations}"],
+                ["Tool Calls", f"{job.tool_calls_used}/{job.max_tool_calls}"],
+                ["LLM Calls", f"{job.llm_calls_used}/{job.max_llm_calls}"],
+                ["Created", job.created_at.strftime("%Y-%m-%d %H:%M:%S") if job.created_at else "N/A"],
+                ["Started", job.started_at.strftime("%Y-%m-%d %H:%M:%S") if job.started_at else "N/A"],
+                ["Completed", job.completed_at.strftime("%Y-%m-%d %H:%M:%S") if job.completed_at else "N/A"],
+            ]
+            if extraction.get("status"):
+                metadata_rows.extend([
+                    ["Memory Extraction", str(extraction.get("status") or "").upper()],
+                    ["Memories Created", str(extraction.get("created_count", 0))],
+                    ["Duplicates Skipped", str(extraction.get("skipped_duplicates", 0))],
+                    ["Parsed Candidates", str(extraction.get("parsed_count", 0))],
+                ])
+                if extraction.get("is_relaunch_chain"):
+                    metadata_rows.append(["Relaunch Dedup Scope", "Enabled"])
+                if extraction.get("relaunch_root_job_id"):
+                    metadata_rows.append(["Relaunch Root Job", str(extraction.get("relaunch_root_job_id"))])
+            if experiment.get("final_phase"):
+                metadata_rows.append(["Experiment Final Phase", str(experiment.get("final_phase"))])
+            if experiment.get("source_name"):
+                metadata_rows.append(["Experiment Source", str(experiment.get("source_name"))])
+            if experiment.get("source_id"):
+                metadata_rows.append(["Experiment Source ID", str(experiment.get("source_id"))])
+            if experiment.get("bootstrap_attempted"):
+                metadata_rows.append([
+                    "Experiment Bootstrap",
+                    "OK" if experiment.get("bootstrap_ok") is True else "ATTEMPTED",
+                ])
+            if experiment.get("fallback_attempted"):
+                metadata_rows.append([
+                    "Experiment Fallback",
+                    "OK" if experiment.get("fallback_ok") is True else "ATTEMPTED",
+                ])
+            if experiment.get("recovery_open"):
+                metadata_rows.append(["Experiment Recovery", "OPEN"])
+            if experiment.get("reason"):
+                metadata_rows.append(["Recovery Reason", str(experiment.get("reason"))])
+            if experiment.get("recommended_action"):
+                metadata_rows.append(["Recovery Next Action", str(experiment.get("recommended_action"))])
+            if interventions.get("count"):
+                metadata_rows.append(["Operator Interventions", str(interventions.get("count"))])
+            if interventions.get("latest_action"):
+                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
+                latest_before = str(interventions.get("latest_status_before") or "").strip()
+                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_value = latest_action
+                if latest_before or latest_after:
+                    latest_value += f" ({latest_before or '?'} -> {latest_after or '?'})"
+                metadata_rows.append(["Latest Intervention", latest_value])
+            if interventions.get("latest_outcome"):
+                metadata_rows.append(["Latest Intervention Outcome", str(interventions.get("latest_outcome")).upper()])
+            if interventions.get("latest_outcome_reason"):
+                metadata_rows.append(["Latest Intervention Outcome Reason", str(interventions.get("latest_outcome_reason"))])
+            if interventions.get("latest_note"):
+                metadata_rows.append(["Latest Intervention Note", str(interventions.get("latest_note"))])
             content.append({"type": "heading", "level": 1, "text": "Job Details"})
             content.append({
                 "type": "table",
                 "headers": ["Property", "Value"],
-                "rows": [
-                    ["Job ID", str(job.id)],
-                    ["Job Type", job.job_type],
-                    ["Status", job.status],
-                    ["Progress", f"{job.progress}%"],
-                    ["Iterations", f"{job.iteration}/{job.max_iterations}"],
-                    ["Tool Calls", f"{job.tool_calls_used}/{job.max_tool_calls}"],
-                    ["LLM Calls", f"{job.llm_calls_used}/{job.max_llm_calls}"],
-                    ["Created", job.created_at.strftime("%Y-%m-%d %H:%M:%S") if job.created_at else "N/A"],
-                    ["Started", job.started_at.strftime("%Y-%m-%d %H:%M:%S") if job.started_at else "N/A"],
-                    ["Completed", job.completed_at.strftime("%Y-%m-%d %H:%M:%S") if job.completed_at else "N/A"],
-                ]
+                "rows": metadata_rows
             })
 
         # Results section
@@ -906,10 +1230,50 @@ class JobResultsExporter:
                 stats_items.append(f"Findings: {job.results['findings_count']}")
             if "actions_count" in job.results:
                 stats_items.append(f"Actions taken: {job.results['actions_count']}")
+            extraction = self._get_memory_extraction_summary(job)
+            experiment = self._get_experiment_run_summary(job)
+            interventions = self._get_operator_intervention_summary(job)
+            if extraction.get("status"):
+                stats_items.append(
+                    f"Memory extraction: {str(extraction.get('status') or '').upper()} "
+                    f"(created {int(extraction.get('created_count', 0) or 0)}, "
+                    f"dedup skipped {int(extraction.get('skipped_duplicates', 0) or 0)})"
+                )
+            if experiment.get("final_phase"):
+                stats_items.append(f"Experiment final phase: {experiment['final_phase']}")
+            if experiment.get("recovery_open"):
+                stats_items.append(
+                    f"Experiment recovery: OPEN ({int(experiment.get('failed_command_count', 0) or 0)} failed commands)"
+                )
+            elif experiment.get("fallback_attempted"):
+                stats_items.append(
+                    f"Experiment fallback: {'OK' if experiment.get('fallback_ok') is True else 'ATTEMPTED'}"
+                )
+            if experiment.get("reason"):
+                stats_items.append(f"Recovery reason: {experiment['reason']}")
+            if experiment.get("recommended_action"):
+                stats_items.append(f"Recovery next action: {experiment['recommended_action']}")
+            if interventions.get("count"):
+                stats_items.append(f"Operator interventions: {int(interventions.get('count', 0) or 0)}")
+            if interventions.get("latest_action"):
+                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
+                latest_before = str(interventions.get("latest_status_before") or "").strip()
+                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_line = f"Latest intervention: {latest_action}"
+                if latest_before or latest_after:
+                    latest_line += f" ({latest_before or '?'} -> {latest_after or '?'})"
+                stats_items.append(latest_line)
+            if interventions.get("latest_outcome"):
+                stats_items.append(f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}")
+            if interventions.get("latest_outcome_reason"):
+                stats_items.append(f"Intervention outcome reason: {interventions['latest_outcome_reason']}")
 
             if stats_items:
                 content.append({"type": "heading", "level": 2, "text": "Statistics"})
                 content.append({"type": "bullet_list", "items": stats_items})
+            if interventions.get("recent_items"):
+                content.append({"type": "heading", "level": 2, "text": "Recent Operator Interventions"})
+                content.append({"type": "bullet_list", "items": list(interventions.get("recent_items") or [])})
 
             findings = job.results.get("findings", [])
             if findings:
@@ -982,16 +1346,56 @@ class JobResultsExporter:
 
         # Metadata slide
         if include_metadata:
+            extraction = self._get_memory_extraction_summary(job)
+            experiment = self._get_experiment_run_summary(job)
+            interventions = self._get_operator_intervention_summary(job)
+            stat_content = [
+                f"Job Type: {job.job_type}",
+                f"Iterations: {job.iteration}/{job.max_iterations}",
+                f"Tool Calls: {job.tool_calls_used}/{job.max_tool_calls}",
+                f"Duration: {self._calculate_duration(job)}",
+            ]
+            if extraction.get("status"):
+                stat_content.append(
+                    f"Memory extraction: {str(extraction.get('status') or '').upper()} "
+                    f"(created {int(extraction.get('created_count', 0) or 0)}, "
+                    f"dedup skipped {int(extraction.get('skipped_duplicates', 0) or 0)})"
+                )
+            if experiment.get("final_phase"):
+                stat_content.append(f"Experiment final phase: {experiment['final_phase']}")
+            if experiment.get("recovery_open"):
+                stat_content.append(
+                    f"Experiment recovery: OPEN ({int(experiment.get('failed_command_count', 0) or 0)} failed commands)"
+                )
+            elif experiment.get("fallback_attempted"):
+                stat_content.append(
+                    f"Experiment fallback: {'OK' if experiment.get('fallback_ok') is True else 'ATTEMPTED'}"
+                )
+            if experiment.get("reason"):
+                stat_content.append(f"Recovery reason: {experiment['reason']}")
+            if experiment.get("recommended_action"):
+                stat_content.append(f"Recovery next action: {experiment['recommended_action']}")
+            if interventions.get("count"):
+                stat_content.append(f"Operator interventions: {int(interventions.get('count', 0) or 0)}")
+            if interventions.get("latest_action"):
+                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
+                latest_before = str(interventions.get("latest_status_before") or "").strip()
+                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_line = f"Latest intervention: {latest_action}"
+                if latest_before or latest_after:
+                    latest_line += f" ({latest_before or '?'} -> {latest_after or '?'})"
+                stat_content.append(latest_line)
+            if interventions.get("latest_outcome"):
+                stat_content.append(f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}")
+            if interventions.get("latest_outcome_reason"):
+                stat_content.append(f"Intervention outcome reason: {interventions['latest_outcome_reason']}")
+            for item in list(interventions.get("recent_items") or [])[:3]:
+                stat_content.append(f"Intervention timeline: {str(item)}")
             slides.append(SlideContent(
                 slide_number=slide_num,
                 slide_type="content",
                 title="Job Statistics",
-                content=[
-                    f"Job Type: {job.job_type}",
-                    f"Iterations: {job.iteration}/{job.max_iterations}",
-                    f"Tool Calls: {job.tool_calls_used}/{job.max_tool_calls}",
-                    f"Duration: {self._calculate_duration(job)}",
-                ],
+                content=stat_content,
             ))
             slide_num += 1
 

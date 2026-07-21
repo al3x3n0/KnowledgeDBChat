@@ -68,6 +68,18 @@ class ExperimentRun(Base):
         nullable=True,
         index=True,
     )
+    parent_run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("experiment_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    latest_child_run_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("experiment_runs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     name = Column(String(500), nullable=False)
     status = Column(String(32), nullable=False, default="planned")  # planned|running|completed|failed|cancelled
@@ -79,6 +91,7 @@ class ExperimentRun(Base):
 
     # Simple progress tracking
     progress = Column(Integer, default=0, nullable=False)  # 0-100
+    retry_count = Column(Integer, default=0, nullable=False)
 
     started_at = Column(DateTime(timezone=True), nullable=True)
     completed_at = Column(DateTime(timezone=True), nullable=True)

@@ -1,5 +1,6 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import toast from 'react-hot-toast';
+import { useLocation } from 'react-router-dom';
 
 import apiClient from '../services/api';
 import {
@@ -12,6 +13,7 @@ import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 
 const PatchPRsPage: React.FC = () => {
+  const location = useLocation();
   const [items, setItems] = useState<PatchPRListItem[]>([]);
   const [total, setTotal] = useState<number>(0);
   const [loading, setLoading] = useState<boolean>(false);
@@ -21,6 +23,7 @@ const PatchPRsPage: React.FC = () => {
 
   const [rootJobId, setRootJobId] = useState<string>('');
   const [proposalStrategy, setProposalStrategy] = useState<'best_passing' | 'latest'>('best_passing');
+  const deepLinkedPatchPrId = useMemo(() => String(new URLSearchParams(location.search).get('pr') || '').trim(), [location.search]);
 
   const canCreate = useMemo(() => rootJobId.trim().length > 0, [rootJobId]);
 
@@ -100,6 +103,11 @@ const PatchPRsPage: React.FC = () => {
   useEffect(() => {
     refresh();
   }, []);
+
+  useEffect(() => {
+    if (!deepLinkedPatchPrId) return;
+    loadDetail(deepLinkedPatchPrId);
+  }, [deepLinkedPatchPrId]);
 
   return (
     <div className="max-w-7xl mx-auto px-4 py-6">

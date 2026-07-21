@@ -25,15 +25,25 @@ if TYPE_CHECKING:
     from app.services.llm_service import LLMService, UserLLMSettings
 
 
-# Extended entity types for LLM extraction
-ENTITY_TYPES = ("person", "org", "location", "product", "email", "url", "concept", "technology", "event", "other")
+def _sanitize_type(s: str, default: str, max_len: int = 64) -> str:
+    """
+    Normalize an arbitrary type label to a compact snake_case token.
 
-# Extended relationship types for LLM extraction
-RELATION_TYPES = (
-    "works_for", "manages", "reports_to", "collaborates_with",
-    "owns", "uses", "implements", "part_of", "located_in",
-    "related_to", "mentions", "references", "created_by"
-)
+    We intentionally avoid a hardcoded taxonomy here; the LLM can introduce
+    new types as needed. We only enforce formatting and a safe fallback.
+    """
+    try:
+        s = (s or "").strip().lower()
+    except Exception:
+        s = ""
+    if not s:
+        return default
+    s = s.replace(" ", "_").replace("-", "_")
+    s = re.sub(r"[^a-z0-9_]", "", s)
+    s = re.sub(r"_+", "_", s).strip("_")
+    if not s:
+        return default
+    return s[:max_len]
 
 
 @dataclass
@@ -228,15 +238,18 @@ Text:
 Return a JSON object with this exact structure:
 {{
   "entities": [
-    {{"text": "entity name", "type": "person|org|location|product|concept|technology|event", "description": "brief context (optional)"}}
+    {{"text": "entity name", "type": "short_snake_case_type", "description": "brief context (optional)"}}
   ],
   "relationships": [
-    {{"source": "entity A name", "target": "entity B name", "type": "relationship_type", "confidence": 0.9, "evidence": "supporting text snippet"}}
+    {{"source": "entity A name", "target": "entity B name", "type": "short_snake_case_relation", "confidence": 0.9, "evidence": "supporting text snippet"}}
   ]
 }}
 
-Entity types: person, org, location, product, concept, technology, event, email, url
-Relationship types: works_for, manages, reports_to, collaborates_with, owns, uses, implements, part_of, located_in, related_to, mentions, references, created_by
+Known entity types (prefer these when they fit):
+{known_entity_types}
+
+Known relationship types (prefer these when they fit):
+{known_relation_types}
 
 Guidelines:
 1. Extract ALL named entities (people, companies, places, products, technologies)
@@ -245,11 +258,38 @@ Guidelines:
 4. Use high confidence (0.8+) only for clearly stated relationships
 5. Include evidence snippets that support each relationship
 6. Keep entity names as they appear in the text (preserve capitalization)
+7. When a known type fits, use it. If none fits, use "other" for entities and "related_to" for relationships.
+8. Keep your type vocabulary small and consistent across extractions; avoid near-duplicate synonyms.
 
 Return ONLY valid JSON, no markdown code blocks or explanation."""
 
+    TYPE_RESOLUTION_PROMPT = """You are a normalization step for a knowledge graph extractor.
+
+You will be given:
+1) an "open list" of allowed entity types
+2) an "open list" of allowed relationship types
+3) an extraction JSON with entities/relationships
+
+Your task:
+- Replace every entity "type" with the single best match from the allowed entity types.
+- Replace every relationship "type" with the single best match from the allowed relationship types.
+- Keep all other fields the same.
+- If nothing fits well, use "other" for entity types and "related_to" for relationship types.
+
+Allowed entity types:
+{allowed_entity_types}
+
+Allowed relationship types:
+{allowed_relation_types}
+
+Extraction JSON:
+{extraction_json}
+
+Return ONLY valid JSON matching the original structure (keys: entities, relationships)."""
+
     def __init__(self) -> None:
         self._llm_service: Optional["LLMService"] = None
+        self._known_types_cache: Optional[Dict[str, Any]] = None
 
     def _get_llm_service(self) -> "LLMService":
         """Lazy-load LLM service to avoid circular imports."""
@@ -257,6 +297,30 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
             from app.services.llm_service import LLMService
             self._llm_service = LLMService()
         return self._llm_service
+
+    async def _get_known_types(self, db: AsyncSession) -> Tuple[List[str], List[str]]:
+        # Small in-process TTL cache to avoid a DISTINCT scan per chunk.
+        try:
+            from time import time as _time
+            now = _time()
+            ttl_s = 300.0
+            cached = self._known_types_cache or {}
+            if cached.get("ts") and (now - float(cached["ts"])) < ttl_s:
+                return cached.get("entity_types", []) or [], cached.get("relation_types", []) or []
+
+            et = (await db.execute(select(Entity.entity_type).distinct().order_by(Entity.entity_type))).fetchall()
+            rt = (await db.execute(select(Relationship.relation_type).distinct().order_by(Relationship.relation_type))).fetchall()
+            entity_types = [r[0] for r in et if r and r[0]]
+            relation_types = [r[0] for r in rt if r and r[0]]
+
+            # Prevent prompt bloat.
+            entity_types = entity_types[:100]
+            relation_types = relation_types[:100]
+
+            self._known_types_cache = {"ts": now, "entity_types": entity_types, "relation_types": relation_types}
+            return entity_types, relation_types
+        except Exception:
+            return [], []
 
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
         """Parse JSON from LLM response, handling markdown blocks."""
@@ -290,6 +354,8 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
         self,
         text: str,
         user_settings: Optional["UserLLMSettings"] = None,
+        known_entity_types: Optional[List[str]] = None,
+        known_relation_types: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         """Extract entities and relationships from text using LLM.
 
@@ -305,7 +371,11 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
         if len(text) > max_len:
             text = text[:max_len] + "..."
 
-        prompt = self.EXTRACTION_PROMPT.format(text=text)
+        prompt = self.EXTRACTION_PROMPT.format(
+            text=text,
+            known_entity_types=json.dumps(known_entity_types or []),
+            known_relation_types=json.dumps(known_relation_types or []),
+        )
 
         try:
             llm = self._get_llm_service()
@@ -324,51 +394,101 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
             return {"entities": [], "relationships": []}
 
     def _normalize_entity_type(self, etype: str) -> str:
-        """Normalize entity type to valid type."""
-        etype = etype.lower().strip()
-        if etype in ENTITY_TYPES:
-            return etype
-        # Map common variations
-        type_map = {
-            "organization": "org",
-            "company": "org",
-            "corporation": "org",
-            "place": "location",
-            "city": "location",
-            "country": "location",
-            "tool": "technology",
-            "framework": "technology",
-            "library": "technology",
-            "language": "technology",
-            "idea": "concept",
-            "topic": "concept",
-        }
-        return type_map.get(etype, "other")
+        """Normalize entity type to a safe snake_case token, without a fixed taxonomy."""
+        return _sanitize_type(etype, default="other")
 
     def _normalize_relation_type(self, rtype: str) -> str:
-        """Normalize relationship type to valid type."""
-        rtype = rtype.lower().strip().replace(" ", "_").replace("-", "_")
-        if rtype in RELATION_TYPES:
-            return rtype
-        # Map common variations
-        type_map = {
-            "employed_by": "works_for",
-            "works_at": "works_for",
-            "employee_of": "works_for",
-            "leads": "manages",
-            "supervises": "manages",
-            "belongs_to": "part_of",
-            "member_of": "part_of",
-            "in": "located_in",
-            "based_in": "located_in",
-            "utilizes": "uses",
-            "employs": "uses",
-            "develops": "created_by",
-            "made_by": "created_by",
-            "associated_with": "related_to",
-            "connected_to": "related_to",
+        """Normalize relationship type to a safe snake_case token, without a fixed taxonomy."""
+        return _sanitize_type(rtype, default="related_to")
+
+    def _coerce_allowed(self, t: str, allowed: List[str], fallback: str) -> str:
+        """Ensure the normalized type is in the allowed open-list when provided."""
+        t = _sanitize_type(t, default=fallback)
+        if not allowed:
+            return t
+        if t in allowed:
+            return t
+        return fallback if fallback in allowed else t
+
+    async def _resolve_types_from_open_list(
+        self,
+        extraction: Dict[str, Any],
+        *,
+        allowed_entity_types: List[str],
+        allowed_relation_types: List[str],
+        user_settings: Optional["UserLLMSettings"] = None,
+    ) -> Dict[str, Any]:
+        """Resolve extracted entity/relation types to the nearest type from the open-list using the LLM.
+
+        This reduces taxonomy drift without hardcoding a fixed set of types.
+        """
+        if not extraction or (not extraction.get("entities") and not extraction.get("relationships")):
+            return extraction
+
+        ent_allowed = [t for t in (allowed_entity_types or []) if isinstance(t, str) and t.strip()]
+        rel_allowed = [t for t in (allowed_relation_types or []) if isinstance(t, str) and t.strip()]
+        if not ent_allowed and not rel_allowed:
+            return extraction
+
+        # Ensure fallbacks exist in the open list we provide to the model.
+        if ent_allowed and "other" not in ent_allowed:
+            ent_allowed = ent_allowed + ["other"]
+        if rel_allowed and "related_to" not in rel_allowed:
+            rel_allowed = rel_allowed + ["related_to"]
+
+        # Keep prompt bounded.
+        ent_allowed = ent_allowed[:120]
+        rel_allowed = rel_allowed[:160]
+
+        # The extraction payload might include non-serializable values; keep only what we use.
+        safe = {
+            "entities": extraction.get("entities", []) or [],
+            "relationships": extraction.get("relationships", []) or [],
         }
-        return type_map.get(rtype, "related_to")
+
+        prompt = self.TYPE_RESOLUTION_PROMPT.format(
+            allowed_entity_types=json.dumps(ent_allowed),
+            allowed_relation_types=json.dumps(rel_allowed),
+            extraction_json=json.dumps(safe, ensure_ascii=True)[:12000],
+        )
+
+        try:
+            llm = self._get_llm_service()
+            resp = await llm.generate_response(
+                query=prompt,
+                temperature=0.0,
+                max_tokens=1200,
+                user_settings=user_settings,
+                task_type="knowledge_extraction",
+                model=getattr(settings, "KG_EXTRACTION_MODEL", None) or None,
+            )
+            resolved = self._parse_json_response(resp)
+        except Exception as e:
+            logger.warning(f"Type resolution failed; using raw types. Error: {e}")
+            return extraction
+
+        # Post-enforce membership + normalization.
+        out_ents: List[Any] = []
+        for e in (resolved.get("entities") or []):
+            if not isinstance(e, dict) or "text" not in e:
+                continue
+            if ent_allowed:
+                e["type"] = self._coerce_allowed(e.get("type", "other"), ent_allowed, "other")
+            else:
+                e["type"] = self._normalize_entity_type(e.get("type", "other"))
+            out_ents.append(e)
+
+        out_rels: List[Any] = []
+        for r in (resolved.get("relationships") or []):
+            if not isinstance(r, dict) or "source" not in r or "target" not in r:
+                continue
+            if rel_allowed:
+                r["type"] = self._coerce_allowed(r.get("type", "related_to"), rel_allowed, "related_to")
+            else:
+                r["type"] = self._normalize_relation_type(r.get("type", "related_to"))
+            out_rels.append(r)
+
+        return {"entities": out_ents, "relationships": out_rels}
 
     async def extract_entities(self, text: str) -> List[ExtractedEntity]:
         """Extract entities from text using LLM."""
@@ -433,7 +553,21 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
                 return (0, 0)
 
             # Extract using LLM
-            extraction_result = await self.extract_from_text(text, user_settings=user_settings)
+            known_entity_types, known_relation_types = await self._get_known_types(db)
+            extraction_result = await self.extract_from_text(
+                text,
+                user_settings=user_settings,
+                known_entity_types=known_entity_types,
+                known_relation_types=known_relation_types,
+            )
+
+            # Resolve entity/relation types to the closest from the open-list to reduce drift.
+            extraction_result = await self._resolve_types_from_open_list(
+                extraction_result,
+                allowed_entity_types=known_entity_types,
+                allowed_relation_types=known_relation_types,
+                user_settings=user_settings,
+            )
 
             raw_entities = extraction_result.get("entities", [])
             raw_relations = extraction_result.get("relationships", [])

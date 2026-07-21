@@ -82,6 +82,22 @@ This guide provides step-by-step instructions for building and running the Knowl
    - API Documentation: http://localhost:8000/docs
    - Ollama: http://localhost:11434
 
+### Active Directory (LDAP) Login + Import (Optional)
+
+If you want to use existing Active Directory users:
+
+1. Configure LDAP settings in `backend/.env` (copy from `backend/env.example`).
+2. Restart `backend` + `celery`.
+3. (Optional) Import users into the local DB via admin API:
+   - `GET /api/v1/admin/ldap/status`
+   - `POST /api/v1/admin/ldap/import`
+
+For convenience, you can run the interactive bootstrap script:
+
+```bash
+./scripts/ldap_ad_bootstrap.sh
+```
+
 ### Docker Commands
 
 ```bash

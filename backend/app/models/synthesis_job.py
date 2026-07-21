@@ -27,7 +27,12 @@ class SynthesisJobType(str, enum.Enum):
     KNOWLEDGE_SYNTHESIS = "knowledge_synthesis"    # Synthesize into new knowledge
     RESEARCH_REPORT = "research_report"            # Generate research report
     EXECUTIVE_BRIEF = "executive_brief"            # Executive briefing
+    DECISION_MEMO = "decision_memo"                # Citation-aware decision memo
     GAP_ANALYSIS_HYPOTHESES = "gap_analysis_hypotheses"  # Identify gaps & propose testable hypotheses
+    HYPOTHESIS_REEVALUATION = "hypothesis_reevaluation"  # Re-score/re-rank hypotheses using experiment evidence
+    COMPILER_REGRESSION_EXPLANATION = "compiler_regression_explanation"  # Explain compared compiler benchmark runs
+    COMPILER_PATCH_PROPOSAL = "compiler_patch_proposal"  # Propose a bounded compiler change from a regression explanation
+    COMPILER_PATCH_DRAFT = "compiler_patch_draft"  # Draft repo-aware file/symbol changes from a compiler patch proposal
 
 
 class SynthesisJobStatus(str, enum.Enum):
@@ -60,6 +65,10 @@ class SynthesisJob(Base):
 
     # Source documents (list of document IDs)
     document_ids = Column(JSON, nullable=False, default=list)
+    # Optional extracted papers (list of research_paper IDs)
+    paper_ids = Column(JSON, nullable=False, default=list)
+    # Optional originating research note
+    research_note_id = Column(UUID(as_uuid=True), ForeignKey("research_notes.id", ondelete="SET NULL"), nullable=True)
     # Optional search query to find additional documents
     search_query = Column(Text, nullable=True)
     # Topic/focus for the synthesis
@@ -127,6 +136,8 @@ class SynthesisJob(Base):
             "title": self.title,
             "description": self.description,
             "document_ids": self.document_ids,
+            "paper_ids": self.paper_ids,
+            "research_note_id": str(self.research_note_id) if self.research_note_id else None,
             "search_query": self.search_query,
             "topic": self.topic,
             "options": self.options,

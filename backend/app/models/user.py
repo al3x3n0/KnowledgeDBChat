@@ -28,6 +28,12 @@ class User(Base):
     hashed_password = Column(String(128), nullable=False)
     is_active = Column(Boolean, default=True)
     is_verified = Column(Boolean, default=False)
+
+    # External auth (optional)
+    # When auth_provider == "ldap", local password is ignored and login is validated against LDAP.
+    auth_provider = Column(String(20), nullable=False, default="local", index=True)  # local, ldap
+    auth_subject = Column(String(512), nullable=True)  # e.g. LDAP DN
+    auth_metadata = Column(JSON, nullable=True)
     
     # Authorization
     role = Column(String(20), default="user")  # admin, user, viewer

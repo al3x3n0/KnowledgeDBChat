@@ -527,7 +527,7 @@ const LatexStudioPage: React.FC = () => {
 
       const overrides: Record<string, any> = {
         latex_project_id: projectId,
-        target_source_id: sourceId,
+        source_id: sourceId,
       };
       const q = (researchEngineerSearchQuery || '').trim();
       if (q) overrides.search_query = q;
@@ -579,7 +579,7 @@ const LatexStudioPage: React.FC = () => {
 
       const overrides: Record<string, any> = {
         latex_project_id: projectId,
-        target_source_id: sourceId,
+        source_id: sourceId,
         mode: citeMode,
         bib_filename: bibFilename,
         publish_tags: publishTags,

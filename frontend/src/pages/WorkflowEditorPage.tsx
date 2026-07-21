@@ -42,6 +42,10 @@ const WorkflowEditorPage: React.FC = () => {
   const [showSynthesis, setShowSynthesis] = useState(false);
   const [synthesisDescription, setSynthesisDescription] = useState('');
   const [synthesisName, setSynthesisName] = useState('');
+  const [synthesizeCustomTools, setSynthesizeCustomTools] = useState(false);
+  const [preferredSynthesisToolType, setPreferredSynthesisToolType] = useState<'webhook' | 'transform' | 'python' | 'llm_prompt' | 'docker_container'>('docker_container');
+  const [exposeWorkflowAsTool, setExposeWorkflowAsTool] = useState(false);
+  const [workflowToolName, setWorkflowToolName] = useState('');
   const [isSynthesizing, setIsSynthesizing] = useState(false);
 
   // Store state and actions
@@ -222,6 +226,10 @@ const WorkflowEditorPage: React.FC = () => {
         name: synthesisName.trim() || undefined,
         is_active: metadata.isActive,
         trigger_config: metadata.triggerConfig,
+        synthesize_custom_tools: synthesizeCustomTools,
+        preferred_tool_type: synthesizeCustomTools ? preferredSynthesisToolType : undefined,
+        expose_workflow_as_tool: exposeWorkflowAsTool,
+        workflow_tool_name: exposeWorkflowAsTool ? workflowToolName.trim() || undefined : undefined,
       });
       applyWorkflowDraft(response.workflow as any);
       setShowSynthesis(false);
@@ -230,6 +238,12 @@ const WorkflowEditorPage: React.FC = () => {
         toast(`${response.warnings.length} warning${response.warnings.length === 1 ? '' : 's'} generated`, {
           icon: '⚠️',
         });
+      }
+      if (response.custom_tools?.length) {
+        toast.success(`Synthesized ${response.custom_tools.length} custom tool draft(s)`);
+      }
+      if (response.workflow_tool) {
+        toast.success('Prepared workflow_runner tool draft');
       }
     } catch (error: any) {
       toast.error(error.response?.data?.detail || 'Failed to generate workflow');
@@ -571,6 +585,53 @@ const WorkflowEditorPage: React.FC = () => {
                 <p className="text-xs text-gray-500 mt-1">
                   This replaces the current workflow draft in the editor.
                 </p>
+              </div>
+
+              <div className="border rounded-lg p-3 space-y-3 bg-gray-50">
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={synthesizeCustomTools}
+                    onChange={(e) => setSynthesizeCustomTools(e.target.checked)}
+                  />
+                  Synthesize custom tools with the workflow
+                </label>
+                {synthesizeCustomTools && (
+                  <div>
+                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                      Preferred custom tool type
+                    </label>
+                    <select
+                      value={preferredSynthesisToolType}
+                      onChange={(e) => setPreferredSynthesisToolType(e.target.value as any)}
+                      className="w-full px-3 py-2 border rounded-lg text-sm"
+                    >
+                      <option value="docker_container">docker_container (recommended)</option>
+                      <option value="python">python</option>
+                      <option value="llm_prompt">llm_prompt</option>
+                      <option value="webhook">webhook</option>
+                      <option value="transform">transform</option>
+                    </select>
+                  </div>
+                )}
+
+                <label className="flex items-center gap-2 text-sm text-gray-700">
+                  <input
+                    type="checkbox"
+                    checked={exposeWorkflowAsTool}
+                    onChange={(e) => setExposeWorkflowAsTool(e.target.checked)}
+                  />
+                  Include workflow_runner tool draft
+                </label>
+                {exposeWorkflowAsTool && (
+                  <input
+                    type="text"
+                    value={workflowToolName}
+                    onChange={(e) => setWorkflowToolName(e.target.value)}
+                    className="w-full px-3 py-2 border rounded-lg text-sm"
+                    placeholder="Workflow tool name (optional)"
+                  />
+                )}
               </div>
             </div>
 

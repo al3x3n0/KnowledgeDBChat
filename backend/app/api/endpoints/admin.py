@@ -3,7 +3,7 @@ Admin API endpoints for system management.
 """
 
 from typing import List, Dict, Any
-from uuid import UUID
+from uuid import UUID, uuid4
 from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
@@ -37,6 +37,7 @@ from app.schemas.admin import (
     IngestionSourceStatusResponse,
 )
 from app.core.feature_flags import get_flags as get_feature_flags, set_flag as set_feature_flag, set_str as set_feature_str, get_str as get_feature_str
+from app.core.cache import cache_service
 from app.services.llm_service import LLMService
 from fastapi import WebSocket, WebSocketDisconnect
 from pathlib import Path
@@ -57,8 +58,455 @@ from app.schemas.ai_hub_feedback_admin import (
     AIHubFeedbackStatsRow,
     AIHubFeedbackBackfillResponse,
 )
+from app.schemas.ldap import LdapStatusResponse, LdapImportRequest, LdapImportResponse, LdapImportUserRow
 
 router = APIRouter()
+
+
+async def _set_download_task(task_id: str, payload: dict, ttl: int = 3600) -> None:
+    await cache_service.set(f"admin:download-task:{task_id}", payload, ttl=ttl)
+
+
+async def _get_download_task(task_id: str) -> dict | None:
+    value = await cache_service.get(f"admin:download-task:{task_id}")
+    return value if isinstance(value, dict) else None
+
+
+@router.get("/whisper/status")
+async def get_whisper_status(current_user: User = Depends(require_admin)):
+    """
+    Admin: return Whisper model selection + cache download status.
+    """
+    from app.services.transcription_service import (
+        TRANSCRIPTION_AVAILABLE,
+        get_transcription_service,
+        get_transcription_runtime_config,
+    )
+
+    allowed_sizes = ["tiny", "base", "small", "medium", "large"]
+    allowed_devices = ["auto", "cpu", "cuda"]
+
+    selected_model_size = (await get_feature_str("whisper_model_size")) or getattr(settings, "WHISPER_MODEL_SIZE", "small")
+    selected_device = (await get_feature_str("whisper_device")) or getattr(settings, "WHISPER_DEVICE", "auto")
+    selected_model_size = str(selected_model_size or "small").strip().lower()
+    selected_device = str(selected_device or "auto").strip().lower()
+    if selected_model_size not in allowed_sizes:
+        selected_model_size = "small"
+    if selected_device not in allowed_devices:
+        selected_device = "auto"
+
+    cache_dir = Path.home() / ".cache" / "knowledge_db_transcriber" / "whisper"
+    models = []
+    for name in allowed_sizes:
+        # Whisper caches as e.g. base.pt, small.pt (or occasionally variants).
+        files = sorted(cache_dir.glob(f"{name}*.pt")) if cache_dir.exists() else []
+        total_bytes = 0
+        for f in files:
+            try:
+                total_bytes += int(f.stat().st_size)
+            except Exception:
+                pass
+        models.append(
+            {
+                "name": name,
+                "downloaded": bool(files),
+                "files": [f.name for f in files][:10],
+                "total_bytes": total_bytes,
+            }
+        )
+
+    runtime_cfg = get_transcription_runtime_config()
+    svc = get_transcription_service() if TRANSCRIPTION_AVAILABLE else None
+    initialized = bool(getattr(svc, "_initialized", False)) if svc is not None else False
+    loaded_model_size = getattr(svc, "model_size", None) if svc is not None else None
+    loaded_device = getattr(svc, "device", None) if svc is not None else None
+
+    return {
+        "transcription_available": bool(TRANSCRIPTION_AVAILABLE),
+        "selected_model_size": selected_model_size,
+        "selected_device": selected_device,
+        "available_model_sizes": allowed_sizes,
+        "available_devices": allowed_devices,
+        "cache_dir": str(cache_dir),
+        "models": models,
+        "runtime_override": runtime_cfg,
+        "service_initialized": initialized,
+        "loaded_model_size": loaded_model_size,
+        "loaded_device": loaded_device,
+    }
+
+
+@router.get("/ldap/status", response_model=LdapStatusResponse)
+async def ldap_status(current_user: User = Depends(require_admin)):
+    from app.services.ldap_service import ldap_service
+
+    return LdapStatusResponse(
+        enabled=bool(ldap_service.enabled),
+        configured=bool(ldap_service.is_configured()),
+        uri=getattr(settings, "LDAP_URI", None),
+        base_dn=getattr(settings, "LDAP_BASE_DN", None),
+        start_tls=bool(getattr(settings, "LDAP_START_TLS", False)),
+        insecure_skip_tls_verify=bool(getattr(settings, "LDAP_INSECURE_SKIP_TLS_VERIFY", False)),
+    )
+
+
+@router.post("/ldap/import", response_model=LdapImportResponse)
+async def ldap_import_users(
+    payload: LdapImportRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(require_admin),
+):
+    """
+    Admin: import (or sync) users from LDAP directory into the local DB.
+
+    This does not import passwords. LDAP users must still authenticate via LDAP login.
+    """
+    from app.services.ldap_service import ldap_service
+    from app.services.auth_service import auth_service
+    from sqlalchemy import select
+
+    if not ldap_service.enabled or not ldap_service.is_configured():
+        raise HTTPException(status_code=400, detail="LDAP is not enabled/configured")
+
+    search_filter = (payload.search_filter or getattr(settings, "LDAP_IMPORT_FILTER", "") or "").strip()
+    if not search_filter:
+        raise HTTPException(status_code=400, detail="search_filter is required (LDAP_IMPORT_FILTER is empty)")
+
+    limit = int(payload.limit)
+    ldap_users = ldap_service.search_users(search_filter=search_filter, limit=limit)
+
+    created = updated = skipped = errors = 0
+    rows: list[LdapImportUserRow] = []
+
+    for u in ldap_users:
+        try:
+            role = ldap_service.map_role(getattr(u, "groups", None)) or payload.default_role
+
+            # Find by username, then email.
+            existing = None
+            if u.username:
+                res = await db.execute(select(User).where(User.username == u.username))
+                existing = res.scalar_one_or_none()
+            if existing is None and u.email:
+                res = await db.execute(select(User).where(User.email == u.email))
+                existing = res.scalar_one_or_none()
+
+            if existing is None:
+                if payload.dry_run:
+                    created += 1
+                    rows.append(
+                        LdapImportUserRow(
+                            username=u.username,
+                            email=u.email,
+                            full_name=u.full_name,
+                            dn=u.dn,
+                            role=role,
+                            action="created",
+                        )
+                    )
+                    continue
+
+                user = await auth_service._upsert_user_from_ldap(
+                    db,
+                    u,
+                    existing=None,
+                )
+                # If role should be overridden (e.g. admin) and differs from mapping, apply.
+                if payload.overwrite_role and payload.default_role:
+                    user.role = payload.default_role
+                    await db.commit()
+                created += 1
+                rows.append(
+                    LdapImportUserRow(
+                        username=user.username,
+                        email=user.email,
+                        full_name=user.full_name,
+                        dn=getattr(u, "dn", None),
+                        role=user.role,
+                        action="created",
+                    )
+                )
+                continue
+
+            # Update existing
+            if payload.dry_run:
+                updated += 1
+                rows.append(
+                    LdapImportUserRow(
+                        username=existing.username,
+                        email=u.email or existing.email,
+                        full_name=u.full_name or existing.full_name,
+                        dn=u.dn,
+                        role=(payload.default_role if payload.overwrite_role else role),
+                        action="updated",
+                    )
+                )
+                continue
+
+            # Upsert sync
+            await auth_service._upsert_user_from_ldap(db, u, existing=existing)
+            if payload.overwrite_role and payload.default_role:
+                existing.role = payload.default_role
+                await db.commit()
+                await db.refresh(existing)
+
+            updated += 1
+            rows.append(
+                LdapImportUserRow(
+                    username=existing.username,
+                    email=existing.email,
+                    full_name=existing.full_name,
+                    dn=existing.auth_subject,
+                    role=existing.role,
+                    action="updated",
+                )
+            )
+        except Exception as e:
+            errors += 1
+            rows.append(
+                LdapImportUserRow(
+                    username=getattr(u, "username", "") or "",
+                    email=getattr(u, "email", None),
+                    full_name=getattr(u, "full_name", None),
+                    dn=getattr(u, "dn", None),
+                    role=payload.default_role,
+                    action="error",
+                    error=str(e),
+                )
+            )
+
+    # Keep response bounded for UI; include at most 200 rows.
+    if len(rows) > 200:
+        rows = rows[:200]
+
+    # Approximate "skipped" (we don't do per-entry skip right now)
+    skipped = max(0, len(ldap_users) - created - updated - errors)
+
+    return LdapImportResponse(
+        created=created,
+        updated=updated,
+        skipped=skipped,
+        errors=errors,
+        rows=rows,
+    )
+
+
+@router.post("/whisper/config")
+async def set_whisper_config(payload: dict, current_user: User = Depends(require_admin)):
+    """
+    Admin: set Whisper runtime config (model size / device).
+    Stored in feature flags and applied as runtime override immediately.
+    """
+    from app.services.transcription_service import set_transcription_runtime_config
+
+    allowed_sizes = {"tiny", "base", "small", "medium", "large"}
+    allowed_devices = {"auto", "cpu", "cuda"}
+
+    model_size = str(payload.get("model_size") or "").strip().lower() if isinstance(payload, dict) else ""
+    device = str(payload.get("device") or "").strip().lower() if isinstance(payload, dict) else ""
+    reinitialize = bool(payload.get("reinitialize", True)) if isinstance(payload, dict) else True
+
+    if not model_size:
+        model_size = str((await get_feature_str("whisper_model_size")) or getattr(settings, "WHISPER_MODEL_SIZE", "small")).strip().lower()
+    if not device:
+        device = str((await get_feature_str("whisper_device")) or getattr(settings, "WHISPER_DEVICE", "auto")).strip().lower()
+
+    if model_size not in allowed_sizes:
+        raise HTTPException(status_code=400, detail="Invalid whisper model_size")
+    if device not in allowed_devices:
+        raise HTTPException(status_code=400, detail="Invalid whisper device")
+
+    ok1 = await set_feature_str("whisper_model_size", model_size)
+    ok2 = await set_feature_str("whisper_device", device)
+
+    set_transcription_runtime_config(model_size=model_size, device=device, reinitialize=reinitialize)
+    return {
+        "updated": {"model_size": bool(ok1), "device": bool(ok2)},
+        "effective": {"model_size": model_size, "device": device},
+        "reinitialized": bool(reinitialize),
+    }
+
+
+@router.post("/whisper/download")
+async def download_whisper_model(payload: dict, current_user: User = Depends(require_admin)):
+    """
+    Admin: force download/init for selected Whisper model now.
+    """
+    from app.services.transcription_service import TranscriptionService, TRANSCRIPTION_AVAILABLE
+
+    if not TRANSCRIPTION_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Transcription module not available on server")
+
+    model_size = str(payload.get("model_size") or "").strip().lower() if isinstance(payload, dict) else ""
+    device = str(payload.get("device") or "").strip().lower() if isinstance(payload, dict) else ""
+
+    if not model_size:
+        model_size = str((await get_feature_str("whisper_model_size")) or getattr(settings, "WHISPER_MODEL_SIZE", "small")).strip().lower()
+    if not device:
+        device = str((await get_feature_str("whisper_device")) or getattr(settings, "WHISPER_DEVICE", "auto")).strip().lower()
+
+    if model_size not in {"tiny", "base", "small", "medium", "large"}:
+        raise HTTPException(status_code=400, detail="Invalid whisper model_size")
+    if device not in {"auto", "cpu", "cuda"}:
+        raise HTTPException(status_code=400, detail="Invalid whisper device")
+
+    try:
+        svc = TranscriptionService(model_size=model_size, device=device)
+        # Force model load/download.
+        svc._ensure_initialized()
+        return {
+            "status": "ok",
+            "model_size": model_size,
+            "device": device,
+            "message": "Whisper model is ready",
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to download/initialize Whisper model: {e}")
+
+
+@router.post("/whisper/download/start")
+async def start_whisper_download(payload: dict, current_user: User = Depends(require_admin)):
+    """
+    Admin: start Whisper download/init in background and return a task id for progress polling.
+    """
+    import asyncio
+    import threading
+    from app.services.transcription_service import TranscriptionService, TRANSCRIPTION_AVAILABLE
+
+    if not TRANSCRIPTION_AVAILABLE:
+        raise HTTPException(status_code=400, detail="Transcription module not available on server")
+
+    model_size = str(payload.get("model_size") or "").strip().lower() if isinstance(payload, dict) else ""
+    device = str(payload.get("device") or "").strip().lower() if isinstance(payload, dict) else ""
+    if not model_size:
+        model_size = str((await get_feature_str("whisper_model_size")) or getattr(settings, "WHISPER_MODEL_SIZE", "small")).strip().lower()
+    if not device:
+        device = str((await get_feature_str("whisper_device")) or getattr(settings, "WHISPER_DEVICE", "auto")).strip().lower()
+    if model_size not in {"tiny", "base", "small", "medium", "large"}:
+        raise HTTPException(status_code=400, detail="Invalid whisper model_size")
+    if device not in {"auto", "cpu", "cuda"}:
+        raise HTTPException(status_code=400, detail="Invalid whisper device")
+
+    task_id = uuid4().hex
+    await _set_download_task(
+        task_id,
+        {
+            "task_id": task_id,
+            "kind": "whisper",
+            "status": "queued",
+            "progress": 0,
+            "model_size": model_size,
+            "device": device,
+            "message": "Queued",
+            "updated_at": datetime.utcnow().isoformat(),
+        },
+    )
+
+    async def _worker():
+        expected_mb = {"tiny": 39, "base": 74, "small": 244, "medium": 769, "large": 1550}
+        cache_dir = Path.home() / ".cache" / "knowledge_db_transcriber" / "whisper"
+        cache_dir.mkdir(parents=True, exist_ok=True)
+
+        result: dict[str, Any] = {}
+        done = threading.Event()
+
+        def _run():
+            try:
+                svc = TranscriptionService(model_size=model_size, device=device)
+                svc._ensure_initialized()
+                result["ok"] = True
+            except Exception as e:
+                result["error"] = str(e)
+            finally:
+                done.set()
+
+        thread = threading.Thread(target=_run, daemon=True)
+        thread.start()
+
+        await _set_download_task(
+            task_id,
+            {
+                "task_id": task_id,
+                "kind": "whisper",
+                "status": "running",
+                "progress": 5,
+                "model_size": model_size,
+                "device": device,
+                "message": "Initializing Whisper model...",
+                "updated_at": datetime.utcnow().isoformat(),
+            },
+        )
+
+        expected_bytes = int(expected_mb.get(model_size, 100) * 1024 * 1024)
+        while not done.is_set():
+            files = list(cache_dir.glob(f"{model_size}*.pt"))
+            current_bytes = 0
+            for f in files:
+                try:
+                    current_bytes += int(f.stat().st_size)
+                except Exception:
+                    pass
+            if current_bytes > 0:
+                pct = min(95, max(10, int((current_bytes / max(expected_bytes, 1)) * 100)))
+                msg = f"Downloading Whisper {model_size}..."
+            else:
+                pct = 15
+                msg = "Preparing download..."
+
+            await _set_download_task(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "kind": "whisper",
+                    "status": "running",
+                    "progress": pct,
+                    "model_size": model_size,
+                    "device": device,
+                    "message": msg,
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+            )
+            await asyncio.sleep(1.0)
+
+        if result.get("ok"):
+            await _set_download_task(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "kind": "whisper",
+                    "status": "done",
+                    "progress": 100,
+                    "model_size": model_size,
+                    "device": device,
+                    "message": "Whisper model is ready",
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+            )
+        else:
+            await _set_download_task(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "kind": "whisper",
+                    "status": "error",
+                    "progress": 100,
+                    "model_size": model_size,
+                    "device": device,
+                    "message": result.get("error", "Unknown error"),
+                    "updated_at": datetime.utcnow().isoformat(),
+                },
+            )
+
+    asyncio.create_task(_worker())
+    return {"task_id": task_id, "status": "queued"}
+
+
+@router.get("/whisper/download/{task_id}")
+async def get_whisper_download_status(task_id: str, current_user: User = Depends(require_admin)):
+    data = await _get_download_task(task_id)
+    if not data or data.get("kind") != "whisper":
+        raise HTTPException(status_code=404, detail="Task not found")
+    return data
 
 @router.get("/ingestion/status", response_model=IngestionStatusResponse)
 async def get_ingestion_status(
@@ -387,7 +835,13 @@ async def update_flags(
     try:
         updated = {}
         for name, val in flags.items():
-            if name in {"knowledge_graph_enabled", "summarization_enabled", "auto_summarize_on_process", "unsafe_code_execution_enabled"}:
+            if name in {
+                "knowledge_graph_enabled",
+                "summarization_enabled",
+                "auto_summarize_on_process",
+                "unsafe_code_execution_enabled",
+                "repo_symbol_retrieval_enabled",
+            }:
                 ok = await set_feature_flag(name, bool(val))
                 updated[name] = ok
         return {"updated": updated}
@@ -676,6 +1130,167 @@ async def switch_llm_model(model_name: str, current_user: User = Depends(require
     except Exception as e:
         logger.error(f"Error switching LLM model: {e}")
         raise HTTPException(status_code=500, detail="Failed to switch LLM model")
+
+
+@router.post("/llm/ollama-pull/start")
+async def start_ollama_pull(payload: dict, current_user: User = Depends(require_admin)):
+    """
+    Admin: start `ollama pull <model>` and return task id for progress polling.
+    """
+    import asyncio
+
+    model_name = str(payload.get("model_name") or "").strip() if isinstance(payload, dict) else ""
+    if not model_name:
+        raise HTTPException(status_code=400, detail="model_name is required")
+
+    task_id = uuid4().hex
+    await _set_download_task(
+        task_id,
+        {
+            "task_id": task_id,
+            "kind": "ollama_pull",
+            "status": "queued",
+            "progress": 0,
+            "model_name": model_name,
+            "message": "Queued",
+            "updated_at": datetime.utcnow().isoformat(),
+            "logs": [],
+        },
+    )
+
+    async def _worker():
+        import re as _re
+
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "ollama",
+                "pull",
+                model_name,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.STDOUT,
+            )
+        except FileNotFoundError:
+            await _set_download_task(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "kind": "ollama_pull",
+                    "status": "error",
+                    "progress": 100,
+                    "model_name": model_name,
+                    "message": "Ollama is not available on this server",
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "logs": [],
+                },
+            )
+            return
+        except Exception as e:
+            await _set_download_task(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "kind": "ollama_pull",
+                    "status": "error",
+                    "progress": 100,
+                    "model_name": model_name,
+                    "message": str(e),
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "logs": [],
+                },
+            )
+            return
+
+        progress = 2
+        logs: list[str] = []
+        await _set_download_task(
+            task_id,
+            {
+                "task_id": task_id,
+                "kind": "ollama_pull",
+                "status": "running",
+                "progress": progress,
+                "model_name": model_name,
+                "message": "Starting ollama pull...",
+                "updated_at": datetime.utcnow().isoformat(),
+                "logs": logs,
+            },
+        )
+
+        if proc.stdout is not None:
+            while True:
+                line = await proc.stdout.readline()
+                if not line:
+                    break
+                txt = line.decode("utf-8", errors="ignore").strip()
+                if not txt:
+                    continue
+                logs.append(txt)
+                logs = logs[-80:]
+                # Extract percentage if present.
+                ms = _re.findall(r"(\d{1,3})%", txt)
+                if ms:
+                    try:
+                        p = max(min(100, int(x)) for x in ms)
+                        progress = max(progress, p)
+                    except Exception:
+                        pass
+                else:
+                    progress = min(95, progress + 1)
+
+                await _set_download_task(
+                    task_id,
+                    {
+                        "task_id": task_id,
+                        "kind": "ollama_pull",
+                        "status": "running",
+                        "progress": progress,
+                        "model_name": model_name,
+                        "message": txt,
+                        "updated_at": datetime.utcnow().isoformat(),
+                        "logs": logs,
+                    },
+                )
+
+        rc = await proc.wait()
+        if rc == 0:
+            await _set_download_task(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "kind": "ollama_pull",
+                    "status": "done",
+                    "progress": 100,
+                    "model_name": model_name,
+                    "message": "Model downloaded",
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "logs": logs[-80:],
+                },
+            )
+        else:
+            await _set_download_task(
+                task_id,
+                {
+                    "task_id": task_id,
+                    "kind": "ollama_pull",
+                    "status": "error",
+                    "progress": 100,
+                    "model_name": model_name,
+                    "message": f"ollama pull failed (exit {rc})",
+                    "updated_at": datetime.utcnow().isoformat(),
+                    "logs": logs[-80:],
+                },
+            )
+
+    asyncio.create_task(_worker())
+    return {"task_id": task_id, "status": "queued"}
+
+
+@router.get("/llm/ollama-pull/{task_id}")
+async def get_ollama_pull_status(task_id: str, current_user: User = Depends(require_admin)):
+    data = await _get_download_task(task_id)
+    if not data or data.get("kind") != "ollama_pull":
+        raise HTTPException(status_code=404, detail="Task not found")
+    return data
 
 
 @router.get("/llm/routing")

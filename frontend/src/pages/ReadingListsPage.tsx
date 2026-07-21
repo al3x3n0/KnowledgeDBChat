@@ -2,7 +2,7 @@
  * Reading lists page.
  */
 
-import React, { useMemo } from 'react';
+import React, { useMemo, useState } from 'react';
 import { useNavigate } from 'react-router-dom';
 import { useQuery, useQueryClient } from 'react-query';
 import { Plus, Loader2 } from 'lucide-react';
@@ -21,6 +21,7 @@ interface ReadingListItem {
 const ReadingListsPage: React.FC = () => {
   const navigate = useNavigate();
   const queryClient = useQueryClient();
+  const [newListName, setNewListName] = useState('New Reading List');
 
   const { data, isLoading, isFetching } = useQuery(['readingLists'], () => apiClient.listReadingLists({ limit: 100, offset: 0 }), {
     staleTime: 5000,
@@ -29,11 +30,12 @@ const ReadingListsPage: React.FC = () => {
   const lists: ReadingListItem[] = useMemo(() => (data?.items || []) as ReadingListItem[], [data?.items]);
 
   const createList = async () => {
-    const name = window.prompt('Reading list name', 'New Reading List');
-    if (!name || !name.trim()) return;
+    const name = newListName.trim();
+    if (!name) return;
     try {
       const created = await apiClient.createReadingList({ name: name.trim(), auto_populate_from_source: false });
       toast.success('Reading list created');
+      setNewListName('New Reading List');
       queryClient.invalidateQueries('readingLists');
       if (created?.id) navigate(`/reading-lists/${created.id}`);
     } catch (e: any) {
@@ -48,13 +50,22 @@ const ReadingListsPage: React.FC = () => {
           <h1 className="text-2xl font-bold text-gray-900">Reading Lists</h1>
           <p className="text-gray-600">Collections of papers/documents with status and notes</p>
         </div>
-        <button
-          onClick={createList}
-          className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
-        >
-          <Plus className="w-4 h-4" />
-          New List
-        </button>
+        <div className="flex items-center gap-2">
+          <input
+            type="text"
+            value={newListName}
+            onChange={(e) => setNewListName(e.target.value)}
+            className="border border-gray-300 rounded-lg px-3 py-2 text-sm min-w-[240px]"
+            placeholder="Reading list name"
+          />
+          <button
+            onClick={createList}
+            className="inline-flex items-center gap-2 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700"
+          >
+            <Plus className="w-4 h-4" />
+            New List
+          </button>
+        </div>
       </div>
 
       <div className="bg-white border rounded-lg shadow-sm">
@@ -92,4 +103,3 @@ const ReadingListsPage: React.FC = () => {
 };
 
 export default ReadingListsPage;
-

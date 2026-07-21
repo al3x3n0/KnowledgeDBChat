@@ -1,4 +1,4 @@
-.PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint
+.PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint typecheck-frontend test-backend-coverage
 
 # Prefer legacy `docker-compose` if installed, otherwise use `docker compose`.
 DC ?= $(shell command -v docker-compose >/dev/null 2>&1 && echo docker-compose || echo "docker compose")
@@ -70,8 +70,14 @@ redis-shell: ## Open Redis CLI
 test-backend: ## Run backend tests
 	$(DC) exec backend pytest
 
+test-backend-coverage: ## Run backend tests with CI-style coverage threshold
+	$(DC) exec backend pytest --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=70
+
 test-frontend: ## Run frontend tests (non-interactive)
 	$(DC) exec frontend npm run test:ci
+
+typecheck-frontend: ## Run frontend TypeScript typecheck
+	$(DC) exec frontend sh -lc "./node_modules/.bin/tsc --noEmit -p tsconfig.json"
 
 test-frontend-watch: ## Run frontend tests (watch mode)
 	$(DC) exec frontend npm test

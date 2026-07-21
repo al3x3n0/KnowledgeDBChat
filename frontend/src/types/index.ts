@@ -56,6 +56,20 @@ export interface SourceDocument {
   snippet?: string;
 }
 
+export interface InstantArxivIngestResponse {
+  document_id: string;
+  arxiv_id: string;
+  title: string;
+  authors: string[];
+  abstract: string;
+  categories: string[];
+  url: string;
+  pdf_url: string;
+  chunks_created: number;
+  ready_for_chat: boolean;
+  background_tasks?: string[];
+}
+
 export interface Persona {
   id: string;
   name: string;
@@ -165,6 +179,76 @@ export interface ArxivSearchResponse {
   start: number;
   max_results: number;
   items: ArxivPaper[];
+}
+
+export interface PaperClaim {
+  id: string;
+  kind: 'performance' | 'compile_time' | 'code_size' | 'energy' | 'correctness' | 'robustness' | 'other' | string;
+  statement: string;
+  mechanism?: string | null;
+  target_layer: 'source' | 'ir' | 'midend' | 'backend' | 'runtime' | 'hardware' | 'unknown' | string;
+  conditions?: string[] | null;
+  assumptions?: string[] | null;
+  expected_effect?: string | null;
+  evidence_summary?: string | null;
+  confidence?: number | null;
+  tags?: string[] | null;
+  rank?: number | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface PaperExtractionJob {
+  id: string;
+  user_id: string;
+  document_id: string;
+  source_id?: string | null;
+  paper_id?: string | null;
+  status: 'pending' | 'running' | 'completed' | 'failed' | string;
+  extractor_version?: string | null;
+  error?: string | null;
+  request_payload?: Record<string, any> | null;
+  result_summary?: Record<string, any> | null;
+  created_at?: string | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ResearchPaper {
+  id: string;
+  user_id: string;
+  document_id: string;
+  source_id?: string | null;
+  arxiv_id: string;
+  title: string;
+  authors?: string[] | null;
+  abstract?: string | null;
+  published_at?: string | null;
+  categories?: string[] | null;
+  paper_url?: string | null;
+  pdf_url?: string | null;
+  extraction_status: 'pending' | 'running' | 'completed' | 'failed' | string;
+  extracted_at?: string | null;
+  extractor_version?: string | null;
+  summary?: string | null;
+  mechanisms?: string[] | null;
+  assumptions?: string[] | null;
+  benchmarks?: string[] | null;
+  metrics?: string[] | null;
+  limitations?: string[] | null;
+  raw_extraction_payload?: Record<string, any> | null;
+  claims: PaperClaim[];
+  latest_job?: PaperExtractionJob | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ResearchPaperListResponse {
+  items: ResearchPaper[];
+  total: number;
+  limit: number;
+  offset: number;
 }
 
 export interface Document {
@@ -1036,6 +1120,12 @@ export type NotificationType =
   | 'summarization_complete'
   | 'research_note_citation_issue'
   | 'experiment_run_update'
+  | 'hypothesis_reevaluation_update'
+  | 'queue_urgency_alert'
+  | 'follow_up_outcome_alert'
+  | 'policy_guardrail_alert'
+  | 'autonomy_budget_alert'
+  | 'customer_autonomy_budget_alert'
   | 'system_maintenance'
   | 'quota_warning'
   | 'admin_broadcast'
@@ -1045,6 +1135,105 @@ export type NotificationType =
 
 export type NotificationPriority = 'low' | 'normal' | 'high' | 'urgent';
 
+export interface ExperimentRunNotificationData {
+  launch_mode?: string | null;
+  final_phase?: string | null;
+  source_name?: string | null;
+  source_id?: string | null;
+  bootstrap_attempted?: boolean;
+  bootstrap_ok?: boolean | null;
+  fallback_attempted?: boolean;
+  fallback_ok?: boolean | null;
+  failed_command_count?: number;
+  first_failed_command?: string | null;
+  recovery_open?: boolean;
+  recovery_reason?: string | null;
+  recommended_action?: string | null;
+  latest_operator_action?: string | null;
+  latest_operator_note?: string | null;
+  latest_operator_status_before?: string | null;
+  latest_operator_status_after?: string | null;
+  latest_operator_at?: string | null;
+  latest_operator_outcome?: string | null;
+  latest_operator_outcome_reason?: string | null;
+  experiment_run_id?: string;
+  experiment_plan_id?: string;
+  agent_job_id?: string | null;
+  status?: string;
+  note_id?: string | null;
+}
+
+export interface QueueUrgencyNotificationData {
+  queue_key?: string | null;
+  queue_item_type?: string | null;
+  job_id?: string | null;
+  sla_bucket?: string | null;
+  escalation_level?: string | null;
+  priority_score?: number | null;
+  recommended_action?: string | null;
+  reason_label?: string | null;
+  customer?: string | null;
+  age_minutes?: number | null;
+  is_overdue?: boolean;
+  is_stale?: boolean;
+  evidence_summary?: string | null;
+  scheduler_state?: Record<string, any> | null;
+}
+
+export interface FollowUpOutcomeNotificationData {
+  inbox_item_id?: string | null;
+  follow_up_job_id?: string | null;
+  follow_up_last_job_id?: string | null;
+  follow_up_recommendation_key?: string | null;
+  follow_up_outcome_status?: string | null;
+  follow_up_outcome_summary?: string | null;
+  customer?: string | null;
+  follow_up_policy_mode?: string | null;
+  origin_source_kind?: 'profile' | 'portfolio' | null;
+  origin_source_id?: string | null;
+  origin_opportunity_id?: string | null;
+}
+
+export interface HypothesisReevaluationNotificationData {
+  note_id?: string | null;
+  note_title?: string | null;
+  reevaluation_job_id?: string | null;
+  reevaluation_status?: string | null;
+  source_run_ids?: string[] | null;
+  reprioritization_summary?: string | null;
+  pending_reevaluation_created_at?: string | null;
+  pending_reevaluation_completed_at?: string | null;
+  reevaluation_error?: string | null;
+  origin_source_kind?: 'profile' | 'portfolio' | null;
+  origin_source_id?: string | null;
+  origin_opportunity_id?: string | null;
+  origin_action_url?: string | null;
+}
+
+export interface PolicyGuardrailNotificationData {
+  queue_key?: string | null;
+  monitor_job_id?: string | null;
+  history_entry_id?: string | null;
+  policy_guardrail_action?: string | null;
+  policy_guardrail_reasons?: string[] | null;
+  customer?: string | null;
+}
+
+export interface AutonomyBudgetNotificationData {
+  queue_key?: string | null;
+  job_id?: string | null;
+  monitor_job_id?: string | null;
+  budget_throttle_state?: string | null;
+  budget_throttle_reasons?: string[] | null;
+  customer?: string | null;
+}
+
+export interface CustomerAutonomyBudgetNotificationData {
+  customer?: string | null;
+  customer_budget_throttle_state?: string | null;
+  customer_budget_throttle_reasons?: string[] | null;
+}
+
 export interface Notification {
   id: string;
   notification_type: NotificationType;
@@ -1053,7 +1242,7 @@ export interface Notification {
   priority: NotificationPriority;
   related_entity_type?: string;
   related_entity_id?: string;
-  data?: Record<string, any>;
+  data?: Record<string, any> | ExperimentRunNotificationData | QueueUrgencyNotificationData | FollowUpOutcomeNotificationData | HypothesisReevaluationNotificationData | PolicyGuardrailNotificationData | AutonomyBudgetNotificationData | CustomerAutonomyBudgetNotificationData;
   action_url?: string;
   is_read: boolean;
   read_at?: string;
@@ -1079,8 +1268,15 @@ export interface NotificationPreferences {
   notify_summarization_complete: boolean;
   notify_research_note_citation_issues: boolean;
   notify_experiment_run_updates: boolean;
+  notify_hypothesis_reevaluation_updates: boolean;
+  notify_queue_urgency_alerts: boolean;
+  notify_follow_up_outcome_alerts: boolean;
+  notify_policy_guardrail_alerts: boolean;
+  notify_autonomy_budget_alerts: boolean;
+  notify_customer_autonomy_budget_alerts: boolean;
   research_note_citation_coverage_threshold: number;
   research_note_citation_notify_cooldown_hours: number;
+  queue_urgency_alert_reminder_cooldown_hours: number;
   research_note_citation_notify_on_unknown_keys: boolean;
   research_note_citation_notify_on_low_coverage: boolean;
   research_note_citation_notify_on_missing_bibliography: boolean;
@@ -1105,8 +1301,15 @@ export interface NotificationPreferencesUpdate {
   notify_summarization_complete?: boolean;
   notify_research_note_citation_issues?: boolean;
   notify_experiment_run_updates?: boolean;
+  notify_hypothesis_reevaluation_updates?: boolean;
+  notify_queue_urgency_alerts?: boolean;
+  notify_follow_up_outcome_alerts?: boolean;
+  notify_policy_guardrail_alerts?: boolean;
+  notify_autonomy_budget_alerts?: boolean;
+  notify_customer_autonomy_budget_alerts?: boolean;
   research_note_citation_coverage_threshold?: number;
   research_note_citation_notify_cooldown_hours?: number;
+  queue_urgency_alert_reminder_cooldown_hours?: number;
   research_note_citation_notify_on_unknown_keys?: boolean;
   research_note_citation_notify_on_low_coverage?: boolean;
   research_note_citation_notify_on_missing_bibliography?: boolean;
@@ -1405,6 +1608,31 @@ export interface AgentJobSwarmSummary {
   conflicts?: Array<Record<string, any>>;
   action_plan?: Array<Record<string, any>>;
   confidence?: Record<string, any>;
+  winning_slice_id?: string;
+  winning_role?: string;
+  promotion_reason?: string;
+  review_state?: string;
+  review_reason?: string;
+  review_required?: boolean;
+  tie_breaker_attempted?: boolean;
+  tie_breaker_job_id?: string;
+  tie_breaker_source_job_id?: string;
+  file_converged?: boolean;
+  file_convergence_support?: number;
+  top_file_cluster?: Record<string, any> | null;
+  command_converged?: boolean;
+  command_convergence_support?: number;
+  top_command_cluster?: Record<string, any> | null;
+  repair_chain_job_id?: string;
+  candidate_paths?: Array<Record<string, any>>;
+  recommended_commands?: string[];
+  owner_user_id?: string;
+  shared_review?: boolean;
+  shared_with_user_ids?: string[];
+  assigned_user_id?: string;
+  assigned_at?: string;
+  assigned_by_user_id?: string;
+  review_note?: string;
 }
 
 export interface AgentJobGoalContractSummary {
@@ -1439,6 +1667,39 @@ export interface AgentJobExecutiveDigest {
   goal_contract?: Record<string, any>;
 }
 
+export interface AgentJobExecutionGraphDagStats {
+  total_nodes?: number;
+  total_edges?: number;
+  node_type_counts?: Record<string, number>;
+  edge_type_counts?: Record<string, number>;
+  root_nodes?: number;
+  leaf_nodes?: number;
+  orphan_nodes?: number;
+  blocked_nodes?: number;
+  successful_nodes?: number;
+  has_cycle?: boolean;
+  critical_path_length?: number;
+}
+
+export interface AgentJobExecutionGraphHealth {
+  status?: 'ok' | 'warning' | 'critical' | 'unknown' | string;
+  reasons?: string[];
+  severity_score?: number;
+  blocked_ratio?: number;
+}
+
+export interface AgentJobExecutionGraph {
+  verification_attempts?: number;
+  verification_successes?: number;
+  summarization_attempts?: number;
+  summarization_successes?: number;
+  nodes?: Array<Record<string, any>>;
+  edges?: Array<Record<string, any>>;
+  dag_stats?: AgentJobExecutionGraphDagStats;
+  graph_health?: AgentJobExecutionGraphHealth;
+  recommended_actions?: string[];
+}
+
 export interface AgentJobFeedback {
   id: string;
   job_id?: string;
@@ -1470,6 +1731,89 @@ export interface AgentJobFeedbackListResponse {
   total: number;
 }
 
+export interface AgentJobExtractedMemory {
+  id: string;
+  type: string;
+  content: string;
+  importance_score: number;
+  tags: string[];
+}
+
+export interface AgentJobMemoryExtractResponse {
+  job_id: string;
+  memories_created: number;
+  parsed_count: number;
+  candidate_count: number;
+  skipped_duplicates: number;
+  is_relaunch_chain: boolean;
+  relaunch_root_job_id?: string | null;
+  memories: AgentJobExtractedMemory[];
+}
+
+export interface AgentJobMemory {
+  id: string;
+  job_id: string;
+  type: string;
+  content: string;
+  importance_score: number;
+  tags: string[];
+  context?: Record<string, any>;
+  access_count: number;
+  created_at?: string | null;
+}
+
+export interface AgentJobMemoryListResponse {
+  job_id: string;
+  memories: AgentJobMemory[];
+  total: number;
+}
+
+export interface AgentJobMemoryDeleteResponse {
+  job_id: string;
+  deleted_count: number;
+}
+
+export interface AgentJobMemoryStatsMostAccessedItem {
+  id: string;
+  type: string;
+  content: string;
+  access_count: number;
+}
+
+export interface AgentJobMemoryStatsMostImportantItem {
+  id: string;
+  type: string;
+  content: string;
+  importance: number;
+}
+
+export interface AgentJobMemoryStatsResponse {
+  total_memories: number;
+  by_type: Record<string, number>;
+  job_sourced: number;
+  chat_sourced: number;
+  manual: number;
+  most_accessed: AgentJobMemoryStatsMostAccessedItem[];
+  most_important: AgentJobMemoryStatsMostImportantItem[];
+}
+
+export interface AgentJobMemorySearchItem {
+  id: string;
+  type: string;
+  content: string;
+  importance_score: number;
+  tags: string[];
+  job_id?: string | null;
+  access_count: number;
+  created_at?: string | null;
+}
+
+export interface AgentJobMemorySearchResponse {
+  query: string;
+  memories: AgentJobMemorySearchItem[];
+  total: number;
+}
+
 export interface AgentTaskMemoryGraphNode {
   id: string;
   type: string;
@@ -1498,6 +1842,1031 @@ export interface AgentTaskMemoryGraph {
   job_id?: string;
 }
 
+export interface AgentControlRunRoutingSummary {
+  provider?: string | null;
+  model?: string | null;
+  routing_tier?: string | null;
+  requested_tier?: string | null;
+  request_count: number;
+  summary?: string | null;
+}
+
+export interface AgentControlRunNode {
+  id: string;
+  kind: string;
+  label: string;
+  status?: string | null;
+  stage?: string | null;
+  timestamp?: string | null;
+  metadata: Record<string, any>;
+}
+
+export interface AgentControlRunEdge {
+  source: string;
+  target: string;
+  relation: string;
+  metadata: Record<string, any>;
+}
+
+export interface AgentControlRunReplaySummary {
+  replayability_status: string;
+  planner_summary?: string | null;
+  router_summary?: string | null;
+  executor_summary?: string | null;
+  ended_at?: string | null;
+}
+
+export interface AgentControlRunLink {
+  label: string;
+  path: string;
+}
+
+export interface AgentControlRunReviewItem {
+  run_id?: string | null;
+  run_title?: string | null;
+  run_source_type?: string | null;
+  run_status?: string | null;
+  review_type?: string | null;
+  review_status?: string | null;
+  reason_code?: string | null;
+  reason_label?: string | null;
+  source_kind?: string | null;
+  source_id?: string | null;
+  opportunity_id?: string | null;
+  canonical_key?: string | null;
+  title?: string | null;
+  evidence_revision?: string | null;
+  autonomy_state?: string | null;
+  operator_note?: string | null;
+  created_at?: string | null;
+  action_path?: string | null;
+  queue_path?: string | null;
+  note_path?: string | null;
+  synthesis_path?: string | null;
+  item_type?: string | null;
+  queue_item_key?: string | null;
+  status?: string | null;
+  summary?: string | null;
+  evidence_summary?: string | null;
+  customer?: string | null;
+  job_id?: string | null;
+  job_name?: string | null;
+  job_type?: string | null;
+  age_minutes?: number | null;
+  priority_score?: number | null;
+  sla_bucket?: string | null;
+  escalation_level?: string | null;
+  next_run_at?: string | null;
+  backoff_until?: string | null;
+  checkpoint?: Record<string, any> | null;
+  checkpoint_action_draft?: Record<string, any> | null;
+  scheduler_state?: Record<string, any> | null;
+  follow_up_launch_status?: string | null;
+  follow_up_review_status?: string | null;
+  follow_up_recommendation_key?: string | null;
+  recommendation_score?: number | null;
+  follow_up_block_reason?: string | null;
+  follow_up_budget_decision?: string | null;
+  follow_up_budget_reason?: string | null;
+  follow_up_customer_budget_decision?: string | null;
+  follow_up_customer_budget_reason?: string | null;
+  recommended_action?: string | null;
+  policy_update_payload?: Record<string, any> | null;
+  policy_rollback_payload?: Record<string, any> | null;
+  policy_guardrail_action?: string | null;
+  policy_guardrail_target_history_entry_id?: string | null;
+  policy_guardrail_reasons?: string[] | null;
+  budget_throttle_state?: string | null;
+  budget_reason?: string | null;
+  customer_budget_throttle_state?: string | null;
+  customer_budget_reason?: string | null;
+  available_actions?: string[] | null;
+  can_acknowledge?: boolean;
+  can_approve?: boolean;
+  can_reject?: boolean;
+  can_defer?: boolean;
+  can_launch_follow_up?: boolean;
+  can_relaunch_follow_up?: boolean;
+  can_skip?: boolean;
+  can_restart?: boolean;
+  can_resume?: boolean;
+  can_cancel?: boolean;
+  metadata: Record<string, any>;
+}
+
+export interface AgentControlRunReviewActionRequest {
+  review_type: string;
+  source_kind: string;
+  source_id: string;
+  opportunity_id: string;
+  action: string;
+  operator_note?: string | null;
+  reason_code?: string | null;
+  checkpoint_action_patch?: Record<string, any> | null;
+}
+
+export interface AgentControlRunReviewActionResponse {
+  ok: boolean;
+  action: string;
+  review_type?: string | null;
+  source_kind?: string | null;
+  source_id?: string | null;
+  opportunity_id?: string | null;
+  detail?: string | null;
+  monitor_job_id?: string | null;
+  follow_up_launch_status?: string | null;
+  follow_up_operator_decision?: string | null;
+  follow_up_job_id?: string | null;
+}
+
+export interface AgentControlRunBulkReviewActionRequest {
+  item_type: string;
+  action: string;
+  job_ids?: string[];
+  domain_research_profile_id?: string | null;
+  profile_opportunity_ids?: string[];
+  portfolio_id?: string | null;
+  portfolio_opportunity_ids?: string[];
+  operator_note?: string | null;
+}
+
+export interface AgentControlRunBulkReviewActionResult {
+  item_key?: string | null;
+  job_id?: string | null;
+  opportunity_id?: string | null;
+  ok: boolean;
+  detail?: string | null;
+  error?: string | null;
+  status?: string | null;
+  follow_up_launch_status?: string | null;
+  follow_up_operator_decision?: string | null;
+  follow_up_job_id?: string | null;
+}
+
+export interface AgentControlRunBulkReviewActionResponse {
+  ok: boolean;
+  item_type: string;
+  action: string;
+  requested_count: number;
+  applied: number;
+  failed: number;
+  results: AgentControlRunBulkReviewActionResult[];
+}
+
+export interface AgentControlRunSummary {
+  id: string;
+  source_type: string;
+  title: string;
+  subtitle?: string | null;
+  status: string;
+  outcome?: string | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+  root_job_id?: string | null;
+  workflow_execution_id?: string | null;
+  child_job_count: number;
+  child_execution_count: number;
+  linked_note_count: number;
+  linked_experiment_count: number;
+  decision_count: number;
+  replayability_status: string;
+  automation_profile?: string | null;
+  routing?: AgentControlRunRoutingSummary | null;
+  queued_operator_review_count: number;
+  queued_operator_reviews_by_type?: Record<string, number> | null;
+}
+
+export interface AgentControlRunListResponse {
+  items: AgentControlRunSummary[];
+  total: number;
+}
+
+export interface AgentControlRunView {
+  id: string;
+  user_id: string;
+  name: string;
+  filters: Record<string, any>;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentControlRunReviewListResponse {
+  items: AgentControlRunReviewItem[];
+  total: number;
+  summary?: {
+    total: number;
+    by_type?: Record<string, number> | null;
+    by_sla_bucket?: Record<string, number> | null;
+    by_status?: Record<string, number> | null;
+    by_customer?: Record<string, number> | null;
+    by_escalation?: Record<string, number> | null;
+  } | null;
+  offset?: number;
+  limit?: number;
+  has_more?: boolean;
+}
+
+export interface AgentControlRunViewListResponse {
+  items: AgentControlRunView[];
+  total: number;
+}
+
+export interface AgentControlRunViewCreateRequest {
+  name: string;
+  filters: Record<string, any>;
+  is_default?: boolean;
+}
+
+export interface AgentControlRunViewUpdateRequest {
+  name?: string;
+  filters?: Record<string, any>;
+  is_default?: boolean;
+}
+
+export interface AgentControlRunDetail {
+  run: AgentControlRunSummary;
+  nodes: AgentControlRunNode[];
+  edges: AgentControlRunEdge[];
+  decision_trace: AgentDecisionTraceEvent[];
+  memory_graph?: AgentTaskMemoryGraph | null;
+  routing?: AgentControlRunRoutingSummary | null;
+  replay: AgentControlRunReplaySummary;
+  related_links: AgentControlRunLink[];
+  queued_operator_review_count: number;
+  queued_operator_reviews: AgentControlRunReviewItem[];
+  policy_summary: Record<string, any>;
+  metadata: Record<string, any>;
+}
+
+export interface AgentJobExperimentRun {
+  source_id?: string;
+  source_name?: string;
+  enabled?: boolean;
+  backend?: string;
+  commands?: string[];
+  verification_commands?: string[];
+  bootstrap_commands?: string[];
+  fallback_commands?: string[];
+  runs?: Array<Record<string, any>>;
+  ok?: boolean | null;
+  final_phase?: string;
+  phases?: string[];
+  verification_phases?: string[];
+  failed_commands?: string[];
+  proposal_id?: string | null;
+  latex_project_id?: string | null;
+  latex_updated?: boolean;
+  inferred_project_profile?: Record<string, any> | null;
+  bootstrap_attempted?: boolean;
+  bootstrap_ok?: boolean | null;
+  bootstrap_used?: boolean;
+  fallback_attempted?: boolean;
+  fallback_ok?: boolean | null;
+  fallback_used?: boolean;
+  note?: string;
+  summary?: string;
+}
+
+export interface AgentJobOperatorIntervention {
+  action: string;
+  actor_user_id?: string | null;
+  at?: string;
+  note?: string | null;
+  job_status_before?: string | null;
+  job_status_after?: string | null;
+  outcome_status?: string | null;
+  outcome_reason?: string | null;
+  resolved_at?: string | null;
+  metadata?: Record<string, any> | null;
+}
+
+export interface AgentJobCodingWorkspaceSummary {
+  created?: boolean;
+  workspace_id?: string | null;
+  source_type?: string | null;
+  file_count?: number;
+  base_path?: string | null;
+  error?: string | null;
+}
+
+export interface AgentJobVerificationPlan {
+  commands?: string[];
+  bootstrap_commands?: string[];
+  fallback_commands?: string[];
+  auto_inferred?: boolean;
+}
+
+export interface AgentJobExecutionPlanStep {
+  step_id?: string;
+  title?: string;
+  status?: string;
+  objective?: string;
+  commands?: string[];
+}
+
+export interface AgentJobCodePatchRecovery {
+  recovery_state?: string;
+  last_failed_commands?: string[];
+  retry_reason?: string | null;
+  resume_hint?: string | null;
+  suggested_operator_actions?: string[];
+  can_retry_with_refined_plan?: boolean;
+  can_resume_verification?: boolean;
+  latest_failed_output?: string | null;
+}
+
+export interface AgentJobCodePatchExecution {
+  mode?: string;
+  source_id?: string;
+  source_name?: string;
+  source_type?: string;
+  scope?: string;
+  failure_symptom?: string;
+  error_output?: string;
+  workspace?: AgentJobCodingWorkspaceSummary | null;
+  inferred_project_profile?: Record<string, any> | null;
+  verification_plan?: AgentJobVerificationPlan | null;
+  execution_plan?: AgentJobExecutionPlanStep[];
+  proposal_strategy?: string;
+  recovery?: AgentJobCodePatchRecovery | null;
+}
+
+export interface CollaborationSummary {
+  owner_user_id?: string | null;
+  owner_label?: string | null;
+  assigned_user_id?: string | null;
+  assignee_label?: string | null;
+  assigned_by_user_id?: string | null;
+  assigned_at?: string | null;
+  shared_with_user_ids?: string[] | null;
+  visibility_scope?: string | null;
+  is_owned_by_current_user?: boolean;
+  is_assigned_to_current_user?: boolean;
+  is_shared_with_current_user?: boolean;
+  note?: string | null;
+}
+
+export interface CodingBacklogItem {
+  id: string;
+  user_id: string;
+  source_id?: string | null;
+  title: string;
+  portfolio_goal: string;
+  status: string;
+  priority: number;
+  scope?: string | null;
+  failure_symptom?: string | null;
+  error_output?: string | null;
+  file_paths?: string[] | null;
+  commands?: string[] | null;
+  auto_apply_enabled: boolean;
+  require_patch_pr: boolean;
+  visibility?: string;
+  shared_with_user_ids?: string[] | null;
+  assigned_user_id?: string | null;
+  assigned_by_user_id?: string | null;
+  assigned_at?: string | null;
+  collaboration?: Record<string, any> | null;
+  collaboration_summary?: CollaborationSummary | null;
+  operator_queue_state?: string | null;
+  closure_reason?: string | null;
+  why_not_repair?: Record<string, any> | null;
+  policy?: CodingBacklogPolicy | null;
+  lineage?: Record<string, any> | null;
+  decomposition?: CodingBacklogDecomposition | null;
+  child_job_ids?: string[] | null;
+  latest_summary?: CodingBacklogLatestSummary | null;
+  orchestrator_job_id?: string | null;
+  current_job_id?: string | null;
+  latest_apply_job_id?: string | null;
+  latest_proposal_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface CodingBacklogItemCreate {
+  title: string;
+  portfolio_goal: string;
+  source_id: string;
+  scope?: string;
+  priority?: number;
+  failure_symptom?: string;
+  error_output?: string;
+  file_paths?: string[];
+  commands?: string[];
+  auto_apply_enabled?: boolean;
+  require_patch_pr?: boolean;
+  visibility?: string;
+  shared_with_user_ids?: string[];
+  assigned_user_id?: string;
+  assigned_by_user_id?: string;
+  assigned_at?: string;
+  collaboration?: Record<string, any>;
+  policy?: CodingBacklogPolicy;
+  lineage?: Record<string, any>;
+  start_immediately?: boolean;
+}
+
+export interface CodingBacklogItemUpdate {
+  title?: string;
+  portfolio_goal?: string;
+  scope?: string;
+  priority?: number;
+  failure_symptom?: string;
+  error_output?: string;
+  file_paths?: string[];
+  commands?: string[];
+  auto_apply_enabled?: boolean;
+  require_patch_pr?: boolean;
+  visibility?: string;
+  shared_with_user_ids?: string[];
+  assigned_user_id?: string;
+  assigned_by_user_id?: string;
+  assigned_at?: string;
+  collaboration?: Record<string, any>;
+  policy?: CodingBacklogPolicy;
+  lineage?: Record<string, any>;
+  decomposition?: CodingBacklogDecomposition;
+}
+
+export interface CodingBacklogItemListResponse {
+  items: CodingBacklogItem[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface CodingSwarmProfile {
+  id: string;
+  user_id: string;
+  source_id: string;
+  title: string;
+  description?: string | null;
+  status: string;
+  preset_key: string;
+  scope_default: string;
+  default_commands?: string[] | null;
+  default_file_paths?: string[] | null;
+  max_agents: number;
+  safe_command_policy: string;
+  saved_search_query?: string | null;
+  is_default: boolean;
+  visibility?: 'private' | 'shared' | string;
+  shared_with_user_ids?: string[];
+  collaboration_summary?: CollaborationSummary | null;
+  latest_job_id?: string | null;
+  profile_metadata?: Record<string, any> | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CodingSwarmProfileCreate {
+  title: string;
+  source_id: string;
+  preset_key: string;
+  description?: string;
+  scope_default?: string;
+  default_commands?: string[];
+  default_file_paths?: string[];
+  max_agents?: number;
+  safe_command_policy?: string;
+  saved_search_query?: string;
+  is_default?: boolean;
+  visibility?: 'private' | 'shared' | string;
+  shared_with_user_ids?: string[];
+  profile_metadata?: Record<string, any>;
+}
+
+export interface CodingSwarmProfileUpdate {
+  title?: string;
+  description?: string;
+  preset_key?: string;
+  scope_default?: string;
+  default_commands?: string[];
+  default_file_paths?: string[];
+  max_agents?: number;
+  safe_command_policy?: string;
+  saved_search_query?: string;
+  is_default?: boolean;
+  status?: string;
+  visibility?: 'private' | 'shared' | string;
+  shared_with_user_ids?: string[];
+  profile_metadata?: Record<string, any>;
+}
+
+export interface CodingSwarmProfileListResponse {
+  items: CodingSwarmProfile[];
+  total: number;
+  limit: number;
+  offset: number;
+}
+
+export interface DomainResearchProfile {
+  id: string;
+  user_id: string;
+  title: string;
+  domain: string;
+  objective: string;
+  customer_context?: string | null;
+  status: string;
+  source_scope: string;
+  track_type: 'compiler' | 'microarchitecture' | 'generic' | string;
+  research_mode: string;
+  monitor_queries?: string[] | null;
+  repo_source_ids?: string[] | null;
+  benchmark_queries?: string[] | null;
+  report_format: string;
+  scoring_policy?: Record<string, any> | null;
+  selection_policy?: Record<string, any> | null;
+  validation_policy?: Record<string, any> | null;
+  automation_profile?: 'balanced' | 'max_autonomy' | string | null;
+  automation_policy?: Record<string, any> | null;
+  effective_policy?: Record<string, any> | null;
+  sandbox_profile_id?: string | null;
+  interval_minutes: number;
+  persist_artifacts: boolean;
+  auto_launch_follow_up: boolean;
+  auto_create_experiment_plans: boolean;
+  confidence_threshold: number;
+  max_documents: number;
+  max_papers: number;
+  opportunities?: ResearchOpportunity[] | null;
+  latest_summary?: SharedAutonomySummary | null;
+  latest_note_ids?: string[] | null;
+  latest_experiment_plan_ids?: string[] | null;
+  latest_validation_run_ids?: string[] | null;
+  latest_validation_runs?: ScientificValidationRunSummary[] | null;
+  latest_run_job_id?: string | null;
+  active_job_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  paused_at?: string | null;
+  last_run_at?: string | null;
+}
+
+export interface DomainResearchProfileCreate {
+  title: string;
+  domain: string;
+  objective: string;
+  customer_context?: string;
+  source_scope?: 'kb_only' | 'arxiv_only' | 'kb_plus_arxiv' | 'kb_plus_arxiv_plus_repo' | string;
+  track_type?: 'compiler' | 'microarchitecture' | 'generic' | string;
+  research_mode?: 'literature_to_hypothesis' | string;
+  monitor_queries?: string[];
+  repo_source_ids?: string[];
+  benchmark_queries?: string[];
+  report_format?: 'brief_only' | 'report_only' | 'brief_and_report' | string;
+  scoring_policy?: Record<string, any>;
+  selection_policy?: Record<string, any>;
+  validation_policy?: Record<string, any>;
+  automation_profile?: 'balanced' | 'max_autonomy' | string;
+  automation_policy?: Record<string, any>;
+  sandbox_profile_id?: string;
+  interval_minutes?: number;
+  persist_artifacts?: boolean;
+  auto_launch_follow_up?: boolean;
+  auto_create_experiment_plans?: boolean;
+  confidence_threshold?: number;
+  max_documents?: number;
+  max_papers?: number;
+  start_immediately?: boolean;
+}
+
+export interface DomainResearchProfileUpdate {
+  title?: string;
+  objective?: string;
+  customer_context?: string;
+  source_scope?: 'kb_only' | 'arxiv_only' | 'kb_plus_arxiv' | 'kb_plus_arxiv_plus_repo' | string;
+  track_type?: 'compiler' | 'microarchitecture' | 'generic' | string;
+  research_mode?: 'literature_to_hypothesis' | string;
+  monitor_queries?: string[];
+  repo_source_ids?: string[];
+  benchmark_queries?: string[];
+  report_format?: 'brief_only' | 'report_only' | 'brief_and_report' | string;
+  scoring_policy?: Record<string, any>;
+  selection_policy?: Record<string, any>;
+  validation_policy?: Record<string, any>;
+  automation_profile?: 'balanced' | 'max_autonomy' | string;
+  automation_policy?: Record<string, any>;
+  sandbox_profile_id?: string;
+  interval_minutes?: number;
+  persist_artifacts?: boolean;
+  auto_launch_follow_up?: boolean;
+  auto_create_experiment_plans?: boolean;
+  confidence_threshold?: number;
+  max_documents?: number;
+  max_papers?: number;
+}
+
+export interface DomainResearchProfileActionRequest {
+  action: 'start' | 'pause' | 'resume' | 'cancel' | 'run_now' | string;
+}
+
+export type ResearchOpportunityStage =
+  | 'discovered'
+  | 'accepted'
+  | 'suppressed'
+  | 'planned'
+  | 'validating'
+  | 'completed'
+  | 'blocked'
+  | string;
+
+export type ResearchOpportunityDecisionState =
+  | 'pending_review'
+  | 'accepted'
+  | 'suppressed'
+  | 'auto_accepted'
+  | string;
+
+export interface ResearchOpportunity {
+  opportunity_id: string;
+  canonical_key: string;
+  title: string;
+  hypothesis: string;
+  stage: ResearchOpportunityStage;
+  decision_state: ResearchOpportunityDecisionState;
+  decision_source?: 'system' | 'operator' | string;
+  operator_note?: string | null;
+  supporting_evidence?: string[];
+  supporting_sources?: Array<Record<string, any>>;
+  next_steps?: string[];
+  source_profile_ids?: string[];
+  source_job_ids?: string[];
+  source_note_ids?: string[];
+  linked_experiment_plan_ids?: string[];
+  linked_validation_run_ids?: string[];
+  latest_experiment_plan_id?: string | null;
+  latest_validation_run_id?: string | null;
+  latest_validation_job_id?: string | null;
+  latest_validation_status?: string | null;
+  latest_validation_blocked_reason_code?: string | null;
+  child_job_ids?: string[];
+  source_repo_ids?: string[];
+  confidence?: number;
+  novelty?: number;
+  readiness?: number;
+  track_type?: string | null;
+  autonomy_state?: 'eligible' | 'cooldown' | 'blocked_structural' | 'completed_waiting_change' | 'active' | string | null;
+  last_evaluated_at?: string | null;
+  next_eligible_at?: string | null;
+  evidence_revision?: string | null;
+  last_material_change_at?: string | null;
+  last_decision_type?: string | null;
+  last_decision_reason_code?: string | null;
+  portfolio_config_revision?: string | null;
+  last_skip_reason_code?: string | null;
+  last_blocked_reason_code?: string | null;
+  follow_up_review_status?: string | null;
+  follow_up_reviewed_at?: string | null;
+  follow_up_reviewed_by_user_id?: string | null;
+  follow_up_review_note?: string | null;
+  follow_up_review_evidence_revision?: string | null;
+  last_reevaluation_review_outcome?: string | null;
+  last_reevaluation_reviewed_at?: string | null;
+  last_reevaluation_review_job_id?: string | null;
+  last_reevaluation_review_note?: string | null;
+  last_reevaluation_review_source_note_id?: string | null;
+  last_reevaluation_review_target_note_id?: string | null;
+  updated_at?: string | null;
+}
+
+export interface AutonomySchedulerSummary {
+  scheduling_mode?: string | null;
+  next_run_at?: string | null;
+  last_evaluated_at?: string | null;
+  last_dispatched_at?: string | null;
+  launches_count?: number;
+  queued_approvals_count?: number;
+  pending_follow_up_approvals_count?: number;
+  manual_recommendations_count?: number;
+  manual_follow_up_recommendations_count?: number;
+  blocked_by_policy_count?: number;
+  blocked_by_budget_count?: number;
+  suppressed_relaunches_count?: number;
+  [key: string]: any;
+}
+
+export interface AutonomyReviewSummaryItem {
+  opportunity_id?: string | null;
+  canonical_key?: string | null;
+  title?: string | null;
+  review_type?: string | null;
+  reason_code?: string | null;
+  operator_note?: string | null;
+  [key: string]: any;
+}
+
+export interface SharedAutonomySummary {
+  autonomy_mode?: string | null;
+  effective_policy?: Record<string, any> | null;
+  stage_counts?: Record<string, number> | null;
+  autonomy_state_counts?: Record<string, number> | null;
+  scheduler_summary?: AutonomySchedulerSummary | null;
+  follow_up_review_counts?: Record<string, number> | null;
+  queued_operator_reviews_count?: number;
+  queued_operator_reviews_by_type?: Record<string, number> | null;
+  queued_operator_reviews?: AutonomyReviewSummaryItem[] | null;
+  pending_follow_up_approvals?: AutonomyReviewSummaryItem[] | null;
+  manual_follow_up_recommendations?: AutonomyReviewSummaryItem[] | null;
+  suppressed_relaunches?: AutonomyReviewSummaryItem[] | null;
+  [key: string]: any;
+}
+
+export interface ResearchOpportunityActionRequest {
+  action:
+    | 'accept'
+    | 'suppress'
+    | 'reopen'
+    | 'create_plan'
+    | 'launch_validation'
+    | 'materialize_experiment'
+    | 'launch_follow_up'
+    | 'relaunch_follow_up'
+    | string;
+  operator_note?: string;
+  start_immediately?: boolean;
+}
+
+export interface DomainResearchProfileListResponse {
+  items: DomainResearchProfile[];
+  total: number;
+}
+
+export interface ResearchPortfolio {
+  id: string;
+  user_id: string;
+  title: string;
+  objective: string;
+  status: string;
+  linked_profile_ids?: string[] | null;
+  automation_profile?: 'balanced' | 'max_autonomy' | string | null;
+  automation_policy?: Record<string, any> | null;
+  effective_policy?: Record<string, any> | null;
+  sandbox_profile_id?: string | null;
+  opportunities?: ResearchOpportunity[] | null;
+  latest_summary?: SharedAutonomySummary | null;
+  latest_note_ids?: string[] | null;
+  latest_experiment_plan_ids?: string[] | null;
+  latest_validation_run_ids?: string[] | null;
+  latest_validation_runs?: ScientificValidationRunSummary[] | null;
+  child_job_ids?: string[] | null;
+  active_job_id?: string | null;
+  latest_run_job_id?: string | null;
+  created_at: string;
+  updated_at: string;
+  started_at?: string | null;
+  paused_at?: string | null;
+  last_run_at?: string | null;
+}
+
+export interface ResearchPortfolioCreate {
+  title: string;
+  objective: string;
+  linked_profile_ids: string[];
+  automation_profile?: 'balanced' | 'max_autonomy' | string;
+  automation_policy?: Record<string, any>;
+  sandbox_profile_id?: string;
+  start_immediately?: boolean;
+}
+
+export interface AgentJobPromoteDomainResearchProfileRequest {
+  title?: string;
+  domain?: string;
+  objective?: string;
+  customer_context?: string;
+  source_scope?: 'kb_only' | 'arxiv_only' | 'kb_plus_arxiv' | 'kb_plus_arxiv_plus_repo' | string;
+  track_type?: 'compiler' | 'microarchitecture' | 'generic' | string;
+  research_mode?: 'literature_to_hypothesis' | string;
+  monitor_queries?: string[];
+  repo_source_ids?: string[];
+  benchmark_queries?: string[];
+  report_format?: 'brief_only' | 'report_only' | 'brief_and_report' | string;
+  scoring_policy?: Record<string, any>;
+  selection_policy?: Record<string, any>;
+  automation_profile?: 'balanced' | 'max_autonomy' | string;
+  automation_policy?: Record<string, any>;
+  sandbox_profile_id?: string;
+  interval_minutes?: number;
+  persist_artifacts?: boolean;
+  auto_launch_follow_up?: boolean;
+  auto_create_experiment_plans?: boolean;
+  confidence_threshold?: number;
+  max_documents?: number;
+  max_papers?: number;
+}
+
+export interface AgentJobPromoteDomainResearchPortfolioRequest {
+  title?: string;
+  objective?: string;
+  sandbox_profile_id?: string;
+  automation_profile?: 'balanced' | 'max_autonomy' | string;
+  automation_policy?: Record<string, any>;
+}
+
+export interface AgentJobPromoteDomainResearchRequest {
+  target_mode?: 'profile_only' | 'profile_with_portfolio' | string;
+  profile?: AgentJobPromoteDomainResearchProfileRequest;
+  portfolio_id?: string;
+  portfolio?: AgentJobPromoteDomainResearchPortfolioRequest;
+  start_profile_now?: boolean;
+  run_portfolio_now?: boolean;
+}
+
+export interface AgentJobPromoteDomainResearchResponse {
+  source_job_id: string;
+  promotion_status: string;
+  domain_research_profile_id: string;
+  research_portfolio_id?: string | null;
+  profile: DomainResearchProfile;
+  portfolio?: ResearchPortfolio | null;
+  source_job?: AgentJob | null;
+}
+
+export interface ResearchPortfolioUpdate {
+  title?: string;
+  objective?: string;
+  linked_profile_ids?: string[];
+  automation_profile?: 'balanced' | 'max_autonomy' | string;
+  automation_policy?: Record<string, any>;
+  sandbox_profile_id?: string;
+}
+
+export interface ResearchPortfolioActionRequest {
+  action: 'start' | 'pause' | 'resume' | 'cancel' | 'run_now' | string;
+}
+
+export interface ResearchPortfolioListResponse {
+  items: ResearchPortfolio[];
+  total: number;
+}
+
+export interface CodingBacklogPolicy {
+  max_auto_retries?: number;
+  max_files_touched?: number;
+  blocked_path_prefixes?: string[];
+  require_experiments_ok?: boolean;
+  confidence_threshold?: number;
+  [key: string]: any;
+}
+
+export interface CodingBacklogPortfolioProgress {
+  total_slices: number;
+  pending_slices: number;
+  completed_slices: number;
+  failed_slices: number;
+  auto_applied_slices: number;
+  proposal_only_slices: number;
+}
+
+export interface CodingBacklogSlice {
+  slice_id: string;
+  title: string;
+  status: string;
+  scope?: string | null;
+  file_paths?: string[] | null;
+  commands?: string[] | null;
+  search_query?: string | null;
+  goal?: string | null;
+  retry_count?: number;
+  selected_proposal_id?: string | null;
+  promotion_decision?: string | null;
+  blocked_reason?: string | null;
+  child_job_id?: string | null;
+  apply_job_id?: string | null;
+  proposal_confidence?: number | null;
+  files_touched?: string[] | null;
+  started_at?: string | null;
+  completed_at?: string | null;
+  status_reason?: string | null;
+  awaiting_operator_action?: boolean;
+  allowed_slice_actions?: string[] | null;
+  recommended_next_action?: string | null;
+  operator_decision?: string | null;
+  operator_note?: string | null;
+  operator_acted_at?: string | null;
+  patch_pr_id?: string | null;
+  timeline?: CodingBacklogTimelineEntry[] | null;
+  job_lineage?: CodingBacklogJobLineage | null;
+  artifact_history?: CodingBacklogArtifactHistoryEntry[] | null;
+  manual_promotion_history?: CodingBacklogManualPromotionEntry[] | null;
+}
+
+export interface CodingBacklogPromotionDecision {
+  slice_id: string;
+  title?: string | null;
+  decision: string;
+  proposal_id?: string | null;
+  job_id?: string | null;
+  apply_job_id?: string | null;
+  blocked_reason?: string | null;
+  proposal_confidence?: number | null;
+  files_touched_count?: number | null;
+}
+
+export interface CodingBacklogDecomposition {
+  strategy?: string | null;
+  planned_slices: CodingBacklogSlice[];
+  active_slice_id?: string | null;
+  completed_slices?: string[] | null;
+  failed_slices?: string[] | null;
+  promotion_decisions?: CodingBacklogPromotionDecision[] | null;
+  backlog_timeline?: CodingBacklogTimelineEntry[] | null;
+  lineage_summary?: CodingBacklogLineageSummary | null;
+  portfolio_progress?: CodingBacklogPortfolioProgress | null;
+  [key: string]: any;
+}
+
+export interface CodingBacklogLatestSummary {
+  status?: string | null;
+  current_child_job_id?: string | null;
+  retry_from_job_id?: string | null;
+  selected_proposal_id?: string | null;
+  promotion_decision?: string | null;
+  blocked_reason?: string | null;
+  active_slice_id?: string | null;
+  active_slice_title?: string | null;
+  promotion_evaluation?: Record<string, any> | null;
+  portfolio_progress?: CodingBacklogPortfolioProgress | null;
+  waiting_on_operator_action?: boolean;
+  allowed_slice_actions?: string[] | null;
+  recommended_next_action?: string | null;
+  note?: string | null;
+  [key: string]: any;
+}
+
+export interface CodingBacklogTimelineEntry {
+  at: string;
+  actor: string;
+  action: string;
+  slice_id?: string | null;
+  previous_status?: string | null;
+  new_status?: string | null;
+  note?: string | null;
+  job_id?: string | null;
+  proposal_id?: string | null;
+  patch_pr_id?: string | null;
+  metadata?: Record<string, any> | null;
+}
+
+export interface CodingBacklogJobLineage {
+  repair_job_ids?: string[] | null;
+  apply_job_ids?: string[] | null;
+  patch_pr_ids?: string[] | null;
+  proposal_ids?: string[] | null;
+  retry_from_job_ids?: string[] | null;
+}
+
+export interface CodingBacklogArtifactHistoryEntry {
+  at: string;
+  artifact_type: string;
+  artifact_id: string;
+  label?: string | null;
+}
+
+export interface CodingBacklogManualPromotionEntry {
+  at: string;
+  action: string;
+  operator_note?: string | null;
+  proposal_id?: string | null;
+  patch_pr_id?: string | null;
+  apply_job_id?: string | null;
+}
+
+export interface CodingBacklogLineageSummary {
+  repair_job_count: number;
+  apply_job_count: number;
+  patch_pr_count: number;
+  proposal_count: number;
+  operator_action_count: number;
+}
+
+export interface CodingBacklogActionRequest {
+  action:
+    | 'start'
+    | 'pause'
+    | 'resume'
+    | 'cancel'
+    | 'close'
+    | 'assign_backlog'
+    | 'clear_backlog_assignment'
+    | 'update_backlog_note'
+    | 'apply_override'
+    | 'create_patch_pr'
+    | 'keep_proposal_only'
+    | 'relaunch_slice'
+    | 'skip_slice';
+  slice_id?: string;
+  assigned_user_id?: string;
+  closure_reason?: string;
+  operator_note?: string;
+}
+
 export interface AgentJob {
   id: string;
   name: string;
@@ -1506,6 +2875,12 @@ export interface AgentJob {
   goal: string;
   goal_criteria?: Record<string, any>;
   config?: Record<string, any>;
+  launch_mode?: string;
+  relaunch_from_job_id?: string;
+  relaunch_children_count?: number;
+  promotion_status?: string | null;
+  promoted_domain_research_profile_id?: string | null;
+  promoted_research_portfolio_id?: string | null;
   agent_definition_id?: string;
   agent_definition_name?: string;
   user_id: string;
@@ -1526,7 +2901,11 @@ export interface AgentJob {
   schedule_type?: string;
   schedule_cron?: string;
   next_run_at?: string;
+  scheduler_state?: Record<string, any> | null;
   results?: Record<string, any>;
+  experiment_run?: AgentJobExperimentRun | null;
+  experiment_runs?: AgentJobExperimentRun[] | null;
+  operator_interventions?: AgentJobOperatorIntervention[] | null;
   output_artifacts?: Array<{type: string; id: string; title: string}>;
   created_at: string;
   started_at?: string;
@@ -1554,6 +2933,344 @@ export interface AgentJobListResponse {
   has_more: boolean;
 }
 
+export interface AgentCheckpointQueueAction {
+  kind: string;
+  label: string;
+  description?: string | null;
+  action?: string | null;
+  recommended?: boolean;
+  launch_label?: string | null;
+  recommendation_key?: string | null;
+  autonomy_eligibility?: string | null;
+  recommendation_score?: number | null;
+  recommendation_reasons?: string[] | null;
+  job_create_payload?: Record<string, any> | null;
+  chain_create_payload?: Record<string, any> | null;
+  follow_up_action_payload?: Record<string, any> | null;
+  policy_update_payload?: Record<string, any> | null;
+  policy_rollback_payload?: Record<string, any> | null;
+}
+
+export interface AgentCheckpointQueueItem {
+  queue_key: string;
+  item_type: 'approval_checkpoint' | 'job_recovery' | 'follow_up_recommendation' | 'policy_review' | 'budget_review' | string;
+  priority: number;
+  priority_score?: number;
+  title: string;
+  summary?: string | null;
+  evidence_summary?: string | null;
+  status?: string | null;
+  customer?: string | null;
+  job_name?: string | null;
+  job_type?: string | null;
+  reason_code?: string | null;
+  reason_label?: string | null;
+  recommended_action?: string | null;
+  age_minutes?: number;
+  sla_bucket?: 'normal' | 'at_risk' | 'overdue' | string | null;
+  escalation_level?: 'normal' | 'medium' | 'high' | string | null;
+  is_overdue?: boolean;
+  is_stale?: boolean;
+  next_run_at?: string | null;
+  backoff_until?: string | null;
+  action_count?: number;
+  created_at?: string | null;
+  job_id?: string | null;
+  inbox_item_id?: string | null;
+  portfolio_id?: string | null;
+  portfolio_title?: string | null;
+  portfolio_opportunity_id?: string | null;
+  portfolio_opportunity_key?: string | null;
+  domain_research_profile_id?: string | null;
+  domain_research_profile_title?: string | null;
+  profile_opportunity_id?: string | null;
+  profile_opportunity_key?: string | null;
+  domain?: string | null;
+  objective?: string | null;
+  track_type?: string | null;
+  source_scope?: string | null;
+  repo_source_ids?: string[] | null;
+  benchmark_queries?: string[] | null;
+  sandbox_profile_id?: string | null;
+  automation_profile?: string | null;
+  effective_policy?: Record<string, any> | null;
+  confidence?: number | null;
+  readiness?: number | null;
+  linked_note_ids?: string[] | null;
+  linked_experiment_plan_ids?: string[] | null;
+  linked_validation_run_ids?: string[] | null;
+  child_job_ids?: string[] | null;
+  job?: AgentJob | null;
+  checkpoint?: Record<string, any> | null;
+  scheduler_state?: Record<string, any> | null;
+  inbox_item?: ResearchInboxItem | Record<string, any> | null;
+  follow_up_decision?: string | null;
+  follow_up_policy_mode?: string | null;
+  follow_up_launch_status?: string | null;
+  follow_up_block_reason?: string | null;
+  follow_up_budget_decision?: string | null;
+  follow_up_budget_reason?: string | null;
+  follow_up_budget_throttle_state?: string | null;
+  follow_up_customer_budget_decision?: string | null;
+  follow_up_customer_budget_reason?: string | null;
+  follow_up_customer_budget_throttle_state?: string | null;
+  follow_up_recommendation_key?: string | null;
+  follow_up_job_id?: string | null;
+  follow_up_chain_definition_id?: string | null;
+  follow_up_operator_decision?: string | null;
+  follow_up_operator_note?: string | null;
+  follow_up_operator_acted_at?: string | null;
+  follow_up_operator_user_id?: string | null;
+  policy_guardrail_status?: string | null;
+  policy_guardrail_action?: string | null;
+  policy_guardrail_target_history_entry_id?: string | null;
+  policy_guardrail_reasons?: string[] | null;
+  policy_guardrail_follow_up_autonomy?: Record<string, any> | null;
+  policy_guardrail_target_policy?: Record<string, any> | null;
+  budget_throttle_state?: string | null;
+  budget_reason?: string | null;
+  customer_budget_throttle_state?: string | null;
+  customer_budget_reason?: string | null;
+  actions: AgentCheckpointQueueAction[];
+}
+
+export interface AgentCheckpointQueueFollowUpActionRequest {
+  inbox_item_id?: string;
+  domain_research_profile_id?: string;
+  profile_opportunity_id?: string;
+  portfolio_id?: string;
+  portfolio_opportunity_id?: string;
+  action: 'approve_launch' | 'reject_launch' | string;
+  operator_note?: string;
+}
+
+export interface AgentCheckpointQueueFollowUpActionResponse {
+  inbox_item_id?: string | null;
+  domain_research_profile_id?: string | null;
+  profile_opportunity_id?: string | null;
+  portfolio_id?: string | null;
+  portfolio_opportunity_id?: string | null;
+  ok: boolean;
+  follow_up_launch_status?: string | null;
+  follow_up_operator_decision?: string | null;
+  follow_up_job_id?: string | null;
+  follow_up_chain_definition_id?: string | null;
+  detail?: string | null;
+}
+
+export interface AgentCheckpointQueueBulkFollowUpActionRequest {
+  domain_research_profile_id?: string;
+  profile_opportunity_ids?: string[];
+  portfolio_id?: string;
+  portfolio_opportunity_ids?: string[];
+  action: 'approve_launch' | 'reject_launch' | string;
+  operator_note?: string;
+}
+
+export interface AgentCheckpointQueueBulkFollowUpActionResult {
+  domain_research_profile_id?: string | null;
+  profile_opportunity_id?: string | null;
+  portfolio_id?: string | null;
+  portfolio_opportunity_id?: string | null;
+  ok: boolean;
+  follow_up_launch_status?: string | null;
+  follow_up_operator_decision?: string | null;
+  follow_up_job_id?: string | null;
+  detail?: string | null;
+  error?: string | null;
+}
+
+export interface AgentCheckpointQueueBulkFollowUpActionResponse {
+  requested_count: number;
+  applied: number;
+  failed: number;
+  results: AgentCheckpointQueueBulkFollowUpActionResult[];
+}
+
+export interface AgentCheckpointQueueResponse {
+  items: AgentCheckpointQueueItem[];
+  total: number;
+  limit: number;
+  offset: number;
+  approvals: number;
+  recoveries: number;
+  follow_ups: number;
+  policy_reviews: number;
+  budget_reviews: number;
+  by_type: Record<string, number>;
+  by_status: Record<string, number>;
+  by_customer: Record<string, number>;
+  by_sla_bucket: Record<string, number>;
+  by_escalation_level: Record<string, number>;
+}
+
+export interface AgentDecisionTraceDeepLink {
+  target_tab: string;
+  job_id?: string | null;
+  params?: Record<string, string> | null;
+  label?: string | null;
+}
+
+export interface AgentDecisionTraceEvent {
+  event_id: string;
+  event_type: string;
+  event_time: string;
+  source_kind: string;
+  source_id?: string | null;
+  source_label?: string | null;
+  customer?: string | null;
+  decision_type: string;
+  reason_code?: string | null;
+  reason_label?: string | null;
+  scheduler_state?: Record<string, any> | null;
+  status?: string | null;
+  severity?: string | null;
+  actor_mode?: string | null;
+  summary: string;
+  operator_note?: string | null;
+  before_state?: Record<string, any> | null;
+  after_state?: Record<string, any> | null;
+  deep_link?: AgentDecisionTraceDeepLink | null;
+  metadata?: Record<string, any> | null;
+  is_derived?: boolean;
+  record_origin?: string | null;
+  triage_status?: string | null;
+  acknowledged_at?: string | null;
+  acknowledged_by_user_id?: string | null;
+  resolved_at?: string | null;
+  resolved_by_user_id?: string | null;
+  resolution_note?: string | null;
+  pinned?: boolean;
+  last_viewed_at?: string | null;
+  owner_user_id?: string | null;
+  owner_label?: string | null;
+  assigned_to_user_id?: string | null;
+  assigned_at?: string | null;
+  assigned_by_user_id?: string | null;
+  assignee_label?: string | null;
+  is_owned_by_current_user?: boolean;
+  is_assigned_to_current_user?: boolean;
+  team_bucket?: string | null;
+  due_at?: string | null;
+  escalation_state?: string | null;
+  escalation_reason?: string | null;
+  escalated_at?: string | null;
+  domain?: string | null;
+  objective?: string | null;
+  track_type?: string | null;
+  source_scope?: string | null;
+  repo_source_ids?: string[] | null;
+  benchmark_queries?: string[] | null;
+  sandbox_profile_id?: string | null;
+  automation_profile?: string | null;
+  effective_policy?: Record<string, any> | null;
+  confidence?: number | null;
+  readiness?: number | null;
+  linked_note_ids?: string[] | null;
+  linked_experiment_plan_ids?: string[] | null;
+  linked_validation_run_ids?: string[] | null;
+  child_job_ids?: string[] | null;
+}
+
+export interface AgentDecisionTraceResponse {
+  items: AgentDecisionTraceEvent[];
+  total: number;
+  limit: number;
+  offset: number;
+  by_source_kind: Record<string, number>;
+  by_decision_type: Record<string, number>;
+  by_status: Record<string, number>;
+  by_customer: Record<string, number>;
+  by_severity: Record<string, number>;
+  by_actor_mode: Record<string, number>;
+  by_triage_status: Record<string, number>;
+  by_assignee: Record<string, number>;
+  by_escalation_state: Record<string, number>;
+  overdue_count: number;
+  has_more: boolean;
+}
+
+export interface AgentDecisionTraceAnalyticsBucket {
+  value: string;
+  count: number;
+}
+
+export interface AgentDecisionTraceAnalyticsTrendPoint {
+  day: string;
+  count: number;
+}
+
+export interface AgentDecisionTraceAnalyticsResponse {
+  window_days: number;
+  total: number;
+  by_source_kind: Record<string, number>;
+  by_triage_status: Record<string, number>;
+  top_decision_types: AgentDecisionTraceAnalyticsBucket[];
+  top_reason_labels: AgentDecisionTraceAnalyticsBucket[];
+  top_queue_reasons: AgentDecisionTraceAnalyticsBucket[];
+  daily_trend: AgentDecisionTraceAnalyticsTrendPoint[];
+}
+
+export interface AgentDecisionTraceActionRequest {
+  action: 'acknowledge' | 'start_investigation' | 'resolve' | 'reopen' | 'toggle_pin' | 'assign' | 'unassign' | 'set_due_at' | 'clear_due_at' | 'approve_launch' | 'reject_launch' | 'relaunch_follow_up';
+  note?: string;
+  assigned_to_user_id?: string;
+  due_at?: string;
+}
+
+export interface AgentDecisionTraceActionResponse {
+  event: AgentDecisionTraceEvent;
+}
+
+export interface AgentDecisionTraceView {
+  id: string;
+  user_id: string;
+  name: string;
+  filters: Record<string, any>;
+  is_default: boolean;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface AgentDecisionTraceViewListResponse {
+  items: AgentDecisionTraceView[];
+  total: number;
+}
+
+export interface AgentDecisionTraceViewCreateRequest {
+  name: string;
+  filters: Record<string, any>;
+  is_default?: boolean;
+}
+
+export interface AgentDecisionTraceViewUpdateRequest {
+  name?: string;
+  filters?: Record<string, any>;
+  is_default?: boolean;
+}
+
+export interface AgentCheckpointQueueBulkActionRequest {
+  item_type: 'approval_checkpoint' | 'job_recovery' | string;
+  action: 'approve' | 'reject' | 'skip' | 'restart' | 'resume' | 'cancel' | string;
+  job_ids: string[];
+  checkpoint_note?: string;
+}
+
+export interface AgentCheckpointQueueBulkActionResult {
+  job_id: string;
+  ok: boolean;
+  status?: string | null;
+  error?: string | null;
+  queue_key?: string | null;
+}
+
+export interface AgentCheckpointQueueBulkActionResponse {
+  requested_count: number;
+  applied: number;
+  failed: number;
+  results: AgentCheckpointQueueBulkActionResult[];
+}
+
 export interface AgentJobTemplate {
   id: string;
   name: string;
@@ -1572,6 +3289,9 @@ export interface AgentJobTemplate {
   is_system: boolean;
   is_active: boolean;
   owner_user_id?: string;
+  recommended?: boolean;
+  recommendation_score?: number;
+  recommendation_reasons?: string[];
   created_at: string;
   updated_at: string;
 }
@@ -1579,6 +3299,251 @@ export interface AgentJobTemplate {
 export interface AgentJobTemplateListResponse {
   templates: AgentJobTemplate[];
   total: number;
+}
+
+export interface AgentJobQuickStartClaudeBackendRequest {
+  name?: string;
+  goal: string;
+  source_id: string;
+  search_query?: string;
+  file_paths?: string[];
+  commands?: string[];
+  start_immediately?: boolean;
+  config_overrides?: Record<string, any>;
+}
+
+export interface AgentJobQuickStartDomainResearchRequest {
+  name?: string;
+  domain: string;
+  objective: string;
+  customer_context?: string;
+  source_scope?: 'kb_only' | 'arxiv_only' | 'kb_plus_arxiv' | 'kb_plus_arxiv_plus_repo' | string;
+  track_type?: 'compiler' | 'microarchitecture' | 'generic' | string;
+  monitor_queries?: string[];
+  repo_source_ids?: string[];
+  benchmark_queries?: string[];
+  sandbox_profile_id?: string;
+  report_format?: 'brief_only' | 'report_only' | 'brief_and_report' | string;
+  scoring_policy?: Record<string, any>;
+  selection_policy?: Record<string, any>;
+  automation_profile?: 'balanced' | 'max_autonomy' | string;
+  automation_policy?: Record<string, any>;
+  validation_policy?: Record<string, any>;
+  persist_artifacts?: boolean;
+  auto_launch_follow_up?: boolean;
+  auto_create_experiment_plans?: boolean;
+  max_documents?: number;
+  max_papers?: number;
+  profile_id?: string;
+  confidence_threshold?: number;
+  start_immediately?: boolean;
+  config_overrides?: Record<string, any>;
+}
+
+export interface ScientificSandboxProfile {
+  id: string;
+  name: string;
+  description?: string | null;
+  track_type: string;
+  backend: string;
+  docker_image?: string | null;
+  timeout_seconds: number;
+  resource_caps: Record<string, any>;
+  allowed_benchmark_families: string[];
+  allowed_perf_collectors: string[];
+  required_capabilities: string[];
+  toolchains: string[];
+  budget_limit_default: number;
+  enabled: boolean;
+  system_managed: boolean;
+  is_default: boolean;
+  created_by_user_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface ScientificValidationRunSummary {
+  id: string;
+  agent_job_id?: string | null;
+  name: string;
+  status: string;
+  progress: number;
+  validation_kind?: string | null;
+  sandbox_profile_id?: string | null;
+  sandbox_profile_name?: string | null;
+  recipe_family?: string | null;
+  recipe_id?: string | null;
+  benchmark_family?: string | null;
+  benchmark_suite_id?: string | null;
+  benchmark_case_ids?: string[];
+  blocked_reason_code?: string | null;
+  hypothesis_id?: string | null;
+  track_type?: string | null;
+  domain_research_profile_id?: string | null;
+  research_portfolio_id?: string | null;
+  parent_run_id?: string | null;
+  latest_child_run_id?: string | null;
+  retry_count?: number;
+  latest_operator_action?: string | null;
+  latest_operator_outcome_status?: string | null;
+  compiler_artifact_summary?: {
+    source_run_ids?: string[];
+    primary_run_id?: string | null;
+    comparison_run_id?: string | null;
+    explanation_note_id?: string | null;
+    explanation_synthesis_job_id?: string | null;
+    explanation_synthesis_status?: string | null;
+    proposal_note_id?: string | null;
+    proposal_synthesis_job_id?: string | null;
+    proposal_synthesis_status?: string | null;
+    patch_draft_note_id?: string | null;
+    patch_draft_synthesis_job_id?: string | null;
+    patch_draft_synthesis_status?: string | null;
+    source_explanation_note_id?: string | null;
+    source_proposal_note_id?: string | null;
+    source_id?: string | null;
+    source_name?: string | null;
+    available_actions?: string[];
+  } | null;
+  created_at: string;
+  started_at?: string | null;
+  completed_at?: string | null;
+}
+
+export interface ScientificSandboxProfileListResponse {
+  items: ScientificSandboxProfile[];
+  total: number;
+}
+
+export interface ScientificSandboxProfileCreate {
+  id: string;
+  name: string;
+  description?: string;
+  track_type?: string;
+  backend?: string;
+  docker_image?: string;
+  timeout_seconds?: number;
+  resource_caps?: Record<string, any>;
+  allowed_benchmark_families?: string[];
+  allowed_perf_collectors?: string[];
+  required_capabilities?: string[];
+  toolchains?: string[];
+  budget_limit_default?: number;
+  enabled?: boolean;
+  is_default?: boolean;
+}
+
+export interface ScientificSandboxProfileUpdate {
+  name?: string;
+  description?: string;
+  track_type?: string;
+  backend?: string;
+  docker_image?: string;
+  timeout_seconds?: number;
+  resource_caps?: Record<string, any>;
+  allowed_benchmark_families?: string[];
+  allowed_perf_collectors?: string[];
+  required_capabilities?: string[];
+  toolchains?: string[];
+  budget_limit_default?: number;
+  enabled?: boolean;
+  is_default?: boolean;
+}
+
+export interface AgentJobQuickStartRepoBugTriageRequest {
+  name?: string;
+  goal?: string;
+  failure_symptom?: string;
+  source_id: string;
+  scope?: 'auto' | 'backend' | 'frontend' | 'worker' | string;
+  search_query?: string;
+  file_paths?: string[];
+  commands?: string[];
+  error_output?: string;
+  start_immediately?: boolean;
+  config_overrides?: Record<string, any>;
+}
+
+export interface AgentJobQuickStartBugTriageSwarmRequest {
+  name?: string;
+  goal?: string;
+  failure_symptom?: string;
+  source_id: string;
+  scope?: 'auto' | 'backend' | 'frontend' | 'worker' | string;
+  search_query?: string;
+  file_paths?: string[];
+  commands?: string[];
+  error_output?: string;
+  max_agents?: number;
+  profile_id?: string;
+  start_immediately?: boolean;
+  config_overrides?: Record<string, any>;
+}
+
+export interface AgentJobQuickStartBuildBreakSwarmRequest {
+  name?: string;
+  goal?: string;
+  failure_symptom?: string;
+  source_id: string;
+  scope?: 'auto' | 'backend' | 'frontend' | 'worker' | string;
+  search_query?: string;
+  file_paths?: string[];
+  commands?: string[];
+  error_output?: string;
+  max_agents?: number;
+  profile_id?: string;
+  start_immediately?: boolean;
+  config_overrides?: Record<string, any>;
+}
+
+export interface AgentJobQuickStartFrontendRegressionSwarmRequest {
+  name?: string;
+  goal?: string;
+  failure_symptom?: string;
+  source_id: string;
+  scope?: 'auto' | 'backend' | 'frontend' | 'worker' | string;
+  search_query?: string;
+  file_paths?: string[];
+  commands?: string[];
+  error_output?: string;
+  max_agents?: number;
+  profile_id?: string;
+  start_immediately?: boolean;
+  config_overrides?: Record<string, any>;
+}
+
+export interface AgentJobQuickStartRoleWorkflowRequest {
+  name?: string;
+  goal: string;
+  roles?: string[];
+  max_agents?: number;
+  memory_profile?: 'off' | 'minimal' | 'balanced' | 'evidence' | 'synthesis' | string;
+  approval_mode?: 'high_impact' | 'none' | string;
+  execution_mode?: 'plan_and_execute' | 'adaptive' | string;
+  extract_memory_on_failure?: boolean;
+  memory_failed_types?: string[];
+  memory_completed_types?: string[];
+  start_immediately?: boolean;
+  config_overrides?: Record<string, any>;
+}
+
+export interface AgentJobRelaunchLineageNode {
+  id: string;
+  name: string;
+  status: AgentJobStatus;
+  created_at: string;
+  launch_mode?: string;
+}
+
+export interface AgentJobRelaunchLineage {
+  job_id: string;
+  root_job_id: string;
+  parent_job_id?: string;
+  latest_child_job_id?: string;
+  ancestors_truncated?: boolean;
+  descendants_truncated?: boolean;
+  ancestors: AgentJobRelaunchLineageNode[];
+  descendants: AgentJobRelaunchLineageNode[];
 }
 
 export interface AgentJobStats {
@@ -1592,6 +3557,102 @@ export interface AgentJobStats {
   total_llm_calls: number;
   avg_completion_time_minutes?: number;
   success_rate?: number;
+  launch_mode_counts?: Record<string, number>;
+  launch_mode_none_count?: number;
+}
+
+export interface AgentJobSwarmAnalyticsPresetRow {
+  preset_key: string;
+  launch_mode: string;
+  label: string;
+  total_runs: number;
+  avg_confidence?: number | null;
+  high_confidence_runs: number;
+  medium_confidence_runs: number;
+  low_confidence_runs: number;
+  auto_promoted_runs: number;
+  review_needed_runs: number;
+  tie_breaker_runs: number;
+  manual_promotion_runs: number;
+  repair_handoff_runs: number;
+  backlog_handoff_runs: number;
+  auto_backlog_handoff_runs: number;
+  manual_backlog_handoff_runs: number;
+  backlog_auto_suppressed_runs: number;
+  promotion_rate?: number | null;
+  review_rate?: number | null;
+  tie_breaker_rate?: number | null;
+}
+
+export interface AgentJobSwarmAnalytics {
+  preset_rows: AgentJobSwarmAnalyticsPresetRow[];
+  totals: Record<string, any>;
+  filters: Record<string, any>;
+}
+
+export interface AgentJobSwarmOutcomeCase {
+  swarm_job_id: string;
+  swarm_job_name?: string | null;
+  preset_key: string;
+  launch_mode: string;
+  source_id?: string | null;
+  source_label?: string | null;
+  swarm_status?: string | null;
+  swarm_completed_at?: string | null;
+  review_state?: string | null;
+  review_reason?: string | null;
+  owner_user_id?: string | null;
+  assigned_user_id?: string | null;
+  assigned_at?: string | null;
+  assigned_by_user_id?: string | null;
+  review_note?: string | null;
+  collaboration_summary?: CollaborationSummary | null;
+  promotion_mode: 'auto' | 'manual' | 'none' | string;
+  confidence_overall?: number | null;
+  tie_breaker_attempted?: boolean;
+  repair_job_id?: string | null;
+  repair_job_name?: string | null;
+  repair_status?: string | null;
+  repair_handoff_at?: string | null;
+  verification_status?: string | null;
+  verification_reason?: string | null;
+  backlog_item_id?: string | null;
+  backlog_title?: string | null;
+  backlog_status?: string | null;
+  backlog_route_mode?: string | null;
+  backlog_routed_at?: string | null;
+  latest_downstream_at?: string | null;
+  handoff_latency_minutes?: number | null;
+  terminal_outcome: 'verified_fix' | 'repair_failed' | 'backlog_routed' | 'needs_review' | 'stalled_after_handoff' | string;
+  terminal_reason?: string | null;
+}
+
+export interface AgentJobSwarmOutcomePresetRow {
+  preset_key: string;
+  launch_mode: string;
+  label: string;
+  total_swarm_roots: number;
+  auto_promoted_runs: number;
+  manual_promoted_runs: number;
+  tie_breaker_runs: number;
+  repair_handoff_runs: number;
+  verified_fix_runs: number;
+  repair_failed_runs: number;
+  backlog_routed_runs: number;
+  auto_backlog_routed_runs: number;
+  manual_backlog_routed_runs: number;
+  backlog_auto_suppressed_runs: number;
+  needs_review_runs: number;
+  stalled_after_handoff_runs: number;
+  avg_confidence?: number | null;
+  avg_handoff_minutes?: number | null;
+}
+
+export interface AgentJobSwarmOutcomeAnalytics {
+  preset_rows: AgentJobSwarmOutcomePresetRow[];
+  cases: AgentJobSwarmOutcomeCase[];
+  totals: Record<string, any>;
+  filters: Record<string, any>;
 }
 
 export interface AgentJobProgressUpdate {
@@ -1602,6 +3663,8 @@ export interface AgentJobProgressUpdate {
   status: AgentJobStatus;
   iteration: number;
   phase_details?: string;
+  execution_graph_runtime?: Record<string, any>;
+  scope_observability_runtime?: Record<string, any>;
   error?: string;
   timestamp: string;
 }
@@ -1632,6 +3695,31 @@ export interface ResearchInboxItem {
   status: ResearchInboxItemStatus;
   feedback?: string;
   metadata?: Record<string, any>;
+  follow_up_decision?: string;
+  follow_up_policy_mode?: string;
+  follow_up_launch_status?: string;
+  follow_up_block_reason?: string;
+  follow_up_budget_decision?: string;
+  follow_up_budget_reason?: string;
+  follow_up_budget_throttle_state?: string;
+  follow_up_customer_budget_decision?: string;
+  follow_up_customer_budget_reason?: string;
+  follow_up_customer_budget_throttle_state?: string;
+  follow_up_recommendation_key?: string;
+  follow_up_operator_decision?: string;
+  follow_up_operator_note?: string;
+  follow_up_operator_acted_at?: string;
+  follow_up_operator_user_id?: string;
+  follow_up_job_id?: string;
+  follow_up_last_job_id?: string;
+  follow_up_chain_definition_id?: string;
+  follow_up_launched_at?: string;
+  follow_up_outcome_status?: string;
+  follow_up_outcome_recorded_at?: string;
+  follow_up_outcome_summary?: string;
+  origin_source_kind?: string;
+  origin_source_id?: string;
+  origin_opportunity_id?: string;
   created_at: string;
   updated_at: string;
 }
@@ -1649,6 +3737,25 @@ export interface ResearchInboxItemUpdateRequest {
   metadata_patch?: Record<string, any>;
 }
 
+export interface ResearchInboxBulkFollowUpRelaunchRequest {
+  item_ids: string[];
+  operator_note?: string;
+}
+
+export interface ResearchInboxBulkFollowUpRelaunchResult {
+  item_id: string;
+  ok: boolean;
+  follow_up_job_id?: string | null;
+  error?: string | null;
+}
+
+export interface ResearchInboxBulkFollowUpRelaunchResponse {
+  requested_count: number;
+  applied: number;
+  failed: number;
+  results: ResearchInboxBulkFollowUpRelaunchResult[];
+}
+
 export interface ResearchInboxStats {
   total: number;
   new: number;
@@ -1661,11 +3768,474 @@ export interface ResearchMonitorProfile {
   user_id: string;
   customer?: string;
   token_scores?: Record<string, number>;
+  phrase_scores?: Record<string, number>;
+  recommendation_scores?: Record<string, number>;
+  source_type_scores?: Record<string, number>;
+  outcome_counters?: Record<string, number>;
+  customer_budget_config?: ResearchMonitorBudgetConfig;
   muted_tokens?: string[];
   muted_patterns?: string[];
   notes?: string;
   created_at: string;
   updated_at: string;
+}
+
+export interface ResearchMonitorRecommendationAnalytics {
+  recommendation_key: string;
+  launch_count: number;
+  auto_launch_count: number;
+  approval_launch_count: number;
+  blocked_count: number;
+  completed_count: number;
+  failed_count: number;
+  cancelled_count: number;
+  success_rate: number;
+  score_trend: string;
+  monitor_count: number;
+}
+
+export interface ResearchMonitorBudgetConfig {
+  auto_launch_limit_24h: number;
+  approval_queue_limit_24h: number;
+  alert_limit_24h: number;
+  queue_backlog_cap: number;
+}
+
+export interface ResearchMonitorBudgetUsage {
+  auto_launch_count_24h: number;
+  approval_queue_count_24h: number;
+  alert_count_24h: number;
+  queue_backlog_count: number;
+}
+
+export interface ResearchMonitorCustomerTopContributor {
+  monitor_job_id?: string;
+  monitor_name: string;
+  customer?: string;
+  value: number;
+  throttle_state?: string | null;
+}
+
+export interface ResearchMonitorBudgetHistoryEntry {
+  id: string;
+  at: string;
+  actor_user_id?: string;
+  change_source: string;
+  change_reason?: string;
+  previous_autonomy_budget: ResearchMonitorBudgetConfig;
+  next_autonomy_budget: ResearchMonitorBudgetConfig;
+  guidance_context: Record<string, any>;
+}
+
+export interface ResearchMonitorCustomerRebalanceChange {
+  monitor_job_id: string;
+  monitor_name: string;
+  customer?: string;
+  current_budget: ResearchMonitorBudgetConfig;
+  proposed_budget: ResearchMonitorBudgetConfig;
+  delta_budget: ResearchMonitorBudgetConfig;
+  reasons: string[];
+}
+
+export interface ResearchMonitorCustomerRebalancePreview {
+  customer: string;
+  guidance_status: string;
+  guidance_summary?: string;
+  guidance_reasons: string[];
+  before_capacity: ResearchMonitorBudgetConfig;
+  after_capacity: ResearchMonitorBudgetConfig;
+  changes: ResearchMonitorCustomerRebalanceChange[];
+}
+
+export interface ResearchMonitorCustomerRebalanceEvaluationCounts {
+  accepted_count: number;
+  blocked_count: number;
+  follow_up_completed_count: number;
+  follow_up_failed_count: number;
+  follow_up_cancelled_count: number;
+  auto_launch_used_24h: number;
+  approval_queue_used_24h: number;
+  alert_used_24h: number;
+  backlog_used: number;
+  throttled_monitor_count: number;
+}
+
+export interface ResearchMonitorCustomerRebalanceHistoryEntry {
+  id: string;
+  at: string;
+  actor_user_id?: string;
+  change_source: string;
+  change_reason?: string;
+  changes: ResearchMonitorCustomerRebalanceChange[];
+  before_capacity: ResearchMonitorBudgetConfig;
+  after_capacity: ResearchMonitorBudgetConfig;
+  evaluation_target_count: number;
+  evaluation_state: string;
+  evaluation_status?: string;
+  evaluation_sample_count: number;
+  evaluation_reasons: string[];
+  before_counts: ResearchMonitorCustomerRebalanceEvaluationCounts;
+  after_counts: ResearchMonitorCustomerRebalanceEvaluationCounts;
+  delta_counts: ResearchMonitorCustomerRebalanceEvaluationCounts;
+}
+
+export interface ResearchMonitorCustomerRebalanceEvaluationSample {
+  item_id: string;
+  title: string;
+  period: string;
+  launch_status?: string;
+  outcome_status?: string;
+  recommendation_key?: string;
+  summary?: string;
+  monitor_job_id?: string;
+  monitor_name?: string;
+}
+
+export interface ResearchMonitorCustomerRebalanceEvaluationDetail {
+  customer: string;
+  history_entry_id: string;
+  evaluation_status: string;
+  evaluation_sample_count: number;
+  evaluation_target_count: number;
+  evaluation_reasons: string[];
+  before_counts: ResearchMonitorCustomerRebalanceEvaluationCounts;
+  after_counts: ResearchMonitorCustomerRebalanceEvaluationCounts;
+  delta_counts: ResearchMonitorCustomerRebalanceEvaluationCounts;
+  sample_items: ResearchMonitorCustomerRebalanceEvaluationSample[];
+}
+
+export interface ResearchMonitorCustomerPortfolio {
+  customer: string;
+  monitor_count: number;
+  strong_monitor_count: number;
+  mixed_monitor_count: number;
+  weak_monitor_count: number;
+  auto_launch_used_24h: number;
+  auto_launch_capacity_24h: number;
+  approval_queue_used_24h: number;
+  approval_queue_capacity_24h: number;
+  alert_used_24h: number;
+  alert_capacity_24h: number;
+  backlog_used: number;
+  backlog_capacity: number;
+  throttled_monitor_count: number;
+  customer_budget: ResearchMonitorBudgetConfig;
+  customer_budget_usage: ResearchMonitorBudgetUsage;
+  customer_budget_remaining: ResearchMonitorBudgetUsage;
+  customer_budget_throttle_state: string;
+  customer_budget_throttle_reasons: string[];
+  accepted_count: number;
+  blocked_count: number;
+  follow_up_completed_count: number;
+  follow_up_failed_count: number;
+  follow_up_cancelled_count: number;
+  portfolio_status: string;
+  portfolio_reasons: string[];
+  top_launch_monitors: ResearchMonitorCustomerTopContributor[];
+  top_backlog_monitors: ResearchMonitorCustomerTopContributor[];
+  top_alert_monitors: ResearchMonitorCustomerTopContributor[];
+  throttled_monitors: ResearchMonitorCustomerTopContributor[];
+  rebalance_guidance_status: string;
+  rebalance_guidance_reasons: string[];
+  rebalance_guidance_summary?: string;
+  rebalance_guidance_changes: ResearchMonitorCustomerRebalanceChange[];
+  latest_rebalance_evaluation_status?: string;
+  latest_rebalance_evaluation_sample_count: number;
+  latest_rebalance_evaluation_target_count: number;
+  latest_rebalance_evaluation_reasons: string[];
+  recent_rebalance_history: ResearchMonitorCustomerRebalanceHistoryEntry[];
+}
+
+export interface ResearchMonitorHealthSummary {
+  monitor_job_id?: string;
+  monitor_name: string;
+  monitor_job_type?: string;
+  customer?: string;
+  discovered_count: number;
+  accepted_count: number;
+  rejected_count: number;
+  acceptance_rate: number;
+  auto_launched_count: number;
+  approval_launched_count: number;
+  queued_for_approval_count: number;
+  manual_only_count: number;
+  blocked_count: number;
+  follow_up_completed_count: number;
+  follow_up_failed_count: number;
+  follow_up_cancelled_count: number;
+  relaunch_count: number;
+  health_score: number;
+  health_bucket: string;
+  health_reasons: string[];
+  automation_profile?: string;
+  automation_policy?: Record<string, any>;
+  effective_policy?: Record<string, any>;
+  autonomy_mode?: string;
+  current_policy_mode?: string;
+  current_allowed_recommendations?: string[];
+  autonomy_budget: ResearchMonitorBudgetConfig;
+  budget_usage: ResearchMonitorBudgetUsage;
+  budget_remaining: ResearchMonitorBudgetUsage;
+  budget_throttle_state: string;
+  budget_throttle_reasons: string[];
+  budget_clamp_state?: string | null;
+  budget_clamp_reasons?: string[];
+  budget_history_count: number;
+  latest_budget_changed_at?: string;
+  latest_budget_change_source?: string;
+  latest_budget_actor_user_id?: string;
+  latest_budget_change_reason?: string;
+  recommended_policy_mode: string;
+  recommended_allowed_recommendations: string[];
+  policy_reasons: string[];
+  policy_confidence: string;
+  policy_history_count: number;
+  latest_policy_changed_at?: string;
+  latest_policy_change_source?: string;
+  latest_policy_actor_user_id?: string;
+  latest_policy_evaluation_status?: string;
+  latest_policy_evaluation_sample_count: number;
+  latest_policy_evaluation_target_count: number;
+  latest_policy_evaluation_reasons: string[];
+  policy_guardrail_status?: string | null;
+  policy_guardrail_action?: string | null;
+  policy_guardrail_reasons: string[];
+  policy_guardrail_target_history_entry_id?: string | null;
+  policy_guardrail_follow_up_autonomy?: ResearchMonitorPolicyConfig | null;
+  policy_guardrail_state?: string | null;
+  policy_guardrail_target_policy?: Record<string, any> | null;
+  policy_mode_counts: Record<string, number>;
+  follow_up_review_counts?: Record<string, number>;
+  scheduler_summary?: Record<string, any>;
+  suppressed_relaunches_count?: number;
+  recent_policy_history: ResearchMonitorPolicyHistoryEntry[];
+  top_recommendations: ResearchMonitorRecommendationAnalytics[];
+}
+
+export interface ResearchMonitorCustomerBudgetUpdateRequest {
+  customer: string;
+  auto_launch_limit_24h?: number;
+  approval_queue_limit_24h?: number;
+  alert_limit_24h?: number;
+  queue_backlog_cap?: number;
+  reset_to_default?: boolean;
+}
+
+export interface ResearchMonitorCustomerBudgetUpdateResponse {
+  customer: string;
+  customer_budget: ResearchMonitorBudgetConfig;
+}
+
+export interface ResearchMonitorAnalyticsTotals {
+  total_monitors: number;
+  discovered_count: number;
+  accepted_count: number;
+  rejected_count: number;
+  auto_launched_count: number;
+  approval_launched_count: number;
+  blocked_count: number;
+  follow_up_completed_count: number;
+  follow_up_failed_count: number;
+  follow_up_cancelled_count: number;
+  strong_monitors: number;
+  mixed_monitors: number;
+  weak_monitors: number;
+}
+
+export interface ResearchMonitorAnalyticsResponse {
+  generated_at: string;
+  totals: ResearchMonitorAnalyticsTotals;
+  customers: ResearchMonitorCustomerPortfolio[];
+  monitors: ResearchMonitorHealthSummary[];
+  recommendations: ResearchMonitorRecommendationAnalytics[];
+}
+
+export interface ResearchMonitorPolicyConfig {
+  mode: string;
+  allowed_recommendations: string[];
+  automation_profile?: string;
+  automation_policy?: Record<string, any>;
+  effective_policy?: Record<string, any>;
+}
+
+export interface ResearchMonitorPolicyEvaluationCounts {
+  accepted_count: number;
+  auto_launched_count: number;
+  approval_launched_count: number;
+  queued_for_approval_count: number;
+  manual_only_count: number;
+  blocked_count: number;
+  follow_up_completed_count: number;
+  follow_up_failed_count: number;
+  follow_up_cancelled_count: number;
+}
+
+export interface ResearchMonitorPolicyEvaluationSample {
+  item_id: string;
+  title: string;
+  period: string;
+  launch_status?: string;
+  outcome_status?: string;
+  recommendation_key?: string;
+  summary?: string;
+}
+
+export interface ResearchMonitorPolicyHistoryEntry {
+  id: string;
+  at: string;
+  actor_user_id?: string;
+  change_source: string;
+  change_reason?: string;
+  previous_follow_up_autonomy?: ResearchMonitorPolicyConfig;
+  next_follow_up_autonomy?: ResearchMonitorPolicyConfig;
+  previous_automation_profile?: string;
+  next_automation_profile?: string;
+  previous_automation_policy?: Record<string, any>;
+  next_automation_policy?: Record<string, any>;
+  previous_effective_policy?: Record<string, any>;
+  next_effective_policy?: Record<string, any>;
+  effective_clamp_state?: string | null;
+  effective_clamp_reasons?: string[];
+  analytics_context: Record<string, any>;
+  evaluation_target_count: number;
+  evaluation_state: string;
+  evaluation_status?: string;
+  evaluation_sample_count: number;
+  evaluation_reasons: string[];
+  before_counts: ResearchMonitorPolicyEvaluationCounts;
+  after_counts: ResearchMonitorPolicyEvaluationCounts;
+  delta_counts: ResearchMonitorPolicyEvaluationCounts;
+}
+
+export interface ResearchMonitorPolicyUpdateRequest {
+  automation_profile?: string;
+  automation_policy?: Record<string, any>;
+  mode?: string;
+  allowed_recommendations?: string[];
+  reset_to_default?: boolean;
+  change_source?: string;
+  change_reason?: string;
+  analytics_context?: Record<string, any>;
+}
+
+export interface ResearchMonitorPolicyRollbackRequest {
+  history_entry_id: string;
+  change_reason?: string;
+}
+
+export interface ResearchMonitorPolicySimulationRequest {
+  automation_profile?: string;
+  automation_policy?: Record<string, any>;
+  mode?: string;
+  allowed_recommendations?: string[];
+  history_limit?: number;
+}
+
+export interface ResearchMonitorPolicyUpdateResponse {
+  monitor_job_id: string;
+  follow_up_autonomy?: ResearchMonitorPolicyConfig;
+  automation_profile?: string;
+  automation_policy?: Record<string, any>;
+  effective_policy?: Record<string, any>;
+  latest_history_entry?: ResearchMonitorPolicyHistoryEntry;
+  policy_history_count: number;
+}
+
+export interface ResearchMonitorBudgetUpdateRequest {
+  auto_launch_limit_24h?: number;
+  approval_queue_limit_24h?: number;
+  alert_limit_24h?: number;
+  queue_backlog_cap?: number;
+  reset_to_default?: boolean;
+}
+
+export interface ResearchMonitorBudgetUpdateResponse {
+  monitor_job_id: string;
+  autonomy_budget: ResearchMonitorBudgetConfig;
+  latest_history_entry?: ResearchMonitorBudgetHistoryEntry;
+}
+
+export interface ResearchMonitorCustomerRebalanceApplyMonitorRequest {
+  monitor_job_id: string;
+  auto_launch_limit_24h: number;
+  approval_queue_limit_24h: number;
+  alert_limit_24h: number;
+  queue_backlog_cap: number;
+}
+
+export interface ResearchMonitorCustomerRebalancePreviewRequest {
+  customer: string;
+  monitor_budget_updates?: ResearchMonitorCustomerRebalanceApplyMonitorRequest[];
+}
+
+export interface ResearchMonitorCustomerRebalanceApplyRequest {
+  customer: string;
+  monitor_budget_updates: ResearchMonitorCustomerRebalanceApplyMonitorRequest[];
+  change_reason?: string;
+}
+
+export interface ResearchMonitorCustomerRebalanceApplyResponse {
+  customer: string;
+  updated_monitor_ids: string[];
+  guidance_status: string;
+  guidance_summary?: string;
+  latest_history_entries: ResearchMonitorBudgetHistoryEntry[];
+}
+
+export interface ResearchMonitorPolicySimulationCounts {
+  auto_launch_safe_count: number;
+  queue_for_approval_count: number;
+  manual_only_count: number;
+  blocked_count: number;
+  insufficient_context_count: number;
+}
+
+export interface ResearchMonitorPolicySimulationRecommendationDelta {
+  recommendation_key: string;
+  baseline_count: number;
+  simulated_count: number;
+  delta_count: number;
+}
+
+export interface ResearchMonitorPolicySimulationSample {
+  item_id: string;
+  title: string;
+  recommendation_key?: string;
+  current_outcome: string;
+  simulated_outcome: string;
+  reason: string;
+}
+
+export interface ResearchMonitorPolicySimulationResponse {
+  monitor_job_id: string;
+  current_policy: ResearchMonitorPolicyConfig;
+  proposed_policy: ResearchMonitorPolicyConfig;
+  current_automation_profile?: string;
+  current_automation_policy?: Record<string, any>;
+  current_effective_policy?: Record<string, any>;
+  proposed_automation_profile?: string;
+  proposed_automation_policy?: Record<string, any>;
+  proposed_effective_policy?: Record<string, any>;
+  history_limit: number;
+  baseline_counts: ResearchMonitorPolicySimulationCounts;
+  simulated_counts: ResearchMonitorPolicySimulationCounts;
+  delta_counts: ResearchMonitorPolicySimulationCounts;
+  top_recommendation_deltas: ResearchMonitorPolicySimulationRecommendationDelta[];
+  sample_items: ResearchMonitorPolicySimulationSample[];
+  insufficient_context_count: number;
+}
+
+export interface ResearchMonitorPolicyEvaluationDetail {
+  monitor_job_id: string;
+  history_entry_id: string;
+  evaluation_status: string;
+  evaluation_sample_count: number;
+  evaluation_target_count: number;
+  evaluation_reasons: string[];
+  before_counts: ResearchMonitorPolicyEvaluationCounts;
+  after_counts: ResearchMonitorPolicyEvaluationCounts;
+  delta_counts: ResearchMonitorPolicyEvaluationCounts;
+  sample_items: ResearchMonitorPolicyEvaluationSample[];
 }
 
 export type CodePatchProposalStatus = 'proposed' | 'applied' | 'rejected';
@@ -1889,7 +4459,12 @@ export type SynthesisJobType =
   | 'knowledge_synthesis'
   | 'research_report'
   | 'executive_brief'
-  | 'gap_analysis_hypotheses';
+  | 'decision_memo'
+  | 'gap_analysis_hypotheses'
+  | 'hypothesis_reevaluation'
+  | 'compiler_regression_explanation'
+  | 'compiler_patch_proposal'
+  | 'compiler_patch_draft';
 
 export type SynthesisJobStatus =
   | 'pending'
@@ -1907,6 +4482,9 @@ export interface SynthesisJob {
   title: string;
   description?: string;
   document_ids: string[];
+  paper_ids?: string[];
+  research_note_id?: string;
+  source_id?: string;
   search_query?: string;
   topic?: string;
   options?: Record<string, any>;
@@ -1921,6 +4499,46 @@ export interface SynthesisJob {
     word_count?: number;
     themes_found?: string[];
     key_findings?: string[];
+    audience?: string;
+    summary?: string;
+    reprioritization_summary?: string;
+    priority_deltas?: Array<Record<string, any>>;
+    archived_hypothesis_ids?: string[];
+    structured_hypotheses?: Array<Record<string, any>>;
+    source_note_id?: string;
+    regression_type?: string;
+    metric_deltas?: Array<Record<string, any>>;
+    artifact_deltas?: Array<Record<string, any>>;
+    likely_causes?: Array<Record<string, any>>;
+    supporting_signals?: string[];
+    confounders?: string[];
+    recommended_next_steps?: string[];
+    source_run_ids?: string[];
+    primary_run_id?: string;
+    comparison_run_id?: string;
+    primary_run_summary?: Record<string, any>;
+    comparison_run_summary?: Record<string, any>;
+    proposal_summary?: string;
+    target_area?: string;
+    candidate_change?: string;
+    expected_effect?: string;
+    mechanism?: string;
+    supporting_evidence?: string[];
+    validation_plan?: string[];
+    risk_assessment?: string[];
+    rollback_or_guardrail?: string;
+    source_explanation_note_id?: string;
+    draft_summary?: string;
+    source_proposal_note_id?: string;
+    source_name?: string;
+    target_files?: string[];
+    target_symbols?: string[];
+    change_plan?: string[];
+    proposed_code_regions?: Array<Record<string, any>>;
+    validation_commands?: string[];
+    benchmark_validation_scope?: string[];
+    risk_checks?: string[];
+    rollback_steps?: string[];
   };
   artifacts?: Array<{
     type: string;
@@ -1931,12 +4549,87 @@ export interface SynthesisJob {
   file_path?: string;
   file_size?: number;
   error?: string;
+  review_outcome_status?: 'applied_to_source_note' | 'saved_as_new_note' | 'dismissed' | string | null;
+  review_recorded_at?: string | null;
+  review_note?: string | null;
+  review_target_note_id?: string | null;
+  can_apply?: boolean;
+  can_dismiss?: boolean;
   created_at?: string;
   started_at?: string;
   completed_at?: string;
 }
 
 // ==================== Research Notes ====================
+
+export interface ResearchHypothesis {
+  id: string;
+  rank: number;
+  title: string;
+  claim: string;
+  rationale: string;
+  supporting_evidence?: string[];
+  supporting_sources?: Array<Record<string, any>>;
+  counterarguments?: string[];
+  novelty_score: number;
+  evidence_score: number;
+  testability_score: number;
+  overall_score: number;
+  recommended_next_step: string;
+  autonomous_origin?: {
+    source_kind?: 'profile' | 'portfolio' | string;
+    source_id?: string | null;
+    opportunity_id?: string | null;
+    evidence_revision_at_launch?: string | null;
+  } | null;
+  experiment_evidence?: ResearchHypothesisExperimentEvidence[];
+}
+
+export interface ResearchHypothesisExperimentEvidence {
+  run_id: string;
+  experiment_plan_id?: string;
+  plan_scope?: string | null;
+  status?: string | null;
+  summary?: string | null;
+  appended_at?: string | null;
+  selected_hypothesis_ids?: string[];
+  supporting_sources?: Array<Record<string, any>>;
+  source_paper_ids?: string[];
+  source_document_ids?: string[];
+  verification_commands?: string[];
+  failed_commands?: string[];
+  result_highlights?: string[];
+  measurement_summary?: Record<string, any> | null;
+  compiler_artifacts?: Record<string, any> | null;
+  perf_counters?: Record<string, any> | null;
+  artifact_diff_summary?: string | null;
+  artifact_inventory?: string[];
+  repeat_count?: number | null;
+  autonomous_origin?: {
+    source_kind?: 'profile' | 'portfolio' | string;
+    source_id?: string | null;
+    opportunity_id?: string | null;
+    evidence_revision_at_launch?: string | null;
+  } | null;
+}
+
+export interface ResearchNoteReevaluationHistoryEntry {
+  job_id: string;
+  saved_at?: string | null;
+  note_title?: string | null;
+  source_note_id?: string | null;
+  target_note_id?: string | null;
+  origin_source_kind?: 'profile' | 'portfolio' | string | null;
+  origin_source_id?: string | null;
+  origin_opportunity_id?: string | null;
+  source_run_ids?: string[];
+  reprioritization_summary?: string | null;
+  priority_deltas?: Array<Record<string, any>>;
+  archived_hypothesis_ids?: string[];
+  outcome_status?: 'applied_to_source_note' | 'saved_as_new_note' | 'dismissed' | string | null;
+  outcome_recorded_at?: string | null;
+  outcome_note?: string | null;
+}
 
 export interface ResearchNote {
   id: string;
@@ -1945,6 +4638,74 @@ export interface ResearchNote {
   content_markdown: string;
   tags?: string[];
   attribution?: Record<string, any> | null;
+  structured_payload?: {
+    research_mode?: string;
+    summary?: string;
+    hypotheses?: ResearchHypothesis[];
+    source_paper_ids?: string[];
+    source_document_ids?: string[];
+    gaps?: string[];
+    solution_sketches?: string[];
+    scoring_policy?: Record<string, any>;
+    selection_policy?: Record<string, any>;
+    open_questions?: string[];
+    ranked_opportunities?: string[];
+    artifact_type?: string;
+    reprioritization_summary?: string;
+    priority_deltas?: Array<Record<string, any>>;
+    archived_hypothesis_ids?: string[];
+    previous_hypotheses?: ResearchHypothesis[];
+    previous_summary?: string;
+    previous_artifact_type?: string;
+    reevaluation_history?: ResearchNoteReevaluationHistoryEntry[];
+    last_appended_run_id?: string;
+    last_appended_at?: string;
+    pending_reevaluation_job_id?: string;
+    pending_reevaluation_created_at?: string;
+    pending_reevaluation_reason?: string;
+    pending_reevaluation_source_run_ids?: string[];
+    pending_reevaluation_status?: string;
+    pending_reevaluation_completed_at?: string;
+    pending_reevaluation_error?: string;
+    regression_type?: string;
+    source_run_ids?: string[];
+    primary_run_id?: string;
+    comparison_run_id?: string;
+    metric_deltas?: Array<Record<string, any>>;
+    artifact_deltas?: Array<Record<string, any>>;
+    likely_causes?: Array<Record<string, any>>;
+    supporting_signals?: string[];
+    confounders?: string[];
+    recommended_next_steps?: string[];
+    benchmark_family?: string;
+    benchmark_suite_id?: string;
+    benchmark_case_ids?: string[];
+    benchmark_baseline_id?: string;
+    primary_run_summary?: Record<string, any> | null;
+    comparison_run_summary?: Record<string, any> | null;
+    proposal_summary?: string;
+    target_area?: string;
+    candidate_change?: string;
+    expected_effect?: string;
+    mechanism?: string;
+    supporting_evidence?: string[];
+    validation_plan?: string[];
+    risk_assessment?: string[];
+    rollback_or_guardrail?: string;
+    source_explanation_note_id?: string;
+    draft_summary?: string;
+    source_proposal_note_id?: string;
+    source_id?: string;
+    source_name?: string;
+    target_files?: string[];
+    target_symbols?: string[];
+    change_plan?: string[];
+    proposed_code_regions?: Array<Record<string, any>>;
+    validation_commands?: string[];
+    benchmark_validation_scope?: string[];
+    risk_checks?: string[];
+    rollback_steps?: string[];
+  } | null;
   source_synthesis_job_id?: string | null;
   source_document_ids?: string[] | null;
   created_at?: string | null;
@@ -1968,7 +4729,36 @@ export interface ExperimentPlan {
   hypothesis_text?: string | null;
   plan: Record<string, any>;
   generator?: string | null;
-  generator_details?: Record<string, any> | null;
+  benchmark_family?: string | null;
+  benchmark_suite_id?: string | null;
+  benchmark_case_ids?: string[];
+  benchmark_baseline_id?: string | null;
+  generator_details?: {
+    generated_at?: string;
+    plan_mode?: 'aggregate_note' | 'single_hypothesis' | 'compiler_regression_followup';
+    hypothesis_id?: string | null;
+    selected_hypothesis_ids?: string[];
+    source_paper_ids?: string[];
+    source_document_ids?: string[];
+    source_run_ids?: string[];
+    primary_run_id?: string | null;
+    comparison_run_id?: string | null;
+    regression_type?: string | null;
+    supporting_sources?: Array<Record<string, any>>;
+    benchmark_family?: string | null;
+    benchmark_suite_id?: string | null;
+    benchmark_case_ids?: string[];
+    benchmark_baseline_id?: string | null;
+    benchmark_suite_name?: string | null;
+    benchmark_case_names?: string[];
+    benchmark_default_commands?: string[];
+    reevaluation_mode?: boolean;
+    reevaluation_source_job_id?: string | null;
+    explanation_mode?: boolean;
+    likely_causes?: Array<Record<string, any>>;
+    recommended_next_steps?: string[];
+    [key: string]: any;
+  } | null;
   created_at: string;
   updated_at: string;
 }
@@ -1981,6 +4771,10 @@ export interface ExperimentPlanGenerateRequest {
   note_id: string;
   max_note_chars?: number;
   prefer_section?: 'hypothesis' | 'full_note';
+  plan_mode?: 'aggregate_note' | 'single_hypothesis' | 'compiler_regression_followup';
+  hypothesis_id?: string;
+  benchmark_suite_id?: string;
+  benchmark_case_ids?: string[];
   include_ablations?: boolean;
   include_timeline?: boolean;
   include_risks?: boolean;
@@ -1998,12 +4792,51 @@ export interface ExperimentRun {
   user_id: string;
   experiment_plan_id: string;
   agent_job_id?: string | null;
+  parent_run_id?: string | null;
+  latest_child_run_id?: string | null;
   name: string;
-  status: 'planned' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status:
+    | 'pending'
+    | 'planned'
+    | 'queued'
+    | 'provisioning'
+    | 'running'
+    | 'paused'
+    | 'succeeded'
+    | 'completed'
+    | 'failed'
+    | 'blocked'
+    | 'cancelled';
   config?: Record<string, any> | null;
   results?: Record<string, any> | null;
+  validation_kind?: string | null;
+  sandbox_profile_id?: string | null;
+  recipe_family?: string | null;
+  recipe_id?: string | null;
+  recipe_version?: number | null;
+  domain_research_profile_id?: string | null;
+  research_portfolio_id?: string | null;
+  hypothesis_id?: string | null;
+  originating_job_id?: string | null;
+  blocked_reason_code?: string | null;
+  capability_check?: Record<string, any> | null;
+  profile_snapshot?: Record<string, any> | null;
+  recipe_snapshot?: Record<string, any> | null;
+  benchmark_family?: string | null;
+  benchmark_suite_id?: string | null;
+  benchmark_case_ids?: string[];
+  benchmark_baseline_id?: string | null;
+  measurement_summary?: Record<string, any> | null;
+  compiler_artifacts?: Record<string, any> | null;
+  perf_counters?: Record<string, any> | null;
+  artifact_inventory?: string[];
+  repeat_count?: number | null;
+  experiment_run?: AgentJobExperimentRun | null;
+  operator_interventions?: AgentJobOperatorIntervention[] | null;
+  operator_actions?: ExperimentRunOperatorAction[] | null;
   summary?: string | null;
   progress: number;
+  retry_count?: number;
   started_at?: string | null;
   completed_at?: string | null;
   created_at: string;
@@ -2014,15 +4847,86 @@ export interface ExperimentRunListResponse {
   runs: ExperimentRun[];
 }
 
+export interface ExperimentRunPostRunActions {
+  auto_append_to_note?: boolean;
+  target_note_id?: string;
+  append_status?: 'pending' | 'completed' | 'failed' | string;
+  appended_at?: string | null;
+  append_error?: string | null;
+}
+
 export interface ExperimentRunCreateRequest {
-  name: string;
+  name?: string;
   config?: Record<string, any> | null;
   summary?: string | null;
 }
 
+export interface BenchmarkCase {
+  id: string;
+  suite_id: string;
+  name: string;
+  description?: string | null;
+  rank: number;
+  source_ref?: string | null;
+  benchmark_query?: string | null;
+  compile_command_template?: string | null;
+  run_command_template?: string | null;
+  expected_artifacts: string[];
+  metrics: Array<Record<string, any>>;
+  observability: Record<string, any>;
+  metadata: Record<string, any>;
+}
+
+export interface BenchmarkBaseline {
+  id: string;
+  suite_id: string;
+  case_id?: string | null;
+  name: string;
+  description?: string | null;
+  compiler_revision?: string | null;
+  toolchain_id?: string | null;
+  sandbox_profile_id?: string | null;
+  measurements: Record<string, any>;
+  environment_snapshot: Record<string, any>;
+  enabled: boolean;
+  system_managed: boolean;
+}
+
+export interface BenchmarkSuite {
+  id: string;
+  user_id?: string | null;
+  name: string;
+  description?: string | null;
+  track_type: string;
+  benchmark_family: string;
+  suite_version: number;
+  tags: string[];
+  metadata: Record<string, any>;
+  enabled: boolean;
+  system_managed: boolean;
+  cases: BenchmarkCase[];
+  baselines: BenchmarkBaseline[];
+}
+
+export interface BenchmarkSuiteListResponse {
+  items: BenchmarkSuite[];
+  total: number;
+}
+
 export interface ExperimentRunUpdateRequest {
   name?: string;
-  status?: 'planned' | 'running' | 'completed' | 'failed' | 'cancelled';
+  status?:
+    | 'pending'
+    | 'planned'
+    | 'queued'
+    | 'provisioning'
+    | 'running'
+    | 'paused'
+    | 'succeeded'
+    | 'completed'
+    | 'failed'
+    | 'blocked'
+    | 'cancelled';
   progress?: number;
   config?: Record<string, any> | null;
   results?: Record<string, any> | null;
@@ -2042,6 +4946,32 @@ export interface ExperimentRunStartRequest {
 export interface ExperimentRunStartResponse {
   run: ExperimentRun;
   agent_job_id: string;
+}
+
+export interface ExperimentRunOperatorAction {
+  action: string;
+  actor_user_id?: string | null;
+  at?: string | null;
+  note?: string | null;
+  previous_status?: string | null;
+  new_status?: string | null;
+  linked_job_id?: string | null;
+  linked_job_action?: string | null;
+  outcome_status?: string | null;
+  outcome_reason?: string | null;
+  parent_run_id?: string | null;
+  child_run_id?: string | null;
+}
+
+export interface ExperimentRunActionRequest {
+  action: 'start' | 'sync' | 'pause' | 'resume' | 'cancel' | 'retry' | 'requeue';
+  note?: string | null;
+  start_immediately?: boolean;
+}
+
+export interface ExperimentRunActionResponse {
+  run: ExperimentRun;
+  agent_job_id?: string | null;
 }
 
 // ============================================================================

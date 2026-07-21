@@ -83,6 +83,8 @@ class AgentJobMemoryService:
 
     # Memory types specific to agent jobs
     JOB_MEMORY_TYPES = ["finding", "insight", "pattern", "lesson"]
+    _RELAUNCH_ANCESTOR_LIMIT = 16
+    _DEDUP_RECENT_LIMIT = 300
     _GRAPH_STOPWORDS = {
         "the", "and", "for", "with", "from", "that", "this", "into", "over", "under",
         "are", "was", "were", "will", "can", "could", "should", "would", "have", "has",
@@ -120,6 +122,233 @@ class AgentJobMemoryService:
         if status == "cancelled":
             return "cancelled"
         return "partial"
+
+    def _normalize_memory_content(self, content: str) -> str:
+        """Normalize memory content for stable deduplication signatures."""
+        text = str(content or "").strip().lower()
+        if not text:
+            return ""
+        text = re.sub(r"[`\"'“”‘’]", "", text)
+        text = re.sub(r"[^a-z0-9\s:/._-]+", " ", text)
+        text = re.sub(r"\s+", " ", text).strip()
+        return text[:600]
+
+    def _normalize_signature_token(self, value: str, *, max_len: int = 100) -> str:
+        """Normalize scope/role tokens used in dedup signatures."""
+        raw = str(value or "").strip().lower()
+        if not raw:
+            return ""
+        raw = re.sub(r"[^a-z0-9]+", "-", raw).strip("-")
+        return raw[:max_len]
+
+    def _build_memory_dedup_signature(
+        self,
+        memory_type: str,
+        content: str,
+        *,
+        project_scope: str = "",
+        agent_role: str = "",
+    ) -> str:
+        """Build a stable deduplication signature for memory comparison."""
+        mtype = str(memory_type or "").strip().lower()
+        body = self._normalize_memory_content(content)
+        if not mtype or not body:
+            return ""
+
+        parts = [mtype, body]
+        scope_token = self._normalize_signature_token(project_scope, max_len=120)
+        role_token = self._normalize_signature_token(agent_role, max_len=80)
+        if scope_token:
+            parts.append(f"scope:{scope_token}")
+        if role_token:
+            parts.append(f"role:{role_token}")
+        return "||".join(parts)
+
+    def _extract_relaunch_parent_job_id(self, config: Optional[dict]) -> Optional[UUID]:
+        """Extract relaunch parent id from job config payload."""
+        cfg = config if isinstance(config, dict) else {}
+        raw = str(cfg.get("relaunch_from_job_id") or "").strip()
+        if not raw:
+            return None
+        try:
+            return UUID(raw)
+        except Exception:
+            return None
+
+    async def _resolve_relaunch_dedup_scope(
+        self,
+        job: AgentJob,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """
+        Resolve job IDs that belong to the current relaunch lineage.
+
+        Returns a scope payload with:
+        - root_job_id: oldest relaunch ancestor id (empty for non-relaunch jobs)
+        - job_ids: set of job ids in lineage including current job
+        - is_relaunch_chain: whether relaunch ancestry was found
+        """
+        lineage_job_ids: set[UUID] = set()
+        current_job_id = getattr(job, "id", None)
+        if current_job_id:
+            lineage_job_ids.add(current_job_id)
+
+        visited_ids: set[str] = set()
+        if current_job_id:
+            visited_ids.add(str(current_job_id))
+
+        root_job_id = ""
+        hops = 0
+        next_parent_id = self._extract_relaunch_parent_job_id(
+            job.config if isinstance(job.config, dict) else None
+        )
+        while next_parent_id and hops < self._RELAUNCH_ANCESTOR_LIMIT:
+            parent_token = str(next_parent_id)
+            if parent_token in visited_ids:
+                break
+            visited_ids.add(parent_token)
+            lineage_job_ids.add(next_parent_id)
+            root_job_id = parent_token
+
+            try:
+                parent_job = await db.get(AgentJob, next_parent_id)
+            except Exception:
+                parent_job = None
+            if parent_job is None:
+                break
+
+            if str(getattr(parent_job, "user_id", "")) != str(getattr(job, "user_id", "")):
+                break
+
+            next_parent_id = self._extract_relaunch_parent_job_id(
+                parent_job.config if isinstance(parent_job.config, dict) else None
+            )
+            hops += 1
+
+        return {
+            "root_job_id": root_job_id if len(lineage_job_ids) > 1 else "",
+            "job_ids": lineage_job_ids,
+            "is_relaunch_chain": len(lineage_job_ids) > 1,
+        }
+
+    def _is_memory_in_dedup_scope(
+        self,
+        memory: ConversationMemory,
+        dedup_job_ids: set[str],
+        dedup_root_job_id: str,
+    ) -> bool:
+        """Check whether a memory should be considered for relaunch-chain dedup."""
+        memory_job_id = str(memory.job_id or "").strip()
+        if memory_job_id and memory_job_id in dedup_job_ids:
+            return True
+
+        context = memory.context if isinstance(memory.context, dict) else {}
+        mem_root = str(context.get("relaunch_root_job_id") or "").strip()
+        if dedup_root_job_id and mem_root and mem_root == dedup_root_job_id:
+            return True
+        return False
+
+    async def _load_existing_dedup_signatures(
+        self,
+        *,
+        user_id: UUID,
+        db: AsyncSession,
+        memory_types: List[str],
+        dedup_job_ids: set[UUID],
+        dedup_root_job_id: str,
+        project_scope: str,
+        agent_role: str,
+    ) -> set[str]:
+        """Load dedup signatures from recent existing memories in the current scope."""
+        mem_types = [str(t or "").strip().lower() for t in memory_types if str(t or "").strip()]
+        if not mem_types:
+            return set()
+
+        result = await db.execute(
+            select(ConversationMemory)
+            .where(
+                and_(
+                    ConversationMemory.user_id == user_id,
+                    ConversationMemory.is_active == True,
+                    ConversationMemory.memory_type.in_(list(set(mem_types))),
+                )
+            )
+            .order_by(desc(ConversationMemory.created_at))
+            .limit(self._DEDUP_RECENT_LIMIT)
+        )
+        candidates = list(result.scalars().all())
+        if not candidates:
+            return set()
+
+        dedup_job_tokens = {str(jid) for jid in dedup_job_ids if jid}
+        root_token = str(dedup_root_job_id or "").strip()
+        signatures: set[str] = set()
+
+        for memory in candidates:
+            if not self._is_memory_in_dedup_scope(memory, dedup_job_tokens, root_token):
+                continue
+            context = memory.context if isinstance(memory.context, dict) else {}
+            sig = self._build_memory_dedup_signature(
+                memory_type=str(memory.memory_type or ""),
+                content=str(memory.content or ""),
+                project_scope=str(context.get("project_scope") or project_scope or ""),
+                agent_role=str(context.get("agent_role") or agent_role or ""),
+            )
+            if sig:
+                signatures.add(sig)
+
+        return signatures
+
+    async def _find_existing_memory_by_signature(
+        self,
+        *,
+        user_id: UUID,
+        db: AsyncSession,
+        memory_type: str,
+        signature: str,
+        dedup_job_ids: set[UUID],
+        dedup_root_job_id: str,
+        project_scope: str,
+        agent_role: str,
+    ) -> Optional[ConversationMemory]:
+        """Find a recent memory with the same dedup signature in the same scope."""
+        mtype = str(memory_type or "").strip().lower()
+        sig = str(signature or "").strip()
+        if not mtype or not sig:
+            return None
+
+        result = await db.execute(
+            select(ConversationMemory)
+            .where(
+                and_(
+                    ConversationMemory.user_id == user_id,
+                    ConversationMemory.is_active == True,
+                    ConversationMemory.memory_type == mtype,
+                )
+            )
+            .order_by(desc(ConversationMemory.created_at))
+            .limit(self._DEDUP_RECENT_LIMIT)
+        )
+        candidates = list(result.scalars().all())
+        if not candidates:
+            return None
+
+        dedup_job_tokens = {str(jid) for jid in dedup_job_ids if jid}
+        root_token = str(dedup_root_job_id or "").strip()
+
+        for memory in candidates:
+            if not self._is_memory_in_dedup_scope(memory, dedup_job_tokens, root_token):
+                continue
+            context = memory.context if isinstance(memory.context, dict) else {}
+            candidate_sig = self._build_memory_dedup_signature(
+                memory_type=str(memory.memory_type or ""),
+                content=str(memory.content or ""),
+                project_scope=str(context.get("project_scope") or project_scope or ""),
+                agent_role=str(context.get("agent_role") or agent_role or ""),
+            )
+            if candidate_sig and candidate_sig == sig:
+                return memory
+        return None
 
     def _tokenize(self, text: str) -> set[str]:
         """Tokenize memory text for lightweight graph similarity scoring."""
@@ -491,7 +720,12 @@ class AgentJobMemoryService:
         self,
         job: AgentJob,
         user_id: str,
-        db: AsyncSession
+        db: AsyncSession,
+        memory_types_allowlist: Optional[List[str]] = None,
+        context_overrides: Optional[Dict[str, Any]] = None,
+        extraction_reason: Optional[str] = None,
+        force_extract: bool = False,
+        stats_out: Optional[Dict[str, Any]] = None,
     ) -> List[ConversationMemory]:
         """
         Extract valuable memories from a completed agent job.
@@ -506,14 +740,37 @@ class AgentJobMemoryService:
             job: The completed AgentJob
             user_id: User ID string
             db: Database session
+            memory_types_allowlist: Optional memory-type subset to persist
+            context_overrides: Optional context merged into stored memory context
+            extraction_reason: Optional extraction reason tag
+            force_extract: Ignore auto-extract preference and force extraction
+            stats_out: Optional output dict populated with extraction stats
 
         Returns:
             List of created ConversationMemory objects
         """
+        if isinstance(stats_out, dict):
+            stats_out.clear()
+            stats_out.update(
+                {
+                    "status": "pending",
+                    "parsed_count": 0,
+                    "candidate_count": 0,
+                    "created_count": 0,
+                    "skipped_duplicates": 0,
+                    "dedup_existing_signature_count": 0,
+                    "is_relaunch_chain": False,
+                    "relaunch_root_job_id": "",
+                }
+            )
+
         prefs = await self.get_user_preferences(UUID(user_id), db)
 
-        if not prefs.auto_extract_job_memories:
+        if not prefs.auto_extract_job_memories and not force_extract:
             logger.info(f"Auto-extract disabled for user {user_id}, skipping memory extraction")
+            if isinstance(stats_out, dict):
+                stats_out["status"] = "skipped"
+                stats_out["skip_reason"] = "auto_extract_disabled"
             return []
 
         # Build job context for LLM
@@ -571,22 +828,85 @@ class AgentJobMemoryService:
                 prompt=prompt,
                 system_prompt="You are an expert analyst extracting valuable memories from job results.",
                 user_id=user_id,
-                user_llm_settings=llm_settings,
+                user_settings=llm_settings,
             )
 
             memories = self._parse_extracted_memories(response, job, user_id)
+            if isinstance(stats_out, dict):
+                stats_out["parsed_count"] = len(memories)
 
             # Store memories
             created_memories = []
             allowed_types = prefs.agent_job_memory_types or self.JOB_MEMORY_TYPES
+            if isinstance(memory_types_allowlist, list) and memory_types_allowlist:
+                subset = [str(v).strip().lower() for v in memory_types_allowlist if str(v).strip()]
+                if subset:
+                    allowed_types = [t for t in allowed_types if str(t).strip().lower() in set(subset)]
 
             outcome = self._execution_outcome(job)
             project_scope = self._extract_project_scope(job)
             agent_role = self._resolve_job_role(job)
+            reason_tag = str(extraction_reason or "").strip().lower().replace(" ", "_")
+            allowed_type_set = {
+                str(t or "").strip().lower()
+                for t in (allowed_types or [])
+                if str(t or "").strip()
+            }
 
+            candidate_memories: List[Dict[str, Any]] = []
             for memory_data in memories:
-                if memory_data["type"] not in allowed_types:
+                mtype = str(memory_data.get("type") or "").strip().lower()
+                content = str(memory_data.get("content") or "").strip()
+                if not mtype or not content:
                     continue
+                if mtype not in allowed_type_set:
+                    continue
+                candidate_memories.append(
+                    {
+                        "type": mtype,
+                        "content": content,
+                        "importance": memory_data.get("importance", 0.5),
+                        "tags": memory_data.get("tags") or [],
+                    }
+                )
+            if isinstance(stats_out, dict):
+                stats_out["candidate_count"] = len(candidate_memories)
+
+            dedup_scope = await self._resolve_relaunch_dedup_scope(job, db)
+            dedup_root_job_id = str(dedup_scope.get("root_job_id") or "").strip()
+            dedup_job_ids = (
+                dedup_scope.get("job_ids")
+                if isinstance(dedup_scope.get("job_ids"), set)
+                else set()
+            )
+            existing_signatures = await self._load_existing_dedup_signatures(
+                user_id=UUID(user_id),
+                db=db,
+                memory_types=[m["type"] for m in candidate_memories],
+                dedup_job_ids=dedup_job_ids,
+                dedup_root_job_id=dedup_root_job_id,
+                project_scope=project_scope,
+                agent_role=agent_role,
+            )
+            seen_signatures = set(existing_signatures)
+            skipped_duplicate_count = 0
+            if isinstance(stats_out, dict):
+                stats_out["dedup_existing_signature_count"] = len(existing_signatures)
+                stats_out["is_relaunch_chain"] = bool(dedup_scope.get("is_relaunch_chain"))
+                stats_out["relaunch_root_job_id"] = dedup_root_job_id
+
+            for memory_data in candidate_memories:
+                dedup_signature = self._build_memory_dedup_signature(
+                    memory_type=memory_data["type"],
+                    content=memory_data["content"],
+                    project_scope=project_scope,
+                    agent_role=agent_role,
+                )
+                if dedup_signature and dedup_signature in seen_signatures:
+                    skipped_duplicate_count += 1
+                    continue
+                if dedup_signature:
+                    seen_signatures.add(dedup_signature)
 
                 memory_tags = list(memory_data["tags"] or [])
                 memory_tags.append(f"outcome:{outcome}")
@@ -598,12 +918,35 @@ class AgentJobMemoryService:
                     memory_tags.append("successful_strategy")
                 if outcome == "failure" and memory_data["type"] in {"pattern", "lesson"}:
                     memory_tags.append("failed_path")
+                if reason_tag:
+                    memory_tags.append(f"extraction:{reason_tag[:60]}")
 
                 strategy_signal = "neutral"
                 if "successful_strategy" in memory_tags:
                     strategy_signal = "successful_strategy"
                 elif "failed_path" in memory_tags:
                     strategy_signal = "failed_path"
+
+                context_payload = {
+                    "job_name": job.name,
+                    "job_type": job.job_type,
+                    "job_status": job.status,
+                    "execution_outcome": outcome,
+                    "project_scope": project_scope,
+                    "agent_role": agent_role,
+                    "strategy_signal": strategy_signal,
+                    "extracted_at": datetime.utcnow().isoformat(),
+                }
+                if dedup_root_job_id:
+                    context_payload["relaunch_root_job_id"] = dedup_root_job_id
+                    context_payload["relaunch_chain"] = True
+                    context_payload["relaunch_lineage_depth"] = max(1, len(dedup_job_ids) - 1)
+                if isinstance(context_overrides, dict):
+                    for key, value in context_overrides.items():
+                        k = str(key or "").strip()
+                        if not k:
+                            continue
+                        context_payload[k[:80]] = value
 
                 memory = ConversationMemory(
                     user_id=UUID(user_id),
@@ -612,16 +955,7 @@ class AgentJobMemoryService:
                     content=memory_data["content"],
                     importance_score=memory_data["importance"],
                     tags=list(set(memory_tags)),
-                    context={
-                        "job_name": job.name,
-                        "job_type": job.job_type,
-                        "job_status": job.status,
-                        "execution_outcome": outcome,
-                        "project_scope": project_scope,
-                        "agent_role": agent_role,
-                        "strategy_signal": strategy_signal,
-                        "extracted_at": datetime.utcnow().isoformat(),
-                    },
+                    context=context_payload,
                 )
                 db.add(memory)
                 created_memories.append(memory)
@@ -642,11 +976,29 @@ class AgentJobMemoryService:
             except Exception as graph_exc:
                 logger.warning(f"Failed to link extracted memories in task graph for job {job.id}: {graph_exc}")
 
-            logger.info(f"Extracted {len(created_memories)} memories from job {job.id}")
+            if isinstance(stats_out, dict):
+                stats_out["status"] = "completed"
+                stats_out["created_count"] = len(created_memories)
+                stats_out["skipped_duplicates"] = int(skipped_duplicate_count)
+                stats_out["created_types"] = list(
+                    {
+                        str(memory.memory_type or "").strip().lower()
+                        for memory in created_memories
+                        if str(memory.memory_type or "").strip()
+                    }
+                )[:12]
+
+            logger.info(
+                f"Extracted {len(created_memories)} memories from job {job.id} "
+                f"(skipped_duplicates={skipped_duplicate_count})"
+            )
             return created_memories
 
         except Exception as e:
             logger.error(f"Failed to extract memories from job {job.id}: {e}")
+            if isinstance(stats_out, dict):
+                stats_out["status"] = "failed"
+                stats_out["error"] = str(e)[:500]
             await db.rollback()
             return []
 
@@ -709,7 +1061,9 @@ class AgentJobMemoryService:
         job: AgentJob,
         user_id: str,
         db: AsyncSession,
-        limit: Optional[int] = None
+        limit: Optional[int] = None,
+        memory_types_override: Optional[List[str]] = None,
+        include_chat_memory_override: Optional[bool] = None,
     ) -> List[ConversationMemory]:
         """
         Get memories relevant to a job's goal.
@@ -721,6 +1075,8 @@ class AgentJobMemoryService:
             user_id: User ID string
             db: Database session
             limit: Max memories to return (uses user pref if not specified)
+            memory_types_override: Optional explicit memory type allowlist
+            include_chat_memory_override: Optional override for mixing chat-memory types
 
         Returns:
             List of relevant ConversationMemory objects
@@ -731,12 +1087,39 @@ class AgentJobMemoryService:
             return []
 
         max_memories = limit or prefs.max_job_memories or 10
+        try:
+            max_memories = int(max_memories or 10)
+        except Exception:
+            max_memories = 10
+        max_memories = max(1, min(max_memories, 50))
+
+        def _normalize_types(value: Any) -> List[str]:
+            if not isinstance(value, list):
+                return []
+            allowed = set(self.JOB_MEMORY_TYPES + ["fact", "preference", "context", "summary"])
+            out: List[str] = []
+            for raw in value:
+                mem_type = str(raw or "").strip().lower()
+                if not mem_type or mem_type not in allowed:
+                    continue
+                if mem_type not in out:
+                    out.append(mem_type)
+            return out
 
         # Get candidate memories
         # Include both job-specific types and general types if sharing enabled
-        memory_types = list(prefs.agent_job_memory_types or self.JOB_MEMORY_TYPES)
-        if prefs.share_memories_with_chat:
+        memory_types = _normalize_types(memory_types_override)
+        if not memory_types:
+            memory_types = list(prefs.agent_job_memory_types or self.JOB_MEMORY_TYPES)
+
+        include_chat_memory = (
+            bool(include_chat_memory_override)
+            if include_chat_memory_override is not None
+            else bool(prefs.share_memories_with_chat)
+        )
+        if include_chat_memory:
             memory_types.extend(["fact", "preference", "context"])
+        memory_types = _normalize_types(memory_types)
 
         query = (
             select(ConversationMemory)
@@ -802,7 +1185,7 @@ class AgentJobMemoryService:
             prompt=prompt,
             system_prompt="You are ranking memories by relevance.",
             user_id=user_id,
-            user_llm_settings=llm_settings,
+            user_settings=llm_settings,
         )
 
         # Parse ranked IDs
@@ -976,6 +1359,35 @@ class AgentJobMemoryService:
         outcome = self._execution_outcome(job)
         project_scope = self._extract_project_scope(job)
         agent_role = self._resolve_job_role(job)
+        dedup_scope = await self._resolve_relaunch_dedup_scope(job, db)
+        dedup_root_job_id = str(dedup_scope.get("root_job_id") or "").strip()
+        dedup_job_ids = (
+            dedup_scope.get("job_ids")
+            if isinstance(dedup_scope.get("job_ids"), set)
+            else set()
+        )
+        signature = self._build_memory_dedup_signature(
+            memory_type=memory_type,
+            content=content,
+            project_scope=project_scope,
+            agent_role=agent_role,
+        )
+        existing = await self._find_existing_memory_by_signature(
+            user_id=UUID(user_id),
+            db=db,
+            memory_type=memory_type,
+            signature=signature,
+            dedup_job_ids=dedup_job_ids,
+            dedup_root_job_id=dedup_root_job_id,
+            project_scope=project_scope,
+            agent_role=agent_role,
+        )
+        if existing is not None:
+            logger.info(
+                f"Skipped duplicate manual memory for job {job.id}; using existing memory {existing.id}"
+            )
+            return existing
+
         memory = ConversationMemory(
             user_id=UUID(user_id),
             job_id=job.id,
@@ -999,6 +1411,10 @@ class AgentJobMemoryService:
                 "created_at": datetime.utcnow().isoformat(),
             },
         )
+        if dedup_root_job_id and isinstance(memory.context, dict):
+            memory.context["relaunch_root_job_id"] = dedup_root_job_id
+            memory.context["relaunch_chain"] = True
+            memory.context["relaunch_lineage_depth"] = max(1, len(dedup_job_ids) - 1)
 
         db.add(memory)
         await db.commit()

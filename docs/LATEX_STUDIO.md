@@ -71,7 +71,7 @@ You can start the built-in chain `ResearchEngineer: Scientist → Code Patch →
 
 Provide `config_overrides` JSON including:
 - `latex_project_id`: the LaTeX Studio project UUID to update
-- `target_source_id`: a git `DocumentSource` UUID for the code patch proposer
+- `source_id`: a git `DocumentSource` UUID for the code patch proposer (legacy `target_source_id` is still accepted)
 
 ## PaperPipeline chain (end-to-end)
 

@@ -19,7 +19,7 @@ from app.core.database import get_db
 from app.models.document import Document
 from app.models.memory import UserPreferences
 from app.models.research_note import ResearchNote
-from app.models.synthesis_job import SynthesisJob
+from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus, SynthesisJobType
 from app.models.user import User
 from app.schemas.research_note import (
     ResearchNoteCreate,
@@ -33,6 +33,7 @@ from app.schemas.research_note import (
 )
 from app.services.auth_service import get_current_user
 from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.research_note_reevaluation_notification_service import maybe_emit_reevaluation_notification
 from app.services.vector_store import vector_store_service
 
 router = APIRouter()
@@ -112,11 +113,113 @@ def _to_response(note: ResearchNote, *, include_attribution_details: bool = True
         content_markdown=note.content_markdown,
         tags=tags,
         attribution=attribution,
+        structured_payload=note.structured_payload if isinstance(note.structured_payload, dict) else None,
         source_synthesis_job_id=note.source_synthesis_job_id,
         source_document_ids=source_doc_ids,
         created_at=note.created_at,
         updated_at=note.updated_at,
     )
+
+
+async def _reconcile_pending_reevaluation_status(
+    note: ResearchNote,
+    *,
+    db: AsyncSession,
+    current_user: User,
+) -> bool:
+    payload = note.structured_payload if isinstance(note.structured_payload, dict) else None
+    if not isinstance(payload, dict):
+        return False
+    if str(payload.get("artifact_type") or "").strip() != SynthesisJobType.HYPOTHESIS_REEVALUATION.value:
+        return False
+
+    pending_job_id = str(payload.get("pending_reevaluation_job_id") or "").strip()
+    if not pending_job_id:
+        return False
+
+    try:
+        job_uuid = UUID(pending_job_id)
+    except Exception:
+        payload.pop("pending_reevaluation_job_id", None)
+        payload.pop("pending_reevaluation_created_at", None)
+        payload.pop("pending_reevaluation_reason", None)
+        payload.pop("pending_reevaluation_source_run_ids", None)
+        payload.pop("pending_reevaluation_status", None)
+        payload.pop("pending_reevaluation_completed_at", None)
+        payload.pop("pending_reevaluation_error", None)
+        note.structured_payload = payload
+        return True
+
+    job = await db.get(SynthesisJob, job_uuid)
+    if not job or job.user_id != current_user.id or job.job_type != SynthesisJobType.HYPOTHESIS_REEVALUATION.value:
+        payload.pop("pending_reevaluation_job_id", None)
+        payload.pop("pending_reevaluation_created_at", None)
+        payload.pop("pending_reevaluation_reason", None)
+        payload.pop("pending_reevaluation_source_run_ids", None)
+        payload.pop("pending_reevaluation_status", None)
+        payload.pop("pending_reevaluation_completed_at", None)
+        payload.pop("pending_reevaluation_error", None)
+        note.structured_payload = payload
+        return True
+
+    new_status = str(payload.get("pending_reevaluation_status") or "pending").strip() or "pending"
+    completed_at_value = payload.get("pending_reevaluation_completed_at")
+    error_value = payload.get("pending_reevaluation_error")
+
+    if job.status == SynthesisJobStatus.COMPLETED.value:
+        new_status = "completed"
+        completed_at_value = job.completed_at.isoformat() if job.completed_at else datetime.utcnow().isoformat()
+        error_value = None
+        last_appended_at = str(payload.get("last_appended_at") or "").strip()
+        if last_appended_at and completed_at_value:
+            try:
+                if datetime.fromisoformat(last_appended_at.replace("Z", "+00:00")) > datetime.fromisoformat(str(completed_at_value).replace("Z", "+00:00")):
+                    new_status = "stale"
+            except Exception:
+                pass
+    elif job.status in {SynthesisJobStatus.FAILED.value, SynthesisJobStatus.CANCELLED.value}:
+        new_status = "failed"
+        completed_at_value = job.completed_at.isoformat() if job.completed_at else datetime.utcnow().isoformat()
+        error_value = str(job.error or "Reevaluation draft failed").strip() or "Reevaluation draft failed"
+    else:
+        new_status = "pending"
+        completed_at_value = None
+        error_value = None
+
+    changed = False
+    if str(payload.get("pending_reevaluation_status") or "") != new_status:
+        payload["pending_reevaluation_status"] = new_status
+        changed = True
+    if payload.get("pending_reevaluation_completed_at") != completed_at_value:
+        if completed_at_value:
+            payload["pending_reevaluation_completed_at"] = completed_at_value
+        else:
+            payload.pop("pending_reevaluation_completed_at", None)
+        changed = True
+    if payload.get("pending_reevaluation_error") != error_value:
+        if error_value:
+            payload["pending_reevaluation_error"] = error_value
+        else:
+            payload.pop("pending_reevaluation_error", None)
+        changed = True
+
+    if changed:
+        note.structured_payload = payload
+        if new_status in {"completed", "failed", "stale"}:
+            await maybe_emit_reevaluation_notification(
+                db,
+                note=note,
+                user_id=current_user.id,
+                reevaluation_job_id=pending_job_id,
+                status=new_status,
+                source_run_ids=payload.get("pending_reevaluation_source_run_ids") if isinstance(payload.get("pending_reevaluation_source_run_ids"), list) else [],
+                error=str(error_value or "").strip(),
+                created_at=str(payload.get("pending_reevaluation_created_at") or "").strip() or None,
+                completed_at=str(completed_at_value or "").strip() or None,
+                commit=False,
+                push=False,
+            )
+    return changed
 
 
 def _extract_json(text: str) -> Dict[str, Any]:
@@ -247,6 +350,7 @@ async def create_research_note(
             tags=payload.tags,
             source_synthesis_job_id=synthesis_job_id,
             source_document_ids=[str(x) for x in (payload.source_document_ids or [])] or None,
+            structured_payload=payload.structured_payload if isinstance(payload.structured_payload, dict) else None,
         )
         db.add(note)
         await db.commit()
@@ -269,6 +373,9 @@ async def get_research_note(
     note = await db.get(ResearchNote, note_id)
     if not note or note.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Research note not found")
+    if await _reconcile_pending_reevaluation_status(note, db=db, current_user=current_user):
+        await db.commit()
+        await db.refresh(note)
     return _to_response(note)
 
 
@@ -289,6 +396,8 @@ async def update_research_note(
         note.content_markdown = payload.content_markdown
     if payload.tags is not None:
         note.tags = payload.tags
+    if payload.structured_payload is not None:
+        note.structured_payload = payload.structured_payload
 
     await db.commit()
     await db.refresh(note)

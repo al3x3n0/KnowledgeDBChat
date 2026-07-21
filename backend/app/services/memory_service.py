@@ -203,6 +203,9 @@ class MemoryService:
                 ConversationMemory.user_id == user_id,
                 ConversationMemory.is_active == True
             ]
+
+            if search_request.session_id is not None:
+                conditions.append(ConversationMemory.session_id == search_request.session_id)
             
             # Add importance score filter only if min_importance is not None
             if search_request.min_importance is not None:
@@ -779,4 +782,3 @@ class MemoryService:
             
         except Exception:
             return 0.0
-

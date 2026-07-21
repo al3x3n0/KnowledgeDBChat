@@ -15,12 +15,14 @@ class ResearchNoteCreate(BaseModel):
     tags: Optional[List[str]] = None
     source_synthesis_job_id: Optional[UUID] = None
     source_document_ids: Optional[List[UUID]] = None
+    structured_payload: Optional[Dict[str, Any]] = None
 
 
 class ResearchNoteUpdate(BaseModel):
     title: Optional[str] = Field(default=None, min_length=1, max_length=500)
     content_markdown: Optional[str] = Field(default=None, min_length=1)
     tags: Optional[List[str]] = None
+    structured_payload: Optional[Dict[str, Any]] = None
 
 
 class ResearchNoteResponse(BaseModel):
@@ -30,10 +32,14 @@ class ResearchNoteResponse(BaseModel):
     content_markdown: str
     tags: Optional[List[str]] = None
     attribution: Optional[Dict[str, Any]] = None
+    structured_payload: Optional[Dict[str, Any]] = None
     source_synthesis_job_id: Optional[UUID] = None
     source_document_ids: Optional[List[UUID]] = None
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
 
 
 class ResearchNoteListResponse(BaseModel):

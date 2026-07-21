@@ -34,7 +34,7 @@ interface UserTool {
   user_id: string;
   name: string;
   description: string | null;
-  tool_type: 'webhook' | 'transform' | 'python' | 'llm_prompt';
+  tool_type: 'webhook' | 'transform' | 'python' | 'llm_prompt' | 'docker_container' | 'workflow_runner';
   parameters_schema: Record<string, any>;
   config: Record<string, any>;
   is_enabled: boolean;
@@ -68,6 +68,18 @@ const TOOL_TYPES = {
     description: 'Call LLM with templated prompts',
     icon: MessageSquare,
     color: 'amber',
+  },
+  docker_container: {
+    label: 'Docker',
+    description: 'Run a command in a Docker container',
+    icon: Wrench,
+    color: 'orange',
+  },
+  workflow_runner: {
+    label: 'Workflow Runner',
+    description: 'Execute a saved workflow as a reusable tool',
+    icon: Play,
+    color: 'indigo',
   },
 };
 

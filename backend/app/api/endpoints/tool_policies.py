@@ -78,7 +78,7 @@ async def list_tool_registry(
                     "kind": "custom_tool",
                     "description": ut.description or "",
                     "input_schema": schema,
-                    "effects": "write" if ut.tool_type in {"webhook", "docker_container"} else "read",
+                    "effects": "write" if ut.tool_type in {"webhook", "docker_container", "workflow_runner"} else "read",
                     "network": "egress" if ut.tool_type in {"webhook", "docker_container"} else "none",
                     "cost_tier": "low",
                     "pii_risk": "medium",

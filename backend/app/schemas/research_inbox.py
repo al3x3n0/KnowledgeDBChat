@@ -28,6 +28,31 @@ class ResearchInboxItemResponse(BaseModel):
     status: str
     feedback: Optional[str] = None
     metadata: Optional[Dict[str, Any]] = Field(default=None, validation_alias="item_metadata")
+    follow_up_decision: Optional[str] = None
+    follow_up_policy_mode: Optional[str] = None
+    follow_up_launch_status: Optional[str] = None
+    follow_up_block_reason: Optional[str] = None
+    follow_up_budget_decision: Optional[str] = None
+    follow_up_budget_reason: Optional[str] = None
+    follow_up_budget_throttle_state: Optional[str] = None
+    follow_up_customer_budget_decision: Optional[str] = None
+    follow_up_customer_budget_reason: Optional[str] = None
+    follow_up_customer_budget_throttle_state: Optional[str] = None
+    follow_up_recommendation_key: Optional[str] = None
+    follow_up_operator_decision: Optional[str] = None
+    follow_up_operator_note: Optional[str] = None
+    follow_up_operator_acted_at: Optional[datetime] = None
+    follow_up_operator_user_id: Optional[UUID] = None
+    follow_up_job_id: Optional[UUID] = None
+    follow_up_last_job_id: Optional[UUID] = None
+    follow_up_chain_definition_id: Optional[UUID] = None
+    follow_up_launched_at: Optional[datetime] = None
+    follow_up_outcome_status: Optional[str] = None
+    follow_up_outcome_recorded_at: Optional[datetime] = None
+    follow_up_outcome_summary: Optional[str] = None
+    origin_source_kind: Optional[str] = None
+    origin_source_id: Optional[str] = None
+    origin_opportunity_id: Optional[str] = None
 
     created_at: datetime
     updated_at: datetime
@@ -57,3 +82,26 @@ class ResearchInboxStatsResponse(BaseModel):
     new: int
     accepted: int
     rejected: int
+
+
+class ResearchInboxFollowUpRelaunchRequest(BaseModel):
+    operator_note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ResearchInboxBulkFollowUpRelaunchRequest(BaseModel):
+    item_ids: List[UUID] = Field(default_factory=list, min_length=1)
+    operator_note: Optional[str] = Field(default=None, max_length=2000)
+
+
+class ResearchInboxBulkFollowUpRelaunchResult(BaseModel):
+    item_id: UUID
+    ok: bool
+    follow_up_job_id: Optional[UUID] = None
+    error: Optional[str] = None
+
+
+class ResearchInboxBulkFollowUpRelaunchResponse(BaseModel):
+    requested_count: int
+    applied: int
+    failed: int
+    results: List[ResearchInboxBulkFollowUpRelaunchResult]

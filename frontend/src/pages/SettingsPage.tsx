@@ -22,10 +22,24 @@ interface PasswordChangeForm {
   confirmPassword: string;
 }
 
+function resolveSettingsTab(rawTab: string | null, userRole?: string): string {
+  const tab = (rawTab || '').trim().toLowerCase();
+  if (!tab) return 'profile';
+  const allowed = new Set([
+    'profile',
+    'security',
+    'llm',
+    'notifications',
+    'appearance',
+    ...(userRole === 'admin' ? ['admin'] : []),
+  ]);
+  return allowed.has(tab) ? tab : 'profile';
+}
+
 const SettingsPage: React.FC = () => {
   const { user, updateUser } = useAuth();
-  const [activeTab, setActiveTab] = useState('profile');
   const [searchParams] = useSearchParams();
+  const [activeTab, setActiveTab] = useState(() => resolveSettingsTab(searchParams.get('tab'), user?.role));
 
   const tabs = [
     { id: 'profile', name: 'Profile', icon: User },
@@ -41,11 +55,7 @@ const SettingsPage: React.FC = () => {
   }
 
   useEffect(() => {
-    const tab = (searchParams.get('tab') || '').trim().toLowerCase();
-    if (!tab) return;
-    const allowed = new Set(['profile', 'security', 'llm', 'notifications', 'appearance', ...(user?.role === 'admin' ? ['admin'] : [])]);
-    if (!allowed.has(tab)) return;
-    setActiveTab(tab);
+    setActiveTab(resolveSettingsTab(searchParams.get('tab'), user?.role));
   }, [searchParams, user?.role]);
 
   return (
@@ -893,8 +903,15 @@ const NotificationsTab: React.FC = () => {
         notify_summarization_complete: preferences.notify_summarization_complete,
         notify_research_note_citation_issues: preferences.notify_research_note_citation_issues,
         notify_experiment_run_updates: preferences.notify_experiment_run_updates,
+        notify_hypothesis_reevaluation_updates: (preferences as any).notify_hypothesis_reevaluation_updates ?? true,
+        notify_queue_urgency_alerts: preferences.notify_queue_urgency_alerts,
+        notify_follow_up_outcome_alerts: preferences.notify_follow_up_outcome_alerts,
+        notify_policy_guardrail_alerts: preferences.notify_policy_guardrail_alerts,
+        notify_autonomy_budget_alerts: (preferences as any).notify_autonomy_budget_alerts ?? true,
+        notify_customer_autonomy_budget_alerts: (preferences as any).notify_customer_autonomy_budget_alerts ?? true,
         research_note_citation_coverage_threshold: preferences.research_note_citation_coverage_threshold,
         research_note_citation_notify_cooldown_hours: preferences.research_note_citation_notify_cooldown_hours,
+        queue_urgency_alert_reminder_cooldown_hours: preferences.queue_urgency_alert_reminder_cooldown_hours,
         research_note_citation_notify_on_unknown_keys: preferences.research_note_citation_notify_on_unknown_keys,
         research_note_citation_notify_on_low_coverage: preferences.research_note_citation_notify_on_low_coverage,
         research_note_citation_notify_on_missing_bibliography: preferences.research_note_citation_notify_on_missing_bibliography,
@@ -1032,9 +1049,87 @@ const NotificationsTab: React.FC = () => {
                   </div>
                 </label>
 
+                <label className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    checked={Boolean((localPrefs as any).notify_hypothesis_reevaluation_updates ?? true)}
+                    onChange={handleToggle("notify_hypothesis_reevaluation_updates")}
+                  />
+                  <div>
+                    <div className="font-medium text-gray-900">Hypothesis reevaluation updates</div>
+                    <div className="text-sm text-gray-500">Notify when a queued hypothesis reevaluation becomes ready, fails, or turns stale</div>
+                  </div>
+                </label>
+
+                <label className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    checked={Boolean((localPrefs as any).notify_queue_urgency_alerts ?? true)}
+                    onChange={handleToggle("notify_queue_urgency_alerts")}
+                  />
+                  <div>
+                    <div className="font-medium text-gray-900">Queue urgency alerts</div>
+                    <div className="text-sm text-gray-500">Notify when queue items become at-risk or overdue</div>
+                  </div>
+                </label>
+
+                <label className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    checked={Boolean((localPrefs as any).notify_follow_up_outcome_alerts ?? true)}
+                    onChange={handleToggle("notify_follow_up_outcome_alerts")}
+                  />
+                  <div>
+                    <div className="font-medium text-gray-900">Follow-up outcome alerts</div>
+                    <div className="text-sm text-gray-500">Notify when a launched autonomous follow-up completes, fails, or is cancelled</div>
+                  </div>
+                </label>
+
+                <label className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    checked={Boolean((localPrefs as any).notify_policy_guardrail_alerts ?? true)}
+                    onChange={handleToggle("notify_policy_guardrail_alerts")}
+                  />
+                  <div>
+                    <div className="font-medium text-gray-900">Policy safeguard alerts</div>
+                    <div className="text-sm text-gray-500">Notify when a monitor policy rollout degrades and a rollback or downgrade is recommended</div>
+                  </div>
+                </label>
+
+                <label className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    checked={Boolean((localPrefs as any).notify_autonomy_budget_alerts ?? true)}
+                    onChange={handleToggle("notify_autonomy_budget_alerts")}
+                  />
+                  <div>
+                    <div className="font-medium text-gray-900">Autonomy budget alerts</div>
+                    <div className="text-sm text-gray-500">Notify when a monitor is throttled by launch, queue, or alert budgets</div>
+                  </div>
+                </label>
+
+                <label className="flex items-start space-x-3">
+                  <input
+                    type="checkbox"
+                    className="mt-1 h-4 w-4 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+                    checked={Boolean((localPrefs as any).notify_customer_autonomy_budget_alerts ?? true)}
+                    onChange={handleToggle("notify_customer_autonomy_budget_alerts")}
+                  />
+                  <div>
+                    <div className="font-medium text-gray-900">Customer budget alerts</div>
+                    <div className="text-sm text-gray-500">Notify when a shared customer autonomy budget throttles follow-ups across multiple monitors</div>
+                  </div>
+                </label>
+
                 <div
                   className={`rounded-lg border p-4 space-y-4 ${
-                    (localPrefs as any).notify_research_note_citation_issues ? "" : "opacity-60"
+                    (localPrefs as any).notify_research_note_citation_issues || (localPrefs as any).notify_queue_urgency_alerts ? "" : "opacity-60"
                   }`}
                 >
                   <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -1064,6 +1159,20 @@ const NotificationsTab: React.FC = () => {
                         value={(localPrefs as any).research_note_citation_notify_cooldown_hours ?? 12}
                         onChange={handleNumberChange("research_note_citation_notify_cooldown_hours", "int")}
                         disabled={!Boolean((localPrefs as any).notify_research_note_citation_issues)}
+                      />
+                    </label>
+                    <label className="block">
+                      <div className="text-sm font-medium text-gray-900">Queue reminder cooldown (hours)</div>
+                      <div className="text-xs text-gray-500 mb-1">Minimum time between overdue queue reminders for the same item</div>
+                      <input
+                        type="number"
+                        min={1}
+                        max={720}
+                        step={1}
+                        className="mt-1 block w-full rounded-md border-gray-300 shadow-sm focus:border-primary-500 focus:ring-primary-500"
+                        value={(localPrefs as any).queue_urgency_alert_reminder_cooldown_hours ?? 6}
+                        onChange={handleNumberChange("queue_urgency_alert_reminder_cooldown_hours", "int")}
+                        disabled={!Boolean((localPrefs as any).notify_queue_urgency_alerts)}
                       />
                     </label>
                   </div>
@@ -1197,12 +1306,21 @@ const AdminTab: React.FC = () => {
   const [pullingImage, setPullingImage] = React.useState(false);
   const [checkingDocker, setCheckingDocker] = React.useState(false);
   const [unsafeExecActionResult, setUnsafeExecActionResult] = React.useState<any>(null);
+  const [whisper, setWhisper] = React.useState<any>(null);
+  const [whisperDraft, setWhisperDraft] = React.useState<{ model_size: string; device: 'auto' | 'cpu' | 'cuda' } | null>(null);
+  const [savingWhisper, setSavingWhisper] = React.useState(false);
+  const [downloadingWhisper, setDownloadingWhisper] = React.useState(false);
+  const [whisperDownloadTaskId, setWhisperDownloadTaskId] = React.useState<string | null>(null);
+  const [whisperDownloadStatus, setWhisperDownloadStatus] = React.useState<any>(null);
+  const [ollamaPullTaskId, setOllamaPullTaskId] = React.useState<string | null>(null);
+  const [ollamaPullStatus, setOllamaPullStatus] = React.useState<any>(null);
   React.useEffect(() => {
     let cancel = false;
     apiClient.getFeatureFlags().then(f => { if (!cancel) setFlags(f); });
     apiClient.getVectorStoreStats().then(s => { if (!cancel) setEmbedStats(s); });
     apiClient.listLLMModels().then(m => { if (!cancel) setLlmModels(m); });
     apiClient.getUnsafeExecStatus().then(s => { if (!cancel) { setUnsafeExec(s); setUnsafeExecDraft({ enabled: !!s?.enabled, backend: (s?.backend === 'docker' ? 'docker' : 'subprocess'), docker_image: String(s?.docker?.image || 'python:3.11-slim') }); } });
+    apiClient.getWhisperStatus().then(s => { if (!cancel) { setWhisper(s); setWhisperDraft({ model_size: String(s?.selected_model_size || 'base'), device: (String(s?.selected_device || 'auto') as any) }); } });
     return () => { cancel = true; };
   }, []);
 
@@ -1308,6 +1426,124 @@ const AdminTab: React.FC = () => {
     }
   };
 
+  const onRefreshWhisper = async (opts?: { toastOnSuccess?: boolean }) => {
+    try {
+      const s = await apiClient.getWhisperStatus();
+      setWhisper(s);
+      setWhisperDraft({ model_size: String(s?.selected_model_size || 'base'), device: (String(s?.selected_device || 'auto') as any) });
+      if (opts?.toastOnSuccess !== false) toast.success('Whisper status refreshed');
+      return s;
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Failed to refresh Whisper status');
+      return null;
+    }
+  };
+
+  const onSaveWhisper = async () => {
+    if (!whisperDraft) return;
+    setSavingWhisper(true);
+    try {
+      await apiClient.updateWhisperConfig({
+        model_size: whisperDraft.model_size,
+        device: whisperDraft.device,
+        reinitialize: true,
+      });
+      toast.success('Whisper settings updated');
+      await onRefreshWhisper({ toastOnSuccess: false });
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Failed to update Whisper settings');
+    } finally {
+      setSavingWhisper(false);
+    }
+  };
+
+  const onDownloadWhisper = async () => {
+    if (!whisperDraft) return;
+    setDownloadingWhisper(true);
+    try {
+      const started = await apiClient.startWhisperDownload({
+        model_size: whisperDraft.model_size,
+        device: whisperDraft.device,
+      });
+      setWhisperDownloadTaskId(started.task_id);
+      setWhisperDownloadStatus({ status: 'queued', progress: 0, message: 'Queued' });
+      toast.success('Whisper download started');
+    } catch (e: any) {
+      toast.error(e?.response?.data?.detail || e?.message || 'Failed to start Whisper download');
+    } finally {
+      setDownloadingWhisper(false);
+    }
+  };
+
+  React.useEffect(() => {
+    if (!whisperDownloadTaskId) return;
+    let canceled = false;
+    const tick = async () => {
+      try {
+        const s = await apiClient.getWhisperDownloadStatus(whisperDownloadTaskId);
+        if (canceled) return;
+        setWhisperDownloadStatus(s);
+        if (s?.status === 'done') {
+          toast.success('Whisper model download complete');
+          setWhisperDownloadTaskId(null);
+          await onRefreshWhisper({ toastOnSuccess: false });
+          return;
+        }
+        if (s?.status === 'error') {
+          toast.error(s?.message || 'Whisper download failed');
+          setWhisperDownloadTaskId(null);
+          return;
+        }
+      } catch (e: any) {
+        if (!canceled) {
+          toast.error(e?.response?.data?.detail || e?.message || 'Failed to poll Whisper download status');
+          setWhisperDownloadTaskId(null);
+        }
+      }
+    };
+    tick();
+    const t = window.setInterval(tick, 1500);
+    return () => {
+      canceled = true;
+      window.clearInterval(t);
+    };
+  }, [whisperDownloadTaskId]);
+
+  React.useEffect(() => {
+    if (!ollamaPullTaskId) return;
+    let canceled = false;
+    const tick = async () => {
+      try {
+        const s = await apiClient.getOllamaPullStatus(ollamaPullTaskId);
+        if (canceled) return;
+        setOllamaPullStatus(s);
+        if (s?.status === 'done') {
+          toast.success('Ollama model download complete');
+          setOllamaPullTaskId(null);
+          const m = await apiClient.listLLMModels();
+          setLlmModels(m);
+          return;
+        }
+        if (s?.status === 'error') {
+          toast.error(s?.message || 'Ollama pull failed');
+          setOllamaPullTaskId(null);
+          return;
+        }
+      } catch (e: any) {
+        if (!canceled) {
+          toast.error(e?.response?.data?.detail || e?.message || 'Failed to poll Ollama pull status');
+          setOllamaPullTaskId(null);
+        }
+      }
+    };
+    tick();
+    const t = window.setInterval(tick, 1200);
+    return () => {
+      canceled = true;
+      window.clearInterval(t);
+    };
+  }, [ollamaPullTaskId]);
+
   return (
     <div className="bg-white rounded-lg shadow p-6">
       <h2 className="text-lg font-semibold text-gray-900 mb-6">Administration</h2>
@@ -1334,6 +1570,99 @@ const AdminTab: React.FC = () => {
             <div className="mt-4">
               <Button onClick={onSave} loading={saving}>Save</Button>
             </div>
+          </div>
+
+          <div>
+            <h3 className="text-md font-medium text-gray-900 mb-2">Whisper Transcription</h3>
+            {!whisperDraft ? (
+              <div className="text-gray-600">Loading…</div>
+            ) : (
+              <div className="space-y-3 text-sm">
+                <div className="text-xs text-gray-700">
+                  Transcription module available: <span className="font-medium">{whisper?.transcription_available ? 'yes' : 'no'}</span>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-28 text-gray-700">Model size</span>
+                  <select
+                    className="border rounded px-2 py-1 text-sm"
+                    value={whisperDraft.model_size}
+                    onChange={(e) => setWhisperDraft({ ...whisperDraft, model_size: e.target.value })}
+                  >
+                    {(whisper?.available_model_sizes || ['tiny', 'base', 'small', 'medium', 'large']).map((m: string) => (
+                      <option key={m} value={m}>{m}</option>
+                    ))}
+                  </select>
+                </div>
+                <div className="flex items-center gap-2">
+                  <span className="w-28 text-gray-700">Device</span>
+                  <select
+                    className="border rounded px-2 py-1 text-sm"
+                    value={whisperDraft.device}
+                    onChange={(e) => setWhisperDraft({ ...whisperDraft, device: (e.target.value as any) })}
+                  >
+                    {(whisper?.available_devices || ['auto', 'cpu', 'cuda']).map((d: string) => (
+                      <option key={d} value={d}>{d}</option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="text-xs text-gray-700">
+                  Cache directory: <span className="font-mono">{String(whisper?.cache_dir || '—')}</span>
+                </div>
+                <div className="text-xs text-gray-700">
+                  Service initialized: <span className="font-medium">{whisper?.service_initialized ? 'yes' : 'no'}</span>
+                  {whisper?.loaded_model_size ? <span> · loaded: <span className="font-medium">{String(whisper.loaded_model_size)}</span></span> : null}
+                  {whisper?.loaded_device ? <span> on <span className="font-medium">{String(whisper.loaded_device)}</span></span> : null}
+                </div>
+
+                <div className="border rounded p-2 max-h-44 overflow-auto bg-gray-50">
+                  <div className="text-xs text-gray-600 mb-1">Download status</div>
+                  <div className="space-y-1">
+                    {(whisper?.models || []).map((m: any) => (
+                      <div key={String(m.name)} className="flex items-center justify-between text-xs">
+                        <span className="font-mono">{String(m.name)}</span>
+                        <span className={m.downloaded ? 'text-green-700' : 'text-gray-500'}>
+                          {m.downloaded ? 'downloaded' : 'not downloaded'}
+                          {typeof m.total_bytes === 'number' && m.total_bytes > 0 ? ` (${(m.total_bytes / (1024 * 1024)).toFixed(1)} MB)` : ''}
+                        </span>
+                      </div>
+                    ))}
+                  </div>
+                </div>
+
+                <div className="flex items-center gap-2">
+                  <Button onClick={onSaveWhisper} loading={savingWhisper}>
+                    Save Whisper Settings
+                  </Button>
+                  <Button variant="ghost" onClick={() => onRefreshWhisper()} disabled={savingWhisper || downloadingWhisper}>
+                    Refresh
+                  </Button>
+                  <Button variant="ghost" onClick={onDownloadWhisper} loading={downloadingWhisper} disabled={!whisper?.transcription_available}>
+                    Download Selected Now
+                  </Button>
+                </div>
+                {whisperDownloadStatus && (
+                  <div className="border rounded p-2 bg-gray-50">
+                    <div className="flex items-center justify-between text-xs text-gray-700 mb-1">
+                      <span>
+                        Whisper {String(whisperDownloadStatus?.model_size || whisperDraft.model_size)}: {String(whisperDownloadStatus?.status || 'running')}
+                      </span>
+                      <span>{Math.max(0, Math.min(100, Number(whisperDownloadStatus?.progress || 0))).toFixed(0)}%</span>
+                    </div>
+                    <div className="w-full h-2 rounded bg-gray-200 overflow-hidden">
+                      <div
+                        className={`h-full ${whisperDownloadStatus?.status === 'error' ? 'bg-red-500' : 'bg-primary-600'}`}
+                        style={{ width: `${Math.max(0, Math.min(100, Number(whisperDownloadStatus?.progress || 0)))}%` }}
+                      />
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">{String(whisperDownloadStatus?.message || '')}</div>
+                  </div>
+                )}
+                <div className="text-xs text-gray-500">
+                  If model is not downloaded, first transcription will download it automatically. Use "Download Selected Now" to prewarm.
+                </div>
+              </div>
+            )}
           </div>
 
           <div>
@@ -1519,7 +1848,50 @@ const AdminTab: React.FC = () => {
                   >
                     Switch
                   </Button>
+                  <Button
+                    variant="ghost"
+                    onClick={async () => {
+                      const sel = (document.getElementById('llm-model') as HTMLSelectElement | null)?.value;
+                      if (!sel) return;
+                      try {
+                        const started = await apiClient.startOllamaPull(sel);
+                        setOllamaPullTaskId(started.task_id);
+                        setOllamaPullStatus({ status: 'queued', progress: 0, model_name: sel, message: 'Queued', logs: [] });
+                        toast.success('Ollama pull started');
+                      } catch (e: any) {
+                        toast.error(e?.response?.data?.detail || e?.message || 'Failed to start Ollama pull');
+                      }
+                    }}
+                    disabled={!!ollamaPullTaskId}
+                  >
+                    Download Selected
+                  </Button>
                 </div>
+                {ollamaPullStatus && (
+                  <div className="border rounded p-2 bg-gray-50">
+                    <div className="flex items-center justify-between text-xs text-gray-700 mb-1">
+                      <span>
+                        Ollama pull {String(ollamaPullStatus?.model_name || '')}: {String(ollamaPullStatus?.status || 'running')}
+                      </span>
+                      <span>{Math.max(0, Math.min(100, Number(ollamaPullStatus?.progress || 0))).toFixed(0)}%</span>
+                    </div>
+                    <div className="w-full h-2 rounded bg-gray-200 overflow-hidden">
+                      <div
+                        className={`h-full ${ollamaPullStatus?.status === 'error' ? 'bg-red-500' : 'bg-primary-600'}`}
+                        style={{ width: `${Math.max(0, Math.min(100, Number(ollamaPullStatus?.progress || 0)))}%` }}
+                      />
+                    </div>
+                    <div className="text-xs text-gray-600 mt-1">{String(ollamaPullStatus?.message || '')}</div>
+                    {Array.isArray(ollamaPullStatus?.logs) && ollamaPullStatus.logs.length > 0 && (
+                      <details className="mt-2">
+                        <summary className="cursor-pointer text-xs text-gray-700">Logs</summary>
+                        <pre className="mt-1 p-2 bg-white border border-gray-200 rounded whitespace-pre-wrap max-h-36 overflow-auto text-xs">
+                          {String((ollamaPullStatus.logs || []).slice(-20).join('\n'))}
+                        </pre>
+                      </details>
+                    )}
+                  </div>
+                )}
                 <div className="text-xs text-gray-500">Switching LLM model affects future generations immediately.</div>
               </div>
             )}

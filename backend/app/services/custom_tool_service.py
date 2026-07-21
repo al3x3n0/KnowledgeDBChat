@@ -21,7 +21,7 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 
-from app.models.workflow import UserTool
+from app.models.workflow import UserTool, Workflow
 from app.models.user import User
 from app.core.config import settings
 from app.services.llm_service import LLMService, UserLLMSettings
@@ -123,6 +123,8 @@ class CustomToolService:
                         "(CUSTOM_TOOL_DOCKER_ENABLED=false)."
                     )
                 result = await self._execute_docker(tool.config, inputs, user)
+            elif tool.tool_type == "workflow_runner":
+                result = await self._execute_workflow_runner(tool.config, inputs, user, db)
             else:
                 raise ToolExecutionError(f"Unknown tool type: {tool.tool_type}")
 
@@ -548,6 +550,62 @@ class CustomToolService:
                 pass
 
         return output
+
+    async def _execute_workflow_runner(
+        self,
+        config: Dict[str, Any],
+        inputs: Dict[str, Any],
+        user: User,
+        db: AsyncSession,
+    ) -> Dict[str, Any]:
+        """
+        Execute another workflow as a tool.
+
+        Config:
+            workflow_id: UUID of the workflow to execute
+        """
+        workflow_id = str(config.get("workflow_id") or "").strip()
+        if not workflow_id:
+            raise ToolExecutionError("workflow_runner missing config.workflow_id")
+
+        try:
+            workflow_uuid = UUID(workflow_id)
+        except Exception as e:
+            raise ToolExecutionError(f"Invalid workflow_id: {workflow_id}") from e
+
+        result = await db.execute(
+            select(Workflow).where(
+                Workflow.id == workflow_uuid,
+                Workflow.user_id == user.id,
+            )
+        )
+        workflow = result.scalar_one_or_none()
+        if not workflow:
+            raise ToolExecutionError("Referenced workflow not found")
+        if not workflow.is_active:
+            raise ToolExecutionError("Referenced workflow is inactive")
+
+        # Avoid module-level cycle (workflow_engine imports CustomToolService).
+        from app.services.workflow_engine import WorkflowEngine
+
+        engine = WorkflowEngine(db, user)
+        execution = await engine.execute_workflow(
+            workflow_id=workflow.id,
+            trigger_type="tool",
+            trigger_data={"source": "custom_tool"},
+            initial_context={"trigger_data": inputs or {}, "tool_inputs": inputs or {}},
+        )
+        await db.refresh(execution)
+
+        return {
+            "workflow_id": str(workflow.id),
+            "workflow_name": workflow.name,
+            "execution_id": str(execution.id),
+            "status": execution.status,
+            "progress": execution.progress,
+            "error": execution.error,
+            "context": execution.context,
+        }
 
 
 # Create singleton instance

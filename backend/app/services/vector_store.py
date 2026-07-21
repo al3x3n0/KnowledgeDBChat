@@ -22,8 +22,14 @@ os.environ.setdefault("CHROMA_TELEMETRY_ENABLED", "false")
 os.environ.setdefault("ANONYMIZED_TELEMETRY", "False")
 os.environ.setdefault("POSTHOG_DISABLED", "true")
 
-import chromadb
-from chromadb.config import Settings
+try:
+    import chromadb
+    from chromadb.config import Settings
+    _CHROMA_IMPORT_ERROR: Optional[str] = None
+except Exception as exc:  # pragma: no cover - depends on local runtime/ABI compatibility
+    chromadb = None
+    Settings = None
+    _CHROMA_IMPORT_ERROR = str(exc)
 from rank_bm25 import BM25Okapi
 from loguru import logger
 
@@ -94,6 +100,11 @@ class VectorStoreService:
 
             try:
                 if self.provider == "chroma":
+                    if chromadb is None or Settings is None:
+                        raise RuntimeError(
+                            "ChromaDB is unavailable in this Python environment. "
+                            f"Import error: {_CHROMA_IMPORT_ERROR or 'unknown'}"
+                        )
                     # Ensure the persist directory exists
                     os.makedirs(settings.CHROMA_PERSIST_DIRECTORY, exist_ok=True)
 
@@ -554,6 +565,8 @@ class VectorStoreService:
         
         try:
             # Prepare data for ChromaDB
+            # For Chroma we use string IDs; for Qdrant we must use UUID/int point IDs
+            # (the Qdrant server rejects arbitrary string IDs).
             ids = []
             documents = []
             metadatas = []
@@ -571,7 +584,17 @@ class VectorStoreService:
                 # Generate embedding
                 embedding = self.embedding_model.encode(chunk.content, show_progress_bar=False).tolist()
                 
-                ids.append(embedding_id)
+                # Choose the actual vector store point ID per provider.
+                # Keep `chunk.embedding_id` populated so we can detect unchanged chunks later.
+                if self.provider == "qdrant":
+                    # Qdrant point IDs must be UUID or unsigned integer.
+                    store_id = chunk.id
+                    chunk.embedding_id = str(chunk.id)
+                else:
+                    store_id = embedding_id
+                    chunk.embedding_id = embedding_id
+
+                ids.append(store_id)
                 documents.append(chunk.content)
                 embeddings.append(embedding)
                 
@@ -612,7 +635,6 @@ class VectorStoreService:
                 metadatas.append(metadata_dict)
                 
                 # Update chunk with embedding info
-                chunk.embedding_id = embedding_id
                 chunk.embedding_hash = embedding_hash
             
             if ids:
@@ -621,7 +643,7 @@ class VectorStoreService:
                     if self.collection is None:
                         raise RuntimeError("Chroma collection is not initialized")
                     self.collection.add(
-                        ids=ids,
+                        ids=[str(x) for x in ids],
                         documents=documents,
                         embeddings=embeddings,
                         metadatas=metadatas

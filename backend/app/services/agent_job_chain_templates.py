@@ -99,6 +99,8 @@ RESEARCH_ENGINEER_LOOP_CHAIN_ID = UUID("e2a1c11e-4b6d-4104-a3ba-fa66d8321a6b")
 PAPER_PIPELINE_CHAIN_ID = UUID("9d62b9e2-1ed8-4e90-9a6d-2f0a6c0c6db5")
 EXPERIMENT_LOOP_CHAIN_ID = UUID("8c38aa0e-92f6-4e58-9e57-6aaac7cfe0b2")
 EXPERIMENT_LOOP_SEEDED_CHAIN_ID = UUID("9e267663-48d6-4a69-9679-984d1cdf6205")
+CLAUDE_CODE_BACKEND_CHAIN_ID = UUID("0d12d9f2-3f6f-4a1f-b4df-68af2a91583f")
+REPO_BUG_TRIAGE_REPAIR_CHAIN_ID = UUID("f49b6eb8-4d2a-4f7c-b0a3-b10f772f55ba")
 
 
 BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
@@ -288,7 +290,7 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
             "DocumentSource. Step 3 appends implementation notes into the same LaTeX project.\n\n"
             "Required config_overrides to start:\n"
             "- latex_project_id: UUID (LaTeX Studio project)\n"
-            "- target_source_id: UUID (git DocumentSource for code patch proposer)\n"
+            "- source_id: UUID (git DocumentSource for code patch proposer)\n"
             "Optional:\n"
             "- search_query: string (KB query)\n"
             "- file_paths: [string]\n"
@@ -332,7 +334,7 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
             "max_chars_per_file": 8000,
             # Provided via config_overrides at launch:
             "latex_project_id": "",
-            "target_source_id": "",
+            "source_id": "",
             "search_query": "",
             "file_paths": [],
         },
@@ -352,7 +354,7 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
             "6) Paper update appends implementation notes (and experiment summary).\n\n"
             "Required config_overrides to start:\n"
             "- latex_project_id: UUID (LaTeX Studio project)\n"
-            "- target_source_id: UUID (git DocumentSource for code patch proposer)\n"
+            "- source_id: UUID (git DocumentSource for code patch proposer)\n"
             "Optional:\n"
             "- search_query: string (KB query)\n"
             "- file_paths: [string]\n"
@@ -448,7 +450,188 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
             "fail_on_block": False,
             # Provided via config_overrides at launch:
             "latex_project_id": "",
-            "target_source_id": "",
+            "source_id": "",
+            "search_query": "",
+            "file_paths": [],
+        },
+    ),
+    BuiltinAgentJobChainDefinition(
+        id=CLAUDE_CODE_BACKEND_CHAIN_ID,
+        name="claude_code_backend_chain",
+        display_name="Claude-Code Backend: Patch → Verify → Refine → Apply",
+        description=(
+            "A practical Claude-code-style backend loop grounded in a git DocumentSource.\n\n"
+            "Flow:\n"
+            "1) Propose a minimal backend patch for the goal.\n"
+            "2) Run backend checks/tests from config (or inherited tests_to_run).\n"
+            "3) Refine the patch from experiment output.\n"
+            "4) Re-run checks/tests.\n"
+            "5) Optional KB dry-run apply.\n"
+            "6) Optional KB write apply.\n\n"
+            "Required config_overrides:\n"
+            "- source_id: UUID (git DocumentSource)\n"
+            "Optional:\n"
+            "- search_query: string (narrow retrieval context)\n"
+            "- file_paths: [string] (targeted files)\n"
+            "- commands: [string] (verification commands)\n"
+        ),
+        chain_steps=[
+            {
+                "step_name": "Propose Backend Patch (Round 1)",
+                "job_type": "analysis",
+                "goal_template": "Implement a minimal backend patch for: {goal}",
+                "config": {"deterministic_runner": "code_patch_proposer"},
+                "trigger_condition": "on_complete",
+            },
+            {
+                "step_name": "Run Backend Checks (Round 1)",
+                "job_type": "analysis",
+                "goal_template": "Run backend verification commands/tests for: {goal}",
+                "config": {"deterministic_runner": "experiment_runner"},
+                "trigger_condition": "on_any_end",
+            },
+            {
+                "step_name": "Refine Backend Patch (Round 2)",
+                "job_type": "analysis",
+                "goal_template": "Refine the backend patch using experiment output for: {goal}",
+                "config": {"deterministic_runner": "code_patch_proposer"},
+                "trigger_condition": "on_complete",
+            },
+            {
+                "step_name": "Run Backend Checks (Round 2)",
+                "job_type": "analysis",
+                "goal_template": "Re-run backend verification commands/tests for: {goal}",
+                "config": {"deterministic_runner": "experiment_runner"},
+                "trigger_condition": "on_any_end",
+            },
+            {
+                "step_name": "KB Apply Dry-Run (Optional)",
+                "job_type": "analysis",
+                "goal_template": "Dry-run apply the final backend patch to KnowledgeDB code documents",
+                "config": {
+                    "deterministic_runner": "code_patch_apply_to_kb",
+                    "enabled_key": "apply_patch_to_kb",
+                    "dry_run": True,
+                    "require_experiments_ok": False,
+                },
+                "trigger_condition": "on_any_end",
+            },
+            {
+                "step_name": "KB Apply Write (Optional)",
+                "job_type": "analysis",
+                "goal_template": "Apply the final backend patch to KnowledgeDB code documents (write)",
+                "config": {
+                    "deterministic_runner": "code_patch_apply_to_kb",
+                    "enabled_key": "apply_patch_to_kb_confirm",
+                    "dry_run": False,
+                },
+            },
+        ],
+        default_settings={
+            "inherit_results": True,
+            "inherit_config": True,
+            "max_iterations": 1,
+            "max_tool_calls": 0,
+            "max_llm_calls": 2,
+            "max_runtime_minutes": 20,
+            "max_documents": 10,
+            "max_files": 10,
+            "max_chars_per_file": 10000,
+            "enable_experiments": True,
+            "commands": [],
+            "auto_commands_from_project_profile": True,
+            "auto_commands_profile_max_files": 300,
+            "apply_patch_to_kb": False,
+            "apply_patch_to_kb_confirm": False,
+            "proposal_strategy": "best_passing",
+            "require_experiments_ok": True,
+            "require_dry_run_first": True,
+            "fail_on_block": False,
+            # Provided via config_overrides at launch:
+            "source_id": "",
+            "search_query": "backend",
+            "file_paths": [],
+        },
+    ),
+    BuiltinAgentJobChainDefinition(
+        id=REPO_BUG_TRIAGE_REPAIR_CHAIN_ID,
+        name="repo_bug_triage_repair_chain",
+        display_name="Repo Bug Triage: Patch -> Verify -> Refine",
+        description=(
+            "A repo-wide bug triage loop grounded in a git DocumentSource.\n\n"
+            "Flow:\n"
+            "1) Propose a minimal patch from the reported symptom.\n"
+            "2) Run explicit or auto-inferred verification commands.\n"
+            "3) Refine the patch from verification output.\n"
+            "4) Re-run verification and keep the best reviewable patch proposal.\n\n"
+            "Required config_overrides:\n"
+            "- source_id: UUID (git DocumentSource)\n"
+            "- failure_symptom: string\n"
+            "Optional:\n"
+            "- goal: string (additional desired outcome)\n"
+            "- scope: auto|backend|frontend|worker\n"
+            "- error_output: string\n"
+            "- search_query: string\n"
+            "- file_paths: [string]\n"
+            "- commands: [string]\n"
+        ),
+        chain_steps=[
+            {
+                "step_name": "Propose Bug Fix (Round 1)",
+                "job_type": "analysis",
+                "goal_template": "Triage and propose a minimal bug fix for: {goal}",
+                "config": {"deterministic_runner": "code_patch_proposer"},
+                "trigger_condition": "on_complete",
+            },
+            {
+                "step_name": "Run Verification (Round 1)",
+                "job_type": "analysis",
+                "goal_template": "Run focused verification commands/tests for: {goal}",
+                "config": {"deterministic_runner": "experiment_runner"},
+                "trigger_condition": "on_any_end",
+            },
+            {
+                "step_name": "Refine Bug Fix (Round 2)",
+                "job_type": "analysis",
+                "goal_template": "Refine the bug fix using verification output for: {goal}",
+                "config": {"deterministic_runner": "code_patch_proposer"},
+                "trigger_condition": "on_complete",
+            },
+            {
+                "step_name": "Run Verification (Round 2)",
+                "job_type": "analysis",
+                "goal_template": "Re-run focused verification commands/tests for: {goal}",
+                "config": {"deterministic_runner": "experiment_runner"},
+                "trigger_condition": "on_any_end",
+            },
+        ],
+        default_settings={
+            "inherit_results": True,
+            "inherit_config": True,
+            "max_iterations": 1,
+            "max_tool_calls": 0,
+            "max_llm_calls": 2,
+            "max_runtime_minutes": 25,
+            "max_documents": 12,
+            "max_files": 12,
+            "max_chars_per_file": 10000,
+            "enable_experiments": True,
+            "create_workspace_from_source": True,
+            "emit_execution_plan": True,
+            "max_verification_commands": 3,
+            "commands": [],
+            "auto_commands_from_project_profile": True,
+            "auto_commands_profile_max_files": 400,
+            "apply_patch_to_kb": False,
+            "apply_patch_to_kb_confirm": False,
+            "proposal_strategy": "best_passing",
+            "require_experiments_ok": True,
+            "require_dry_run_first": False,
+            "fail_on_block": False,
+            "source_id": "",
+            "failure_symptom": "",
+            "error_output": "",
+            "scope": "auto",
             "search_query": "",
             "file_paths": [],
         },
@@ -615,7 +798,7 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
             "End-to-end paper workflow grounded in the Knowledge DB and a LaTeX Studio project.\n\n"
             "Required config_overrides to start:\n"
             "- latex_project_id: UUID (LaTeX Studio project)\n"
-            "- target_source_id: UUID (git DocumentSource)\n"
+            "- source_id: UUID (git DocumentSource)\n"
             "Optional:\n"
             "- search_query: string (KB query)\n"
             "- file_paths: [string] (limit patch context)\n"
@@ -714,7 +897,7 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
             "enable_experiments": True,
             # Provided via config_overrides at launch:
             "latex_project_id": "",
-            "target_source_id": "",
+            "source_id": "",
             "search_query": "",
             "file_paths": [],
             "commands": [],

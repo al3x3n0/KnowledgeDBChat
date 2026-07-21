@@ -12,6 +12,7 @@ A comprehensive knowledge management system with LLM-based chat interface for or
 - **Real-time Chat**: WebSocket-based chat interface with typing indicators
 - **Document References**: Source attribution and links for all AI responses
 - **LaTeX Studio**: In-app LaTeX editor with KB-assisted copilot and optional server-side PDF compilation (see `docs/LATEX_STUDIO.md`)
+- **Autonomous RnD Agents**: Domain research jobs, recurring research profiles, research fleets, checkpoint approvals, and bounded scientific validation (see `docs/AUTONOMOUS_RND_AGENTS.md`)
 
 ### Data Sources Supported
 - **GitLab**: Repository files, wikis, issues, merge requests
@@ -30,7 +31,20 @@ A comprehensive knowledge management system with LLM-based chat interface for or
 - Exposes an MCP-compatible tool API for external agents (see `backend/app/mcp/server.py`)
 - Tools include semantic search, document browsing, chat/Q&A, and `web_scrape` for extracting readable text/links from wiki/portal pages
 
+## 📚 Key Docs
+
+- `docs/ARCHITECTURE_ASCII.md` - Canonical ASCII system map for frontend, backend, autonomy runtime, and operator surface layout
+- `docs/AUTONOMOUS_RND_AGENTS.md` - Operator runbook for autonomous research and engineering agents
+- `docs/pilots/research_lab_pilot.md` - Pilot workflow for AI Hub and research-native training/eval loops
+- `docs/INGESTION_GUIDE.md` - Source ingestion and document pipeline guidance
+- `docs/KNOWLEDGE_GRAPH.md` - Knowledge graph concepts and admin workflow
+- `docs/LATEX_STUDIO.md` - LaTeX editor, copilot, compile, and citation sync workflow
+
+Autonomous RnD integrations should use the canonical autonomy contract: `automation_profile`, `automation_policy`, and `effective_policy`. Legacy fields such as `validation_policy` and `follow_up_autonomy` remain backend-compatible, but are compatibility mirrors rather than the preferred interface.
+
 ## 🏗️ System Architecture
+
+The detailed current architecture lives in `docs/ARCHITECTURE_ASCII.md`. The diagram below is the high-level product view.
 
 ```
 ┌─────────────────┐    ┌─────────────────┐    ┌─────────────────┐
@@ -117,7 +131,7 @@ uvicorn main:app --reload
 #### Frontend Setup
 ```bash
 cd frontend
-npm install
+npm install --legacy-peer-deps
 npm start
 ```
 
@@ -345,6 +359,16 @@ KnowledgeDBChat/
 - `DELETE /api/v1/agent/agents/{id}` - Delete agent definition (admin only)
 - `POST /api/v1/agent/agents/{id}/duplicate` - Duplicate agent definition (admin only)
 
+#### Autonomous RnD
+- `POST /api/v1/agent-jobs/quick-start/domain-research` - Launch a bounded domain-research job
+- `GET /api/v1/agent-jobs/checkpoint-queue` - Review pending approvals and follow-up checkpoints
+- `GET /api/v1/domain-research-profiles` - List recurring domain monitors
+- `POST /api/v1/domain-research-profiles` - Create a recurring domain monitor
+- `GET /api/v1/research-portfolios` - List research fleets
+- `POST /api/v1/research-portfolios` - Create a research fleet
+- `GET /api/v1/scientific-sandbox-profiles` - List scientific validation environments
+- `POST /api/v1/experiments/plans/generate` - Create experiment plans from research findings
+
 #### Documents
 - `GET /api/v1/documents/` - List documents
 - `POST /api/v1/documents/upload` - Upload document
@@ -368,7 +392,7 @@ uvicorn main:app --reload --host 0.0.0.0 --port 8000
 
 # Frontend development
 cd frontend
-npm install
+npm install --legacy-peer-deps
 npm start
 
 # Database operations
@@ -394,9 +418,15 @@ asyncio.run(create_tables())
 cd backend
 pytest
 
+# Backend coverage gate (CI-style)
+pytest --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=70
+
 # Frontend tests
 cd frontend
 npm run test:ci
+
+# Frontend typecheck
+./node_modules/.bin/tsc --noEmit -p tsconfig.json
 
 # Integration tests
 docker compose -f docker-compose.test.yml up --abort-on-container-exit

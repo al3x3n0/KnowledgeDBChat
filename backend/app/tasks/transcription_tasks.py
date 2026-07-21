@@ -15,9 +15,14 @@ from app.core.celery import celery_app
 from celery import Task
 from app.core.database import create_celery_session
 from app.core.config import settings
+from app.core.feature_flags import get_str as get_feature_str
 import hashlib
 from app.models.document import Document
-from app.services.transcription_service import get_transcription_service
+from app.services.transcription_service import (
+    get_transcription_service,
+    get_transcription_runtime_config,
+    set_transcription_runtime_config,
+)
 from app.services.storage_service import storage_service
 from app.services.persona_service import persona_service
 from sqlalchemy import select
@@ -102,12 +107,12 @@ class TranscribeTask(Task):
                         doc = result.scalar_one_or_none()
                         if not doc:
                             return
-                        doc.extra_metadata = (doc.extra_metadata or {})
-                        doc.extra_metadata.update({
+                        doc.extra_metadata = {
+                            **(doc.extra_metadata or {}),
                             "transcription_error": error_text or "Transcription failed",
                             "is_transcribing": False,
                             "is_transcribed": False,
-                        })
+                        }
                         doc.processing_error = f"Transcription failed: {error_text}"
                         await db.commit()
                     except Exception as _e:
@@ -158,16 +163,72 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
                     "success": False,
                     "error": "Document not found"
                 }
+
+            async def _fail_transcription(error_message: str) -> Dict[str, Any]:
+                """Persist failure state and notify websocket listeners for non-exception paths."""
+                try:
+                    document.extra_metadata = {
+                        **(document.extra_metadata or {}),
+                        "transcription_error": error_message,
+                        "is_transcribing": False,
+                        "is_transcribed": False,
+                    }
+                    document.processing_error = f"Transcription failed: {error_message}"
+                    await db.commit()
+                except Exception as save_err:
+                    logger.warning(f"Failed to persist transcription failure for {document_id}: {save_err}")
+                try:
+                    _publish_status(document_id, {
+                        "is_transcribing": False,
+                        "is_transcoded": bool((document.extra_metadata or {}).get("is_transcoded")),
+                    })
+                    _publish_error(document_id, error_message)
+                except Exception:
+                    pass
+                return {
+                    "document_id": document_id,
+                    "success": False,
+                    "error": error_message,
+                }
             
+            # Resolve worker runtime whisper config from feature flags first, so
+            # Celery uses the same model/device selected in Settings.
+            try:
+                allowed_sizes = {"tiny", "base", "small", "medium", "large"}
+                allowed_devices = {"auto", "cpu", "cuda"}
+                desired_model = str(
+                    (await get_feature_str("whisper_model_size"))
+                    or getattr(settings, "WHISPER_MODEL_SIZE", "base")
+                ).strip().lower()
+                desired_device = str(
+                    (await get_feature_str("whisper_device"))
+                    or getattr(settings, "WHISPER_DEVICE", "auto")
+                ).strip().lower()
+                if desired_model not in allowed_sizes:
+                    desired_model = str(getattr(settings, "WHISPER_MODEL_SIZE", "base")).strip().lower()
+                if desired_device not in allowed_devices:
+                    desired_device = str(getattr(settings, "WHISPER_DEVICE", "auto")).strip().lower()
+
+                current_cfg = get_transcription_runtime_config() or {}
+                current_model = str(current_cfg.get("model_size") or "").strip().lower()
+                current_device = str(current_cfg.get("device") or "").strip().lower()
+                needs_reinit = (current_model != desired_model) or (current_device != desired_device)
+                set_transcription_runtime_config(
+                    model_size=desired_model,
+                    device=desired_device,
+                    reinitialize=needs_reinit,
+                )
+                logger.info(
+                    f"Transcription worker config resolved: model={desired_model}, device={desired_device}, reinit={needs_reinit}"
+                )
+            except Exception as cfg_err:
+                logger.warning(f"Failed to resolve whisper runtime config from feature flags: {cfg_err}")
+
             # Check if document is a video/audio file
             transcription_service = get_transcription_service()
             if not transcription_service:
                 logger.warning("Transcription service not available")
-                return {
-                    "document_id": document_id,
-                    "success": False,
-                    "error": "Transcription service not available"
-                }
+                return await _fail_transcription("Transcription service not available")
 
             # If it's a non-MP4 video and not yet transcoded, reroute to transcode first
             try:
@@ -182,9 +243,11 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
             if is_video and not is_mp4 and not is_transcoded:
                 logger.info(f"Document {document_id} is non-MP4 video; scheduling transcode before transcription")
                 # Flip flags and publish status
-                document.extra_metadata = document.extra_metadata or {}
-                document.extra_metadata["is_transcribing"] = False
-                document.extra_metadata["is_transcoding"] = True
+                document.extra_metadata = {
+                    **(document.extra_metadata or {}),
+                    "is_transcribing": False,
+                    "is_transcoding": True,
+                }
                 await db.commit()
                 _publish_status(document_id, {
                     "is_transcribing": False,
@@ -204,11 +267,7 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
             # Get file from MinIO
             if not document.file_path:
                 logger.warning(f"Document {document_id} has no file_path")
-                return {
-                    "document_id": document_id,
-                    "success": False,
-                    "error": "Document has no file path"
-                }
+                return await _fail_transcription("Document has no file path")
             
             # Download file from MinIO to temporary location
             temp_file_path = None
@@ -240,11 +299,7 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
                         "progress": 0,
                         "error": "File format not supported for transcription"
                     })
-                    return {
-                        "document_id": document_id,
-                        "success": False,
-                        "error": "File format not supported for transcription"
-                    }
+                    return await _fail_transcription("File format not supported for transcription")
                 
                 # Create progress callback
                 def progress_callback(progress_dict: dict):
@@ -262,19 +317,18 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
                 
                 # Transcribe the file
                 logger.info(f"Transcribing file: {temp_file_path}")
+                configured_language = (settings.TRANSCRIPTION_LANGUAGE or "").strip().lower()
+                language_for_transcription = None if configured_language in {"", "auto", "detect"} else settings.TRANSCRIPTION_LANGUAGE
+
                 transcript_text, metadata = transcription_service.transcribe_file(
                     temp_file_path,
-                    language=settings.TRANSCRIPTION_LANGUAGE,
+                    language=language_for_transcription,
                     progress_callback=progress_callback
                 )
                 
                 if not transcript_text:
                     logger.warning(f"No transcript generated for document {document_id}")
-                    return {
-                        "document_id": document_id,
-                        "success": False,
-                        "error": "No transcript generated"
-                    }
+                    return await _fail_transcription("No transcript generated")
                 
                 # Publish processing progress
                 _publish_progress(document_id, {
@@ -319,19 +373,25 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
                 db.add(transcript_doc)
                 
                 # Update original document flags and link to transcript
-                document.extra_metadata = document.extra_metadata or {}
-                document.extra_metadata.update({
+                document.extra_metadata = {
+                    **(document.extra_metadata or {}),
                     "transcription_metadata": metadata,
                     "is_transcribed": True,
                     "is_transcribing": False,
                     "transcript_document_id": None,  # set after flush
-                })
+                    "transcription_error": None,
+                    "transcription_traceback": None,
+                }
+                document.processing_error = None
 
                 await db.commit()
                 await db.refresh(transcript_doc)
                 
                 # Now set the link id
-                document.extra_metadata["transcript_document_id"] = str(transcript_doc.id)
+                document.extra_metadata = {
+                    **(document.extra_metadata or {}),
+                    "transcript_document_id": str(transcript_doc.id),
+                }
                 await db.commit()
                 await db.refresh(document)
 
@@ -401,13 +461,13 @@ async def _async_transcribe_document(task, document_id: str) -> Dict[str, Any]:
                 doc = result.scalar_one_or_none()
                 if doc:
                     tb = traceback.format_exc()
-                    doc.extra_metadata = (doc.extra_metadata or {})
-                    doc.extra_metadata.update({
+                    doc.extra_metadata = {
+                        **(doc.extra_metadata or {}),
                         "transcription_error": str(e),
                         "transcription_traceback": tb,
                         "is_transcribing": False,
                         "is_transcribed": False,
-                    })
+                    }
                     # Also set generic processing_error for UI
                     doc.processing_error = f"Transcription failed: {e}"
                     await db.commit()
@@ -512,5 +572,3 @@ def _publish_error(document_id: str, error: str):
             redis_client.publish(channel, message)
     except Exception as e:
         logger.warning(f"Failed to publish error: {e}")
-
-

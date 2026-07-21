@@ -173,6 +173,7 @@ class ArxivSourceRequest(BaseModel):
     auto_summarize: bool = Field(default=True, description="Queue summarization for ingested papers")
     auto_literature_review: bool = Field(default=False, description="Generate a literature review document after ingestion")
     auto_enrich_metadata: bool = Field(default=True, description="Enrich papers with BibTeX/DOI metadata after ingestion")
+    auto_extract_structure: bool = Field(default=False, description="Queue structured paper extraction after ingestion")
     topic: Optional[str] = Field(default=None, description="Optional topic label for literature review/reporting")
 
     @field_validator("search_queries", "paper_ids", "categories", mode="after")
@@ -249,6 +250,14 @@ class IngestUrlRequest(BaseModel):
     url: str = Field(..., description="URL to ingest (http/https)", min_length=1, max_length=2000)
     title: Optional[str] = Field(default=None, description="Optional title override (single-document mode)")
     tags: Optional[List[str]] = Field(default=None, description="Optional tags to apply")
+    ingest_mode: Literal["auto", "web", "youtube"] = Field(
+        default="auto",
+        description="Ingestion mode. 'auto' routes YouTube links to media download + transcription.",
+    )
+    youtube_audio_only: bool = Field(
+        default=True,
+        description="For YouTube ingestion, download audio-only stream when possible.",
+    )
 
     follow_links: bool = Field(default=False, description="Crawl a small link graph from the start page")
     max_pages: int = Field(default=1, ge=1, le=25, description="Max pages to fetch when crawling")
@@ -300,6 +309,10 @@ class InstantArxivIngestRequest(BaseModel):
         default=False,
         description="Queue background metadata enrichment (BibTeX, DOI)"
     )
+    auto_extract: bool = Field(
+        default=False,
+        description="Queue background structured paper extraction"
+    )
 
     @field_validator("arxiv_input")
     @classmethod
@@ -348,7 +361,7 @@ class InstantArxivIngestResponse(BaseModel):
     ready_for_chat: bool = True
     background_tasks: List[str] = Field(
         default_factory=list,
-        description="List of queued background tasks (summarize, enrich)"
+        description="List of queued background tasks (summarize, enrich, extract)"
     )
 
 

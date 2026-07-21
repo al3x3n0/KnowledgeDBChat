@@ -45,6 +45,29 @@ class ResearchInboxItem(Base):
     # Source-specific metadata
     item_metadata = Column("metadata", JSON, nullable=True)
 
+    # Follow-up autonomy / execution state
+    follow_up_decision = Column(String(32), nullable=True)
+    follow_up_policy_mode = Column(String(32), nullable=True)
+    follow_up_launch_status = Column(String(32), nullable=True)
+    follow_up_block_reason = Column(Text, nullable=True)
+    follow_up_budget_decision = Column(String(32), nullable=True)
+    follow_up_budget_reason = Column(Text, nullable=True)
+    follow_up_budget_throttle_state = Column(String(32), nullable=True)
+    follow_up_customer_budget_decision = Column(String(32), nullable=True)
+    follow_up_customer_budget_reason = Column(Text, nullable=True)
+    follow_up_customer_budget_throttle_state = Column(String(32), nullable=True)
+    follow_up_recommendation_key = Column(String(100), nullable=True)
+    follow_up_operator_decision = Column(String(32), nullable=True)
+    follow_up_operator_note = Column(Text, nullable=True)
+    follow_up_operator_acted_at = Column(DateTime(timezone=True), nullable=True)
+    follow_up_operator_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    follow_up_job_id = Column(UUID(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    follow_up_chain_definition_id = Column(UUID(as_uuid=True), nullable=True)
+    follow_up_launched_at = Column(DateTime(timezone=True), nullable=True)
+    follow_up_outcome_status = Column(String(32), nullable=True)
+    follow_up_outcome_recorded_at = Column(DateTime(timezone=True), nullable=True)
+    follow_up_outcome_summary = Column(Text, nullable=True)
+
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
 

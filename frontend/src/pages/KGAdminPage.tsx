@@ -12,6 +12,7 @@ const KGAdminPage: React.FC = () => {
   }, [q]);
 
   const { data: stats, refetch: refetchStats } = useQuery(['kg-stats'], () => apiClient.getKGStats());
+  const { data: kgTypes } = useQuery(['kg-types'], () => apiClient.getKGTypes(), { staleTime: 60000 });
   const [limit, setLimit] = React.useState(50);
   const [offset, setOffset] = React.useState(0);
   const { data: page, refetch } = useQuery(['kg-entities', debouncedQ, limit, offset], () => apiClient.searchKGEntities(debouncedQ || undefined, limit, offset));
@@ -21,10 +22,18 @@ const KGAdminPage: React.FC = () => {
   const [sourceId, setSourceId] = React.useState<string>('');
   const [targetId, setTargetId] = React.useState<string>('');
   const [busy, setBusy] = React.useState(false);
+  const [inferring, setInferring] = React.useState(false);
   const [editId, setEditId] = React.useState<string>('');
   const [editData, setEditData] = React.useState<{ canonical_name: string; entity_type: string; description?: string; properties?: string }>({ canonical_name: '', entity_type: 'other' });
   const [propsValid, setPropsValid] = React.useState<boolean | null>(null);
   const [confirmDelete, setConfirmDelete] = React.useState('');
+
+  const entityTypeOptions = React.useMemo(() => {
+    const fromServer = kgTypes?.entity_types || [];
+    const fromResults = Array.from(new Set((results || []).map((e: any) => e.entity_type).filter(Boolean)));
+    const combined = Array.from(new Set([...fromServer, ...fromResults, editData.entity_type, 'other'].filter(Boolean)));
+    return combined.sort();
+  }, [kgTypes, results, editData.entity_type]);
 
   const loadForEdit = async (id: string) => {
     try {
@@ -161,9 +170,32 @@ const KGAdminPage: React.FC = () => {
                 </div>
                 <div>
                   <label className="text-xs text-gray-600">Type</label>
-                  <select className="w-full border rounded px-2 py-1 text-sm" value={editData.entity_type} onChange={e => setEditData({ ...editData, entity_type: e.target.value })}>
-                    {['person','org','location','product','email','url','other'].map(t => <option key={t} value={t}>{t}</option>)}
-                  </select>
+                  <div className="flex items-center gap-2">
+                    <select className="flex-1 border rounded px-2 py-1 text-sm" value={editData.entity_type} onChange={e => setEditData({ ...editData, entity_type: e.target.value })}>
+                      {entityTypeOptions.map(t => <option key={t} value={t}>{t}</option>)}
+                    </select>
+                    <button
+                      type="button"
+                      className="px-2 py-1 text-xs rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
+                      disabled={!editId || inferring}
+                      onClick={async () => {
+                        try {
+                          setInferring(true);
+                          const res = await apiClient.inferKGEntityType(editId);
+                          const nextType = String(res?.entity_type || 'other');
+                          setEditData((prev) => ({ ...prev, entity_type: nextType }));
+                          toast.success(`AI inferred type: ${nextType}${typeof res?.confidence === 'number' ? ` (${Math.round(res.confidence * 100)}%)` : ''}`);
+                        } catch (e: any) {
+                          toast.error(e?.response?.data?.detail || e?.message || 'Failed to infer type');
+                        } finally {
+                          setInferring(false);
+                        }
+                      }}
+                      title="Infer entity type using LLM against the open-list of known types"
+                    >
+                      {inferring ? 'AI…' : 'AI'}
+                    </button>
+                  </div>
                 </div>
               </div>
               <div>

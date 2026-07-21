@@ -4,8 +4,8 @@
  * Displays all user workflows with CRUD operations.
  */
 
-import React, { useState, useEffect } from 'react';
-import { useNavigate } from 'react-router-dom';
+import React, { useState, useEffect, useMemo } from 'react';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   Plus,
   Play,
@@ -41,7 +41,7 @@ interface WorkflowItem {
 interface ExecutionItem {
   id: string;
   workflow_id: string;
-  workflow_name: string;
+  workflow_name: string | null;
   trigger_type: string;
   status: string;
   progress: number;
@@ -49,12 +49,18 @@ interface ExecutionItem {
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
+  current_node_id?: string | null;
+  context?: Record<string, any>;
 }
 
 const WorkflowsPage: React.FC = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
+  const selectedExecutionId = String(searchParams.get('executionId') || '').trim();
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
   const [recentExecutions, setRecentExecutions] = useState<ExecutionItem[]>([]);
+  const [selectedExecution, setSelectedExecution] = useState<ExecutionItem | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');
   const [activeMenuId, setActiveMenuId] = useState<string | null>(null);
@@ -63,6 +69,14 @@ const WorkflowsPage: React.FC = () => {
   useEffect(() => {
     loadWorkflows();
   }, []);
+
+  useEffect(() => {
+    if (!selectedExecutionId) {
+      setSelectedExecution(null);
+      return;
+    }
+    loadExecution(selectedExecutionId);
+  }, [selectedExecutionId]);
 
   const loadWorkflows = async () => {
     setIsLoading(true);
@@ -73,6 +87,30 @@ const WorkflowsPage: React.FC = () => {
       toast.error('Failed to load workflows');
     } finally {
       setIsLoading(false);
+    }
+  };
+
+  const loadExecution = async (executionId: string) => {
+    try {
+      const response = await api.get(`/workflows/executions/${executionId}`);
+      const payload = response.data || {};
+      setSelectedExecution({
+        id: String(payload.id || ''),
+        workflow_id: String(payload.workflow_id || ''),
+        workflow_name: null,
+        trigger_type: String(payload.trigger_type || ''),
+        status: String(payload.status || ''),
+        progress: Number(payload.progress || 0),
+        error: payload.error || null,
+        created_at: String(payload.created_at || ''),
+        started_at: payload.started_at || null,
+        completed_at: payload.completed_at || null,
+        current_node_id: payload.current_node_id || null,
+        context: payload.context || {},
+      });
+    } catch (_error: any) {
+      setSelectedExecution(null);
+      toast.error('Workflow execution could not be loaded');
     }
   };
 
@@ -168,6 +206,10 @@ const WorkflowsPage: React.FC = () => {
     });
   };
 
+  const selectedExecutionWorkflow = selectedExecution
+    ? workflows.find((workflow) => workflow.id === selectedExecution.workflow_id) || null
+    : null;
+
   return (
     <div className="max-w-6xl mx-auto p-6">
         {/* Header */}
@@ -197,6 +239,43 @@ const WorkflowsPage: React.FC = () => {
           />
         </div>
 
+        {selectedExecutionId && (
+          <div className="mb-6 rounded-lg border border-sky-200 bg-sky-50 p-4">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <div className="text-xs font-semibold uppercase tracking-wide text-sky-700">Execution Drilldown</div>
+                {selectedExecution ? (
+                  <>
+                    <h2 className="mt-2 text-lg font-semibold text-slate-900">
+                      {selectedExecutionWorkflow?.name || 'Workflow execution'} · {selectedExecution.id}
+                    </h2>
+                    <div className="mt-2 text-sm text-slate-700">
+                      Status: <span className="font-medium">{selectedExecution.status}</span> · Trigger: {selectedExecution.trigger_type} · Progress: {selectedExecution.progress}%
+                    </div>
+                    <div className="mt-1 text-sm text-slate-600">
+                      Current node: {selectedExecution.current_node_id || '—'} · Started: {selectedExecution.started_at ? formatDate(selectedExecution.started_at) : '—'}
+                    </div>
+                    {selectedExecution.error ? (
+                      <div className="mt-2 text-sm text-rose-700">Error: {selectedExecution.error}</div>
+                    ) : null}
+                  </>
+                ) : (
+                  <div className="mt-2 text-sm text-slate-600">Execution not found or no longer available.</div>
+                )}
+              </div>
+              {selectedExecutionWorkflow ? (
+                <button
+                  type="button"
+                  onClick={() => navigate(`/workflows/${selectedExecutionWorkflow.id}/executions`)}
+                  className="rounded-lg border border-sky-300 px-3 py-2 text-sm font-medium text-sky-800 hover:border-sky-500"
+                >
+                  Open executions
+                </button>
+              ) : null}
+            </div>
+          </div>
+        )}
+
         {/* Loading state */}
         {isLoading ? (
           <div className="flex items-center justify-center h-64">
@@ -220,7 +299,9 @@ const WorkflowsPage: React.FC = () => {
             {filteredWorkflows.map((workflow) => (
               <div
                 key={workflow.id}
-                className="bg-white rounded-lg border shadow-sm hover:shadow-md transition-shadow"
+                className={`bg-white rounded-lg border shadow-sm hover:shadow-md transition-shadow ${
+                  selectedExecution?.workflow_id === workflow.id ? 'border-sky-400 ring-2 ring-sky-100' : ''
+                }`}
               >
                 <div className="p-4">
                   <div className="flex items-start justify-between">

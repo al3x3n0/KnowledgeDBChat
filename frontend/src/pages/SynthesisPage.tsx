@@ -7,6 +7,7 @@
 
 import React, { useMemo, useRef, useState, useEffect } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
+import { useLocation, useNavigate } from 'react-router-dom';
 import {
   FileText,
   Plus,
@@ -34,9 +35,10 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
-import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document } from '../types';
+import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document, ResearchNote } from '../types';
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
+import { useNotifications } from '../contexts/NotificationContext';
 
 // Job type configuration
 const JOB_TYPE_CONFIG: Record<SynthesisJobType, { icon: React.ComponentType<any>; label: string; color: string; description: string }> = {
@@ -76,11 +78,41 @@ const JOB_TYPE_CONFIG: Record<SynthesisJobType, { icon: React.ComponentType<any>
     color: 'text-orange-600 bg-orange-100',
     description: 'Create concise executive briefing for leadership',
   },
+  decision_memo: {
+    icon: FileText,
+    label: 'Decision Memo',
+    color: 'text-cyan-700 bg-cyan-100',
+    description: 'Compare claims across sources, surface conflicts, and produce a short memo with citations',
+  },
   gap_analysis_hypotheses: {
     icon: Target,
     label: 'Gap Analysis & Hypotheses',
     color: 'text-rose-600 bg-rose-100',
     description: 'Identify research gaps, propose testable hypotheses, and outline experiment plans',
+  },
+  hypothesis_reevaluation: {
+    icon: RefreshCw,
+    label: 'Hypothesis Re-evaluation',
+    color: 'text-emerald-700 bg-emerald-100',
+    description: 'Re-score and re-rank structured hypotheses using appended experiment evidence',
+  },
+  compiler_regression_explanation: {
+    icon: FileSearch,
+    label: 'Compiler Regression Explanation',
+    color: 'text-sky-700 bg-sky-100',
+    description: 'Compare two benchmark-backed compiler runs and explain the likely causes and next steps',
+  },
+  compiler_patch_proposal: {
+    icon: Target,
+    label: 'Compiler Patch Proposal',
+    color: 'text-teal-700 bg-teal-100',
+    description: 'Turn a compiler regression explanation into a bounded compiler-change proposal with validation and rollback guidance',
+  },
+  compiler_patch_draft: {
+    icon: FileText,
+    label: 'Compiler Patch Draft',
+    color: 'text-violet-700 bg-violet-100',
+    description: 'Turn a compiler patch proposal into a repo-aware draft with target files, symbols, validation commands, and rollback steps',
   },
 };
 
@@ -95,12 +127,31 @@ const STATUS_CONFIG: Record<SynthesisJobStatus, { color: string; bgColor: string
   cancelled: { color: 'text-gray-700', bgColor: 'bg-gray-100', icon: X },
 };
 
+const DEFAULT_NOTE_TAGS: Record<SynthesisJobType, string[]> = {
+  multi_doc_summary: ['summary', 'synthesis'],
+  comparative_analysis: ['comparison', 'analysis'],
+  theme_extraction: ['themes', 'analysis'],
+  knowledge_synthesis: ['knowledge-synthesis', 'insights'],
+  research_report: ['research-report', 'analysis'],
+  executive_brief: ['executive-brief', 'briefing'],
+  decision_memo: ['decision-memo', 'research-synthesis', 'citations'],
+  gap_analysis_hypotheses: ['gap-analysis', 'hypotheses'],
+  hypothesis_reevaluation: ['hypothesis-reevaluation', 'hypotheses'],
+  compiler_regression_explanation: ['compiler-regression-explanation', 'performance-analysis'],
+  compiler_patch_proposal: ['compiler-patch-proposal', 'compiler-proposal'],
+  compiler_patch_draft: ['compiler-patch-draft', 'compiler-change-plan'],
+};
+
 const SynthesisPage: React.FC = () => {
+  const location = useLocation();
+  const navigate = useNavigate();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedJob, setSelectedJob] = useState<SynthesisJob | null>(null);
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<string>('');
   const queryClient = useQueryClient();
+  const { fetchNotifications, refreshUnreadCount } = useNotifications();
+  const focusedJobId = useMemo(() => new URLSearchParams(location.search).get('job'), [location.search]);
 
   // Fetch jobs
   const { data: jobsData, isLoading: jobsLoading, refetch: refetchJobs } = useQuery(
@@ -149,6 +200,30 @@ const SynthesisPage: React.FC = () => {
     }
   );
 
+  const dismissReviewMutation = useMutation(
+    ({ jobId, outcomeNote }: { jobId: string; outcomeNote?: string }) =>
+      apiClient.reviewSynthesisJob(jobId, { outcome_status: 'dismissed', outcome_note: outcomeNote }),
+    {
+      onSuccess: (job) => {
+        queryClient.invalidateQueries(['synthesis-jobs']);
+        queryClient.invalidateQueries(['research-notes']);
+        void fetchNotifications();
+        void refreshUnreadCount();
+        if (job?.research_note_id) {
+          queryClient.invalidateQueries(['synthesis-source-note', job.id, job.research_note_id]);
+        }
+        if (selectedJob?.research_note_id) {
+          queryClient.invalidateQueries(['domain-research-profiles']);
+          queryClient.invalidateQueries(['research-portfolios']);
+        }
+        toast.success('Reevaluation draft dismissed');
+      },
+      onError: (error: any) => {
+        toast.error(error.message || 'Dismiss failed');
+      },
+    }
+  );
+
   // Job card component
   const JobCard: React.FC<{ job: SynthesisJob }> = ({ job }) => {
     const typeConfig = JOB_TYPE_CONFIG[job.job_type] || JOB_TYPE_CONFIG.multi_doc_summary;
@@ -156,6 +231,9 @@ const SynthesisPage: React.FC = () => {
     const StatusIcon = statusConfig.icon;
     const TypeIcon = typeConfig.icon;
     const isRunning = ['analyzing', 'synthesizing', 'generating'].includes(job.status);
+
+    const sourceCount = job.research_note_id ? 1 : (job.paper_ids?.length ? job.paper_ids.length : job.document_ids.length);
+    const sourceLabel = job.research_note_id ? 'note' : (job.paper_ids?.length ? 'papers' : 'docs');
 
     return (
       <div
@@ -209,7 +287,7 @@ const SynthesisPage: React.FC = () => {
         <div className="flex items-center gap-4 text-xs text-gray-500 mt-2">
           <span className="flex items-center gap-1">
             <FileText className="w-3 h-3" />
-            {job.document_ids.length} docs
+            {sourceCount} {sourceLabel}
           </span>
           {job.result_metadata?.word_count && (
             <span>{job.result_metadata.word_count} words</span>
@@ -220,6 +298,12 @@ const SynthesisPage: React.FC = () => {
     );
   };
 
+  useEffect(() => {
+    if (!focusedJobId || !jobsData?.jobs?.length) return;
+    const match = jobsData.jobs.find((job) => job.id === focusedJobId);
+    if (match) setSelectedJob(match);
+  }, [focusedJobId, jobsData?.jobs]);
+
   // Job detail panel
   const JobDetailPanel: React.FC<{ job: SynthesisJob }> = ({ job }) => {
     const [showFullContent, setShowFullContent] = useState(false);
@@ -229,6 +313,100 @@ const SynthesisPage: React.FC = () => {
     const TypeIcon = typeConfig.icon;
     const isRunning = ['analyzing', 'synthesizing', 'generating'].includes(job.status);
     const contentContainerRef = useRef<HTMLDivElement | null>(null);
+    const isReevaluationJob = job.job_type === 'hypothesis_reevaluation';
+    const isCompilerExplanationJob = job.job_type === 'compiler_regression_explanation';
+    const isCompilerPatchProposalJob = job.job_type === 'compiler_patch_proposal';
+    const isCompilerPatchDraftJob = job.job_type === 'compiler_patch_draft';
+    const isCompletedReevaluationDraft = isReevaluationJob && job.status === 'completed' && !!job.research_note_id && Boolean(job.can_apply);
+    const reviewOutcomeStatus = String(job.review_outcome_status || '').trim();
+    const isDismissedDraft = reviewOutcomeStatus === 'dismissed';
+    const isAppliedDraft = reviewOutcomeStatus === 'applied_to_source_note';
+    const isSavedAsNewNoteDraft = reviewOutcomeStatus === 'saved_as_new_note';
+    const reviewTargetNoteId = String(job.review_target_note_id || '').trim();
+    const { data: sourceNote } = useQuery(
+      ['synthesis-source-note', job.id, job.research_note_id],
+      () => apiClient.getResearchNote(job.research_note_id!),
+      {
+        enabled: Boolean(isReevaluationJob && job.research_note_id),
+        staleTime: 5000,
+      }
+    );
+    const primaryAutonomousOpportunityTarget = useMemo(() => {
+      const hypotheses = Array.isArray(sourceNote?.structured_payload?.hypotheses) ? sourceNote.structured_payload.hypotheses : [];
+      for (const hypothesis of hypotheses) {
+        const origins = [
+          hypothesis?.autonomous_origin,
+          ...(Array.isArray(hypothesis?.experiment_evidence)
+            ? hypothesis.experiment_evidence.map((row: any) => row?.autonomous_origin)
+            : []),
+        ];
+        for (const origin of origins) {
+          const sourceKind = String(origin?.source_kind || '').trim().toLowerCase();
+          const sourceId = String(origin?.source_id || '').trim();
+          const opportunityId = String(origin?.opportunity_id || '').trim();
+          if ((sourceKind === 'profile' || sourceKind === 'portfolio') && sourceId && opportunityId) {
+            return {
+              sourceKind: sourceKind as 'profile' | 'portfolio',
+              sourceId,
+              opportunityId,
+            };
+          }
+        }
+      }
+      return null;
+    }, [sourceNote]);
+    const reviewOutcomeLabel = useMemo(() => {
+      if (isAppliedDraft) return 'Applied to source note';
+      if (isSavedAsNewNoteDraft) return 'Saved as new note';
+      if (isDismissedDraft) return 'Dismissed';
+      return '';
+    }, [isAppliedDraft, isDismissedDraft, isSavedAsNewNoteDraft]);
+    const shouldShowSavedNoteLink = Boolean(
+      reviewTargetNoteId
+      && reviewTargetNoteId !== String(job.research_note_id || '').trim()
+    );
+
+    const reevaluationDiffRows = useMemo(() => {
+      if (!isReevaluationJob) return [];
+      const previousRows = Array.isArray(sourceNote?.structured_payload?.hypotheses) ? sourceNote!.structured_payload!.hypotheses! : [];
+      const previousById = previousRows.reduce<Record<string, any>>((acc, hypothesis) => {
+        const id = String(hypothesis?.id || '').trim();
+        if (id) acc[id] = hypothesis;
+        return acc;
+      }, {});
+      const updatedRows = Array.isArray(job.result_metadata?.structured_hypotheses) ? job.result_metadata!.structured_hypotheses! : [];
+      const archivedIds = Array.isArray(job.result_metadata?.archived_hypothesis_ids) ? job.result_metadata!.archived_hypothesis_ids! : [];
+      const priorityDeltas = Array.isArray(job.result_metadata?.priority_deltas) ? job.result_metadata!.priority_deltas! : [];
+
+      const rows = updatedRows.map((hypothesis: any, index: number) => {
+        const id = String(hypothesis?.id || '').trim() || `hypothesis-${index + 1}`;
+        const previous = previousById[id];
+        const delta = priorityDeltas.find((item: any) => String(item?.hypothesis_id || '').trim() === id) || null;
+        return {
+          id,
+          title: String(hypothesis?.title || previous?.title || id),
+          previous,
+          next: hypothesis,
+          delta,
+          archived: archivedIds.includes(id),
+        };
+      });
+
+      for (const previous of previousRows) {
+        const id = String(previous?.id || '').trim();
+        if (!id || rows.some((row) => row.id === id)) continue;
+        rows.push({
+          id,
+          title: String(previous?.title || id),
+          previous,
+          next: null,
+          delta: priorityDeltas.find((item: any) => String(item?.hypothesis_id || '').trim() === id) || null,
+          archived: archivedIds.includes(id),
+        });
+      }
+
+      return rows;
+    }, [isReevaluationJob, sourceNote, job.result_metadata]);
 
     const sections = useMemo(() => {
       const content = job.result_content || '';
@@ -333,27 +511,77 @@ const SynthesisPage: React.FC = () => {
       }
     };
 
-    const handleSaveAsResearchNote = async () => {
+    const handleSaveAsResearchNote = async (targetNoteId?: string) => {
       if (!job.result_content) return;
       try {
-        const tagsRaw = window.prompt('Tags (comma-separated, optional):', 'gap-analysis, hypotheses') || '';
-        const tags = tagsRaw
+        const suggestedTags = DEFAULT_NOTE_TAGS[job.job_type].join(', ');
+        const tags = suggestedTags
           .split(',')
           .map((t) => t.trim())
           .filter(Boolean);
-        const note = await apiClient.createResearchNote({
+        await apiClient.saveSynthesisJobAsResearchNote(job.id, {
           title: job.title || JOB_TYPE_CONFIG[job.job_type].label,
-          content_markdown: job.result_content,
           tags: tags.length > 0 ? tags : undefined,
-          source_synthesis_job_id: job.id,
-          source_document_ids: job.document_ids,
+          target_note_id: targetNoteId,
         });
-        toast.success('Saved as Research Note');
-        // Navigate to notes page and auto-select the note
-        window.location.href = `/research-notes?note=${encodeURIComponent(note.id)}`;
+        toast.success(targetNoteId ? 'Applied reevaluation to source note' : 'Saved as new note');
+        queryClient.invalidateQueries(['synthesis-jobs']);
+        queryClient.invalidateQueries(['research-notes']);
+        void fetchNotifications();
+        void refreshUnreadCount();
+        if (job.research_note_id) {
+          queryClient.invalidateQueries(['synthesis-source-note', job.id, job.research_note_id]);
+        }
+        if (primaryAutonomousOpportunityTarget?.sourceKind === 'profile') {
+          queryClient.invalidateQueries(['domain-research-profiles']);
+        }
+        if (primaryAutonomousOpportunityTarget?.sourceKind === 'portfolio') {
+          queryClient.invalidateQueries(['research-portfolios']);
+        }
       } catch (e: any) {
         toast.error(e?.message || 'Failed to save note');
       }
+    };
+
+    const renderReevaluationHandoffActions = (includeSavedTarget: boolean) => {
+      if (!sourceNote && !primaryAutonomousOpportunityTarget && !(includeSavedTarget && shouldShowSavedNoteLink)) {
+        return null;
+      }
+      return (
+        <div className="mb-2 flex flex-wrap gap-2">
+          {sourceNote ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => navigate(`/research-notes?note=${encodeURIComponent(sourceNote.id)}`)}
+            >
+              Open source note
+            </Button>
+          ) : null}
+          {includeSavedTarget && shouldShowSavedNoteLink ? (
+            <Button
+              size="sm"
+              variant="secondary"
+              onClick={() => navigate(`/research-notes?note=${encodeURIComponent(reviewTargetNoteId)}`)}
+            >
+              Open saved note
+            </Button>
+          ) : null}
+          {primaryAutonomousOpportunityTarget ? (
+            <Button
+              size="sm"
+              variant="ghost"
+              onClick={() => navigate(
+                primaryAutonomousOpportunityTarget.sourceKind === 'profile'
+                  ? `/autonomous-agents?tab=domain&profileId=${encodeURIComponent(primaryAutonomousOpportunityTarget.sourceId)}&opportunityId=${encodeURIComponent(primaryAutonomousOpportunityTarget.opportunityId)}`
+                  : `/autonomous-agents?tab=fleet&fleetId=${encodeURIComponent(primaryAutonomousOpportunityTarget.sourceId)}&opportunityId=${encodeURIComponent(primaryAutonomousOpportunityTarget.opportunityId)}`
+              )}
+            >
+              Open originating opportunity
+            </Button>
+          ) : null}
+        </div>
+      );
     };
 
     const jumpToSection = (id: string) => {
@@ -398,12 +626,45 @@ const SynthesisPage: React.FC = () => {
                 Cancel
               </Button>
             )}
-            {job.status === 'completed' && job.result_content && (
-              <Button size="sm" variant="secondary" onClick={handleSaveAsResearchNote}>
+            {isReevaluationJob && reviewOutcomeLabel ? (
+              <span className="inline-flex items-center rounded-full bg-emerald-100 px-3 py-1 text-xs font-medium text-emerald-800">
+                Outcome: {reviewOutcomeLabel}
+              </span>
+            ) : null}
+            {isCompletedReevaluationDraft ? (
+              <>
+                <Button size="sm" variant="primary" onClick={() => handleSaveAsResearchNote(job.research_note_id || undefined)}>
+                  <Save className="w-4 h-4 mr-1" />
+                  Apply to source note
+                </Button>
+                <Button size="sm" variant="secondary" onClick={() => handleSaveAsResearchNote(undefined)}>
+                  <Save className="w-4 h-4 mr-1" />
+                  Save as new note
+                </Button>
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => dismissReviewMutation.mutate({ jobId: job.id })}
+                  disabled={dismissReviewMutation.isLoading}
+                >
+                  <X className="w-4 h-4 mr-1" />
+                  Dismiss draft
+                </Button>
+              </>
+            ) : job.status === 'completed' && job.result_content ? (
+              <Button size="sm" variant="secondary" onClick={() => handleSaveAsResearchNote()}>
                 <Save className="w-4 h-4 mr-1" />
-                Save Note
+                {job.job_type === 'decision_memo'
+                  ? 'Save Memo Note'
+                  : job.job_type === 'compiler_regression_explanation'
+                    ? 'Save Explanation Note'
+                    : job.job_type === 'compiler_patch_proposal'
+                      ? 'Save Proposal Note'
+                      : job.job_type === 'compiler_patch_draft'
+                        ? 'Save Patch Draft Note'
+                      : 'Save Note'}
               </Button>
-            )}
+            ) : null}
             {job.status === 'completed' && job.result_content && (
               <Button size="sm" variant="secondary" onClick={handleDownloadMarkdown}>
                 <Download className="w-4 h-4 mr-1" />
@@ -440,6 +701,19 @@ const SynthesisPage: React.FC = () => {
               Delete
             </Button>
           </div>
+          {isReevaluationJob && reviewOutcomeLabel ? (
+            <div className="mt-3 rounded border border-gray-200 bg-gray-50 px-3 py-2 text-xs text-gray-700">
+              <div className="font-medium text-gray-900">Review outcome</div>
+              <div className="mt-1">
+                {reviewOutcomeLabel}
+                {job.review_recorded_at ? ` · ${new Date(job.review_recorded_at).toLocaleString()}` : ''}
+              </div>
+              {job.review_note ? <div className="mt-1 text-gray-600">{job.review_note}</div> : null}
+              <div className="mt-2">
+                {renderReevaluationHandoffActions(true)}
+              </div>
+            </div>
+          ) : null}
         </div>
 
         {/* Content */}
@@ -501,13 +775,40 @@ const SynthesisPage: React.FC = () => {
             </div>
           )}
 
+          {/* Decision memo options */}
+          {job.job_type === 'decision_memo' && job.options && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Decision Memo Options</h3>
+              <div className="text-sm text-gray-700 bg-gray-50 rounded-lg p-3 space-y-1">
+                {job.options.audience && (
+                  <p>
+                    <span className="text-gray-500">Audience:</span>{' '}
+                    {String(job.options.audience).replace(/_/g, ' ')}
+                  </p>
+                )}
+                {job.options.include_recommendations !== undefined && (
+                  <p>
+                    <span className="text-gray-500">Recommended actions:</span>{' '}
+                    {job.options.include_recommendations ? 'Included' : 'Omitted'}
+                  </p>
+                )}
+                {job.options.include_watchlist !== undefined && (
+                  <p>
+                    <span className="text-gray-500">Watchlist:</span>{' '}
+                    {job.options.include_watchlist ? 'Included' : 'Omitted'}
+                  </p>
+                )}
+              </div>
+            </div>
+          )}
+
           {/* Documents */}
           <div className="mb-4">
             <h3 className="text-sm font-medium text-gray-700 mb-2">
-              Documents ({job.document_ids.length})
+              {job.paper_ids?.length ? `Papers (${job.paper_ids.length})` : `Documents (${job.document_ids.length})`}
             </h3>
             <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 max-h-24 overflow-y-auto">
-              {job.document_ids.map((id, idx) => (
+              {(job.paper_ids?.length ? job.paper_ids : job.document_ids).map((id, idx) => (
                 <div key={id} className="truncate">{id}</div>
               ))}
             </div>
@@ -530,6 +831,20 @@ const SynthesisPage: React.FC = () => {
                     <p className="text-lg font-semibold">{job.result_metadata.documents_analyzed}</p>
                   </div>
                 )}
+                {job.paper_ids?.length ? (
+                  <div className="bg-gray-50 rounded-lg p-3 text-center">
+                    <p className="text-xs text-gray-500">Selected Papers</p>
+                    <p className="text-lg font-semibold">{job.paper_ids.length}</p>
+                  </div>
+                ) : null}
+                {job.job_type === 'decision_memo' && job.result_metadata.audience && (
+                  <div className="bg-gray-50 rounded-lg p-3 text-center">
+                    <p className="text-xs text-gray-500">Audience</p>
+                    <p className="text-sm font-semibold capitalize">
+                      {String(job.result_metadata.audience).replace(/_/g, ' ')}
+                    </p>
+                  </div>
+                )}
               </div>
 
               {/* Themes found */}
@@ -545,6 +860,249 @@ const SynthesisPage: React.FC = () => {
                   </div>
                 </div>
               )}
+            </div>
+          )}
+
+          {isCompletedReevaluationDraft && sourceNote && (
+            <div className="mb-4">
+              {renderReevaluationHandoffActions(false)}
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Changes vs source note</h3>
+              <div className="space-y-2">
+                {reevaluationDiffRows.map((row) => {
+                  const previousRank = row.previous?.rank;
+                  const nextRank = row.next?.rank;
+                  const previousOverall = row.previous?.overall_score;
+                  const nextOverall = row.next?.overall_score;
+                  const previousEvidence = row.previous?.evidence_score;
+                  const nextEvidence = row.next?.evidence_score;
+                  const previousTestability = row.previous?.testability_score;
+                  const nextTestability = row.next?.testability_score;
+                  return (
+                    <div key={row.id} className="rounded border border-gray-200 bg-gray-50 p-3">
+                      <div className="flex items-center justify-between gap-2">
+                        <div className="font-medium text-gray-900">{row.title}</div>
+                        <div className="text-[11px] text-gray-600">
+                          {row.archived
+                            ? 'Archived'
+                            : row.previous && row.next
+                              ? 'Updated'
+                              : row.next
+                                ? 'New'
+                                : 'Removed'}
+                        </div>
+                      </div>
+                      <div className="mt-1 text-xs text-gray-700">
+                        Rank {previousRank ?? '—'} → {nextRank ?? '—'}
+                        {' · '}
+                        Overall {previousOverall ?? '—'} → {nextOverall ?? '—'}
+                        {' · '}
+                        Evidence {previousEvidence ?? '—'} → {nextEvidence ?? '—'}
+                        {' · '}
+                        Testability {previousTestability ?? '—'} → {nextTestability ?? '—'}
+                      </div>
+                      {row.delta?.reason ? (
+                        <div className="mt-1 text-xs text-gray-600">{String(row.delta.reason)}</div>
+                      ) : null}
+                      {row.next?.recommended_next_step && row.next?.recommended_next_step !== row.previous?.recommended_next_step ? (
+                        <div className="mt-1 text-xs text-gray-700">
+                          Next step: {String(row.next.recommended_next_step)}
+                        </div>
+                      ) : null}
+                    </div>
+                  );
+                })}
+              </div>
+            </div>
+          )}
+
+          {isCompilerExplanationJob && job.result_metadata && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Compiler Regression Explanation</h3>
+              <div className="rounded border border-sky-200 bg-sky-50 p-4 space-y-3">
+                {job.result_metadata.summary ? (
+                  <div className="text-sm text-sky-900">{String(job.result_metadata.summary)}</div>
+                ) : null}
+                <div className="text-xs text-sky-800">
+                  {job.result_metadata.regression_type ? `Type: ${String(job.result_metadata.regression_type)}` : 'Type: mixed'}
+                  {job.result_metadata.primary_run_id ? ` · Primary ${String(job.result_metadata.primary_run_id)}` : ''}
+                  {job.result_metadata.comparison_run_id ? ` · Comparison ${String(job.result_metadata.comparison_run_id)}` : ''}
+                </div>
+                {Array.isArray(job.result_metadata.metric_deltas) && job.result_metadata.metric_deltas.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-sky-700">Metric Deltas</div>
+                    <ul className="mt-1 space-y-1 text-sm text-sky-900">
+                      {job.result_metadata.metric_deltas.slice(0, 6).map((item: any, idx: number) => (
+                        <li key={`metric-delta-${idx}`}>
+                          {String(item?.metric || 'metric')}: {String(item?.comparison ?? '?')} → {String(item?.primary ?? '?')}
+                          {item?.interpretation ? ` · ${String(item.interpretation)}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {Array.isArray(job.result_metadata.artifact_deltas) && job.result_metadata.artifact_deltas.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-sky-700">Artifact Deltas</div>
+                    <ul className="mt-1 space-y-1 text-sm text-sky-900">
+                      {job.result_metadata.artifact_deltas.slice(0, 5).map((item: any, idx: number) => (
+                        <li key={`artifact-delta-${idx}`}>
+                          {String(item?.kind || 'artifact')}: {String(item?.summary || '')}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {Array.isArray(job.result_metadata.likely_causes) && job.result_metadata.likely_causes.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-sky-700">Likely Causes</div>
+                    <ul className="mt-1 space-y-1 text-sm text-sky-900">
+                      {job.result_metadata.likely_causes.slice(0, 5).map((item: any, idx: number) => (
+                        <li key={`likely-cause-${idx}`}>
+                          {String(item?.title || 'Cause')}
+                          {item?.confidence ? ` [${String(item.confidence)}]` : ''}
+                          {item?.reason ? ` · ${String(item.reason)}` : ''}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {Array.isArray(job.result_metadata.confounders) && job.result_metadata.confounders.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-sky-700">Confounders</div>
+                    <ul className="mt-1 space-y-1 text-sm text-sky-900">
+                      {job.result_metadata.confounders.slice(0, 5).map((item: any, idx: number) => (
+                        <li key={`confounder-${idx}`}>{String(item)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {Array.isArray(job.result_metadata.recommended_next_steps) && job.result_metadata.recommended_next_steps.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-sky-700">Recommended Next Steps</div>
+                    <ul className="mt-1 space-y-1 text-sm text-sky-900">
+                      {job.result_metadata.recommended_next_steps.slice(0, 5).map((item: any, idx: number) => (
+                        <li key={`next-step-${idx}`}>{String(item)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          {isCompilerPatchProposalJob && job.result_metadata && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Compiler Patch Proposal</h3>
+              <div className="rounded border border-teal-200 bg-teal-50 p-4 space-y-3">
+                {job.result_metadata.proposal_summary ? (
+                  <div className="text-sm text-teal-900">{String(job.result_metadata.proposal_summary)}</div>
+                ) : null}
+                <div className="text-xs text-teal-800">
+                  {job.result_metadata.target_area ? `Target area: ${String(job.result_metadata.target_area)}` : 'Target area: compiler'}
+                  {job.result_metadata.source_explanation_note_id ? ` · Source note ${String(job.result_metadata.source_explanation_note_id)}` : ''}
+                </div>
+                {job.result_metadata.candidate_change ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-teal-700">Candidate Change</div>
+                    <div className="mt-1 text-sm text-teal-900 whitespace-pre-wrap">{String(job.result_metadata.candidate_change)}</div>
+                  </div>
+                ) : null}
+                {job.result_metadata.expected_effect ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-teal-700">Expected Effect</div>
+                    <div className="mt-1 text-sm text-teal-900 whitespace-pre-wrap">{String(job.result_metadata.expected_effect)}</div>
+                  </div>
+                ) : null}
+                {job.result_metadata.mechanism ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-teal-700">Mechanism</div>
+                    <div className="mt-1 text-sm text-teal-900 whitespace-pre-wrap">{String(job.result_metadata.mechanism)}</div>
+                  </div>
+                ) : null}
+                {job.result_metadata.validation_plan ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-teal-700">Validation Plan</div>
+                    <div className="mt-1 text-sm text-teal-900 whitespace-pre-wrap">{String(job.result_metadata.validation_plan)}</div>
+                  </div>
+                ) : null}
+                {job.result_metadata.risk_assessment ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-teal-700">Risk Assessment</div>
+                    <div className="mt-1 text-sm text-teal-900 whitespace-pre-wrap">{String(job.result_metadata.risk_assessment)}</div>
+                  </div>
+                ) : null}
+                {job.result_metadata.rollback_or_guardrail ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-teal-700">Rollback Or Guardrail</div>
+                    <div className="mt-1 text-sm text-teal-900 whitespace-pre-wrap">{String(job.result_metadata.rollback_or_guardrail)}</div>
+                  </div>
+                ) : null}
+              </div>
+            </div>
+          )}
+
+          {isCompilerPatchDraftJob && job.result_metadata && (
+            <div className="mb-4">
+              <h3 className="text-sm font-medium text-gray-700 mb-2">Compiler Patch Draft</h3>
+              <div className="rounded border border-violet-200 bg-violet-50 p-4 space-y-3">
+                {job.result_metadata.draft_summary ? (
+                  <div className="text-sm text-violet-900">{String(job.result_metadata.draft_summary)}</div>
+                ) : null}
+                <div className="text-xs text-violet-800">
+                  {job.result_metadata.source_name ? `Repo source: ${String(job.result_metadata.source_name)}` : 'Repo source selected'}
+                  {(job.result_metadata as { source_id?: string | null }).source_id
+                    ? ` · ${String((job.result_metadata as { source_id?: string | null }).source_id)}`
+                    : ''}
+                </div>
+                {Array.isArray(job.result_metadata.target_files) && job.result_metadata.target_files.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-violet-700">Target Files</div>
+                    <ul className="mt-1 space-y-1 text-sm text-violet-900">
+                      {job.result_metadata.target_files.slice(0, 8).map((item: any, idx: number) => (
+                        <li key={`draft-file-${idx}`}>{String(item)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {Array.isArray(job.result_metadata.target_symbols) && job.result_metadata.target_symbols.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-violet-700">Target Symbols</div>
+                    <div className="mt-1 text-sm text-violet-900">
+                      {job.result_metadata.target_symbols.slice(0, 10).map((item: any) => String(item)).join(', ')}
+                    </div>
+                  </div>
+                ) : null}
+                {Array.isArray(job.result_metadata.change_plan) && job.result_metadata.change_plan.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-violet-700">Change Plan</div>
+                    <ul className="mt-1 space-y-1 text-sm text-violet-900">
+                      {job.result_metadata.change_plan.slice(0, 10).map((item: any, idx: number) => (
+                        <li key={`draft-step-${idx}`}>{String(item)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {Array.isArray(job.result_metadata.validation_commands) && job.result_metadata.validation_commands.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-violet-700">Validation Commands</div>
+                    <ul className="mt-1 space-y-1 text-sm text-violet-900">
+                      {job.result_metadata.validation_commands.slice(0, 8).map((item: any, idx: number) => (
+                        <li key={`draft-validation-${idx}`}>{String(item)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+                {Array.isArray(job.result_metadata.rollback_steps) && job.result_metadata.rollback_steps.length > 0 ? (
+                  <div>
+                    <div className="text-xs font-medium uppercase tracking-wide text-violet-700">Rollback Steps</div>
+                    <ul className="mt-1 space-y-1 text-sm text-violet-900">
+                      {job.result_metadata.rollback_steps.slice(0, 8).map((item: any, idx: number) => (
+                        <li key={`draft-rollback-${idx}`}>{String(item)}</li>
+                      ))}
+                    </ul>
+                  </div>
+                ) : null}
+              </div>
             </div>
           )}
 
@@ -658,6 +1216,7 @@ const SynthesisPage: React.FC = () => {
     const [selectedType, setSelectedType] = useState<SynthesisJobType>('multi_doc_summary');
     const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
+    const [sourceSearchQuery, setSourceSearchQuery] = useState('');
     const [title, setTitle] = useState('');
     const [autoTitle, setAutoTitle] = useState(true);
     const [topic, setTopic] = useState('');
@@ -669,6 +1228,9 @@ const SynthesisPage: React.FC = () => {
     const [constraints, setConstraints] = useState('');
     const [desiredOutcomes, setDesiredOutcomes] = useState('');
     const [includeBibliography, setIncludeBibliography] = useState(true);
+    const [decisionAudience, setDecisionAudience] = useState('product_and_strategy');
+    const [includeDecisionRecommendations, setIncludeDecisionRecommendations] = useState(true);
+    const [includeDecisionWatchlist, setIncludeDecisionWatchlist] = useState(true);
 
     useEffect(() => {
       if (autoTitle) {
@@ -679,6 +1241,10 @@ const SynthesisPage: React.FC = () => {
         // Default to a more technical tone for research
         if (outputStyle === 'professional') {
           setOutputStyle('technical');
+        }
+      } else if (selectedType === 'decision_memo') {
+        if (outputStyle === 'casual') {
+          setOutputStyle('professional');
         }
       }
       // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -692,8 +1258,8 @@ const SynthesisPage: React.FC = () => {
     );
 
     const handleSubmit = async () => {
-      if (selectedDocs.length === 0) {
-        toast.error('Select at least one document');
+      if (selectedDocs.length === 0 && !sourceSearchQuery.trim()) {
+        toast.error('Select at least one document or provide a search query');
         return;
       }
       if (!title.trim()) {
@@ -707,6 +1273,7 @@ const SynthesisPage: React.FC = () => {
           job_type: selectedType,
           title,
           document_ids: selectedDocs,
+          search_query: sourceSearchQuery.trim() || undefined,
           topic: topic || undefined,
           output_format: outputFormat,
           output_style: outputStyle,
@@ -718,6 +1285,12 @@ const SynthesisPage: React.FC = () => {
                   desired_outcomes: desiredOutcomes.trim() || undefined,
                   include_bibliography: includeBibliography,
                 }
+              : selectedType === 'decision_memo'
+                ? {
+                    audience: decisionAudience,
+                    include_recommendations: includeDecisionRecommendations,
+                    include_watchlist: includeDecisionWatchlist,
+                  }
               : undefined,
         });
         toast.success('Synthesis job created');
@@ -765,7 +1338,9 @@ const SynthesisPage: React.FC = () => {
             {/* Step 1: Select type */}
             {step === 'type' && (
               <div className="grid grid-cols-2 gap-3">
-                {Object.entries(JOB_TYPE_CONFIG).map(([type, config]) => {
+                {Object.entries(JOB_TYPE_CONFIG)
+                  .filter(([type]) => type !== 'hypothesis_reevaluation' && type !== 'compiler_patch_proposal' && type !== 'compiler_patch_draft')
+                  .map(([type, config]) => {
                   const Icon = config.icon;
                   return (
                     <div
@@ -811,6 +1386,22 @@ const SynthesisPage: React.FC = () => {
                 <p className="text-sm text-gray-500 mb-3">
                   Selected: {selectedDocs.length} documents
                 </p>
+
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Or search existing knowledge base
+                  </label>
+                  <input
+                    type="text"
+                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm bg-white text-gray-900 placeholder-gray-400"
+                    value={sourceSearchQuery}
+                    onChange={(e) => setSourceSearchQuery(e.target.value)}
+                    placeholder="Optional query to pull matching documents automatically"
+                  />
+                  <p className="text-xs text-gray-500 mt-1">
+                    Useful for decision memos when you want to synthesize by topic instead of manually selecting every document.
+                  </p>
+                </div>
 
                 {docsLoading ? (
                   <div className="flex justify-center py-8">
@@ -931,6 +1522,47 @@ const SynthesisPage: React.FC = () => {
                   </div>
                 )}
 
+                {selectedType === 'decision_memo' && (
+                  <div className="border border-gray-200 rounded-lg p-4 bg-cyan-50/40">
+                    <h4 className="text-sm font-medium text-gray-900 mb-3">Decision Memo Options</h4>
+                    <div className="space-y-3">
+                      <div>
+                        <label className="block text-sm font-medium text-gray-700 mb-1">Audience</label>
+                        <select
+                          className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
+                          value={decisionAudience}
+                          onChange={(e) => setDecisionAudience(e.target.value)}
+                        >
+                          <option value="product_and_strategy">Product and Strategy</option>
+                          <option value="executive_leadership">Executive Leadership</option>
+                          <option value="research_ops">Research Ops</option>
+                          <option value="procurement">Procurement</option>
+                        </select>
+                      </div>
+
+                      <label className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          className="rounded"
+                          checked={includeDecisionRecommendations}
+                          onChange={(e) => setIncludeDecisionRecommendations(e.target.checked)}
+                        />
+                        Include recommended actions
+                      </label>
+
+                      <label className="flex items-center gap-2 text-sm text-gray-700">
+                        <input
+                          type="checkbox"
+                          className="rounded"
+                          checked={includeDecisionWatchlist}
+                          onChange={(e) => setIncludeDecisionWatchlist(e.target.checked)}
+                        />
+                        Include watchlist / monitoring triggers
+                      </label>
+                    </div>
+                  </div>
+                )}
+
                 <div className="grid grid-cols-2 gap-4">
                   <div>
                     <label className="block text-sm font-medium text-gray-700 mb-1">Output Format</label>
@@ -966,6 +1598,9 @@ const SynthesisPage: React.FC = () => {
                   <div className="text-sm text-gray-600 space-y-1">
                     <p><span className="text-gray-500">Type:</span> {JOB_TYPE_CONFIG[selectedType].label}</p>
                     <p><span className="text-gray-500">Documents:</span> {selectedDocs.length}</p>
+                    {sourceSearchQuery.trim() && (
+                      <p><span className="text-gray-500">Search query:</span> {sourceSearchQuery.trim()}</p>
+                    )}
                     <p><span className="text-gray-500">Output:</span> {outputFormat.toUpperCase()}</p>
                   </div>
                 </div>
@@ -990,8 +1625,8 @@ const SynthesisPage: React.FC = () => {
               onClick={() => {
                 if (step === 'type') setStep('documents');
                 else if (step === 'documents') {
-                  if (selectedDocs.length === 0) {
-                    toast.error('Select at least one document');
+                  if (selectedDocs.length === 0 && !sourceSearchQuery.trim()) {
+                    toast.error('Select at least one document or provide a search query');
                     return;
                   }
                   setStep('config');

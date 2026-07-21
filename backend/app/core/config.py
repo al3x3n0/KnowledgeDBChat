@@ -32,7 +32,8 @@ class Settings(BaseSettings):
     CELERY_DB_POOL_TIMEOUT_SECONDS: int = 10
     
     # LLM Configuration
-    # Provider can be 'ollama' (local) or 'deepseek' (external OpenAI-compatible API)
+    # Provider: 'ollama' (local), 'deepseek', 'openai', 'anthropic',
+    # 'qwen' (DashScope), or 'kimi' (Moonshot AI)
     LLM_PROVIDER: str = "ollama"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
     DEFAULT_MODEL: str = "llama3.2:1b"  # Smallest model for Mac compatibility (~1GB, best for 8GB Mac)
@@ -48,7 +49,35 @@ class Settings(BaseSettings):
     DEEPSEEK_MODEL: str = "deepseek-chat"
     DEEPSEEK_TIMEOUT_SECONDS: int = 120
     DEEPSEEK_MAX_RESPONSE_TOKENS: int = 2000
-    
+
+    # OpenAI (external, official SDK) — optional
+    OPENAI_API_BASE: str = "https://api.openai.com/v1"
+    OPENAI_API_KEY: Optional[str] = None
+    OPENAI_MODEL: str = "gpt-4o"
+
+    # Anthropic (external, official SDK) — optional
+    ANTHROPIC_API_KEY: Optional[str] = None
+    ANTHROPIC_MODEL: str = "claude-opus-4-8"
+    ANTHROPIC_MAX_TOKENS: int = 16000
+    # Add cache_control breakpoints (system + newest message) so stable
+    # prompt prefixes are served from Anthropic's prompt cache (~0.1x cost).
+    ANTHROPIC_PROMPT_CACHE_ENABLED: bool = True
+
+    # Qwen via DashScope OpenAI-compatible mode (external) — optional
+    QWEN_API_BASE: str = "https://dashscope.aliyuncs.com/compatible-mode/v1"
+    QWEN_API_KEY: Optional[str] = None
+    QWEN_MODEL: str = "qwen-plus"
+
+    # Kimi / Moonshot AI (external, OpenAI-compatible) — optional
+    KIMI_API_BASE: str = "https://api.moonshot.cn/v1"
+    KIMI_API_KEY: Optional[str] = None
+    KIMI_MODEL: str = "kimi-latest"
+
+    # LLM call snapshots (replay/debug observability). Opt-in: snapshots
+    # store full prompt and response text in the llm_call_snapshots table.
+    LLM_CALL_SNAPSHOT_ENABLED: bool = False
+    LLM_CALL_SNAPSHOT_MAX_CHARS: int = 20000
+
     # ChromaDB
     CHROMA_PERSIST_DIRECTORY: str = "./data/chroma_db"
     CHROMA_COLLECTION_NAME: str = "knowledge_base"
@@ -80,13 +109,52 @@ class Settings(BaseSettings):
     CONFLUENCE_USER: Optional[str] = None
     CONFLUENCE_API_TOKEN: Optional[str] = None
     
+    # Vision
+    VISION_MODEL: str = "llava"  # Vision-capable model for image analysis (e.g. llava, llava:13b)
+
     # Transcription
     WHISPER_MODEL_SIZE: str = "base"  # Options: tiny, base, small, medium, large
     WHISPER_DEVICE: str = "auto"  # Options: cpu, cuda, auto
-    TRANSCRIPTION_LANGUAGE: str = "ru"  # Default language for transcription
-    TRANSCRIPTION_SPEAKER_DIARIZATION: bool = True  # Enable speaker labels in transcripts
+    TRANSCRIPTION_LANGUAGE: str = "auto"  # Default language for transcription ("auto" enables Whisper language detection)
+    TRANSCRIPTION_SPEAKER_DIARIZATION: bool = False  # Enable speaker labels in transcripts
     TRANSCRIPTION_DIARIZATION_MODEL: str = "pyannote/speaker-diarization-3.1"  # Pyannote diarization model
     HUGGINGFACE_TOKEN: Optional[str] = None  # HF token required to download some pyannote models
+    TRANSCRIPTION_FILTER_INTRO_JUNK: bool = True
+    TRANSCRIPTION_INTRO_MAX_SECONDS: float = 12.0
+    TRANSCRIPTION_INTRO_NO_SPEECH_PROB: float = 0.30
+    TRANSCRIPTION_SKIP_INITIAL_SECONDS: float = 0.0
+
+    # LDAP (optional)
+    LDAP_ENABLED: bool = False
+    LDAP_URI: Optional[str] = None  # e.g. "ldap://ldap.example.com:389" or "ldaps://ldap.example.com:636"
+    LDAP_START_TLS: bool = False
+    LDAP_INSECURE_SKIP_TLS_VERIFY: bool = False
+    LDAP_CONNECT_TIMEOUT_SECONDS: int = 8
+
+    # Service account used to search for user DN (recommended). If not set, DN template is used.
+    LDAP_BIND_DN: Optional[str] = None
+    LDAP_BIND_PASSWORD: Optional[str] = None
+
+    # User search
+    LDAP_BASE_DN: Optional[str] = None  # e.g. "dc=example,dc=com"
+    LDAP_USER_DN_TEMPLATE: Optional[str] = None  # e.g. "uid={username},ou=People,dc=example,dc=com"
+    LDAP_USER_SEARCH_FILTER: str = "(|(uid={username})(sAMAccountName={username})(userPrincipalName={username}))"
+    LDAP_IMPORT_FILTER: str = "(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
+    LDAP_SEARCH_PAGE_SIZE: int = 200
+
+    # Attribute mapping
+    LDAP_USERNAME_ATTRIBUTE: str = "uid"
+    LDAP_EMAIL_ATTRIBUTE: str = "mail"
+    LDAP_FULL_NAME_ATTRIBUTE: str = "displayName"
+    LDAP_GROUPS_ATTRIBUTE: str = "memberOf"
+    LDAP_DEFAULT_EMAIL_DOMAIN: Optional[str] = None  # if LDAP has no email, we can synthesize `${username}@domain`
+    LDAP_USER_ATTRIBUTES: str = "uid,sAMAccountName,userPrincipalName,mail,cn,displayName,memberOf"
+
+    # Role mapping (comma-separated group DNs)
+    LDAP_ADMIN_GROUP_DNS: Optional[str] = None
+    LDAP_VIEWER_GROUP_DNS: Optional[str] = None
+    LDAP_SYNC_ON_LOGIN: bool = True
+    LDAP_CREATE_USER_ON_LOGIN: bool = True
     
     # File Upload Limits
     MAX_FILE_SIZE: int = 500 * 1024 * 1024  # 500MB default (videos can be large)
@@ -142,6 +210,24 @@ class Settings(BaseSettings):
     UNSAFE_CODE_EXEC_DOCKER_IMAGE: str = "python:3.11-slim"
     UNSAFE_CODE_EXEC_DOCKER_CPUS: float = 1.0
     UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT: int = 128
+    SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
+        "ghcr.io/knowledgedb/compiler-research:latest,"
+        "ghcr.io/knowledgedb/microarch-research:latest,"
+        "python:3.11-slim"
+    )
+    SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = "repo_reconstruction,perf_counters"
+    SCIENTIFIC_VALIDATION_ALLOWED_BENCHMARK_FAMILIES: str = (
+        "compiler_regression,codegen_quality,kernel_compile,"
+        "perf_counter_regression,cache_branch_analysis,throughput_latency,generic_validation"
+    )
+    SCIENTIFIC_VALIDATION_ALLOWED_PERF_COLLECTORS: str = (
+        "benchmark_output,compile_time,artifact_diff,perf_stat,cache_miss,branch_miss"
+    )
+    SCIENTIFIC_VALIDATION_MAX_TIMEOUT_SECONDS: int = 1800
+    SCIENTIFIC_VALIDATION_MAX_MEMORY_MB: int = 8192
+    SCIENTIFIC_VALIDATION_MAX_CPUS: float = 8.0
+    SCIENTIFIC_VALIDATION_MAX_PIDS_LIMIT: int = 1024
+    SCIENTIFIC_VALIDATION_MAX_BUDGET_PER_RUN: float = 10000.0
 
     # RAG Knowledge Graph Integration
     RAG_KG_CONTEXT_ENABLED: bool = True  # Inject KG context into chat responses
@@ -203,6 +289,21 @@ class Settings(BaseSettings):
         "merge_entities",
         "run_custom_tool",
     ]
+    # Native tool-calling loop in the agent think phase (opt-in globally;
+    # per-job override via job config key `native_tool_loop`). Requires a
+    # provider with native tool calling (all providers in llm_providers).
+    AGENT_NATIVE_TOOL_LOOP_ENABLED: bool = False
+    AGENT_NATIVE_TOOL_LOOP_MAX_TOOL_CALLS: int = 5
+    AGENT_NATIVE_TOOL_LOOP_MAX_LLM_CALLS: int = 6
+    # Automatic context compaction: when serialized iteration state exceeds
+    # the threshold, older actions are summarized into compressed_history
+    # (same contract as the agent-invoked compress_history tool). Per-job
+    # override via job config key `auto_compaction`.
+    AGENT_AUTO_COMPACTION_ENABLED: bool = True
+    AGENT_AUTO_COMPACTION_THRESHOLD_CHARS: int = 60000
+    AGENT_AUTO_COMPACTION_KEEP_RECENT_ACTIONS: int = 5
+    AGENT_AUTO_COMPACTION_MIN_ITERATIONS_BETWEEN: int = 3
+    REPO_SYMBOL_RETRIEVAL_ENABLED: bool = False
     # If enabled, autonomous agent jobs may directly apply code patches to the KB (writes).
     # Strongly recommended to keep disabled and use PatchPR review/merge instead.
     AGENT_KB_PATCH_APPLY_ENABLED: bool = False

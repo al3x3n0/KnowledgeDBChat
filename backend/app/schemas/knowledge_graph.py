@@ -130,3 +130,9 @@ class KGGlobalGraph(BaseModel):
     nodes: List[dict]
     edges: List[dict]
     metadata: KGGlobalGraphMetadata
+
+
+class KGTypes(BaseModel):
+    """Lists of known entity and relationship types in the system."""
+    entity_types: List[str]
+    relation_types: List[str]

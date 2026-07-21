@@ -46,6 +46,11 @@ LATEX_REVIEWER_CRITIC_TEMPLATE_ID = UUID("8f0d4d6f-0a93-4a4b-9b18-7f2f3b5b7c8d")
 EXPERIMENT_RUNNER_TEMPLATE_ID = UUID("4e3c2b1a-9f8e-4d3c-b2a1-1c2d3e4f5a6b")
 LATEX_COMPILE_PROJECT_TEMPLATE_ID = UUID("f0b7c0e7-3a39-4a9b-9b8e-3dd89a2dcbf4")
 LATEX_PUBLISH_PROJECT_TEMPLATE_ID = UUID("3e8b4f4a-9d2f-4c73-9f0e-7d5ac97acdb3")
+CLAUDE_CODE_BACKEND_TEMPLATE_ID = UUID("5b24fc8a-1e6f-4a49-9c90-f53b6fdac2a1")
+REPO_BUG_TRIAGE_REPAIR_TEMPLATE_ID = UUID("e9fb641d-8ca2-4f17-aedd-df5e76d6a38e")
+DOMAIN_RESEARCH_TEMPLATE_ID = UUID("51f2bb76-33d2-4df7-b58f-7f2fb68b3f03")
+AUTONOMOUS_CODER_TEMPLATE_ID = UUID("a1b2c3d4-5e6f-7a8b-9c0d-e1f2a3b4c5d6")
+DOCUMENT_AUTHOR_TEMPLATE_ID = UUID("d6c5b4a3-f2e1-0d9c-8b7a-6f5e4d3c2b1a")
 
 
 BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
@@ -203,12 +208,88 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
             "persist_artifacts": False,
             # For schedule_type == "continuous": interval in minutes.
             "interval_minutes": 60,
+            "automation_profile": "balanced",
+            "automation_policy": {
+                "follow_up_review_mode": "manual_only",
+                "allowed_recommendations": [
+                    "deep_dive_chain",
+                    "single_research_job",
+                ],
+            },
+            "autonomy_budget": {
+                "auto_launch_limit_24h": 3,
+                "approval_queue_limit_24h": 6,
+                "alert_limit_24h": 4,
+                "queue_backlog_cap": 8,
+            },
         },
         agent_definition_id=None,
         default_max_iterations=1,
         default_max_tool_calls=0,
         default_max_llm_calls=0,
         default_max_runtime_minutes=5,
+    ),
+    BuiltinAgentJobTemplate(
+        id=DOMAIN_RESEARCH_TEMPLATE_ID,
+        name="domain_research_orchestrator",
+        display_name="Domain Research: Ideas + Notes",
+        description=(
+            "Research a scientific or technical domain, rank evidence-backed ideas, generate a brief and a report, "
+            "persist outputs as Research Notes, and optionally auto-launch a deeper follow-up."
+        ),
+        category="research",
+        job_type="research",
+        default_goal=(
+            "Research the target domain using Knowledge DB sources first, then arXiv as needed. "
+            "Produce ranked ideas with supporting evidence, a short brief, a longer report, and recommended next experiments."
+        ),
+        default_config={
+            "deterministic_runner": "domain_research_orchestrator",
+            "domain_research_mode": True,
+            "domain": "",
+            "objective": "",
+            "customer_context": "",
+            "source_scope": "kb_plus_arxiv",
+            "track_type": "generic",
+            "monitor_queries": [],
+            "repo_source_ids": [],
+            "benchmark_queries": [],
+            "report_format": "brief_and_report",
+            "persist_artifacts": True,
+            "persist_target": "research_notes",
+            "automation_profile": "balanced",
+            "automation_policy": {
+                "confidence_threshold": 0.7,
+                "experiment_readiness_threshold": 0.8,
+                "max_auto_follow_up_launches": 2,
+                "auto_create_experiment_plans": True,
+                "auto_launch_follow_up": True,
+                "auto_execute_validation_runs": False,
+                "max_concurrent_validation_runs": 1,
+                "max_validation_runtime_minutes": 20,
+                "max_validation_budget_per_run": 25.0,
+                "follow_up_review_mode": "auto_launch_safe",
+                "validation_backoff_policy": {
+                    "max_consecutive_failures": 2,
+                    "cooldown_minutes": 180,
+                },
+                "auto_launch_experiment_runs": False,
+            },
+            "auto_launch_follow_up": True,
+            "follow_up_type": "deep_dive_chain",
+            "prefer_sources": ["documents", "arxiv"],
+            "max_documents": 10,
+            "max_papers": 8,
+            "confidence_threshold": 0.7,
+            "llm_tier": "deep",
+            "llm_fallback_tiers": ["balanced"],
+            "llm_timeout_seconds": 180,
+        },
+        agent_definition_id=None,
+        default_max_iterations=1,
+        default_max_tool_calls=0,
+        default_max_llm_calls=2,
+        default_max_runtime_minutes=15,
     ),
     BuiltinAgentJobTemplate(
         id=CODE_PATCH_PROPOSER_TEMPLATE_ID,
@@ -225,7 +306,7 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
         ),
         default_config={
             "deterministic_runner": "code_patch_proposer",
-            "target_source_id": "",
+            "source_id": "",
             "search_query": "",
             "file_paths": [],
             "max_files": 6,
@@ -306,7 +387,7 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
         default_config={
             "deterministic_runner": "experiment_runner",
             # Required:
-            "source_id": "",  # or target_source_id
+            "source_id": "",
             # Optional:
             "commands": [],
             "latex_project_id": "",
@@ -317,6 +398,171 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
         default_max_tool_calls=0,
         default_max_llm_calls=0,
         default_max_runtime_minutes=10,
+    ),
+    BuiltinAgentJobTemplate(
+        id=CLAUDE_CODE_BACKEND_TEMPLATE_ID,
+        name="claude_code_backend",
+        display_name="Code Agent: Claude-Code Backend Loop",
+        description=(
+            "Runs a Claude-code-style backend loop: propose patch, run verification commands, "
+            "refine patch, and optionally apply to KB code documents."
+        ),
+        category="code",
+        job_type="analysis",
+        default_goal=(
+            "Implement the backend change as a minimal patch, verify with focused checks/tests, "
+            "and provide a safer final patch candidate."
+        ),
+        default_config={
+            "deterministic_runner": "code_patch_proposer",
+            "source_id": "",
+            "search_query": "backend",
+            "file_paths": [],
+            "commands": [],
+            "auto_commands_from_project_profile": True,
+            "auto_commands_profile_max_files": 300,
+            "max_files": 10,
+            "max_chars_per_file": 10000,
+            "apply_patch_to_kb": False,
+            "apply_patch_to_kb_confirm": False,
+            "proposal_strategy": "best_passing",
+            "require_experiments_ok": True,
+            "require_dry_run_first": True,
+            "fail_on_block": False,
+            "llm_tier": "deep",
+            "llm_fallback_tiers": ["balanced"],
+            "llm_timeout_seconds": 180,
+        },
+        default_chain_config={
+            "trigger_condition": "on_complete",
+            "inherit_results": True,
+            "inherit_config": True,
+            "child_jobs": [
+                {
+                    "name": "Claude-Code Backend — Verify (Round 1)",
+                    "job_type": "analysis",
+                    "goal": "Run backend verification commands/tests for the proposed patch.",
+                    "config": {"deterministic_runner": "experiment_runner"},
+                    "chain_config": {
+                        "trigger_condition": "on_any_end",
+                        "inherit_results": True,
+                        "inherit_config": True,
+                        "child_jobs": [
+                            {
+                                "name": "Claude-Code Backend — Refine (Round 2)",
+                                "job_type": "analysis",
+                                "goal": "Refine the backend patch using experiment output.",
+                                "config": {"deterministic_runner": "code_patch_proposer"},
+                                "chain_config": {
+                                    "trigger_condition": "on_complete",
+                                    "inherit_results": True,
+                                    "inherit_config": True,
+                                    "child_jobs": [
+                                        {
+                                            "name": "Claude-Code Backend — Verify (Round 2)",
+                                            "job_type": "analysis",
+                                            "goal": "Re-run backend verification commands/tests for the refined patch.",
+                                            "config": {"deterministic_runner": "experiment_runner"},
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+        agent_definition_id=None,
+        default_max_iterations=1,
+        default_max_tool_calls=0,
+        default_max_llm_calls=2,
+        default_max_runtime_minutes=20,
+    ),
+    BuiltinAgentJobTemplate(
+        id=REPO_BUG_TRIAGE_REPAIR_TEMPLATE_ID,
+        name="repo_bug_triage_repair",
+        display_name="Code Agent: Repo Bug Triage + Repair",
+        description=(
+            "Runs a repo-wide bug triage loop from a git-backed KB source: inspect symptom context, "
+            "propose a minimal patch, run bounded verification commands, refine from failures, "
+            "and stop at a reviewable patch proposal by default."
+        ),
+        category="code",
+        job_type="analysis",
+        default_goal=(
+            "Triage the reported repo bug, identify the minimal fix, verify with focused checks/tests, "
+            "and provide a safer final patch proposal with verification notes."
+        ),
+        default_config={
+            "deterministic_runner": "code_patch_proposer",
+            "source_id": "",
+            "failure_symptom": "",
+            "error_output": "",
+            "scope": "auto",
+            "search_query": "",
+            "file_paths": [],
+            "commands": [],
+            "auto_commands_from_project_profile": True,
+            "auto_commands_profile_max_files": 400,
+            "create_workspace_from_source": True,
+            "emit_execution_plan": True,
+            "max_verification_commands": 3,
+            "max_files": 12,
+            "max_chars_per_file": 10000,
+            "apply_patch_to_kb": False,
+            "apply_patch_to_kb_confirm": False,
+            "proposal_strategy": "best_passing",
+            "require_experiments_ok": True,
+            "require_dry_run_first": False,
+            "fail_on_block": False,
+            "llm_tier": "deep",
+            "llm_fallback_tiers": ["balanced"],
+            "llm_timeout_seconds": 180,
+        },
+        default_chain_config={
+            "trigger_condition": "on_complete",
+            "inherit_results": True,
+            "inherit_config": True,
+            "child_jobs": [
+                {
+                    "name": "Repo Bug Triage — Verify (Round 1)",
+                    "job_type": "analysis",
+                    "goal": "Run focused verification commands/tests for the proposed bug fix.",
+                    "config": {"deterministic_runner": "experiment_runner"},
+                    "chain_config": {
+                        "trigger_condition": "on_any_end",
+                        "inherit_results": True,
+                        "inherit_config": True,
+                        "child_jobs": [
+                            {
+                                "name": "Repo Bug Triage — Refine (Round 2)",
+                                "job_type": "analysis",
+                                "goal": "Refine the bug-fix patch using verification output.",
+                                "config": {"deterministic_runner": "code_patch_proposer"},
+                                "chain_config": {
+                                    "trigger_condition": "on_complete",
+                                    "inherit_results": True,
+                                    "inherit_config": True,
+                                    "child_jobs": [
+                                        {
+                                            "name": "Repo Bug Triage — Verify (Round 2)",
+                                            "job_type": "analysis",
+                                            "goal": "Re-run verification commands/tests for the refined patch.",
+                                            "config": {"deterministic_runner": "experiment_runner"},
+                                        }
+                                    ],
+                                },
+                            }
+                        ],
+                    },
+                }
+            ],
+        },
+        agent_definition_id=None,
+        default_max_iterations=1,
+        default_max_tool_calls=0,
+        default_max_llm_calls=2,
+        default_max_runtime_minutes=25,
     ),
     BuiltinAgentJobTemplate(
         id=LATEX_COMPILE_PROJECT_TEMPLATE_ID,
@@ -368,6 +614,60 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
         default_max_tool_calls=0,
         default_max_llm_calls=0,
         default_max_runtime_minutes=6,
+    ),
+    BuiltinAgentJobTemplate(
+        id=AUTONOMOUS_CODER_TEMPLATE_ID,
+        name="autonomous_coder",
+        display_name="Autonomous Coder",
+        description=(
+            "Clones a repository or loads code from a KB source, then iteratively "
+            "browses, edits, tests, and patches code to achieve a coding goal. "
+            "Supports running commands, applying patches, and tracking file changes."
+        ),
+        category="coding",
+        job_type="analysis",
+        default_goal="Clone the repository, understand the codebase, implement the requested changes, and verify with tests.",
+        default_config={
+            "agent_role": "coder",
+            "auto_clone": True,
+            "auto_run_tests": True,
+            "max_test_retries": 3,
+            "llm_tier": "deep",
+            "llm_fallback_tiers": ["balanced"],
+            "llm_timeout_seconds": 180,
+        },
+        agent_definition_id=None,
+        default_max_iterations=20,
+        default_max_tool_calls=100,
+        default_max_llm_calls=40,
+        default_max_runtime_minutes=30,
+    ),
+    BuiltinAgentJobTemplate(
+        id=DOCUMENT_AUTHOR_TEMPLATE_ID,
+        name="document_author",
+        display_name="Document Author",
+        description=(
+            "Plans, writes, revises, and exports structured documents with citations. "
+            "Uses RAG search to find relevant sources, supports multi-section documents "
+            "with figures, and exports to DOCX, PDF, PPTX, or LaTeX formats."
+        ),
+        category="authoring",
+        job_type="synthesis",
+        default_goal="Plan, write, and export a well-structured document based on the given topic and requirements.",
+        default_config={
+            "agent_role": "author",
+            "output_format": "markdown",
+            "export_formats": ["docx"],
+            "persist_to_kb": True,
+            "llm_tier": "deep",
+            "llm_fallback_tiers": ["balanced"],
+            "llm_timeout_seconds": 180,
+        },
+        agent_definition_id=None,
+        default_max_iterations=15,
+        default_max_tool_calls=80,
+        default_max_llm_calls=30,
+        default_max_runtime_minutes=20,
     ),
 ]
 

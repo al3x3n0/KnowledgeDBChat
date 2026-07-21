@@ -264,6 +264,7 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                     auto_summarize = bool(cfg.get("auto_summarize", True))
                     auto_lit_review = bool(cfg.get("auto_literature_review", False))
                     auto_enrich = bool(cfg.get("auto_enrich_metadata", True))
+                    auto_extract = bool(cfg.get("auto_extract_structure", False))
                     # Extract user_id from source config if available
                     source_user_id = cfg.get("requested_by_user_id") or cfg.get("requestedByUserId")
 
@@ -294,6 +295,30 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                             _enrich_task.delay(str(source.id), False, 500)
                         except Exception as _e:
                             logger.warning(f"Failed to queue metadata enrichment for source {source_id}: {_e}")
+                    if auto_extract:
+                        try:
+                            from app.models.document import Document as _Doc
+                            from app.models.user import User as _User
+                            from app.services.paper_extraction_service import paper_extraction_service
+                            from app.tasks.paper_extraction_tasks import extract_paper_job as _extract_paper_job
+                            owner = await db.get(_User, UUID(str(source_user_id))) if source_user_id else None
+                            if owner:
+                                docs_result = await db.execute(
+                                    select(_Doc).where(_Doc.source_id == source.id).order_by(_Doc.created_at.desc()).limit(500)
+                                )
+                                for doc in docs_result.scalars().all():
+                                    try:
+                                        await paper_extraction_service.queue_document_extraction_job(
+                                            db,
+                                            document=doc,
+                                            user_id=owner.id,
+                                            force=False,
+                                            dispatch_task=lambda job_id: _extract_paper_job.delay(job_id),
+                                        )
+                                    except Exception as inner_exc:
+                                        logger.warning(f"Failed to queue extraction for doc {doc.id}: {inner_exc}")
+                        except Exception as _e:
+                            logger.warning(f"Failed to queue structured paper extraction for source {source_id}: {_e}")
             except Exception:
                 pass
             

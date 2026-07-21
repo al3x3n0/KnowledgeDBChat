@@ -68,8 +68,15 @@ class NotificationPreferencesBase(BaseModel):
     # Research notes
     notify_research_note_citation_issues: bool = True
     notify_experiment_run_updates: bool = True
+    notify_hypothesis_reevaluation_updates: bool = True
+    notify_queue_urgency_alerts: bool = True
+    notify_follow_up_outcome_alerts: bool = True
+    notify_policy_guardrail_alerts: bool = True
+    notify_autonomy_budget_alerts: bool = True
+    notify_customer_autonomy_budget_alerts: bool = True
     research_note_citation_coverage_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
     research_note_citation_notify_cooldown_hours: int = Field(default=12, ge=0, le=720)
+    queue_urgency_alert_reminder_cooldown_hours: int = Field(default=6, ge=1, le=720)
     research_note_citation_notify_on_unknown_keys: bool = True
     research_note_citation_notify_on_low_coverage: bool = True
     research_note_citation_notify_on_missing_bibliography: bool = True
@@ -99,8 +106,15 @@ class NotificationPreferencesUpdate(BaseModel):
     notify_summarization_complete: Optional[bool] = None
     notify_research_note_citation_issues: Optional[bool] = None
     notify_experiment_run_updates: Optional[bool] = None
+    notify_hypothesis_reevaluation_updates: Optional[bool] = None
+    notify_queue_urgency_alerts: Optional[bool] = None
+    notify_follow_up_outcome_alerts: Optional[bool] = None
+    notify_policy_guardrail_alerts: Optional[bool] = None
+    notify_autonomy_budget_alerts: Optional[bool] = None
+    notify_customer_autonomy_budget_alerts: Optional[bool] = None
     research_note_citation_coverage_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
     research_note_citation_notify_cooldown_hours: Optional[int] = Field(default=None, ge=0, le=720)
+    queue_urgency_alert_reminder_cooldown_hours: Optional[int] = Field(default=None, ge=1, le=720)
     research_note_citation_notify_on_unknown_keys: Optional[bool] = None
     research_note_citation_notify_on_low_coverage: Optional[bool] = None
     research_note_citation_notify_on_missing_bibliography: Optional[bool] = None

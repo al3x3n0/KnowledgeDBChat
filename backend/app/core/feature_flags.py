@@ -11,6 +11,7 @@ _FLAG_KEYS = {
     "summarization_enabled": "feature:summarization_enabled",
     "auto_summarize_on_process": "feature:auto_summarize_on_process",
     "unsafe_code_execution_enabled": "feature:unsafe_code_execution_enabled",
+    "repo_symbol_retrieval_enabled": "feature:repo_symbol_retrieval_enabled",
 }
 
 _STR_KEYS = {
@@ -26,6 +27,8 @@ _STR_KEYS = {
     "ai_hub_customer_profile": "feature:ai_hub_customer_profile",
     "unsafe_code_exec_backend": "feature:unsafe_code_exec_backend",
     "unsafe_code_exec_docker_image": "feature:unsafe_code_exec_docker_image",
+    "whisper_model_size": "feature:whisper_model_size",
+    "whisper_device": "feature:whisper_device",
 }
 
 
@@ -45,6 +48,8 @@ async def get_flag(name: str) -> Optional[bool]:
         return bool(getattr(settings, "AUTO_SUMMARIZE_ON_PROCESS", False))
     if name == "unsafe_code_execution_enabled":
         return bool(getattr(settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
+    if name == "repo_symbol_retrieval_enabled":
+        return bool(getattr(settings, "REPO_SYMBOL_RETRIEVAL_ENABLED", False))
     return None
 
 
@@ -61,6 +66,7 @@ async def get_flags() -> Dict[str, bool]:
         "summarization_enabled": bool(await get_flag("summarization_enabled")),
         "auto_summarize_on_process": bool(await get_flag("auto_summarize_on_process")),
         "unsafe_code_execution_enabled": bool(await get_flag("unsafe_code_execution_enabled")),
+        "repo_symbol_retrieval_enabled": bool(await get_flag("repo_symbol_retrieval_enabled")),
     }
 
 

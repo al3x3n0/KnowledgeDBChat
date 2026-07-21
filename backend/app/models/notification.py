@@ -78,8 +78,15 @@ class NotificationPreferences(Base):
     # Research notes
     notify_research_note_citation_issues = Column(Boolean, default=True, nullable=False)
     notify_experiment_run_updates = Column(Boolean, default=True, nullable=False)
+    notify_hypothesis_reevaluation_updates = Column(Boolean, default=True, nullable=False)
+    notify_queue_urgency_alerts = Column(Boolean, default=True, nullable=False)
+    notify_follow_up_outcome_alerts = Column(Boolean, default=True, nullable=False)
+    notify_policy_guardrail_alerts = Column(Boolean, default=True, nullable=False)
+    notify_autonomy_budget_alerts = Column(Boolean, default=True, nullable=False)
+    notify_customer_autonomy_budget_alerts = Column(Boolean, default=True, nullable=False)
     research_note_citation_coverage_threshold = Column(Float, default=0.7, nullable=False)
     research_note_citation_notify_cooldown_hours = Column(Integer, default=12, nullable=False)
+    queue_urgency_alert_reminder_cooldown_hours = Column(Integer, default=6, nullable=False)
     research_note_citation_notify_on_unknown_keys = Column(Boolean, default=True, nullable=False)
     research_note_citation_notify_on_low_coverage = Column(Boolean, default=True, nullable=False)
     research_note_citation_notify_on_missing_bibliography = Column(Boolean, default=True, nullable=False)
@@ -131,6 +138,12 @@ class NotificationType:
     # Research notes
     RESEARCH_NOTE_CITATION_ISSUE = "research_note_citation_issue"
     EXPERIMENT_RUN_UPDATE = "experiment_run_update"
+    HYPOTHESIS_REEVALUATION_UPDATE = "hypothesis_reevaluation_update"
+    QUEUE_URGENCY_ALERT = "queue_urgency_alert"
+    FOLLOW_UP_OUTCOME_ALERT = "follow_up_outcome_alert"
+    POLICY_GUARDRAIL_ALERT = "policy_guardrail_alert"
+    AUTONOMY_BUDGET_ALERT = "autonomy_budget_alert"
+    CUSTOMER_AUTONOMY_BUDGET_ALERT = "customer_autonomy_budget_alert"
 
     # Collaboration events (future-proofing)
     COLLABORATION_MENTION = "mention"

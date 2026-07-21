@@ -89,6 +89,18 @@ class RussianTranscriber:
         whisper_cache = self.model_dir / "whisper"
         whisper_cache.mkdir(exist_ok=True)
         os.environ['WHISPER_CACHE'] = str(whisper_cache)
+        # Ensure weights exist locally. If WHISPER_OFFLINE=1 and missing, raise with instructions.
+        from .whisper_weights import ensure_local_whisper_weights, get_model_url, get_offline_flag
+        allow_download = not get_offline_flag()
+        ensure_local_whisper_weights(
+            model_size=model_size,
+            whisper_cache_dir=whisper_cache,
+            allow_download=allow_download,
+        )
+
+        # At this point the .pt file exists (offline) or we allow whisper to download if needed.
+        # If WHISPER_MODEL_URL(_BASE) is set and allow_download=True, the helper downloads from it
+        # so we do not depend on whisper's default host.
         self.model = whisper.load_model(model_size, download_root=str(whisper_cache))
         
         self.supported_formats = {'.mp3', '.wav', '.m4a', '.flac', '.mp4', '.avi', '.mkv', '.mov', '.webm'}
@@ -717,7 +729,7 @@ class RussianTranscriber:
         logger.info(f"✅ Transcription completed. Duration: {result.get('duration', 0):.2f} seconds")
         return result
     
-    def _transcribe_with_streaming(self, audio_path: Path, language: str, stream_file, checkpoint_path: Optional[Path] = None) -> dict:
+    def _transcribe_with_streaming(self, audio_path: Path, language: Optional[str], stream_file, checkpoint_path: Optional[Path] = None) -> dict:
         """Transcribe with streaming output using Whisper's internal decoder"""
         import whisper
         from whisper.decoding import DecodingOptions, DecodingResult
@@ -743,8 +755,25 @@ class RussianTranscriber:
         except Exception as _e:
             logger.debug(f"Leading silence trim skipped: {_e}")
 
+        # Optional fixed skip at beginning to remove intro noise/bumper speech
+        try:
+            from app.core.config import settings as app_settings
+            skip_initial = float(getattr(app_settings, "TRANSCRIPTION_SKIP_INITIAL_SECONDS", 0.0))
+            if skip_initial < 0:
+                skip_initial = 0.0
+            if skip_initial > 15.0:
+                skip_initial = 15.0
+            if skip_initial > 0.0:
+                skip_samples = int(skip_initial * whisper.audio.SAMPLE_RATE)
+                if skip_samples < len(audio):
+                    audio = audio[skip_samples:]
+                    base_offset_sec += skip_initial
+                    logger.info(f"Skipped initial audio: {skip_initial:.2f}s")
+        except Exception as _e:
+            logger.debug(f"Initial audio skip not applied: {_e}")
+
         # Prepare segment sizing for both detection and decoding
-        segment_duration = 30.0  # seconds per segment
+        segment_duration = 30.0  # seconds per segment (required by whisper.decode)
         samples_per_segment = int(segment_duration * whisper.audio.SAMPLE_RATE)
 
         # Detect language (optional, for logging only). If language not provided,
@@ -806,71 +835,125 @@ class RussianTranscriber:
         # Calculate starting position for resume
         start_sample = int(current_offset * whisper.audio.SAMPLE_RATE)
         
+        # Intro junk filter configuration (helps remove common hallucinations/noise
+        # in first seconds of short videos).
+        try:
+            from app.core.config import settings as app_settings
+            intro_filter_enabled = bool(getattr(app_settings, "TRANSCRIPTION_FILTER_INTRO_JUNK", True))
+            intro_filter_max_seconds = float(getattr(app_settings, "TRANSCRIPTION_INTRO_MAX_SECONDS", 12.0))
+            intro_filter_no_speech_prob = float(getattr(app_settings, "TRANSCRIPTION_INTRO_NO_SPEECH_PROB", 0.30))
+        except Exception:
+            intro_filter_enabled = True
+            intro_filter_max_seconds = 12.0
+            intro_filter_no_speech_prob = 0.30
+
+        dropped_intro_segment = None
+
         # Process audio in chunks
         for i in range(start_sample, len(audio), samples_per_segment):
             # Skip already processed segments
             segment_index = i // samples_per_segment
             if checkpoint_data and segment_index < segments_completed:
                 continue
-            
-            segment_audio = audio[i:i + samples_per_segment]
-            if len(segment_audio) < samples_per_segment:
+
+            raw_segment_audio = audio[i:i + samples_per_segment]
+            raw_segment_len = len(raw_segment_audio)
+            if raw_segment_len <= 0:
+                continue
+
+            segment_audio = raw_segment_audio
+            if raw_segment_len < samples_per_segment:
                 segment_audio = pad_or_trim(segment_audio, samples_per_segment)
-            
+
             segment_mel = whisper.log_mel_spectrogram(segment_audio).to(self.model.device)
-            
+
             # Decode this segment
             result = whisper.decode(self.model, segment_mel, decoding_options)
-            
-            if result.text.strip():
-                # Calculate timing
-                start_time = base_offset_sec + current_offset
-                end_time = base_offset_sec + current_offset + min(segment_duration, len(segment_audio) / whisper.audio.SAMPLE_RATE)
-                
-                # Create segment info
-                speaker_label = self._find_speaker_for_segment(start_time, end_time, speaker_segments)
-                segment_info = {
-                    "id": len(segments),
-                    "seek": int(i / hop_length),
-                    "start": start_time,
-                    "end": end_time,
-                    "text": result.text,
-                    "tokens": result.tokens,  
-                    "temperature": result.temperature,
-                    "avg_logprob": result.avg_logprob,
-                    "compression_ratio": result.compression_ratio,
-                    "no_speech_prob": result.no_speech_prob,
-                    "speaker": speaker_label if self.enable_speaker_diarization else None
-                }
-                
-                segments.append(segment_info)
-                text_parts.append(result.text)
-                
-                # Stream to file with sentence segmentation and timecodes, computing speaker per sentence when available
-                self._stream_with_sentences(result.text, start_time, end_time, stream_file, speaker_label, speaker_segments)
-                
-                # Also print to console for real-time feedback
-                print(f"[{start_time:.1f}s-{end_time:.1f}s] {result.text.strip()}")
-                
-                # Save checkpoint after each segment (if enabled)
-                if checkpoint_path:
-                    checkpoint_data = {
-                        'audio_path': str(audio_path),
-                        'segments_completed': segment_index + 1,
-                        'segments': segments,
-                        'text_parts': text_parts,
-                        'current_offset': end_time,
-                        'speaker_segments': speaker_segments,
-                        'timestamp': datetime.now().timestamp(),
-                        'language': language,
-                        'segment_duration': segment_duration
+
+            # Calculate timing from real (unpadded) segment length
+            start_time = base_offset_sec + current_offset
+            real_segment_seconds = float(raw_segment_len) / float(whisper.audio.SAMPLE_RATE)
+            end_time = start_time + min(segment_duration, real_segment_seconds)
+
+            text = (result.text or "").strip()
+            if text:
+                # Filter likely intro junk near the beginning of the media.
+                # This targets short noisy intro artifacts (e.g. subtitle credits).
+                is_intro_window = start_time <= intro_filter_max_seconds
+                looks_like_intro_credit = ("субтит" in text.lower()) and (len(text) <= 120)
+                low_conf_intro = (
+                    (result.no_speech_prob is not None and float(result.no_speech_prob) >= intro_filter_no_speech_prob)
+                    and len(text) <= 120
+                )
+                if intro_filter_enabled and is_intro_window and (looks_like_intro_credit or low_conf_intro):
+                    logger.info(
+                        "Skipping intro junk segment at %.2fs (no_speech_prob=%.3f): %s",
+                        start_time,
+                        float(result.no_speech_prob or 0.0),
+                        text,
+                    )
+                    if dropped_intro_segment is None:
+                        dropped_intro_segment = {
+                            "id": len(segments),
+                            "seek": int(i / hop_length),
+                            "start": start_time,
+                            "end": end_time,
+                            "text": text,
+                            "tokens": result.tokens,
+                            "temperature": result.temperature,
+                            "avg_logprob": result.avg_logprob,
+                            "compression_ratio": result.compression_ratio,
+                            "no_speech_prob": result.no_speech_prob,
+                            "speaker": None
+                        }
+                else:
+                    # Create segment info
+                    speaker_label = self._find_speaker_for_segment(start_time, end_time, speaker_segments)
+                    segment_info = {
+                        "id": len(segments),
+                        "seek": int(i / hop_length),
+                        "start": start_time,
+                        "end": end_time,
+                        "text": text,
+                        "tokens": result.tokens,
+                        "temperature": result.temperature,
+                        "avg_logprob": result.avg_logprob,
+                        "compression_ratio": result.compression_ratio,
+                        "no_speech_prob": result.no_speech_prob,
+                        "speaker": speaker_label if self.enable_speaker_diarization else None
                     }
-                    self._save_checkpoint(checkpoint_path, checkpoint_data)
-            
+
+                    segments.append(segment_info)
+                    text_parts.append(text)
+
+                    # Stream to file with sentence segmentation and timecodes, computing speaker per sentence when available
+                    self._stream_with_sentences(text, start_time, end_time, stream_file, speaker_label, speaker_segments)
+
+                    # Also print to console for real-time feedback
+                    print(f"[{start_time:.1f}s-{end_time:.1f}s] {text}")
+
+                    # Save checkpoint after each segment (if enabled)
+                    if checkpoint_path:
+                        checkpoint_data = {
+                            'audio_path': str(audio_path),
+                            'segments_completed': segment_index + 1,
+                            'segments': segments,
+                            'text_parts': text_parts,
+                            'current_offset': end_time,
+                            'speaker_segments': speaker_segments,
+                            'timestamp': datetime.now().timestamp(),
+                            'language': language,
+                            'segment_duration': segment_duration
+                        }
+                        self._save_checkpoint(checkpoint_path, checkpoint_data)
+
             current_offset = end_time
-        
         # Build final text efficiently
         full_text = ''.join(text_parts)
+        if not full_text and dropped_intro_segment is not None:
+            logger.info("Transcript became empty after intro filtering; restoring first filtered segment")
+            segments.append(dropped_intro_segment)
+            full_text = dropped_intro_segment.get("text", "")
         
         # Return in same format as standard transcribe
         return {

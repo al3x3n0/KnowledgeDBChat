@@ -8,11 +8,13 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.services.knowledge_graph_service import KnowledgeGraphService
 from app.schemas.knowledge_graph import (
     KGStats, KGGraph, KGEntity, KGRelationship, KGChunk, KGMention,
     KGEntityDetail, KGEntityUpdate, KGAuditRecord, KGGlobalGraph,
     KGRelationshipCreate, KGRelationshipUpdate, KGRelationshipDetail,
+    KGTypes,
 )
 from pydantic import BaseModel
 from app.services.auth_service import require_admin
@@ -23,6 +25,22 @@ import json
 
 
 router = APIRouter()
+
+
+class KGResolveTypesRequest(BaseModel):
+    query: str
+    entity_types: List[str] = []
+    relation_types: List[str] = []
+
+
+class KGResolveTypesResponse(BaseModel):
+    entity_types: Optional[List[str]] = None
+    relation_types: Optional[List[str]] = None
+
+
+class KGInferEntityTypeResponse(BaseModel):
+    entity_type: str
+    confidence: Optional[float] = None
 
 
 @router.get("/stats", response_model=KGStats)
@@ -75,6 +93,108 @@ async def global_graph(
         )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get global graph: {e}")
+
+
+@router.get("/types", response_model=KGTypes)
+async def list_kg_types(db: AsyncSession = Depends(get_db)):
+    """List all unique entity types and relation types in the system."""
+    svc = KnowledgeGraphService()
+    entity_types = await svc.list_entity_types(db)
+    relation_types = await svc.list_relation_types(db)
+    return {"entity_types": entity_types, "relation_types": relation_types}
+
+
+@router.post("/resolve-types", response_model=KGResolveTypesResponse)
+async def resolve_kg_types(req: KGResolveTypesRequest):
+    """
+    Use the LLM to resolve a natural-language filter request into concrete entity/relation types.
+
+    This is for UI filtering and does not mutate the KG.
+    """
+    from app.services.llm_service import LLMService
+    import re as _re
+
+    def _parse_json_obj(s: str) -> dict:
+        s = (s or "").strip()
+        if s.startswith("```json"):
+            s = s[7:]
+        elif s.startswith("```"):
+            s = s[3:]
+        if s.endswith("```"):
+            s = s[:-3]
+        s = s.strip()
+        m = _re.search(r"\{.*\}", s, _re.DOTALL)
+        if m:
+            try:
+                return json.loads(m.group(0))
+            except Exception:
+                pass
+        try:
+            return json.loads(s)
+        except Exception:
+            return {}
+
+    query = (req.query or "").strip()
+    if not query:
+        return {"entity_types": None, "relation_types": None}
+
+    available_entity_types = [t for t in (req.entity_types or []) if isinstance(t, str) and t.strip()]
+    available_relation_types = [t for t in (req.relation_types or []) if isinstance(t, str) and t.strip()]
+
+    prompt = (
+        "You are helping a user filter a knowledge graph.\n"
+        "Given a natural-language request and the available type lists, choose the most relevant subsets.\n\n"
+        f"User request:\n{query}\n\n"
+        f"Available entity types:\n{json.dumps(available_entity_types)}\n\n"
+        f"Available relationship types:\n{json.dumps(available_relation_types)}\n\n"
+        "Return ONLY valid JSON in this schema:\n"
+        "{\n"
+        '  "entity_types": null | string[],\n'
+        '  "relation_types": null | string[]\n'
+        "}\n\n"
+        "Rules:\n"
+        "1. If the request does not imply filtering by entity types, set entity_types to null.\n"
+        "2. If it implies filtering by entity types, return a non-empty subset of available entity types.\n"
+        "3. Same for relation_types.\n"
+        "4. Do not invent types not present in the available lists.\n"
+    )
+
+    llm = LLMService()
+    raw = await llm.generate_response(
+        query=prompt,
+        temperature=0.0,
+        max_tokens=400,
+        task_type="kg_resolve_types",
+    )
+    obj = _parse_json_obj(raw)
+
+    ent = obj.get("entity_types", None)
+    rel = obj.get("relation_types", None)
+
+    ent_set = set(available_entity_types)
+    rel_set = set(available_relation_types)
+
+    def _clean(v, allowed_set):
+        if v is None:
+            return None
+        if not isinstance(v, list):
+            return None
+        out = []
+        for x in v:
+            if isinstance(x, str) and x in allowed_set and x not in out:
+                out.append(x)
+        return out
+
+    ent_clean = _clean(ent, ent_set)
+    rel_clean = _clean(rel, rel_set)
+
+    # If the model returns the entire set, treat it as "no filter".
+    if ent_clean is not None and len(ent_clean) == len(ent_set):
+        ent_clean = None
+    if rel_clean is not None and len(rel_clean) == len(rel_set):
+        rel_clean = None
+
+    return {"entity_types": ent_clean, "relation_types": rel_clean}
 
 
 @router.get("/audit")
@@ -291,6 +411,116 @@ async def update_entity(
         raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to update entity: {e}")
+
+
+@router.post("/entity/{entity_id}/infer-type", response_model=KGInferEntityTypeResponse)
+async def infer_entity_type(
+    entity_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user=Depends(require_admin),
+):
+    """Infer entity type using the LLM against the open-list of known entity types (admin only)."""
+    import re as _re
+    from app.services.llm_service import LLMService
+    from app.models.knowledge_graph import EntityMention
+
+    try:
+        ent = await db.get(Entity, UUID(entity_id))
+        if not ent:
+            raise HTTPException(status_code=404, detail="Entity not found")
+
+        svc = KnowledgeGraphService()
+        allowed = await svc.list_entity_types(db)
+        allowed = [t for t in (allowed or []) if isinstance(t, str) and t.strip()]
+        if "other" not in allowed:
+            allowed.append("other")
+        allowed = allowed[:120]
+
+        # Pull a small amount of grounded evidence to help the classifier.
+        try:
+            mention_rows = (
+                await db.execute(
+                    select(EntityMention.sentence, EntityMention.text)
+                    .where(EntityMention.entity_id == ent.id)
+                    .order_by(EntityMention.created_at.desc())
+                    .limit(8)
+                )
+            ).all()
+        except Exception:
+            mention_rows = []
+
+        evidence: List[str] = []
+        for s, t in (mention_rows or []):
+            ss = (s or "").strip()
+            if ss:
+                evidence.append(ss[:240])
+            else:
+                tt = (t or "").strip()
+                if tt:
+                    evidence.append(tt[:240])
+
+        def _parse_json_obj(s: str) -> dict:
+            s = (s or "").strip()
+            if s.startswith("```json"):
+                s = s[7:]
+            elif s.startswith("```"):
+                s = s[3:]
+            if s.endswith("```"):
+                s = s[:-3]
+            s = s.strip()
+            m = _re.search(r"\{.*\}", s, _re.DOTALL)
+            if m:
+                try:
+                    return json.loads(m.group(0))
+                except Exception:
+                    pass
+            try:
+                return json.loads(s)
+            except Exception:
+                return {}
+
+        prompt = (
+            "You are classifying a knowledge graph entity into one of the allowed entity types.\n\n"
+            f"Allowed entity types: {json.dumps(allowed)}\n\n"
+            "Entity:\n"
+            f"- name: {ent.canonical_name}\n"
+            f"- description: {ent.description or ''}\n\n"
+            f"Evidence snippets (may be empty): {json.dumps(evidence)}\n\n"
+            'Return ONLY JSON like: {"entity_type":"one_of_allowed","confidence":0.0}\n'
+        )
+
+        llm = LLMService()
+        resp = await llm.generate_response(
+            query=prompt,
+            temperature=0.0,
+            max_tokens=300,
+            task_type="knowledge_extraction",
+            model=getattr(settings, "KG_EXTRACTION_MODEL", None) or None,
+        )
+        obj = _parse_json_obj(resp)
+
+        et = str(obj.get("entity_type") or "").strip().lower()
+        et = et.replace(" ", "_").replace("-", "_")
+        et = _re.sub(r"[^a-z0-9_]", "", et)
+        et = _re.sub(r"_+", "_", et).strip("_")
+        if not et:
+            et = "other"
+        if et not in allowed:
+            et = "other"
+
+        conf = obj.get("confidence", None)
+        try:
+            conf_f = float(conf) if conf is not None else None
+            if conf_f is not None:
+                conf_f = max(0.0, min(1.0, conf_f))
+        except Exception:
+            conf_f = None
+
+        return KGInferEntityTypeResponse(entity_type=et, confidence=conf_f)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to infer entity type: {e}")
 
 
 @router.delete("/entity/{entity_id}")

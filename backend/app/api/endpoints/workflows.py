@@ -232,15 +232,24 @@ async def synthesize_workflow(
     """Generate a workflow draft from a natural language description."""
     service = WorkflowSynthesisService()
     try:
-        workflow, warnings = await service.synthesize(
+        bundle = await service.synthesize_bundle(
             description=synthesis_request.description,
             name=synthesis_request.name,
             trigger_config=synthesis_request.trigger_config,
             is_active=synthesis_request.is_active,
             user_id=current_user.id,
             db=db,
+            synthesize_custom_tools=bool(synthesis_request.synthesize_custom_tools),
+            preferred_tool_type=synthesis_request.preferred_tool_type,
+            expose_workflow_as_tool=bool(synthesis_request.expose_workflow_as_tool),
+            workflow_tool_name=synthesis_request.workflow_tool_name,
         )
-        return WorkflowSynthesisResponse(workflow=workflow, warnings=warnings)
+        return WorkflowSynthesisResponse(
+            workflow=bundle.workflow,
+            warnings=bundle.warnings,
+            custom_tools=bundle.custom_tools,
+            workflow_tool=bundle.workflow_tool,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
     except Exception as exc:

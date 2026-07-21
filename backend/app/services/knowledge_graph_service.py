@@ -335,6 +335,237 @@ class KnowledgeGraphService:
 
     # ==================== RAG Integration Methods ====================
 
+    async def build_chat_context_pack(
+        self,
+        db: AsyncSession,
+        search_results: List[Dict[str, Any]],
+        *,
+        max_entities: int = 20,
+        max_relationships: int = 40,
+        max_entity_evidence: int = 3,
+        max_evidence_chars: int = 260,
+        min_confidence: float = 0.0,
+    ) -> Dict[str, Any]:
+        """Build a KG "context pack" grounded in the retrieved chunks/documents.
+
+        This is intended for chat RAG: we prefer entities/relationships that have direct
+        evidence inside the currently retrieved sources (chunk_ids / document_ids).
+        """
+        from collections import defaultdict
+        from uuid import UUID as _UUID
+
+        chunk_ids: List[_UUID] = []
+        doc_ids: List[_UUID] = []
+
+        # Weights based on retrieval score to bias toward the most relevant chunks/docs.
+        chunk_weight: Dict[_UUID, float] = {}
+        doc_weight: Dict[_UUID, float] = {}
+
+        for r in (search_results or []):
+            md = (r.get("metadata") or {}) if isinstance(r, dict) else {}
+            raw_chunk_id = md.get("chunk_id")
+            raw_doc_id = md.get("document_id") or (r.get("id") if isinstance(r, dict) else None)
+
+            score = md.get("score", r.get("score", 0.0) if isinstance(r, dict) else 0.0)
+            try:
+                score_f = float(score or 0.0)
+            except Exception:
+                score_f = 0.0
+
+            if raw_chunk_id:
+                try:
+                    cid = raw_chunk_id if isinstance(raw_chunk_id, _UUID) else _UUID(str(raw_chunk_id))
+                    chunk_ids.append(cid)
+                    chunk_weight[cid] = max(chunk_weight.get(cid, 0.0), score_f)
+                except Exception:
+                    pass
+
+            if raw_doc_id:
+                try:
+                    did = raw_doc_id if isinstance(raw_doc_id, _UUID) else _UUID(str(raw_doc_id))
+                    doc_ids.append(did)
+                    doc_weight[did] = max(doc_weight.get(did, 0.0), score_f)
+                except Exception:
+                    pass
+
+        def _uniq(xs: List[_UUID]) -> List[_UUID]:
+            seen = set()
+            out: List[_UUID] = []
+            for x in xs:
+                if x in seen:
+                    continue
+                seen.add(x)
+                out.append(x)
+            return out
+
+        chunk_ids = _uniq(chunk_ids)
+        doc_ids = _uniq(doc_ids)
+
+        if not chunk_ids and not doc_ids:
+            return {"entities": [], "relationships": [], "kg_context": "", "stats": {"reason": "no_chunk_or_doc_ids"}}
+
+        mention_stmt = select(EntityMention, Entity).join(Entity, Entity.id == EntityMention.entity_id)
+        if chunk_ids:
+            mention_stmt = mention_stmt.where(EntityMention.chunk_id.in_(chunk_ids))
+        else:
+            mention_stmt = mention_stmt.where(EntityMention.document_id.in_(doc_ids))
+
+        mention_stmt = mention_stmt.limit(5000)
+        mention_rows = (await db.execute(mention_stmt)).all()
+
+        ent_score: Dict[str, float] = defaultdict(float)
+        ent_mentions: Dict[str, int] = defaultdict(int)
+        ent_docs: Dict[str, set] = defaultdict(set)
+        ent_evidence: Dict[str, List[Dict[str, Any]]] = defaultdict(list)
+        ent_obj: Dict[str, Entity] = {}
+
+        for m, e in mention_rows:
+            eid = str(e.id)
+            ent_obj[eid] = e
+            ent_mentions[eid] += 1
+            try:
+                ent_docs[eid].add(str(m.document_id))
+            except Exception:
+                pass
+
+            w = 0.0
+            if getattr(m, "chunk_id", None) and m.chunk_id in chunk_weight:
+                w = chunk_weight.get(m.chunk_id, 0.0)
+            elif getattr(m, "document_id", None):
+                w = doc_weight.get(m.document_id, 0.0)
+            ent_score[eid] += (w if w > 0 else 0.05)
+
+            if len(ent_evidence[eid]) < max_entity_evidence:
+                sent = (m.sentence or "").strip() if hasattr(m, "sentence") else ""
+                if not sent:
+                    sent = (m.text or "").strip()
+                if sent:
+                    ent_evidence[eid].append(
+                        {
+                            "document_id": str(m.document_id) if getattr(m, "document_id", None) else None,
+                            "chunk_id": str(m.chunk_id) if getattr(m, "chunk_id", None) else None,
+                            "text": sent[:max_evidence_chars],
+                        }
+                    )
+
+        if not ent_score:
+            return {
+                "entities": [],
+                "relationships": [],
+                "kg_context": "",
+                "stats": {"chunks": len(chunk_ids), "docs": len(doc_ids), "reason": "no_mentions"},
+            }
+
+        ranked_entity_ids = sorted(ent_score.keys(), key=lambda k: ent_score[k], reverse=True)[:max_entities]
+
+        entities_pack: List[Dict[str, Any]] = []
+        for eid in ranked_entity_ids:
+            e = ent_obj.get(eid)
+            if not e:
+                continue
+            entities_pack.append(
+                {
+                    "id": eid,
+                    "name": e.canonical_name,
+                    "type": e.entity_type,
+                    "description": e.description,
+                    "score": float(ent_score.get(eid, 0.0)),
+                    "mention_count": int(ent_mentions.get(eid, 0)),
+                    "document_count": int(len(ent_docs.get(eid) or set())),
+                    "evidence": ent_evidence.get(eid, []),
+                }
+            )
+
+        top_entity_uuids: List[_UUID] = []
+        for eid in ranked_entity_ids:
+            try:
+                top_entity_uuids.append(_UUID(eid))
+            except Exception:
+                pass
+
+        rel_stmt = select(Relationship).where(
+            and_(
+                or_(
+                    Relationship.source_entity_id.in_(top_entity_uuids),
+                    Relationship.target_entity_id.in_(top_entity_uuids),
+                ),
+                Relationship.confidence >= float(min_confidence or 0.0),
+            )
+        )
+        if chunk_ids:
+            rel_stmt = rel_stmt.where(Relationship.chunk_id.in_(chunk_ids))
+        else:
+            rel_stmt = rel_stmt.where(Relationship.document_id.in_(doc_ids))
+
+        rel_stmt = rel_stmt.order_by(Relationship.confidence.desc()).limit(max_relationships * 3)
+        rels = list((await db.execute(rel_stmt)).scalars().all())
+
+        top_set = set(ranked_entity_ids)
+        internal_rels: List[Relationship] = []
+        external_rels: List[Relationship] = []
+        for r in rels:
+            s = str(r.source_entity_id)
+            t = str(r.target_entity_id)
+            if s in top_set and t in top_set:
+                internal_rels.append(r)
+            else:
+                external_rels.append(r)
+
+        chosen_rels = (internal_rels + external_rels)[:max_relationships]
+
+        rel_pack: List[Dict[str, Any]] = []
+        rel_seen: set[str] = set()
+        for r in chosen_rels:
+            rid = str(r.id)
+            if rid in rel_seen:
+                continue
+            rel_seen.add(rid)
+            rel_pack.append(
+                {
+                    "id": rid,
+                    "type": r.relation_type,
+                    "source": str(r.source_entity_id),
+                    "target": str(r.target_entity_id),
+                    "confidence": float(r.confidence or 0.0),
+                    "evidence": (r.evidence or "")[:max_evidence_chars] if r.evidence else None,
+                    "document_id": str(r.document_id) if r.document_id else None,
+                    "chunk_id": str(r.chunk_id) if r.chunk_id else None,
+                }
+            )
+
+        ent_name = {e["id"]: e["name"] for e in entities_pack}
+        lines: List[str] = []
+        lines.append("\n--- Knowledge Graph Context (Grounded in Retrieved Sources) ---")
+        lines.append("Entities:")
+        for e in entities_pack:
+            base = f"• {e['name']} ({e['type']})"
+            if e.get("description"):
+                base += f": {str(e['description'])[:120]}"
+            lines.append(base)
+            for ev in (e.get("evidence") or [])[:max_entity_evidence]:
+                t = (ev.get("text") or "").strip()
+                if t:
+                    lines.append(f"  - evidence: {t}")
+
+        if rel_pack:
+            lines.append("\nRelationships:")
+            for r in rel_pack:
+                sname = ent_name.get(r["source"], f"[Entity:{r['source'][:8]}]")
+                tname = ent_name.get(r["target"], f"[Entity:{r['target'][:8]}]")
+                rel_line = f"  {sname} --[{r['type']}]--> {tname}"
+                if isinstance(r.get("confidence"), (int, float)):
+                    rel_line += f" (confidence: {r['confidence']:.2f})"
+                lines.append(rel_line)
+                if r.get("evidence"):
+                    lines.append(f"    evidence: {r['evidence']}")
+
+        return {
+            "entities": entities_pack,
+            "relationships": rel_pack,
+            "kg_context": "\n".join(lines),
+            "stats": {"chunks": len(chunk_ids), "docs": len(doc_ids), "mentions": len(mention_rows), "rels": len(rel_pack)},
+        }
+
     async def search_entities_by_names(
         self,
         names: List[str],
@@ -788,3 +1019,12 @@ class KnowledgeGraphService:
             .order_by(Relationship.relation_type)
         )
         return [row[0] for row in result.fetchall()]
+
+    async def list_entity_types(self, db: AsyncSession) -> List[str]:
+        """Get all unique entity types in the system."""
+        result = await db.execute(
+            select(Entity.entity_type)
+            .distinct()
+            .order_by(Entity.entity_type)
+        )
+        return [row[0] for row in result.fetchall() if row[0]]

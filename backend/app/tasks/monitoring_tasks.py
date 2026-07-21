@@ -4,6 +4,7 @@ Monitoring and maintenance tasks.
 
 import asyncio
 import os
+from copy import deepcopy
 from datetime import datetime, timedelta
 from typing import Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,9 +20,14 @@ from app.models.synthesis_job import SynthesisJob
 from app.models.notification import NotificationType, NotificationPreferences
 from app.models.experiment import ExperimentRun, ExperimentPlan
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.models.notification import Notification
+from app.models.research_inbox import ResearchInboxItem
 from app.services.vector_store import VectorStoreService, vector_store_service
 from app.services.llm_service import LLMService
 from app.services.notification_service import notification_service
+from app.services.operator_interventions import derive_operator_interventions_with_outcomes
+from app.api.endpoints.agent_jobs import _build_checkpoint_queue_items
+from app.services.research_monitor_profile_service import research_monitor_profile_service
 
 # Note: cleanup_old_data has been moved to app.tasks.maintenance_tasks
 
@@ -57,6 +63,380 @@ def lint_recent_research_notes_citations() -> Dict[str, Any]:
 def sync_experiment_runs() -> Dict[str, Any]:
     """Periodically sync ExperimentRun status/results from linked AgentJobs."""
     return _run_async(_async_sync_experiment_runs())
+
+
+@celery_app.task(name="app.tasks.monitoring_tasks.emit_queue_urgency_alerts")
+def emit_queue_urgency_alerts() -> Dict[str, Any]:
+    """Emit notifications for urgent queue items and overdue reminders."""
+    return _run_async(_async_emit_queue_urgency_alerts())
+
+
+def _summarize_experiment_run_notification(
+    exp: Dict[str, Any],
+    run_status: str,
+    *,
+    launch_mode: str | None = None,
+) -> Dict[str, Any]:
+    """Build a compact notification message/data payload for an experiment run update."""
+    if not isinstance(exp, dict):
+        exp = {}
+
+    failed_commands = exp.get("failed_commands") if isinstance(exp.get("failed_commands"), list) else []
+    execution_strategy = (
+        exp.get("execution_strategy") if isinstance(exp.get("execution_strategy"), dict) else {}
+    )
+    execution_graph = (
+        execution_strategy.get("execution_graph")
+        if isinstance(execution_strategy.get("execution_graph"), dict)
+        else {}
+    )
+    operator_interventions = (
+        execution_strategy.get("operator_interventions")
+        if isinstance(execution_strategy.get("operator_interventions"), list)
+        else []
+    )
+    graph_health = execution_graph.get("graph_health") if isinstance(execution_graph.get("graph_health"), dict) else {}
+    reasons = graph_health.get("reasons") if isinstance(graph_health.get("reasons"), list) else []
+    recommended_actions = (
+        execution_graph.get("recommended_actions")
+        if isinstance(execution_graph.get("recommended_actions"), list)
+        else []
+    )
+
+    final_phase = str(exp.get("final_phase") or "").strip()
+    source_name = str(exp.get("source_name") or "").strip()
+    source_id = str(exp.get("source_id") or "").strip()
+    fallback_attempted = bool(exp.get("fallback_attempted"))
+    fallback_ok = exp.get("fallback_ok")
+    bootstrap_attempted = bool(exp.get("bootstrap_attempted"))
+    bootstrap_ok = exp.get("bootstrap_ok")
+    recovery_open = bool(fallback_attempted and failed_commands and fallback_ok is not True)
+    reason = next((str(item).strip() for item in reasons if str(item).strip()), "")
+    recommended_action = next((str(item).strip() for item in recommended_actions if str(item).strip()), "")
+    first_failed_command = next((str(item).strip() for item in failed_commands if str(item).strip()), "")
+    normalized_launch_mode = str(launch_mode or "").strip() or None
+    derived_interventions = derive_operator_interventions_with_outcomes(
+        [item for item in operator_interventions if isinstance(item, dict)],
+        current_status=run_status,
+        status_values={
+            "completed": AgentJobStatus.COMPLETED.value,
+            "failed": AgentJobStatus.FAILED.value,
+            "cancelled": AgentJobStatus.CANCELLED.value,
+            "pending": AgentJobStatus.PENDING.value,
+            "running": AgentJobStatus.RUNNING.value,
+            "paused": AgentJobStatus.PAUSED.value,
+        },
+    )
+    latest_operator_intervention = next(
+        (item for item in reversed(derived_interventions) if isinstance(item, dict)),
+        {},
+    )
+    latest_operator_action = str(latest_operator_intervention.get("action") or "").strip().lower()
+    latest_operator_note = str(latest_operator_intervention.get("note") or "").strip()
+    latest_operator_status_before = str(latest_operator_intervention.get("job_status_before") or "").strip().lower()
+    latest_operator_status_after = str(latest_operator_intervention.get("job_status_after") or "").strip().lower()
+    latest_operator_at = str(latest_operator_intervention.get("at") or "").strip()
+    latest_operator_outcome = str(latest_operator_intervention.get("outcome_status") or "").strip().lower()
+    latest_operator_outcome_reason = str(latest_operator_intervention.get("outcome_reason") or "").strip()
+
+    message_parts = [str(run_status or "").strip()]
+    if final_phase:
+        message_parts.append(f"phase {final_phase}")
+    if source_name:
+        message_parts.append(f"repo {source_name}")
+    if recovery_open:
+        message_parts.append("recovery open")
+    elif fallback_attempted:
+        message_parts.append("fallback ok" if fallback_ok is True else "fallback attempted")
+    elif bootstrap_attempted:
+        message_parts.append("bootstrap ok" if bootstrap_ok is True else "bootstrap attempted")
+    if latest_operator_action:
+        message_parts.append(f"last operator {latest_operator_action.replace('_', ' ')}")
+    if latest_operator_outcome:
+        message_parts.append(f"operator {latest_operator_outcome.replace('_', ' ')}")
+    if reason:
+        message_parts.append(reason)
+
+    return {
+        "message_suffix": " · ".join(part for part in message_parts if part),
+        "data": {
+            "final_phase": final_phase or None,
+            "source_name": source_name or None,
+            "source_id": source_id or None,
+            "bootstrap_attempted": bootstrap_attempted,
+            "bootstrap_ok": bootstrap_ok if bootstrap_attempted else None,
+            "fallback_attempted": fallback_attempted,
+            "fallback_ok": fallback_ok if fallback_attempted else None,
+            "failed_command_count": len(failed_commands),
+            "first_failed_command": first_failed_command or None,
+            "recovery_open": recovery_open,
+            "recovery_reason": reason or None,
+            "recommended_action": recommended_action or None,
+            "launch_mode": normalized_launch_mode,
+            "latest_operator_action": latest_operator_action or None,
+            "latest_operator_note": latest_operator_note or None,
+            "latest_operator_status_before": latest_operator_status_before or None,
+            "latest_operator_status_after": latest_operator_status_after or None,
+            "latest_operator_at": latest_operator_at or None,
+            "latest_operator_outcome": latest_operator_outcome or None,
+            "latest_operator_outcome_reason": latest_operator_outcome_reason or None,
+        },
+    }
+
+
+def _build_experiment_run_notification_action_url(*, note_id: str | None, agent_job_id: str | None) -> str | None:
+    """Prefer the autonomous-agent deep link when a backing agent job exists."""
+    if agent_job_id:
+        return f"/autonomous-agents?job={agent_job_id}"
+    if note_id:
+        return f"/research-notes?note={note_id}"
+    return None
+
+
+def _build_queue_urgency_notification_action_url(
+    *,
+    job_id: str | None,
+    item_type: str | None,
+    sla_bucket: str | None,
+) -> str:
+    params = ["tab=queue"]
+    if job_id:
+        params.append(f"job={job_id}")
+    if item_type:
+        params.append(f"queue_item_type={item_type}")
+    if sla_bucket:
+        params.append(f"queue_sla={sla_bucket}")
+    return f"/autonomous-agents?{'&'.join(params)}"
+
+
+def _build_policy_guardrail_notification_action_url(
+    *,
+    job_id: str | None,
+    history_entry_id: str | None,
+) -> str:
+    params = ["tab=queue", "queue_item_type=policy_review"]
+    if job_id:
+        params.append(f"job={job_id}")
+    if history_entry_id:
+        params.append(f"policy_history={history_entry_id}")
+    return f"/autonomous-agents?{'&'.join(params)}"
+
+
+def _build_budget_alert_notification_action_url(*, job_id: str | None) -> str:
+    params = ["tab=health"]
+    if job_id:
+        params.append(f"job={job_id}")
+    return f"/autonomous-agents?{'&'.join(params)}"
+
+
+def _build_customer_budget_alert_notification_action_url(*, customer: str | None) -> str:
+    params = ["tab=health"]
+    if customer:
+        params.append(f"health_customer={customer}")
+    return f"/autonomous-agents?{'&'.join(params)}"
+
+
+def _summarize_queue_urgency_notification(item: Dict[str, Any]) -> Dict[str, Any]:
+    title = str(item.get("title") or "Queue item requires attention").strip() or "Queue item requires attention"
+    item_type = str(item.get("item_type") or "").strip()
+    reason = str(item.get("reason_label") or item.get("reason_code") or "").strip()
+    sla_bucket = str(item.get("sla_bucket") or "").strip()
+    escalation = str(item.get("escalation_level") or "").strip()
+    recommended = str(item.get("recommended_action") or "").strip()
+    customer = str(item.get("customer") or "").strip()
+    age_minutes = int(item.get("age_minutes") or 0)
+    priority_score = float(item.get("priority_score") or 0)
+    is_stale = bool(item.get("is_stale"))
+    evidence = str(item.get("evidence_summary") or "").strip()
+    scheduler_state = item.get("scheduler_state") if isinstance(item.get("scheduler_state"), dict) else None
+
+    message_parts = []
+    if item_type:
+        message_parts.append(item_type.replace("_", " "))
+    if sla_bucket:
+        message_parts.append(sla_bucket.replace("_", " "))
+    if escalation:
+        message_parts.append(f"escalation {escalation}")
+    if reason:
+        message_parts.append(reason)
+    if is_stale:
+        message_parts.append("stale")
+    if age_minutes > 0:
+        message_parts.append(f"age {age_minutes}m")
+    if recommended:
+        message_parts.append(f"next {recommended.replace('_', ' ')}")
+    message = " · ".join(message_parts[:6]) or "Urgent queue item requires operator attention."
+
+    return {
+        "title": f"Queue alert: {title[:180]}",
+        "message": message,
+        "priority": "high" if sla_bucket == "overdue" else "normal",
+        "data": {
+            "queue_key": str(item.get("queue_key") or ""),
+            "queue_item_type": item_type or None,
+            "job_id": str(item.get("job_id") or "") or None,
+            "sla_bucket": sla_bucket or None,
+            "escalation_level": escalation or None,
+            "priority_score": priority_score,
+            "recommended_action": recommended or None,
+            "reason_label": reason or None,
+            "customer": customer or None,
+            "age_minutes": age_minutes,
+            "is_overdue": bool(item.get("is_overdue")),
+            "is_stale": is_stale,
+            "evidence_summary": evidence or None,
+            "scheduler_state": deepcopy(scheduler_state) if isinstance(scheduler_state, dict) else None,
+        },
+    }
+
+
+def _summarize_policy_guardrail_notification(item: Dict[str, Any]) -> Dict[str, Any]:
+    title = str(item.get("title") or "Monitor policy safeguard recommended").strip() or "Monitor policy safeguard recommended"
+    action = str(item.get("policy_guardrail_action") or item.get("recommended_action") or "").strip()
+    reasons = [str(reason).strip() for reason in (item.get("policy_guardrail_reasons") or []) if str(reason).strip()]
+    customer = str(item.get("customer") or "").strip()
+    message_parts = ["degrading policy evaluation"]
+    if action:
+        message_parts.append(f"suggested {action.replace('_', ' ')}")
+    if customer:
+        message_parts.append(f"customer {customer}")
+    if reasons:
+        message_parts.append(reasons[0])
+    return {
+        "title": f"Policy safeguard: {title[:180]}",
+        "message": " · ".join(message_parts[:4]),
+        "priority": "high",
+        "data": {
+            "queue_key": str(item.get("queue_key") or ""),
+            "monitor_job_id": str(item.get("job_id") or "") or None,
+            "history_entry_id": str(item.get("policy_guardrail_target_history_entry_id") or "") or None,
+            "policy_guardrail_action": action or None,
+            "policy_guardrail_reasons": reasons[:3],
+            "customer": customer or None,
+        },
+    }
+
+
+def _summarize_budget_guardrail_notification(item: Dict[str, Any]) -> Dict[str, Any]:
+    title = str(item.get("title") or "Monitor autonomy budget throttled").strip() or "Monitor autonomy budget throttled"
+    throttle_state = str(item.get("budget_throttle_state") or "").strip()
+    reasons = [str(reason).strip() for reason in (item.get("budget_throttle_reasons") or []) if str(reason).strip()]
+    customer = str(item.get("customer") or "").strip()
+    message_parts = ["autonomy budget throttled"]
+    if throttle_state:
+        message_parts.append(throttle_state.replace("_", " "))
+    if customer:
+        message_parts.append(f"customer {customer}")
+    if reasons:
+        message_parts.append(reasons[0])
+    return {
+        "title": f"Budget throttle: {title[:180]}",
+        "message": " · ".join(message_parts[:4]),
+        "priority": "high",
+        "data": {
+            "queue_key": str(item.get("queue_key") or ""),
+            "job_id": str(item.get("job_id") or "") or None,
+            "monitor_job_id": str(item.get("job_id") or "") or None,
+            "budget_throttle_state": throttle_state or None,
+            "budget_throttle_reasons": reasons[:3],
+            "customer": customer or None,
+        },
+    }
+
+
+def _summarize_customer_budget_notification(item: Dict[str, Any]) -> Dict[str, Any]:
+    customer = str(item.get("customer") or "").strip() or "Customer"
+    throttle_state = str(item.get("customer_budget_throttle_state") or "").strip()
+    reasons = [
+        str(reason).strip()
+        for reason in (item.get("customer_budget_throttle_reasons") or [])
+        if str(reason).strip()
+    ]
+    message_parts = ["shared customer autonomy budget throttled"]
+    if throttle_state:
+        message_parts.append(throttle_state.replace("_", " "))
+    if reasons:
+        message_parts.append(reasons[0])
+    return {
+        "title": f"Customer budget throttle: {customer[:180]}",
+        "message": " · ".join(message_parts[:4]),
+        "priority": "high",
+        "data": {
+            "customer": customer,
+            "customer_budget_throttle_state": throttle_state or None,
+            "customer_budget_throttle_reasons": reasons[:3],
+        },
+    }
+
+
+def _customer_budget_alert_should_emit(
+    *,
+    item: Dict[str, Any],
+    existing_notifications: list[Notification],
+) -> bool:
+    customer = str(item.get("customer") or "").strip()
+    throttle_state = str(item.get("customer_budget_throttle_state") or "").strip().lower()
+    if not customer or not throttle_state or throttle_state == "normal":
+        return False
+    matching = []
+    for notification in existing_notifications:
+        payload = notification.data if isinstance(notification.data, dict) else {}
+        if str(payload.get("customer") or "").strip() == customer:
+            matching.append(notification)
+    if not matching:
+        return True
+    matching.sort(key=lambda n: n.created_at or datetime.min, reverse=True)
+    latest = matching[0]
+    latest_data = latest.data if isinstance(latest.data, dict) else {}
+    latest_state = str(latest_data.get("customer_budget_throttle_state") or "").strip().lower()
+    if latest_state != throttle_state:
+        return True
+    return False
+
+
+def _queue_alert_should_emit(
+    *,
+    item: Dict[str, Any],
+    existing_notifications: list[Notification],
+    reminder_cooldown_hours: int,
+    now: datetime,
+) -> bool:
+    queue_key = str(item.get("queue_key") or "").strip()
+    sla_bucket = str(item.get("sla_bucket") or "").strip().lower()
+    escalation_level = str(item.get("escalation_level") or "").strip().lower()
+    item_type = str(item.get("item_type") or "").strip().lower()
+    if item_type in {"policy_review", "budget_review"}:
+        sla_bucket = sla_bucket or "overdue"
+    if not queue_key or sla_bucket not in {"at_risk", "overdue"}:
+        return False
+
+    matching = []
+    for notification in existing_notifications:
+        payload = notification.data if isinstance(notification.data, dict) else {}
+        if str(payload.get("queue_key") or "").strip() == queue_key:
+            matching.append(notification)
+    if not matching:
+        return True
+
+    matching.sort(key=lambda n: n.created_at or datetime.min, reverse=True)
+    latest = matching[0]
+    latest_data = latest.data if isinstance(latest.data, dict) else {}
+    latest_sla = str(latest_data.get("sla_bucket") or "").strip().lower()
+    latest_escalation = str(latest_data.get("escalation_level") or "").strip().lower()
+
+    if latest_sla != sla_bucket or latest_escalation != escalation_level:
+        return True
+
+    if item_type in {"policy_review", "budget_review"}:
+        return False
+
+    if sla_bucket == "overdue":
+        cooldown = max(1, int(reminder_cooldown_hours or 6))
+        created_at = latest.created_at or datetime.min
+        if (now - created_at) >= timedelta(hours=cooldown):
+            return True
+
+    return False
 
 
 async def _async_health_check() -> Dict[str, Any]:
@@ -662,8 +1042,16 @@ async def _async_sync_experiment_runs() -> Dict[str, Any]:
                             elif run.status == "cancelled":
                                 title = "Experiment run cancelled"
 
-                            message = f"{run.name} · {run.status}"
-                            action_url = f"/research-notes?note={note_id}" if note_id else None
+                            notification_summary = _summarize_experiment_run_notification(
+                                exp or {},
+                                run.status,
+                                launch_mode=str(getattr(job, "launch_mode", "") or "").strip() or None,
+                            )
+                            message = f"{run.name} · {notification_summary['message_suffix']}"
+                            action_url = _build_experiment_run_notification_action_url(
+                                note_id=note_id,
+                                agent_job_id=str(run.agent_job_id) if run.agent_job_id else None,
+                            )
 
                             await notification_service.create_notification(
                                 db=db,
@@ -681,6 +1069,7 @@ async def _async_sync_experiment_runs() -> Dict[str, Any]:
                                     "agent_job_id": str(run.agent_job_id) if run.agent_job_id else None,
                                     "status": run.status,
                                     "note_id": note_id,
+                                    **notification_summary["data"],
                                 },
                             )
                     except Exception as exc:
@@ -704,4 +1093,224 @@ async def _async_sync_experiment_runs() -> Dict[str, Any]:
         "processed": processed,
         "updated": updated,
         "missing_job": missing_job,
+    }
+
+
+async def _async_emit_queue_urgency_alerts() -> Dict[str, Any]:
+    """Create notifications for urgent queue items using the derived queue projection."""
+    now = datetime.utcnow()
+    processed_users = 0
+    emitted = 0
+    skipped = 0
+
+    async with create_celery_session()() as db:
+        user_rows = await db.execute(select(NotificationPreferences.user_id))
+        user_ids = [row[0] for row in user_rows.fetchall()]
+
+        for user_id in user_ids:
+            try:
+                prefs_result = await db.execute(
+                    select(NotificationPreferences).where(NotificationPreferences.user_id == user_id)
+                )
+                prefs = prefs_result.scalar_one_or_none()
+                if prefs is not None and not any(
+                    bool(getattr(prefs, attr, True))
+                    for attr in (
+                        "notify_queue_urgency_alerts",
+                        "notify_policy_guardrail_alerts",
+                        "notify_autonomy_budget_alerts",
+                        "notify_customer_autonomy_budget_alerts",
+                    )
+                ):
+                    continue
+
+                reminder_cooldown_hours = (
+                    int(getattr(prefs, "queue_urgency_alert_reminder_cooldown_hours", 6) or 6)
+                    if prefs is not None
+                    else 6
+                )
+
+                jobs_result = await db.execute(
+                    select(AgentJob).where(AgentJob.user_id == user_id).order_by(AgentJob.created_at.desc())
+                )
+                jobs = list(jobs_result.scalars().all())
+
+                inbox_result = await db.execute(
+                    select(ResearchInboxItem)
+                    .where(
+                        and_(
+                            ResearchInboxItem.user_id == user_id,
+                            ResearchInboxItem.status == "accepted",
+                        )
+                    )
+                    .order_by(ResearchInboxItem.updated_at.desc(), ResearchInboxItem.discovered_at.desc())
+                )
+                inbox_items = list(inbox_result.scalars().all())
+
+                analytics = research_monitor_profile_service.build_effectiveness_snapshot(
+                    items=inbox_items,
+                    jobs_by_id={job.id: job for job in jobs if job.id is not None},
+                )
+                for customer_row in analytics.get("customers", []) or []:
+                    customer_name = str(customer_row.get("customer") or "").strip() or None
+                    if not customer_name:
+                        continue
+                    customer_budget_snapshot = await research_monitor_profile_service.build_customer_budget_snapshot(
+                        db=db,
+                        user_id=user_id,
+                        customer=customer_name,
+                        now=now,
+                    )
+                    customer_row.update(customer_budget_snapshot)
+                queue_items = _build_checkpoint_queue_items(
+                    jobs,
+                    inbox_items,
+                    monitor_health_rows=analytics.get("monitors", []),
+                )
+                candidate_items = [
+                    item for item in queue_items
+                    if (
+                        str(item.item_type or "") in {"approval_checkpoint", "job_recovery"}
+                        and str(item.sla_bucket or "") in {"at_risk", "overdue"}
+                    )
+                    or str(item.item_type or "") in {"policy_review", "budget_review"}
+                ]
+                customer_budget_items = [
+                    customer_row
+                    for customer_row in (analytics.get("customers", []) or [])
+                    if str(customer_row.get("customer_budget_throttle_state") or "").strip().lower() not in {"", "normal"}
+                ]
+
+                existing_result = await db.execute(
+                    select(Notification)
+                    .where(
+                        and_(
+                            Notification.user_id == user_id,
+                            Notification.notification_type.in_(
+                                [
+                                    NotificationType.QUEUE_URGENCY_ALERT,
+                                    NotificationType.POLICY_GUARDRAIL_ALERT,
+                                    NotificationType.AUTONOMY_BUDGET_ALERT,
+                                    NotificationType.CUSTOMER_AUTONOMY_BUDGET_ALERT,
+                                ]
+                            ),
+                            Notification.is_dismissed == False,
+                        )
+                    )
+                    .order_by(Notification.created_at.desc())
+                    .limit(200)
+                )
+                existing_notifications = list(existing_result.scalars().all())
+
+                for item in candidate_items:
+                    item_payload = item.model_dump(mode="json")
+                    item_type = str(item.item_type or "").strip()
+                    notification_type = (
+                        NotificationType.POLICY_GUARDRAIL_ALERT
+                        if item_type == "policy_review"
+                        else (
+                            NotificationType.AUTONOMY_BUDGET_ALERT
+                            if item_type == "budget_review"
+                            else NotificationType.QUEUE_URGENCY_ALERT
+                        )
+                    )
+                    if (
+                        notification_type == NotificationType.POLICY_GUARDRAIL_ALERT
+                        and prefs is not None
+                        and not bool(getattr(prefs, "notify_policy_guardrail_alerts", True))
+                    ):
+                        continue
+                    if (
+                        notification_type == NotificationType.AUTONOMY_BUDGET_ALERT
+                        and prefs is not None
+                        and not bool(getattr(prefs, "notify_autonomy_budget_alerts", True))
+                    ):
+                        continue
+                    if not _queue_alert_should_emit(
+                        item=item_payload,
+                        existing_notifications=[
+                            notification
+                            for notification in existing_notifications
+                            if str(notification.notification_type or "").strip() == notification_type
+                        ],
+                        reminder_cooldown_hours=reminder_cooldown_hours,
+                        now=now,
+                    ):
+                        skipped += 1
+                        continue
+
+                    if notification_type == NotificationType.POLICY_GUARDRAIL_ALERT:
+                        summary = _summarize_policy_guardrail_notification(item_payload)
+                        action_url = _build_policy_guardrail_notification_action_url(
+                            job_id=str(item.job_id) if item.job_id else None,
+                            history_entry_id=str(item.policy_guardrail_target_history_entry_id or "").strip() or None,
+                        )
+                    elif notification_type == NotificationType.AUTONOMY_BUDGET_ALERT:
+                        summary = _summarize_budget_guardrail_notification(item_payload)
+                        action_url = _build_budget_alert_notification_action_url(
+                            job_id=str(item.job_id) if item.job_id else None,
+                        )
+                    else:
+                        summary = _summarize_queue_urgency_notification(item_payload)
+                        action_url = _build_queue_urgency_notification_action_url(
+                            job_id=str(item.job_id) if item.job_id else None,
+                            item_type=str(item.item_type or "").strip() or None,
+                            sla_bucket=str(item.sla_bucket or "").strip() or None,
+                        )
+
+                    notification = await notification_service.create_notification(
+                        db=db,
+                        user_id=user_id,
+                        notification_type=notification_type,
+                        title=summary["title"],
+                        message=summary["message"],
+                        priority=summary["priority"],
+                        related_entity_type="agent_job" if item.job_id else "research_inbox_item",
+                        related_entity_id=item.job_id or item.inbox_item_id,
+                        action_url=action_url,
+                        data=summary["data"],
+                    )
+                    if notification is not None:
+                        emitted += 1
+                        existing_notifications.insert(0, notification)
+
+                for customer_item in customer_budget_items:
+                    if prefs is not None and not bool(getattr(prefs, "notify_customer_autonomy_budget_alerts", True)):
+                        continue
+                    if not _customer_budget_alert_should_emit(
+                        item=customer_item,
+                        existing_notifications=[
+                            notification
+                            for notification in existing_notifications
+                            if str(notification.notification_type or "").strip() == NotificationType.CUSTOMER_AUTONOMY_BUDGET_ALERT
+                        ],
+                    ):
+                        skipped += 1
+                        continue
+                    summary = _summarize_customer_budget_notification(customer_item)
+                    notification = await notification_service.create_notification(
+                        db=db,
+                        user_id=user_id,
+                        notification_type=NotificationType.CUSTOMER_AUTONOMY_BUDGET_ALERT,
+                        title=summary["title"],
+                        message=summary["message"],
+                        priority=summary["priority"],
+                        related_entity_type="customer_portfolio",
+                        action_url=_build_customer_budget_alert_notification_action_url(
+                            customer=str(customer_item.get("customer") or "").strip() or None,
+                        ),
+                        data=summary["data"],
+                    )
+                    if notification is not None:
+                        emitted += 1
+                        existing_notifications.insert(0, notification)
+                processed_users += 1
+            except Exception as exc:
+                logger.warning(f"Failed to emit queue urgency alerts for user {user_id}: {exc}")
+
+    return {
+        "timestamp": now.isoformat(),
+        "processed_users": processed_users,
+        "emitted": emitted,
+        "skipped": skipped,
     }

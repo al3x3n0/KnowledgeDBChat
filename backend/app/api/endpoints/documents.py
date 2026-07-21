@@ -1128,7 +1128,13 @@ async def retrigger_transcription(
                     "is_transcribed": False,
                 })
             from app.tasks.transcription_tasks import transcribe_document
-            transcribe_document.delay(str(document.id))
+            # Use explicit high limits for manual reruns to avoid soft timeout on long media
+            # and first-time model initialization/download.
+            transcribe_document.apply_async(
+                args=[str(document.id)],
+                soft_time_limit=5 * 60 * 60,
+                time_limit=6 * 60 * 60,
+            )
             return {"message": "Transcription scheduled"}
     except HTTPException:
         raise
@@ -1624,6 +1630,7 @@ async def submit_arxiv_request(
             "auto_summarize": bool(getattr(request, "auto_summarize", True)),
             "auto_literature_review": bool(getattr(request, "auto_literature_review", False)),
             "auto_enrich_metadata": bool(getattr(request, "auto_enrich_metadata", True)),
+            "auto_extract_structure": bool(getattr(request, "auto_extract_structure", False)),
             "topic": getattr(request, "topic", None),
             "display": {
                 "queries": request.search_queries or [],
@@ -1812,6 +1819,22 @@ async def ingest_arxiv_instant(
                 background_tasks.append("enrichment_queued")
             except Exception as e:
                 logger.warning(f"Failed to queue enrichment: {e}")
+
+        if request.auto_extract:
+            try:
+                from app.tasks.paper_extraction_tasks import extract_paper_job
+                from app.services.paper_extraction_service import paper_extraction_service
+
+                await paper_extraction_service.queue_document_extraction_job(
+                    db,
+                    document=document,
+                    user_id=current_user.id,
+                    force=False,
+                    dispatch_task=lambda job_id: extract_paper_job.delay(job_id),
+                )
+                background_tasks.append("paper_extraction_queued")
+            except Exception as e:
+                logger.warning(f"Failed to queue paper extraction: {e}")
 
         doc_metadata = document.extra_metadata or {}
 

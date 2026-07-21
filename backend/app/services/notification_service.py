@@ -35,6 +35,12 @@ class NotificationService:
         NotificationType.ADMIN_BROADCAST: "notify_admin_broadcasts",
         NotificationType.RESEARCH_NOTE_CITATION_ISSUE: "notify_research_note_citation_issues",
         NotificationType.EXPERIMENT_RUN_UPDATE: "notify_experiment_run_updates",
+        NotificationType.HYPOTHESIS_REEVALUATION_UPDATE: "notify_hypothesis_reevaluation_updates",
+        NotificationType.QUEUE_URGENCY_ALERT: "notify_queue_urgency_alerts",
+        NotificationType.FOLLOW_UP_OUTCOME_ALERT: "notify_follow_up_outcome_alerts",
+        NotificationType.POLICY_GUARDRAIL_ALERT: "notify_policy_guardrail_alerts",
+        NotificationType.AUTONOMY_BUDGET_ALERT: "notify_autonomy_budget_alerts",
+        NotificationType.CUSTOMER_AUTONOMY_BUDGET_ALERT: "notify_customer_autonomy_budget_alerts",
         NotificationType.COLLABORATION_MENTION: "notify_mentions",
         NotificationType.COLLABORATION_SHARE: "notify_shares",
         NotificationType.COLLABORATION_COMMENT: "notify_comments",
@@ -61,6 +67,8 @@ class NotificationService:
         data: Optional[Dict[str, Any]] = None,
         action_url: Optional[str] = None,
         expires_at: Optional[datetime] = None,
+        commit: bool = True,
+        push: bool = True,
     ) -> Optional[Notification]:
         """Create a notification for a user, respecting their preferences."""
         try:
@@ -89,18 +97,23 @@ class NotificationService:
             )
 
             db.add(notification)
-            await db.commit()
+            if commit:
+                await db.commit()
+            else:
+                await db.flush()
             await db.refresh(notification)
 
             # Push via WebSocket
-            self._push_notification(user_id, notification)
+            if push:
+                self._push_notification(user_id, notification)
 
             logger.info(f"Created notification {notification.id} for user {user_id}: {title}")
             return notification
 
         except Exception as e:
             logger.error(f"Error creating notification: {e}")
-            await db.rollback()
+            if commit:
+                await db.rollback()
             return None
 
     async def create_broadcast_notification(

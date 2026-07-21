@@ -7,12 +7,41 @@ import apiClient from '../services/api';
 import ForceGraph, { FGNode, FGEdge, ForceGraphHandle } from '../components/kg/ForceGraph';
 import RelationshipEditModal from '../components/kg/RelationshipEditModal';
 import RelationshipCreateModal from '../components/kg/RelationshipCreateModal';
+import { useElementSize } from '../hooks/useElementSize';
+import { useAuth } from '../contexts/AuthContext';
+
+const extractArxivId = (raw: string): string | null => {
+  const v = String(raw || '').trim();
+  if (!v) return null;
+  let m = v.match(/(?:^|arxiv:)(\d{4}\.\d{4,5}(?:v\d+)?)(?:$)/i);
+  if (m?.[1]) return m[1];
+  m = v.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?/i);
+  if (m?.[1]) return m[1];
+  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.\-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
+  if (m?.[1]) return m[1];
+  m = v.match(/^([\w.\-]+\/\d+(?:v\d+)?)$/i);
+  if (m?.[1]) return m[1];
+  return null;
+};
+
+const parseCsvParam = (v: string | null): string[] | null => {
+  // null => "all" (no filter). '__none__' or '' => "none".
+  if (v == null) return null;
+  const trimmed = v.trim();
+  if (!trimmed || trimmed === '__none__') return [];
+  return trimmed
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+};
 
 const DocumentGraphPage: React.FC = () => {
   const { documentId } = useParams<{ documentId: string }>();
   const navigate = useNavigate();
   const queryClient = useQueryClient();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { user } = useAuth();
+  const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
 
   const { data: graph, isLoading, isError, refetch } = useQuery(
     ['kg-document-graph', documentId],
@@ -34,8 +63,9 @@ const DocumentGraphPage: React.FC = () => {
     }
   );
 
-  const width = 960;
-  const height = 600;
+  const graphBox = useElementSize<HTMLDivElement>();
+  const width = Math.max(320, graphBox.width || 0);
+  const height = Math.max(420, graphBox.height || 0);
 
   const nodes = (graph?.nodes || []) as FGNode[];
   const edges = (graph?.edges || []) as FGEdge[];
@@ -44,6 +74,15 @@ const DocumentGraphPage: React.FC = () => {
   const selectedNode = React.useMemo(() => nodes.find(n => n.id === selected) || null, [nodes, selected]);
   const neighborEdges = React.useMemo(() => edges.filter(e => e.source === selected || e.target === selected), [edges, selected]);
   const [selectedEdge, setSelectedEdge] = React.useState<FGEdge | null>(null);
+  const [isIngestingArxiv, setIsIngestingArxiv] = React.useState(false);
+  const [isQueueingArxiv, setIsQueueingArxiv] = React.useState(false);
+  const [aiSuggestedType, setAiSuggestedType] = React.useState<{ entity_type: string; confidence?: number | null } | null>(null);
+  const [aiSuggestBusy, setAiSuggestBusy] = React.useState(false);
+  const [aiApplyBusy, setAiApplyBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    setAiSuggestedType(null);
+  }, [selected]);
 
   // Relationship edit/delete/create modal state
   const [editModalOpen, setEditModalOpen] = React.useState(false);
@@ -101,8 +140,7 @@ const DocumentGraphPage: React.FC = () => {
   };
 
   // Filters and search
-  const initialTypes = (searchParams.get('types') || 'person,org,email,url,other').split(',').reduce<Record<string, boolean>>((acc, t) => { if (t) acc[t] = true; return acc; }, { person: false, org: false, email: false, url: false, other: false });
-  const [entityTypes, setEntityTypes] = React.useState<Record<string, boolean>>({ person: !!initialTypes.person, org: !!initialTypes.org, email: !!initialTypes.email, url: !!initialTypes.url, other: !!initialTypes.other });
+  const [selectedEntityTypes, setSelectedEntityTypes] = React.useState<string[] | null>(() => parseCsvParam(searchParams.get('types')));
   const allRelTypes = React.useMemo(() => Array.from(new Set(edges.map(e => e.type))).sort(), [edges]);
   const [relTypes, setRelTypes] = React.useState<Record<string, boolean>>({});
   React.useEffect(() => {
@@ -115,11 +153,26 @@ const DocumentGraphPage: React.FC = () => {
 
   const [search, setSearch] = React.useState(searchParams.get('q') || '');
 
+  const availableEntityTypes = React.useMemo(() => {
+    return Array.from(new Set(nodes.map((n) => (n.type || 'other').toLowerCase()))).sort();
+  }, [nodes]);
+
+  const enabledEntityTypes = React.useMemo(() => {
+    return selectedEntityTypes === null ? availableEntityTypes : selectedEntityTypes;
+  }, [selectedEntityTypes, availableEntityTypes]);
+
+  React.useEffect(() => {
+    if (selectedEntityTypes === null) return;
+    const allowed = new Set(availableEntityTypes);
+    setSelectedEntityTypes((prev) => (prev === null ? null : prev.filter((t) => allowed.has(t.toLowerCase()))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableEntityTypes.join(',')]);
+
   const filteredNodes = React.useMemo(() => {
-    const allowedTypes = new Set(Object.entries(entityTypes).filter(([, v]) => v).map(([k]) => k));
+    const allowedTypes = new Set(enabledEntityTypes.map((t) => t.toLowerCase()));
     const nameMatch = (n: FGNode) => (search ? n.name.toLowerCase().includes(search.toLowerCase()) : true);
     return nodes.filter(n => allowedTypes.has((n.type || 'other').toLowerCase()) && nameMatch(n));
-  }, [nodes, entityTypes, search]);
+  }, [nodes, enabledEntityTypes, search]);
 
   const filteredNodeIds = React.useMemo(() => new Set(filteredNodes.map(n => n.id)), [filteredNodes]);
   const filteredEdges = React.useMemo(() => {
@@ -128,28 +181,21 @@ const DocumentGraphPage: React.FC = () => {
   }, [edges, relTypes, filteredNodeIds]);
 
   const graphRef = React.useRef<ForceGraphHandle>(null);
-  React.useEffect(() => {
-    // Auto-center when selection changes
-    if (selected) {
-      graphRef.current?.centerOnNode(selected, 1.1);
-    }
-  }, [selected]);
 
   // Sync UI state to URL params
   React.useEffect(() => {
-    const types = Object.entries(entityTypes).filter(([, v]) => v).map(([k]) => k).join(',');
     const rels = Object.entries(relTypes).filter(([, v]) => v).map(([k]) => k).join(',');
     const params: any = {};
-    if (types) params.types = types;
+    if (selectedEntityTypes !== null) params.types = selectedEntityTypes.length ? selectedEntityTypes.join(',') : '__none__';
     if (rels) params.rels = rels;
     if (search) params.q = search;
     if (selected) params.sel = selected;
     setSearchParams(params, { replace: true });
-  }, [entityTypes, relTypes, search, selected]);
+  }, [selectedEntityTypes, relTypes, search, selected]);
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="p-6 h-full min-h-0 flex flex-col gap-4 flex-1">
+      <div className="flex items-center justify-between flex-none">
         <div className="flex items-center space-x-2">
           <button className="inline-flex items-center text-sm text-gray-700 hover:text-gray-900" onClick={() => navigate('/documents')}>
             <ArrowLeft className="w-4 h-4 mr-1" /> Back to Documents
@@ -209,14 +255,30 @@ const DocumentGraphPage: React.FC = () => {
         </div>
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden grid grid-cols-1 lg:grid-cols-3 gap-0">
-        <div className="lg:col-span-2">
+      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden grid grid-cols-1 lg:grid-cols-3 lg:grid-rows-1 gap-0 flex-1 min-h-0">
+        <div className="lg:col-span-2 min-h-0 flex flex-col">
           {/* Filters */}
           <div className="border-b border-gray-200 p-3 flex flex-wrap items-center gap-3 text-sm">
             <div className="flex items-center gap-2">
-              {(['person','org','email','url','other'] as const).map(t => (
+              {availableEntityTypes.map(t => (
                 <label key={t} className="inline-flex items-center gap-1">
-                  <input type="checkbox" checked={entityTypes[t]} onChange={e => setEntityTypes(s => ({ ...s, [t]: e.target.checked }))} />
+                  <input
+                    type="checkbox"
+                    checked={enabledEntityTypes.includes(t)}
+                    onChange={(e) => {
+                      const checked = e.target.checked;
+                      setSelectedEntityTypes((prev) => {
+                        const base = prev === null ? availableEntityTypes.slice() : prev.slice();
+                        const set = new Set(base);
+                        if (checked) set.add(t);
+                        else set.delete(t);
+                        const next = Array.from(set);
+                        next.sort();
+                        if (next.length === availableEntityTypes.length) return null;
+                        return next;
+                      });
+                    }}
+                  />
                   <span className="capitalize">{t}</span>
                 </label>
               ))}
@@ -254,30 +316,195 @@ const DocumentGraphPage: React.FC = () => {
           ) : filteredNodes.length === 0 ? (
             <div className="p-6 text-gray-600">No entities found for this document.</div>
           ) : (
-            <div className="w-full overflow-auto">
-              <ForceGraph
-                ref={graphRef}
-                width={width}
-                height={height}
-                nodes={filteredNodes}
-                edges={filteredEdges}
-                selectedNodeId={selected}
-                selectedEdgeId={selectedEdge?.id || null}
-                onNodeClick={(n) => { setSelected(n.id); setSelectedEdge(null); }}
-                onEdgeClick={(e) => { setSelectedEdge(e); setSelected(null); }}
-              />
+            <div ref={graphBox.ref} className="w-full flex-1 min-h-0 overflow-hidden">
+              {width > 0 && height > 0 && (
+                <ForceGraph
+                  ref={graphRef}
+                  width={width}
+                  height={height}
+                  nodes={filteredNodes}
+                  edges={filteredEdges}
+                  selectedNodeId={selected}
+                  selectedEdgeId={selectedEdge?.id || null}
+                  onBackgroundClick={() => { setSelected(null); setSelectedEdge(null); }}
+                  onNodeClick={(n) => { setSelected(n.id); setSelectedEdge(null); }}
+                  onEdgeClick={(e) => { setSelectedEdge(e); setSelected(null); }}
+                />
+              )}
             </div>
           )}
         </div>
-        <div className="border-l border-gray-200 p-4">
+        <div className="border-l border-gray-200 p-4 overflow-auto h-full min-h-0">
           <h2 className="text-base font-semibold text-gray-900 mb-2">Details</h2>
           {selectedNode ? (
             <div>
               <div className="mb-2">
                 <div className="text-sm text-gray-500">Selected entity</div>
-                <div className="text-lg font-medium text-gray-900">{selectedNode.name}</div>
-                <div className="text-xs text-gray-600">Type: {selectedNode.type}</div>
+                {(() => {
+                  const t = String(selectedNode.type || '').toLowerCase();
+                  const name = String(selectedNode.name || '');
+                  const isUrl = t === 'url' || /^https?:\/\//i.test(name);
+                  if (!isUrl) return <div className="text-lg font-medium text-gray-900">{name}</div>;
+                  return (
+                    <a
+                      href={name}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-lg font-medium text-primary-700 hover:text-primary-900 hover:underline break-all"
+                      title="Open URL"
+                    >
+                      {name}
+                    </a>
+                  );
+                })()}
+                <div className="text-xs text-gray-600 flex items-center gap-2">
+                  <span>Type: {selectedNode.type}</span>
+                  {isAdmin && (
+                    <>
+                      <button
+                        type="button"
+                        className="px-2 py-0.5 text-[11px] rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
+                        disabled={!selectedNode?.id || aiSuggestBusy}
+                        onClick={async () => {
+                          try {
+                            setAiSuggestBusy(true);
+                            const res = await apiClient.inferKGEntityType(selectedNode.id);
+                            setAiSuggestedType(res);
+                            toast.success(
+                              `AI suggested: ${res.entity_type}` +
+                                (typeof res.confidence === 'number' ? ` (${Math.round(res.confidence * 100)}%)` : '')
+                            );
+                          } catch (e: any) {
+                            toast.error(e?.response?.data?.detail || e?.message || 'Failed to infer type');
+                          } finally {
+                            setAiSuggestBusy(false);
+                          }
+                        }}
+                        title="Infer entity type using LLM against the open-list of known types"
+                      >
+                        {aiSuggestBusy ? 'AI…' : 'AI Suggest'}
+                      </button>
+                      {aiSuggestedType?.entity_type && aiSuggestedType.entity_type !== selectedNode.type && (
+                        <button
+                          type="button"
+                          className="px-2 py-0.5 text-[11px] rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                          disabled={aiApplyBusy}
+                          onClick={async () => {
+                            try {
+                              setAiApplyBusy(true);
+                              await apiClient.updateKGEntity(selectedNode.id, { entity_type: aiSuggestedType.entity_type });
+                              toast.success(`Updated type to ${aiSuggestedType.entity_type}`);
+                              refetch();
+                            } catch (e: any) {
+                              toast.error(e?.response?.data?.detail || e?.message || 'Failed to update type');
+                            } finally {
+                              setAiApplyBusy(false);
+                            }
+                          }}
+                          title="Apply the AI-suggested type to the entity"
+                        >
+                          {aiApplyBusy ? 'Saving…' : 'Apply'}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
               </div>
+
+              {(() => {
+                const name = String(selectedNode.name || '');
+                const arxivId = extractArxivId(name);
+                if (!arxivId) return null;
+                const absUrl = `https://arxiv.org/abs/${encodeURIComponent(arxivId)}`;
+                const pdfUrl = `https://arxiv.org/pdf/${encodeURIComponent(arxivId)}.pdf`;
+                return (
+                  <div className="mb-4 p-3 rounded border border-gray-200 bg-gray-50">
+                    <div className="text-sm font-medium text-gray-800">arXiv</div>
+                    <div className="text-xs text-gray-600 mt-0.5 break-all">{arxivId}</div>
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                      <a
+                        href={absUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 text-xs rounded bg-white border border-gray-300 hover:bg-gray-50"
+                      >
+                        Open abstract
+                      </a>
+                      <a
+                        href={pdfUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 text-xs rounded bg-white border border-gray-300 hover:bg-gray-50"
+                      >
+                        Open PDF
+                      </a>
+                      <button
+                        type="button"
+                        className="px-2.5 py-1.5 text-xs rounded bg-white border border-gray-300 hover:bg-gray-50"
+                        onClick={() => navigate(`/papers?q=${encodeURIComponent(`id:${arxivId}`)}`)}
+                        title="Open in Papers page"
+                      >
+                        Open in Papers
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isQueueingArxiv}
+                        className="px-2.5 py-1.5 text-xs rounded bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                        onClick={async () => {
+                          try {
+                            setIsQueueingArxiv(true);
+                            const src = await apiClient.ingestArxivPapers({
+                              name: `arXiv ${arxivId}`,
+                              paper_ids: [arxivId],
+                              max_results: 1,
+                              start: 0,
+                              sort_by: 'submittedDate',
+                              sort_order: 'descending',
+                              auto_sync: true,
+                              auto_summarize: true,
+                              auto_literature_review: false,
+                              topic: arxivId,
+                            });
+                            toast.success('Queued arXiv import');
+                            navigate(`/papers?source_id=${encodeURIComponent(String(src.id))}&q=${encodeURIComponent(`id:${arxivId}`)}`);
+                          } catch (e: any) {
+                            toast.error(e?.response?.data?.detail || e?.message || 'Failed to queue arXiv import');
+                          } finally {
+                            setIsQueueingArxiv(false);
+                          }
+                        }}
+                        title="Create an arXiv import source (async ingestion pipeline)"
+                      >
+                        {isQueueingArxiv ? 'Queueing…' : 'Queue import'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isIngestingArxiv}
+                        className="px-2.5 py-1.5 text-xs rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                        onClick={async () => {
+                          try {
+                            setIsIngestingArxiv(true);
+                            const res = await apiClient.ingestArxivInstant({ arxiv_input: arxivId, auto_summarize: true, auto_enrich: true });
+                            toast.success('Ingested arXiv paper');
+                            navigate('/documents', { state: { openDocId: res.document_id } });
+                          } catch (e: any) {
+                            toast.error(e?.response?.data?.detail || e?.message || 'Failed to ingest arXiv paper');
+                          } finally {
+                            setIsIngestingArxiv(false);
+                          }
+                        }}
+                        title="Instantly ingest into the Knowledge DB"
+                      >
+                        {isIngestingArxiv ? 'Ingesting…' : 'Ingest to DB'}
+                      </button>
+                    </div>
+                    <div className="mt-1 text-[11px] text-gray-500">
+                      Instant ingest makes it available immediately. Queue import runs the async source pipeline.
+                    </div>
+                  </div>
+                );
+              })()}
+
               <div className="mt-4">
                 <div className="text-sm font-medium text-gray-800 mb-1">Relationships</div>
                 {neighborEdges.length === 0 ? (

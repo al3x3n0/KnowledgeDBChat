@@ -103,6 +103,42 @@ async def list_datasets(
     )
 
 
+@router.get("/presets", response_model=DatasetPresetsResponse)
+async def list_dataset_presets(
+    current_user: User = Depends(get_current_active_user),
+):
+    presets = ai_hub_dataset_preset_service.list_presets()
+    return DatasetPresetsResponse(
+        presets=[
+            DatasetPresetInfo(
+                id=p.id,
+                name=p.name,
+                description=p.description,
+                dataset_type=p.dataset_type,
+            )
+            for p in presets
+        ]
+    )
+
+
+@router.get("/presets/enabled", response_model=DatasetPresetsResponse)
+async def list_enabled_dataset_presets(
+    current_user: User = Depends(get_current_active_user),
+):
+    presets = await ai_hub_dataset_preset_service.list_enabled_presets()
+    return DatasetPresetsResponse(
+        presets=[
+            DatasetPresetInfo(
+                id=p.id,
+                name=p.name,
+                description=p.description,
+                dataset_type=p.dataset_type,
+            )
+            for p in presets
+        ]
+    )
+
+
 @router.get("/{dataset_id}", response_model=TrainingDatasetResponse)
 async def get_dataset(
     dataset_id: UUID,
@@ -375,42 +411,6 @@ async def generate_from_documents(
     )
 
     return _dataset_to_response(dataset)
-
-
-@router.get("/presets", response_model=DatasetPresetsResponse)
-async def list_dataset_presets(
-    current_user: User = Depends(get_current_active_user),
-):
-    presets = ai_hub_dataset_preset_service.list_presets()
-    return DatasetPresetsResponse(
-        presets=[
-            DatasetPresetInfo(
-                id=p.id,
-                name=p.name,
-                description=p.description,
-                dataset_type=p.dataset_type,
-            )
-            for p in presets
-        ]
-    )
-
-
-@router.get("/presets/enabled", response_model=DatasetPresetsResponse)
-async def list_enabled_dataset_presets(
-    current_user: User = Depends(get_current_active_user),
-):
-    presets = await ai_hub_dataset_preset_service.list_enabled_presets()
-    return DatasetPresetsResponse(
-        presets=[
-            DatasetPresetInfo(
-                id=p.id,
-                name=p.name,
-                description=p.description,
-                dataset_type=p.dataset_type,
-            )
-            for p in presets
-        ]
-    )
 
 
 @router.post("/{sample_id}/flag")

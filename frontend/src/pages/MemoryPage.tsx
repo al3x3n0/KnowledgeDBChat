@@ -534,10 +534,215 @@ const StatsTab: React.FC<StatsTabProps> = ({ stats, isLoading }) => {
 
 // Settings Tab Component
 const SettingsTab: React.FC = () => {
+  const queryClient = useQueryClient();
+  const [selectedSessionId, setSelectedSessionId] = useState<string>('');
+  const [draft, setDraft] = useState<any | null>(null);
+
+  const { data: sessions = [], isLoading: sessionsLoading } = useQuery(
+    'memorySettingsChatSessions',
+    () => apiClient.getChatSessions(),
+    { refetchOnWindowFocus: false }
+  );
+  const { data: preferences, isLoading: preferencesLoading } = useQuery(
+    'memoryPreferences',
+    () => apiClient.getMemoryPreferences(),
+    { refetchOnWindowFocus: false }
+  );
+
+  React.useEffect(() => {
+    if (preferences && !draft) {
+      setDraft({
+        auto_memory_build_enabled: !!preferences.auto_memory_build_enabled,
+        auto_memory_build_mode: String(preferences.auto_memory_build_mode || 'per_turn'),
+        auto_memory_build_min_messages: Number(preferences.auto_memory_build_min_messages ?? 3),
+        auto_memory_build_min_minutes: Number(preferences.auto_memory_build_min_minutes ?? 10),
+        max_memories_per_session: Number(preferences.max_memories_per_session ?? 10),
+        memory_importance_threshold: Number(preferences.memory_importance_threshold ?? 0.3),
+        allow_cross_session_memory: !!preferences.allow_cross_session_memory,
+      });
+    }
+  }, [preferences, draft]);
+
+  React.useEffect(() => {
+    if (!selectedSessionId && sessions.length > 0) {
+      setSelectedSessionId(String((sessions[0] as any).id));
+    }
+  }, [selectedSessionId, sessions]);
+
+  const extractMutation = useMutation(
+    (sessionId: string) => apiClient.extractMemoriesFromSession(sessionId),
+    {
+      onSuccess: (res: any) => {
+        const added = Array.isArray(res?.memories) ? res.memories.length : 0;
+        toast.success(`Memory extraction finished${added ? `: ${added} memories added` : ''}`);
+        queryClient.invalidateQueries('memories');
+        queryClient.invalidateQueries('memoryStats');
+      },
+      onError: (e: any) => {
+        toast.error(e?.response?.data?.detail || e?.message || 'Memory extraction failed');
+      },
+    }
+  );
+  const savePreferencesMutation = useMutation(
+    (updates: any) => apiClient.updateMemoryPreferences(updates),
+    {
+      onSuccess: () => {
+        toast.success('Memory settings saved');
+        queryClient.invalidateQueries('memoryPreferences');
+      },
+      onError: (e: any) => {
+        toast.error(e?.response?.data?.detail || e?.message || 'Failed to save memory settings');
+      },
+    }
+  );
+
+  const periodicEnabled = !!draft?.auto_memory_build_enabled && draft?.auto_memory_build_mode === 'periodic';
+
   return (
-    <div className="bg-white rounded-lg shadow p-6">
-      <h3 className="text-lg font-semibold text-gray-900 mb-4">Memory Settings</h3>
-      <p className="text-gray-600">Memory settings will be available soon.</p>
+    <div className="space-y-4">
+      <div className="bg-white rounded-lg shadow p-6">
+        <h3 className="text-lg font-semibold text-gray-900 mb-2">Memory Settings</h3>
+        <p className="text-gray-600">
+          Configure how memories are automatically extracted from chat turns.
+        </p>
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-6">
+        <h4 className="text-base font-semibold text-gray-900 mb-3">Automatic Memory Building</h4>
+        {preferencesLoading || !draft ? (
+          <div className="text-sm text-gray-600">Loading settings...</div>
+        ) : (
+          <div className="space-y-4">
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={!!draft.auto_memory_build_enabled}
+                onChange={(e) => setDraft({ ...draft, auto_memory_build_enabled: e.target.checked })}
+              />
+              <span className="text-sm text-gray-800">Enable automatic extraction</span>
+            </label>
+
+            <div>
+              <label className="block text-sm font-medium text-gray-700 mb-1">Mode</label>
+              <select
+                value={String(draft.auto_memory_build_mode || 'per_turn')}
+                onChange={(e) => setDraft({ ...draft, auto_memory_build_mode: e.target.value })}
+                className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                disabled={!draft.auto_memory_build_enabled}
+              >
+                <option value="off">Off</option>
+                <option value="manual">Manual only</option>
+                <option value="per_turn">Every turn</option>
+                <option value="periodic">Periodic</option>
+              </select>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Periodic: min turns</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={100}
+                  value={Number(draft.auto_memory_build_min_messages ?? 3)}
+                  onChange={(e) => setDraft({ ...draft, auto_memory_build_min_messages: Number(e.target.value) || 1 })}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                  disabled={!periodicEnabled}
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Periodic: min minutes</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={1440}
+                  value={Number(draft.auto_memory_build_min_minutes ?? 10)}
+                  onChange={(e) => setDraft({ ...draft, auto_memory_build_min_minutes: Number(e.target.value) || 1 })}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                  disabled={!periodicEnabled}
+                />
+              </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Memories loaded per turn</label>
+                <input
+                  type="number"
+                  min={1}
+                  max={50}
+                  value={Number(draft.max_memories_per_session ?? 10)}
+                  onChange={(e) => setDraft({ ...draft, max_memories_per_session: Number(e.target.value) || 1 })}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">Importance threshold (0.0-1.0)</label>
+                <input
+                  type="number"
+                  min={0}
+                  max={1}
+                  step={0.05}
+                  value={Number(draft.memory_importance_threshold ?? 0.3)}
+                  onChange={(e) => setDraft({ ...draft, memory_importance_threshold: Number(e.target.value) || 0 })}
+                  className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+                />
+              </div>
+            </div>
+
+            <label className="flex items-center gap-3">
+              <input
+                type="checkbox"
+                checked={!!draft.allow_cross_session_memory}
+                onChange={(e) => setDraft({ ...draft, allow_cross_session_memory: e.target.checked })}
+              />
+              <span className="text-sm text-gray-800">Allow cross-session memory retrieval</span>
+            </label>
+
+            <div className="pt-1">
+              <Button
+                onClick={() => savePreferencesMutation.mutate(draft)}
+                disabled={savePreferencesMutation.isLoading}
+              >
+                {savePreferencesMutation.isLoading ? 'Saving...' : 'Save Settings'}
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+
+      <div className="bg-white rounded-lg shadow p-6">
+        <h4 className="text-base font-semibold text-gray-900 mb-3">Manual Memory Extraction</h4>
+        <div className="flex flex-col gap-3 md:flex-row md:items-end">
+          <div className="flex-1">
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              Chat session
+            </label>
+            <select
+              value={selectedSessionId}
+              onChange={(e) => setSelectedSessionId(e.target.value)}
+              className="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm"
+              disabled={sessionsLoading || extractMutation.isLoading}
+            >
+              <option value="">{sessionsLoading ? 'Loading sessions...' : 'Select session'}</option>
+              {sessions.map((s: any) => (
+                <option key={String(s.id)} value={String(s.id)}>
+                  {String(s.title || `Session ${String(s.id).slice(0, 8)}`)}
+                </option>
+              ))}
+            </select>
+          </div>
+          <Button
+            onClick={() => selectedSessionId && extractMutation.mutate(selectedSessionId)}
+            disabled={!selectedSessionId || extractMutation.isLoading}
+          >
+            {extractMutation.isLoading ? 'Extracting...' : 'Extract Memories'}
+          </Button>
+        </div>
+        <p className="text-xs text-gray-500 mt-3">
+          This runs `POST /api/v1/memory/extract/{`{session_id}`}` and updates memory list/statistics.
+        </p>
+      </div>
     </div>
   );
 };

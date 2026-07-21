@@ -197,4 +197,17 @@ MCP_TOOLS = {
         "required_scope": "read",
         "config_schema": {}
     },
+    "docker_execute": {
+        "name": "docker_execute",
+        "display_name": "Docker Execute",
+        "description": "Run a command inside a Docker container with resource limits",
+        "category": "write",
+        "required_scope": "write",
+        "config_schema": {
+            "timeout_seconds_max": {"type": "integer", "default": 120, "min": 1, "max": 3600},
+            "memory_limit_default": {"type": "string", "default": "512m"},
+            "cpu_limit_default": {"type": "number", "default": 1.0, "min": 0.1, "max": 8.0},
+            "network_enabled_default": {"type": "boolean", "default": False},
+        },
+    },
 }

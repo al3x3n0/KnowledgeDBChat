@@ -139,7 +139,7 @@ async def search_memories(
         log_error(e, context={"user_id": str(current_user.id), "query": search_request.query})
         raise HTTPException(status_code=500, detail="Failed to search memories")
 
-@router.get("/{memory_id}", response_model=MemoryResponse)
+@router.get("/{memory_id:uuid}", response_model=MemoryResponse)
 async def get_memory(
     memory_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -176,7 +176,7 @@ async def get_memory(
         log_error(e, context={"memory_id": str(memory_id), "user_id": str(current_user.id)})
         raise HTTPException(status_code=500, detail="Failed to retrieve memory")
 
-@router.put("/{memory_id}", response_model=MemoryResponse)
+@router.put("/{memory_id:uuid}", response_model=MemoryResponse)
 async def update_memory(
     memory_id: UUID,
     memory_update: MemoryUpdate,
@@ -211,7 +211,7 @@ async def update_memory(
         log_error(e, context={"memory_id": str(memory_id), "user_id": str(current_user.id)})
         raise HTTPException(status_code=500, detail="Failed to update memory")
 
-@router.delete("/{memory_id}")
+@router.delete("/{memory_id:uuid}")
 async def delete_memory(
     memory_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -380,5 +380,4 @@ async def cleanup_old_memories(
     except Exception as e:
         logger.error(f"Error cleaning up memories: {e}")
         raise HTTPException(status_code=500, detail="Failed to cleanup memories")
-
 

@@ -9,23 +9,6 @@ import { apiClient } from '../../services/api';
 import { KGRelationshipCreate } from '../../types';
 import toast from 'react-hot-toast';
 
-// Standard relation types
-const RELATION_TYPES = [
-  'works_for',
-  'manages',
-  'reports_to',
-  'collaborates_with',
-  'owns',
-  'uses',
-  'implements',
-  'part_of',
-  'located_in',
-  'related_to',
-  'mentions',
-  'references',
-  'created_by',
-];
-
 interface Entity {
   id: string;
   name: string;
@@ -46,7 +29,7 @@ const RelationshipCreateModal: React.FC<RelationshipCreateModalProps> = ({
   const queryClient = useQueryClient();
   const [sourceEntity, setSourceEntity] = useState<Entity | null>(null);
   const [targetEntity, setTargetEntity] = useState<Entity | null>(null);
-  const [relationType, setRelationType] = useState('related_to');
+  const [relationType, setRelationType] = useState<'custom' | string>('custom');
   const [customType, setCustomType] = useState('');
   const [confidence, setConfidence] = useState(0.8);
   const [evidence, setEvidence] = useState('');
@@ -93,8 +76,7 @@ const RelationshipCreateModal: React.FC<RelationshipCreateModalProps> = ({
 
   const allRelationTypes = useMemo(() => {
     const systemTypes = relationTypesData?.types || [];
-    const combined = Array.from(new Set([...RELATION_TYPES, ...systemTypes]));
-    return combined.sort();
+    return Array.from(new Set(systemTypes)).sort();
   }, [relationTypesData]);
 
   // Create mutation
@@ -259,7 +241,7 @@ const RelationshipCreateModal: React.FC<RelationshipCreateModalProps> = ({
               Relationship Type
             </label>
             <select
-              value={RELATION_TYPES.includes(relationType) ? relationType : 'custom'}
+              value={allRelationTypes.includes(relationType) ? relationType : 'custom'}
               onChange={(e) => {
                 if (e.target.value === 'custom') {
                   setRelationType('custom');

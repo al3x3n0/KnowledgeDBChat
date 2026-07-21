@@ -196,11 +196,41 @@ async def _apply_minimal_migrations(conn) -> None:
         # Notifications
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_research_note_citation_issues BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_experiment_run_updates BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_hypothesis_reevaluation_updates BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_queue_urgency_alerts BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_follow_up_outcome_alerts BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_policy_guardrail_alerts BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_autonomy_budget_alerts BOOLEAN NOT NULL DEFAULT TRUE",
+        "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_customer_autonomy_budget_alerts BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS research_note_citation_coverage_threshold DOUBLE PRECISION NOT NULL DEFAULT 0.7",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS research_note_citation_notify_cooldown_hours INTEGER NOT NULL DEFAULT 12",
+        "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS queue_urgency_alert_reminder_cooldown_hours INTEGER NOT NULL DEFAULT 6",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS research_note_citation_notify_on_unknown_keys BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS research_note_citation_notify_on_low_coverage BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS research_note_citation_notify_on_missing_bibliography BOOLEAN NOT NULL DEFAULT TRUE",
+
+        # Research inbox follow-up autonomy state
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_decision VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_policy_mode VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_launch_status VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_block_reason TEXT",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_budget_decision VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_budget_reason TEXT",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_budget_throttle_state VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_customer_budget_decision VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_customer_budget_reason TEXT",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_customer_budget_throttle_state VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_recommendation_key VARCHAR(100)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_operator_decision VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_operator_note TEXT",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_operator_acted_at TIMESTAMPTZ",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_operator_user_id UUID",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_job_id UUID",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_chain_definition_id UUID",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_launched_at TIMESTAMPTZ",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_outcome_status VARCHAR(32)",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_outcome_recorded_at TIMESTAMPTZ",
+        "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_outcome_summary TEXT",
 
         # Tool audits: policy provenance
         "ALTER TABLE tool_execution_audits ADD COLUMN IF NOT EXISTS policy_decision JSONB",
@@ -209,6 +239,8 @@ async def _apply_minimal_migrations(conn) -> None:
         "ALTER TABLE tool_execution_audits ADD COLUMN IF NOT EXISTS owner_approved_at TIMESTAMPTZ",
         "ALTER TABLE tool_execution_audits ADD COLUMN IF NOT EXISTS admin_approved_by UUID",
         "ALTER TABLE tool_execution_audits ADD COLUMN IF NOT EXISTS admin_approved_at TIMESTAMPTZ",
+        "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS customer_budget_config JSON",
+        "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS customer_rebalance_history JSON",
 
         # Persistent agent tool priors
         """
@@ -228,6 +260,13 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_agent_tool_priors_job_type ON agent_tool_priors(job_type)",
         "CREATE INDEX IF NOT EXISTS ix_agent_tool_priors_tool_name ON agent_tool_priors(tool_name)",
         "CREATE INDEX IF NOT EXISTS ix_agent_tool_priors_user_job ON agent_tool_priors(user_id, job_type)",
+
+        # External auth fields (LDAP)
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(20) NOT NULL DEFAULT 'local'",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_subject VARCHAR(512)",
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_metadata JSON",
+        "CREATE INDEX IF NOT EXISTS ix_users_auth_provider ON users(auth_provider)",
+        "CREATE INDEX IF NOT EXISTS ix_users_auth_subject ON users(auth_subject)",
 
         # Reading lists (collections) - for environments without Alembic
         """
@@ -277,8 +316,89 @@ async def _apply_minimal_migrations(conn) -> None:
         )
         """,
         "ALTER TABLE research_notes ADD COLUMN IF NOT EXISTS attribution JSON",
+        "ALTER TABLE research_notes ADD COLUMN IF NOT EXISTS structured_payload JSON",
         "CREATE INDEX IF NOT EXISTS ix_research_notes_user_id ON research_notes(user_id)",
         "CREATE INDEX IF NOT EXISTS ix_research_notes_created_at ON research_notes(created_at)",
+        "ALTER TABLE synthesis_jobs ADD COLUMN IF NOT EXISTS paper_ids JSON NOT NULL DEFAULT '[]'",
+        "ALTER TABLE synthesis_jobs ADD COLUMN IF NOT EXISTS research_note_id UUID NULL REFERENCES research_notes(id) ON DELETE SET NULL",
+
+        # Structured research papers - for environments without Alembic
+        """
+        CREATE TABLE IF NOT EXISTS research_papers (
+            id UUID PRIMARY KEY,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            source_id UUID NULL REFERENCES document_sources(id) ON DELETE SET NULL,
+            arxiv_id VARCHAR(128) NOT NULL,
+            title VARCHAR(500) NOT NULL,
+            authors JSON NULL,
+            abstract TEXT NULL,
+            published_at TIMESTAMPTZ NULL,
+            categories JSON NULL,
+            paper_url VARCHAR(1000) NULL,
+            pdf_url VARCHAR(1000) NULL,
+            extraction_status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            extracted_at TIMESTAMPTZ NULL,
+            extractor_version VARCHAR(64) NULL,
+            summary TEXT NULL,
+            mechanisms JSON NULL,
+            assumptions JSON NULL,
+            benchmarks JSON NULL,
+            metrics JSON NULL,
+            limitations JSON NULL,
+            raw_extraction_payload JSON NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE UNIQUE INDEX IF NOT EXISTS uq_research_papers_document_id ON research_papers(document_id)",
+        "CREATE INDEX IF NOT EXISTS ix_research_papers_user_id ON research_papers(user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_research_papers_source_id ON research_papers(source_id)",
+        "CREATE INDEX IF NOT EXISTS ix_research_papers_arxiv_id ON research_papers(arxiv_id)",
+        "CREATE INDEX IF NOT EXISTS ix_research_papers_extraction_status ON research_papers(extraction_status)",
+        """
+        CREATE TABLE IF NOT EXISTS paper_claims (
+            id UUID PRIMARY KEY,
+            paper_id UUID NOT NULL REFERENCES research_papers(id) ON DELETE CASCADE,
+            kind VARCHAR(32) NOT NULL DEFAULT 'other',
+            statement TEXT NOT NULL,
+            mechanism VARCHAR(255) NULL,
+            target_layer VARCHAR(32) NOT NULL DEFAULT 'unknown',
+            conditions JSON NULL,
+            assumptions JSON NULL,
+            expected_effect TEXT NULL,
+            evidence_summary TEXT NULL,
+            confidence DOUBLE PRECISION NULL,
+            tags JSON NULL,
+            rank INTEGER NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_paper_claims_paper_id ON paper_claims(paper_id)",
+        """
+        CREATE TABLE IF NOT EXISTS paper_extraction_jobs (
+            id UUID PRIMARY KEY,
+            user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+            document_id UUID NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            source_id UUID NULL REFERENCES document_sources(id) ON DELETE SET NULL,
+            paper_id UUID NULL REFERENCES research_papers(id) ON DELETE SET NULL,
+            status VARCHAR(32) NOT NULL DEFAULT 'pending',
+            extractor_version VARCHAR(64) NULL,
+            error TEXT NULL,
+            request_payload JSON NULL,
+            result_summary JSON NULL,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            started_at TIMESTAMPTZ NULL,
+            completed_at TIMESTAMPTZ NULL,
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_paper_extraction_jobs_user_id ON paper_extraction_jobs(user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_paper_extraction_jobs_document_id ON paper_extraction_jobs(document_id)",
+        "CREATE INDEX IF NOT EXISTS ix_paper_extraction_jobs_source_id ON paper_extraction_jobs(source_id)",
+        "CREATE INDEX IF NOT EXISTS ix_paper_extraction_jobs_paper_id ON paper_extraction_jobs(paper_id)",
+        "CREATE INDEX IF NOT EXISTS ix_paper_extraction_jobs_status ON paper_extraction_jobs(status)",
 
         # Experiments - for environments without Alembic
         """
@@ -323,6 +443,71 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_experiment_runs_agent_job_id ON experiment_runs(agent_job_id)",
         "CREATE INDEX IF NOT EXISTS ix_experiment_runs_created_at ON experiment_runs(created_at)",
 
+        # Benchmark harness - for environments without Alembic
+        """
+        CREATE TABLE IF NOT EXISTS benchmark_suites (
+            id VARCHAR(120) PRIMARY KEY,
+            user_id UUID NULL REFERENCES users(id) ON DELETE SET NULL,
+            name VARCHAR(200) NOT NULL,
+            description TEXT NULL,
+            track_type VARCHAR(32) NOT NULL DEFAULT 'compiler',
+            benchmark_family VARCHAR(64) NOT NULL DEFAULT 'compiler_regression',
+            suite_version INTEGER NOT NULL DEFAULT 1,
+            tags JSON NOT NULL DEFAULT '[]',
+            metadata_json JSON NOT NULL DEFAULT '{}',
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            system_managed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_suites_user_id ON benchmark_suites(user_id)",
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_suites_track_type ON benchmark_suites(track_type)",
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_suites_benchmark_family ON benchmark_suites(benchmark_family)",
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_suites_enabled ON benchmark_suites(enabled)",
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_suites_system_managed ON benchmark_suites(system_managed)",
+        """
+        CREATE TABLE IF NOT EXISTS benchmark_cases (
+            id VARCHAR(120) PRIMARY KEY,
+            suite_id VARCHAR(120) NOT NULL REFERENCES benchmark_suites(id) ON DELETE CASCADE,
+            name VARCHAR(200) NOT NULL,
+            description TEXT NULL,
+            rank INTEGER NOT NULL DEFAULT 0,
+            source_ref VARCHAR(500) NULL,
+            benchmark_query VARCHAR(500) NULL,
+            compile_command_template TEXT NULL,
+            run_command_template TEXT NULL,
+            expected_artifacts JSON NOT NULL DEFAULT '[]',
+            metrics JSON NOT NULL DEFAULT '[]',
+            metadata_json JSON NOT NULL DEFAULT '{}',
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_cases_suite_id ON benchmark_cases(suite_id)",
+        """
+        CREATE TABLE IF NOT EXISTS benchmark_baselines (
+            id VARCHAR(120) PRIMARY KEY,
+            suite_id VARCHAR(120) NOT NULL REFERENCES benchmark_suites(id) ON DELETE CASCADE,
+            case_id VARCHAR(120) NULL REFERENCES benchmark_cases(id) ON DELETE SET NULL,
+            name VARCHAR(200) NOT NULL,
+            description TEXT NULL,
+            compiler_revision VARCHAR(120) NULL,
+            toolchain_id VARCHAR(120) NULL,
+            sandbox_profile_id VARCHAR(120) NULL,
+            measurements JSON NOT NULL DEFAULT '{}',
+            environment_snapshot JSON NOT NULL DEFAULT '{}',
+            enabled BOOLEAN NOT NULL DEFAULT TRUE,
+            system_managed BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+            updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+        )
+        """,
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_baselines_suite_id ON benchmark_baselines(suite_id)",
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_baselines_case_id ON benchmark_baselines(case_id)",
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_baselines_enabled ON benchmark_baselines(enabled)",
+        "CREATE INDEX IF NOT EXISTS ix_benchmark_baselines_system_managed ON benchmark_baselines(system_managed)",
+
         # Research inbox items - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS research_inbox_items (
@@ -340,6 +525,24 @@ async def _apply_minimal_migrations(conn) -> None:
             status VARCHAR(16) NOT NULL DEFAULT 'new',
             feedback TEXT NULL,
             metadata JSON NULL,
+            follow_up_decision VARCHAR(32) NULL,
+            follow_up_policy_mode VARCHAR(32) NULL,
+            follow_up_launch_status VARCHAR(32) NULL,
+            follow_up_block_reason TEXT NULL,
+            follow_up_budget_decision VARCHAR(32) NULL,
+            follow_up_budget_reason TEXT NULL,
+            follow_up_budget_throttle_state VARCHAR(32) NULL,
+            follow_up_recommendation_key VARCHAR(100) NULL,
+            follow_up_operator_decision VARCHAR(32) NULL,
+            follow_up_operator_note TEXT NULL,
+            follow_up_operator_acted_at TIMESTAMPTZ NULL,
+            follow_up_operator_user_id UUID NULL,
+            follow_up_job_id UUID NULL,
+            follow_up_chain_definition_id UUID NULL,
+            follow_up_launched_at TIMESTAMPTZ NULL,
+            follow_up_outcome_status VARCHAR(32) NULL,
+            follow_up_outcome_recorded_at TIMESTAMPTZ NULL,
+            follow_up_outcome_summary TEXT NULL,
             created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
             updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
         )
@@ -358,6 +561,10 @@ async def _apply_minimal_migrations(conn) -> None:
             user_id UUID NOT NULL REFERENCES users(id) ON DELETE CASCADE,
             customer VARCHAR(255) NULL,
             token_scores JSON NULL,
+            phrase_scores JSON NULL,
+            recommendation_scores JSON NULL,
+            source_type_scores JSON NULL,
+            outcome_counters JSON NULL,
             muted_tokens JSON NULL,
             muted_patterns JSON NULL,
             notes TEXT NULL,
@@ -369,6 +576,10 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_research_monitor_profiles_user_id ON research_monitor_profiles(user_id)",
         "CREATE INDEX IF NOT EXISTS ix_research_monitor_profiles_customer ON research_monitor_profiles(customer)",
         "CREATE INDEX IF NOT EXISTS ix_research_monitor_profiles_user_customer ON research_monitor_profiles(user_id, customer)",
+        "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS phrase_scores JSON",
+        "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS recommendation_scores JSON",
+        "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS source_type_scores JSON",
+        "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS outcome_counters JSON",
 
         # Code patch proposals - for environments without Alembic
         """

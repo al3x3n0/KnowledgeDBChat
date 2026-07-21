@@ -75,6 +75,23 @@ out/
 !/data/hf_cache/.gitkeep
 !/data/test/hf_cache/.gitkeep
 
+# Docker runtime volumes and caches (never commit runtime state)
+/data/minio_data/
+/data/ollama_data/
+/data/postgres_data/
+/data/postgres-init/
+/data/qdrant_data/
+/data/redis_data/
+/data/embeddings/
+/data/pip_cache/
+/data/torch_cache/
+/data/whisper_models/
+/data/yt_dlp_cache/
+
+# Editor/compose backups
+*.bak
+*.bak.*
+
 # Database
 *.db
 *.sqlite

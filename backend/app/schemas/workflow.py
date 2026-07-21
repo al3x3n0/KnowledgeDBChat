@@ -73,7 +73,7 @@ class UserToolBase(BaseModel):
     """Base schema for user tools."""
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = None
-    tool_type: Literal["webhook", "transform", "python", "llm_prompt", "docker_container"]
+    tool_type: Literal["webhook", "transform", "python", "llm_prompt", "docker_container", "workflow_runner"]
     parameters_schema: Dict[str, Any] = Field(
         default_factory=dict,
         description="JSON Schema for tool input parameters"
@@ -94,7 +94,7 @@ class UserToolUpdate(BaseModel):
     """Schema for updating a user tool."""
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = None
-    tool_type: Optional[Literal["webhook", "transform", "python", "llm_prompt", "docker_container"]] = None
+    tool_type: Optional[Literal["webhook", "transform", "python", "llm_prompt", "docker_container", "workflow_runner"]] = None
     parameters_schema: Optional[Dict[str, Any]] = None
     config: Optional[Dict[str, Any]] = None
     is_enabled: Optional[bool] = None
@@ -240,12 +240,30 @@ class WorkflowSynthesisRequest(BaseModel):
     name: Optional[str] = Field(None, max_length=255)
     is_active: Optional[bool] = True
     trigger_config: Optional[Dict[str, Any]] = None
+    synthesize_custom_tools: bool = Field(False, description="Allow LLM to generate custom tool drafts")
+    preferred_tool_type: Optional[Literal["webhook", "transform", "python", "llm_prompt", "docker_container"]] = Field(
+        None,
+        description="Bias generated custom tools to a type (e.g. docker_container)",
+    )
+    expose_workflow_as_tool: bool = Field(False, description="Suggest a workflow_runner tool wrapping this workflow")
+    workflow_tool_name: Optional[str] = Field(None, max_length=100)
+
+
+class WorkflowSynthesisToolDraft(BaseModel):
+    name: str = Field(..., min_length=1, max_length=100)
+    description: Optional[str] = None
+    tool_type: Literal["webhook", "transform", "python", "llm_prompt", "docker_container", "workflow_runner"]
+    parameters_schema: Dict[str, Any] = Field(default_factory=dict)
+    config: Dict[str, Any] = Field(default_factory=dict)
+    is_enabled: bool = True
 
 
 class WorkflowSynthesisResponse(BaseModel):
     """Response schema for workflow synthesis."""
     workflow: WorkflowCreate
     warnings: List[str] = Field(default_factory=list)
+    custom_tools: List[WorkflowSynthesisToolDraft] = Field(default_factory=list)
+    workflow_tool: Optional[WorkflowSynthesisToolDraft] = None
 
 
 class WorkflowResponse(WorkflowBase):

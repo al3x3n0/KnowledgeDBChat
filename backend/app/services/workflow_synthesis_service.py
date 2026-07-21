@@ -32,6 +32,14 @@ class ToolCatalog:
     custom_tools: List[UserTool]
 
 
+@dataclass
+class SynthesisBundle:
+    workflow: WorkflowCreate
+    warnings: List[str]
+    custom_tools: List[Dict[str, Any]]
+    workflow_tool: Optional[Dict[str, Any]]
+
+
 class WorkflowSynthesisService:
     """Synthesize workflow definitions from descriptions."""
 
@@ -45,12 +53,44 @@ class WorkflowSynthesisService:
         user_id,
         db: AsyncSession,
     ) -> Tuple[WorkflowCreate, List[str]]:
+        bundle = await self.synthesize_bundle(
+            description=description,
+            name=name,
+            trigger_config=trigger_config,
+            is_active=is_active,
+            user_id=user_id,
+            db=db,
+            synthesize_custom_tools=False,
+            preferred_tool_type=None,
+            expose_workflow_as_tool=False,
+            workflow_tool_name=None,
+        )
+        return bundle.workflow, bundle.warnings
+
+    async def synthesize_bundle(
+        self,
+        *,
+        description: str,
+        name: Optional[str],
+        trigger_config: Optional[Dict[str, Any]],
+        is_active: Optional[bool],
+        user_id,
+        db: AsyncSession,
+        synthesize_custom_tools: bool,
+        preferred_tool_type: Optional[str],
+        expose_workflow_as_tool: bool,
+        workflow_tool_name: Optional[str],
+    ) -> SynthesisBundle:
         catalog = await self._load_tool_catalog(db, user_id)
         prompt = self._build_prompt(
             description=description,
             name=name,
             trigger_config=trigger_config,
             catalog=catalog,
+            synthesize_custom_tools=synthesize_custom_tools,
+            preferred_tool_type=preferred_tool_type,
+            expose_workflow_as_tool=expose_workflow_as_tool,
+            workflow_tool_name=workflow_tool_name,
         )
 
         llm_service = LLMService()
@@ -75,14 +115,25 @@ class WorkflowSynthesisService:
             fallback_description=description,
             fallback_trigger=trigger_config,
             fallback_is_active=is_active,
+            synthesize_custom_tools=synthesize_custom_tools,
+            preferred_tool_type=preferred_tool_type,
+            expose_workflow_as_tool=expose_workflow_as_tool,
+            workflow_tool_name=workflow_tool_name,
         )
 
+        custom_tools = normalized.pop("custom_tools", [])
+        workflow_tool = normalized.pop("workflow_tool", None)
         try:
             workflow = WorkflowCreate.model_validate(normalized)
         except ValidationError as exc:
             logger.error(f"Workflow synthesis validation error: {exc}")
             raise ValueError("Synthesized workflow failed validation") from exc
-        return workflow, warnings
+        return SynthesisBundle(
+            workflow=workflow,
+            warnings=warnings,
+            custom_tools=custom_tools,
+            workflow_tool=workflow_tool,
+        )
 
     async def _load_user_settings(self, db: AsyncSession, user_id) -> Optional[UserLLMSettings]:
         try:
@@ -118,6 +169,10 @@ class WorkflowSynthesisService:
         name: Optional[str],
         trigger_config: Optional[Dict[str, Any]],
         catalog: ToolCatalog,
+        synthesize_custom_tools: bool,
+        preferred_tool_type: Optional[str],
+        expose_workflow_as_tool: bool,
+        workflow_tool_name: Optional[str],
     ) -> str:
         builtin_json = json.dumps(catalog.builtin_tools, ensure_ascii=True, indent=2)
         custom_json = json.dumps(
@@ -137,6 +192,14 @@ class WorkflowSynthesisService:
 
         preferred_name = name or ""
         trigger_hint = json.dumps(trigger_config or {"type": "manual"}, ensure_ascii=True)
+        tool_synth_hint = (
+            "true"
+            if synthesize_custom_tools
+            else "false"
+        )
+        preferred_tool_hint = preferred_tool_type or "none"
+        expose_workflow_tool_hint = "true" if expose_workflow_as_tool else "false"
+        workflow_tool_name_hint = workflow_tool_name or ""
 
         return (
             "You are a workflow synthesis engine. "
@@ -172,7 +235,25 @@ class WorkflowSynthesisService:
             '      "source_handle": "true|false|null",\n'
             '      "condition": object|null\n'
             "    }\n"
-            "  ]\n"
+            "  ],\n"
+            '  "custom_tools": [\n'
+            "    {\n"
+            '      "name": string,\n'
+            '      "description": string,\n'
+            '      "tool_type": "webhook|transform|python|llm_prompt|docker_container",\n'
+            '      "parameters_schema": object,\n'
+            '      "config": object,\n'
+            '      "is_enabled": true\n'
+            "    }\n"
+            "  ],\n"
+            '  "workflow_tool": {\n'
+            '      "name": string,\n'
+            '      "description": string,\n'
+            '      "tool_type": "workflow_runner",\n'
+            '      "parameters_schema": object,\n'
+            '      "config": { "workflow_id": "__TO_BE_FILLED__" },\n'
+            '      "is_enabled": true\n'
+            "  } | null\n"
             "}\n\n"
             "Rules:\n"
             "- Include exactly one start node and at least one end node.\n"
@@ -182,9 +263,19 @@ class WorkflowSynthesisService:
             "- Use {{context.trigger_data}} for trigger inputs when needed.\n"
             "- For condition nodes, connect outgoing edges with source_handle 'true' and 'false'.\n"
             "- Keep the graph small and practical (roughly 4-10 nodes).\n"
+            "- If custom_tools synthesis is disabled, return custom_tools as [].\n"
+            "- If custom_tools synthesis is enabled and the task mentions containers, prefer docker_container tools.\n"
+            "- For docker_container tools, include image and command in config.\n"
+            "- For tool nodes that should call a newly generated custom tool, set config.tool_name_hint to that custom tool name.\n"
+            "- If expose_workflow_as_tool is false, set workflow_tool to null.\n"
+            "- If expose_workflow_as_tool is true, return a workflow_runner draft in workflow_tool.\n"
             "- Output JSON only, no markdown or explanations.\n\n"
             f"Preferred name (if suitable): {preferred_name}\n"
             f"Trigger hint: {trigger_hint}\n\n"
+            f"custom_tools synthesis enabled: {tool_synth_hint}\n"
+            f"preferred custom tool type: {preferred_tool_hint}\n"
+            f"expose_workflow_as_tool: {expose_workflow_tool_hint}\n"
+            f"preferred workflow_tool_name: {workflow_tool_name_hint}\n\n"
             f"USER DESCRIPTION:\n{description}\n\n"
             f"BUILTIN TOOLS:\n{builtin_json}\n\n"
             f"CUSTOM TOOLS:\n{custom_json}\n"
@@ -214,11 +305,22 @@ class WorkflowSynthesisService:
         fallback_description: str,
         fallback_trigger: Optional[Dict[str, Any]],
         fallback_is_active: Optional[bool],
+        synthesize_custom_tools: bool,
+        preferred_tool_type: Optional[str],
+        expose_workflow_as_tool: bool,
+        workflow_tool_name: Optional[str],
     ) -> Tuple[Dict[str, Any], List[str]]:
         warnings: List[str] = []
         builtin_names = {tool["name"] for tool in catalog.builtin_tools}
         custom_by_name = {tool.name.lower(): tool for tool in catalog.custom_tools}
         custom_by_id = {str(tool.id): tool for tool in catalog.custom_tools}
+        generated_custom_tools = self._normalize_custom_tools(
+            data.get("custom_tools"),
+            synthesize_custom_tools=synthesize_custom_tools,
+            preferred_tool_type=preferred_tool_type,
+            warnings=warnings,
+        )
+        generated_custom_names = {str(t.get("name") or "").strip().lower() for t in generated_custom_tools if t.get("name")}
 
         is_active = data.get("is_active")
         if is_active is None:
@@ -231,6 +333,14 @@ class WorkflowSynthesisService:
             "trigger_config": data.get("trigger_config") or fallback_trigger or {"type": "manual"},
             "nodes": [],
             "edges": [],
+            "custom_tools": generated_custom_tools,
+            "workflow_tool": self._normalize_workflow_tool(
+                data.get("workflow_tool"),
+                expose_workflow_as_tool=expose_workflow_as_tool,
+                workflow_tool_name=workflow_tool_name,
+                workflow_name=(data.get("name") or fallback_name or "Generated Workflow"),
+                warnings=warnings,
+            ),
         }
 
         nodes_input = data.get("nodes") or []
@@ -280,7 +390,12 @@ class WorkflowSynthesisService:
                     tool_id = None
 
                 if not builtin_tool and not tool_id:
-                    warnings.append(f"Tool node '{node_id}' has no valid tool reference.")
+                    if tool_name and str(tool_name).strip().lower() in generated_custom_names:
+                        config["tool_name_hint"] = str(tool_name).strip()
+                    elif config.get("tool_name_hint"):
+                        config["tool_name_hint"] = str(config.get("tool_name_hint")).strip()
+                    else:
+                        warnings.append(f"Tool node '{node_id}' has no valid tool reference.")
 
             normalized["nodes"].append(
                 {
@@ -319,6 +434,103 @@ class WorkflowSynthesisService:
         self._assign_positions(normalized)
 
         return normalized, warnings
+
+    def _normalize_custom_tools(
+        self,
+        tool_data: Any,
+        *,
+        synthesize_custom_tools: bool,
+        preferred_tool_type: Optional[str],
+        warnings: List[str],
+    ) -> List[Dict[str, Any]]:
+        if not synthesize_custom_tools:
+            return []
+        if not isinstance(tool_data, list):
+            return []
+
+        allowed_types = {"webhook", "transform", "python", "llm_prompt", "docker_container"}
+        normalized: List[Dict[str, Any]] = []
+        seen = set()
+
+        for idx, item in enumerate(tool_data):
+            if not isinstance(item, dict):
+                continue
+            name = str(item.get("name") or "").strip()
+            if not name:
+                continue
+            key = name.lower()
+            if key in seen:
+                warnings.append(f"Duplicate synthesized custom tool '{name}' was skipped.")
+                continue
+            seen.add(key)
+
+            tool_type = str(item.get("tool_type") or preferred_tool_type or "docker_container").strip().lower()
+            if tool_type not in allowed_types:
+                warnings.append(f"Synthesized tool '{name}' had unsupported type '{tool_type}', using '{preferred_tool_type or 'docker_container'}'.")
+                tool_type = (preferred_tool_type or "docker_container")
+                if tool_type not in allowed_types:
+                    tool_type = "docker_container"
+
+            parameters_schema = item.get("parameters_schema")
+            if not isinstance(parameters_schema, dict):
+                parameters_schema = {"type": "object", "properties": {}}
+            config = item.get("config")
+            if not isinstance(config, dict):
+                config = {}
+
+            normalized.append(
+                {
+                    "name": name[:100],
+                    "description": str(item.get("description") or "").strip() or f"Synthesized {tool_type} tool",
+                    "tool_type": tool_type,
+                    "parameters_schema": parameters_schema,
+                    "config": config,
+                    "is_enabled": bool(item.get("is_enabled", True)),
+                }
+            )
+
+        return normalized
+
+    def _normalize_workflow_tool(
+        self,
+        item: Any,
+        *,
+        expose_workflow_as_tool: bool,
+        workflow_tool_name: Optional[str],
+        workflow_name: str,
+        warnings: List[str],
+    ) -> Optional[Dict[str, Any]]:
+        if not expose_workflow_as_tool:
+            return None
+
+        draft = item if isinstance(item, dict) else {}
+        name = str(draft.get("name") or workflow_tool_name or f"Run {workflow_name}").strip()
+        if not name:
+            name = "Run Workflow"
+        config = draft.get("config")
+        if not isinstance(config, dict):
+            config = {}
+        # Placeholder is replaced after workflow persistence.
+        if "workflow_id" not in config:
+            config["workflow_id"] = "__TO_BE_FILLED__"
+
+        tool_type = str(draft.get("tool_type") or "workflow_runner").strip().lower()
+        if tool_type != "workflow_runner":
+            warnings.append("workflow_tool.tool_type normalized to 'workflow_runner'.")
+            tool_type = "workflow_runner"
+
+        parameters_schema = draft.get("parameters_schema")
+        if not isinstance(parameters_schema, dict):
+            parameters_schema = {"type": "object", "properties": {}}
+
+        return {
+            "name": name[:100],
+            "description": str(draft.get("description") or f"Run workflow '{workflow_name}'").strip(),
+            "tool_type": tool_type,
+            "parameters_schema": parameters_schema,
+            "config": config,
+            "is_enabled": bool(draft.get("is_enabled", True)),
+        }
 
     def _sanitize_node_id(self, node_id: str) -> str:
         cleaned = re.sub(r"[^a-zA-Z0-9_-]", "_", node_id.strip())

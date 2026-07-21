@@ -116,6 +116,9 @@ async def login(
     except SQLAlchemyError as e:
         logger.error(f"Login DB error: {e}")
         raise HTTPException(status_code=503, detail="Database is temporarily unavailable")
+    except OSError as e:
+        logger.error(f"Login backend network error: {e}")
+        raise HTTPException(status_code=503, detail="Authentication backend is temporarily unavailable")
     except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Login failed")

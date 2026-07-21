@@ -4,7 +4,16 @@ LLM service for generating responses using local or external LLMs.
 Supported providers:
 - Ollama (local)
 - DeepSeek (external, OpenAI-compatible chat API)
+- OpenAI (external, official SDK)
+- Anthropic (external, official SDK)
+- Qwen via DashScope compatible mode (external)
+- Kimi / Moonshot AI (external, OpenAI-compatible)
 - Custom OpenAI-compatible APIs (user-configured)
+
+Two generation paths:
+- ``generate_response``: legacy prompted-text completion (returns str)
+- ``generate_structured``: native tool calling / schema-constrained output
+  via ``app.services.llm_providers`` (returns ``LLMCompletion``)
 """
 
 import asyncio
@@ -154,6 +163,81 @@ class LLMService:
         u = (api_url or '').strip()
         return f"{p}:{u}" if u else p
 
+    async def _tier_overrides_for(self, attempt_tier: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        try:
+            from app.core.feature_flags import get_str as _get_str
+            return await resolve_tier_overrides(_get_str, attempt_tier)
+        except Exception:
+            return None, None
+
+    @staticmethod
+    def _clip_snapshot(text: Optional[str]) -> Optional[str]:
+        if text is None:
+            return None
+        limit = int(getattr(settings, "LLM_CALL_SNAPSHOT_MAX_CHARS", 20000) or 20000)
+        text = str(text)
+        if len(text) > limit:
+            return text[:limit] + " ... [truncated]"
+        return text
+
+    def _record_call_snapshot(
+        self,
+        db: Optional[AsyncSession],
+        *,
+        request: Dict[str, Any],
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        task_type: Optional[str] = None,
+        user_id: Optional[UUID] = None,
+        response_text: Optional[str] = None,
+        tool_calls: Optional[Any] = None,
+        structured: Optional[Dict[str, Any]] = None,
+        error: Optional[str] = None,
+        latency_ms: Optional[int] = None,
+        prompt_tokens: Optional[int] = None,
+        completion_tokens: Optional[int] = None,
+        snapshot_context: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Persist a full request/response snapshot for replay debugging.
+
+        Best-effort and opt-in (LLM_CALL_SNAPSHOT_ENABLED); never raises.
+        """
+        if db is None or not getattr(settings, "LLM_CALL_SNAPSHOT_ENABLED", False):
+            return
+        try:
+            from uuid import UUID as _UUID
+
+            from app.models.llm_call_snapshot import LLMCallSnapshot
+
+            ctx = snapshot_context if isinstance(snapshot_context, dict) else {}
+            job_id = ctx.get("job_id")
+            if job_id is not None and not isinstance(job_id, _UUID):
+                try:
+                    job_id = _UUID(str(job_id))
+                except Exception:
+                    job_id = None
+            iteration = ctx.get("iteration")
+            snapshot = LLMCallSnapshot(
+                user_id=user_id,
+                job_id=job_id,
+                iteration=int(iteration) if isinstance(iteration, int) else None,
+                phase=(str(ctx.get("phase"))[:50] if ctx.get("phase") else None),
+                provider=(str(provider)[:50] if provider else None),
+                model=(str(model)[:200] if model else None),
+                task_type=(str(task_type)[:50] if task_type else None),
+                request=request,
+                response_text=self._clip_snapshot(response_text),
+                tool_calls=tool_calls,
+                structured=structured,
+                error=(str(error)[:2000] if error else None),
+                latency_ms=latency_ms,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+            db.add(snapshot)
+        except Exception:
+            pass
+
     async def generate_response(
         self,
         query: Optional[str] = None,
@@ -174,6 +258,7 @@ class LLMService:
         provider: Optional[str] = None,
         api_url: Optional[str] = None,
         api_key: Optional[str] = None,
+        snapshot_context: Optional[Dict[str, Any]] = None,
         # Back-compat aliases used in parts of the codebase.
         # Prefer `query=` + `context=` + `task_type=`.
         system_prompt: Optional[str] = None,
@@ -263,8 +348,9 @@ class LLMService:
             elif tier_model:
                 attempt_model_source = "tier_feature_flag"
 
+            attempt_started = asyncio.get_event_loop().time()
             try:
-                return await self._generate_response_once(
+                result_text = await self._generate_response_once(
                     query=query,
                     context=context,
                     conversation_history=conversation_history,
@@ -300,7 +386,40 @@ class LLMService:
                     timeout_seconds=timeout_seconds,
                     max_tokens_cap=max_tokens_cap,
                 )
+                self._record_call_snapshot(
+                    db,
+                    request={
+                        "system_prompt": self._clip_snapshot(system_prompt),
+                        "query": self._clip_snapshot(query),
+                        "context": self._clip_snapshot(context),
+                        "conversation_history": self._clip_snapshot(conversation_history),
+                        "tier": attempt_tier,
+                    },
+                    provider=attempt_provider,
+                    model=attempt_model,
+                    task_type=task_type,
+                    user_id=user_id,
+                    response_text=result_text,
+                    latency_ms=int((asyncio.get_event_loop().time() - attempt_started) * 1000),
+                    snapshot_context=snapshot_context,
+                )
+                return result_text
             except LLMServiceError as e:
+                self._record_call_snapshot(
+                    db,
+                    request={
+                        "system_prompt": self._clip_snapshot(system_prompt),
+                        "query": self._clip_snapshot(query),
+                        "tier": attempt_tier,
+                    },
+                    provider=attempt_provider,
+                    model=attempt_model,
+                    task_type=task_type,
+                    user_id=user_id,
+                    error=str(e),
+                    latency_ms=int((asyncio.get_event_loop().time() - attempt_started) * 1000),
+                    snapshot_context=snapshot_context,
+                )
                 try:
                     k = self._health_key(provider=str(attempt_provider or ""), api_url=api_url)
                     await self._mark_unhealthy(k, cooldown_seconds=cooldown_seconds, reason=str(e))
@@ -311,6 +430,274 @@ class LLMService:
         if isinstance(last_err, LLMServiceError):
             raise last_err
         raise LLMServiceError("Failed to generate response")
+
+    async def generate_structured(
+        self,
+        *,
+        messages: Optional[List[Dict[str, Any]]] = None,
+        system_prompt: Optional[str] = None,
+        user_message: Optional[str] = None,
+        tools: Optional[List[Dict[str, Any]]] = None,
+        response_schema: Optional[Dict[str, Any]] = None,
+        model: Optional[str] = None,
+        temperature: Optional[float] = None,
+        max_tokens: Optional[int] = None,
+        user_settings: Optional[UserLLMSettings] = None,
+        task_type: str = "chat",
+        user_id: Optional[UUID] = None,
+        db: Optional[AsyncSession] = None,
+        routing: Optional[Dict[str, Any]] = None,
+        provider: Optional[str] = None,
+        api_url: Optional[str] = None,
+        api_key: Optional[str] = None,
+        snapshot_context: Optional[Dict[str, Any]] = None,
+    ):
+        """Native completion with tool calling and/or structured output.
+
+        Unlike ``generate_response`` (prompted text), this path uses each
+        provider's native APIs: tool/function calling (``tools``) and
+        schema-constrained JSON output (``response_schema``). Returns an
+        ``LLMCompletion`` with ``text``, ``tool_calls``, and ``structured``.
+
+        Provider/model resolution, tier routing with fallback, provider
+        health cooldowns, the concurrency semaphore, and usage-event logging
+        all match ``generate_response`` semantics.
+        """
+        from app.services.llm_providers import build_provider
+
+        if messages is None:
+            if user_message is None:
+                raise TypeError(
+                    "generate_structured requires `messages` or `user_message`."
+                )
+            messages = []
+            if system_prompt:
+                messages.append({"role": "system", "content": system_prompt})
+            messages.append({"role": "user", "content": user_message})
+
+        routing_cfg = coerce_routing_config(routing)
+        tier = routing_cfg.get("tier")
+        fallback_tiers = (
+            routing_cfg.get("fallback_tiers")
+            if isinstance(routing_cfg.get("fallback_tiers"), list)
+            else []
+        )
+        timeout_seconds = routing_cfg.get("timeout_seconds")
+        max_tokens_cap = routing_cfg.get("max_tokens_cap")
+        cooldown_seconds = routing_cfg.get("cooldown_seconds")
+        tiers = compute_attempt_tiers(tier=tier, fallback_tiers=fallback_tiers)
+
+        last_err: Optional[Exception] = None
+
+        for idx, attempt_tier in enumerate(tiers):
+            tier_provider, tier_model = await self._tier_overrides_for(attempt_tier)
+
+            # Resolution mirrors _generate_response_once: user settings first,
+            # then call/tier overrides on top.
+            effective_provider = self.provider
+            effective_api_url: Optional[str] = None
+            effective_api_key: Optional[str] = None
+            effective_model = model
+            effective_temperature = temperature
+            effective_max_tokens = max_tokens
+
+            if user_settings and user_settings.has_custom_settings():
+                task_provider = user_settings.get_provider_for_task(task_type)
+                if task_provider:
+                    effective_provider = task_provider.lower()
+                if effective_model is None:
+                    effective_model = (
+                        user_settings.get_model_for_task(task_type)
+                        or user_settings.model
+                    )
+                if user_settings.api_url:
+                    effective_api_url = user_settings.api_url
+                if user_settings.api_key:
+                    effective_api_key = user_settings.api_key
+                if effective_temperature is None:
+                    effective_temperature = user_settings.temperature
+                if effective_max_tokens is None:
+                    effective_max_tokens = user_settings.max_tokens
+
+            attempt_provider = provider or tier_provider
+            if attempt_provider:
+                effective_provider = str(attempt_provider).strip().lower()
+            if api_url:
+                effective_api_url = str(api_url).strip() or None
+            if api_key:
+                effective_api_key = str(api_key)
+            if effective_model is None and tier_model:
+                effective_model = tier_model
+
+            # Only Ollama falls back to the system default model; external
+            # providers use their own configured defaults.
+            if effective_model is None and effective_provider == "ollama":
+                try:
+                    from app.core.feature_flags import get_str as _get_str
+                    effective_model = await _get_str("llm_default_model")
+                except Exception:
+                    effective_model = None
+                effective_model = effective_model or self.default_model
+
+            if max_tokens_cap:
+                effective_max_tokens = min(
+                    int(effective_max_tokens or max_tokens_cap), int(max_tokens_cap)
+                )
+
+            hk = self._health_key(provider=effective_provider, api_url=effective_api_url)
+            try:
+                if not await self._is_healthy(hk):
+                    continue
+            except Exception:
+                pass
+
+            start_time = asyncio.get_event_loop().time()
+            completion = None
+            error_text: Optional[str] = None
+            try:
+                await _LLM_SEMAPHORE.acquire()
+                try:
+                    llm_provider = build_provider(
+                        effective_provider,
+                        api_url=effective_api_url,
+                        api_key=effective_api_key,
+                        http_client=self.client,
+                    )
+                    completion = await llm_provider.complete(
+                        messages,
+                        model=effective_model,
+                        tools=tools,
+                        response_schema=response_schema,
+                        temperature=effective_temperature,
+                        max_tokens=effective_max_tokens,
+                        timeout_seconds=timeout_seconds,
+                    )
+                finally:
+                    _LLM_SEMAPHORE.release()
+                return completion
+            except LLMServiceError as e:
+                error_text = str(e)
+                try:
+                    await self._mark_unhealthy(
+                        hk, cooldown_seconds=cooldown_seconds, reason=str(e)
+                    )
+                except Exception:
+                    pass
+                last_err = e
+            except Exception as e:
+                error_text = str(e)
+                logger.error(f"Error in structured LLM generation: {e}")
+                last_err = LLMServiceError(f"Failed to generate structured response: {e}")
+            finally:
+                if db is not None:
+                    try:
+                        latency_ms = int(
+                            (asyncio.get_event_loop().time() - start_time) * 1000
+                        )
+                        event = LLMUsageEvent(
+                            user_id=user_id,
+                            provider=(
+                                completion.provider if completion else effective_provider
+                            ),
+                            model=(
+                                completion.model if completion else effective_model
+                            ),
+                            task_type=task_type,
+                            prompt_tokens=(
+                                completion.prompt_tokens if completion else None
+                            ),
+                            completion_tokens=(
+                                completion.completion_tokens if completion else None
+                            ),
+                            total_tokens=(
+                                completion.total_tokens if completion else None
+                            ),
+                            input_chars=sum(
+                                len(str(m.get("content") or "")) for m in messages
+                            ),
+                            output_chars=(
+                                len(completion.text or "") if completion else None
+                            ),
+                            latency_ms=latency_ms,
+                            error=(error_text[:255] if error_text else None),
+                            extra={
+                                "structured": True,
+                                "has_schema": bool(response_schema),
+                                "tool_count": len(tools or []),
+                                "tool_call_count": (
+                                    len(completion.tool_calls) if completion else None
+                                ),
+                                "cache_read_input_tokens": (
+                                    (completion.raw or {}).get("cache_read_input_tokens")
+                                    if completion
+                                    else None
+                                ),
+                                "cache_creation_input_tokens": (
+                                    (completion.raw or {}).get(
+                                        "cache_creation_input_tokens"
+                                    )
+                                    if completion
+                                    else None
+                                ),
+                                "routing": {
+                                    "tier": attempt_tier,
+                                    "attempt": idx + 1,
+                                    "attempts": len(tiers),
+                                    "requested_tier": tier,
+                                },
+                            },
+                        )
+                        db.add(event)
+                    except Exception:
+                        pass
+                self._record_call_snapshot(
+                    db,
+                    request={
+                        "messages": [
+                            {
+                                "role": m.get("role"),
+                                "content": self._clip_snapshot(
+                                    str(m.get("content") or "")
+                                ),
+                            }
+                            for m in messages
+                        ],
+                        "tool_names": [
+                            str(t.get("name") or "") for t in (tools or [])
+                        ],
+                        "has_schema": bool(response_schema),
+                        "tier": attempt_tier,
+                    },
+                    provider=(
+                        completion.provider if completion else effective_provider
+                    ),
+                    model=(completion.model if completion else effective_model),
+                    task_type=task_type,
+                    user_id=user_id,
+                    response_text=(completion.text if completion else None),
+                    tool_calls=(
+                        [
+                            {"id": tc.id, "name": tc.name, "arguments": tc.arguments}
+                            for tc in completion.tool_calls
+                        ]
+                        if completion and completion.tool_calls
+                        else None
+                    ),
+                    structured=(completion.structured if completion else None),
+                    error=error_text,
+                    latency_ms=int(
+                        (asyncio.get_event_loop().time() - start_time) * 1000
+                    ),
+                    prompt_tokens=(completion.prompt_tokens if completion else None),
+                    completion_tokens=(
+                        completion.completion_tokens if completion else None
+                    ),
+                    snapshot_context=snapshot_context,
+                )
+
+        if isinstance(last_err, LLMServiceError):
+            raise last_err
+        raise LLMServiceError("Failed to generate structured response")
 
     async def _generate_response_once(
         self,
@@ -435,7 +822,54 @@ class LLMService:
                 if routing_meta and isinstance(routing_meta, dict):
                     routing_meta["decision"] = routing_decision
 
-                # Determine which provider to use
+                # Determine which provider to use.
+                # SDK-module providers route through llm_providers; the model
+                # prefixes guard against the generic (Ollama) model default
+                # leaking into a provider that can't serve it.
+                _sdk_provider_model_prefixes = {
+                    "anthropic": ("claude",),
+                    "qwen": ("qwen",),
+                    "kimi": ("kimi", "moonshot"),
+                }
+                if effective_provider in _sdk_provider_model_prefixes:
+                    from app.services.llm_providers import build_provider as _build_provider
+
+                    provider_used = effective_provider
+                    chat_messages = self._build_chat_messages(
+                        query=query,
+                        context=context,
+                        conversation_history=conversation_history,
+                        memory_context=memory_context,
+                        kg_context=kg_context,
+                        system_prompt=system_prompt,
+                    )
+                    input_chars = sum(len(m.get("content") or "") for m in chat_messages)
+                    prefixes = _sdk_provider_model_prefixes[effective_provider]
+                    native_model = (
+                        model if model and str(model).lower().startswith(prefixes) else None
+                    )
+                    llm_provider = _build_provider(
+                        effective_provider,
+                        api_url=effective_api_url,
+                        api_key=effective_api_key,
+                    )
+                    completion = await llm_provider.complete(
+                        chat_messages,
+                        model=native_model,
+                        # AnthropicProvider never sends temperature; the
+                        # OpenAI-compatible providers honor it.
+                        temperature=temperature,
+                        max_tokens=max_tokens,
+                        timeout_seconds=timeout_seconds,
+                    )
+                    model_used = completion.model or native_model
+                    prompt_tokens = completion.prompt_tokens
+                    completion_tokens = completion.completion_tokens
+                    total_tokens = completion.total_tokens
+                    output_chars = len(completion.text or "")
+                    extra = completion.raw
+                    return completion.text
+
                 if effective_api_url:
                     provider_used = "custom"
                     model_used = model

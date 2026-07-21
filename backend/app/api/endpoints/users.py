@@ -21,6 +21,7 @@ from app.utils.exceptions import ValidationError
 from app.core.logging import log_error
 from app.services.llm_service import LLMService
 from app.core.config import settings
+from app.services.collaboration_service import list_collaboration_users as load_collaboration_users
 
 
 # Supported task types for per-task model configuration
@@ -85,6 +86,34 @@ class LLMModelsResponse(BaseModel):
 
 
 router = APIRouter()
+
+
+@router.get("/collaboration", response_model=PaginatedResponse[UserResponse])
+async def list_collaboration_users(
+    page: int = 1,
+    page_size: int = 20,
+    search: Optional[str] = None,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """List active users for lightweight collaboration pickers."""
+    try:
+        if page < 1:
+            raise ValidationError("Page must be >= 1", field="page")
+        if page_size < 1 or page_size > 100:
+            raise ValidationError("Page size must be between 1 and 100", field="page_size")
+
+        skip = (page - 1) * page_size
+        users = await load_collaboration_users(db, current_user=current_user, search=search)
+        total = len(users)
+        users = users[skip : skip + page_size]
+        items = [UserResponse.from_orm(user) for user in users]
+        return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
+    except ValidationError:
+        raise
+    except Exception as e:
+        log_error(e, context={"page": page, "page_size": page_size, "search": search})
+        raise HTTPException(status_code=500, detail="Failed to retrieve collaboration users")
 
 
 @router.get("/", response_model=PaginatedResponse[UserResponse])

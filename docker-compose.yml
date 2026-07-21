@@ -10,7 +10,8 @@ services:
     ports:
       - "5432:5432"
     volumes:
-      - postgres_data:/var/lib/postgresql/data
+      # Bind-mount DB data to host FS to reduce Docker Desktop disk usage
+      - ./data/postgres_data:/var/lib/postgresql/data
       - ./data/postgres-init:/docker-entrypoint-initdb.d
     networks:
       - knowledge_net
@@ -22,7 +23,8 @@ services:
     ports:
       - "6379:6379"
     volumes:
-      - redis_data:/data
+      # Bind-mount Redis data to host FS to reduce Docker Desktop disk usage
+      - ./data/redis_data:/data
     command: redis-server --appendonly yes
     networks:
       - knowledge_net
@@ -34,7 +36,8 @@ services:
     ports:
       - "6333:6333"
     volumes:
-      - qdrant_data:/qdrant/storage
+      # Bind-mount Qdrant storage to host FS to reduce Docker Desktop disk usage
+      - ./data/qdrant_data:/qdrant/storage
     networks:
       - knowledge_net
 
@@ -46,7 +49,8 @@ services:
       - "9000:9000"  # API
       - "9001:9001"  # Console
     volumes:
-      - minio_data:/data
+      # Bind-mount MinIO data to host FS to reduce Docker Desktop disk usage
+      - ./data/minio_data:/data
     environment:
       - MINIO_ROOT_USER=minioadmin
       - MINIO_ROOT_PASSWORD=minioadmin
@@ -96,9 +100,15 @@ services:
       # Kroki for local Mermaid diagram rendering
       - KROKI_URL=http://kroki:8000
       # Transcription configuration
-      - WHISPER_MODEL_SIZE=medium
+      # Note: "large" / "turbo" can exceed typical Docker Desktop memory budgets.
+      # We default to "small" for reliability; you can switch to "medium"/"large" once Docker has enough RAM.
+      - WHISPER_MODEL_SIZE=small
       - WHISPER_DEVICE=auto
-      - TRANSCRIPTION_LANGUAGE=ru
+      - TRANSCRIPTION_LANGUAGE=auto
+      - TRANSCRIPTION_SKIP_INITIAL_SECONDS=2.0
+      - TRANSCRIPTION_SPEAKER_DIARIZATION=false
+      # Require local Whisper weights (avoids runtime network/TLS issues).
+      - WHISPER_OFFLINE=1
       # Don't block API startup on large model downloads; preload can be enabled when needed.
       - PRELOAD_WHISPER_MODEL=false
       # Run migrations in the background so the API can start serving immediately.
@@ -109,9 +119,12 @@ services:
       - ./data:/app/data
       - ./backend:/app
       # Mount Whisper model cache directory
-      - whisper_models:/root/.cache/knowledge_db_transcriber
+      - ./data/whisper_models:/root/.cache/knowledge_db_transcriber
       # Bind-mount HF cache to host FS to avoid filling container layer (common on Docker Desktop)
       - ./data/hf_cache:/root/.cache/huggingface
+      - ./data/pip_cache:/root/.cache/pip
+      - ./data/torch_cache:/root/.cache/torch
+      - ./data/yt_dlp_cache:/root/.cache/yt-dlp
     depends_on:
       - postgres
       - redis
@@ -182,7 +195,8 @@ services:
     ports:
       - "11434:11434"
     volumes:
-      - ollama_data:/root/.ollama
+      # Bind-mount Ollama models to host FS to reduce Docker Desktop disk usage
+      - ./data/ollama_data:/root/.ollama
     networks:
       - knowledge_net
     environment:
@@ -286,9 +300,15 @@ services:
       # Kroki for local Mermaid diagram rendering
       - KROKI_URL=http://kroki:8000
       # Transcription configuration
-      - WHISPER_MODEL_SIZE=base
+      # Note: "large" / "turbo" can exceed typical Docker Desktop memory budgets.
+      # We default to "small" for reliability; you can switch to "medium"/"large" once Docker has enough RAM.
+      - WHISPER_MODEL_SIZE=small
       - WHISPER_DEVICE=auto
-      - TRANSCRIPTION_LANGUAGE=ru
+      - TRANSCRIPTION_LANGUAGE=auto
+      - TRANSCRIPTION_SKIP_INITIAL_SECONDS=2.0
+      - TRANSCRIPTION_SPEAKER_DIARIZATION=false
+      # Require local Whisper weights (avoids runtime network/TLS issues).
+      - WHISPER_OFFLINE=1
       # Avoid blocking worker startup on model downloads; enable if you want warm transcriptions.
       - PRELOAD_WHISPER_MODEL=false
       # Only the API service should run migrations.
@@ -302,9 +322,12 @@ services:
       - ./data:/app/data
       - ./backend:/app
       # Mount Whisper model cache directory (shared with backend)
-      - whisper_models:/root/.cache/knowledge_db_transcriber
+      - ./data/whisper_models:/root/.cache/knowledge_db_transcriber
       # Bind-mount HF cache to host FS to avoid filling container layer (common on Docker Desktop)
       - ./data/hf_cache:/root/.cache/huggingface
+      - ./data/pip_cache:/root/.cache/pip
+      - ./data/torch_cache:/root/.cache/torch
+      - ./data/yt_dlp_cache:/root/.cache/yt-dlp
     depends_on:
       - postgres
       - redis
@@ -374,14 +397,6 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
-
-volumes:
-  postgres_data:
-  redis_data:
-  ollama_data:
-  minio_data:
-  whisper_models:  # Persistent storage for Whisper models
-  qdrant_data:
 
 networks:
   knowledge_net:

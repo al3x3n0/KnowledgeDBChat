@@ -31,6 +31,9 @@ const RoutingObservabilityPage: React.FC = () => {
   }, [searchParams]);
   const experimentIdFilter = useMemo(() => (searchParams.get('experiment_id') || '').trim() || null, [searchParams]);
   const experimentVariantIdFilter = useMemo(() => (searchParams.get('variant_id') || '').trim() || null, [searchParams]);
+  const providerFilter = useMemo(() => (searchParams.get('provider') || '').trim() || null, [searchParams]);
+  const modelFilter = useMemo(() => (searchParams.get('model') || '').trim() || null, [searchParams]);
+  const routingTierFilter = useMemo(() => (searchParams.get('routing_tier') || '').trim() || null, [searchParams]);
 
   const [preset, setPreset] = useState<RangePreset>(initialPreset);
   const [includeUnrouted, setIncludeUnrouted] = useState(true);
@@ -97,6 +100,15 @@ const RoutingObservabilityPage: React.FC = () => {
   const items: LLMRoutingSummaryItem[] = routingQuery.data?.items || [];
   const displayedItems: LLMRoutingSummaryItem[] = useMemo(() => {
     let out = items;
+    if (providerFilter) {
+      out = out.filter((r) => String(r.provider || '').toLowerCase() === String(providerFilter).toLowerCase());
+    }
+    if (modelFilter) {
+      out = out.filter((r) => String(r.model || '').toLowerCase() === String(modelFilter).toLowerCase());
+    }
+    if (routingTierFilter) {
+      out = out.filter((r) => String(r.routing_tier || '').toLowerCase() === String(routingTierFilter).toLowerCase());
+    }
     if (experimentIdFilter) {
       out = out.filter((r) => String(r.routing_experiment_id || '') === String(experimentIdFilter));
     }
@@ -104,14 +116,24 @@ const RoutingObservabilityPage: React.FC = () => {
       out = out.filter((r) => String(r.routing_experiment_variant_id || '') === String(experimentVariantIdFilter));
     }
     return out;
-  }, [items, experimentIdFilter, experimentVariantIdFilter]);
+  }, [items, experimentIdFilter, experimentVariantIdFilter, providerFilter, modelFilter, routingTierFilter]);
 
   useEffect(() => {
-    if (!experimentIdFilter) return;
-    if (selectedRow) return;
+    if (selectedRow) {
+      const selectedStillVisible = displayedItems.some((row) =>
+        row.provider === selectedRow.provider &&
+        row.model === selectedRow.model &&
+        row.task_type === selectedRow.task_type &&
+        row.routing_tier === selectedRow.routing_tier &&
+        row.routing_attempt === selectedRow.routing_attempt &&
+        row.routing_experiment_id === selectedRow.routing_experiment_id &&
+        row.routing_experiment_variant_id === selectedRow.routing_experiment_variant_id
+      );
+      if (selectedStillVisible) return;
+    }
     if (displayedItems.length === 0) return;
     setSelectedRow(displayedItems[0]);
-  }, [experimentIdFilter, displayedItems, selectedRow]);
+  }, [displayedItems, selectedRow]);
 
   const totals = useMemo(() => {
     let requests = 0;

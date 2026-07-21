@@ -328,13 +328,20 @@ class ChatService:
             except Exception as e:
                 logger.warning(f"Failed to apply session LLM overrides: {e}")
             
+            # Resolve memory preferences once; they are used for retrieval and auto-extraction policy.
+            preferences = await self.memory_service.get_user_preferences(user_id=user_id, db=db)
+
             # Get relevant memories for context
+            memory_limit = max(1, min(int(getattr(preferences, "max_memories_per_session", 10) or 10), 50))
+            memory_min_importance = float(getattr(preferences, "memory_importance_threshold", 0.3) or 0.3)
+            memory_session_filter = None if bool(getattr(preferences, "allow_cross_session_memory", True)) else session_id
             relevant_memories = await self.memory_service.search_memories(
                 user_id=user_id,
                 search_request=MemorySearchRequest(
                     query=query,
-                    limit=5,
-                    min_importance=0.3
+                    limit=memory_limit,
+                    min_importance=memory_min_importance,
+                    session_id=memory_session_filter,
                 ),
                 db=db
             )
@@ -457,38 +464,63 @@ class ChatService:
                     from app.services.knowledge_graph_service import KnowledgeGraphService
                     kg_service = KnowledgeGraphService()
 
-                    # Extract potential entity names from query and search results
-                    entity_names = self.context_manager.extract_entity_names_from_results(search_results)
+                    # Prefer a grounded "context pack" from the retrieved chunks/docs.
+                    kg_pack = await kg_service.build_chat_context_pack(
+                        db=db,
+                        search_results=search_results,
+                        max_entities=settings.RAG_KG_MAX_ENTITIES,
+                        max_relationships=settings.RAG_KG_MAX_RELATIONSHIPS,
+                    )
+                    if kg_pack.get("kg_context"):
+                        kg_context = str(kg_pack["kg_context"])
+                        # Keep the trace compact: it's JSON, but can grow quickly.
+                        retrieval_trace_payload["kg_context_pack"] = {
+                            "stats": kg_pack.get("stats"),
+                            "entities": (kg_pack.get("entities") or [])[: settings.RAG_KG_MAX_ENTITIES],
+                            "relationships": (kg_pack.get("relationships") or [])[: settings.RAG_KG_MAX_RELATIONSHIPS],
+                            # Useful for debugging / UI inspection; keep bounded.
+                            "kg_context": str(kg_context)[:8000],
+                        }
 
-                    # Also add key terms from the processed query
-                    key_terms = processed_query.get("key_terms", [])
-                    for term in key_terms:
-                        if len(term) > 2 and term not in entity_names:
-                            entity_names.append(term)
+                    # If the pack couldn't be built (e.g., no mentions in retrieved scope), fall back.
+                    if not kg_context:
+                        # Extract potential entity names from query and search results
+                        entity_names = self.context_manager.extract_entity_names_from_results(search_results)
 
-                    # Search for matching entities in KG
-                    if entity_names:
-                        entities = await kg_service.search_entities_by_names(
-                            names=entity_names[:20],  # Limit search candidates
-                            db=db,
-                            limit=settings.RAG_KG_MAX_ENTITIES
-                        )
+                        # Also add key terms from the processed query
+                        key_terms = processed_query.get("key_terms", [])
+                        for term in key_terms:
+                            if len(term) > 2 and term not in entity_names:
+                                entity_names.append(term)
 
-                        if entities:
-                            # Get relationships between found entities
-                            entity_ids = [e.id for e in entities]
-                            kg_data = await kg_service.get_entity_context(
-                                entity_ids=entity_ids,
+                        # Search for matching entities in KG
+                        if entity_names:
+                            entities = await kg_service.search_entities_by_names(
+                                names=entity_names[:20],  # Limit search candidates
                                 db=db,
-                                max_relationships=settings.RAG_KG_MAX_RELATIONSHIPS
+                                limit=settings.RAG_KG_MAX_ENTITIES
                             )
 
-                            # Build KG context string
-                            kg_context = self.context_manager.build_kg_context(
-                                entities=kg_data["entities"],
-                                relationships=kg_data["relationships"]
-                            )
-                            logger.debug(f"KG context injected: {len(kg_data['entities'])} entities, {len(kg_data['relationships'])} relationships")
+                            if entities:
+                                # Get relationships between found entities
+                                entity_ids = [e.id for e in entities]
+                                kg_data = await kg_service.get_entity_context(
+                                    entity_ids=entity_ids,
+                                    db=db,
+                                    max_relationships=settings.RAG_KG_MAX_RELATIONSHIPS
+                                )
+
+                                # Build KG context string
+                                kg_context = self.context_manager.build_kg_context(
+                                    entities=kg_data["entities"],
+                                    relationships=kg_data["relationships"]
+                                )
+                                logger.debug(f"KG context injected: {len(kg_data['entities'])} entities, {len(kg_data['relationships'])} relationships")
+                                retrieval_trace_payload["kg_context_fallback"] = {
+                                    "entity_names": entity_names[:20],
+                                    "entities": len(kg_data.get("entities") or []),
+                                    "relationships": len(kg_data.get("relationships") or []),
+                                }
                 except Exception as e:
                     logger.warning(f"KG context injection failed: {e}")
                     # Continue without KG context - don't break the chat flow
@@ -634,13 +666,14 @@ class ChatService:
                 db=db
             )
             
-            # Extract memories from this conversation turn
-            await self._extract_memories_from_turn(
+            # Apply configurable automatic memory extraction policy.
+            await self._apply_auto_memory_extraction_policy(
                 user_id=user_id,
-                session_id=session_id,
+                session=session,
                 user_message=user_message,
                 assistant_message=assistant_message,
-                db=db
+                preferences=preferences,
+                db=db,
             )
             
             # Trigger async title generation if this is the first assistant message
@@ -869,3 +902,96 @@ class ChatService:
         except Exception as e:
             logger.error(f"Error extracting memories from turn: {e}")
             # Don't raise - memory extraction failure shouldn't break the chat
+
+    def _normalize_auto_memory_mode(self, preferences: Any) -> str:
+        enabled = bool(getattr(preferences, "auto_memory_build_enabled", True))
+        if not enabled:
+            return "off"
+        mode = str(getattr(preferences, "auto_memory_build_mode", "per_turn") or "per_turn").strip().lower()
+        if mode not in {"off", "manual", "per_turn", "periodic"}:
+            mode = "per_turn"
+        return mode
+
+    def _read_memory_build_state(self, session: ChatSession) -> tuple[dict[str, Any], dict[str, Any]]:
+        meta = session.extra_metadata if isinstance(session.extra_metadata, dict) else {}
+        state = meta.get("memory_build_state")
+        if not isinstance(state, dict):
+            state = {}
+        return meta, state
+
+    async def _apply_auto_memory_extraction_policy(
+        self,
+        user_id: UUID,
+        session: ChatSession,
+        user_message: ChatMessage,
+        assistant_message: ChatMessage,
+        preferences: Any,
+        db: AsyncSession,
+    ) -> None:
+        now = datetime.utcnow()
+        mode = self._normalize_auto_memory_mode(preferences)
+        meta, state = self._read_memory_build_state(session)
+
+        turns_since = int(state.get("turns_since_extract") or 0) + 1
+        state["turns_since_extract"] = turns_since
+        state["last_mode"] = mode
+
+        should_extract = False
+        reason = ""
+
+        if mode in {"off", "manual"}:
+            should_extract = False
+            reason = f"mode_{mode}"
+        elif mode == "per_turn":
+            should_extract = True
+            reason = "per_turn"
+        else:
+            # periodic mode
+            min_turns = max(1, int(getattr(preferences, "auto_memory_build_min_messages", 3) or 3))
+            min_minutes = max(1, int(getattr(preferences, "auto_memory_build_min_minutes", 10) or 10))
+            last_iso = state.get("last_extracted_at")
+            elapsed_minutes = None
+            if isinstance(last_iso, str) and last_iso.strip():
+                try:
+                    last_dt = datetime.fromisoformat(last_iso)
+                    elapsed_minutes = (now - last_dt).total_seconds() / 60.0
+                except Exception:
+                    elapsed_minutes = None
+            enough_turns = turns_since >= min_turns
+            enough_time = elapsed_minutes is None or elapsed_minutes >= float(min_minutes)
+            should_extract = bool(enough_turns or enough_time)
+            reason = f"periodic(turns={turns_since}/{min_turns}, elapsed_min={elapsed_minutes})"
+
+        created_count = 0
+        if should_extract:
+            try:
+                if mode == "per_turn":
+                    await self._extract_memories_from_turn(
+                        user_id=user_id,
+                        session_id=session.id,
+                        user_message=user_message,
+                        assistant_message=assistant_message,
+                        db=db,
+                    )
+                else:
+                    created = await self.memory_service.extract_memories_from_conversation(
+                        session_id=session.id,
+                        user_id=user_id,
+                        db=db,
+                    )
+                    created_count = len(created or [])
+                state["turns_since_extract"] = 0
+                state["last_extracted_at"] = now.isoformat()
+                state["last_extract_status"] = "ok"
+            except Exception as e:
+                logger.warning(f"Auto memory extraction failed for session {session.id}: {e}")
+                state["last_extract_status"] = "failed"
+                state["last_extract_error"] = str(e)
+        else:
+            state["last_extract_status"] = "skipped"
+
+        state["last_extract_reason"] = reason
+        state["last_extract_created_count"] = created_count
+        meta["memory_build_state"] = state
+        session.extra_metadata = meta
+        await db.commit()

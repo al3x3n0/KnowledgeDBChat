@@ -26,6 +26,7 @@ celery_app = Celery(
         "app.tasks.research_tasks",
         "app.tasks.paper_kg_tasks",
         "app.tasks.paper_enrichment_tasks",
+        "app.tasks.paper_extraction_tasks",
         "app.tasks.maintenance_tasks",
         "app.tasks.repo_report_tasks",
         "app.tasks.template_tasks",
@@ -47,6 +48,14 @@ celery_app.conf.update(
     task_routes={
         # Route only the heavy LaTeX compile task to a dedicated queue by default.
         "app.tasks.latex_tasks.compile_latex_project_job": {"queue": getattr(settings, "LATEX_COMPILER_CELERY_QUEUE", "latex") or "latex"},
+    },
+    task_annotations={
+        # Transcription may include model download/init + long media decode on CPU.
+        # Keep a generous default so calls using .delay() do not die at the global 25m soft limit.
+        "app.tasks.transcription_tasks.transcribe_document": {
+            "soft_time_limit": 5 * 60 * 60,  # 5 hours
+            "time_limit": 6 * 60 * 60,       # 6 hours
+        },
     },
     task_time_limit=30 * 60,  # 30 minutes
     task_soft_time_limit=25 * 60,  # 25 minutes
@@ -90,6 +99,12 @@ celery_app.conf.beat_schedule = {
     "sync-experiment-runs": {
         "task": "app.tasks.monitoring_tasks.sync_experiment_runs",
         "schedule": crontab(minute="*/5"),
+    },
+
+    # Emit queue urgency notifications from the derived checkpoint queue (every 10 minutes)
+    "emit-queue-urgency-alerts": {
+        "task": "app.tasks.monitoring_tasks.emit_queue_urgency_alerts",
+        "schedule": crontab(minute="*/10"),
     },
 
     # Lint citations in recently-updated research notes (every hour)

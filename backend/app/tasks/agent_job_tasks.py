@@ -20,8 +20,70 @@ from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
-from sqlalchemy import select, and_, or_
+from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
+from sqlalchemy import select, and_, or_, delete
 from sqlalchemy.orm import selectinload
+
+
+def _scheduler_state(job: AgentJob) -> dict:
+    results = job.results if isinstance(job.results, dict) else {}
+    execution = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
+    state = execution.get("scheduler_state") if isinstance(execution.get("scheduler_state"), dict) else {}
+    return {
+        **state,
+        "last_run_status": str(state.get("last_run_status") or "").strip() or None,
+        "failure_streak": max(0, int(state.get("failure_streak", 0) or 0)),
+    }
+
+
+def _write_scheduler_state(job: AgentJob, state: dict) -> dict:
+    results = dict(job.results) if isinstance(job.results, dict) else {}
+    execution = dict(results.get("execution_strategy")) if isinstance(results.get("execution_strategy"), dict) else {}
+    execution["scheduler_state"] = state
+    results["execution_strategy"] = execution
+    job.results = results
+    return state
+
+
+def _mark_scheduler_dispatched(job: AgentJob, *, dispatched_at: datetime) -> None:
+    state = _scheduler_state(job)
+    state["last_scheduled_at"] = dispatched_at.isoformat()
+    state["last_dispatched_at"] = dispatched_at.isoformat()
+    state["current_run_started_at"] = dispatched_at.isoformat()
+    state["last_run_status"] = "queued"
+    state["queue_reason"] = None
+    state["backoff_until"] = None
+    state["backoff_seconds"] = 0
+    _write_scheduler_state(job, state)
+
+
+def _record_scheduler_outcome(job: AgentJob, *, outcome: str, happened_at: datetime, queue_reason: str | None = None) -> None:
+    state = _scheduler_state(job)
+    state["last_run_status"] = outcome
+    state["current_run_started_at"] = None
+    state["queue_reason"] = queue_reason
+    if outcome == AgentJobStatus.COMPLETED.value:
+        state["failure_streak"] = 0
+        state["last_successful_run_at"] = happened_at.isoformat()
+        state["last_completed_run_at"] = happened_at.isoformat()
+        state["backoff_until"] = None
+        state["backoff_seconds"] = 0
+    else:
+        streak = max(0, int(state.get("failure_streak", 0) or 0)) + 1
+        state["failure_streak"] = streak
+        state["last_failure_at"] = happened_at.isoformat()
+        if str(job.schedule_type or "").strip().lower() in {"recurring", "continuous"}:
+            interval_minutes = 30
+            try:
+                interval_minutes = int(((job.config or {}).get("interval_minutes") or 30))
+            except Exception:
+                interval_minutes = 30
+            interval_minutes = max(1, min(interval_minutes, 24 * 60))
+            backoff_seconds = min(interval_minutes * 60 * (2 ** max(0, streak - 1)), 6 * 60 * 60)
+            state["backoff_seconds"] = int(backoff_seconds)
+            state["backoff_until"] = (happened_at + timedelta(seconds=backoff_seconds)).isoformat()
+            job.next_run_at = happened_at + timedelta(seconds=backoff_seconds)
+    _write_scheduler_state(job, state)
 
 
 async def _publish_job_progress(
@@ -32,6 +94,8 @@ async def _publish_job_progress(
     iteration: int = 0,
     phase_details: Optional[str] = None,
     error: Optional[str] = None,
+    execution_graph_runtime: Optional[dict] = None,
+    scope_observability_runtime: Optional[dict] = None,
 ):
     """Publish job progress update to Redis for WebSocket subscribers."""
     import redis.asyncio as redis
@@ -54,6 +118,10 @@ async def _publish_job_progress(
             message["phase_details"] = phase_details
         if error:
             message["error"] = error
+        if isinstance(execution_graph_runtime, dict) and execution_graph_runtime:
+            message["execution_graph_runtime"] = execution_graph_runtime
+        if isinstance(scope_observability_runtime, dict) and scope_observability_runtime:
+            message["scope_observability_runtime"] = scope_observability_runtime
 
         await redis_client.publish(channel, json.dumps(message))
         await redis_client.close()
@@ -109,6 +177,16 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
                     status="running",
                     iteration=progress_data.get("iteration", 0),
                     phase_details=progress_data.get("phase_details"),
+                    execution_graph_runtime=(
+                        progress_data.get("execution_graph_runtime")
+                        if isinstance(progress_data.get("execution_graph_runtime"), dict)
+                        else None
+                    ),
+                    scope_observability_runtime=(
+                        progress_data.get("scope_observability_runtime")
+                        if isinstance(progress_data.get("scope_observability_runtime"), dict)
+                        else None
+                    ),
                 )
 
             # Execute the job
@@ -120,6 +198,14 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
 
             # Publish completion
             final_status = result.get("status", "completed")
+            _record_scheduler_outcome(
+                job,
+                outcome=str(final_status or AgentJobStatus.COMPLETED.value),
+                happened_at=datetime.utcnow(),
+                queue_reason=None,
+            )
+            await sync_follow_up_outcome_for_job(db, job)
+            await db.commit()
             await _publish_job_progress(
                 job_id=job_id,
                 progress=result.get("progress", 100),
@@ -135,6 +221,13 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
             job.status = AgentJobStatus.FAILED.value
             job.error = str(e)
             job.completed_at = datetime.utcnow()
+            _record_scheduler_outcome(
+                job,
+                outcome=AgentJobStatus.FAILED.value,
+                happened_at=job.completed_at,
+                queue_reason="execution_failure",
+            )
+            await sync_follow_up_outcome_for_job(db, job)
             await db.commit()
 
             await _publish_job_progress(
@@ -187,6 +280,13 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
                     job.status = AgentJobStatus.FAILED.value
                     job.error = f"Task error: {str(e)}"
                     job.completed_at = datetime.utcnow()
+                    _record_scheduler_outcome(
+                        job,
+                        outcome=AgentJobStatus.FAILED.value,
+                        happened_at=job.completed_at,
+                        queue_reason="task_failure",
+                    )
+                    await sync_follow_up_outcome_for_job(db, job)
                     await db.commit()
 
         try:
@@ -227,6 +327,7 @@ def process_scheduled_agent_jobs():
                         ]),
                     )
                 )
+                .with_for_update(skip_locked=True)
             )
             due_jobs = result.scalars().all()
 
@@ -241,9 +342,9 @@ def process_scheduled_agent_jobs():
                 job.started_at = None
                 job.completed_at = None
                 job.error = None
-
-                # Queue the job
-                execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                job.celery_task_id = None
+                job.last_activity_at = now
+                _mark_scheduler_dispatched(job, dispatched_at=now)
 
                 # Update next_run_at for recurring jobs
                 if job.schedule_type == "recurring" and job.schedule_cron:
@@ -267,6 +368,7 @@ def process_scheduled_agent_jobs():
                     job.next_run_at = None
 
                 await db.commit()
+                execute_agent_job_task.delay(str(job.id), str(job.user_id))
 
             logger.info(f"Queued {len(due_jobs)} scheduled agent jobs")
 
@@ -304,12 +406,19 @@ def resume_paused_agent_jobs():
 
             resumed_count = 0
             for job in paused_jobs:
-                # Check if job can continue
-                if job.can_continue():
-                    logger.info(f"Resuming paused agent job {job.id}")
-                    job.status = AgentJobStatus.PENDING.value
-                    execute_agent_job_task.delay(str(job.id), str(job.user_id))
-                    resumed_count += 1
+                # Paused jobs are not eligible for can_continue(); check resource limits directly.
+                is_limited, reason = job.is_resource_limited()
+                if is_limited:
+                    logger.info(f"Skipping paused agent job {job.id} because of {reason}")
+                    continue
+
+                logger.info(f"Resuming paused agent job {job.id}")
+                job.status = AgentJobStatus.PENDING.value
+                job.error = None
+                job.celery_task_id = None
+                job.last_activity_at = datetime.utcnow()
+                execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                resumed_count += 1
 
             await db.commit()
             logger.info(f"Resumed {resumed_count} paused agent jobs")
@@ -355,10 +464,9 @@ def cleanup_old_agent_jobs(days: int = 30):
             deleted_count = 0
             for job in old_jobs:
                 try:
-                    # Delete checkpoints
+                    # Delete checkpoints before removing the job row.
                     await db.execute(
-                        select(AgentJobCheckpoint)
-                        .where(AgentJobCheckpoint.job_id == job.id)
+                        delete(AgentJobCheckpoint).where(AgentJobCheckpoint.job_id == job.id)
                     )
 
                     # Delete job
@@ -411,6 +519,14 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30):
                 job.status = AgentJobStatus.FAILED.value
                 job.error = f"Job stalled - no activity for {timeout_minutes} minutes"
                 job.completed_at = datetime.utcnow()
+                job.celery_task_id = None
+                _record_scheduler_outcome(
+                    job,
+                    outcome=AgentJobStatus.FAILED.value,
+                    happened_at=job.completed_at,
+                    queue_reason="stalled_run",
+                )
+                await sync_follow_up_outcome_for_job(db, job)
 
                 await _publish_job_progress(
                     job_id=str(job.id),

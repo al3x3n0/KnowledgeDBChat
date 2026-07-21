@@ -2,17 +2,123 @@
 Pytest configuration and fixtures for backend tests.
 """
 
+import sys
+import types
+import importlib.machinery
 import pytest
 import asyncio
 from typing import AsyncGenerator
 from fastapi.testclient import TestClient
+from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.pool import StaticPool
 
-from main import app
 from app.core.database import Base, get_db
 from app.models.user import User
 from app.services.auth_service import AuthService
+
+
+if "pptx" not in sys.modules:
+    pptx_stub = types.ModuleType("pptx")
+    pptx_stub.Presentation = object
+    sys.modules["pptx"] = pptx_stub
+    pptx_enum_stub = types.ModuleType("pptx.enum")
+    pptx_shapes_stub = types.ModuleType("pptx.enum.shapes")
+    pptx_shapes_stub.PP_PLACEHOLDER = object()
+    sys.modules["pptx.enum"] = pptx_enum_stub
+    sys.modules["pptx.enum.shapes"] = pptx_shapes_stub
+
+if "sentence_transformers" not in sys.modules:
+    sentence_transformers_stub = types.ModuleType("sentence_transformers")
+
+    class _DummySentenceTransformer:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def encode(self, texts, *args, **kwargs):
+            if isinstance(texts, list):
+                return [[0.0] * 4 for _ in texts]
+            return [0.0] * 4
+
+    sentence_transformers_stub.SentenceTransformer = _DummySentenceTransformer
+    sys.modules["sentence_transformers"] = sentence_transformers_stub
+
+if "bs4" not in sys.modules:
+    bs4_stub = types.ModuleType("bs4")
+    bs4_stub.__spec__ = importlib.machinery.ModuleSpec("bs4", loader=None)
+
+    class _DummyBeautifulSoup:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def find_all(self, *args, **kwargs):
+            return []
+
+        def __str__(self):
+            return ""
+
+    class _DummyNavigableString(str):
+        pass
+
+    bs4_stub.BeautifulSoup = _DummyBeautifulSoup
+    bs4_stub.NavigableString = _DummyNavigableString
+    sys.modules["bs4"] = bs4_stub
+
+if "croniter" not in sys.modules:
+    croniter_stub = types.ModuleType("croniter")
+
+    class _DummyCronIter:
+        def __init__(self, *args, **kwargs):
+            self.args = args
+            self.kwargs = kwargs
+
+        def get_next(self, *args, **kwargs):
+            return 0
+
+    croniter_stub.croniter = _DummyCronIter
+    sys.modules["croniter"] = croniter_stub
+
+if "mammoth" not in sys.modules:
+    mammoth_stub = types.ModuleType("mammoth")
+
+    class _DummyMammothResult:
+        def __init__(self, value: str = "", messages=None):
+            self.value = value
+            self.messages = messages or []
+
+    def _convert_to_html(*args, **kwargs):
+        return _DummyMammothResult()
+
+    mammoth_stub.convert_to_html = _convert_to_html
+    sys.modules["mammoth"] = mammoth_stub
+
+if "jsonpath_ng" not in sys.modules:
+    jsonpath_ng_stub = types.ModuleType("jsonpath_ng")
+
+    class _DummyJsonPathMatch:
+        def __init__(self, value=None):
+            self.value = value
+
+    class _DummyJsonPath:
+        def __init__(self, expression: str):
+            self.expression = expression
+
+        def find(self, data):
+            return [_DummyJsonPathMatch(data)]
+
+    def _parse_jsonpath(expression: str):
+        return _DummyJsonPath(expression)
+
+    jsonpath_ng_stub.parse = _parse_jsonpath
+    sys.modules["jsonpath_ng"] = jsonpath_ng_stub
+
+
+@compiles(JSONB, "sqlite")
+def _compile_jsonb_sqlite(_element, _compiler, **_kwargs):
+    return "JSON"
 
 
 # Test database URL (in-memory SQLite for testing)
@@ -57,6 +163,8 @@ async def db_session() -> AsyncGenerator[AsyncSession, None]:
 @pytest.fixture(scope="function")
 def client(db_session: AsyncSession) -> TestClient:
     """Create a test client."""
+    from main import app
+
     def override_get_db():
         return db_session
     
@@ -108,28 +216,12 @@ async def admin_user(db_session: AsyncSession) -> User:
 @pytest.fixture
 def auth_headers(client: TestClient, test_user: User) -> dict:
     """Get authentication headers for test user."""
-    response = client.post(
-        "/api/v1/auth/login",
-        data={
-            "username": "testuser",
-            "password": "testpassword123"
-        }
-    )
-    
-    token = response.json()["access_token"]
+    token = AuthService().create_access_token(test_user.id)
     return {"Authorization": f"Bearer {token}"}
 
 
 @pytest.fixture
 def admin_headers(client: TestClient, admin_user: User) -> dict:
     """Get authentication headers for admin user."""
-    response = client.post(
-        "/api/v1/auth/login",
-        data={
-            "username": "admin",
-            "password": "adminpassword123"
-        }
-    )
-    
-    token = response.json()["access_token"]
+    token = AuthService().create_access_token(admin_user.id)
     return {"Authorization": f"Bearer {token}"}

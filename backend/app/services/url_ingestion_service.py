@@ -5,13 +5,19 @@ Service for scraping URLs and ingesting them into the KnowledgeDB.
 from __future__ import annotations
 
 import hashlib
+import mimetypes
+import tempfile
 from datetime import datetime
+from io import BytesIO
+from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import parse_qs, urlparse
 
+from fastapi import UploadFile
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.datastructures import Headers
 
 from app.models.document import Document, DocumentSource
 from app.models.user import User
@@ -31,6 +37,8 @@ class UrlIngestionService:
         url: str,
         title: Optional[str] = None,
         tags: Optional[List[str]] = None,
+        ingest_mode: str = "auto",
+        youtube_audio_only: bool = True,
         follow_links: bool = False,
         max_pages: int = 1,
         max_depth: int = 0,
@@ -46,6 +54,27 @@ class UrlIngestionService:
             return {"error": "Missing required parameter: url"}
 
         publish = publish or (lambda _t, _p: None)
+        cancel_check = cancel_check or (lambda: False)
+
+        if cancel_check():
+            return {"error": "canceled"}
+
+        mode = (ingest_mode or "auto").strip().lower()
+        if mode not in {"auto", "web", "youtube"}:
+            return {"error": "ingest_mode must be one of: auto, web, youtube"}
+
+        is_youtube = self._is_youtube_url(url)
+        if mode == "youtube" or (mode == "auto" and is_youtube):
+            return await self._ingest_youtube_url(
+                db=db,
+                user=user,
+                url=url,
+                title=title,
+                tags=tags,
+                youtube_audio_only=youtube_audio_only,
+                publish=publish,
+                cancel_check=cancel_check,
+            )
 
         is_allowlisted = await self._is_url_allowlisted_for_internal_scrape(url, db)
 
@@ -59,8 +88,6 @@ class UrlIngestionService:
                 return {"error": "allow_private_networks requires admin role (or an active web source allowlist)"}
         else:
             allow_private_effective = bool(is_allowlisted)
-
-        cancel_check = cancel_check or (lambda: False)
 
         if cancel_check():
             return {"error": "canceled"}
@@ -126,16 +153,14 @@ class UrlIngestionService:
                     if tags is not None:
                         existing.tags = tags
                     existing.author = existing.author or owner_display_name
-                    existing.extra_metadata = existing.extra_metadata or {}
-                    existing.extra_metadata.update(
-                        {
-                            "origin": "url_ingest",
-                            "source_url": page_url,
-                            "scraped_at": datetime.utcnow().isoformat(),
-                            "content_type": page.get("content_type"),
-                            "status_code": page.get("status_code"),
-                        }
-                    )
+                    existing.extra_metadata = {
+                        **(existing.extra_metadata or {}),
+                        "origin": "url_ingest",
+                        "source_url": page_url,
+                        "scraped_at": datetime.utcnow().isoformat(),
+                        "content_type": page.get("content_type"),
+                        "status_code": page.get("status_code"),
+                    }
                     existing.is_processed = False
                     await db.commit()
                     await self.document_service.reprocess_document(existing.id, db, user_id=user.id)
@@ -222,6 +247,164 @@ class UrlIngestionService:
         }
         publish("complete", {"progress": 100, **result})
         return result
+
+    def _is_youtube_url(self, url: str) -> bool:
+        try:
+            host = (urlparse(url).hostname or "").lower()
+        except Exception:
+            return False
+        if not host:
+            return False
+        return (
+            host == "youtube.com"
+            or host.endswith(".youtube.com")
+            or host == "youtu.be"
+            or host.endswith(".youtu.be")
+        )
+
+    def _youtube_video_id(self, url: str, info: Dict[str, Any]) -> Optional[str]:
+        vid = str(info.get("id") or "").strip()
+        if vid:
+            return vid
+        parsed = urlparse(url)
+        host = (parsed.hostname or "").lower()
+        if host == "youtu.be":
+            return parsed.path.lstrip("/") or None
+        qs = parse_qs(parsed.query or "")
+        vals = qs.get("v") or []
+        if vals:
+            return vals[0]
+        return None
+
+    async def _ingest_youtube_url(
+        self,
+        *,
+        db: AsyncSession,
+        user: User,
+        url: str,
+        title: Optional[str],
+        tags: Optional[List[str]],
+        youtube_audio_only: bool,
+        publish: Callable[[str, Dict[str, Any]], None],
+        cancel_check: Callable[[], bool],
+    ) -> Dict[str, Any]:
+        publish("status", {"stage": "youtube", "status": "Fetching YouTube metadata...", "progress": 5})
+
+        try:
+            import yt_dlp  # type: ignore
+        except Exception as e:
+            return {"error": f"YouTube ingestion requires yt-dlp: {e}"}
+
+        if cancel_check():
+            return {"error": "canceled"}
+
+        with tempfile.TemporaryDirectory(prefix="yt_ingest_") as tmpdir:
+            format_selector = "bestaudio[ext=m4a]/bestaudio/best" if youtube_audio_only else "best[ext=mp4]/best"
+            ydl_opts = {
+                "format": format_selector,
+                "outtmpl": str(Path(tmpdir) / "%(id)s.%(ext)s"),
+                "noplaylist": True,
+                "quiet": True,
+                "no_warnings": True,
+                "restrictfilenames": True,
+                "socket_timeout": 30,
+            }
+
+            publish("status", {"stage": "youtube", "status": "Downloading media...", "progress": 25})
+            try:
+                with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                    info = ydl.extract_info(url, download=True)
+                    if not isinstance(info, dict):
+                        return {"error": "Failed to fetch YouTube video info"}
+
+                    media_path: Optional[Path] = None
+                    requested = info.get("requested_downloads")
+                    if isinstance(requested, list):
+                        for item in requested:
+                            if not isinstance(item, dict):
+                                continue
+                            candidate = item.get("filepath") or item.get("_filename")
+                            if candidate and Path(candidate).exists():
+                                media_path = Path(candidate)
+                                break
+
+                    if media_path is None:
+                        candidate = ydl.prepare_filename(info)
+                        if candidate and Path(candidate).exists():
+                            media_path = Path(candidate)
+
+                    if media_path is None:
+                        files = sorted(Path(tmpdir).glob("*"))
+                        media_files = [f for f in files if f.is_file()]
+                        if media_files:
+                            media_path = max(media_files, key=lambda p: p.stat().st_size)
+
+                    if media_path is None or not media_path.exists():
+                        return {"error": "Downloaded YouTube file not found"}
+            except Exception as e:
+                logger.error(f"YouTube download failed for {url}: {e}")
+                return {"error": f"YouTube download failed: {e}"}
+
+            if cancel_check():
+                return {"error": "canceled"}
+
+            data = media_path.read_bytes()
+            if not data:
+                return {"error": "Downloaded YouTube file is empty"}
+
+            content_type = mimetypes.guess_type(str(media_path))[0] or ("audio/mp4" if youtube_audio_only else "video/mp4")
+            upload_file = UploadFile(
+                filename=media_path.name,
+                file=BytesIO(data),
+                headers=Headers({"content-type": content_type}),
+            )
+
+            doc_title = (title or "").strip() or str(info.get("title") or media_path.stem or "YouTube Media")
+            doc_tags = list(tags or [])
+            if "youtube" not in [t.lower() for t in doc_tags]:
+                doc_tags.append("youtube")
+
+            publish("status", {"stage": "youtube", "status": "Saving document and queueing transcription...", "progress": 70})
+            document = await self.document_service.upload_file(
+                file=upload_file,
+                title=doc_title,
+                tags=doc_tags,
+                db=db,
+                owner_user=user,
+            )
+
+            document.extra_metadata = {
+                **(document.extra_metadata or {}),
+                "origin": "youtube",
+                "source_url": url,
+                "youtube_video_id": self._youtube_video_id(url, info),
+                "youtube_channel": info.get("uploader") or info.get("channel"),
+                "youtube_duration_seconds": info.get("duration"),
+                "youtube_upload_date": info.get("upload_date"),
+                "youtube_audio_only": bool(youtube_audio_only),
+            }
+            await db.commit()
+            await db.refresh(document)
+
+            result = {
+                "action": "ingested",
+                "root_url": url,
+                "total_pages_scraped": 1,
+                "created": [
+                    {
+                        "document_id": str(document.id),
+                        "url": url,
+                        "title": document.title,
+                        "media_type": "audio" if youtube_audio_only else "video",
+                        "transcription_queued": True,
+                    }
+                ],
+                "updated": [],
+                "skipped": [],
+                "errors": [],
+            }
+            publish("complete", {"progress": 100, **result})
+            return result
 
     async def _is_url_allowlisted_for_internal_scrape(self, url: str, db: AsyncSession) -> bool:
         parsed = urlparse(url)

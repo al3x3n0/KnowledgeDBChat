@@ -30,12 +30,14 @@ const PapersPage = lazy(() => import('./pages/PapersPage'));
 const LatexStudioPage = lazy(() => import('./pages/LatexStudioPage'));
 const ReadingListsPage = lazy(() => import('./pages/ReadingListsPage'));
 const ReadingListDetailPage = lazy(() => import('./pages/ReadingListDetailPage'));
+const ContextPackPage = lazy(() => import('./pages/ContextPackPage'));
 const UsagePage = lazy(() => import('./pages/UsagePage'));
 const RoutingObservabilityPage = lazy(() => import('./pages/RoutingObservabilityPage'));
 const RoutingExperimentsPage = lazy(() => import('./pages/RoutingExperimentsPage'));
 const APIKeysPage = lazy(() => import('./pages/APIKeysPage'));
 const MCPConfigPage = lazy(() => import('./pages/MCPConfigPage'));
 const AgentBuilderPage = lazy(() => import('./pages/AgentBuilderPage'));
+const AgentControlPlanePage = lazy(() => import('./pages/AgentControlPlanePage'));
 const RepoReportsPage = lazy(() => import('./pages/RepoReportsPage'));
 const AutonomousAgentsPage = lazy(() => import('./pages/AutonomousAgentsPage'));
 const PatchPRsPage = lazy(() => import('./pages/PatchPRsPage'));
@@ -166,6 +168,14 @@ const AppRoutes: React.FC = () => {
             }
           />
           <Route
+            path="context-packs/:traceId"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <ContextPackPage />
+              </Suspense>
+            }
+          />
+          <Route
             path="latex"
             element={
               <Suspense fallback={<PageLoader />}>
@@ -261,6 +271,14 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <AgentBuilderPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="agent-control-plane"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <AgentControlPlanePage />
               </Suspense>
             }
           />

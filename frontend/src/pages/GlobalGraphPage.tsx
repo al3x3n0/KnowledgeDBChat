@@ -1,41 +1,54 @@
 import React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
-import { useQuery } from 'react-query';
+import { useMutation, useQuery } from 'react-query';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Network, Filter, Download, ZoomIn } from 'lucide-react';
+import { ArrowLeft, Network, Filter, Download, ZoomIn, Sparkles } from 'lucide-react';
 import apiClient from '../services/api';
 import ForceGraph, { FGNode, FGEdge, ForceGraphHandle } from '../components/kg/ForceGraph';
+import { useElementSize } from '../hooks/useElementSize';
+import { useAuth } from '../contexts/AuthContext';
 
 interface GlobalGraphNode extends FGNode {
   mention_count?: number;
   description?: string;
 }
 
-const ENTITY_TYPES = ['person', 'org', 'location', 'product', 'concept', 'technology', 'event', 'email', 'url', 'other'];
-const RELATION_TYPES = ['works_for', 'manages', 'reports_to', 'collaborates_with', 'owns', 'uses', 'implements', 'part_of', 'located_in', 'related_to', 'mentions', 'references', 'created_by'];
+const extractArxivId = (raw: string): string | null => {
+  const v = String(raw || '').trim();
+  if (!v) return null;
+  // new-style: 2401.12345 or 2401.12345v2
+  let m = v.match(/(?:^|arxiv:)(\d{4}\.\d{4,5}(?:v\d+)?)(?:$)/i);
+  if (m?.[1]) return m[1];
+  m = v.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?/i);
+  if (m?.[1]) return m[1];
+  // old-style: cs.CL/0001234
+  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.\-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
+  if (m?.[1]) return m[1];
+  m = v.match(/^([\w.\-]+\/\d+(?:v\d+)?)$/i);
+  if (m?.[1]) return m[1];
+  return null;
+};
+
+const parseCsvParam = (v: string | null): string[] | null => {
+  // null => "all" (no filter). '__none__' or '' => "none".
+  if (v == null) return null;
+  const trimmed = v.trim();
+  if (!trimmed || trimmed === '__none__') return [];
+  return trimmed
+    .split(',')
+    .map((s) => s.trim())
+    .filter(Boolean);
+};
 
 const GlobalGraphPage: React.FC = () => {
   const navigate = useNavigate();
   const [searchParams, setSearchParams] = useSearchParams();
+  const { user } = useAuth();
+  const isAdmin = String(user?.role || '').toLowerCase() === 'admin';
 
   // Filter state
-  const [entityTypes, setEntityTypes] = React.useState<Record<string, boolean>>(() => {
-    const initial: Record<string, boolean> = {};
-    const paramTypes = searchParams.get('entity_types')?.split(',') || [];
-    ENTITY_TYPES.forEach(t => {
-      initial[t] = paramTypes.length === 0 || paramTypes.includes(t);
-    });
-    return initial;
-  });
-
-  const [relationTypes, setRelationTypes] = React.useState<Record<string, boolean>>(() => {
-    const initial: Record<string, boolean> = {};
-    const paramTypes = searchParams.get('relation_types')?.split(',') || [];
-    RELATION_TYPES.forEach(t => {
-      initial[t] = paramTypes.length === 0 || paramTypes.includes(t);
-    });
-    return initial;
-  });
+  const [selectedEntityTypes, setSelectedEntityTypes] = React.useState<string[] | null>(() => parseCsvParam(searchParams.get('entity_types')));
+  const [selectedRelationTypes, setSelectedRelationTypes] = React.useState<string[] | null>(() => parseCsvParam(searchParams.get('relation_types')));
 
   const [minConfidence, setMinConfidence] = React.useState(
     parseFloat(searchParams.get('min_confidence') || '0')
@@ -50,26 +63,22 @@ const GlobalGraphPage: React.FC = () => {
   const [limitEdges, setLimitEdges] = React.useState(
     parseInt(searchParams.get('limit_edges') || '1000', 10)
   );
+  const [aiFilter, setAiFilter] = React.useState('');
 
-  // Build query params
+  // Build query params (do not depend on metadata; metadata is derived from this request).
   const queryParams = React.useMemo(() => {
-    const enabledEntityTypes = Object.entries(entityTypes)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-    const enabledRelTypes = Object.entries(relationTypes)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-
     return {
-      entity_types: enabledEntityTypes.length < ENTITY_TYPES.length ? enabledEntityTypes.join(',') : undefined,
-      relation_types: enabledRelTypes.length < RELATION_TYPES.length ? enabledRelTypes.join(',') : undefined,
+      entity_types:
+        selectedEntityTypes === null ? undefined : (selectedEntityTypes.length ? selectedEntityTypes.join(',') : '__none__'),
+      relation_types:
+        selectedRelationTypes === null ? undefined : (selectedRelationTypes.length ? selectedRelationTypes.join(',') : '__none__'),
       min_confidence: minConfidence > 0 ? minConfidence : undefined,
       min_mentions: minMentions > 1 ? minMentions : undefined,
       limit_nodes: limitNodes !== 300 ? limitNodes : undefined,
       limit_edges: limitEdges !== 1000 ? limitEdges : undefined,
       search: search || undefined,
     };
-  }, [entityTypes, relationTypes, minConfidence, minMentions, limitNodes, limitEdges, search]);
+  }, [selectedEntityTypes, selectedRelationTypes, minConfidence, minMentions, limitNodes, limitEdges, search]);
 
   const { data: graphData, isLoading, isError, refetch } = useQuery(
     ['kg-global-graph', queryParams],
@@ -80,11 +89,75 @@ const GlobalGraphPage: React.FC = () => {
     }
   );
 
+  const { data: kgTypes } = useQuery(['kg-types'], () => apiClient.getKGTypes(), { staleTime: 60000 });
+
   const nodes = (graphData?.nodes || []) as GlobalGraphNode[];
   const edges = (graphData?.edges || []) as FGEdge[];
   const metadata = graphData?.metadata;
 
+  const availableEntityTypes = React.useMemo(() => {
+    const fromServer = kgTypes?.entity_types || [];
+    const fromMeta = metadata?.entity_types || [];
+    const fromNodes = nodes.map((n) => (n.type || 'other'));
+    return Array.from(new Set([...fromServer, ...fromMeta, ...fromNodes].filter(Boolean))).sort();
+  }, [kgTypes?.entity_types, metadata?.entity_types, nodes]);
+
+  const availableRelationTypes = React.useMemo(() => {
+    const fromServer = kgTypes?.relation_types || [];
+    const fromMeta = metadata?.relation_types || [];
+    const fromEdges = edges.map((e) => e.type);
+    return Array.from(new Set([...fromServer, ...fromMeta, ...fromEdges].filter(Boolean))).sort();
+  }, [kgTypes?.relation_types, metadata?.relation_types, edges]);
+
+  const enabledEntityTypes = React.useMemo(() => {
+    return selectedEntityTypes === null ? availableEntityTypes : selectedEntityTypes;
+  }, [selectedEntityTypes, availableEntityTypes]);
+
+  const enabledRelationTypes = React.useMemo(() => {
+    return selectedRelationTypes === null ? availableRelationTypes : selectedRelationTypes;
+  }, [selectedRelationTypes, availableRelationTypes]);
+
+  const resolveTypesMutation = useMutation(
+    (q: string) =>
+      apiClient.resolveKGTypes({
+        query: q,
+        entity_types: availableEntityTypes,
+        relation_types: availableRelationTypes,
+      }),
+    {
+      onSuccess: (res) => {
+        setSelectedEntityTypes(res.entity_types ?? null);
+        setSelectedRelationTypes(res.relation_types ?? null);
+        toast.success('AI filters applied');
+      },
+      onError: (e: any) => {
+        toast.error(e?.response?.data?.detail || e?.message || 'AI filter failed');
+      },
+    }
+  );
+
+  React.useEffect(() => {
+    if (selectedEntityTypes === null) return;
+    const allowed = new Set(availableEntityTypes);
+    setSelectedEntityTypes((prev) => (prev === null ? null : prev.filter((t) => allowed.has(t))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableEntityTypes.join(',')]);
+
+  React.useEffect(() => {
+    if (selectedRelationTypes === null) return;
+    const allowed = new Set(availableRelationTypes);
+    setSelectedRelationTypes((prev) => (prev === null ? null : prev.filter((t) => allowed.has(t))));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [availableRelationTypes.join(',')]);
+
   const [selected, setSelected] = React.useState<string | null>(null);
+  // Allow deep-linking to a selected node via `?sel=<entity_id>`.
+  React.useEffect(() => {
+    const sel = (searchParams.get('sel') || '').trim();
+    if (sel && sel !== selected) setSelected(sel);
+    if (!sel && selected) setSelected(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams]);
   const selectedNode = React.useMemo(
     () => nodes.find(n => n.id === selected) || null,
     [nodes, selected]
@@ -94,26 +167,29 @@ const GlobalGraphPage: React.FC = () => {
     [edges, selected]
   );
   const [selectedEdge, setSelectedEdge] = React.useState<FGEdge | null>(null);
+  const [isIngestingArxiv, setIsIngestingArxiv] = React.useState(false);
+  const [isQueueingArxiv, setIsQueueingArxiv] = React.useState(false);
+  const [aiSuggestedType, setAiSuggestedType] = React.useState<{ entity_type: string; confidence?: number | null } | null>(null);
+  const [aiSuggestBusy, setAiSuggestBusy] = React.useState(false);
+  const [aiApplyBusy, setAiApplyBusy] = React.useState(false);
+
+  React.useEffect(() => {
+    setAiSuggestedType(null);
+  }, [selected]);
 
   const graphRef = React.useRef<ForceGraphHandle>(null);
-  const width = 960;
-  const height = 600;
+  const graphBox = useElementSize<HTMLDivElement>();
+  const width = Math.max(320, graphBox.width || 0);
+  const height = Math.max(420, graphBox.height || 0);
 
   // Sync URL params
   React.useEffect(() => {
     const params: Record<string, string> = {};
-    const enabledEntityTypes = Object.entries(entityTypes)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-    const enabledRelTypes = Object.entries(relationTypes)
-      .filter(([, v]) => v)
-      .map(([k]) => k);
-
-    if (enabledEntityTypes.length < ENTITY_TYPES.length) {
-      params.entity_types = enabledEntityTypes.join(',');
+    if (selectedEntityTypes !== null) {
+      params.entity_types = selectedEntityTypes.length ? selectedEntityTypes.join(',') : '__none__';
     }
-    if (enabledRelTypes.length < RELATION_TYPES.length) {
-      params.relation_types = enabledRelTypes.join(',');
+    if (selectedRelationTypes !== null) {
+      params.relation_types = selectedRelationTypes.length ? selectedRelationTypes.join(',') : '__none__';
     }
     if (minConfidence > 0) params.min_confidence = String(minConfidence);
     if (minMentions > 1) params.min_mentions = String(minMentions);
@@ -123,20 +199,13 @@ const GlobalGraphPage: React.FC = () => {
     if (selected) params.sel = selected;
 
     setSearchParams(params, { replace: true });
-  }, [entityTypes, relationTypes, minConfidence, minMentions, limitNodes, limitEdges, search, selected, setSearchParams]);
-
-  // Auto-center on selection
-  React.useEffect(() => {
-    if (selected) {
-      graphRef.current?.centerOnNode(selected, 1.1);
-    }
-  }, [selected]);
+  }, [selectedEntityTypes, selectedRelationTypes, minConfidence, minMentions, limitNodes, limitEdges, search, selected, setSearchParams]);
 
   const [showFilters, setShowFilters] = React.useState(true);
 
   return (
-    <div className="p-6 space-y-4">
-      <div className="flex items-center justify-between">
+    <div className="p-6 h-full min-h-0 flex flex-col gap-4 flex-1">
+      <div className="flex items-center justify-between flex-none">
         <div className="flex items-center space-x-2">
           <button
             className="inline-flex items-center text-sm text-gray-700 hover:text-gray-900"
@@ -188,18 +257,68 @@ const GlobalGraphPage: React.FC = () => {
       </div>
 
       {/* Metadata bar */}
-      {metadata && (
-        <div className="flex items-center gap-4 text-sm text-gray-600 bg-gray-50 rounded-lg p-3">
-          <span>Total Entities: <strong>{metadata.total_entities}</strong></span>
-          <span>Total Relationships: <strong>{metadata.total_relationships}</strong></span>
-          <span>Showing: <strong>{metadata.filtered_nodes}</strong> nodes, <strong>{metadata.filtered_edges}</strong> edges</span>
-        </div>
-      )}
+      <div className="flex-none">
+        {metadata && (
+          <div className="flex items-center gap-4 text-sm text-gray-600 bg-gray-50 rounded-lg p-3">
+            <span>Total Entities: <strong>{metadata.total_entities}</strong></span>
+            <span>Total Relationships: <strong>{metadata.total_relationships}</strong></span>
+            <span>Showing: <strong>{metadata.filtered_nodes}</strong> nodes, <strong>{metadata.filtered_edges}</strong> edges</span>
+          </div>
+        )}
+      </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden grid grid-cols-1 lg:grid-cols-4 gap-0">
+      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden grid grid-cols-1 lg:grid-cols-4 lg:grid-rows-1 gap-0 flex-1 min-h-0">
         {/* Filters Panel */}
         {showFilters && (
-          <div className="border-r border-gray-200 p-4 lg:col-span-1 space-y-4 max-h-[700px] overflow-auto">
+          <div className="border-r border-gray-200 p-4 lg:col-span-1 space-y-4 overflow-auto h-full min-h-0">
+            <div>
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <h3 className="text-sm font-medium text-gray-800 inline-flex items-center gap-1">
+                  <Sparkles className="w-4 h-4 text-primary-600" />
+                  AI Filter
+                </h3>
+                <button
+                  type="button"
+                  className="text-xs text-primary-700 hover:underline disabled:opacity-50"
+                  disabled={!aiFilter.trim()}
+                  onClick={() => setAiFilter('')}
+                  title="Clear AI filter"
+                >
+                  Clear
+                </button>
+              </div>
+
+              <textarea
+                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm bg-white shadow-sm focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-500 placeholder:text-gray-400 resize-none"
+                placeholder="Describe what you want to see. Example: show companies and acquisitions"
+                rows={2}
+                value={aiFilter}
+                onChange={e => setAiFilter(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter applies; Shift+Enter inserts a newline.
+                  if (e.key === 'Enter' && !e.shiftKey) {
+                    e.preventDefault();
+                    const q = aiFilter.trim();
+                    if (q && !resolveTypesMutation.isLoading) resolveTypesMutation.mutate(q);
+                  }
+                }}
+              />
+
+              <div className="mt-2 flex items-center gap-2">
+                <button
+                  className="flex-1 px-3 py-2 text-sm rounded-md bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                  disabled={!aiFilter.trim() || resolveTypesMutation.isLoading}
+                  onClick={() => resolveTypesMutation.mutate(aiFilter.trim())}
+                >
+                  {resolveTypesMutation.isLoading ? 'Applying…' : 'Apply'}
+                </button>
+              </div>
+
+              <div className="mt-1 text-xs text-gray-500">
+                Picks relevant entity and relationship types from the KG. Press Enter to apply.
+              </div>
+            </div>
+
             <div>
               <h3 className="text-sm font-medium text-gray-800 mb-2">Search</h3>
               <input
@@ -213,12 +332,24 @@ const GlobalGraphPage: React.FC = () => {
             <div>
               <h3 className="text-sm font-medium text-gray-800 mb-2">Entity Types</h3>
               <div className="space-y-1">
-                {ENTITY_TYPES.map(t => (
+                {availableEntityTypes.map(t => (
                   <label key={t} className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
-                      checked={entityTypes[t]}
-                      onChange={e => setEntityTypes(s => ({ ...s, [t]: e.target.checked }))}
+                      checked={enabledEntityTypes.includes(t)}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setSelectedEntityTypes((prev) => {
+                          const base = prev === null ? availableEntityTypes.slice() : prev.slice();
+                          const set = new Set(base);
+                          if (checked) set.add(t);
+                          else set.delete(t);
+                          const next = Array.from(set);
+                          next.sort();
+                          if (next.length === availableEntityTypes.length) return null;
+                          return next;
+                        });
+                      }}
                     />
                     <span className="capitalize">{t}</span>
                   </label>
@@ -228,9 +359,7 @@ const GlobalGraphPage: React.FC = () => {
                 <button
                   className="text-xs text-primary-600 hover:underline"
                   onClick={() => {
-                    const all: Record<string, boolean> = {};
-                    ENTITY_TYPES.forEach(t => (all[t] = true));
-                    setEntityTypes(all);
+                    setSelectedEntityTypes(null);
                   }}
                 >
                   Select All
@@ -238,9 +367,7 @@ const GlobalGraphPage: React.FC = () => {
                 <button
                   className="text-xs text-primary-600 hover:underline"
                   onClick={() => {
-                    const none: Record<string, boolean> = {};
-                    ENTITY_TYPES.forEach(t => (none[t] = false));
-                    setEntityTypes(none);
+                    setSelectedEntityTypes([]);
                   }}
                 >
                   Clear
@@ -251,12 +378,24 @@ const GlobalGraphPage: React.FC = () => {
             <div>
               <h3 className="text-sm font-medium text-gray-800 mb-2">Relation Types</h3>
               <div className="space-y-1 max-h-40 overflow-auto">
-                {RELATION_TYPES.map(t => (
+                {availableRelationTypes.map(t => (
                   <label key={t} className="flex items-center gap-2 text-sm">
                     <input
                       type="checkbox"
-                      checked={relationTypes[t]}
-                      onChange={e => setRelationTypes(s => ({ ...s, [t]: e.target.checked }))}
+                      checked={enabledRelationTypes.includes(t)}
+                      onChange={e => {
+                        const checked = e.target.checked;
+                        setSelectedRelationTypes((prev) => {
+                          const base = prev === null ? availableRelationTypes.slice() : prev.slice();
+                          const set = new Set(base);
+                          if (checked) set.add(t);
+                          else set.delete(t);
+                          const next = Array.from(set);
+                          next.sort();
+                          if (next.length === availableRelationTypes.length) return null;
+                          return next;
+                        });
+                      }}
                     />
                     <span>{t.replace(/_/g, ' ')}</span>
                   </label>
@@ -266,9 +405,7 @@ const GlobalGraphPage: React.FC = () => {
                 <button
                   className="text-xs text-primary-600 hover:underline"
                   onClick={() => {
-                    const all: Record<string, boolean> = {};
-                    RELATION_TYPES.forEach(t => (all[t] = true));
-                    setRelationTypes(all);
+                    setSelectedRelationTypes(null);
                   }}
                 >
                   Select All
@@ -276,9 +413,7 @@ const GlobalGraphPage: React.FC = () => {
                 <button
                   className="text-xs text-primary-600 hover:underline"
                   onClick={() => {
-                    const none: Record<string, boolean> = {};
-                    RELATION_TYPES.forEach(t => (none[t] = false));
-                    setRelationTypes(none);
+                    setSelectedRelationTypes([]);
                   }}
                 >
                   Clear
@@ -356,39 +491,109 @@ const GlobalGraphPage: React.FC = () => {
         )}
 
         {/* Graph Area */}
-        <div className={showFilters ? 'lg:col-span-2' : 'lg:col-span-3'}>
+        <div className={(showFilters ? 'lg:col-span-2' : 'lg:col-span-3') + ' h-full min-h-0 flex flex-col'}>
           {isLoading ? (
-            <div className="p-6 text-gray-600">Loading graph...</div>
+            <div className="p-6 text-gray-600 flex-1">Loading graph...</div>
           ) : isError ? (
-            <div className="p-6 text-red-600">Failed to load graph.</div>
+            <div className="p-6 text-red-600 flex-1">Failed to load graph.</div>
           ) : nodes.length === 0 ? (
-            <div className="p-6 text-gray-600">No entities found matching the filters.</div>
+            <div className="p-6 text-gray-600 flex-1">No entities found matching the filters.</div>
           ) : (
-            <div className="w-full overflow-auto">
-              <ForceGraph
-                ref={graphRef}
-                width={width}
-                height={height}
-                nodes={nodes}
-                edges={edges}
-                selectedNodeId={selected}
-                selectedEdgeId={selectedEdge?.id || null}
-                onNodeClick={n => { setSelected(n.id); setSelectedEdge(null); }}
-                onEdgeClick={e => { setSelectedEdge(e); setSelected(null); }}
-              />
+            <div ref={graphBox.ref} className="w-full flex-1 min-h-0 overflow-hidden">
+              {width > 0 && height > 0 && (
+                <ForceGraph
+                  ref={graphRef}
+                  width={width}
+                  height={height}
+                  nodes={nodes}
+                  edges={edges}
+                  selectedNodeId={selected}
+                  selectedEdgeId={selectedEdge?.id || null}
+                  onBackgroundClick={() => { setSelected(null); setSelectedEdge(null); }}
+                  onNodeClick={n => { setSelected(n.id); setSelectedEdge(null); }}
+                  onEdgeClick={e => { setSelectedEdge(e); setSelected(null); }}
+                />
+              )}
             </div>
           )}
         </div>
 
         {/* Details Panel */}
-        <div className="border-l border-gray-200 p-4 lg:col-span-1 max-h-[700px] overflow-auto">
+        <div className="border-l border-gray-200 p-4 lg:col-span-1 overflow-auto h-full min-h-0">
           <h2 className="text-base font-semibold text-gray-900 mb-2">Details</h2>
           {selectedNode ? (
             <div>
               <div className="mb-3">
                 <div className="text-sm text-gray-500">Selected Entity</div>
-                <div className="text-lg font-medium text-gray-900">{selectedNode.name}</div>
-                <div className="text-xs text-gray-600 capitalize">Type: {selectedNode.type}</div>
+                {(() => {
+                  const t = String(selectedNode.type || '').toLowerCase();
+                  const name = String(selectedNode.name || '');
+                  const isUrl = t === 'url' || /^https?:\/\//i.test(name);
+                  if (!isUrl) return <div className="text-lg font-medium text-gray-900">{name}</div>;
+                  return (
+                    <a
+                      href={name}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-lg font-medium text-primary-700 hover:text-primary-900 hover:underline break-all"
+                      title="Open URL"
+                    >
+                      {name}
+                    </a>
+                  );
+                })()}
+                <div className="text-xs text-gray-600 capitalize flex items-center gap-2">
+                  <span>Type: {selectedNode.type}</span>
+                  {isAdmin && (
+                    <>
+                      <button
+                        type="button"
+                        className="px-2 py-0.5 text-[11px] rounded bg-gray-100 hover:bg-gray-200 disabled:opacity-50"
+                        disabled={!selectedNode?.id || aiSuggestBusy}
+                        onClick={async () => {
+                          try {
+                            setAiSuggestBusy(true);
+                            const res = await apiClient.inferKGEntityType(selectedNode.id);
+                            setAiSuggestedType(res);
+                            toast.success(
+                              `AI suggested: ${res.entity_type}` +
+                                (typeof res.confidence === 'number' ? ` (${Math.round(res.confidence * 100)}%)` : '')
+                            );
+                          } catch (e: any) {
+                            toast.error(e?.response?.data?.detail || e?.message || 'Failed to infer type');
+                          } finally {
+                            setAiSuggestBusy(false);
+                          }
+                        }}
+                        title="Infer entity type using LLM against the open-list of known types"
+                      >
+                        {aiSuggestBusy ? 'AI…' : 'AI Suggest'}
+                      </button>
+                      {aiSuggestedType?.entity_type && aiSuggestedType.entity_type !== selectedNode.type && (
+                        <button
+                          type="button"
+                          className="px-2 py-0.5 text-[11px] rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                          disabled={aiApplyBusy}
+                          onClick={async () => {
+                            try {
+                              setAiApplyBusy(true);
+                              await apiClient.updateKGEntity(selectedNode.id, { entity_type: aiSuggestedType.entity_type });
+                              toast.success(`Updated type to ${aiSuggestedType.entity_type}`);
+                              refetch();
+                            } catch (e: any) {
+                              toast.error(e?.response?.data?.detail || e?.message || 'Failed to update type');
+                            } finally {
+                              setAiApplyBusy(false);
+                            }
+                          }}
+                          title="Apply the AI-suggested type to the entity"
+                        >
+                          {aiApplyBusy ? 'Saving…' : 'Apply'}
+                        </button>
+                      )}
+                    </>
+                  )}
+                </div>
                 {(selectedNode as GlobalGraphNode).mention_count !== undefined && (
                   <div className="text-xs text-gray-600">
                     Mentions: {(selectedNode as GlobalGraphNode).mention_count}
@@ -400,6 +605,100 @@ const GlobalGraphPage: React.FC = () => {
                   </div>
                 )}
               </div>
+
+              {(() => {
+                const name = String(selectedNode.name || '');
+                const arxivId = extractArxivId(name);
+                if (!arxivId) return null;
+                const absUrl = `https://arxiv.org/abs/${encodeURIComponent(arxivId)}`;
+                const pdfUrl = `https://arxiv.org/pdf/${encodeURIComponent(arxivId)}.pdf`;
+                return (
+                  <div className="mb-4 p-3 rounded border border-gray-200 bg-gray-50">
+                    <div className="text-sm font-medium text-gray-800">arXiv</div>
+                    <div className="text-xs text-gray-600 mt-0.5 break-all">{arxivId}</div>
+                    <div className="mt-2 flex items-center gap-2 flex-wrap">
+                      <a
+                        href={absUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 text-xs rounded bg-white border border-gray-300 hover:bg-gray-50"
+                      >
+                        Open abstract
+                      </a>
+                      <a
+                        href={pdfUrl}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="px-2.5 py-1.5 text-xs rounded bg-white border border-gray-300 hover:bg-gray-50"
+                      >
+                        Open PDF
+                      </a>
+                      <button
+                        type="button"
+                        className="px-2.5 py-1.5 text-xs rounded bg-white border border-gray-300 hover:bg-gray-50"
+                        onClick={() => navigate(`/papers?q=${encodeURIComponent(`id:${arxivId}`)}`)}
+                        title="Open in Papers page"
+                      >
+                        Open in Papers
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isQueueingArxiv}
+                        className="px-2.5 py-1.5 text-xs rounded bg-white border border-gray-300 hover:bg-gray-50 disabled:opacity-50"
+                        onClick={async () => {
+                          try {
+                            setIsQueueingArxiv(true);
+                            const src = await apiClient.ingestArxivPapers({
+                              name: `arXiv ${arxivId}`,
+                              paper_ids: [arxivId],
+                              max_results: 1,
+                              start: 0,
+                              sort_by: 'submittedDate',
+                              sort_order: 'descending',
+                              auto_sync: true,
+                              auto_summarize: true,
+                              auto_literature_review: false,
+                              topic: arxivId,
+                            });
+                            toast.success('Queued arXiv import');
+                            navigate(`/papers?source_id=${encodeURIComponent(String(src.id))}&q=${encodeURIComponent(`id:${arxivId}`)}`);
+                          } catch (e: any) {
+                            toast.error(e?.response?.data?.detail || e?.message || 'Failed to queue arXiv import');
+                          } finally {
+                            setIsQueueingArxiv(false);
+                          }
+                        }}
+                        title="Create an arXiv import source (async ingestion pipeline)"
+                      >
+                        {isQueueingArxiv ? 'Queueing…' : 'Queue import'}
+                      </button>
+                      <button
+                        type="button"
+                        disabled={isIngestingArxiv}
+                        className="px-2.5 py-1.5 text-xs rounded bg-primary-600 text-white hover:bg-primary-700 disabled:opacity-50"
+                        onClick={async () => {
+                          try {
+                            setIsIngestingArxiv(true);
+                            const res = await apiClient.ingestArxivInstant({ arxiv_input: arxivId, auto_summarize: true, auto_enrich: true });
+                            toast.success('Ingested arXiv paper');
+                            navigate('/documents', { state: { openDocId: res.document_id } });
+                          } catch (e: any) {
+                            toast.error(e?.response?.data?.detail || e?.message || 'Failed to ingest arXiv paper');
+                          } finally {
+                            setIsIngestingArxiv(false);
+                          }
+                        }}
+                        title="Instantly ingest into the Knowledge DB"
+                      >
+                        {isIngestingArxiv ? 'Ingesting…' : 'Ingest to DB'}
+                      </button>
+                    </div>
+                    <div className="mt-1 text-[11px] text-gray-500">
+                      Instant ingest makes it available immediately. Queue import runs the async source pipeline.
+                    </div>
+                  </div>
+                );
+              })()}
 
               <div className="mt-4">
                 <div className="text-sm font-medium text-gray-800 mb-1">

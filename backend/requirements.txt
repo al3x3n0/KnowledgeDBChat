@@ -19,7 +19,10 @@ huggingface_hub>=0.20.0
 # LLM and AI
 langchain==0.0.340
 langchain-community==0.0.1
+langgraph>=0.2.0
 ollama==0.1.7
+anthropic>=0.69.0
+openai>=1.60.0
 transformers==4.35.2
 torch==2.1.1
 torchaudio==2.1.1
@@ -48,6 +51,7 @@ reportlab>=4.0.0
 
 # Video/Audio Transcription
 openai-whisper>=20230918
+yt-dlp>=2024.8.6
 ffmpeg-python>=0.2.0
 librosa>=0.10.0
 speechbrain>=0.5.14
@@ -66,9 +70,14 @@ croniter>=2.0.3
 
 # Security
 python-jose[cryptography]==3.3.0
+cryptography>=43,<45
 passlib[bcrypt]==1.7.4
 python-multipart==0.0.6
 slowapi==0.1.9
+reportlab>=4.2,<5
+
+# Directory auth (LDAP)
+ldap3==2.9.1
 
 # Web Scraping
 beautifulsoup4==4.12.2

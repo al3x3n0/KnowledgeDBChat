@@ -27,6 +27,7 @@ from app.mcp.tools.documents import DocumentsTool
 from app.mcp.tools.chat import ChatTool
 from app.mcp.tools.generation import GenerationTool
 from app.mcp.tools.web_scrape import WebScrapeTool
+from app.mcp.tools.docker_execute import DockerExecuteTool
 
 
 # Initialize tools
@@ -35,6 +36,7 @@ documents_tool = DocumentsTool()
 chat_tool = ChatTool()
 generation_tool = GenerationTool()
 web_scrape_tool = WebScrapeTool()
+docker_execute_tool = DockerExecuteTool()
 
 # Create router
 mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
@@ -146,6 +148,7 @@ async def list_tools(
         ("create_repo_report", "Create a report from a GitHub/GitLab repository", generation_tool.operations["create_repo_report"]["input_schema"]),
         ("get_job_status", "Get status of a generation job", generation_tool.operations["get_job_status"]["input_schema"]),
         ("list_jobs", "List generation jobs", generation_tool.operations["list_jobs"]["input_schema"]),
+        ("docker_execute", "Run a bounded command inside a Docker container", docker_execute_tool.input_schema),
     ]
 
     # Filter tools based on API key configuration
@@ -226,7 +229,8 @@ async def call_tool(
         if not decision.allowed:
             raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.denied_reason or "Tool denied by policy")
 
-        if decision.require_approval:
+        require_approval = bool(decision.require_approval) or tool_name == "docker_execute"
+        if require_approval:
             audit = ToolExecutionAudit(
                 user_id=auth.user_id,
                 agent_definition_id=None,
@@ -235,7 +239,7 @@ async def call_tool(
                 tool_input={"arguments": args, "api_key_id": str(auth.api_key.id)},
                 policy_decision={
                     "allowed": bool(decision.allowed),
-                    "require_approval": bool(decision.require_approval),
+                    "require_approval": bool(require_approval),
                     "denied_reason": decision.denied_reason,
                     "matched_policies": decision.matched_policies,
                 },
@@ -364,6 +368,22 @@ async def call_tool(
                 db=db,
                 job_type=args.get("job_type", "all"),
                 limit=args.get("limit", 20),
+            )
+
+        elif tool_name == "docker_execute":
+            result = await docker_execute_tool.execute(
+                auth=auth,
+                db=db,
+                image=args.get("image", ""),
+                command=args.get("command", []),
+                stdin_data=args.get("stdin_data"),
+                input_content=args.get("input_content"),
+                timeout_seconds=args.get("timeout_seconds", 120),
+                memory_limit=args.get("memory_limit", "512m"),
+                cpu_limit=args.get("cpu_limit", 1.0),
+                network_enabled=args.get("network_enabled", False),
+                environment=args.get("environment"),
+                working_dir=args.get("working_dir", "/workspace"),
             )
 
         else:

@@ -9,23 +9,6 @@ import { apiClient } from '../../services/api';
 import { KGRelationshipUpdate } from '../../types';
 import toast from 'react-hot-toast';
 
-// Standard relation types
-const RELATION_TYPES = [
-  'works_for',
-  'manages',
-  'reports_to',
-  'collaborates_with',
-  'owns',
-  'uses',
-  'implements',
-  'part_of',
-  'located_in',
-  'related_to',
-  'mentions',
-  'references',
-  'created_by',
-];
-
 interface RelationshipEditModalProps {
   relationshipId: string;
   onClose: () => void;
@@ -52,9 +35,7 @@ const RelationshipEditModal: React.FC<RelationshipEditModalProps> = ({
           confidence: data.confidence,
           evidence: data.evidence || '',
         });
-        if (!RELATION_TYPES.includes(data.relation_type)) {
-          setCustomType(data.relation_type);
-        }
+        setCustomType(data.relation_type);
       },
     }
   );
@@ -67,8 +48,7 @@ const RelationshipEditModal: React.FC<RelationshipEditModalProps> = ({
 
   const allRelationTypes = React.useMemo(() => {
     const systemTypes = relationTypesData?.types || [];
-    const combined = Array.from(new Set([...RELATION_TYPES, ...systemTypes]));
-    return combined.sort();
+    return Array.from(new Set(systemTypes)).sort();
   }, [relationTypesData]);
 
   // Update mutation
@@ -96,7 +76,7 @@ const RelationshipEditModal: React.FC<RelationshipEditModalProps> = ({
 
     // Only include changed fields
     if (formData.relation_type !== relationship?.relation_type) {
-      updates.relation_type = formData.relation_type === 'custom' ? customType : formData.relation_type;
+      updates.relation_type = formData.relation_type;
     }
     if (formData.confidence !== relationship?.confidence) {
       updates.confidence = formData.confidence;
@@ -171,7 +151,7 @@ const RelationshipEditModal: React.FC<RelationshipEditModalProps> = ({
               Relationship Type
             </label>
             <select
-              value={RELATION_TYPES.includes(formData.relation_type || '') ? formData.relation_type : 'custom'}
+              value={allRelationTypes.includes(formData.relation_type || '') ? formData.relation_type : 'custom'}
               onChange={(e) => {
                 if (e.target.value === 'custom') {
                   setFormData({ ...formData, relation_type: customType || '' });
@@ -188,7 +168,7 @@ const RelationshipEditModal: React.FC<RelationshipEditModalProps> = ({
               ))}
               <option value="custom">Custom...</option>
             </select>
-            {(!RELATION_TYPES.includes(formData.relation_type || '') || formData.relation_type === 'custom') && (
+            {!allRelationTypes.includes(formData.relation_type || '') && (
               <input
                 type="text"
                 value={customType}

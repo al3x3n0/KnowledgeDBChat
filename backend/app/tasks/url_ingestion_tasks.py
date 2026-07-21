@@ -111,6 +111,8 @@ async def _async_ingest_url(task, request: Dict[str, Any], user_id: str) -> Dict
                 url=str(request.get("url") or ""),
                 title=request.get("title"),
                 tags=request.get("tags"),
+                ingest_mode=str(request.get("ingest_mode", "auto")),
+                youtube_audio_only=bool(request.get("youtube_audio_only", True)),
                 follow_links=bool(request.get("follow_links", False)),
                 max_pages=int(request.get("max_pages", 1)),
                 max_depth=int(request.get("max_depth", 0)),

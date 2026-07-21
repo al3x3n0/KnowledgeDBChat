@@ -85,6 +85,10 @@ class UserPreferencesBase(BaseModel):
     max_memories_per_session: int = Field(10, ge=1, le=100, description="Max memories to load per session")
     memory_importance_threshold: float = Field(0.3, ge=0.0, le=1.0, description="Minimum importance to store")
     auto_summarize_sessions: bool = Field(True, description="Auto-create session summaries")
+    auto_memory_build_enabled: bool = Field(True, description="Enable automatic memory extraction while chatting")
+    auto_memory_build_mode: str = Field("per_turn", description="Automatic extraction mode: off, manual, per_turn, periodic")
+    auto_memory_build_min_messages: int = Field(3, ge=1, le=100, description="Periodic mode: minimum new turns before extraction")
+    auto_memory_build_min_minutes: int = Field(10, ge=1, le=1440, description="Periodic mode: minimum minutes between extractions")
     allow_cross_session_memory: bool = Field(True, description="Share memories across sessions")
     allow_personal_data_storage: bool = Field(True, description="Store personal information")
 
@@ -105,6 +109,13 @@ class UserPreferencesBase(BaseModel):
     # Paper algorithm agent defaults
     paper_algo_default_run_demo_check: bool = Field(False, description="Default: run demo check after generating paper algorithm projects (when available)")
 
+    @validator("auto_memory_build_mode")
+    def validate_auto_memory_build_mode(cls, v):
+        allowed = {"off", "manual", "per_turn", "periodic"}
+        if v not in allowed:
+            raise ValueError(f"auto_memory_build_mode must be one of {sorted(allowed)}")
+        return v
+
 class UserPreferencesCreate(UserPreferencesBase):
     """Schema for creating user preferences."""
     user_id: UUID
@@ -115,6 +126,10 @@ class UserPreferencesUpdate(BaseModel):
     max_memories_per_session: Optional[int] = Field(None, ge=1, le=100)
     memory_importance_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)
     auto_summarize_sessions: Optional[bool] = None
+    auto_memory_build_enabled: Optional[bool] = None
+    auto_memory_build_mode: Optional[str] = Field(None, description="off, manual, per_turn, periodic")
+    auto_memory_build_min_messages: Optional[int] = Field(None, ge=1, le=100)
+    auto_memory_build_min_minutes: Optional[int] = Field(None, ge=1, le=1440)
     allow_cross_session_memory: Optional[bool] = None
     allow_personal_data_storage: Optional[bool] = None
 
@@ -132,6 +147,15 @@ class UserPreferencesUpdate(BaseModel):
     # Paper algorithm agent defaults
     paper_algo_default_run_demo_check: Optional[bool] = None
 
+    @validator("auto_memory_build_mode")
+    def validate_auto_memory_build_mode(cls, v):
+        if v is None:
+            return v
+        allowed = {"off", "manual", "per_turn", "periodic"}
+        if v not in allowed:
+            raise ValueError(f"auto_memory_build_mode must be one of {sorted(allowed)}")
+        return v
+
 class UserPreferencesResponse(UserPreferencesBase):
     """Schema for user preferences response."""
     id: UUID
@@ -145,6 +169,7 @@ class UserPreferencesResponse(UserPreferencesBase):
 class MemorySearchRequest(BaseModel):
     """Schema for memory search request."""
     query: str = Field(..., description="Search query")
+    session_id: Optional[UUID] = Field(None, description="Optional session filter")
     memory_types: Optional[List[str]] = Field(None, description="Filter by memory types")
     tags: Optional[List[str]] = Field(None, description="Filter by tags")
     min_importance: Optional[float] = Field(None, ge=0.0, le=1.0, description="Minimum importance score")
@@ -178,9 +203,6 @@ class MemoryStatsResponse(BaseModel):
     recent_memories: int  # Last 7 days
     most_accessed_memories: List[MemoryResponse]
     memory_usage_trend: List[Dict[str, Any]]  # Usage over time
-
-
-
 
 
 

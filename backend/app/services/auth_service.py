@@ -20,6 +20,7 @@ from loguru import logger
 from app.core.database import get_db
 from app.core.config import settings
 from app.models.user import User
+from app.services.ldap_service import ldap_service
 
 
 class AuthService:
@@ -163,18 +164,123 @@ class AuthService:
         password: str,
         db: AsyncSession
     ) -> Optional[User]:
-        """Authenticate a user with username and password."""
+        """Authenticate a user with username and password.
+
+        If LDAP is enabled, we support LDAP login and optional user auto-provisioning.
+        """
         user = await self.get_user_by_username(username, db)
-        
-        if not user:
+
+        # If the user exists and is LDAP-managed, prefer LDAP bind.
+        # If LDAP is unreachable, allow local-password fallback so LDAP remains optional.
+        if user and getattr(user, "auth_provider", "local") == "ldap":
+            try:
+                ldap_user = ldap_service.authenticate_and_fetch(username, password) if ldap_service.enabled else None
+            except Exception as e:
+                logger.warning(f"LDAP authentication backend unavailable for user {username}: {e}")
+                ldap_user = None
+
+            if ldap_user:
+                return await self._upsert_user_from_ldap(db, ldap_user, existing=user)
+
+            # Optional fallback: keep local login working when LDAP is down/misconfigured.
+            if user.is_active and self.verify_password(password, user.hashed_password):
+                logger.warning(f"LDAP user {username} authenticated via local fallback")
+                return user
+
             return None
-        
-        if not user.is_active:
-            return None
-        
-        if not self.verify_password(password, user.hashed_password):
-            return None
-        
+
+        # Local auth (default)
+        if user and user.is_active and self.verify_password(password, user.hashed_password):
+            return user
+
+        # LDAP fallback: either user doesn't exist, or local password failed
+        if ldap_service.enabled and ldap_service.is_configured():
+            try:
+                ldap_user = ldap_service.authenticate_and_fetch(username, password)
+            except Exception as e:
+                logger.warning(f"LDAP fallback authentication unavailable for user {username}: {e}")
+                ldap_user = None
+            if not ldap_user:
+                return None
+
+            if not getattr(settings, "LDAP_CREATE_USER_ON_LOGIN", True):
+                # Only allow login if the user already exists locally.
+                existing = user
+                if not existing:
+                    existing = await self.get_user_by_username(ldap_user.username, db)
+                if not existing and ldap_user.email:
+                    existing = await self.get_user_by_email(ldap_user.email, db)
+                if not existing:
+                    return None
+                return await self._upsert_user_from_ldap(db, ldap_user, existing=existing)
+
+            return await self._upsert_user_from_ldap(db, ldap_user, existing=user)
+
+        return None
+
+    async def _upsert_user_from_ldap(self, db: AsyncSession, ldap_user, existing: Optional[User] = None) -> User:
+        """
+        Create or update a local user record from LDAP attributes.
+        """
+        from datetime import datetime
+
+        sync = bool(getattr(settings, "LDAP_SYNC_ON_LOGIN", True))
+        role = ldap_service.map_role(getattr(ldap_user, "groups", None))
+
+        user = existing
+        if user is None:
+            # Try to avoid duplicates by matching email.
+            if getattr(ldap_user, "email", None):
+                user = await self.get_user_by_email(ldap_user.email, db)
+
+        if user is None:
+            # Create a local user with a random password hash (never used for LDAP auth).
+            import secrets
+
+            username = (ldap_user.username or "").strip() or "ldap_user"
+            email = (ldap_user.email or "").strip()
+            if not email:
+                raise ValueError("LDAP user has no email and LDAP_DEFAULT_EMAIL_DOMAIN is not set")
+
+            user = User(
+                username=username,
+                email=email,
+                full_name=getattr(ldap_user, "full_name", None),
+                hashed_password=self.hash_password(secrets.token_urlsafe(32)),
+                is_active=True,
+                is_verified=True,
+                role=role,
+                auth_provider="ldap",
+                auth_subject=getattr(ldap_user, "dn", None),
+                auth_metadata={
+                    "groups": list(getattr(ldap_user, "groups", []) or []),
+                },
+            )
+            db.add(user)
+            await db.commit()
+            await db.refresh(user)
+            return user
+
+        # Update existing record if desired.
+        if sync:
+            if getattr(ldap_user, "email", None):
+                user.email = ldap_user.email
+            if getattr(ldap_user, "full_name", None):
+                user.full_name = ldap_user.full_name
+
+        # Always mark LDAP provider + subject when login succeeds.
+        user.auth_provider = "ldap"
+        user.auth_subject = getattr(ldap_user, "dn", None)
+        user.auth_metadata = {
+            "groups": list(getattr(ldap_user, "groups", []) or []),
+        }
+        user.role = role
+        user.is_active = True
+        user.is_verified = True
+        user.updated_at = datetime.utcnow()
+
+        await db.commit()
+        await db.refresh(user)
         return user
     
     async def get_current_user(

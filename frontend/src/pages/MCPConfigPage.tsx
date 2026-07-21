@@ -67,10 +67,7 @@ const MCPConfigPage: React.FC = () => {
   // Fetch document sources for source access configuration
   const { data: sources } = useQuery(
     'documentSources',
-    async () => {
-      const response = await apiClient.get<{ sources: DocumentSource[] }>('/admin/sources');
-      return response.data.sources;
-    },
+    () => apiClient.getDocumentSources(),
     { refetchOnWindowFocus: false }
   );
 

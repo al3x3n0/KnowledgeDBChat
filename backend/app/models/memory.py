@@ -97,6 +97,10 @@ class UserPreferences(Base):
     max_memories_per_session = Column(Integer, default=10, nullable=False)  # Max memories to load per session
     memory_importance_threshold = Column(Float, default=0.3, nullable=False)  # Min importance to store
     auto_summarize_sessions = Column(Boolean, default=True, nullable=False)  # Auto-create session summaries
+    auto_memory_build_enabled = Column(Boolean, default=True, nullable=False)  # Enable automatic memory extraction
+    auto_memory_build_mode = Column(String(32), default="per_turn", nullable=False)  # off|manual|per_turn|periodic
+    auto_memory_build_min_messages = Column(Integer, default=3, nullable=False)  # Used by periodic mode
+    auto_memory_build_min_minutes = Column(Integer, default=10, nullable=False)  # Used by periodic mode
     
     # Privacy settings
     allow_cross_session_memory = Column(Boolean, default=True, nullable=False)  # Share memories across sessions
@@ -211,7 +215,6 @@ class AgentToolExecution(Base):
 
     def __repr__(self):
         return f"<AgentToolExecution(id={self.id}, tool={self.tool_name}, status={self.status})>"
-
 
 
 

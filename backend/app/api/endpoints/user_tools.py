@@ -88,7 +88,7 @@ async def create_user_tool(
             )
 
         # Validate tool type
-        valid_types = ["webhook", "transform", "python", "llm_prompt"]
+        valid_types = ["webhook", "transform", "python", "llm_prompt", "workflow_runner"]
         if bool(getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
             valid_types.append("docker_container")
         if tool_data.tool_type not in valid_types:

@@ -2406,6 +2406,10 @@ async def act_on_experiment_run(
     blocked_reason_code = str(scientific_validation.get("blocked_reason_code") or scientific_validation.get("blocked_reason") or "").strip() or None
     is_scientific = bool(scientific_validation)
     agent_job_id: UUID | None = None
+    # Only the retry/requeue branch derives this from a linked job; every
+    # other action falls through to the shared decision-event build below,
+    # so it must be initialized here or those paths raise UnboundLocalError.
+    source_scheduler_state: Optional[dict] = None
 
     if action == "start":
         if not is_scientific:

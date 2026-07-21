@@ -26,8 +26,32 @@ if "pptx" not in sys.modules:
     pptx_enum_stub = types.ModuleType("pptx.enum")
     pptx_shapes_stub = types.ModuleType("pptx.enum.shapes")
     pptx_shapes_stub.PP_PLACEHOLDER = object()
+    pptx_shapes_stub.MSO_SHAPE = object()
+    pptx_text_stub = types.ModuleType("pptx.enum.text")
+    pptx_text_stub.PP_ALIGN = object()
+    pptx_text_stub.MSO_ANCHOR = object()
+
+    def _pptx_dimension(*args, **kwargs):
+        return 0
+
+    pptx_util_stub = types.ModuleType("pptx.util")
+    pptx_util_stub.Inches = _pptx_dimension
+    pptx_util_stub.Pt = _pptx_dimension
+    pptx_util_stub.Emu = _pptx_dimension
+    pptx_dml_stub = types.ModuleType("pptx.dml")
+    pptx_dml_color_stub = types.ModuleType("pptx.dml.color")
+
+    class _RGBColor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    pptx_dml_color_stub.RGBColor = _RGBColor
     sys.modules["pptx.enum"] = pptx_enum_stub
     sys.modules["pptx.enum.shapes"] = pptx_shapes_stub
+    sys.modules["pptx.enum.text"] = pptx_text_stub
+    sys.modules["pptx.util"] = pptx_util_stub
+    sys.modules["pptx.dml"] = pptx_dml_stub
+    sys.modules["pptx.dml.color"] = pptx_dml_color_stub
 
 if "sentence_transformers" not in sys.modules:
     sentence_transformers_stub = types.ModuleType("sentence_transformers")

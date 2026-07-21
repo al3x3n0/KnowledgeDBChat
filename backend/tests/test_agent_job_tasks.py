@@ -6,7 +6,7 @@ import types
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from conftest import TestSessionLocal
+from tests.conftest import TestSessionLocal
 from sqlalchemy import select
 
 from app.models.agent_job import AgentJob, AgentJobCheckpoint, AgentJobStatus

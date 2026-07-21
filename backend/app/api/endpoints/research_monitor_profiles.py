@@ -935,6 +935,8 @@ async def apply_customer_rebalance(
             customer=customer,
             decision_type="customer_rebalanced",
             reason_code="customer_rebalance_guidance",
+            reason_label="Customer rebalance guidance",
+            scheduler_state=None,
             status="applied",
             severity="medium",
             actor_mode="operator",

@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional, Tuple
 from uuid import UUID
 
@@ -830,12 +830,34 @@ class ResearchMonitorProfileService:
         return "normal", reasons[:3]
 
     @staticmethod
+    def _to_naive_utc(value: Any) -> Optional[datetime]:
+        """Coerce a datetime or ISO string to a naive-UTC datetime for comparison.
+
+        The codebase stores naive-UTC datetimes, but policy-history "at" values
+        may arrive as tz-aware datetimes or ISO strings (with a Z suffix);
+        comparing those directly raises "offset-naive vs offset-aware".
+        """
+        if value is None:
+            return None
+        if isinstance(value, str):
+            try:
+                value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+            except Exception:
+                return None
+        if isinstance(value, datetime):
+            if value.tzinfo is not None:
+                return value.astimezone(timezone.utc).replace(tzinfo=None)
+            return value
+        return None
+
+    @staticmethod
     def _item_sort_time(item: ResearchInboxItem) -> datetime:
-        return (
+        raw = (
             getattr(item, "updated_at", None)
             or getattr(item, "created_at", None)
             or datetime.utcnow()
         )
+        return ResearchMonitorProfileService._to_naive_utc(raw) or datetime.utcnow()
 
     def _empty_policy_evaluation_counts(self) -> dict[str, int]:
         return {
@@ -971,7 +993,7 @@ class ResearchMonitorProfileService:
     ) -> dict[str, Any]:
         target_count = max(3, int(history_entry.get("evaluation_target_count") or self.POLICY_EVALUATION_TARGET_COUNT))
         sorted_items = sorted(items, key=self._item_sort_time)
-        effective_at = history_entry["at"]
+        effective_at = self._to_naive_utc(history_entry["at"]) or datetime.utcnow()
         before_candidates = [item for item in sorted_items if self._item_sort_time(item) < effective_at]
         after_candidates = [item for item in sorted_items if self._item_sort_time(item) >= effective_at]
         before_items = before_candidates[-target_count:]
@@ -1072,7 +1094,7 @@ class ResearchMonitorProfileService:
     ) -> dict[str, Any]:
         target_count = max(3, int(history_entry.get("evaluation_target_count") or self.CUSTOMER_REBALANCE_EVALUATION_TARGET_COUNT))
         sorted_items = sorted(items, key=self._item_sort_time)
-        effective_at = history_entry["at"]
+        effective_at = self._to_naive_utc(history_entry["at"]) or datetime.utcnow()
         before_candidates = [item for item in sorted_items if self._item_sort_time(item) < effective_at]
         after_candidates = [item for item in sorted_items if self._item_sort_time(item) >= effective_at]
         before_items = before_candidates[-target_count:]

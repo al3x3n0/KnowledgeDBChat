@@ -56,6 +56,11 @@ class _FakeExecuteResult:
         return _FakeScalarResult(self._rows)
 
 
+async def _empty_execute(_stmt):
+    """Async db.execute stub returning no rows (for budget-snapshot queries)."""
+    return _FakeExecuteResult(rows=[])
+
+
 class _FakeProfileSession:
     def __init__(self, results):
         self._results = list(results)
@@ -96,6 +101,13 @@ class _FakeInboxOutcomeSession:
         if model_name == "NotificationPreferences":
             return _FakeExecuteResult(scalar=None)
         return _FakeExecuteResult(rows=self.items)
+
+    async def get(self, _model, lookup_id):
+        # Outcome projection fetches the originating profile/portfolio by id.
+        for candidate in (self.profile, self.portfolio):
+            if candidate is not None and getattr(candidate, "id", None) == lookup_id:
+                return candidate
+        return None
 
     def add(self, obj):
         self.notifications.append(obj)
@@ -150,7 +162,7 @@ async def test_apply_follow_up_policy_blocks_manual_mode():
             return source_job
         return None
 
-    db = SimpleNamespace(get=fake_get)
+    db = SimpleNamespace(get=fake_get, execute=_empty_execute)
     current_user = SimpleNamespace(id=item.user_id)
 
     await agent_jobs_endpoint._apply_follow_up_policy_on_accept(
@@ -191,7 +203,7 @@ async def test_apply_follow_up_policy_queues_safe_follow_up_for_approval():
             return source_job
         return None
 
-    db = SimpleNamespace(get=fake_get)
+    db = SimpleNamespace(get=fake_get, execute=_empty_execute)
     current_user = SimpleNamespace(id=item.user_id)
 
     await agent_jobs_endpoint._apply_follow_up_policy_on_accept(
@@ -242,7 +254,7 @@ async def test_apply_follow_up_policy_auto_launches_safe_chain(monkeypatch):
 
     monkeypatch.setattr(agent_jobs_endpoint, "create_job_from_chain", fake_create_job_from_chain)
 
-    db = SimpleNamespace(get=fake_get)
+    db = SimpleNamespace(get=fake_get, execute=_empty_execute)
     current_user = SimpleNamespace(id=item.user_id)
 
     await agent_jobs_endpoint._apply_follow_up_policy_on_accept(
@@ -291,7 +303,7 @@ async def test_apply_follow_up_policy_blocks_non_allowlisted_safe_recommendation
             return source_job
         return None
 
-    db = SimpleNamespace(get=fake_get)
+    db = SimpleNamespace(get=fake_get, execute=_empty_execute)
     current_user = SimpleNamespace(id=item.user_id)
 
     await agent_jobs_endpoint._apply_follow_up_policy_on_accept(
@@ -426,7 +438,7 @@ async def test_checkpoint_queue_follow_up_action_threads_source_job_scheduler_st
     monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
-        ResearchInboxFollowUpRelaunchRequest(
+        AgentCheckpointQueueFollowUpActionRequest(
             inbox_item_id=item.id,
             action="approve_launch",
             operator_note="Looks safe to launch.",
@@ -494,7 +506,7 @@ async def test_checkpoint_queue_follow_up_action_omits_malformed_source_job_sche
     monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
-        ResearchInboxFollowUpRelaunchRequest(
+        AgentCheckpointQueueFollowUpActionRequest(
             inbox_item_id=item.id,
             action="reject_launch",
             operator_note="Not safe enough.",
@@ -2650,7 +2662,7 @@ def test_customer_rebalance_evaluation_scores_before_and_after():
 
 
 @pytest.mark.asyncio
-async def test_apply_customer_rebalance_records_customer_history():
+async def test_apply_customer_rebalance_records_customer_history(monkeypatch):
     user_id = uuid4()
     profile = ResearchMonitorProfile(
         id=uuid4(),

@@ -51,4 +51,6 @@ def queue_reason_label(reason_code: str) -> str:
         "policy_guardrail": "Policy safeguard review",
         "budget_throttle": "Autonomy budget review",
     }
-    return labels.get(code, code.replace("_", " ").strip().title() or "Needs review")
+    # Fallback matches the sentence-case convention of the labels above
+    # (e.g. "Execution failure", not "Execution Failure").
+    return labels.get(code, code.replace("_", " ").strip().capitalize() or "Needs review")

@@ -120,6 +120,7 @@ def process_export_task(self, job_id: str):
 
     except Exception as e:
         logger.exception(f"Export task failed for job {job_id}")
+        error_text = str(e)
 
         async def _mark_failed():
             job_uuid = UUID(job_id)
@@ -131,7 +132,7 @@ def process_export_task(self, job_id: str):
                 job = result.scalar_one_or_none()
                 if job and job.status not in ("completed", "failed", "cancelled"):
                     job.status = "failed"
-                    job.error = f"Task error: {str(e)}"
+                    job.error = f"Task error: {error_text}"
                     job.completed_at = datetime.utcnow()
                     await db.commit()
 

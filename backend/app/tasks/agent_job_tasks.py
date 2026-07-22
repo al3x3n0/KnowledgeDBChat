@@ -263,6 +263,7 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
 
     except Exception as e:
         logger.exception(f"Agent job task failed for {job_id}")
+        error_text = str(e)
 
         async def _mark_failed():
             job_uuid = UUID(job_id)
@@ -278,7 +279,7 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
                     AgentJobStatus.CANCELLED.value,
                 ):
                     job.status = AgentJobStatus.FAILED.value
-                    job.error = f"Task error: {str(e)}"
+                    job.error = f"Task error: {error_text}"
                     job.completed_at = datetime.utcnow()
                     _record_scheduler_outcome(
                         job,

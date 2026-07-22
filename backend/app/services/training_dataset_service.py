@@ -31,7 +31,7 @@ from app.schemas.training import (
     DatasetValidationResult,
 )
 from app.services.storage_service import storage_service
-from app.services.llm_service import LLMService
+from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 
 

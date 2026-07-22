@@ -13,6 +13,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.autonomy_service import build_domain_profile_compat_policy
+from app.services.project_profile_service import build_project_profile
 
 
 class AgentScientificValidationService:

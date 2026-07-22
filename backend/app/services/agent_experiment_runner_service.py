@@ -27,6 +27,7 @@ from app.models.user import User
 from app.models.memory import UserPreferences
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 from app.services.ai_hub_eval_service import ai_hub_eval_service
+from app.services.llm_service import LLMService
 from app.services.project_profile_service import (
     build_project_profile,
     format_project_profile_for_prompt,

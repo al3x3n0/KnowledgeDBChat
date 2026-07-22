@@ -14,13 +14,16 @@ import math
 import re
 import uuid
 from datetime import datetime, timedelta
-from typing import Any, Optional
+from typing import Any, Optional, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from app.models.document import DocumentSource
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status, WebSocket, WebSocketDisconnect
 from fastapi.responses import Response
 from loguru import logger
-from sqlalchemy import select, func, and_, or_, cast, String, literal
+from sqlalchemy import select, func, and_, or_, cast, String, literal, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, aliased
 import redis.asyncio as redis
@@ -4207,12 +4210,6 @@ async def _record_follow_up_queue_decision_event(
         deep_link=deep_link,
         metadata=metadata,
     )
-
-
-    try:
-        return datetime.fromisoformat(text.replace("Z", "+00:00"))
-    except Exception:
-        return None
 
 
 def _build_follow_up_actions_for_inbox_item(
@@ -10454,77 +10451,6 @@ async def agent_job_progress_websocket(
             await websocket.close()
         except:
             pass
-
-
-    # Get first step configuration
-    job_config = chain.create_job_config_for_step(
-        step_index=0,
-        variables=request.variables,
-        parent_results=None,
-    )
-
-    if not job_config:
-        raise HTTPException(
-            status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Failed to create job configuration from chain",
-        )
-
-    # Merge with config overrides
-    default_settings = chain.default_settings or {}
-    if request.config_overrides:
-        default_settings.update(request.config_overrides)
-    default_settings = _normalize_scope_keys_deep(default_settings) or {}
-
-    # Build chain config for next step trigger
-    chain_config = None
-    if len(chain.chain_steps) > 1:
-        next_step = chain.chain_steps[1]
-        chain_config = {
-            "trigger_condition": chain.chain_steps[0].get("trigger_condition", "on_complete"),
-            "inherit_results": default_settings.get("inherit_results", True),
-            "chain_definition_id": str(chain.id),
-            "current_step_index": 0,
-            "total_steps": len(chain.chain_steps),
-            "variables": request.variables,
-            "child_jobs": [{
-                "name": f"{request.name_prefix} - {next_step.get('step_name', 'Step 2')}",
-                "job_type": next_step.get("job_type", "custom"),
-                "goal": _substitute_variables(next_step.get("goal_template", ""), request.variables),
-                "config": _merge_chain_step_config(default_settings, next_step.get("config", {}) or {}),
-                "chain_config": _build_chain_config_for_step(chain, 1, request.variables, default_settings) if len(chain.chain_steps) > 2 else None,
-            }],
-        }
-        if chain.chain_steps[0].get("trigger_thresholds"):
-            chain_config.update(chain.chain_steps[0]["trigger_thresholds"])
-
-    # Create the first job
-    job = AgentJob(
-        name=f"{request.name_prefix} - {job_config.get('name', 'Step 1')}",
-        description=f"Chain: {chain.display_name}",
-        job_type=job_config.get("job_type", "custom"),
-        goal=job_config.get("goal", ""),
-        config=_merge_chain_step_config(default_settings, job_config.get("config", {}) or {}),
-        user_id=current_user.id,
-        status=AgentJobStatus.PENDING.value,
-        max_iterations=default_settings.get("max_iterations", 100),
-        max_tool_calls=default_settings.get("max_tool_calls", 500),
-        max_llm_calls=default_settings.get("max_llm_calls", 200),
-        max_runtime_minutes=default_settings.get("max_runtime_minutes", 60),
-        chain_config=_normalize_scope_keys_deep(chain_config),
-        chain_depth=0,
-    )
-
-    db.add(job)
-    await db.commit()
-    await db.refresh(job)
-
-    logger.info(f"Created chain job {job.id} from chain {chain.name} for user {current_user.id}")
-
-    # Start immediately if requested
-    if request.start_immediately:
-        execute_agent_job_task.delay(str(job.id), str(current_user.id))
-
-    return _job_to_response(job)
 
 
 @router.get("/{job_id}/chain-status", response_model=AgentJobChainStatusResponse)

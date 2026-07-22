@@ -10,6 +10,7 @@ import random
 import re
 import uuid
 from collections import Counter
+from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from uuid import UUID

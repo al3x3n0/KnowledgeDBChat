@@ -415,10 +415,13 @@ class DataSandbox:
             if group_by:
                 result_df = df.groupby(group_by).agg(aggregations).reset_index()
                 # Flatten column names
-                result_df.columns = [
-                    f"{col}_{agg}" if isinstance(col, tuple) else col
-                    for col in result_df.columns
-                ]
+                def _flatten_col(col):
+                    if isinstance(col, tuple):
+                        name, agg = col[0], (col[1] if len(col) > 1 else "")
+                        return f"{name}_{agg}" if agg else str(name)
+                    return col
+
+                result_df.columns = [_flatten_col(col) for col in result_df.columns]
             else:
                 result_dict = {}
                 for col, aggs in aggregations.items():

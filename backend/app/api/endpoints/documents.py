@@ -3,6 +3,7 @@ Document-related API endpoints.
 """
 
 import os
+import json
 import hashlib
 import tempfile
 from pathlib import Path
@@ -1538,6 +1539,8 @@ async def submit_git_repository(
     Creates a GitHub or GitLab document source scoped to the provided configuration.
     """
     try:
+        from app.core.config import settings
+
         provider = request.provider.lower()
         repos = request.repositories
         if not repos:

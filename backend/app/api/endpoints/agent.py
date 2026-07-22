@@ -795,6 +795,7 @@ async def preview_agent_routing(
     """
     from app.core.feature_flags import get_str as get_feature_str
     from app.models.agent_job import AgentJob
+    from app.core.config import settings
 
     res = await db.execute(select(AgentDefinition).where(AgentDefinition.id == agent_id))
     agent = res.scalar_one_or_none()

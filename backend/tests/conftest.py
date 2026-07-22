@@ -5,6 +5,7 @@ Pytest configuration and fixtures for backend tests.
 import sys
 import types
 import importlib.machinery
+import importlib.util
 import pytest
 import asyncio
 from typing import AsyncGenerator
@@ -69,7 +70,15 @@ if "sentence_transformers" not in sys.modules:
     sentence_transformers_stub.SentenceTransformer = _DummySentenceTransformer
     sys.modules["sentence_transformers"] = sentence_transformers_stub
 
-if "bs4" not in sys.modules:
+def _real_module_available(name: str) -> bool:
+    """True if the real (non-stubbed) package is importable."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+if "bs4" not in sys.modules and not _real_module_available("bs4"):
     bs4_stub = types.ModuleType("bs4")
     bs4_stub.__spec__ = importlib.machinery.ModuleSpec("bs4", loader=None)
 
@@ -91,7 +100,7 @@ if "bs4" not in sys.modules:
     bs4_stub.NavigableString = _DummyNavigableString
     sys.modules["bs4"] = bs4_stub
 
-if "croniter" not in sys.modules:
+if "croniter" not in sys.modules and not _real_module_available("croniter"):
     croniter_stub = types.ModuleType("croniter")
 
     class _DummyCronIter:

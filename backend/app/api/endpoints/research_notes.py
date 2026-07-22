@@ -466,6 +466,10 @@ async def enforce_research_note_citations(
     if not documents:
         raise HTTPException(status_code=400, detail="No source documents found for provided IDs")
 
+    note_markdown = (note.content_markdown or "").strip()
+    if len(note_markdown) > payload.max_note_chars:
+        note_markdown = note_markdown[: payload.max_note_chars].rstrip() + "\n\n[TRUNCATED]\n"
+
     chunk_query = (payload.chunk_query or "").strip()
     if not chunk_query:
         chunk_query = f"{note.title}\n{note_markdown[:1200]}"
@@ -492,9 +496,6 @@ async def enforce_research_note_citations(
         {"key": f"S{i + 1}", "doc_id": s["id"], "evidence": s.get("evidence") or []}
         for i, s in enumerate(sources_payload)
     ]
-    note_markdown = (note.content_markdown or "").strip()
-    if len(note_markdown) > payload.max_note_chars:
-        note_markdown = note_markdown[: payload.max_note_chars].rstrip() + "\n\n[TRUNCATED]\n"
 
     strict_block = ""
     if payload.strict:

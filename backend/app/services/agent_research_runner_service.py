@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import math
 import os
@@ -39,6 +40,7 @@ from app.services.research_opportunity_service import (
     list_normalized_research_opportunities,
     merge_operator_fields,
     normalize_research_opportunity,
+    summarize_portfolio_operator_reviews,
     summarize_research_opportunity_autonomy_states,
     summarize_research_opportunity_stages,
 )
@@ -47,6 +49,36 @@ from app.services.autonomy_service import (
     current_domain_profile_policy_snapshot,
     resolve_domain_profile_automation_contract,
 )
+
+
+def _extract_json(text: Any) -> Optional[Dict[str, Any]]:
+    """Best-effort extraction of a JSON object from an LLM response.
+
+    Returns the parsed dict, or ``None`` if no valid JSON object is found
+    (callers guard with ``_extract_json(...) or {}``).
+    """
+    if isinstance(text, dict):
+        return text
+    if not isinstance(text, str):
+        return None
+
+    cleaned = text.strip()
+    if cleaned.startswith("```"):
+        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*", "", cleaned).strip()
+        if cleaned.endswith("```"):
+            cleaned = cleaned[:-3].strip()
+
+    start = cleaned.find("{")
+    end = cleaned.rfind("}")
+    if start == -1 or end == -1 or end <= start:
+        return None
+
+    try:
+        parsed = json.loads(cleaned[start:end + 1])
+    except (json.JSONDecodeError, ValueError):
+        return None
+
+    return parsed if isinstance(parsed, dict) else None
 
 
 class AgentResearchRunnerService:

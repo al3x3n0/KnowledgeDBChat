@@ -26,7 +26,7 @@ from loguru import logger
 
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.document_service import DocumentService
-from app.services.vector_store import vector_store_service
+from app.services.vector_store import vector_store_service, VectorStore
 from app.services.agent_tools import AGENT_TOOLS, get_tools_description, validate_tool_params
 from app.services.agent_router import AgentRouter
 from app.services.agent_tool_dispatch import (

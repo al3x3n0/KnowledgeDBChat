@@ -16,6 +16,7 @@ from app.models.research_note import ResearchNote
 from app.models.research_portfolio import ResearchPortfolio
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.agent_execution_planner import ExecutionPlan, PlanStep
+from app.services.project_profile_service import infer_project_profile_from_paths
 from app.services.research_opportunity_service import merge_operator_fields, normalize_research_opportunity
 
 
@@ -233,7 +234,7 @@ def test_infer_project_profile_from_paths_detects_stack_and_commands():
         "docker-compose.yml",
     ]
 
-    profile = executor._infer_project_profile_from_paths(paths)
+    profile = infer_project_profile_from_paths(paths)
 
     stacks = profile.get("detected_stack") or []
     commands = profile.get("suggested_commands") or []
@@ -339,7 +340,7 @@ def test_infer_project_profile_from_paths_scopes_commands_for_nested_repo_dirs()
         "Makefile",
     ]
 
-    profile = executor._infer_project_profile_from_paths(paths)
+    profile = infer_project_profile_from_paths(paths)
 
     commands = profile.get("suggested_commands") or []
     command_groups = profile.get("command_groups") or {}
@@ -364,7 +365,7 @@ def test_infer_project_profile_from_paths_uses_poetry_and_yarn_fallbacks():
         "backend/tests/test_agent.py",
     ]
 
-    profile = executor._infer_project_profile_from_paths(paths)
+    profile = infer_project_profile_from_paths(paths)
 
     command_groups = profile.get("command_groups") or {}
     assert "cd frontend && yarn install" in (command_groups.get("install") or [])

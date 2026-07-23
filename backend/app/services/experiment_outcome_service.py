@@ -159,10 +159,13 @@ def _apply_experiment_outcome_to_row(
     updated["linked_experiment_plan_ids"] = linked_plan_ids
     updated["linked_validation_run_ids"] = linked_run_ids
     updated["source_note_ids"] = source_note_ids
+    # The opportunity-facing status is canonical: a "succeeded" run is surfaced
+    # as "completed" so it matches the stage / follow-up / decision fields below.
+    canonical_status = "completed" if status == "succeeded" else status
     updated["latest_experiment_plan_id"] = plan_id
     updated["latest_validation_run_id"] = run_id
     updated["latest_validation_job_id"] = agent_job_id
-    updated["latest_validation_status"] = status or None
+    updated["latest_validation_status"] = canonical_status or None
     updated["latest_validation_blocked_reason_code"] = blocked_reason_code
     updated["last_activity_at"] = recorded_at_iso
     updated["updated_at"] = recorded_at_iso

@@ -2305,7 +2305,7 @@ async def update_experiment_run(
     return _run_to_response(run)
 
 
-@router.post("/runs/{run_id}/start", response_model=ExperimentRunStartResponse, status_code=status.HTTP_201_CREATED)
+@router.post("/runs/{run_id}/start", response_model=ExperimentRunStartResponse, status_code=status.HTTP_200_OK)
 async def start_experiment_run(
     run_id: UUID,
     request: ExperimentRunStartRequest,

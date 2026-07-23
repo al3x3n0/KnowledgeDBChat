@@ -1,5 +1,6 @@
 import asyncio
 import json
+from uuid import UUID
 
 import pytest
 from fastapi import FastAPI
@@ -556,6 +557,13 @@ def test_sync_experiment_run_auto_appends_to_target_note_when_configured(
         await db_session.flush()
         run.experiment_plan_id = plan.id
         run.agent_job_id = job.id
+        run.config = {
+            **run.config,
+            "post_run_actions": {
+                **run.config["post_run_actions"],
+                "target_note_id": str(note.id),
+            },
+        }
         db_session.add(run)
         await db_session.commit()
 
@@ -688,6 +696,13 @@ def test_sync_experiment_run_queues_pending_reevaluation_draft_for_reevaluated_n
         await db_session.flush()
         run.experiment_plan_id = plan.id
         run.agent_job_id = job.id
+        run.config = {
+            **run.config,
+            "post_run_actions": {
+                **run.config["post_run_actions"],
+                "target_note_id": str(note.id),
+            },
+        }
         db_session.add(run)
         await db_session.commit()
 
@@ -705,7 +720,7 @@ def test_sync_experiment_run_queues_pending_reevaluation_draft_for_reevaluated_n
         assert pending_job_id
         assert refreshed_note.structured_payload["pending_reevaluation_reason"] == "new_experiment_evidence"
         assert refreshed_note.structured_payload["pending_reevaluation_source_run_ids"] == [str(run.id)]
-        queued_job = await db_session.get(SynthesisJob, pending_job_id)
+        queued_job = await db_session.get(SynthesisJob, UUID(pending_job_id))
         assert queued_job is not None
         assert queued_job.job_type == "hypothesis_reevaluation"
         assert str(queued_job.research_note_id) == str(note.id)
@@ -1211,14 +1226,22 @@ def test_experiment_run_action_retry_creates_child_run_lineage(
     assert payload["operator_actions"][0]["outcome_status"] == "spawned"
     assert captured["reason_label"] == "Validation requeued"
     assert captured["scheduler_state"] == {
-        "queue_reason": "execution_failure",
+        "last_run_status": None,
+        "failure_streak": 0,
         "last_scheduled_at": "2026-03-16T09:00:00Z",
         "last_dispatched_at": "2026-03-16T09:05:00Z",
+        "current_run_started_at": None,
+        "last_successful_run_at": None,
+        "last_completed_run_at": None,
+        "last_failure_at": None,
+        "backoff_until": None,
+        "backoff_seconds": 0,
+        "queue_reason": "execution_failure",
     }
 
     async def _verify():
         parent = await db_session.get(ExperimentRun, run.id)
-        child = await db_session.get(ExperimentRun, payload["id"])
+        child = await db_session.get(ExperimentRun, UUID(payload["id"]))
         assert parent is not None
         assert child is not None
         assert str(parent.latest_child_run_id) == payload["id"]

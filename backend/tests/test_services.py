@@ -17,13 +17,15 @@ async def test_document_service_get_documents(db_session: AsyncSession):
     """Test DocumentService.get_documents."""
     service = DocumentService()
     
-    documents = await service.get_documents(
+    # get_documents returns a (items, total_count) tuple for pagination
+    documents, total = await service.get_documents(
         skip=0,
         limit=10,
         db=db_session
     )
-    
+
     assert isinstance(documents, list)
+    assert isinstance(total, int)
 
 
 @pytest.mark.asyncio

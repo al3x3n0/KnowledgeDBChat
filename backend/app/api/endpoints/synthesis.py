@@ -347,7 +347,12 @@ def _build_hypothesis_reevaluation_structured_payload(
         )
 
     primary_origin: dict[str, str] | None = None
-    for hypothesis in updated_hypotheses or [item for item in prior_hypotheses if isinstance(item, dict)]:
+    origin_search_hypotheses = [
+        item
+        for item in (list(updated_hypotheses) + [h for h in prior_hypotheses if isinstance(h, dict)])
+        if isinstance(item, dict)
+    ]
+    for hypothesis in origin_search_hypotheses:
         origin_candidates = []
         if isinstance(hypothesis.get("autonomous_origin"), dict):
             origin_candidates.append(hypothesis.get("autonomous_origin"))

@@ -132,12 +132,13 @@ class ChatService:
             .where(
                 and_(
                     ChatSession.id == session_id,
-                    ChatSession.user_id == user_id
+                    ChatSession.user_id == user_id,
+                    ChatSession.is_active == True
                 )
             )
         )
         session = result.scalar_one_or_none()
-        
+
         if session and session.messages:
             # Sort messages by creation time
             session.messages.sort(key=lambda m: m.created_at)

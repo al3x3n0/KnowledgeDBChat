@@ -222,8 +222,10 @@ Provide a concise summary that captures the essential information:"""
         if not results:
             return {
                 "total_results": 0,
+                "total_chunks": 0,
                 "total_tokens": 0,
                 "avg_score": 0.0,
+                "avg_relevance": 0.0,
                 "coverage": 0.0
             }
         
@@ -242,8 +244,10 @@ Provide a concise summary that captures the essential information:"""
         
         return {
             "total_results": len(results),
+            "total_chunks": len(results),
             "total_tokens": total_tokens,
             "avg_score": avg_score,
+            "avg_relevance": avg_score,
             "coverage": coverage,
             "min_score": min(scores) if scores else 0.0,
             "max_score": max(scores) if scores else 0.0

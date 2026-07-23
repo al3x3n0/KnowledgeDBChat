@@ -19,7 +19,6 @@ from app.core.rate_limit import limiter, AUTH_LIMIT
 from app.models.user import User
 from app.services.auth_service import AuthService
 from app.schemas.auth import (
-    UserLogin,
     UserRegister,
     UserResponse,
     TokenResponse
@@ -43,14 +42,14 @@ async def get_current_active_user(
     return current_user
 
 
-@router.post("/register", response_model=UserResponse)
+@router.post("/register", response_model=TokenResponse)
 @limiter.limit(AUTH_LIMIT)
 async def register(
     request: Request,
     user_data: UserRegister,
     db: AsyncSession = Depends(get_db)
 ):
-    """Register a new user."""
+    """Register a new user and return an access token."""
     try:
         user = await auth_service.create_user(
             username=user_data.username,
@@ -59,8 +58,13 @@ async def register(
             full_name=user_data.full_name,
             db=db
         )
-        return UserResponse.from_orm(user)
-    
+        access_token = auth_service.create_access_token(user.id)
+        return TokenResponse(
+            access_token=access_token,
+            token_type="bearer",
+            user=UserResponse.from_orm(user)
+        )
+
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except SQLAlchemyTimeoutError:
@@ -78,14 +82,41 @@ async def register(
 @limiter.limit(AUTH_LIMIT)
 async def login(
     request: Request,
-    user_data: UserLogin,
     db: AsyncSession = Depends(get_db)
 ):
-    """Login user and return access token."""
+    """Login user and return access token.
+
+    Accepts either a form-encoded body (OAuth2 password flow) or a JSON body
+    ``{"username": ..., "password": ...}`` for backwards compatibility with the
+    web client.
+    """
     try:
+        username: Optional[str] = None
+        password: Optional[str] = None
+
+        content_type = request.headers.get("content-type", "")
+        if "application/json" in content_type:
+            try:
+                body = await request.json()
+            except Exception:
+                body = {}
+            if isinstance(body, dict):
+                username = body.get("username")
+                password = body.get("password")
+        else:
+            form = await request.form()
+            username = form.get("username")
+            password = form.get("password")
+
+        if not username or not password:
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="username and password are required",
+            )
+
         user = await auth_service.authenticate_user(
-            username=user_data.username,
-            password=user_data.password,
+            username=username,
+            password=password,
             db=db
         )
         

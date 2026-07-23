@@ -17,7 +17,9 @@ def test_get_documents(client: TestClient, auth_headers):
     
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
+    # Endpoint returns a PaginatedResponse: {"items": [...], "total": int, ...}
+    assert isinstance(data, dict)
+    assert isinstance(data["items"], list)
 
 
 def test_get_documents_with_pagination(client: TestClient, auth_headers):
@@ -26,11 +28,12 @@ def test_get_documents_with_pagination(client: TestClient, auth_headers):
         "/api/v1/documents/?skip=0&limit=10",
         headers=auth_headers
     )
-    
+
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
-    assert len(data) <= 10
+    assert isinstance(data, dict)
+    assert isinstance(data["items"], list)
+    assert len(data["items"]) <= 10
 
 
 def test_get_documents_with_search(client: TestClient, auth_headers):
@@ -39,10 +42,11 @@ def test_get_documents_with_search(client: TestClient, auth_headers):
         "/api/v1/documents/?search=test",
         headers=auth_headers
     )
-    
+
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
+    assert isinstance(data, dict)
+    assert isinstance(data["items"], list)
 
 
 def test_get_document_not_found(client: TestClient, auth_headers):

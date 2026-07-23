@@ -84,7 +84,7 @@ def test_create_decision_memo_synthesis_job(client, db_session, test_user, auth_
     assert queued[0][1] == str(test_user.id)
 
     async def _load_job():
-        return await db_session.get(SynthesisJob, payload["id"])
+        return await db_session.get(SynthesisJob, UUID(payload["id"]))
 
     job = asyncio.get_event_loop().run_until_complete(_load_job())
     assert job is not None
@@ -180,7 +180,7 @@ def test_save_completed_synthesis_job_as_research_note(client, db_session, test_
     assert payload["attribution"]["saved_from_synthesis"]["job_type"] == "decision_memo"
 
     async def _load_note():
-        return await db_session.get(ResearchNote, payload["id"])
+        return await db_session.get(ResearchNote, UUID(payload["id"]))
 
     note = asyncio.get_event_loop().run_until_complete(_load_note())
     assert note is not None
@@ -349,7 +349,7 @@ def test_save_completed_gap_analysis_as_structured_research_note(client, db_sess
     payload = response.json()
 
     async def _load_note():
-        return await db_session.get(ResearchNote, payload["id"])
+        return await db_session.get(ResearchNote, UUID(payload["id"]))
 
     note = asyncio.get_event_loop().run_until_complete(_load_note())
     assert note is not None
@@ -549,6 +549,7 @@ def test_save_completed_hypothesis_reevaluation_updates_target_note(client, db_s
         domain="Compiler",
         objective="Track compiler opportunities",
         status="active",
+        automation_profile="max_autonomy",
         latest_run_job_id=parent_job.id,
         latest_summary={
             "opportunities": [
@@ -605,6 +606,8 @@ def test_save_completed_hypothesis_reevaluation_updates_target_note(client, db_s
         await db_session.flush()
         profile.latest_run_job_id = parent_job.id
         db_session.add(job)
+        await db_session.flush()
+        notification.data = {**notification.data, "reevaluation_job_id": str(job.id)}
         db_session.add(profile)
         db_session.add(notification)
         await db_session.commit()
@@ -803,7 +806,11 @@ def test_review_completed_hypothesis_reevaluation_marks_dismissed(client, db_ses
     async def _seed():
         db_session.add(note)
         await db_session.flush()
+        job.research_note_id = note.id
+        notification.related_entity_id = note.id
         db_session.add(job)
+        await db_session.flush()
+        notification.data = {**notification.data, "reevaluation_job_id": str(job.id)}
         db_session.add(profile)
         db_session.add(notification)
         await db_session.commit()
@@ -1076,7 +1083,6 @@ def test_save_compiler_patch_proposal_as_note(client, db_session, test_user, aut
             "risk_assessment": "May suppress beneficial vectorization in edge cases.",
             "rollback_or_guardrail": "Feature-flag the heuristic and keep a fast rollback path.",
             "source_run_ids": ["run-a", "run-b"],
-            "source_explanation_note_id": str(note.id),
             "source_document_ids": ["doc-1"],
             "source_paper_ids": ["paper-1"],
             "benchmark_family": "compiler_regression",
@@ -1090,6 +1096,10 @@ def test_save_compiler_patch_proposal_as_note(client, db_session, test_user, aut
         db_session.add(note)
         await db_session.flush()
         job.research_note_id = note.id
+        job.result_metadata = {
+            **job.result_metadata,
+            "source_explanation_note_id": str(note.id),
+        }
         db_session.add(job)
         await db_session.commit()
         await db_session.refresh(job)
@@ -1188,7 +1198,6 @@ def test_save_compiler_patch_draft_as_note(client, db_session, test_user, auth_h
         result_content="# Compiler Patch Draft\n\nSummary",
         result_metadata={
             "draft_summary": "Target vectorization profitability hooks in a narrow backend file set.",
-            "source_proposal_note_id": str(note.id),
             "source_explanation_note_id": "note-exp-1",
             "source_id": "source-1",
             "source_name": "Compiler Repo Source",
@@ -1207,6 +1216,10 @@ def test_save_compiler_patch_draft_as_note(client, db_session, test_user, auth_h
         db_session.add(note)
         await db_session.flush()
         job.research_note_id = note.id
+        job.result_metadata = {
+            **job.result_metadata,
+            "source_proposal_note_id": str(note.id),
+        }
         db_session.add(job)
         await db_session.commit()
         await db_session.refresh(job)

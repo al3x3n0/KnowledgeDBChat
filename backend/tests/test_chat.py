@@ -64,8 +64,9 @@ def test_get_chat_sessions(client: TestClient, auth_headers):
     
     assert response.status_code == 200
     data = response.json()
-    assert isinstance(data, list)
-    assert len(data) >= 1
+    # Endpoint returns a paginated response: {items, total, page, page_size}
+    assert isinstance(data["items"], list)
+    assert len(data["items"]) >= 1
 
 
 def test_get_chat_session(client: TestClient, auth_headers):
@@ -128,8 +129,11 @@ def test_send_message(client: TestClient, auth_headers):
     
     assert response.status_code == 200
     data = response.json()
-    assert data["content"] == "Hello, this is a test message"
+    # The endpoint returns the AI-generated assistant reply (not an echo of the
+    # user's message). Assert on the stable contract: an assistant message with
+    # non-empty content.
     assert data["role"] == "assistant"  # AI response
+    assert isinstance(data["content"], str) and len(data["content"]) > 0
 
 
 def test_send_message_empty_content(client: TestClient, auth_headers):

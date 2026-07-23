@@ -128,7 +128,7 @@ def _extract_scheduler_state(job: AgentJob | None) -> dict[str, Any] | None:
 
 def _hypotheses_from_note(note: ResearchNote) -> list[dict[str, Any]]:
     payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
-    if _text(payload.get("artifact_type")) != "hypothesis_reevaluation":
+    if _text(payload.get("artifact_type")) not in {"hypothesis_reevaluation", "hypothesis_synthesis"}:
         return []
     rows = payload.get("hypotheses") if isinstance(payload.get("hypotheses"), list) else []
     return [dict(row) for row in rows if isinstance(row, dict)]

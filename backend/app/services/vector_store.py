@@ -1200,7 +1200,7 @@ class VectorStoreService:
                 # Weighted combination
                 alpha = settings.RAG_HYBRID_SEARCH_ALPHA
                 result["score"] = alpha * norm_semantic + (1 - alpha) * norm_bm25
-                result["metadata"]["score"] = result["score"]
+                result.setdefault("metadata", {})["score"] = result["score"]
         
         # Sort by combined score and return top results
         sorted_results = sorted(
@@ -1281,7 +1281,7 @@ class VectorStoreService:
                 norm_bm25 = result["bm25_score"] / max_bm25 if max_bm25 > 0 else 0
                 alpha = settings.RAG_HYBRID_SEARCH_ALPHA
                 result["score"] = alpha * norm_semantic + (1 - alpha) * norm_bm25
-                result["metadata"]["score"] = result["score"]
+                result.setdefault("metadata", {})["score"] = result["score"]
 
         sorted_results = sorted(combined_results.values(), key=lambda x: x["score"], reverse=True)[:limit]
         trace["hybrid_sorted"] = [self._pack_result_for_trace(r) for r in sorted_results[:50]]
@@ -1352,7 +1352,7 @@ class VectorStoreService:
                 # Combine original score with rerank score (weighted)
                 original_score = result.get("score", 0.0)
                 result["score"] = 0.7 * original_score + 0.3 * result["rerank_score"]
-                result["metadata"]["score"] = result["score"]
+                result.setdefault("metadata", {})["score"] = result["score"]
             
             # Sort by reranking score
             reranked = sorted(results, key=lambda x: x["rerank_score"], reverse=True)
@@ -1374,6 +1374,30 @@ class VectorStoreService:
                 logger.error(f"Error in reranking: {e}")
             return results
     
+    @staticmethod
+    def _as_vector(embedding: Any) -> "np.ndarray":
+        """Coerce an embedding (possibly a batched 2D array/list) into a 1D vector.
+
+        ``SentenceTransformer.encode`` returns a 1D array for a single string,
+        but callers/mocks may return a 2D array (e.g. a single-row batch). Flatten
+        a single-row 2D array to 1D; for a genuine multi-row array take the first row.
+        """
+        arr = np.asarray(embedding, dtype=float)
+        if arr.ndim >= 2:
+            arr = arr[0] if arr.shape[0] == 1 else arr[0]
+        return arr.ravel()
+
+    @classmethod
+    def _cosine_similarity(cls, a: Any, b: Any) -> float:
+        """Cosine similarity between two embeddings, robust to shape/zero-norm."""
+        va = cls._as_vector(a)
+        vb = cls._as_vector(b)
+        norm_a = np.linalg.norm(va)
+        norm_b = np.linalg.norm(vb)
+        if norm_a == 0 or norm_b == 0:
+            return 0.0
+        return float(np.dot(va, vb) / (norm_a * norm_b))
+
     def _apply_mmr(
         self,
         results: List[Dict[str, Any]],
@@ -1395,7 +1419,11 @@ class VectorStoreService:
         """
         if not results or top_k <= 0:
             return []
-        
+
+        # Without an embedding model we cannot compute diversity; return top_k by relevance
+        if self.embedding_model is None:
+            return results[:top_k]
+
         # Generate query embedding for similarity calculation
         query_embedding = self.embedding_model.encode(query, show_progress_bar=False)
         
@@ -1422,10 +1450,8 @@ class VectorStoreService:
                     for selected_result in selected:
                         selected_embedding = self.embedding_model.encode(selected_result.get("content", ""), show_progress_bar=False)
                         # Cosine similarity
-                        similarity = np.dot(candidate_embedding, selected_embedding) / (
-                            np.linalg.norm(candidate_embedding) * np.linalg.norm(selected_embedding)
-                        )
-                        max_similarity = max(max_similarity, float(similarity))
+                        similarity = self._cosine_similarity(candidate_embedding, selected_embedding)
+                        max_similarity = max(max_similarity, similarity)
                 
                 # MMR score: balance relevance and diversity
                 mmr_score = lambda_param * relevance - (1 - lambda_param) * max_similarity
@@ -1455,7 +1481,11 @@ class VectorStoreService:
         """
         if not results:
             return []
-        
+
+        # Without an embedding model we cannot detect near-duplicates
+        if self.embedding_model is None:
+            return results
+
         deduplicated = []
         seen_embeddings = []
         
@@ -1466,10 +1496,8 @@ class VectorStoreService:
             # Check similarity with already selected results
             is_duplicate = False
             for seen_emb in seen_embeddings:
-                similarity = np.dot(embedding, seen_emb) / (
-                    np.linalg.norm(embedding) * np.linalg.norm(seen_emb)
-                )
-                if float(similarity) >= similarity_threshold:
+                similarity = self._cosine_similarity(embedding, seen_emb)
+                if similarity >= similarity_threshold:
                     is_duplicate = True
                     break
             

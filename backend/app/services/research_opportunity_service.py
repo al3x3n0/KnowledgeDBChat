@@ -577,6 +577,54 @@ async def materialize_research_opportunity_experiment(
     from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 
     existing_plan_ids = _clean_string_list(opportunity.get("linked_experiment_plan_ids"), limit=8)
+    existing_run_ids = _clean_string_list(opportunity.get("linked_validation_run_ids"), limit=8)
+
+    # Idempotent requeue: when the opportunity is already linked to a validation
+    # run, reuse it instead of creating a duplicate. This must run before we
+    # force a plan to exist, so a requeue never fabricates a fresh plan.
+    if existing_run_ids:
+        run_id = _text(existing_run_ids[-1])
+        target_note_id = next((item for item in note_ids if _text(item)), "")
+        run = None
+        try:
+            run = await db.get(ExperimentRun, UUID(run_id))
+        except Exception:
+            run = None
+        if run is not None:
+            config = deepcopy(run.config) if isinstance(run.config, dict) else {}
+            post_run_actions = config.get("post_run_actions") if isinstance(config.get("post_run_actions"), dict) else {}
+            post_run_actions["auto_append_to_note"] = True
+            if not target_note_id:
+                target_note_id = str(getattr(run, "research_note_id", "") or "")
+            if target_note_id:
+                post_run_actions["target_note_id"] = target_note_id
+            config["post_run_actions"] = post_run_actions
+            run.config = config
+            scientific_validation = config.get("scientific_validation") if isinstance(config.get("scientific_validation"), dict) else {}
+            return {
+                "plan_ids": existing_plan_ids,
+                "run_id": str(run.id),
+                "job_id": str(run.agent_job_id) if run.agent_job_id else None,
+                "validation_status": _text(run.status) or _text(scientific_validation.get("status")) or "planned",
+                "blocked_reason_code": _text(
+                    scientific_validation.get("blocked_reason_code")
+                    or scientific_validation.get("blocked_reason")
+                ) or None,
+                "reused_run": True,
+                "reused_plan": bool(existing_plan_ids),
+            }
+        # The linked validation run row cannot be loaded (missing, or a non-UUID
+        # identifier). Still treat this as an idempotent requeue of that run.
+        return {
+            "plan_ids": existing_plan_ids,
+            "run_id": run_id,
+            "job_id": _text(opportunity.get("latest_validation_job_id")) or None,
+            "validation_status": _text(opportunity.get("latest_validation_status")) or "planned",
+            "blocked_reason_code": _text(opportunity.get("latest_validation_blocked_reason_code")) or None,
+            "reused_run": True,
+            "reused_plan": bool(existing_plan_ids),
+        }
+
     plan_ids = await ensure_plan_ids(existing_plan_ids)
     if not plan_ids:
         raise HTTPException(status_code=400, detail="Could not resolve an experiment plan for this opportunity")
@@ -590,35 +638,6 @@ async def materialize_research_opportunity_experiment(
         raise HTTPException(status_code=400, detail="Linked experiment plan is unavailable")
 
     target_note_id = next((item for item in note_ids if _text(item)), "") or str(experiment_plan.research_note_id or "")
-    existing_run_ids = _clean_string_list(opportunity.get("linked_validation_run_ids"), limit=8)
-    if existing_run_ids:
-        run_id = _text(existing_run_ids[-1])
-        run = None
-        try:
-            run = await db.get(ExperimentRun, UUID(run_id))
-        except Exception:
-            run = None
-        if run is not None:
-            config = deepcopy(run.config) if isinstance(run.config, dict) else {}
-            post_run_actions = config.get("post_run_actions") if isinstance(config.get("post_run_actions"), dict) else {}
-            post_run_actions["auto_append_to_note"] = True
-            if target_note_id:
-                post_run_actions["target_note_id"] = target_note_id
-            config["post_run_actions"] = post_run_actions
-            run.config = config
-            scientific_validation = config.get("scientific_validation") if isinstance(config.get("scientific_validation"), dict) else {}
-            return {
-                "plan_ids": plan_ids,
-                "run_id": str(run.id),
-                "job_id": str(run.agent_job_id) if run.agent_job_id else None,
-                "validation_status": _text(run.status) or _text(scientific_validation.get("status")) or "planned",
-                "blocked_reason_code": _text(
-                    scientific_validation.get("blocked_reason_code")
-                    or scientific_validation.get("blocked_reason")
-                ) or None,
-                "reused_run": True,
-                "reused_plan": bool(existing_plan_ids),
-            }
 
     executor = AutonomousAgentExecutor()
     decision = await executor._create_scientific_validation_run(

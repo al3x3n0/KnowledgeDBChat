@@ -1311,6 +1311,8 @@ def test_domain_profile_validation_requeue_omits_malformed_scheduler_state(
 
     async def _seed():
         db_session.add(parent_job)
+        await db_session.flush()
+        profile.latest_run_job_id = parent_job.id
         db_session.add(profile)
         await db_session.commit()
 

@@ -2439,10 +2439,19 @@ async def test_update_monitor_policy_updates_follow_up_autonomy(monkeypatch):
     )
     assert job.results["follow_up_policy_history"][0]["next_follow_up_autonomy"]["mode"] == "queue_for_approval"
     assert captured["reason_label"] == "Guided recommendation"
+    # scheduler_state is the full normalized 11-key dict from extract_scheduler_state.
     assert captured["scheduler_state"] == {
-        "queue_reason": "execution_failure",
+        "last_run_status": None,
+        "failure_streak": 0,
         "last_scheduled_at": "2026-03-16T09:00:00Z",
         "last_dispatched_at": "2026-03-16T09:05:00Z",
+        "current_run_started_at": None,
+        "last_successful_run_at": None,
+        "last_completed_run_at": None,
+        "last_failure_at": None,
+        "backoff_until": None,
+        "backoff_seconds": 0,
+        "queue_reason": "execution_failure",
     }
 
 
@@ -2527,10 +2536,19 @@ async def test_rollback_monitor_policy_restores_previous_follow_up_autonomy(monk
     assert job.config["automation_policy"]["follow_up_review_mode"] == "manual_only"
     assert job.config["follow_up_autonomy"]["mode"] == "manual_only"
     assert captured["reason_label"] == "Policy rollback"
+    # scheduler_state is the full normalized 11-key dict from extract_scheduler_state.
     assert captured["scheduler_state"] == {
-        "queue_reason": "scheduled_recovery",
+        "last_run_status": None,
+        "failure_streak": 0,
         "last_scheduled_at": "2026-03-16T10:00:00Z",
         "last_dispatched_at": "2026-03-16T10:05:00Z",
+        "current_run_started_at": None,
+        "last_successful_run_at": None,
+        "last_completed_run_at": None,
+        "last_failure_at": None,
+        "backoff_until": None,
+        "backoff_seconds": 0,
+        "queue_reason": "scheduled_recovery",
     }
 
 

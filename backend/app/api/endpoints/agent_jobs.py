@@ -26,6 +26,7 @@ from loguru import logger
 from sqlalchemy import select, func, and_, or_, cast, String, literal, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, aliased
+from sqlalchemy.orm.attributes import flag_modified
 import redis.asyncio as redis
 
 from app.api.endpoints.auth import get_current_active_user
@@ -5456,6 +5457,11 @@ def _job_to_response(
             "paused": AgentJobStatus.PAUSED.value,
         },
     )
+    # Surface the derived outcome fields inside the raw results payload so
+    # consumers reading results["execution_strategy"]["operator_interventions"]
+    # observe the same outcome_status/outcome_reason as the top-level field.
+    if operator_interventions and isinstance(execution_strategy.get("operator_interventions"), list):
+        execution_strategy["operator_interventions"] = operator_interventions
     relaunch_from_job_id = _extract_relaunch_parent_job_id(cfg)
     promotion = _extract_domain_research_promotion(job)
     promoted_profile_id_raw = str(
@@ -8788,6 +8794,7 @@ async def _perform_job_action(
             job_status_after=AgentJobStatus.PAUSED.value,
         )
         job.results = results_payload
+        flag_modified(job, "results")
         job.status = AgentJobStatus.PAUSED.value
         job.add_log_entry({"phase": "paused", "reason": "user_request"})
 
@@ -8853,6 +8860,7 @@ async def _perform_job_action(
             },
         )
         job.results = results_payload
+        flag_modified(job, "results")
         job.status = AgentJobStatus.PENDING.value
         job.add_log_entry({"phase": "resumed", "reason": "user_request"})
         # Queue for execution
@@ -9157,6 +9165,7 @@ async def _perform_job_action(
             job_status_after=AgentJobStatus.CANCELLED.value,
         )
         job.results = results_payload
+        flag_modified(job, "results")
         job.status = AgentJobStatus.CANCELLED.value
         job.completed_at = datetime.utcnow()
         job.add_log_entry({"phase": "cancelled", "reason": "user_request"})
@@ -9438,6 +9447,7 @@ async def _perform_job_action(
             metadata={"new_job_id": str(new_job.id)},
         )
         job.results = results_payload
+        flag_modified(job, "results")
         job.add_log_entry(
             {
                 "phase": "tie_breaker_requested",
@@ -9512,6 +9522,7 @@ async def _perform_job_action(
             },
         )
         job.results = results_payload
+        flag_modified(job, "results")
         job.add_log_entry(
             {
                 "phase": "swarm_candidate_promoted",
@@ -9989,18 +10000,33 @@ async def checkpoint_queue_bulk_action(
     action = str(request.action or "").strip().lower()
     _validate_bulk_queue_action(item_type, action)
 
-    requested_ids = list(dict.fromkeys(request.job_ids))
+    # Preserve request order while coercing raw ids to UUID for the DB query.
+    ordered_raw_ids: list[str] = []
+    id_map: dict[str, UUID] = {}
+    for raw in request.job_ids:
+        key = str(raw).strip()
+        if not key or key in id_map:
+            continue
+        ordered_raw_ids.append(key)
+        try:
+            id_map[key] = UUID(key)
+        except (ValueError, AttributeError, TypeError):
+            id_map[key] = None  # type: ignore[assignment]
+
+    valid_uuids = [value for value in id_map.values() if value is not None]
     jobs_result = await db.execute(
         select(AgentJob)
         .options(selectinload(AgentJob.agent_definition))
-        .where(and_(AgentJob.user_id == current_user.id, AgentJob.id.in_(requested_ids)))
-    )
-    jobs = list(jobs_result.scalars().all())
+        .where(and_(AgentJob.user_id == current_user.id, AgentJob.id.in_(valid_uuids)))
+    ) if valid_uuids else None
+    jobs = list(jobs_result.scalars().all()) if jobs_result is not None else []
     job_by_id = {job.id: job for job in jobs}
 
     results: list[AgentCheckpointQueueBulkActionResultResponse] = []
-    for job_id in requested_ids:
-        job = job_by_id.get(job_id)
+    for raw_id in ordered_raw_ids:
+        job_uuid = id_map.get(raw_id)
+        job = job_by_id.get(job_uuid) if job_uuid is not None else None
+        job_id = job_uuid if job_uuid is not None else raw_id
         if job is None:
             results.append(
                 AgentCheckpointQueueBulkActionResultResponse(
@@ -10072,7 +10098,7 @@ async def checkpoint_queue_bulk_action(
     applied = sum(1 for row in results if row.ok)
     failed = len(results) - applied
     return AgentCheckpointQueueBulkActionResponse(
-        requested_count=len(requested_ids),
+        requested_count=len(ordered_raw_ids),
         applied=applied,
         failed=failed,
         results=results,

@@ -240,6 +240,24 @@ def _matches_origin(
     return opportunity_id == hypothesis_id and note_id in source_note_ids
 
 
+def _resolve_follow_up_review_mode(effective_policy: dict[str, Any], *, explicit_policy: Any, default: str = "auto_launch_safe") -> str:
+    """Resolve the follow-up review mode for auto-dispatch.
+
+    A domain profile has no dedicated ``follow_up_review_mode`` column (only the
+    legacy ``auto_launch_follow_up`` boolean), so the resolved effective policy
+    falls back to the portfolio default of ``queue_for_approval``. Only honor an
+    explicitly configured mode; otherwise default to ``auto_launch_safe`` so that
+    ``auto_launch_follow_up`` profiles actually launch.
+    """
+    explicit = explicit_policy if isinstance(explicit_policy, dict) else {}
+    raw_mode = _text(explicit.get("follow_up_review_mode")).lower()
+    if raw_mode not in {"auto_launch_safe", "queue_for_approval", "manual_only"}:
+        raw_mode = _text(default).lower()
+    if raw_mode not in {"auto_launch_safe", "queue_for_approval", "manual_only"}:
+        raw_mode = "auto_launch_safe"
+    return raw_mode
+
+
 def _current_follow_up_review_applies(row: dict[str, Any], *, evidence_revision: str) -> bool:
     return _text(row.get("follow_up_review_evidence_revision")) == evidence_revision
 
@@ -385,11 +403,11 @@ async def _auto_dispatch_profile_follow_ups(
     opportunities: list[dict[str, Any]],
     effective_policy: dict[str, Any],
     changed_opportunity_ids: set[str],
+    follow_up_review_mode: str,
 ) -> bool:
     if not changed_opportunity_ids or not bool(effective_policy.get("auto_launch_follow_up", True)):
         return False
 
-    follow_up_review_mode = _text(effective_policy.get("follow_up_review_mode")).lower() or "auto_launch_safe"
     if follow_up_review_mode not in {"auto_launch_safe", "queue_for_approval", "manual_only"}:
         follow_up_review_mode = "auto_launch_safe"
 
@@ -505,11 +523,11 @@ async def _auto_dispatch_portfolio_follow_ups(
     opportunities: list[dict[str, Any]],
     effective_policy: dict[str, Any],
     changed_opportunity_ids: set[str],
+    follow_up_review_mode: str,
 ) -> bool:
     if not changed_opportunity_ids or not bool(effective_policy.get("auto_launch_follow_up", True)):
         return False
 
-    follow_up_review_mode = _text(effective_policy.get("follow_up_review_mode")).lower() or "auto_launch_safe"
     if follow_up_review_mode not in {"auto_launch_safe", "queue_for_approval", "manual_only"}:
         follow_up_review_mode = "auto_launch_safe"
 
@@ -914,6 +932,10 @@ async def project_note_reevaluation_to_autonomous_opportunities(
                 opportunities=next_rows,
                 effective_policy=effective_policy,
                 changed_opportunity_ids=changed_opportunity_ids,
+                follow_up_review_mode=_resolve_follow_up_review_mode(
+                    effective_policy,
+                    explicit_policy=getattr(profile, "automation_policy", None),
+                ),
             )
             changed_any = changed_any or dispatch_changed
             await _sync_profile(profile, next_rows)
@@ -962,6 +984,10 @@ async def project_note_reevaluation_to_autonomous_opportunities(
                 opportunities=next_rows,
                 effective_policy=effective_policy,
                 changed_opportunity_ids=changed_opportunity_ids,
+                follow_up_review_mode=_resolve_follow_up_review_mode(
+                    effective_policy,
+                    explicit_policy=getattr(portfolio, "automation_policy", None),
+                ),
             )
             changed_any = changed_any or dispatch_changed
             await _sync_portfolio(portfolio, next_rows)

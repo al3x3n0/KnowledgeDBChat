@@ -130,6 +130,9 @@ class AgentJobMemoryService:
             return ""
         text = re.sub(r"[`\"'“”‘’]", "", text)
         text = re.sub(r"[^a-z0-9\s:/._-]+", " ", text)
+        # Drop boundary punctuation (e.g. trailing "calls.") so that content
+        # differing only by terminal/edge punctuation dedups identically.
+        text = re.sub(r"(?<![a-z0-9])[:/._-]+|[:/._-]+(?![a-z0-9])", " ", text)
         text = re.sub(r"\s+", " ", text).strip()
         return text[:600]
 

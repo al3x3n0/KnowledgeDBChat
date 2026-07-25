@@ -111,7 +111,11 @@ _DEFAULT_RUNTIME_STATE: Dict[str, Any] = {
 def initialize_runtime_state(checkpoint_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Create a fully normalized runtime state, optionally overlaying a checkpoint."""
     state = deepcopy(_DEFAULT_RUNTIME_STATE)
+    checkpoint_had_last_progress = (
+        isinstance(checkpoint_state, dict) and "last_progress" in checkpoint_state
+    )
     if isinstance(checkpoint_state, dict):
         state.update(checkpoint_state)
-    state["last_progress"] = int(state.get("goal_progress", 0) or 0)
+    if not checkpoint_had_last_progress:
+        state["last_progress"] = int(state.get("goal_progress", 0) or 0)
     return state

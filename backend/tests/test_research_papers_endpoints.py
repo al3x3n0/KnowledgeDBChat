@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 from datetime import datetime
+from uuid import UUID
 
 from app.models.document import Document, DocumentSource
 from app.models.research_note import ResearchNote
@@ -174,7 +175,7 @@ def test_save_research_paper_as_note_persists_structured_payload(
     payload = response.json()
 
     async def _load_note():
-        return await db_session.get(ResearchNote, payload["id"])
+        return await db_session.get(ResearchNote, UUID(payload["id"]))
 
     note = asyncio.get_event_loop().run_until_complete(_load_note())
     assert note is not None

@@ -157,7 +157,12 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
             job.celery_task_id = current_task.request.id
             await db.commit()
 
-        await _publish_job_progress(job_id, 0, "starting", "running")
+        await _publish_job_progress(
+            job_id=job_id,
+            progress=0,
+            phase="starting",
+            status="running",
+        )
 
         try:
             # Initialize executor

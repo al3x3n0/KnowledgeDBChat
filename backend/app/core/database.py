@@ -33,6 +33,11 @@ AsyncSessionLocal = sessionmaker(
     expire_on_commit=False,
 )
 
+# Alias used by callers that need a bare session factory (e.g. WebSocket
+# endpoints that manage their own session lifecycle outside the get_db
+# dependency).
+async_session_factory = AsyncSessionLocal
+
 # Create declarative base
 Base = declarative_base()
 

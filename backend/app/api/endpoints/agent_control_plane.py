@@ -1085,7 +1085,11 @@ async def _build_control_run_summaries(
                     select(AgentJob)
                     .where(
                         AgentJob.user_id == current_user.id,
-                        or_(AgentJob.parent_job_id.is_(None), AgentJob.chain_depth == 0),
+                        # A control-run root has no parent (mirrors
+                        # AgentJob.is_control_run_root). chain_depth defaults to
+                        # 0 even for children, so it cannot be used to identify
+                        # roots or child jobs would be double-counted as roots.
+                        AgentJob.parent_job_id.is_(None),
                     )
                     .order_by(AgentJob.created_at.desc())
                     .limit(limit)
@@ -1093,8 +1097,42 @@ async def _build_control_run_summaries(
             ).scalars().all()
         )
         if job_rows:
+            # Parentless jobs whose only control-plane relevance is a pending
+            # approval checkpoint or a recovery candidate are queue items, not
+            # standalone runs. Fold them into the newest genuine (non-queue-only)
+            # root run so their reviews surface there instead of spawning empty
+            # duplicate runs.
+            queue_only_item_types = {"approval_checkpoint", "job_recovery"}
+            queue_item_types_by_job: dict[str, set[str]] = {}
+            for queue_item in _build_checkpoint_queue_items(job_rows, []):
+                q_type = _normalize_string(getattr(queue_item, "item_type", None))
+                q_job = _normalize_string(getattr(queue_item, "job_id", None))
+                if q_type and q_job:
+                    queue_item_types_by_job.setdefault(q_job, set()).add(q_type)
+
+            def _is_queue_only_root(job: AgentJob) -> bool:
+                types = queue_item_types_by_job.get(str(job.id), set())
+                if not types or not types.issubset(queue_only_item_types):
+                    return False
+                # A job that anchors a lineage (children) is a real run.
+                return True
+
+            primary_job_rows = [job for job in job_rows if not _is_queue_only_root(job)]
+            queue_only_job_rows = [job for job in job_rows if _is_queue_only_root(job)]
+            # Anchor queue-only jobs to the newest primary root (job_rows are
+            # ordered created_at desc, so the first primary is the newest).
+            anchor_root_id = str(primary_job_rows[0].id) if primary_job_rows else None
+            if anchor_root_id is None:
+                # No primary root: treat queue-only jobs as their own runs.
+                primary_job_rows = job_rows
+                queue_only_job_rows = []
+            job_rows = primary_job_rows
+
             root_ids = [job.id for job in job_rows]
             job_linked_job_ids_by_root = {str(job.id): {str(job.id)} for job in job_rows}
+            if anchor_root_id is not None:
+                for queue_job in queue_only_job_rows:
+                    job_linked_job_ids_by_root.setdefault(anchor_root_id, {anchor_root_id}).add(str(queue_job.id))
             lineage_rows = list(
                 (
                     await db.execute(

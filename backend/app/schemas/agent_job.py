@@ -679,7 +679,7 @@ class AgentJobQuickStartRepoBugTriageRequest(BaseModel):
     @field_validator("scope", mode="before")
     @classmethod
     def _normalize_scope(cls, value: Any) -> Any:
-        text = str(value or "auto").strip().lower().replace("-", "_").replace(" ", "_")
+        text = str(value or "auto").strip().lower().replace("-", "").replace("_", "").replace(" ", "")
         if text not in {"auto", "backend", "frontend", "worker"}:
             text = "auto"
         return text
@@ -743,7 +743,7 @@ class _AgentJobQuickStartCodingSwarmRequestBase(BaseModel):
     @field_validator("scope", mode="before")
     @classmethod
     def _normalize_scope(cls, value: Any) -> Any:
-        text = str(value or "auto").strip().lower().replace("-", "_").replace(" ", "_")
+        text = str(value or "auto").strip().lower().replace("-", "").replace("_", "").replace(" ", "")
         if text not in {"auto", "backend", "frontend", "worker"}:
             text = "auto"
         return text
@@ -1096,7 +1096,7 @@ class AgentCheckpointQueueBulkActionRequest(BaseModel):
         ...,
         description="Bulk action. Supported by item_type validation on the server.",
     )
-    job_ids: List[UUID] = Field(
+    job_ids: List[str] = Field(
         ...,
         min_length=1,
         description="Job ids to process in one homogeneous bulk action.",
@@ -1111,7 +1111,7 @@ class AgentCheckpointQueueBulkActionRequest(BaseModel):
 class AgentCheckpointQueueBulkActionResultResponse(BaseModel):
     """Per-item result for a bulk queue action."""
 
-    job_id: UUID
+    job_id: Optional[str] = None
     ok: bool
     status: Optional[str] = None
     error: Optional[str] = None

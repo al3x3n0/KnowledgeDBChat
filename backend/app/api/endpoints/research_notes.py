@@ -4,6 +4,7 @@ Research notes API endpoints.
 Research-native notes intended for labs: hypotheses, experiment plans, insights.
 """
 
+from copy import deepcopy
 from datetime import datetime
 import json
 import re
@@ -127,9 +128,12 @@ async def _reconcile_pending_reevaluation_status(
     db: AsyncSession,
     current_user: User,
 ) -> bool:
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else None
-    if not isinstance(payload, dict):
+    if not isinstance(note.structured_payload, dict):
         return False
+    # Work on a copy so the reassignment below is a genuinely new object; mutating
+    # the existing dict in place is not tracked by the JSON column and would be lost
+    # on the subsequent db.refresh().
+    payload = deepcopy(note.structured_payload)
     if str(payload.get("artifact_type") or "").strip() != SynthesisJobType.HYPOTHESIS_REEVALUATION.value:
         return False
 

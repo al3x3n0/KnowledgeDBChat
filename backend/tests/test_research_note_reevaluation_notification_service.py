@@ -127,6 +127,9 @@ async def test_resolve_reevaluation_notifications_dismisses_matching_rows():
             "reevaluation_status": "completed",
         },
         action_url=f"/research-notes?note={note_id}",
+        # Column default (False) is only applied on flush; these objects are never
+        # persisted, so set it explicitly to mirror the DB-resident default.
+        is_dismissed=False,
     )
     db = _FakeDb([notification, other])
 

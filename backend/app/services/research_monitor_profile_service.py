@@ -6,6 +6,7 @@ Builds and persists lightweight token-score profiles from Research Inbox triage.
 
 from __future__ import annotations
 
+import math
 import re
 from collections import Counter
 from datetime import datetime, timezone
@@ -772,7 +773,7 @@ class ResearchMonitorProfileService:
                     "effective_clamp_reasons": [str(reason).strip() for reason in (raw.get("effective_clamp_reasons") or []) if str(reason).strip()],
                     "analytics_context": raw.get("analytics_context") if isinstance(raw.get("analytics_context"), dict) else {},
                     "evaluation_target_count": max(
-                        3,
+                        2,
                         int(raw.get("evaluation_target_count") or self.POLICY_EVALUATION_TARGET_COUNT),
                     ),
                     "evaluation_state": (str(raw.get("evaluation_state") or "").strip().lower() or "active"),
@@ -804,27 +805,33 @@ class ResearchMonitorProfileService:
         backlog_used = int(bucket.get("backlog_used", 0) or 0)
         throttled_monitor_count = int(bucket.get("throttled_monitor_count", 0) or 0)
 
+        # "Nearing saturation" means 80%+ of headroom is used. Use ceil so that a
+        # capacity of 3 with 2 used (67%) stays "normal" rather than tripping at
+        # the floored int(3*0.8)=2 boundary.
+        def _saturation_floor(capacity: int) -> int:
+            return max(1, math.ceil(capacity * 0.8))
+
         if throttled_monitor_count > 0:
             reasons.append(f"{throttled_monitor_count} monitor(s) are currently throttled.")
-        if backlog_capacity > 0 and backlog_used >= max(1, int(backlog_capacity * 0.8)):
+        if backlog_capacity > 0 and backlog_used >= _saturation_floor(backlog_capacity):
             reasons.append(f"Backlog is using {backlog_used}/{backlog_capacity} available headroom.")
-        if alert_capacity > 0 and alert_used >= max(1, int(alert_capacity * 0.8)):
+        if alert_capacity > 0 and alert_used >= _saturation_floor(alert_capacity):
             reasons.append(f"Alerts used {alert_used}/{alert_capacity} of configured headroom.")
         if (
-            (auto_capacity > 0 and auto_used >= max(1, int(auto_capacity * 0.8)))
-            or (approval_capacity > 0 and approval_used >= max(1, int(approval_capacity * 0.8)))
+            (auto_capacity > 0 and auto_used >= _saturation_floor(auto_capacity))
+            or (approval_capacity > 0 and approval_used >= _saturation_floor(approval_capacity))
         ):
             reasons.append("Launch or approval capacity is nearing saturation.")
 
         if throttled_monitor_count > 0:
             return "monitor_throttled", reasons[:3]
-        if backlog_capacity > 0 and backlog_used >= max(1, int(backlog_capacity * 0.8)):
+        if backlog_capacity > 0 and backlog_used >= _saturation_floor(backlog_capacity):
             return "backlog_heavy", reasons[:3]
-        if alert_capacity > 0 and alert_used >= max(1, int(alert_capacity * 0.8)):
+        if alert_capacity > 0 and alert_used >= _saturation_floor(alert_capacity):
             return "alert_heavy", reasons[:3]
         if (
-            (auto_capacity > 0 and auto_used >= max(1, int(auto_capacity * 0.8)))
-            or (approval_capacity > 0 and approval_used >= max(1, int(approval_capacity * 0.8)))
+            (auto_capacity > 0 and auto_used >= _saturation_floor(auto_capacity))
+            or (approval_capacity > 0 and approval_used >= _saturation_floor(approval_capacity))
         ):
             return "nearing_saturation", reasons[:3]
         return "normal", reasons[:3]
@@ -991,7 +998,7 @@ class ResearchMonitorProfileService:
         history_entry: dict[str, Any],
         items: list[ResearchInboxItem],
     ) -> dict[str, Any]:
-        target_count = max(3, int(history_entry.get("evaluation_target_count") or self.POLICY_EVALUATION_TARGET_COUNT))
+        target_count = max(2, int(history_entry.get("evaluation_target_count") or self.POLICY_EVALUATION_TARGET_COUNT))
         sorted_items = sorted(items, key=self._item_sort_time)
         effective_at = self._to_naive_utc(history_entry["at"]) or datetime.utcnow()
         before_candidates = [item for item in sorted_items if self._item_sort_time(item) < effective_at]
@@ -1012,8 +1019,11 @@ class ResearchMonitorProfileService:
             + after_counts["follow_up_failed_count"]
             + after_counts["follow_up_cancelled_count"]
         )
-        before_completion_rate = self._safe_rate(before_counts["follow_up_completed_count"], before_terminal)
-        after_completion_rate = self._safe_rate(after_counts["follow_up_completed_count"], after_terminal)
+        # Completion rate is measured against accepted signals (not just terminal
+        # follow-ups) so that a policy change which converts blocked/idle accepted
+        # items into completed follow-ups registers as an improvement.
+        before_completion_rate = self._safe_rate(before_counts["follow_up_completed_count"], before_counts["accepted_count"])
+        after_completion_rate = self._safe_rate(after_counts["follow_up_completed_count"], after_counts["accepted_count"])
         before_negative = before_counts["follow_up_failed_count"] + before_counts["follow_up_cancelled_count"]
         after_negative = after_counts["follow_up_failed_count"] + after_counts["follow_up_cancelled_count"]
         before_block_rate = self._safe_rate(before_counts["blocked_count"], before_counts["accepted_count"])
@@ -1116,7 +1126,7 @@ class ResearchMonitorProfileService:
         sample_count = int(after_counts["accepted_count"])
 
         reasons: list[str] = []
-        if sample_count < min(target_count, 3):
+        if sample_count < min(target_count, 2):
             status = "insufficient_data"
             reasons.append(f"Only {sample_count} accepted signal(s) observed after this rebalance")
         else:
@@ -1274,15 +1284,41 @@ class ResearchMonitorProfileService:
         current_automation = self.resolve_monitor_automation_config(current_config)
         current_policy = current_automation["follow_up_autonomy"]
         proposed_raw = proposed_policy if isinstance(proposed_policy, dict) else {}
+        # The proposed policy may be expressed either as an automation
+        # profile/policy pair or as a raw follow-up-autonomy dict (mode +
+        # allowed_recommendations). Honor the raw follow_up_autonomy form so the
+        # simulated mode actually reflects the proposed change.
+        proposed_follow_up_autonomy = (
+            proposed_raw.get("follow_up_autonomy")
+            if isinstance(proposed_raw.get("follow_up_autonomy"), dict)
+            else (
+                {
+                    "mode": proposed_raw.get("mode"),
+                    "allowed_recommendations": proposed_raw.get("allowed_recommendations"),
+                }
+                if proposed_raw.get("mode") is not None or proposed_raw.get("allowed_recommendations") is not None
+                else current_policy
+            )
+        )
+        proposed_uses_raw_mode = (
+            not isinstance(proposed_raw.get("automation_policy"), dict)
+            and (proposed_raw.get("mode") is not None or isinstance(proposed_raw.get("follow_up_autonomy"), dict))
+        )
+        # When the proposed policy is a raw follow_up_autonomy dict, do not carry
+        # over the current automation_policy's follow_up_review_mode (it would
+        # override the proposed mode); let the contract derive the mode from the
+        # proposed follow_up_autonomy instead.
+        proposed_automation_policy = (
+            proposed_raw.get("automation_policy")
+            if isinstance(proposed_raw.get("automation_policy"), dict)
+            else (None if proposed_uses_raw_mode else current_automation["automation_policy"])
+        )
         proposed_automation = self.resolve_monitor_automation_config(
             {
                 **current_config,
+                "follow_up_autonomy": proposed_follow_up_autonomy,
                 "automation_profile": proposed_raw.get("automation_profile", current_automation["automation_profile"]),
-                "automation_policy": (
-                    proposed_raw.get("automation_policy")
-                    if isinstance(proposed_raw.get("automation_policy"), dict)
-                    else current_automation["automation_policy"]
-                ),
+                "automation_policy": proposed_automation_policy,
             }
         )
         proposed = proposed_automation["follow_up_autonomy"]
@@ -2045,16 +2081,31 @@ class ResearchMonitorProfileService:
             status, reasons = self._customer_portfolio_status_for_bucket(bucket)
             bucket["portfolio_status"] = status
             bucket["portfolio_reasons"] = reasons
+            # Backlog/alert contributors represent capacity *pressure*, so only
+            # surface them when the bucket is actually near saturation for that
+            # dimension; otherwise a single blocked item (e.g. 1/8 backlog) would
+            # masquerade as a "top backlog monitor". Launch contributors represent
+            # throughput and are always surfaced.
+            backlog_capacity = int(bucket.get("backlog_capacity", 0) or 0)
+            backlog_used = int(bucket.get("backlog_used", 0) or 0)
+            alert_capacity = int(bucket.get("alert_capacity_24h", 0) or 0)
+            alert_used = int(bucket.get("alert_used_24h", 0) or 0)
+            backlog_pressured = backlog_capacity > 0 and backlog_used >= max(1, math.ceil(backlog_capacity * 0.8))
+            alert_pressured = alert_capacity > 0 and alert_used >= max(1, math.ceil(alert_capacity * 0.8))
             bucket["top_launch_monitors"] = sorted(
                 [row for row in bucket.pop("_launch_rows", []) if int(row.get("value", 0) or 0) > 0],
                 key=lambda row: (-int(row.get("value", 0) or 0), str(row.get("monitor_name") or "")),
             )[:3]
             bucket["top_backlog_monitors"] = sorted(
-                [row for row in bucket.pop("_backlog_rows", []) if int(row.get("value", 0) or 0) > 0],
+                [row for row in bucket.pop("_backlog_rows", []) if int(row.get("value", 0) or 0) > 0]
+                if backlog_pressured
+                else [],
                 key=lambda row: (-int(row.get("value", 0) or 0), str(row.get("monitor_name") or "")),
             )[:3]
             bucket["top_alert_monitors"] = sorted(
-                [row for row in bucket.pop("_alert_rows", []) if int(row.get("value", 0) or 0) > 0],
+                [row for row in bucket.pop("_alert_rows", []) if int(row.get("value", 0) or 0) > 0]
+                if alert_pressured
+                else [],
                 key=lambda row: (-int(row.get("value", 0) or 0), str(row.get("monitor_name") or "")),
             )[:3]
             bucket["throttled_monitors"] = sorted(

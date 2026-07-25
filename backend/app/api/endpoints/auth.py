@@ -28,6 +28,35 @@ router = APIRouter()
 auth_service = AuthService()
 security = HTTPBearer()
 
+async def get_user_from_token(token: str) -> Optional[User]:
+    """Resolve a raw JWT access token to an active user.
+
+    Used by WebSocket endpoints that cannot rely on the standard dependency
+    chain (tokens arrive as a query param, not a header). Returns ``None`` when
+    the token is missing/invalid or the user is inactive.
+    """
+    raw = (token or "").strip()
+    if not raw:
+        return None
+    try:
+        payload = jwt.decode(raw, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+    except JWTError:
+        return None
+    user_id = payload.get("sub")
+    if not user_id:
+        return None
+
+    # Reference the module attribute at call time so tests can monkeypatch the
+    # session factory on app.core.database.
+    from app.core import database as core_database
+
+    async with core_database.async_session_factory() as db:
+        user = await auth_service.get_user_by_id(str(user_id), db)
+    if user is None or not user.is_active:
+        return None
+    return user
+
+
 async def get_current_active_user(
     current_user: User = Depends(auth_service.get_current_user),
 ) -> User:

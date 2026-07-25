@@ -81,7 +81,7 @@ class AgentChainOrchestrationService:
         db: AsyncSession,
     ) -> Dict[str, Any]:
         """Collect sibling job outputs for swarm fan-in aggregators."""
-        sibling_parent_id = parent_job.parent_job_id
+        sibling_parent_id = parent_job.id
         if not sibling_parent_id:
             return {}
         siblings_res = await db.execute(

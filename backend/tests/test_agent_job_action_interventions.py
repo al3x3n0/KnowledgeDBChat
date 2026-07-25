@@ -1,4 +1,5 @@
 import asyncio
+from uuid import UUID
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.domain_research_profile import DomainResearchProfile
@@ -301,12 +302,12 @@ def test_promote_domain_research_job_creates_profile_and_portfolio(
         assert promotion["domain_research_profile_id"] == payload["domain_research_profile_id"]
         assert promotion["research_portfolio_id"] == payload["research_portfolio_id"]
 
-        profile = await db_session.get(DomainResearchProfile, payload["domain_research_profile_id"])
+        profile = await db_session.get(DomainResearchProfile, UUID(payload["domain_research_profile_id"]))
         assert profile is not None
         assert profile.title == "Compiler Perf Monitor"
         assert profile.latest_run_job_id is not None
 
-        portfolio = await db_session.get(ResearchPortfolio, payload["research_portfolio_id"])
+        portfolio = await db_session.get(ResearchPortfolio, UUID(payload["research_portfolio_id"]))
         assert portfolio is not None
         assert str(profile.id) in (portfolio.linked_profile_ids or [])
         assert portfolio.latest_run_job_id is not None

@@ -418,6 +418,12 @@ def _queue_alert_should_emit(
     if not matching:
         return True
 
+    # For policy/budget reviews the queue_key itself encodes the reviewed state
+    # (e.g. the history revision), so any existing notification with the same
+    # queue_key is a duplicate regardless of the recorded sla_bucket/escalation.
+    if item_type in {"policy_review", "budget_review"}:
+        return False
+
     matching.sort(key=lambda n: n.created_at or datetime.min, reverse=True)
     latest = matching[0]
     latest_data = latest.data if isinstance(latest.data, dict) else {}
@@ -426,9 +432,6 @@ def _queue_alert_should_emit(
 
     if latest_sla != sla_bucket or latest_escalation != escalation_level:
         return True
-
-    if item_type in {"policy_review", "budget_review"}:
-        return False
 
     if sla_bucket == "overdue":
         cooldown = max(1, int(reminder_cooldown_hours or 6))

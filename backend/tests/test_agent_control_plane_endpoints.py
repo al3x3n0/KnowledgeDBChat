@@ -472,8 +472,9 @@ def test_agent_control_run_detail_for_job_includes_related_links_and_memory_grap
             )
         )
         await db_session.commit()
+        return workflow_execution.id
 
-    asyncio.get_event_loop().run_until_complete(_seed())
+    workflow_execution_id = asyncio.get_event_loop().run_until_complete(_seed())
 
     async def _fake_slice_memory_graph_for_job_ids(*, db, current_user, job_ids):
         return {
@@ -530,7 +531,7 @@ def test_agent_control_run_detail_for_job_includes_related_links_and_memory_grap
     assert recovery_review["scheduler_state"]["queue_reason"] == "execution_failure"
     assert {link["path"] for link in payload["related_links"]} >= {
         f"/autonomous-agents?job={root_job.id}",
-        f"/workflows?executionId={workflow_execution.id}",
+        f"/workflows?executionId={workflow_execution_id}",
         "/research-notes?note=note-control-1",
         "/synthesis",
     }
@@ -539,7 +540,7 @@ def test_agent_control_run_detail_for_job_includes_related_links_and_memory_grap
     assert "model=gpt-5.4" in routing_link["path"]
     assert "routing_tier=balanced" in routing_link["path"]
     workflow_node = next(node for node in payload["nodes"] if node["kind"] == "workflow_execution")
-    assert workflow_node["metadata"]["workflow_execution_id"] == str(workflow_execution.id)
+    assert workflow_node["metadata"]["workflow_execution_id"] == str(workflow_execution_id)
     experiment_node = next(node for node in payload["nodes"] if node["kind"] == "experiment_run")
     assert experiment_node["metadata"]["experiment_run_id"] == "run-1"
 
@@ -663,7 +664,7 @@ def test_list_agent_control_reviews_returns_flattened_cross_run_queue_items(
 
     root_job_id, execution_id, approval_job_id = asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = control_plane_client.get("/api/v1/agent-control-plane/reviews?queuePreset=approval_required")
+    response = control_plane_client.get("/api/v1/agent-control-plane/reviews?queue_preset=approval_required")
 
     assert response.status_code == 200
     payload = response.json()
@@ -677,7 +678,7 @@ def test_list_agent_control_reviews_returns_flattened_cross_run_queue_items(
     assert payload["items"][0]["run_title"] == "Compiler root job"
     assert payload["items"][0]["job_id"] == approval_job_id
 
-    response = control_plane_client.get("/api/v1/agent-control-plane/reviews?reviewType=policy_review")
+    response = control_plane_client.get("/api/v1/agent-control-plane/reviews?review_type=policy_review")
     assert response.status_code == 200
     payload = response.json()
     assert payload["total"] == 2

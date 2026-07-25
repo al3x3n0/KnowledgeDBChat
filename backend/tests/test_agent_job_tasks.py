@@ -421,7 +421,9 @@ def test_execute_agent_job_task_persists_failure_when_loop_bootstrap_breaks(db_s
         retry=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("retry should not be called")),
     )
 
-    agent_job_tasks.execute_agent_job_task(task, str(job.id), str(job.user_id))
+    # Invoke the underlying bound-task function directly with an explicit fake
+    # ``self`` (Celery would otherwise inject the real task instance).
+    agent_job_tasks.execute_agent_job_task.run.__func__(task, str(job.id), str(job.user_id))
     _run(db_session.refresh(job))
 
     assert call_count["value"] == 2

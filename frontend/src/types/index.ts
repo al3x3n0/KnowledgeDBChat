@@ -1120,6 +1120,7 @@ export type NotificationType =
   | 'summarization_complete'
   | 'research_note_citation_issue'
   | 'experiment_run_update'
+  | 'autonomous_rnd_verification_update'
   | 'hypothesis_reevaluation_update'
   | 'queue_urgency_alert'
   | 'follow_up_outcome_alert'
@@ -2931,6 +2932,178 @@ export interface AgentJobListResponse {
   page: number;
   page_size: number;
   has_more: boolean;
+}
+
+export interface AutonomousRndVerificationBudget {
+  repeat_count?: number;
+  timeout_seconds?: number;
+  max_runtime_minutes?: number;
+  budget_limit?: number;
+}
+
+export interface AutonomousRndVerificationTask {
+  task_id: string;
+  evidence_id?: string | null;
+  evidence_status?: string | null;
+  priority?: string | null;
+  priority_score?: number | null;
+  required_checks: string[];
+  launch_status: string;
+  job_status?: string | null;
+  approval_status?: string | null;
+  reconciliation_status?: string | null;
+  reconciliation_recorded_at?: string | null;
+  experiment_plan_id?: string | null;
+  experiment_run_id?: string | null;
+  agent_job_id?: string | null;
+  audit_id?: string | null;
+  budget: AutonomousRndVerificationBudget;
+}
+
+export interface AutonomousRndVerificationTimelineEvent {
+  event_id: string;
+  task_id: string;
+  event_type: string;
+  at: string;
+  actor: string;
+  label: string;
+  status?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+}
+
+export interface AutonomousRndVerificationLifecycle {
+  task_count: number;
+  launch_status_counts: Record<string, number>;
+  evidence_status_counts: Record<string, number>;
+  tasks: AutonomousRndVerificationTask[];
+  timeline: AutonomousRndVerificationTimelineEvent[];
+}
+
+export interface AutonomousRndJobOutcomeResponse {
+  job_id: string;
+  job_status: string;
+  outcome: Record<string, any>;
+  verification_lifecycle: AutonomousRndVerificationLifecycle;
+}
+
+export interface AutonomousRndVerificationLaunchRequest {
+  approval_confirmed: true;
+  approval_note: string;
+  research_note_id: string;
+  source_id: string;
+  sandbox_profile_id: string;
+  commands: string[];
+  repeat_count: number;
+  timeout_seconds: number;
+  max_runtime_minutes: number;
+  budget_limit: number;
+  start_immediately: boolean;
+}
+
+export interface AutonomousRndVerificationLaunchResponse {
+  created: boolean;
+  queued: boolean;
+  experiment_plan_id: string;
+  experiment_run_id: string;
+  agent_job_id: string;
+  audit_id: string;
+  status: string;
+  budget: AutonomousRndVerificationBudget;
+}
+
+export interface AutonomousRndVerificationAuditEnvelope {
+  snapshot: Record<string, any>;
+  integrity: {
+    canonicalization: string;
+    sha256: string;
+    signature_algorithm?: string;
+    signature_encoding?: string;
+    signature?: string;
+    key_id?: string;
+    public_key?: string;
+  };
+}
+
+export interface ExternalAgentConnection {
+  id: string;
+  name: string;
+  description?: string | null;
+  provider_type: 'generic_agent' | 'compops';
+  endpoint_url: string;
+  capabilities: string[];
+  auth_type: 'none' | 'bearer' | 'api_key' | string;
+  secret_id?: string | null;
+  auth_header_name?: string | null;
+  timeout_seconds: number;
+  is_enabled: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExternalAgentConnectionList {
+  agents: ExternalAgentConnection[];
+  total: number;
+}
+
+export interface ExternalAgentInvokeResult {
+  status: 'completed' | 'requires_approval' | 'failed';
+  audit_id: string;
+  output?: Record<string, any> | null;
+  error?: string | null;
+  evidence_linked?: boolean;
+}
+
+export interface CompOpsEvidenceSubscription {
+  id: string;
+  user_id: string;
+  job_id: string;
+  tool_id: string;
+  capability: string;
+  remote_id: string;
+  payload: Record<string, any>;
+  interval_minutes: number;
+  is_enabled: boolean;
+  status: string;
+  last_response_sha256?: string | null;
+  last_audit_id?: string | null;
+  last_attempt_at?: string | null;
+  last_success_at?: string | null;
+  next_sync_at?: string | null;
+  last_error?: string | null;
+  webhook_enabled: boolean;
+  last_webhook_at?: string | null;
+  last_webhook_event_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CompOpsEvidenceSubscriptionList {
+  subscriptions: CompOpsEvidenceSubscription[];
+  total: number;
+}
+
+export interface CompOpsEvidenceSyncResult {
+  subscription: CompOpsEvidenceSubscription;
+  evidence_changed: boolean;
+}
+
+export interface CompOpsWebhookSetup {
+  subscription: CompOpsEvidenceSubscription;
+  callback_path: string;
+  signing_secret: string;
+  signature_header: string;
+  timestamp_header: string;
+  event_id_header: string;
+  signing_format: string;
+}
+
+export interface SecretSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface AgentCheckpointQueueAction {

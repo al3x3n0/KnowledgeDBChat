@@ -3,15 +3,16 @@ Application configuration settings.
 """
 
 import os
-from typing import Optional, List
+from typing import List, Optional
+
+from loguru import logger
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
-from loguru import logger
 
 
 class Settings(BaseSettings):
     """Application settings."""
-    
+
     # Database
     DATABASE_URL: str = "postgresql://user:password@localhost:5432/knowledge_db"
     REDIS_URL: str = "redis://localhost:6379/0"
@@ -22,7 +23,9 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT_SECONDS: int = 10
     DB_POOL_RECYCLE_SECONDS: int = 300
     # Backpressure: limit concurrent DB sessions per API instance
-    DB_SESSION_CONCURRENCY_LIMIT: Optional[int] = None  # default: pool_size + max_overflow
+    DB_SESSION_CONCURRENCY_LIMIT: Optional[
+        int
+    ] = None  # default: pool_size + max_overflow
     DB_SESSION_ACQUIRE_TIMEOUT_SECONDS: int = 2
 
     # Celery task DB pool tuning (fresh engine per task invocation)
@@ -30,18 +33,24 @@ class Settings(BaseSettings):
     CELERY_DB_POOL_SIZE: int = 2
     CELERY_DB_MAX_OVERFLOW: int = 5
     CELERY_DB_POOL_TIMEOUT_SECONDS: int = 10
-    
+
     # LLM Configuration
     # Provider: 'ollama' (local), 'deepseek', 'openai', 'anthropic',
     # 'qwen' (DashScope), or 'kimi' (Moonshot AI)
     LLM_PROVIDER: str = "ollama"
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    DEFAULT_MODEL: str = "llama3.2:1b"  # Smallest model for Mac compatibility (~1GB, best for 8GB Mac)
+    DEFAULT_MODEL: str = (
+        "llama3.2:1b"  # Smallest model for Mac compatibility (~1GB, best for 8GB Mac)
+    )
     # Alternative models: "llama3.2:3b" (~2GB), "phi3:mini" (~2GB), "gemma:2b" (~1.5GB)
     # For more powerful systems: "llama2" (~4GB), "mistral:7b" (~4GB), "llama3.2" (~4GB)
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     # Alternative embedding models: "all-mpnet-base-v2" (better quality), "multilingual-mpnet-base-v2" (multilingual)
-    EMBEDDING_MODEL_OPTIONS: List[str] = ["all-MiniLM-L6-v2", "all-mpnet-base-v2", "multilingual-mpnet-base-v2"]
+    EMBEDDING_MODEL_OPTIONS: List[str] = [
+        "all-MiniLM-L6-v2",
+        "all-mpnet-base-v2",
+        "multilingual-mpnet-base-v2",
+    ]
 
     # DeepSeek (external) — optional
     DEEPSEEK_API_BASE: str = "https://api.deepseek.com/v1"
@@ -90,35 +99,50 @@ class Settings(BaseSettings):
     QDRANT_URL: str = "http://localhost:6333"
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_COLLECTION_NAME: str = "knowledge_base"
-    
+
     # Security
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    
+    # Ed25519 seed is base64/base64url-encoded raw 32-byte private key material.
+    # When omitted, a stable development seed is domain-derived from SECRET_KEY.
+    AUTONOMOUS_RND_AUDIT_SIGNING_KEY_ID: str = "knowledgeops-ed25519-v1"
+    AUTONOMOUS_RND_AUDIT_SIGNING_PRIVATE_KEY: Optional[str] = None
+    # Exact hostnames permitted to resolve to private/loopback addresses through
+    # the external-system gateway (for example a Docker-internal CompOps API).
+    EXTERNAL_GATEWAY_PRIVATE_HOST_ALLOWLIST: str = ""
+
     # Application
     DEBUG: bool = True
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     WORKERS: int = 1
-    
+
     # Data Sources
     GITLAB_URL: Optional[str] = None
     GITLAB_TOKEN: Optional[str] = None
     CONFLUENCE_URL: Optional[str] = None
     CONFLUENCE_USER: Optional[str] = None
     CONFLUENCE_API_TOKEN: Optional[str] = None
-    
+
     # Vision
-    VISION_MODEL: str = "llava"  # Vision-capable model for image analysis (e.g. llava, llava:13b)
+    VISION_MODEL: str = (
+        "llava"  # Vision-capable model for image analysis (e.g. llava, llava:13b)
+    )
 
     # Transcription
     WHISPER_MODEL_SIZE: str = "base"  # Options: tiny, base, small, medium, large
     WHISPER_DEVICE: str = "auto"  # Options: cpu, cuda, auto
     TRANSCRIPTION_LANGUAGE: str = "auto"  # Default language for transcription ("auto" enables Whisper language detection)
-    TRANSCRIPTION_SPEAKER_DIARIZATION: bool = False  # Enable speaker labels in transcripts
-    TRANSCRIPTION_DIARIZATION_MODEL: str = "pyannote/speaker-diarization-3.1"  # Pyannote diarization model
-    HUGGINGFACE_TOKEN: Optional[str] = None  # HF token required to download some pyannote models
+    TRANSCRIPTION_SPEAKER_DIARIZATION: bool = (
+        False  # Enable speaker labels in transcripts
+    )
+    TRANSCRIPTION_DIARIZATION_MODEL: str = (
+        "pyannote/speaker-diarization-3.1"  # Pyannote diarization model
+    )
+    HUGGINGFACE_TOKEN: Optional[
+        str
+    ] = None  # HF token required to download some pyannote models
     TRANSCRIPTION_FILTER_INTRO_JUNK: bool = True
     TRANSCRIPTION_INTRO_MAX_SECONDS: float = 12.0
     TRANSCRIPTION_INTRO_NO_SPEECH_PROB: float = 0.30
@@ -126,7 +150,9 @@ class Settings(BaseSettings):
 
     # LDAP (optional)
     LDAP_ENABLED: bool = False
-    LDAP_URI: Optional[str] = None  # e.g. "ldap://ldap.example.com:389" or "ldaps://ldap.example.com:636"
+    LDAP_URI: Optional[
+        str
+    ] = None  # e.g. "ldap://ldap.example.com:389" or "ldaps://ldap.example.com:636"
     LDAP_START_TLS: bool = False
     LDAP_INSECURE_SKIP_TLS_VERIFY: bool = False
     LDAP_CONNECT_TIMEOUT_SECONDS: int = 8
@@ -137,9 +163,15 @@ class Settings(BaseSettings):
 
     # User search
     LDAP_BASE_DN: Optional[str] = None  # e.g. "dc=example,dc=com"
-    LDAP_USER_DN_TEMPLATE: Optional[str] = None  # e.g. "uid={username},ou=People,dc=example,dc=com"
-    LDAP_USER_SEARCH_FILTER: str = "(|(uid={username})(sAMAccountName={username})(userPrincipalName={username}))"
-    LDAP_IMPORT_FILTER: str = "(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
+    LDAP_USER_DN_TEMPLATE: Optional[
+        str
+    ] = None  # e.g. "uid={username},ou=People,dc=example,dc=com"
+    LDAP_USER_SEARCH_FILTER: str = (
+        "(|(uid={username})(sAMAccountName={username})(userPrincipalName={username}))"
+    )
+    LDAP_IMPORT_FILTER: str = (
+        "(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
+    )
     LDAP_SEARCH_PAGE_SIZE: int = 200
 
     # Attribute mapping
@@ -147,27 +179,31 @@ class Settings(BaseSettings):
     LDAP_EMAIL_ATTRIBUTE: str = "mail"
     LDAP_FULL_NAME_ATTRIBUTE: str = "displayName"
     LDAP_GROUPS_ATTRIBUTE: str = "memberOf"
-    LDAP_DEFAULT_EMAIL_DOMAIN: Optional[str] = None  # if LDAP has no email, we can synthesize `${username}@domain`
-    LDAP_USER_ATTRIBUTES: str = "uid,sAMAccountName,userPrincipalName,mail,cn,displayName,memberOf"
+    LDAP_DEFAULT_EMAIL_DOMAIN: Optional[
+        str
+    ] = None  # if LDAP has no email, we can synthesize `${username}@domain`
+    LDAP_USER_ATTRIBUTES: str = (
+        "uid,sAMAccountName,userPrincipalName,mail,cn,displayName,memberOf"
+    )
 
     # Role mapping (comma-separated group DNs)
     LDAP_ADMIN_GROUP_DNS: Optional[str] = None
     LDAP_VIEWER_GROUP_DNS: Optional[str] = None
     LDAP_SYNC_ON_LOGIN: bool = True
     LDAP_CREATE_USER_ON_LOGIN: bool = True
-    
+
     # File Upload Limits
     MAX_FILE_SIZE: int = 500 * 1024 * 1024  # 500MB default (videos can be large)
     MAX_VIDEO_SIZE: int = 2000 * 1024 * 1024  # 2GB for videos specifically
-    
+
     # Celery
     CELERY_BROKER_URL: str = "redis://localhost:6379/0"
     CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
-    
+
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "./data/logs/app.log"
-    
+
     # Chat Configuration
     MAX_CONTEXT_LENGTH: int = 4000
     MAX_RESPONSE_LENGTH: int = 1000
@@ -176,23 +212,33 @@ class Settings(BaseSettings):
 
     # Backpressure (global concurrency caps)
     LLM_MAX_CONCURRENCY: int = 4
-    
+
     # Document Processing
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
     MAX_SEARCH_RESULTS: int = 5
-    
+
     # Summarization
-    SUMMARIZATION_HEAVY_THRESHOLD_CHARS: int = 30000  # Above this, treat as heavy and prefer external provider
-    SUMMARIZATION_CHUNK_SIZE_CHARS: int = 12000       # Per-chunk size for document summarization
-    SUMMARIZATION_CHUNK_OVERLAP_CHARS: int = 800      # Overlap between chunks to preserve continuity
+    SUMMARIZATION_HEAVY_THRESHOLD_CHARS: int = (
+        30000  # Above this, treat as heavy and prefer external provider
+    )
+    SUMMARIZATION_CHUNK_SIZE_CHARS: int = (
+        12000  # Per-chunk size for document summarization
+    )
+    SUMMARIZATION_CHUNK_OVERLAP_CHARS: int = (
+        800  # Overlap between chunks to preserve continuity
+    )
     KNOWLEDGE_GRAPH_ENABLED: bool = True
     SUMMARIZATION_ENABLED: bool = True
     AUTO_SUMMARIZE_ON_PROCESS: bool = False
 
     # Knowledge Graph Extraction
-    KG_LLM_EXTRACTION_ENABLED: bool = True  # Use LLM for better entity/relationship extraction
-    KG_EXTRACTION_MODEL: Optional[str] = None  # Model for KG extraction (None = use default)
+    KG_LLM_EXTRACTION_ENABLED: bool = (
+        True  # Use LLM for better entity/relationship extraction
+    )
+    KG_EXTRACTION_MODEL: Optional[
+        str
+    ] = None  # Model for KG extraction (None = use default)
     KG_EXTRACTION_BATCH_SIZE: int = 3  # Chunks to batch per LLM call
     KG_EXTRACTION_MAX_TEXT_LENGTH: int = 3000  # Max chars per extraction call
 
@@ -215,7 +261,9 @@ class Settings(BaseSettings):
         "ghcr.io/knowledgedb/microarch-research:latest,"
         "python:3.11-slim"
     )
-    SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = "repo_reconstruction,perf_counters"
+    SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = (
+        "repo_reconstruction,perf_counters"
+    )
     SCIENTIFIC_VALIDATION_ALLOWED_BENCHMARK_FAMILIES: str = (
         "compiler_regression,codegen_quality,kernel_compile,"
         "perf_counter_regression,cache_branch_analysis,throughput_latency,generic_validation"
@@ -233,10 +281,12 @@ class Settings(BaseSettings):
     RAG_KG_CONTEXT_ENABLED: bool = True  # Inject KG context into chat responses
     RAG_KG_MAX_ENTITIES: int = 10  # Max entities to include in context
     RAG_KG_MAX_RELATIONSHIPS: int = 15  # Max relationships to include
-    
+
     # RAG Configuration
     RAG_HYBRID_SEARCH_ENABLED: bool = True
-    RAG_HYBRID_SEARCH_ALPHA: float = 0.7  # Semantic weight (0.0 = keyword only, 1.0 = semantic only)
+    RAG_HYBRID_SEARCH_ALPHA: float = (
+        0.7  # Semantic weight (0.0 = keyword only, 1.0 = semantic only)
+    )
     RAG_RERANKING_ENABLED: bool = True
     RAG_RERANKING_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     RAG_RERANKING_TOP_K: int = 5
@@ -247,8 +297,10 @@ class Settings(BaseSettings):
     RAG_MMR_ENABLED: bool = True
     RAG_MMR_LAMBDA: float = 0.5  # Balance between relevance (1.0) and diversity (0.0)
     RAG_DEDUPLICATION_ENABLED: bool = True
-    RAG_DEDUPLICATION_THRESHOLD: float = 0.95  # Similarity threshold for considering duplicates
-    
+    RAG_DEDUPLICATION_THRESHOLD: float = (
+        0.95  # Similarity threshold for considering duplicates
+    )
+
     # Kroki (local diagram rendering)
     KROKI_URL: str = "http://localhost:8001"  # Local Kroki Docker container
     KROKI_FALLBACK_URL: str = "https://kroki.io"  # External fallback
@@ -275,10 +327,14 @@ class Settings(BaseSettings):
     MINIO_BUCKET_NAME: str = "documents"
     MINIO_USE_SSL: bool = False
     MINIO_PRESIGNED_URL_EXPIRY: int = 3600  # 1 hour in seconds
-    MINIO_PROXY_BASE_URL: Optional[str] = None  # Base URL for nginx proxy (e.g., "http://localhost:3000/minio")
+    MINIO_PROXY_BASE_URL: Optional[
+        str
+    ] = None  # Base URL for nginx proxy (e.g., "http://localhost:3000/minio")
 
     # Secrets vault
-    SECRETS_ENCRYPTION_KEY: Optional[str] = None  # Optional Fernet key (urlsafe base64, 32 bytes)
+    SECRETS_ENCRYPTION_KEY: Optional[
+        str
+    ] = None  # Optional Fernet key (urlsafe base64, 32 bytes)
 
     # Agent governance
     AGENT_REQUIRE_TOOL_APPROVAL: bool = True
@@ -321,10 +377,18 @@ class Settings(BaseSettings):
     TRAINING_LOCAL_MAX_GPU_MEMORY_GB: float = 24.0
     TRAINING_CHECKPOINT_INTERVAL_STEPS: int = 100
     TRAINING_OUTPUT_DIR: str = "./data/training_outputs"
-    AI_HUB_EVAL_TEMPLATES_DIR: Optional[str] = None  # Optional override for eval template "plugins"
-    AI_HUB_EVAL_ENABLED_TEMPLATE_IDS: Optional[str] = None  # Comma-separated template IDs allowed for non-admin users
-    AI_HUB_DATASET_PRESETS_DIR: Optional[str] = None  # Optional override for dataset preset "plugins"
-    AI_HUB_DATASET_ENABLED_PRESET_IDS: Optional[str] = None  # Comma-separated preset IDs allowed for non-admin users
+    AI_HUB_EVAL_TEMPLATES_DIR: Optional[
+        str
+    ] = None  # Optional override for eval template "plugins"
+    AI_HUB_EVAL_ENABLED_TEMPLATE_IDS: Optional[
+        str
+    ] = None  # Comma-separated template IDs allowed for non-admin users
+    AI_HUB_DATASET_PRESETS_DIR: Optional[
+        str
+    ] = None  # Optional override for dataset preset "plugins"
+    AI_HUB_DATASET_ENABLED_PRESET_IDS: Optional[
+        str
+    ] = None  # Comma-separated preset IDs allowed for non-admin users
 
     # Cloud Training (future - optional)
     MODAL_API_KEY: Optional[str] = None
@@ -334,21 +398,21 @@ class Settings(BaseSettings):
     DATASET_MAX_SIZE_MB: int = 500
     DATASET_MAX_SAMPLES: int = 100000
     DATASET_MAX_TOKEN_COUNT: int = 50000000  # 50M tokens
-    
+
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def validate_database_url(cls, v):
         if not v or v == "":
             raise ValueError("DATABASE_URL must be set")
         return v
-    
+
     @field_validator("SECRET_KEY", mode="before")
     @classmethod
     def validate_secret_key(cls, v):
         if v == "your-secret-key-change-in-production":
             logger.warning("Using default SECRET_KEY. Change this in production!")
         return v
-    
+
     class Config:
         env_file = ".env"
         case_sensitive = True
@@ -365,11 +429,17 @@ class Settings(BaseSettings):
         # If value is localhost but we're running inside Docker, localhost points at the container.
         # Default to the docker-compose service name `ollama`.
         try:
-            in_docker = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+            in_docker = os.path.exists("/.dockerenv") or os.path.exists(
+                "/run/.containerenv"
+            )
         except Exception:
             in_docker = False
 
-        if in_docker and isinstance(v, str) and ("localhost:11434" in v or "127.0.0.1:11434" in v):
+        if (
+            in_docker
+            and isinstance(v, str)
+            and ("localhost:11434" in v or "127.0.0.1:11434" in v)
+        ):
             return "http://ollama:11434"
 
         return v
@@ -402,10 +472,10 @@ logger.add(
     level=settings.LOG_LEVEL,
     rotation="10 MB",
     retention="30 days",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}",
 )
 logger.add(
     lambda msg: print(msg, end=""),
     level=settings.LOG_LEVEL,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | {message}"
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | {message}",
 )

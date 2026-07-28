@@ -49,11 +49,17 @@ class ToolPolicy(Base):
     # - {"max_cost_tier": "low"}
     constraints = Column(JSONB, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
     __table_args__ = (
         Index("ix_tool_policies_subject", "subject_type", "subject_id", "subject_key"),
         Index("ix_tool_policies_selector", "tool_name", "effect"),
     )
-

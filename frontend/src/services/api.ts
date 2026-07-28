@@ -2,7 +2,7 @@
  * API client for Knowledge Database backend
  */
 
-import axios, { AxiosInstance, AxiosError, AxiosProgressEvent } from 'axios';
+import axios, { AxiosInstance, AxiosError } from 'axios';
 import toast from 'react-hot-toast';
 import {
   User,
@@ -13,7 +13,6 @@ import {
   ActiveGitSource,
   GitBranch,
   GitCompareJob,
-  DocumentChunk,
   SystemHealth,
   SystemStats,
   AdminIngestionStatus,
@@ -38,7 +37,6 @@ import {
   KGRelationshipUpdate,
   SearchParams,
   SearchResponse,
-  Notification,
   NotificationListResponse,
   NotificationPreferences,
   NotificationPreferencesUpdate,
@@ -87,11 +85,22 @@ import {
   MCPSourceAccessResponse,
   MCPSourceAccessUpdate,
   AgentJob,
+  AutonomousRndJobOutcomeResponse,
+  AutonomousRndVerificationAuditEnvelope,
+  AutonomousRndVerificationLaunchRequest,
+  AutonomousRndVerificationLaunchResponse,
+  ExternalAgentConnection,
+  ExternalAgentConnectionList,
+  ExternalAgentInvokeResult,
+  CompOpsEvidenceSubscription,
+  CompOpsEvidenceSubscriptionList,
+  CompOpsEvidenceSyncResult,
+  CompOpsWebhookSetup,
+  SecretSummary,
   AgentJobCreate,
   AgentJobFromTemplate,
   AgentJobUpdate,
   AgentJobListResponse,
-  AgentJobTemplate,
   AgentJobTemplateListResponse,
   AgentJobQuickStartBugTriageSwarmRequest,
   AgentJobQuickStartBuildBreakSwarmRequest,
@@ -1654,6 +1663,7 @@ class ApiClient {
         const chunkFormData = new FormData();
         chunkFormData.append('chunk_number', chunkIndex.toString());
         chunkFormData.append('chunk', chunk, file.name);
+        const uploadedBeforeChunk = uploadedSoFar;
         
         try {
           await this.client.post(`/api/v1/upload/${sessionId}/chunk`, chunkFormData, {
@@ -1667,7 +1677,7 @@ class ApiClient {
                 // Overall progress
                 const overallProgress = ((chunkIndex + chunkProgress / 100) / totalChunks) * 100;
                 onProgress?.(Math.round(overallProgress));
-                onBytesProgress?.(uploadedSoFar + progressEvent.loaded, file.size);
+                onBytesProgress?.(uploadedBeforeChunk + progressEvent.loaded, file.size);
               }
             },
           });
@@ -2906,6 +2916,157 @@ class ApiClient {
 
   async getAgentJob(jobId: string): Promise<AgentJob> {
     const response = await this.client.get(`/api/v1/agent-jobs/${jobId}`);
+    return response.data;
+  }
+
+  async getAutonomousRndJobOutcome(jobId: string): Promise<AutonomousRndJobOutcomeResponse> {
+    const response = await this.client.get(
+      `/api/v1/autonomous-rnd-evals/jobs/${encodeURIComponent(String(jobId))}/outcome`
+    );
+    return response.data;
+  }
+
+  async launchAutonomousRndVerificationTask(
+    jobId: string,
+    taskId: string,
+    data: AutonomousRndVerificationLaunchRequest
+  ): Promise<AutonomousRndVerificationLaunchResponse> {
+    const response = await this.client.post(
+      `/api/v1/autonomous-rnd-evals/jobs/${encodeURIComponent(String(jobId))}`
+        + `/verification-tasks/${encodeURIComponent(String(taskId))}/launch`,
+      data
+    );
+    return response.data;
+  }
+
+  async createAutonomousRndVerificationAuditSnapshot(
+    jobId: string,
+    filters: { task_id?: string; status?: string } = {}
+  ): Promise<AutonomousRndVerificationAuditEnvelope> {
+    const response = await this.client.post(
+      `/api/v1/autonomous-rnd-evals/jobs/${encodeURIComponent(String(jobId))}`
+        + '/verification-audit-snapshot',
+      filters
+    );
+    return response.data;
+  }
+
+  async listExternalAgentConnections(): Promise<ExternalAgentConnectionList> {
+    const response = await this.client.get('/api/v1/external-agents');
+    return response.data;
+  }
+
+  async createExternalAgentConnection(data: {
+    name: string;
+    description?: string | null;
+    provider_type: 'generic_agent' | 'compops';
+    endpoint_url: string;
+    capabilities: string[];
+    auth_type: 'none' | 'bearer' | 'api_key';
+    secret_id?: string | null;
+    auth_header_name?: string;
+    timeout_seconds?: number;
+    is_enabled?: boolean;
+  }): Promise<ExternalAgentConnection> {
+    const response = await this.client.post('/api/v1/external-agents', data);
+    return response.data;
+  }
+
+  async invokeExternalAgentConnection(
+    connectionId: string,
+    data: {
+      capability: string;
+      payload?: Record<string, any>;
+      request_id?: string;
+      agent_job_id?: string;
+    }
+  ): Promise<ExternalAgentInvokeResult> {
+    const response = await this.client.post(
+      `/api/v1/external-agents/${encodeURIComponent(connectionId)}/invoke`,
+      data
+    );
+    return response.data;
+  }
+
+  async listCompOpsEvidenceSubscriptions(
+    jobId: string
+  ): Promise<CompOpsEvidenceSubscriptionList> {
+    const response = await this.client.get(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}/compops-sync-subscriptions`
+    );
+    return response.data;
+  }
+
+  async createCompOpsEvidenceSubscription(
+    jobId: string,
+    data: {
+      tool_id: string;
+      capability: string;
+      payload: Record<string, any>;
+      interval_minutes: number;
+      sync_immediately?: boolean;
+    }
+  ): Promise<CompOpsEvidenceSyncResult> {
+    const response = await this.client.post(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}/compops-sync-subscriptions`,
+      data
+    );
+    return response.data;
+  }
+
+  async updateCompOpsEvidenceSubscription(
+    jobId: string,
+    subscriptionId: string,
+    data: { interval_minutes?: number; is_enabled?: boolean }
+  ): Promise<CompOpsEvidenceSubscription> {
+    const response = await this.client.patch(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}`
+        + `/compops-sync-subscriptions/${encodeURIComponent(subscriptionId)}`,
+      data
+    );
+    return response.data;
+  }
+
+  async syncCompOpsEvidenceSubscription(
+    jobId: string,
+    subscriptionId: string
+  ): Promise<CompOpsEvidenceSyncResult> {
+    const response = await this.client.post(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}`
+        + `/compops-sync-subscriptions/${encodeURIComponent(subscriptionId)}/sync`
+    );
+    return response.data;
+  }
+
+  async enableCompOpsSubscriptionWebhook(
+    jobId: string,
+    subscriptionId: string
+  ): Promise<CompOpsWebhookSetup> {
+    const response = await this.client.post(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}`
+        + `/compops-sync-subscriptions/${encodeURIComponent(subscriptionId)}/webhook`
+    );
+    return response.data;
+  }
+
+  async disableCompOpsSubscriptionWebhook(
+    jobId: string,
+    subscriptionId: string
+  ): Promise<CompOpsEvidenceSubscription> {
+    const response = await this.client.delete(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}`
+        + `/compops-sync-subscriptions/${encodeURIComponent(subscriptionId)}/webhook`
+    );
+    return response.data;
+  }
+
+  async listSecrets(): Promise<SecretSummary[]> {
+    const response = await this.client.get('/api/v1/secrets');
+    return response.data;
+  }
+
+  async storeSecret(name: string, value: string): Promise<SecretSummary> {
+    const response = await this.client.post('/api/v1/secrets', { name, value });
     return response.data;
   }
 

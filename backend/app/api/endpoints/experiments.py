@@ -11,33 +11,30 @@ import re
 from copy import deepcopy
 from datetime import datetime
 from typing import Any, Dict, Optional
+from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from loguru import logger
-from sqlalchemy import select, and_
+from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.endpoints.agent_jobs import _perform_job_action
-from app.services.agent_job_scheduler_state import (
-    extract_scheduler_state as _extract_scheduler_state,
-)
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
-from app.models.experiment import ExperimentPlan, ExperimentRun
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.models.experiment import ExperimentPlan, ExperimentRun
 from app.models.research_note import ResearchNote
 from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus, SynthesisJobType
 from app.models.user import User
-from uuid import UUID
-
 from app.schemas.agent_job import AgentJobActionRequest
+from app.schemas.benchmark import BenchmarkSuiteListResponse, BenchmarkSuiteResponse
 from app.schemas.experiment import (
-    ExperimentRunActionRequest,
-    ExperimentRunActionResponse,
     ExperimentPlanGenerateRequest,
     ExperimentPlanListResponse,
     ExperimentPlanResponse,
     ExperimentPlanUpdateRequest,
+    ExperimentRunActionRequest,
+    ExperimentRunActionResponse,
     ExperimentRunCreateRequest,
     ExperimentRunListResponse,
     ExperimentRunResponse,
@@ -46,15 +43,30 @@ from app.schemas.experiment import (
     ExperimentRunSyncResponse,
     ExperimentRunUpdateRequest,
 )
-from app.schemas.benchmark import BenchmarkSuiteListResponse, BenchmarkSuiteResponse
-from app.services.llm_service import LLMService
-from app.services.autonomy_event_service import record_autonomy_decision_event
-from app.services.experiment_outcome_service import reconcile_experiment_run_outcome_to_originating_opportunity
-from app.services.operator_interventions import derive_operator_interventions_with_outcomes
-from app.services.benchmark_harness_service import get_benchmark_suite, list_benchmark_suites
-from app.services.scientific_validation_service import build_scientific_validation_recipe, get_scientific_sandbox_profile
-from app.services.synthesis_service import synthesis_service
 from app.schemas.research_note import ResearchNoteResponse
+from app.services.agent_job_scheduler_state import (
+    extract_scheduler_state as _extract_scheduler_state,
+)
+from app.services.autonomous_rnd_verification_reconciliation_service import (
+    autonomous_rnd_verification_reconciliation_service,
+)
+from app.services.autonomy_event_service import record_autonomy_decision_event
+from app.services.benchmark_harness_service import (
+    get_benchmark_suite,
+    list_benchmark_suites,
+)
+from app.services.experiment_outcome_service import (
+    reconcile_experiment_run_outcome_to_originating_opportunity,
+)
+from app.services.llm_service import LLMService
+from app.services.operator_interventions import (
+    derive_operator_interventions_with_outcomes,
+)
+from app.services.scientific_validation_service import (
+    build_scientific_validation_recipe,
+    get_scientific_sandbox_profile,
+)
+from app.services.synthesis_service import synthesis_service
 from app.tasks.agent_job_tasks import execute_agent_job_task
 from app.tasks.synthesis_tasks import execute_synthesis_task
 
@@ -68,27 +80,38 @@ def _text(value: Any) -> str:
 def _plan_benchmark_metadata(plan: ExperimentPlan) -> Dict[str, Any]:
     details = plan.generator_details if isinstance(plan.generator_details, dict) else {}
     plan_body = plan.plan if isinstance(plan.plan, dict) else {}
-    provenance = plan_body.get("provenance") if isinstance(plan_body.get("provenance"), dict) else {}
+    provenance = (
+        plan_body.get("provenance")
+        if isinstance(plan_body.get("provenance"), dict)
+        else {}
+    )
     return {
         "benchmark_family": str(
             details.get("benchmark_family")
             or plan_body.get("benchmark_family")
             or provenance.get("benchmark_family")
             or ""
-        ).strip() or None,
+        ).strip()
+        or None,
         "benchmark_suite_id": str(
             details.get("benchmark_suite_id")
             or plan_body.get("benchmark_suite_id")
             or provenance.get("benchmark_suite_id")
             or ""
-        ).strip() or None,
+        ).strip()
+        or None,
         "benchmark_case_ids": [
             str(item).strip()
             for item in (
                 details.get("benchmark_case_ids")
                 if isinstance(details.get("benchmark_case_ids"), list)
-                else (plan_body.get("benchmark_case_ids") if isinstance(plan_body.get("benchmark_case_ids"), list) else provenance.get("benchmark_case_ids"))
-            ) or []
+                else (
+                    plan_body.get("benchmark_case_ids")
+                    if isinstance(plan_body.get("benchmark_case_ids"), list)
+                    else provenance.get("benchmark_case_ids")
+                )
+            )
+            or []
             if str(item).strip()
         ],
         "benchmark_baseline_id": str(
@@ -96,7 +119,8 @@ def _plan_benchmark_metadata(plan: ExperimentPlan) -> Dict[str, Any]:
             or plan_body.get("benchmark_baseline_id")
             or provenance.get("benchmark_baseline_id")
             or ""
-        ).strip() or None,
+        ).strip()
+        or None,
     }
 
 
@@ -116,7 +140,9 @@ def _scientific_validation_payload(run: ExperimentRun) -> Dict[str, Any]:
     return deepcopy(value) if isinstance(value, dict) else {}
 
 
-def _set_scientific_validation_payload(run: ExperimentRun, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _set_scientific_validation_payload(
+    run: ExperimentRun, payload: Dict[str, Any]
+) -> Dict[str, Any]:
     config = deepcopy(run.config) if isinstance(run.config, dict) else {}
     if payload:
         config["scientific_validation"] = payload
@@ -188,11 +214,15 @@ async def _start_experiment_run_internal(
     start_immediately: bool = True,
 ) -> tuple[ExperimentRun, AgentJob]:
     if run.agent_job_id:
-        raise HTTPException(status_code=400, detail="Run already started (agent job exists)")
+        raise HTTPException(
+            status_code=400, detail="Run already started (agent job exists)"
+        )
 
     normalized_commands = _run_start_commands(run, commands)
     if not normalized_commands:
-        raise HTTPException(status_code=400, detail="Run is missing executable commands")
+        raise HTTPException(
+            status_code=400, detail="Run is missing executable commands"
+        )
 
     run_config = deepcopy(run.config) if isinstance(run.config, dict) else {}
     scientific_validation = (
@@ -267,7 +297,9 @@ async def _sync_experiment_run_from_job_internal(
         run.progress = int(job.progress or 0)
 
     jr = job.results if isinstance(job.results, dict) else {}
-    exp_run = jr.get("experiment_run") if isinstance(jr.get("experiment_run"), dict) else None
+    exp_run = (
+        jr.get("experiment_run") if isinstance(jr.get("experiment_run"), dict) else None
+    )
     if exp_run:
         run.results = {
             **{key: value for key, value in jr.items() if key != "experiment_run"},
@@ -328,7 +360,6 @@ def _run_to_response(run: ExperimentRun) -> ExperimentRunResponse:
     now = datetime.utcnow()
     results = run.results if isinstance(run.results, dict) else {}
     experiment_run = results if results else None
-    config = run.config if isinstance(run.config, dict) else {}
     scientific_validation = _scientific_validation_payload(run)
     execution_handoff = _run_execution_handoff(run)
     compiler_artifacts = _run_compiler_artifacts(run)
@@ -343,7 +374,11 @@ def _run_to_response(run: ExperimentRun) -> ExperimentRunResponse:
             else []
         )
     )
-    execution_strategy = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
+    execution_strategy = (
+        results.get("execution_strategy")
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
     operator_interventions_raw = (
         execution_strategy.get("operator_interventions")
         if isinstance(execution_strategy.get("operator_interventions"), list)
@@ -358,35 +393,90 @@ def _run_to_response(run: ExperimentRun) -> ExperimentRunResponse:
         {
             **run.__dict__,
             "created_at": getattr(run, "created_at", None) or now,
-            "updated_at": getattr(run, "updated_at", None) or getattr(run, "created_at", None) or now,
+            "updated_at": getattr(run, "updated_at", None)
+            or getattr(run, "created_at", None)
+            or now,
             "results": results or None,
             "parent_run_id": run.parent_run_id,
             "latest_child_run_id": run.latest_child_run_id,
-            "validation_kind": str(scientific_validation.get("validation_kind") or "").strip() or None,
-            "sandbox_profile_id": str(scientific_validation.get("sandbox_profile_id") or "").strip() or None,
-            "recipe_family": str(scientific_validation.get("recipe_family") or "").strip() or None,
-            "recipe_id": str(scientific_validation.get("recipe_id") or "").strip() or None,
-            "recipe_version": int(scientific_validation.get("recipe_version") or 0) or None,
-            "domain_research_profile_id": str(scientific_validation.get("domain_research_profile_id") or "").strip() or None,
-            "research_portfolio_id": str(scientific_validation.get("research_portfolio_id") or "").strip() or None,
-            "hypothesis_id": str(scientific_validation.get("hypothesis_id") or "").strip() or None,
-            "originating_job_id": str(scientific_validation.get("originating_job_id") or "").strip() or None,
-            "blocked_reason_code": str(scientific_validation.get("blocked_reason_code") or scientific_validation.get("blocked_reason") or "").strip() or None,
-            "capability_check": scientific_validation.get("capability_check") if isinstance(scientific_validation.get("capability_check"), dict) else None,
-            "profile_snapshot": scientific_validation.get("profile_snapshot") if isinstance(scientific_validation.get("profile_snapshot"), dict) else None,
-            "recipe_snapshot": scientific_validation.get("recipe_snapshot") if isinstance(scientific_validation.get("recipe_snapshot"), dict) else None,
-            "benchmark_family": str(scientific_validation.get("benchmark_family") or execution_handoff.get("benchmark_family") or "").strip() or None,
-            "benchmark_suite_id": str(scientific_validation.get("benchmark_suite_id") or execution_handoff.get("benchmark_suite_id") or "").strip() or None,
+            "validation_kind": str(
+                scientific_validation.get("validation_kind") or ""
+            ).strip()
+            or None,
+            "sandbox_profile_id": str(
+                scientific_validation.get("sandbox_profile_id") or ""
+            ).strip()
+            or None,
+            "recipe_family": str(
+                scientific_validation.get("recipe_family") or ""
+            ).strip()
+            or None,
+            "recipe_id": str(scientific_validation.get("recipe_id") or "").strip()
+            or None,
+            "recipe_version": int(scientific_validation.get("recipe_version") or 0)
+            or None,
+            "domain_research_profile_id": str(
+                scientific_validation.get("domain_research_profile_id") or ""
+            ).strip()
+            or None,
+            "research_portfolio_id": str(
+                scientific_validation.get("research_portfolio_id") or ""
+            ).strip()
+            or None,
+            "hypothesis_id": str(
+                scientific_validation.get("hypothesis_id") or ""
+            ).strip()
+            or None,
+            "originating_job_id": str(
+                scientific_validation.get("originating_job_id") or ""
+            ).strip()
+            or None,
+            "blocked_reason_code": str(
+                scientific_validation.get("blocked_reason_code")
+                or scientific_validation.get("blocked_reason")
+                or ""
+            ).strip()
+            or None,
+            "capability_check": scientific_validation.get("capability_check")
+            if isinstance(scientific_validation.get("capability_check"), dict)
+            else None,
+            "profile_snapshot": scientific_validation.get("profile_snapshot")
+            if isinstance(scientific_validation.get("profile_snapshot"), dict)
+            else None,
+            "recipe_snapshot": scientific_validation.get("recipe_snapshot")
+            if isinstance(scientific_validation.get("recipe_snapshot"), dict)
+            else None,
+            "benchmark_family": str(
+                scientific_validation.get("benchmark_family")
+                or execution_handoff.get("benchmark_family")
+                or ""
+            ).strip()
+            or None,
+            "benchmark_suite_id": str(
+                scientific_validation.get("benchmark_suite_id")
+                or execution_handoff.get("benchmark_suite_id")
+                or ""
+            ).strip()
+            or None,
             "benchmark_case_ids": [
                 str(item).strip()
                 for item in (
                     scientific_validation.get("benchmark_case_ids")
                     if isinstance(scientific_validation.get("benchmark_case_ids"), list)
-                    else (execution_handoff.get("benchmark_case_ids") if isinstance(execution_handoff.get("benchmark_case_ids"), list) else [])
+                    else (
+                        execution_handoff.get("benchmark_case_ids")
+                        if isinstance(execution_handoff.get("benchmark_case_ids"), list)
+                        else []
+                    )
                 )
                 if str(item).strip()
             ],
-            "benchmark_baseline_id": str(scientific_validation.get("benchmark_baseline_id") or execution_handoff.get("benchmark_baseline_id") or "").strip() or None,
+            "benchmark_baseline_id": str(
+                scientific_validation.get("benchmark_baseline_id")
+                or execution_handoff.get("benchmark_baseline_id")
+                or ""
+            ).strip()
+            or None,
             "measurement_summary": measurement_summary or None,
             "compiler_artifacts": compiler_artifacts or None,
             "perf_counters": perf_counters or None,
@@ -406,25 +496,57 @@ def _plan_execution_handoff(plan: ExperimentPlan) -> Dict[str, Any]:
     benchmark = _plan_benchmark_metadata(plan)
     selected_hypothesis_ids = details.get("selected_hypothesis_ids")
     if not isinstance(selected_hypothesis_ids, list):
-        selected_hypothesis_ids = plan_body.get("selected_hypothesis_ids") if isinstance(plan_body.get("selected_hypothesis_ids"), list) else []
+        selected_hypothesis_ids = (
+            plan_body.get("selected_hypothesis_ids")
+            if isinstance(plan_body.get("selected_hypothesis_ids"), list)
+            else []
+        )
     supporting_sources = details.get("supporting_sources")
     if not isinstance(supporting_sources, list):
-        supporting_sources = plan_body.get("supporting_sources") if isinstance(plan_body.get("supporting_sources"), list) else []
-    provenance = plan_body.get("provenance") if isinstance(plan_body.get("provenance"), dict) else {}
+        supporting_sources = (
+            plan_body.get("supporting_sources")
+            if isinstance(plan_body.get("supporting_sources"), list)
+            else []
+        )
+    provenance = (
+        plan_body.get("provenance")
+        if isinstance(plan_body.get("provenance"), dict)
+        else {}
+    )
     source_paper_ids = details.get("source_paper_ids")
     if not isinstance(source_paper_ids, list):
-        source_paper_ids = provenance.get("source_paper_ids") if isinstance(provenance.get("source_paper_ids"), list) else []
+        source_paper_ids = (
+            provenance.get("source_paper_ids")
+            if isinstance(provenance.get("source_paper_ids"), list)
+            else []
+        )
     source_document_ids = details.get("source_document_ids")
     if not isinstance(source_document_ids, list):
-        source_document_ids = provenance.get("source_document_ids") if isinstance(provenance.get("source_document_ids"), list) else []
+        source_document_ids = (
+            provenance.get("source_document_ids")
+            if isinstance(provenance.get("source_document_ids"), list)
+            else []
+        )
     source_run_ids = details.get("source_run_ids")
     if not isinstance(source_run_ids, list):
-        source_run_ids = provenance.get("source_run_ids") if isinstance(provenance.get("source_run_ids"), list) else []
-    autonomous_origin = details.get("autonomous_origin") if isinstance(details.get("autonomous_origin"), dict) else {}
+        source_run_ids = (
+            provenance.get("source_run_ids")
+            if isinstance(provenance.get("source_run_ids"), list)
+            else []
+        )
+    autonomous_origin = (
+        details.get("autonomous_origin")
+        if isinstance(details.get("autonomous_origin"), dict)
+        else {}
+    )
     if not autonomous_origin and isinstance(provenance.get("autonomous_origin"), dict):
         autonomous_origin = provenance.get("autonomous_origin")
     if not autonomous_origin:
-        source_kind = "profile" if _text(details.get("profile_id")) else ("portfolio" if _text(details.get("portfolio_id")) else "")
+        source_kind = (
+            "profile"
+            if _text(details.get("profile_id"))
+            else ("portfolio" if _text(details.get("portfolio_id")) else "")
+        )
         source_id = _text(details.get("profile_id") or details.get("portfolio_id"))
         opportunity_id = _text(details.get("opportunity_id"))
         if source_kind and source_id and opportunity_id:
@@ -432,30 +554,49 @@ def _plan_execution_handoff(plan: ExperimentPlan) -> Dict[str, Any]:
                 "source_kind": source_kind,
                 "source_id": source_id,
                 "opportunity_id": opportunity_id,
-                "evidence_revision_at_launch": _text(details.get("evidence_revision_at_launch")) or None,
+                "evidence_revision_at_launch": _text(
+                    details.get("evidence_revision_at_launch")
+                )
+                or None,
             }
 
     return {
         "execution_handoff_version": 1,
-        "plan_scope": str(details.get("plan_mode") or plan_body.get("plan_scope") or "").strip() or None,
-        "selected_hypothesis_ids": [str(item) for item in selected_hypothesis_ids if str(item).strip()],
-        "supporting_sources": [dict(item) for item in supporting_sources if isinstance(item, dict)],
-        "source_paper_ids": [str(item) for item in source_paper_ids if str(item).strip()],
-        "source_document_ids": [str(item) for item in source_document_ids if str(item).strip()],
+        "plan_scope": str(
+            details.get("plan_mode") or plan_body.get("plan_scope") or ""
+        ).strip()
+        or None,
+        "selected_hypothesis_ids": [
+            str(item) for item in selected_hypothesis_ids if str(item).strip()
+        ],
+        "supporting_sources": [
+            dict(item) for item in supporting_sources if isinstance(item, dict)
+        ],
+        "source_paper_ids": [
+            str(item) for item in source_paper_ids if str(item).strip()
+        ],
+        "source_document_ids": [
+            str(item) for item in source_document_ids if str(item).strip()
+        ],
         "source_run_ids": [str(item) for item in source_run_ids if str(item).strip()],
         "primary_run_id": str(details.get("primary_run_id") or "").strip() or None,
-        "comparison_run_id": str(details.get("comparison_run_id") or "").strip() or None,
+        "comparison_run_id": str(details.get("comparison_run_id") or "").strip()
+        or None,
         "regression_type": str(details.get("regression_type") or "").strip() or None,
         "explanation_mode": bool(details.get("explanation_mode")),
         "benchmark_family": benchmark["benchmark_family"],
         "benchmark_suite_id": benchmark["benchmark_suite_id"],
         "benchmark_case_ids": benchmark["benchmark_case_ids"],
         "benchmark_baseline_id": benchmark["benchmark_baseline_id"],
-        "autonomous_origin": dict(autonomous_origin) if isinstance(autonomous_origin, dict) and autonomous_origin else None,
+        "autonomous_origin": dict(autonomous_origin)
+        if isinstance(autonomous_origin, dict) and autonomous_origin
+        else None,
     }
 
 
-def _merge_run_config_with_plan_handoff(plan: ExperimentPlan, run_config: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _merge_run_config_with_plan_handoff(
+    plan: ExperimentPlan, run_config: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
     config = deepcopy(run_config) if isinstance(run_config, dict) else {}
     handoff = _plan_execution_handoff(plan)
     if any(
@@ -485,7 +626,11 @@ def _merge_run_config_with_plan_handoff(plan: ExperimentPlan, run_config: Option
 def _default_run_name_from_plan(plan: ExperimentPlan) -> str:
     details = plan.generator_details if isinstance(plan.generator_details, dict) else {}
     plan_mode = str(details.get("plan_mode") or "").strip()
-    selected_ids = details.get("selected_hypothesis_ids") if isinstance(details.get("selected_hypothesis_ids"), list) else []
+    selected_ids = (
+        details.get("selected_hypothesis_ids")
+        if isinstance(details.get("selected_hypothesis_ids"), list)
+        else []
+    )
     if plan_mode == "single_hypothesis":
         if selected_ids:
             return f"{plan.title} · {selected_ids[0]}"
@@ -502,10 +647,18 @@ def _default_run_summary_from_plan(plan: ExperimentPlan) -> Optional[str]:
     objective = str(plan_body.get("objective") or "").strip()
     hypothesis = str(plan_body.get("hypothesis") or "").strip()
     handoff = _plan_execution_handoff(plan)
-    selected_ids = handoff.get("selected_hypothesis_ids") if isinstance(handoff.get("selected_hypothesis_ids"), list) else []
+    selected_ids = (
+        handoff.get("selected_hypothesis_ids")
+        if isinstance(handoff.get("selected_hypothesis_ids"), list)
+        else []
+    )
     source_titles = [
         str(item.get("title") or item.get("id") or "").strip()
-        for item in (handoff.get("supporting_sources") if isinstance(handoff.get("supporting_sources"), list) else [])
+        for item in (
+            handoff.get("supporting_sources")
+            if isinstance(handoff.get("supporting_sources"), list)
+            else []
+        )
         if isinstance(item, dict)
     ]
     parts: list[str] = []
@@ -516,16 +669,24 @@ def _default_run_summary_from_plan(plan: ExperimentPlan) -> Optional[str]:
     if selected_ids:
         parts.append(f"Hypotheses: {', '.join(selected_ids[:5])}")
     if source_titles:
-        parts.append(f"Sources: {', '.join([title for title in source_titles[:3] if title])}")
+        parts.append(
+            f"Sources: {', '.join([title for title in source_titles[:3] if title])}"
+        )
     summary = " | ".join(part for part in parts if part).strip()
     return summary[:20000] if summary else None
 
 
-def _benchmark_queries_from_context(benchmark_context: Optional[Dict[str, Any]]) -> list[str]:
+def _benchmark_queries_from_context(
+    benchmark_context: Optional[Dict[str, Any]]
+) -> list[str]:
     if not isinstance(benchmark_context, dict):
         return []
     queries: list[str] = []
-    for case in benchmark_context.get("selected_cases") if isinstance(benchmark_context.get("selected_cases"), list) else []:
+    for case in (
+        benchmark_context.get("selected_cases")
+        if isinstance(benchmark_context.get("selected_cases"), list)
+        else []
+    ):
         if not isinstance(case, dict):
             continue
         query = str(case.get("benchmark_query") or case.get("name") or "").strip()
@@ -534,14 +695,23 @@ def _benchmark_queries_from_context(benchmark_context: Optional[Dict[str, Any]])
     return queries[:8]
 
 
-def _benchmark_commands_from_context(benchmark_context: Optional[Dict[str, Any]]) -> list[str]:
+def _benchmark_commands_from_context(
+    benchmark_context: Optional[Dict[str, Any]]
+) -> list[str]:
     if not isinstance(benchmark_context, dict):
         return []
     commands: list[str] = []
-    for case in benchmark_context.get("selected_cases") if isinstance(benchmark_context.get("selected_cases"), list) else []:
+    for case in (
+        benchmark_context.get("selected_cases")
+        if isinstance(benchmark_context.get("selected_cases"), list)
+        else []
+    ):
         if not isinstance(case, dict):
             continue
-        for raw in (case.get("compile_command_template"), case.get("run_command_template")):
+        for raw in (
+            case.get("compile_command_template"),
+            case.get("run_command_template"),
+        ):
             text = str(raw or "").strip()
             if text and text not in commands:
                 commands.append(text)
@@ -556,40 +726,68 @@ def _benchmark_context_from_suite_payload(
     if not isinstance(suite, dict):
         return None
     suite_cases = suite.get("cases") if isinstance(suite.get("cases"), list) else []
-    requested = [str(item).strip() for item in (requested_case_ids or []) if str(item).strip()]
+    requested = [
+        str(item).strip() for item in (requested_case_ids or []) if str(item).strip()
+    ]
     selected_cases = [
         dict(case)
         for case in suite_cases
-        if isinstance(case, dict) and (not requested or str(case.get("id") or "").strip() in requested)
+        if isinstance(case, dict)
+        and (not requested or str(case.get("id") or "").strip() in requested)
     ]
     if requested and not selected_cases:
-        raise HTTPException(status_code=400, detail="No requested benchmark cases matched the selected suite")
+        raise HTTPException(
+            status_code=400,
+            detail="No requested benchmark cases matched the selected suite",
+        )
     if not selected_cases:
-        selected_cases = [dict(case) for case in suite_cases[: min(3, len(suite_cases))] if isinstance(case, dict)]
-    baselines = suite.get("baselines") if isinstance(suite.get("baselines"), list) else []
-    default_baseline_id = str((suite.get("metadata") or {}).get("default_baseline_id") or "").strip() if isinstance(suite.get("metadata"), dict) else ""
+        selected_cases = [
+            dict(case)
+            for case in suite_cases[: min(3, len(suite_cases))]
+            if isinstance(case, dict)
+        ]
+    baselines = (
+        suite.get("baselines") if isinstance(suite.get("baselines"), list) else []
+    )
+    default_baseline_id = (
+        str((suite.get("metadata") or {}).get("default_baseline_id") or "").strip()
+        if isinstance(suite.get("metadata"), dict)
+        else ""
+    )
     selected_baseline = next(
         (
             dict(item)
             for item in baselines
-            if isinstance(item, dict) and str(item.get("id") or "").strip() == default_baseline_id
+            if isinstance(item, dict)
+            and str(item.get("id") or "").strip() == default_baseline_id
         ),
         dict(baselines[0]) if baselines and isinstance(baselines[0], dict) else None,
     )
     return {
         "suite": dict(suite),
         "selected_cases": selected_cases,
-        "selected_case_ids": [str(case.get("id") or "").strip() for case in selected_cases if str(case.get("id") or "").strip()],
+        "selected_case_ids": [
+            str(case.get("id") or "").strip()
+            for case in selected_cases
+            if str(case.get("id") or "").strip()
+        ],
         "baseline": selected_baseline,
-        "benchmark_queries": _benchmark_queries_from_context({"selected_cases": selected_cases}),
-        "default_commands": _benchmark_commands_from_context({"selected_cases": selected_cases}),
+        "benchmark_queries": _benchmark_queries_from_context(
+            {"selected_cases": selected_cases}
+        ),
+        "default_commands": _benchmark_commands_from_context(
+            {"selected_cases": selected_cases}
+        ),
     }
 
 
-def _benchmark_observability_from_context(benchmark_context: Optional[Dict[str, Any]]) -> Dict[str, Any]:
+def _benchmark_observability_from_context(
+    benchmark_context: Optional[Dict[str, Any]]
+) -> Dict[str, Any]:
     selected_cases = (
         benchmark_context.get("selected_cases")
-        if isinstance(benchmark_context, dict) and isinstance(benchmark_context.get("selected_cases"), list)
+        if isinstance(benchmark_context, dict)
+        and isinstance(benchmark_context.get("selected_cases"), list)
         else []
     )
     artifact_inventory: list[str] = []
@@ -605,28 +803,50 @@ def _benchmark_observability_from_context(benchmark_context: Optional[Dict[str, 
     for case in selected_cases:
         if not isinstance(case, dict):
             continue
-        for item in case.get("expected_artifacts") if isinstance(case.get("expected_artifacts"), list) else []:
+        for item in (
+            case.get("expected_artifacts")
+            if isinstance(case.get("expected_artifacts"), list)
+            else []
+        ):
             text = str(item).strip()
             if text and text not in artifact_inventory:
                 artifact_inventory.append(text)
-        for metric in case.get("metrics") if isinstance(case.get("metrics"), list) else []:
+        for metric in (
+            case.get("metrics") if isinstance(case.get("metrics"), list) else []
+        ):
             if not isinstance(metric, dict):
                 continue
             name = str(metric.get("name") or "").strip()
             if name and name not in metric_names:
                 metric_names.append(name)
-        metadata = case.get("metadata") if isinstance(case.get("metadata"), dict) else {}
-        observability = metadata.get("observability") if isinstance(metadata.get("observability"), dict) else {}
+        metadata = (
+            case.get("metadata") if isinstance(case.get("metadata"), dict) else {}
+        )
+        observability = (
+            metadata.get("observability")
+            if isinstance(metadata.get("observability"), dict)
+            else {}
+        )
         capture_ir = capture_ir or bool(observability.get("capture_ir"))
         capture_asm = capture_asm or bool(observability.get("capture_asm"))
         capture_remarks = capture_remarks or bool(observability.get("capture_remarks"))
-        capture_compile_logs = capture_compile_logs or bool(observability.get("capture_compile_logs"))
-        capture_perf_stat = capture_perf_stat or bool(observability.get("capture_perf_stat"))
+        capture_compile_logs = capture_compile_logs or bool(
+            observability.get("capture_compile_logs")
+        )
+        capture_perf_stat = capture_perf_stat or bool(
+            observability.get("capture_perf_stat")
+        )
         try:
-            repeat_count = max(repeat_count, int(observability.get("repeat_count") or 1))
+            repeat_count = max(
+                repeat_count, int(observability.get("repeat_count") or 1)
+            )
         except Exception:
             repeat_count = max(repeat_count, 1)
-        for signal in observability.get("pass_signals") if isinstance(observability.get("pass_signals"), list) else []:
+        for signal in (
+            observability.get("pass_signals")
+            if isinstance(observability.get("pass_signals"), list)
+            else []
+        ):
             text = str(signal).strip()
             if text and text not in pass_signals:
                 pass_signals.append(text)
@@ -635,7 +855,9 @@ def _benchmark_observability_from_context(benchmark_context: Optional[Dict[str, 
         artifact_inventory.append("compiler_logs")
     if capture_remarks and "compiler_remarks" not in artifact_inventory:
         artifact_inventory.append("compiler_remarks")
-    if (capture_ir or capture_asm) and "ir_or_codegen_artifacts" not in artifact_inventory:
+    if (
+        capture_ir or capture_asm
+    ) and "ir_or_codegen_artifacts" not in artifact_inventory:
         artifact_inventory.append("ir_or_codegen_artifacts")
     if capture_perf_stat and "perf_counter_summary" not in artifact_inventory:
         artifact_inventory.append("perf_counter_summary")
@@ -660,15 +882,23 @@ def _run_measurement_summary(run: ExperimentRun) -> Dict[str, Any]:
         if isinstance(results.get("measurement_summary"), dict)
         else (
             deepcopy(_scientific_validation_payload(run).get("measurement_summary"))
-            if isinstance(_scientific_validation_payload(run).get("measurement_summary"), dict)
+            if isinstance(
+                _scientific_validation_payload(run).get("measurement_summary"), dict
+            )
             else {}
         )
     )
     if not isinstance(measurement_summary, dict):
         measurement_summary = {}
     compiler_artifacts = _run_compiler_artifacts(run)
-    artifact_inventory = compiler_artifacts.get("artifact_inventory") if isinstance(compiler_artifacts.get("artifact_inventory"), list) else []
-    if artifact_inventory and not isinstance(measurement_summary.get("artifact_inventory"), list):
+    artifact_inventory = (
+        compiler_artifacts.get("artifact_inventory")
+        if isinstance(compiler_artifacts.get("artifact_inventory"), list)
+        else []
+    )
+    if artifact_inventory and not isinstance(
+        measurement_summary.get("artifact_inventory"), list
+    ):
         measurement_summary["artifact_inventory"] = artifact_inventory
     perf_counters = _run_perf_counters(run)
     if perf_counters and not isinstance(measurement_summary.get("perf_counters"), dict):
@@ -697,7 +927,11 @@ def _run_perf_counters(run: ExperimentRun) -> Dict[str, Any]:
 
 def _run_compiler_artifacts(run: ExperimentRun) -> Dict[str, Any]:
     results = run.results if isinstance(run.results, dict) else {}
-    base = deepcopy(results.get("compiler_artifacts")) if isinstance(results.get("compiler_artifacts"), dict) else {}
+    base = (
+        deepcopy(results.get("compiler_artifacts"))
+        if isinstance(results.get("compiler_artifacts"), dict)
+        else {}
+    )
     scientific_validation = _scientific_validation_payload(run)
     observability = (
         scientific_validation.get("compiler_observability")
@@ -708,24 +942,74 @@ def _run_compiler_artifacts(run: ExperimentRun) -> Dict[str, Any]:
     for item in (
         base.get("artifact_inventory")
         if isinstance(base.get("artifact_inventory"), list)
-        else (observability.get("artifact_inventory") if isinstance(observability.get("artifact_inventory"), list) else [])
+        else (
+            observability.get("artifact_inventory")
+            if isinstance(observability.get("artifact_inventory"), list)
+            else []
+        )
     ):
         text = str(item).strip()
         if text and text not in artifact_inventory:
             artifact_inventory.append(text)
     payload = {
-        "ir_paths": [str(item).strip() for item in (base.get("ir_paths") if isinstance(base.get("ir_paths"), list) else []) if str(item).strip()][:8],
-        "asm_paths": [str(item).strip() for item in (base.get("asm_paths") if isinstance(base.get("asm_paths"), list) else []) if str(item).strip()][:8],
-        "remark_paths": [str(item).strip() for item in (base.get("remark_paths") if isinstance(base.get("remark_paths"), list) else []) if str(item).strip()][:8],
-        "log_paths": [str(item).strip() for item in (base.get("log_paths") if isinstance(base.get("log_paths"), list) else []) if str(item).strip()][:8],
-        "diff_summary": str(base.get("diff_summary") or observability.get("diff_summary") or "").strip() or None,
-        "pass_signals": [str(item).strip() for item in (base.get("pass_signals") if isinstance(base.get("pass_signals"), list) else (observability.get("pass_signals") if isinstance(observability.get("pass_signals"), list) else [])) if str(item).strip()][:12],
+        "ir_paths": [
+            str(item).strip()
+            for item in (
+                base.get("ir_paths") if isinstance(base.get("ir_paths"), list) else []
+            )
+            if str(item).strip()
+        ][:8],
+        "asm_paths": [
+            str(item).strip()
+            for item in (
+                base.get("asm_paths") if isinstance(base.get("asm_paths"), list) else []
+            )
+            if str(item).strip()
+        ][:8],
+        "remark_paths": [
+            str(item).strip()
+            for item in (
+                base.get("remark_paths")
+                if isinstance(base.get("remark_paths"), list)
+                else []
+            )
+            if str(item).strip()
+        ][:8],
+        "log_paths": [
+            str(item).strip()
+            for item in (
+                base.get("log_paths") if isinstance(base.get("log_paths"), list) else []
+            )
+            if str(item).strip()
+        ][:8],
+        "diff_summary": str(
+            base.get("diff_summary") or observability.get("diff_summary") or ""
+        ).strip()
+        or None,
+        "pass_signals": [
+            str(item).strip()
+            for item in (
+                base.get("pass_signals")
+                if isinstance(base.get("pass_signals"), list)
+                else (
+                    observability.get("pass_signals")
+                    if isinstance(observability.get("pass_signals"), list)
+                    else []
+                )
+            )
+            if str(item).strip()
+        ][:12],
         "artifact_inventory": artifact_inventory[:16],
-        "capture_ir": bool(base.get("ir_paths")) or bool(observability.get("capture_ir")),
-        "capture_asm": bool(base.get("asm_paths")) or bool(observability.get("capture_asm")),
-        "capture_remarks": bool(base.get("remark_paths")) or bool(observability.get("capture_remarks")),
-        "capture_compile_logs": bool(base.get("log_paths")) or bool(observability.get("capture_compile_logs")),
-        "capture_perf_stat": bool(_run_perf_counters(run)) or bool(observability.get("capture_perf_stat")),
+        "capture_ir": bool(base.get("ir_paths"))
+        or bool(observability.get("capture_ir")),
+        "capture_asm": bool(base.get("asm_paths"))
+        or bool(observability.get("capture_asm")),
+        "capture_remarks": bool(base.get("remark_paths"))
+        or bool(observability.get("capture_remarks")),
+        "capture_compile_logs": bool(base.get("log_paths"))
+        or bool(observability.get("capture_compile_logs")),
+        "capture_perf_stat": bool(_run_perf_counters(run))
+        or bool(observability.get("capture_perf_stat")),
     }
     if any(
         payload.get(key)
@@ -750,11 +1034,20 @@ def _run_compiler_artifacts(run: ExperimentRun) -> Dict[str, Any]:
 
 def _run_repeat_count(run: ExperimentRun) -> Optional[int]:
     measurement_summary = (
-        (run.results if isinstance(run.results, dict) else {}).get("measurement_summary")
-        if isinstance((run.results if isinstance(run.results, dict) else {}).get("measurement_summary"), dict)
+        (run.results if isinstance(run.results, dict) else {}).get(
+            "measurement_summary"
+        )
+        if isinstance(
+            (run.results if isinstance(run.results, dict) else {}).get(
+                "measurement_summary"
+            ),
+            dict,
+        )
         else (
             _scientific_validation_payload(run).get("measurement_summary")
-            if isinstance(_scientific_validation_payload(run).get("measurement_summary"), dict)
+            if isinstance(
+                _scientific_validation_payload(run).get("measurement_summary"), dict
+            )
             else {}
         )
     )
@@ -767,7 +1060,9 @@ def _run_repeat_count(run: ExperimentRun) -> Optional[int]:
             pass
     observability = (
         _scientific_validation_payload(run).get("compiler_observability")
-        if isinstance(_scientific_validation_payload(run).get("compiler_observability"), dict)
+        if isinstance(
+            _scientific_validation_payload(run).get("compiler_observability"), dict
+        )
         else {}
     )
     try:
@@ -789,7 +1084,9 @@ async def _build_benchmark_context_for_request(
     suite = await get_benchmark_suite(db, suite_id)
     if not isinstance(suite, dict):
         raise HTTPException(status_code=404, detail="Benchmark suite not found")
-    return _benchmark_context_from_suite_payload(suite, requested_case_ids=benchmark_case_ids)
+    return _benchmark_context_from_suite_payload(
+        suite, requested_case_ids=benchmark_case_ids
+    )
 
 
 async def _build_scientific_validation_for_run(
@@ -805,17 +1102,30 @@ async def _build_scientific_validation_for_run(
     benchmark_context = await _build_benchmark_context_for_request(
         db=db,
         benchmark_suite_id=benchmark_suite_id,
-        benchmark_case_ids=(handoff.get("benchmark_case_ids") if isinstance(handoff.get("benchmark_case_ids"), list) else []),
+        benchmark_case_ids=(
+            handoff.get("benchmark_case_ids")
+            if isinstance(handoff.get("benchmark_case_ids"), list)
+            else []
+        ),
     )
     if not isinstance(benchmark_context, dict):
         return None
     suite = benchmark_context["suite"]
-    baseline = benchmark_context.get("baseline") if isinstance(benchmark_context.get("baseline"), dict) else {}
+    baseline = (
+        benchmark_context.get("baseline")
+        if isinstance(benchmark_context.get("baseline"), dict)
+        else {}
+    )
     supporting_sources = _experiment_supporting_sources(handoff)
     compiler_observability = _benchmark_observability_from_context(benchmark_context)
     objective = str((plan.plan or {}).get("objective") or plan.title or "").strip()
-    hypothesis_title = str((plan.plan or {}).get("hypothesis") or plan.title or "").strip()[:240] or plan.title
-    hypothesis_text = str(plan.hypothesis_text or objective or "").strip()[:2000] or hypothesis_title
+    hypothesis_title = (
+        str((plan.plan or {}).get("hypothesis") or plan.title or "").strip()[:240]
+        or plan.title
+    )
+    hypothesis_text = (
+        str(plan.hypothesis_text or objective or "").strip()[:2000] or hypothesis_title
+    )
     verification_commands = _benchmark_commands_from_context(benchmark_context)
     recipe = build_scientific_validation_recipe(
         track_type=str(suite.get("track_type") or "compiler"),
@@ -827,7 +1137,11 @@ async def _build_scientific_validation_for_run(
         supporting_sources=supporting_sources,
         supporting_evidence=[
             f"Benchmark suite: {suite.get('name')}",
-            *[str(case.get("name") or "").strip() for case in benchmark_context.get("selected_cases", []) if isinstance(case, dict)],
+            *[
+                str(case.get("name") or "").strip()
+                for case in benchmark_context.get("selected_cases", [])
+                if isinstance(case, dict)
+            ],
         ],
     )
     profile = await get_scientific_sandbox_profile(
@@ -842,12 +1156,17 @@ async def _build_scientific_validation_for_run(
         "recipe_family": str(recipe.get("recipe_family") or "").strip() or None,
         "recipe_id": str(recipe.get("recipe_id") or "").strip() or None,
         "recipe_version": int(recipe.get("recipe_version") or 1),
-        "benchmark_family": str(suite.get("benchmark_family") or recipe.get("benchmark_family") or "").strip() or None,
+        "benchmark_family": str(
+            suite.get("benchmark_family") or recipe.get("benchmark_family") or ""
+        ).strip()
+        or None,
         "benchmark_suite_id": benchmark_suite_id,
         "benchmark_case_ids": benchmark_context.get("selected_case_ids", []),
         "benchmark_baseline_id": str((baseline or {}).get("id") or "").strip() or None,
         "benchmark_queries": benchmark_context.get("benchmark_queries", []),
-        "artifact_collection_rules": recipe.get("artifact_collection_rules") if isinstance(recipe.get("artifact_collection_rules"), list) else [],
+        "artifact_collection_rules": recipe.get("artifact_collection_rules")
+        if isinstance(recipe.get("artifact_collection_rules"), list)
+        else [],
         "compiler_observability": {
             **(
                 recipe.get("compiler_observability_defaults")
@@ -857,16 +1176,26 @@ async def _build_scientific_validation_for_run(
             **compiler_observability,
         },
         "baseline_comparison": {
-            **(recipe.get("baseline_comparison") if isinstance(recipe.get("baseline_comparison"), dict) else {}),
-            "benchmark_baseline_id": str((baseline or {}).get("id") or "").strip() or None,
-            "baseline_measurements": dict((baseline or {}).get("measurements") or {}) if isinstance((baseline or {}).get("measurements"), dict) else {},
+            **(
+                recipe.get("baseline_comparison")
+                if isinstance(recipe.get("baseline_comparison"), dict)
+                else {}
+            ),
+            "benchmark_baseline_id": str((baseline or {}).get("id") or "").strip()
+            or None,
+            "baseline_measurements": dict((baseline or {}).get("measurements") or {})
+            if isinstance((baseline or {}).get("measurements"), dict)
+            else {},
         },
         "measurement_summary": {
             "status": "pending",
             "benchmark_suite_id": benchmark_suite_id,
             "benchmark_case_ids": benchmark_context.get("selected_case_ids", []),
-            "benchmark_baseline_id": str((baseline or {}).get("id") or "").strip() or None,
-            "baseline_measurements": dict((baseline or {}).get("measurements") or {}) if isinstance((baseline or {}).get("measurements"), dict) else {},
+            "benchmark_baseline_id": str((baseline or {}).get("id") or "").strip()
+            or None,
+            "baseline_measurements": dict((baseline or {}).get("measurements") or {})
+            if isinstance((baseline or {}).get("measurements"), dict)
+            else {},
             "artifact_inventory": compiler_observability.get("artifact_inventory", []),
             "repeat_count": compiler_observability.get("repeat_count", 1),
             "perf_counters": {},
@@ -896,7 +1225,9 @@ def _run_post_run_actions(run: ExperimentRun) -> Dict[str, Any]:
     return deepcopy(value) if isinstance(value, dict) else {}
 
 
-def _set_run_post_run_actions(run: ExperimentRun, payload: Dict[str, Any]) -> Dict[str, Any]:
+def _set_run_post_run_actions(
+    run: ExperimentRun, payload: Dict[str, Any]
+) -> Dict[str, Any]:
     config = deepcopy(run.config) if isinstance(run.config, dict) else {}
     if payload:
         config["post_run_actions"] = payload
@@ -911,21 +1242,37 @@ def _run_start_commands(run: ExperimentRun, request_commands: list[str]) -> list
     if requested:
         return requested[:6]
     config = run.config if isinstance(run.config, dict) else {}
-    fallback = config.get("commands") if isinstance(config.get("commands"), list) else []
+    fallback = (
+        config.get("commands") if isinstance(config.get("commands"), list) else []
+    )
     return [str(item).strip() for item in fallback if str(item).strip()][:6]
 
 
 def _is_terminal_experiment_run_status(status_value: str | None) -> bool:
-    return str(status_value or "").strip().lower() in {"succeeded", "completed", "failed", "blocked", "cancelled"}
+    return str(status_value or "").strip().lower() in {
+        "succeeded",
+        "completed",
+        "failed",
+        "blocked",
+        "cancelled",
+    }
 
 
 def _experiment_supporting_sources(handoff: Dict[str, Any]) -> list[Dict[str, Any]]:
-    raw = handoff.get("supporting_sources") if isinstance(handoff.get("supporting_sources"), list) else []
+    raw = (
+        handoff.get("supporting_sources")
+        if isinstance(handoff.get("supporting_sources"), list)
+        else []
+    )
     return [dict(item) for item in raw if isinstance(item, dict)]
 
 
 def _experiment_selected_hypothesis_ids(handoff: Dict[str, Any]) -> list[str]:
-    raw = handoff.get("selected_hypothesis_ids") if isinstance(handoff.get("selected_hypothesis_ids"), list) else []
+    raw = (
+        handoff.get("selected_hypothesis_ids")
+        if isinstance(handoff.get("selected_hypothesis_ids"), list)
+        else []
+    )
     return [str(item).strip() for item in raw if str(item).strip()]
 
 
@@ -938,16 +1285,38 @@ def _result_highlights(run: ExperimentRun) -> list[str]:
     if final_phase:
         highlights.append(f"Final phase: {final_phase}")
     if results.get("bootstrap_attempted"):
-        highlights.append(f"Bootstrap: {'ok' if results.get('bootstrap_ok') is True else 'attempted'}")
+        highlights.append(
+            f"Bootstrap: {'ok' if results.get('bootstrap_ok') is True else 'attempted'}"
+        )
     if results.get("fallback_attempted"):
-        highlights.append(f"Fallback: {'ok' if results.get('fallback_ok') is True else 'attempted'}")
+        highlights.append(
+            f"Fallback: {'ok' if results.get('fallback_ok') is True else 'attempted'}"
+        )
     if isinstance(results.get("ok"), bool):
         highlights.append(f"ok={str(bool(results.get('ok'))).lower()}")
-    execution_strategy = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
-    execution_graph = execution_strategy.get("execution_graph") if isinstance(execution_strategy.get("execution_graph"), dict) else {}
-    graph_health = execution_graph.get("graph_health") if isinstance(execution_graph.get("graph_health"), dict) else {}
-    reasons = graph_health.get("reasons") if isinstance(graph_health.get("reasons"), list) else []
-    first_reason = next((str(item).strip() for item in reasons if str(item).strip()), "")
+    execution_strategy = (
+        results.get("execution_strategy")
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
+    execution_graph = (
+        execution_strategy.get("execution_graph")
+        if isinstance(execution_strategy.get("execution_graph"), dict)
+        else {}
+    )
+    graph_health = (
+        execution_graph.get("graph_health")
+        if isinstance(execution_graph.get("graph_health"), dict)
+        else {}
+    )
+    reasons = (
+        graph_health.get("reasons")
+        if isinstance(graph_health.get("reasons"), list)
+        else []
+    )
+    first_reason = next(
+        (str(item).strip() for item in reasons if str(item).strip()), ""
+    )
     if first_reason:
         highlights.append(f"Recovery reason: {first_reason}")
     compile_time_ms = measurement_summary.get("compile_time_ms")
@@ -968,9 +1337,15 @@ def _result_highlights(run: ExperimentRun) -> list[str]:
     diff_summary = str(compiler_artifacts.get("diff_summary") or "").strip()
     if diff_summary:
         highlights.append(f"Artifact diff: {diff_summary[:80]}")
-    pass_signals = compiler_artifacts.get("pass_signals") if isinstance(compiler_artifacts.get("pass_signals"), list) else []
+    pass_signals = (
+        compiler_artifacts.get("pass_signals")
+        if isinstance(compiler_artifacts.get("pass_signals"), list)
+        else []
+    )
     if pass_signals:
-        highlights.append(f"Pass signals: {', '.join([str(item) for item in pass_signals[:2] if str(item).strip()])}")
+        highlights.append(
+            f"Pass signals: {', '.join([str(item) for item in pass_signals[:2] if str(item).strip()])}"
+        )
     perf_counters = _run_perf_counters(run)
     if perf_counters:
         first_key = next(iter(perf_counters.keys()))
@@ -978,13 +1353,21 @@ def _result_highlights(run: ExperimentRun) -> list[str]:
     return highlights[:8]
 
 
-def _run_evidence_item(run: ExperimentRun, plan: ExperimentPlan, *, appended_at: str) -> Dict[str, Any]:
+def _run_evidence_item(
+    run: ExperimentRun, plan: ExperimentPlan, *, appended_at: str
+) -> Dict[str, Any]:
     results = run.results if isinstance(run.results, dict) else {}
     handoff = _run_execution_handoff(run)
     verification_commands = (
-        results.get("verification_commands") if isinstance(results.get("verification_commands"), list) else []
+        results.get("verification_commands")
+        if isinstance(results.get("verification_commands"), list)
+        else []
     )
-    failed_commands = results.get("failed_commands") if isinstance(results.get("failed_commands"), list) else []
+    failed_commands = (
+        results.get("failed_commands")
+        if isinstance(results.get("failed_commands"), list)
+        else []
+    )
     compiler_artifacts = _run_compiler_artifacts(run)
     measurement_summary = _run_measurement_summary(run)
     return {
@@ -992,27 +1375,45 @@ def _run_evidence_item(run: ExperimentRun, plan: ExperimentPlan, *, appended_at:
         "experiment_plan_id": str(plan.id),
         "plan_scope": str(handoff.get("plan_scope") or "").strip() or None,
         "status": str(run.status or "").strip() or None,
-        "summary": str(run.summary or results.get("summary") or results.get("note") or "").strip() or None,
+        "summary": str(
+            run.summary or results.get("summary") or results.get("note") or ""
+        ).strip()
+        or None,
         "appended_at": appended_at,
         "selected_hypothesis_ids": _experiment_selected_hypothesis_ids(handoff),
         "supporting_sources": _experiment_supporting_sources(handoff),
         "source_paper_ids": [
             str(item).strip()
-            for item in (handoff.get("source_paper_ids") if isinstance(handoff.get("source_paper_ids"), list) else [])
+            for item in (
+                handoff.get("source_paper_ids")
+                if isinstance(handoff.get("source_paper_ids"), list)
+                else []
+            )
             if str(item).strip()
         ],
         "source_document_ids": [
             str(item).strip()
-            for item in (handoff.get("source_document_ids") if isinstance(handoff.get("source_document_ids"), list) else [])
+            for item in (
+                handoff.get("source_document_ids")
+                if isinstance(handoff.get("source_document_ids"), list)
+                else []
+            )
             if str(item).strip()
         ],
-        "verification_commands": [str(item)[:240] for item in verification_commands[:10] if str(item).strip()],
-        "failed_commands": [str(item)[:240] for item in failed_commands[:10] if str(item).strip()],
+        "verification_commands": [
+            str(item)[:240] for item in verification_commands[:10] if str(item).strip()
+        ],
+        "failed_commands": [
+            str(item)[:240] for item in failed_commands[:10] if str(item).strip()
+        ],
         "result_highlights": _result_highlights(run),
         "measurement_summary": measurement_summary or None,
         "compiler_artifacts": compiler_artifacts or None,
         "perf_counters": _run_perf_counters(run) or None,
-        "artifact_diff_summary": str(compiler_artifacts.get("diff_summary") or "").strip() or None,
+        "artifact_diff_summary": str(
+            compiler_artifacts.get("diff_summary") or ""
+        ).strip()
+        or None,
         "artifact_inventory": (
             compiler_artifacts.get("artifact_inventory")
             if isinstance(compiler_artifacts.get("artifact_inventory"), list)
@@ -1034,7 +1435,9 @@ def _append_run_evidence_to_structured_payload(
     plan: ExperimentPlan,
     appended_at: str,
 ) -> Optional[Dict[str, Any]]:
-    payload = deepcopy(structured_payload) if isinstance(structured_payload, dict) else None
+    payload = (
+        deepcopy(structured_payload) if isinstance(structured_payload, dict) else None
+    )
     if not isinstance(payload, dict):
         return None
     hypotheses = payload.get("hypotheses")
@@ -1058,11 +1461,19 @@ def _append_run_evidence_to_structured_payload(
             continue
 
         existing_evidence = (
-            [dict(item) for item in hypothesis.get("experiment_evidence") if isinstance(item, dict)]
+            [
+                dict(item)
+                for item in hypothesis.get("experiment_evidence")
+                if isinstance(item, dict)
+            ]
             if isinstance(hypothesis.get("experiment_evidence"), list)
             else []
         )
-        existing_evidence = [item for item in existing_evidence if str(item.get("run_id") or "").strip() != str(run.id)]
+        existing_evidence = [
+            item
+            for item in existing_evidence
+            if str(item.get("run_id") or "").strip() != str(run.id)
+        ]
         existing_evidence.append(evidence_item)
         hypothesis_copy = dict(hypothesis)
         hypothesis_copy["experiment_evidence"] = existing_evidence
@@ -1078,7 +1489,9 @@ def _append_run_evidence_to_structured_payload(
     return payload
 
 
-def _run_evidence_already_recorded(structured_payload: Optional[Dict[str, Any]], *, run: ExperimentRun) -> bool:
+def _run_evidence_already_recorded(
+    structured_payload: Optional[Dict[str, Any]], *, run: ExperimentRun
+) -> bool:
     payload = structured_payload if isinstance(structured_payload, dict) else None
     if not isinstance(payload, dict):
         return False
@@ -1095,8 +1508,16 @@ def _run_evidence_already_recorded(structured_payload: Optional[Dict[str, Any]],
             continue
         if str(hypothesis.get("id") or "").strip() not in selected_ids:
             continue
-        evidence_rows = hypothesis.get("experiment_evidence") if isinstance(hypothesis.get("experiment_evidence"), list) else []
-        if any(str(item.get("run_id") or "").strip() == str(run.id) for item in evidence_rows if isinstance(item, dict)):
+        evidence_rows = (
+            hypothesis.get("experiment_evidence")
+            if isinstance(hypothesis.get("experiment_evidence"), list)
+            else []
+        )
+        if any(
+            str(item.get("run_id") or "").strip() == str(run.id)
+            for item in evidence_rows
+            if isinstance(item, dict)
+        ):
             return True
     return False
 
@@ -1104,36 +1525,56 @@ def _run_evidence_already_recorded(structured_payload: Optional[Dict[str, Any]],
 def _build_experiment_run_note_block(run: ExperimentRun, *, marker: str) -> list[str]:
     """Build the markdown block appended to a research note for one experiment run."""
     results = run.results if isinstance(run.results, dict) else {}
-    commands = results.get("commands") if isinstance(results.get("commands"), list) else []
+    commands = (
+        results.get("commands") if isinstance(results.get("commands"), list) else []
+    )
     verification_commands = (
-        results.get("verification_commands") if isinstance(results.get("verification_commands"), list) else []
+        results.get("verification_commands")
+        if isinstance(results.get("verification_commands"), list)
+        else []
     )
     bootstrap_commands = (
-        results.get("bootstrap_commands") if isinstance(results.get("bootstrap_commands"), list) else []
+        results.get("bootstrap_commands")
+        if isinstance(results.get("bootstrap_commands"), list)
+        else []
     )
     fallback_commands = (
-        results.get("fallback_commands") if isinstance(results.get("fallback_commands"), list) else []
+        results.get("fallback_commands")
+        if isinstance(results.get("fallback_commands"), list)
+        else []
     )
     failed_commands = (
-        results.get("failed_commands") if isinstance(results.get("failed_commands"), list) else []
+        results.get("failed_commands")
+        if isinstance(results.get("failed_commands"), list)
+        else []
     )
-    run_summary = str(run.summary or results.get("summary") or results.get("note") or "").strip()
+    run_summary = str(
+        run.summary or results.get("summary") or results.get("note") or ""
+    ).strip()
     phases = results.get("phases") if isinstance(results.get("phases"), list) else []
     final_phase = str(results.get("final_phase") or "").strip()
     source_id = str(results.get("source_id") or "").strip()
     source_name = str(results.get("source_name") or "").strip()
     inferred_project_profile = (
-        results.get("inferred_project_profile") if isinstance(results.get("inferred_project_profile"), dict) else {}
+        results.get("inferred_project_profile")
+        if isinstance(results.get("inferred_project_profile"), dict)
+        else {}
     )
     execution_strategy = (
-        results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
+        results.get("execution_strategy")
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
     )
     execution_graph = (
         execution_strategy.get("execution_graph")
         if isinstance(execution_strategy.get("execution_graph"), dict)
         else {}
     )
-    graph_health = execution_graph.get("graph_health") if isinstance(execution_graph.get("graph_health"), dict) else {}
+    graph_health = (
+        execution_graph.get("graph_health")
+        if isinstance(execution_graph.get("graph_health"), dict)
+        else {}
+    )
     recovery_reasons = (
         graph_health.get("reasons")
         if isinstance(graph_health.get("reasons"), list)
@@ -1164,19 +1605,37 @@ def _build_experiment_run_note_block(run: ExperimentRun, *, marker: str) -> list
     fallback_ok = results.get("fallback_ok")
     runs = results.get("runs") if isinstance(results.get("runs"), list) else []
     ok = results.get("ok")
-    recovery_open = bool(fallback_attempted and failed_commands and fallback_ok is not True)
-    first_recovery_reason = next((str(item).strip() for item in recovery_reasons if str(item).strip()), "")
-    first_recommended_action = next((str(item).strip() for item in recommended_actions if str(item).strip()), "")
+    recovery_open = bool(
+        fallback_attempted and failed_commands and fallback_ok is not True
+    )
+    first_recovery_reason = next(
+        (str(item).strip() for item in recovery_reasons if str(item).strip()), ""
+    )
+    first_recommended_action = next(
+        (str(item).strip() for item in recommended_actions if str(item).strip()), ""
+    )
     latest_operator_intervention = next(
         (item for item in reversed(operator_interventions) if isinstance(item, dict)),
         {},
     )
-    latest_operator_action = str(latest_operator_intervention.get("action") or "").strip().replace("_", " ")
-    latest_operator_status_before = str(latest_operator_intervention.get("job_status_before") or "").strip()
-    latest_operator_status_after = str(latest_operator_intervention.get("job_status_after") or "").strip()
+    latest_operator_action = (
+        str(latest_operator_intervention.get("action") or "").strip().replace("_", " ")
+    )
+    latest_operator_status_before = str(
+        latest_operator_intervention.get("job_status_before") or ""
+    ).strip()
+    latest_operator_status_after = str(
+        latest_operator_intervention.get("job_status_after") or ""
+    ).strip()
     latest_operator_note = str(latest_operator_intervention.get("note") or "").strip()
-    latest_operator_outcome = str(latest_operator_intervention.get("outcome_status") or "").strip().replace("_", " ")
-    latest_operator_outcome_reason = str(latest_operator_intervention.get("outcome_reason") or "").strip()
+    latest_operator_outcome = (
+        str(latest_operator_intervention.get("outcome_status") or "")
+        .strip()
+        .replace("_", " ")
+    )
+    latest_operator_outcome_reason = str(
+        latest_operator_intervention.get("outcome_reason") or ""
+    ).strip()
     execution_handoff = _run_execution_handoff(run)
     selected_hypothesis_ids = _experiment_selected_hypothesis_ids(execution_handoff)
     supporting_sources = _experiment_supporting_sources(execution_handoff)
@@ -1187,7 +1646,11 @@ def _build_experiment_run_note_block(run: ExperimentRun, *, marker: str) -> list
     ]
     source_paper_ids = [
         str(item).strip()
-        for item in (execution_handoff.get("source_paper_ids") if isinstance(execution_handoff.get("source_paper_ids"), list) else [])
+        for item in (
+            execution_handoff.get("source_paper_ids")
+            if isinstance(execution_handoff.get("source_paper_ids"), list)
+            else []
+        )
         if str(item).strip()
     ]
     plan_scope = str(execution_handoff.get("plan_scope") or "").strip()
@@ -1217,12 +1680,17 @@ def _build_experiment_run_note_block(run: ExperimentRun, *, marker: str) -> list
         summary_bits.append(f"Source ID: `{source_id}`")
     if detected_stack:
         summary_bits.append(
-            "Detected stack: " + ", ".join(str(item)[:60] for item in detected_stack[:8] if str(item).strip())
+            "Detected stack: "
+            + ", ".join(
+                str(item)[:60] for item in detected_stack[:8] if str(item).strip()
+            )
         )
     if final_phase:
         summary_bits.append(f"Final phase: `{final_phase}`")
     if bootstrap_attempted:
-        summary_bits.append(f"Bootstrap: {'ok' if bootstrap_ok is True else 'attempted'}")
+        summary_bits.append(
+            f"Bootstrap: {'ok' if bootstrap_ok is True else 'attempted'}"
+        )
     if fallback_attempted:
         summary_bits.append(f"Fallback: {'ok' if fallback_ok is True else 'attempted'}")
     if recovery_open:
@@ -1242,7 +1710,9 @@ def _build_experiment_run_note_block(run: ExperimentRun, *, marker: str) -> list
         if plan_scope:
             block.append(f"- Plan scope: {plan_scope}")
         if selected_hypothesis_ids:
-            block.append(f"- Selected hypotheses: {', '.join(selected_hypothesis_ids[:8])}")
+            block.append(
+                f"- Selected hypotheses: {', '.join(selected_hypothesis_ids[:8])}"
+            )
         if source_titles:
             block.append(f"- Supporting sources: {', '.join(source_titles[:5])}")
         if source_paper_ids:
@@ -1297,26 +1767,42 @@ def _build_experiment_run_note_block(run: ExperimentRun, *, marker: str) -> list
             else []
         )
         if artifact_inventory:
-            block.append(f"- Captured artifacts: {', '.join([str(item) for item in artifact_inventory[:8] if str(item).strip()])}")
+            block.append(
+                f"- Captured artifacts: {', '.join([str(item) for item in artifact_inventory[:8] if str(item).strip()])}"
+            )
         diff_summary = str(compiler_artifacts.get("diff_summary") or "").strip()
         if diff_summary:
             block.append(f"- Artifact diff: {diff_summary[:240]}")
-        pass_signals = compiler_artifacts.get("pass_signals") if isinstance(compiler_artifacts.get("pass_signals"), list) else []
+        pass_signals = (
+            compiler_artifacts.get("pass_signals")
+            if isinstance(compiler_artifacts.get("pass_signals"), list)
+            else []
+        )
         if pass_signals:
-            block.append(f"- Pass signals: {', '.join([str(item) for item in pass_signals[:6] if str(item).strip()])}")
+            block.append(
+                f"- Pass signals: {', '.join([str(item) for item in pass_signals[:6] if str(item).strip()])}"
+            )
         for label, key in (
             ("IR paths", "ir_paths"),
             ("ASM paths", "asm_paths"),
             ("Remark paths", "remark_paths"),
             ("Log paths", "log_paths"),
         ):
-            paths = compiler_artifacts.get(key) if isinstance(compiler_artifacts.get(key), list) else []
+            paths = (
+                compiler_artifacts.get(key)
+                if isinstance(compiler_artifacts.get(key), list)
+                else []
+            )
             if paths:
-                block.append(f"- {label}: {', '.join([str(item) for item in paths[:4] if str(item).strip()])}")
+                block.append(
+                    f"- {label}: {', '.join([str(item) for item in paths[:4] if str(item).strip()])}"
+                )
         if perf_counters:
             block.append(
                 "- Perf counters: "
-                + " · ".join([f"{key}={value}" for key, value in list(perf_counters.items())[:4]])
+                + " · ".join(
+                    [f"{key}={value}" for key, value in list(perf_counters.items())[:4]]
+                )
             )
         block.append("")
 
@@ -1392,7 +1878,10 @@ async def _append_experiment_run_to_note_internal(
 ) -> tuple[ResearchNote, bool]:
     marker = f"<!-- experiment_run:{run.id} -->"
     existing = note.content_markdown or ""
-    appended_timestamp = str(appended_at or datetime.utcnow().isoformat()).strip() or datetime.utcnow().isoformat()
+    appended_timestamp = (
+        str(appended_at or datetime.utcnow().isoformat()).strip()
+        or datetime.utcnow().isoformat()
+    )
     had_existing_evidence = _run_evidence_already_recorded(
         note.structured_payload if isinstance(note.structured_payload, dict) else None,
         run=run,
@@ -1405,7 +1894,9 @@ async def _append_experiment_run_to_note_internal(
     )
     if marker not in existing:
         block = _build_experiment_run_note_block(run, marker=marker)
-        note.content_markdown = existing.rstrip() + "\n\n" + "\n".join(block).rstrip() + "\n"
+        note.content_markdown = (
+            existing.rstrip() + "\n\n" + "\n".join(block).rstrip() + "\n"
+        )
 
     post_run_actions = _run_post_run_actions(run)
     if post_run_actions:
@@ -1423,8 +1914,13 @@ async def _queue_pending_hypothesis_reevaluation_draft(
     db: AsyncSession,
     current_user: User,
 ) -> None:
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
-    if str(payload.get("artifact_type") or "").strip() != SynthesisJobType.HYPOTHESIS_REEVALUATION.value:
+    payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
+    if (
+        str(payload.get("artifact_type") or "").strip()
+        != SynthesisJobType.HYPOTHESIS_REEVALUATION.value
+    ):
         return
     if not isinstance(payload.get("hypotheses"), list) or not payload.get("hypotheses"):
         return
@@ -1438,7 +1934,8 @@ async def _queue_pending_hypothesis_reevaluation_draft(
             active_pending_job = None
         if active_pending_job and (
             active_pending_job.user_id != current_user.id
-            or active_pending_job.job_type != SynthesisJobType.HYPOTHESIS_REEVALUATION.value
+            or active_pending_job.job_type
+            != SynthesisJobType.HYPOTHESIS_REEVALUATION.value
         ):
             active_pending_job = None
 
@@ -1447,7 +1944,11 @@ async def _queue_pending_hypothesis_reevaluation_draft(
         SynthesisJobStatus.FAILED.value,
         SynthesisJobStatus.CANCELLED.value,
     }:
-        source_run_ids = payload.get("pending_reevaluation_source_run_ids") if isinstance(payload.get("pending_reevaluation_source_run_ids"), list) else []
+        source_run_ids = (
+            payload.get("pending_reevaluation_source_run_ids")
+            if isinstance(payload.get("pending_reevaluation_source_run_ids"), list)
+            else []
+        )
         deduped = [str(item).strip() for item in source_run_ids if str(item).strip()]
         run_id = str(run.id)
         if run_id not in deduped:
@@ -1495,7 +1996,9 @@ async def _maybe_auto_append_experiment_run_to_note(
     if append_status == "completed":
         return
 
-    target_note_id = str(post_run_actions.get("target_note_id") or plan.research_note_id or "").strip()
+    target_note_id = str(
+        post_run_actions.get("target_note_id") or plan.research_note_id or ""
+    ).strip()
     appended_at = datetime.utcnow().isoformat()
     try:
         if not target_note_id:
@@ -1518,7 +2021,9 @@ async def _maybe_auto_append_experiment_run_to_note(
                 current_user=current_user,
             )
     except Exception as exc:
-        logger.warning("Auto-append failed for run {} and note {}: {}", run.id, target_note_id, exc)
+        logger.warning(
+            "Auto-append failed for run {} and note {}: {}", run.id, target_note_id, exc
+        )
         post_run_actions["append_status"] = "failed"
         post_run_actions["append_error"] = str(exc)[:1000]
         _set_run_post_run_actions(run, post_run_actions)
@@ -1560,7 +2065,9 @@ def _extract_hypothesis_section(markdown: str) -> Optional[str]:
 
 
 def _structured_hypotheses(note: ResearchNote) -> list[dict[str, Any]]:
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
     value = payload.get("hypotheses")
     if not isinstance(value, list):
         return []
@@ -1568,13 +2075,20 @@ def _structured_hypotheses(note: ResearchNote) -> list[dict[str, Any]]:
 
 
 def _is_reevaluated_hypothesis_note(note: ResearchNote) -> bool:
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
     return str(payload.get("artifact_type") or "").strip() == "hypothesis_reevaluation"
 
 
 def _is_compiler_regression_explanation_note(note: ResearchNote) -> bool:
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
-    return str(payload.get("artifact_type") or "").strip() == "compiler_regression_explanation"
+    payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
+    return (
+        str(payload.get("artifact_type") or "").strip()
+        == "compiler_regression_explanation"
+    )
 
 
 def _top_ranked_hypothesis_id(note: ResearchNote) -> Optional[str]:
@@ -1603,17 +2117,55 @@ def _build_structured_experiment_context(
     max_note_chars: int,
     benchmark_context: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
     if _is_compiler_regression_explanation_note(note):
-        source_run_ids = payload.get("source_run_ids") if isinstance(payload.get("source_run_ids"), list) else []
-        source_document_ids = payload.get("source_document_ids") if isinstance(payload.get("source_document_ids"), list) else []
-        source_paper_ids = payload.get("source_paper_ids") if isinstance(payload.get("source_paper_ids"), list) else []
-        likely_causes = payload.get("likely_causes") if isinstance(payload.get("likely_causes"), list) else []
-        recommended_next_steps = payload.get("recommended_next_steps") if isinstance(payload.get("recommended_next_steps"), list) else []
-        supporting_signals = payload.get("supporting_signals") if isinstance(payload.get("supporting_signals"), list) else []
-        confounders = payload.get("confounders") if isinstance(payload.get("confounders"), list) else []
-        metric_deltas = payload.get("metric_deltas") if isinstance(payload.get("metric_deltas"), list) else []
-        artifact_deltas = payload.get("artifact_deltas") if isinstance(payload.get("artifact_deltas"), list) else []
+        source_run_ids = (
+            payload.get("source_run_ids")
+            if isinstance(payload.get("source_run_ids"), list)
+            else []
+        )
+        source_document_ids = (
+            payload.get("source_document_ids")
+            if isinstance(payload.get("source_document_ids"), list)
+            else []
+        )
+        source_paper_ids = (
+            payload.get("source_paper_ids")
+            if isinstance(payload.get("source_paper_ids"), list)
+            else []
+        )
+        likely_causes = (
+            payload.get("likely_causes")
+            if isinstance(payload.get("likely_causes"), list)
+            else []
+        )
+        recommended_next_steps = (
+            payload.get("recommended_next_steps")
+            if isinstance(payload.get("recommended_next_steps"), list)
+            else []
+        )
+        supporting_signals = (
+            payload.get("supporting_signals")
+            if isinstance(payload.get("supporting_signals"), list)
+            else []
+        )
+        confounders = (
+            payload.get("confounders")
+            if isinstance(payload.get("confounders"), list)
+            else []
+        )
+        metric_deltas = (
+            payload.get("metric_deltas")
+            if isinstance(payload.get("metric_deltas"), list)
+            else []
+        )
+        artifact_deltas = (
+            payload.get("artifact_deltas")
+            if isinstance(payload.get("artifact_deltas"), list)
+            else []
+        )
         summary = str(payload.get("summary") or "").strip()
         regression_type = str(payload.get("regression_type") or "").strip() or "mixed"
         primary_run_id = str(payload.get("primary_run_id") or "").strip()
@@ -1627,10 +2179,14 @@ def _build_structured_experiment_context(
         if primary_run_id or comparison_run_id:
             lines.append(
                 "Compared runs: "
-                + " vs ".join([item for item in [primary_run_id, comparison_run_id] if item])
+                + " vs ".join(
+                    [item for item in [primary_run_id, comparison_run_id] if item]
+                )
             )
         if source_run_ids:
-            lines.append(f"Source run ids: {', '.join(str(item) for item in source_run_ids[:12])}")
+            lines.append(
+                f"Source run ids: {', '.join(str(item) for item in source_run_ids[:12])}"
+            )
         if likely_causes:
             lines.append("Likely causes:")
             for item in likely_causes[:5]:
@@ -1684,30 +2240,55 @@ def _build_structured_experiment_context(
                     lines.append(f"- {kind}: {summary_text}")
 
         if isinstance(benchmark_context, dict):
-            suite = benchmark_context.get("suite") if isinstance(benchmark_context.get("suite"), dict) else {}
-            baseline = benchmark_context.get("baseline") if isinstance(benchmark_context.get("baseline"), dict) else {}
+            suite = (
+                benchmark_context.get("suite")
+                if isinstance(benchmark_context.get("suite"), dict)
+                else {}
+            )
+            baseline = (
+                benchmark_context.get("baseline")
+                if isinstance(benchmark_context.get("baseline"), dict)
+                else {}
+            )
             lines.append(
                 f"Benchmark suite: {str(suite.get('name') or suite.get('id') or payload.get('benchmark_suite_id') or '').strip()} "
                 f"({str(suite.get('benchmark_family') or payload.get('benchmark_family') or '').strip() or 'compiler_regression'})"
             )
-            case_names = [
-                str(item.get("name") or item.get("id") or "").strip()
-                for item in benchmark_context.get("selected_cases") if isinstance(item, dict)
-            ] if isinstance(benchmark_context.get("selected_cases"), list) else []
+            case_names = (
+                [
+                    str(item.get("name") or item.get("id") or "").strip()
+                    for item in benchmark_context.get("selected_cases")
+                    if isinstance(item, dict)
+                ]
+                if isinstance(benchmark_context.get("selected_cases"), list)
+                else []
+            )
             if case_names:
-                lines.append(f"Benchmark cases: {', '.join([name for name in case_names if name][:8])}")
+                lines.append(
+                    f"Benchmark cases: {', '.join([name for name in case_names if name][:8])}"
+                )
             if baseline:
-                lines.append(f"Benchmark baseline: {str(baseline.get('name') or baseline.get('id') or '').strip()}")
+                lines.append(
+                    f"Benchmark baseline: {str(baseline.get('name') or baseline.get('id') or '').strip()}"
+                )
         elif payload.get("benchmark_suite_id"):
             lines.append(
                 f"Benchmark suite: {str(payload.get('benchmark_suite_id')).strip()} "
                 f"({str(payload.get('benchmark_family') or '').strip() or 'compiler_regression'})"
             )
-            case_ids = payload.get("benchmark_case_ids") if isinstance(payload.get("benchmark_case_ids"), list) else []
+            case_ids = (
+                payload.get("benchmark_case_ids")
+                if isinstance(payload.get("benchmark_case_ids"), list)
+                else []
+            )
             if case_ids:
-                lines.append(f"Benchmark cases: {', '.join(str(item) for item in case_ids[:8])}")
+                lines.append(
+                    f"Benchmark cases: {', '.join(str(item) for item in case_ids[:8])}"
+                )
             if payload.get("benchmark_baseline_id"):
-                lines.append(f"Benchmark baseline: {str(payload.get('benchmark_baseline_id')).strip()}")
+                lines.append(
+                    f"Benchmark baseline: {str(payload.get('benchmark_baseline_id')).strip()}"
+                )
 
         hypothesis_text = "\n".join(lines).strip()
         if max_note_chars and len(hypothesis_text) > int(max_note_chars):
@@ -1725,10 +2306,20 @@ def _build_structured_experiment_context(
             "primary_run_id": primary_run_id or None,
             "comparison_run_id": comparison_run_id or None,
             "regression_type": regression_type,
-            "likely_causes": [dict(item) for item in likely_causes if isinstance(item, dict)],
-            "recommended_next_steps": [str(item).strip() for item in recommended_next_steps if str(item).strip()],
-            "supporting_signals": [str(item).strip() for item in supporting_signals if str(item).strip()],
-            "confounders": [str(item).strip() for item in confounders if str(item).strip()],
+            "likely_causes": [
+                dict(item) for item in likely_causes if isinstance(item, dict)
+            ],
+            "recommended_next_steps": [
+                str(item).strip()
+                for item in recommended_next_steps
+                if str(item).strip()
+            ],
+            "supporting_signals": [
+                str(item).strip() for item in supporting_signals if str(item).strip()
+            ],
+            "confounders": [
+                str(item).strip() for item in confounders if str(item).strip()
+            ],
         }
 
     hypotheses = _structured_hypotheses(note)
@@ -1737,9 +2328,18 @@ def _build_structured_experiment_context(
 
     selected: list[dict[str, Any]]
     if plan_mode == "single_hypothesis":
-        target = next((item for item in hypotheses if str(item.get("id") or "").strip() == str(hypothesis_id or "").strip()), None)
+        target = next(
+            (
+                item
+                for item in hypotheses
+                if str(item.get("id") or "").strip() == str(hypothesis_id or "").strip()
+            ),
+            None,
+        )
         if not target:
-            raise HTTPException(status_code=400, detail="Unknown hypothesis_id for this research note")
+            raise HTTPException(
+                status_code=400, detail="Unknown hypothesis_id for this research note"
+            )
         selected = [target]
     else:
         selected = sorted(
@@ -1757,13 +2357,17 @@ def _build_structured_experiment_context(
 
     lines.append(f"Plan mode: {plan_mode}")
     if plan_mode == "aggregate_note":
-        lines.append("Use the selected ranked hypotheses as one coordinated program of work.")
+        lines.append(
+            "Use the selected ranked hypotheses as one coordinated program of work."
+        )
     else:
         lines.append("Focus on validating or falsifying the selected hypothesis only.")
 
     lines.append("Selected hypotheses:")
     for hypothesis in selected:
-        title = str(hypothesis.get("title") or hypothesis.get("id") or "Hypothesis").strip()
+        title = str(
+            hypothesis.get("title") or hypothesis.get("id") or "Hypothesis"
+        ).strip()
         lines.append(f"- [{str(hypothesis.get('id') or '').strip() or title}] {title}")
         claim = str(hypothesis.get("claim") or "").strip()
         rationale = str(hypothesis.get("rationale") or "").strip()
@@ -1774,7 +2378,11 @@ def _build_structured_experiment_context(
             lines.append(f"  Rationale: {rationale}")
         if next_step:
             lines.append(f"  Suggested next step: {next_step}")
-        sources = hypothesis.get("supporting_sources") if isinstance(hypothesis.get("supporting_sources"), list) else []
+        sources = (
+            hypothesis.get("supporting_sources")
+            if isinstance(hypothesis.get("supporting_sources"), list)
+            else []
+        )
         if sources:
             source_text = ", ".join(
                 str(src.get("title") or src.get("id") or "source")
@@ -1784,27 +2392,56 @@ def _build_structured_experiment_context(
             if source_text:
                 lines.append(f"  Supporting sources: {source_text}")
 
-    source_paper_ids = payload.get("source_paper_ids") if isinstance(payload.get("source_paper_ids"), list) else []
-    source_document_ids = payload.get("source_document_ids") if isinstance(payload.get("source_document_ids"), list) else []
+    source_paper_ids = (
+        payload.get("source_paper_ids")
+        if isinstance(payload.get("source_paper_ids"), list)
+        else []
+    )
+    source_document_ids = (
+        payload.get("source_document_ids")
+        if isinstance(payload.get("source_document_ids"), list)
+        else []
+    )
     if source_paper_ids:
-        lines.append(f"Source paper ids: {', '.join(str(item) for item in source_paper_ids[:20])}")
+        lines.append(
+            f"Source paper ids: {', '.join(str(item) for item in source_paper_ids[:20])}"
+        )
     if source_document_ids:
-        lines.append(f"Source document ids: {', '.join(str(item) for item in source_document_ids[:20])}")
+        lines.append(
+            f"Source document ids: {', '.join(str(item) for item in source_document_ids[:20])}"
+        )
     if isinstance(benchmark_context, dict):
-        suite = benchmark_context.get("suite") if isinstance(benchmark_context.get("suite"), dict) else {}
-        baseline = benchmark_context.get("baseline") if isinstance(benchmark_context.get("baseline"), dict) else {}
+        suite = (
+            benchmark_context.get("suite")
+            if isinstance(benchmark_context.get("suite"), dict)
+            else {}
+        )
+        baseline = (
+            benchmark_context.get("baseline")
+            if isinstance(benchmark_context.get("baseline"), dict)
+            else {}
+        )
         lines.append(
             f"Benchmark suite: {str(suite.get('name') or suite.get('id') or '').strip()} "
             f"({str(suite.get('benchmark_family') or '').strip() or 'compiler_regression'})"
         )
-        case_names = [
-            str(item.get("name") or item.get("id") or "").strip()
-            for item in benchmark_context.get("selected_cases") if isinstance(item, dict)
-        ] if isinstance(benchmark_context.get("selected_cases"), list) else []
+        case_names = (
+            [
+                str(item.get("name") or item.get("id") or "").strip()
+                for item in benchmark_context.get("selected_cases")
+                if isinstance(item, dict)
+            ]
+            if isinstance(benchmark_context.get("selected_cases"), list)
+            else []
+        )
         if case_names:
-            lines.append(f"Benchmark cases: {', '.join([name for name in case_names if name][:8])}")
+            lines.append(
+                f"Benchmark cases: {', '.join([name for name in case_names if name][:8])}"
+            )
         if baseline:
-            lines.append(f"Benchmark baseline: {str(baseline.get('name') or baseline.get('id') or '').strip()}")
+            lines.append(
+                f"Benchmark baseline: {str(baseline.get('name') or baseline.get('id') or '').strip()}"
+            )
 
     hypothesis_text = "\n".join(lines).strip()
     if max_note_chars and len(hypothesis_text) > int(max_note_chars):
@@ -1812,19 +2449,30 @@ def _build_structured_experiment_context(
 
     supporting_sources: list[dict[str, Any]] = []
     for hypothesis in selected:
-        sources = hypothesis.get("supporting_sources") if isinstance(hypothesis.get("supporting_sources"), list) else []
+        sources = (
+            hypothesis.get("supporting_sources")
+            if isinstance(hypothesis.get("supporting_sources"), list)
+            else []
+        )
         for source in sources:
             if not isinstance(source, dict):
                 continue
             key = str(source.get("id") or source.get("title") or "").strip()
-            if not key or any(str(existing.get("id") or existing.get("title") or "").strip() == key for existing in supporting_sources):
+            if not key or any(
+                str(existing.get("id") or existing.get("title") or "").strip() == key
+                for existing in supporting_sources
+            ):
                 continue
             supporting_sources.append(dict(source))
 
     return {
         "hypothesis_text": hypothesis_text,
         "selected_hypotheses": selected,
-        "selected_hypothesis_ids": [str(item.get("id") or "").strip() for item in selected if str(item.get("id") or "").strip()],
+        "selected_hypothesis_ids": [
+            str(item.get("id") or "").strip()
+            for item in selected
+            if str(item.get("id") or "").strip()
+        ],
         "source_paper_ids": [str(item) for item in source_paper_ids],
         "source_document_ids": [str(item) for item in source_document_ids],
         "supporting_sources": supporting_sources,
@@ -1850,7 +2498,9 @@ def _build_experiment_plan_prompt(
     Output is strict JSON (no markdown) that front-end can render and users can edit.
     """
     sections = []
-    sections.append("You are an AI research engineer. Create a runnable experiment plan from the hypothesis.")
+    sections.append(
+        "You are an AI research engineer. Create a runnable experiment plan from the hypothesis."
+    )
     sections.append("Return ONLY valid JSON. No markdown, no commentary.")
     sections.append(
         "JSON schema (high level): {\n"
@@ -1886,7 +2536,9 @@ def _build_experiment_plan_prompt(
     sections.append(hypothesis_text)
     sections.append(f"Requested plan scope: {plan_mode}")
     if selected_hypothesis_ids:
-        sections.append(f"Selected hypothesis ids: {', '.join(selected_hypothesis_ids)}")
+        sections.append(
+            f"Selected hypothesis ids: {', '.join(selected_hypothesis_ids)}"
+        )
     if supporting_sources:
         sections.append(f"Supporting sources: {json.dumps(supporting_sources)}")
     if source_paper_ids or source_document_ids:
@@ -1906,11 +2558,21 @@ def _build_experiment_plan_prompt(
     sections.append("Rules:")
     sections.append("- Keep it concrete: include at least 3 experiments and 2 metrics.")
     sections.append("- Prefer minimal feasible baselines.")
-    sections.append("- Always return plan_scope, selected_hypothesis_ids, supporting_sources, and provenance.")
-    sections.append("- If benchmark context is provided, carry benchmark_family, benchmark_suite_id, benchmark_case_ids, benchmark_baseline_id, and benchmark_measurements into the plan.")
-    sections.append("- In aggregate_note mode, coordinate the top hypotheses into a staged evaluation plan.")
-    sections.append("- In single_hypothesis mode, optimize the plan for validating or falsifying the chosen hypothesis.")
-    sections.append("- In compiler_regression_followup mode, optimize the plan to isolate or falsify the likely regression causes from the explanation and make the compared benchmark runs directly actionable.")
+    sections.append(
+        "- Always return plan_scope, selected_hypothesis_ids, supporting_sources, and provenance."
+    )
+    sections.append(
+        "- If benchmark context is provided, carry benchmark_family, benchmark_suite_id, benchmark_case_ids, benchmark_baseline_id, and benchmark_measurements into the plan."
+    )
+    sections.append(
+        "- In aggregate_note mode, coordinate the top hypotheses into a staged evaluation plan."
+    )
+    sections.append(
+        "- In single_hypothesis mode, optimize the plan for validating or falsifying the chosen hypothesis."
+    )
+    sections.append(
+        "- In compiler_regression_followup mode, optimize the plan to isolate or falsify the likely regression causes from the explanation and make the compared benchmark runs directly actionable."
+    )
     if not include.get("ablations", True):
         sections.append('- Set "ablations" to an empty array [].')
     if not include.get("timeline", True):
@@ -1934,7 +2596,9 @@ async def list_benchmark_harness_suites(
     del current_user
     items = [
         BenchmarkSuiteResponse.model_validate(item)
-        for item in await list_benchmark_suites(db, track_type=track_type, include_disabled=include_disabled)
+        for item in await list_benchmark_suites(
+            db, track_type=track_type, include_disabled=include_disabled
+        )
         if isinstance(item, dict)
     ]
     return BenchmarkSuiteListResponse(items=items, total=len(items))
@@ -1953,7 +2617,11 @@ async def get_benchmark_harness_suite(
     return BenchmarkSuiteResponse.model_validate(suite)
 
 
-@router.post("/plans/generate", response_model=ExperimentPlanResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/plans/generate",
+    response_model=ExperimentPlanResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def generate_experiment_plan(
     request: ExperimentPlanGenerateRequest,
     db: AsyncSession = Depends(get_db),
@@ -1966,15 +2634,26 @@ async def generate_experiment_plan(
     content = (note.content_markdown or "").strip()
     is_reevaluated_note = _is_reevaluated_hypothesis_note(note)
     is_compiler_explanation_note = _is_compiler_regression_explanation_note(note)
-    auto_selected_hypothesis_id = _top_ranked_hypothesis_id(note) if is_reevaluated_note else None
-    note_payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    auto_selected_hypothesis_id = (
+        _top_ranked_hypothesis_id(note) if is_reevaluated_note else None
+    )
+    note_payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
     benchmark_context = await _build_benchmark_context_for_request(
         db=db,
-        benchmark_suite_id=request.benchmark_suite_id or (
-            str(note_payload.get("benchmark_suite_id") or "").strip() if is_compiler_explanation_note else None
+        benchmark_suite_id=request.benchmark_suite_id
+        or (
+            str(note_payload.get("benchmark_suite_id") or "").strip()
+            if is_compiler_explanation_note
+            else None
         ),
-        benchmark_case_ids=request.benchmark_case_ids or (
-            [str(item) for item in note_payload.get("benchmark_case_ids")] if is_compiler_explanation_note and isinstance(note_payload.get("benchmark_case_ids"), list) else []
+        benchmark_case_ids=request.benchmark_case_ids
+        or (
+            [str(item) for item in note_payload.get("benchmark_case_ids")]
+            if is_compiler_explanation_note
+            and isinstance(note_payload.get("benchmark_case_ids"), list)
+            else []
         ),
     )
     plan_mode = request.plan_mode or (
@@ -1982,9 +2661,13 @@ async def generate_experiment_plan(
         if is_compiler_explanation_note
         else ("single_hypothesis" if auto_selected_hypothesis_id else "aggregate_note")
     )
-    effective_hypothesis_id = str(request.hypothesis_id or "").strip() or (auto_selected_hypothesis_id if plan_mode == "single_hypothesis" else "")
+    effective_hypothesis_id = str(request.hypothesis_id or "").strip() or (
+        auto_selected_hypothesis_id if plan_mode == "single_hypothesis" else ""
+    )
     if plan_mode == "single_hypothesis" and not effective_hypothesis_id:
-        raise HTTPException(status_code=400, detail="single_hypothesis planning requires hypothesis_id")
+        raise HTTPException(
+            status_code=400, detail="single_hypothesis planning requires hypothesis_id"
+        )
     structured_context = _build_structured_experiment_context(
         note,
         plan_mode=plan_mode,
@@ -1993,7 +2676,10 @@ async def generate_experiment_plan(
         benchmark_context=benchmark_context,
     )
     if effective_hypothesis_id and structured_context is None:
-        raise HTTPException(status_code=400, detail="This research note does not contain structured hypotheses")
+        raise HTTPException(
+            status_code=400,
+            detail="This research note does not contain structured hypotheses",
+        )
 
     if structured_context is not None:
         hypothesis_text = structured_context["hypothesis_text"]
@@ -2004,13 +2690,23 @@ async def generate_experiment_plan(
             hypothesis_text = content
 
         hypothesis_text = (hypothesis_text or "").strip()
-        if request.max_note_chars and len(hypothesis_text) > int(request.max_note_chars):
+        if request.max_note_chars and len(hypothesis_text) > int(
+            request.max_note_chars
+        ):
             hypothesis_text = hypothesis_text[: int(request.max_note_chars)]
         if isinstance(benchmark_context, dict):
-            suite = benchmark_context.get("suite") if isinstance(benchmark_context.get("suite"), dict) else {}
+            suite = (
+                benchmark_context.get("suite")
+                if isinstance(benchmark_context.get("suite"), dict)
+                else {}
+            )
             case_names = [
                 str(item.get("name") or item.get("id") or "").strip()
-                for item in (benchmark_context.get("selected_cases") if isinstance(benchmark_context.get("selected_cases"), list) else [])
+                for item in (
+                    benchmark_context.get("selected_cases")
+                    if isinstance(benchmark_context.get("selected_cases"), list)
+                    else []
+                )
                 if isinstance(item, dict)
             ]
             benchmark_lines = [
@@ -2018,7 +2714,9 @@ async def generate_experiment_plan(
                 f"Benchmark family: {str(suite.get('benchmark_family') or '').strip()}",
             ]
             if case_names:
-                benchmark_lines.append(f"Benchmark cases: {', '.join([name for name in case_names if name][:8])}")
+                benchmark_lines.append(
+                    f"Benchmark cases: {', '.join([name for name in case_names if name][:8])}"
+                )
             hypothesis_text = "\n".join([hypothesis_text, "", *benchmark_lines]).strip()
 
     include = {
@@ -2034,7 +2732,9 @@ async def generate_experiment_plan(
         hypothesis_text,
         include,
         plan_mode=plan_mode,
-        selected_hypothesis_ids=(structured_context or {}).get("selected_hypothesis_ids"),
+        selected_hypothesis_ids=(structured_context or {}).get(
+            "selected_hypothesis_ids"
+        ),
         source_paper_ids=(structured_context or {}).get("source_paper_ids"),
         source_document_ids=(structured_context or {}).get("source_document_ids"),
         supporting_sources=(structured_context or {}).get("supporting_sources"),
@@ -2067,37 +2767,98 @@ async def generate_experiment_plan(
                 raise ValueError("No JSON object found")
             parsed = json.loads(m.group(0))
         except Exception:
-            raise HTTPException(status_code=422, detail="Model did not return valid JSON")
+            raise HTTPException(
+                status_code=422, detail="Model did not return valid JSON"
+            )
 
     parsed["plan_scope"] = plan_mode
-    parsed["selected_hypothesis_ids"] = (structured_context or {}).get("selected_hypothesis_ids", [])
-    parsed["supporting_sources"] = (structured_context or {}).get("supporting_sources", [])
+    parsed["selected_hypothesis_ids"] = (structured_context or {}).get(
+        "selected_hypothesis_ids", []
+    )
+    parsed["supporting_sources"] = (structured_context or {}).get(
+        "supporting_sources", []
+    )
     parsed["provenance"] = {
         "source_paper_ids": (structured_context or {}).get("source_paper_ids", []),
-        "source_document_ids": (structured_context or {}).get("source_document_ids", []),
-        "benchmark_suite_id": str((benchmark_context or {}).get("suite", {}).get("id") or "").strip() or None,
+        "source_document_ids": (structured_context or {}).get(
+            "source_document_ids", []
+        ),
+        "benchmark_suite_id": str(
+            (benchmark_context or {}).get("suite", {}).get("id") or ""
+        ).strip()
+        or None,
         "benchmark_case_ids": (benchmark_context or {}).get("selected_case_ids", []),
-        "benchmark_baseline_id": str((benchmark_context or {}).get("baseline", {}).get("id") or "").strip() or None,
-        "benchmark_family": str((benchmark_context or {}).get("suite", {}).get("benchmark_family") or "").strip() or None,
+        "benchmark_baseline_id": str(
+            (benchmark_context or {}).get("baseline", {}).get("id") or ""
+        ).strip()
+        or None,
+        "benchmark_family": str(
+            (benchmark_context or {}).get("suite", {}).get("benchmark_family") or ""
+        ).strip()
+        or None,
     }
-    parsed["benchmark_family"] = str((benchmark_context or {}).get("suite", {}).get("benchmark_family") or parsed.get("benchmark_family") or "").strip() or None
-    parsed["benchmark_suite_id"] = str((benchmark_context or {}).get("suite", {}).get("id") or parsed.get("benchmark_suite_id") or "").strip() or None
-    parsed["benchmark_case_ids"] = (benchmark_context or {}).get("selected_case_ids", [])
-    parsed["benchmark_baseline_id"] = str((benchmark_context or {}).get("baseline", {}).get("id") or parsed.get("benchmark_baseline_id") or "").strip() or None
-    parsed["benchmark_measurements"] = parsed.get("benchmark_measurements") if isinstance(parsed.get("benchmark_measurements"), dict) else {
-        "focus_metrics": [
-            str(metric.get("name") or "").strip()
-            for case in ((benchmark_context or {}).get("selected_cases") if isinstance((benchmark_context or {}).get("selected_cases"), list) else [])
-            for metric in (case.get("metrics") if isinstance(case, dict) and isinstance(case.get("metrics"), list) else [])
-            if isinstance(metric, dict) and str(metric.get("name") or "").strip()
-        ][:8],
-        "artifact_expectations": [
-            str(item).strip()
-            for case in ((benchmark_context or {}).get("selected_cases") if isinstance((benchmark_context or {}).get("selected_cases"), list) else [])
-            for item in (case.get("expected_artifacts") if isinstance(case, dict) and isinstance(case.get("expected_artifacts"), list) else [])
-            if str(item).strip()
-        ][:8],
-    }
+    parsed["benchmark_family"] = (
+        str(
+            (benchmark_context or {}).get("suite", {}).get("benchmark_family")
+            or parsed.get("benchmark_family")
+            or ""
+        ).strip()
+        or None
+    )
+    parsed["benchmark_suite_id"] = (
+        str(
+            (benchmark_context or {}).get("suite", {}).get("id")
+            or parsed.get("benchmark_suite_id")
+            or ""
+        ).strip()
+        or None
+    )
+    parsed["benchmark_case_ids"] = (benchmark_context or {}).get(
+        "selected_case_ids", []
+    )
+    parsed["benchmark_baseline_id"] = (
+        str(
+            (benchmark_context or {}).get("baseline", {}).get("id")
+            or parsed.get("benchmark_baseline_id")
+            or ""
+        ).strip()
+        or None
+    )
+    parsed["benchmark_measurements"] = (
+        parsed.get("benchmark_measurements")
+        if isinstance(parsed.get("benchmark_measurements"), dict)
+        else {
+            "focus_metrics": [
+                str(metric.get("name") or "").strip()
+                for case in (
+                    (benchmark_context or {}).get("selected_cases")
+                    if isinstance((benchmark_context or {}).get("selected_cases"), list)
+                    else []
+                )
+                for metric in (
+                    case.get("metrics")
+                    if isinstance(case, dict) and isinstance(case.get("metrics"), list)
+                    else []
+                )
+                if isinstance(metric, dict) and str(metric.get("name") or "").strip()
+            ][:8],
+            "artifact_expectations": [
+                str(item).strip()
+                for case in (
+                    (benchmark_context or {}).get("selected_cases")
+                    if isinstance((benchmark_context or {}).get("selected_cases"), list)
+                    else []
+                )
+                for item in (
+                    case.get("expected_artifacts")
+                    if isinstance(case, dict)
+                    and isinstance(case.get("expected_artifacts"), list)
+                    else []
+                )
+                if str(item).strip()
+            ][:8],
+        }
+    )
 
     plan = ExperimentPlan(
         user_id=current_user.id,
@@ -2111,31 +2872,67 @@ async def generate_experiment_plan(
                 else f"Experiment Plan: {note.title} · {((structured_context or {}).get('selected_hypotheses') or [{}])[0].get('title') or effective_hypothesis_id or 'Hypothesis'}"
             )
         ),
-        hypothesis_text=hypothesis_text if request.prefer_section == "hypothesis" else None,
+        hypothesis_text=hypothesis_text
+        if request.prefer_section == "hypothesis"
+        else None,
         plan=parsed,
         generator="llm",
         generator_details={
             "generated_at": datetime.utcnow().isoformat(),
             "plan_mode": plan_mode,
             "hypothesis_id": effective_hypothesis_id or None,
-            "selected_hypothesis_ids": (structured_context or {}).get("selected_hypothesis_ids", []),
+            "selected_hypothesis_ids": (structured_context or {}).get(
+                "selected_hypothesis_ids", []
+            ),
             "source_paper_ids": (structured_context or {}).get("source_paper_ids", []),
-            "source_document_ids": (structured_context or {}).get("source_document_ids", []),
-            "supporting_sources": (structured_context or {}).get("supporting_sources", []),
-            "benchmark_family": str((benchmark_context or {}).get("suite", {}).get("benchmark_family") or "").strip() or None,
-            "benchmark_suite_id": str((benchmark_context or {}).get("suite", {}).get("id") or "").strip() or None,
-            "benchmark_case_ids": (benchmark_context or {}).get("selected_case_ids", []),
-            "benchmark_baseline_id": str((benchmark_context or {}).get("baseline", {}).get("id") or "").strip() or None,
-            "benchmark_suite_name": str((benchmark_context or {}).get("suite", {}).get("name") or "").strip() or None,
+            "source_document_ids": (structured_context or {}).get(
+                "source_document_ids", []
+            ),
+            "supporting_sources": (structured_context or {}).get(
+                "supporting_sources", []
+            ),
+            "benchmark_family": str(
+                (benchmark_context or {}).get("suite", {}).get("benchmark_family") or ""
+            ).strip()
+            or None,
+            "benchmark_suite_id": str(
+                (benchmark_context or {}).get("suite", {}).get("id") or ""
+            ).strip()
+            or None,
+            "benchmark_case_ids": (benchmark_context or {}).get(
+                "selected_case_ids", []
+            ),
+            "benchmark_baseline_id": str(
+                (benchmark_context or {}).get("baseline", {}).get("id") or ""
+            ).strip()
+            or None,
+            "benchmark_suite_name": str(
+                (benchmark_context or {}).get("suite", {}).get("name") or ""
+            ).strip()
+            or None,
             "benchmark_case_names": [
                 str(case.get("name") or "").strip()
-                for case in ((benchmark_context or {}).get("selected_cases") if isinstance((benchmark_context or {}).get("selected_cases"), list) else [])
+                for case in (
+                    (benchmark_context or {}).get("selected_cases")
+                    if isinstance((benchmark_context or {}).get("selected_cases"), list)
+                    else []
+                )
                 if isinstance(case, dict) and str(case.get("name") or "").strip()
             ],
-            "benchmark_default_commands": (benchmark_context or {}).get("default_commands", []),
+            "benchmark_default_commands": (benchmark_context or {}).get(
+                "default_commands", []
+            ),
             "reevaluation_mode": bool(is_reevaluated_note),
             "reevaluation_source_job_id": (
-                str((((note.structured_payload or {}).get("scoring_policy") or {}).get("source_job_id") or "")).strip() or None
+                str(
+                    (
+                        (
+                            (note.structured_payload or {}).get("scoring_policy") or {}
+                        ).get("source_job_id")
+                        or ""
+                    )
+                ).strip()
+                or None
                 if isinstance(note.structured_payload, dict)
                 else None
             ),
@@ -2145,7 +2942,9 @@ async def generate_experiment_plan(
             "comparison_run_id": (structured_context or {}).get("comparison_run_id"),
             "regression_type": (structured_context or {}).get("regression_type"),
             "likely_causes": (structured_context or {}).get("likely_causes", []),
-            "recommended_next_steps": (structured_context or {}).get("recommended_next_steps", []),
+            "recommended_next_steps": (structured_context or {}).get(
+                "recommended_next_steps", []
+            ),
         },
     )
     db.add(plan)
@@ -2167,7 +2966,12 @@ async def list_experiment_plans_for_note(
 
     stmt = (
         select(ExperimentPlan)
-        .where(and_(ExperimentPlan.user_id == current_user.id, ExperimentPlan.research_note_id == note_id))
+        .where(
+            and_(
+                ExperimentPlan.user_id == current_user.id,
+                ExperimentPlan.research_note_id == note_id,
+            )
+        )
         .order_by(ExperimentPlan.created_at.desc())
         .limit(limit)
     )
@@ -2208,7 +3012,11 @@ async def update_experiment_plan(
     return _plan_to_response(plan)
 
 
-@router.post("/plans/{plan_id}/runs", response_model=ExperimentRunResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/plans/{plan_id}/runs",
+    response_model=ExperimentRunResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_experiment_run(
     plan_id: UUID,
     request: ExperimentRunCreateRequest,
@@ -2220,7 +3028,11 @@ async def create_experiment_run(
         raise HTTPException(status_code=404, detail="Experiment plan not found")
 
     run_name = str(request.name or "").strip() or _default_run_name_from_plan(plan)
-    run_summary = request.summary if isinstance(request.summary, str) and request.summary.strip() else _default_run_summary_from_plan(plan)
+    run_summary = (
+        request.summary
+        if isinstance(request.summary, str) and request.summary.strip()
+        else _default_run_summary_from_plan(plan)
+    )
     run_config = _merge_run_config_with_plan_handoff(plan, request.config)
     scientific_validation = await _build_scientific_validation_for_run(
         db=db,
@@ -2230,7 +3042,10 @@ async def create_experiment_run(
     if scientific_validation:
         run_config["scientific_validation"] = scientific_validation
         if not run_summary:
-            run_summary = str(scientific_validation.get("decision_summary") or "").strip() or run_summary
+            run_summary = (
+                str(scientific_validation.get("decision_summary") or "").strip()
+                or run_summary
+            )
 
     run = ExperimentRun(
         user_id=current_user.id,
@@ -2259,7 +3074,12 @@ async def list_experiment_runs(
 
     stmt = (
         select(ExperimentRun)
-        .where(and_(ExperimentRun.user_id == current_user.id, ExperimentRun.experiment_plan_id == plan.id))
+        .where(
+            and_(
+                ExperimentRun.user_id == current_user.id,
+                ExperimentRun.experiment_plan_id == plan.id,
+            )
+        )
         .order_by(ExperimentRun.created_at.desc())
     )
     res = await db.execute(stmt)
@@ -2288,7 +3108,10 @@ async def update_experiment_run(
     if next_status and next_status != run.status:
         if next_status == "running" and data.get("started_at") is None:
             data["started_at"] = datetime.utcnow()
-        if next_status in {"succeeded", "completed", "failed", "blocked", "cancelled"} and data.get("completed_at") is None:
+        if (
+            next_status in {"succeeded", "completed", "failed", "blocked", "cancelled"}
+            and data.get("completed_at") is None
+        ):
             data["completed_at"] = datetime.utcnow()
 
     for k, v in data.items():
@@ -2305,7 +3128,11 @@ async def update_experiment_run(
     return _run_to_response(run)
 
 
-@router.post("/runs/{run_id}/start", response_model=ExperimentRunStartResponse, status_code=status.HTTP_200_OK)
+@router.post(
+    "/runs/{run_id}/start",
+    response_model=ExperimentRunStartResponse,
+    status_code=status.HTTP_200_OK,
+)
 async def start_experiment_run(
     run_id: UUID,
     request: ExperimentRunStartRequest,
@@ -2379,6 +3206,10 @@ async def sync_experiment_run_from_job(
         plan=plan,
         recorded_at=getattr(run, "completed_at", None) or datetime.utcnow(),
     )
+    await autonomous_rnd_verification_reconciliation_service.reconcile(
+        verification_job=job,
+        db=db,
+    )
     await db.commit()
     await db.refresh(run)
     return ExperimentRunSyncResponse(run=_run_to_response(run))
@@ -2403,7 +3234,14 @@ async def act_on_experiment_run(
     note = str(request.note or "").strip() or None
     previous_status = str(run.status or "")
     scientific_validation = _scientific_validation_payload(run)
-    blocked_reason_code = str(scientific_validation.get("blocked_reason_code") or scientific_validation.get("blocked_reason") or "").strip() or None
+    blocked_reason_code = (
+        str(
+            scientific_validation.get("blocked_reason_code")
+            or scientific_validation.get("blocked_reason")
+            or ""
+        ).strip()
+        or None
+    )
     is_scientific = bool(scientific_validation)
     agent_job_id: UUID | None = None
     # Only the retry/requeue branch derives this from a linked job; every
@@ -2413,12 +3251,21 @@ async def act_on_experiment_run(
 
     if action == "start":
         if not is_scientific:
-            raise HTTPException(status_code=400, detail="Run controls start is only supported for scientific validation runs")
+            raise HTTPException(
+                status_code=400,
+                detail="Run controls start is only supported for scientific validation runs",
+            )
         source_id = str((run.config or {}).get("source_id") or "").strip()
-        commands = (run.config or {}).get("commands") if isinstance((run.config or {}).get("commands"), list) else []
+        commands = (
+            (run.config or {}).get("commands")
+            if isinstance((run.config or {}).get("commands"), list)
+            else []
+        )
         timeout_seconds = int((run.config or {}).get("timeout_seconds") or 60)
         if not source_id:
-            raise HTTPException(status_code=400, detail="Scientific validation run is missing source_id")
+            raise HTTPException(
+                status_code=400, detail="Scientific validation run is missing source_id"
+            )
         run, job = await _start_experiment_run_internal(
             run=run,
             plan=plan,
@@ -2463,7 +3310,10 @@ async def act_on_experiment_run(
         )
     elif action in {"pause", "resume", "cancel"}:
         if not is_scientific:
-            raise HTTPException(status_code=400, detail="Run controls are only supported for scientific validation runs")
+            raise HTTPException(
+                status_code=400,
+                detail="Run controls are only supported for scientific validation runs",
+            )
         if not run.agent_job_id:
             raise HTTPException(status_code=400, detail="Run has no linked agent job")
         job = await db.get(AgentJob, run.agent_job_id)
@@ -2499,15 +3349,34 @@ async def act_on_experiment_run(
         )
     elif action in {"retry", "requeue"}:
         if not is_scientific:
-            raise HTTPException(status_code=400, detail="Run controls are only supported for scientific validation runs")
-        if action == "retry" and run.status not in {"succeeded", "completed", "failed", "blocked", "cancelled"}:
-            raise HTTPException(status_code=400, detail="Retry requires a terminal scientific validation run")
+            raise HTTPException(
+                status_code=400,
+                detail="Run controls are only supported for scientific validation runs",
+            )
+        if action == "retry" and run.status not in {
+            "succeeded",
+            "completed",
+            "failed",
+            "blocked",
+            "cancelled",
+        }:
+            raise HTTPException(
+                status_code=400,
+                detail="Retry requires a terminal scientific validation run",
+            )
         if action == "requeue" and run.status not in {"planned", "blocked"}:
-            raise HTTPException(status_code=400, detail="Requeue is only allowed for planned or blocked scientific validation runs")
-        linked_job = await db.get(AgentJob, run.agent_job_id) if run.agent_job_id else None
+            raise HTTPException(
+                status_code=400,
+                detail="Requeue is only allowed for planned or blocked scientific validation runs",
+            )
+        linked_job = (
+            await db.get(AgentJob, run.agent_job_id) if run.agent_job_id else None
+        )
         if linked_job is not None and str(linked_job.user_id) != str(current_user.id):
             linked_job = None
-        source_scheduler_state = _extract_scheduler_state(linked_job) if linked_job is not None else None
+        source_scheduler_state = (
+            _extract_scheduler_state(linked_job) if linked_job is not None else None
+        )
         child_run = _spawn_child_experiment_run(
             source_run=run,
             current_user=current_user,
@@ -2536,10 +3405,17 @@ async def act_on_experiment_run(
         )
         if request.start_immediately:
             source_id = str((child_run.config or {}).get("source_id") or "").strip()
-            commands = (child_run.config or {}).get("commands") if isinstance((child_run.config or {}).get("commands"), list) else []
+            commands = (
+                (child_run.config or {}).get("commands")
+                if isinstance((child_run.config or {}).get("commands"), list)
+                else []
+            )
             timeout_seconds = int((child_run.config or {}).get("timeout_seconds") or 60)
             if not source_id:
-                raise HTTPException(status_code=400, detail="Scientific validation child run is missing source_id")
+                raise HTTPException(
+                    status_code=400,
+                    detail="Scientific validation child run is missing source_id",
+                )
             child_run, job = await _start_experiment_run_internal(
                 run=child_run,
                 plan=plan,
@@ -2592,28 +3468,51 @@ async def act_on_experiment_run(
     await record_autonomy_decision_event(
         db,
         user_id=current_user.id,
-        event_type="validation_requeued" if action in {"retry", "requeue"} else "validation_operator_action",
+        event_type="validation_requeued"
+        if action in {"retry", "requeue"}
+        else "validation_operator_action",
         event_time=datetime.utcnow(),
         source_kind="validation_run",
         source_id=str(run.id),
         source_label=str(run.name or "Experiment run").strip(),
-        decision_type="validation_requeued" if action in {"retry", "requeue"} else action,
+        decision_type="validation_requeued"
+        if action in {"retry", "requeue"}
+        else action,
         reason_code=blocked_reason_code or action,
         status=str(run.status or "").strip() or None,
-        severity="high" if str(run.status or "").strip().lower() == "blocked" else "medium",
+        severity="high"
+        if str(run.status or "").strip().lower() == "blocked"
+        else "medium",
         actor_mode="operator",
         summary=f"{str(run.name or 'Experiment run').strip()}: {action.replace('_', ' ')}",
         operator_note=note,
-        reason_label=("Validation requeued" if action in {"retry", "requeue"} else str(blocked_reason_code or action).replace("_", " ").strip().capitalize()),
+        reason_label=(
+            "Validation requeued"
+            if action in {"retry", "requeue"}
+            else str(blocked_reason_code or action)
+            .replace("_", " ")
+            .strip()
+            .capitalize()
+        ),
         scheduler_state=source_scheduler_state,
         before_state={"status": previous_status},
         after_state={"status": str(run.status or "").strip()},
-        deep_link={"target_tab": "jobs", "job_id": str(run.agent_job_id) if run.agent_job_id else None, "params": {"job": str(run.agent_job_id)} if run.agent_job_id else {}, "label": "Open Validation Job"},
-        metadata={"experiment_plan_id": str(plan.id), "linked_job_id": str(agent_job_id) if agent_job_id else None},
+        deep_link={
+            "target_tab": "jobs",
+            "job_id": str(run.agent_job_id) if run.agent_job_id else None,
+            "params": {"job": str(run.agent_job_id)} if run.agent_job_id else {},
+            "label": "Open Validation Job",
+        },
+        metadata={
+            "experiment_plan_id": str(plan.id),
+            "linked_job_id": str(agent_job_id) if agent_job_id else None,
+        },
     )
     await db.commit()
     await db.refresh(run)
-    return ExperimentRunActionResponse(run=_run_to_response(run), agent_job_id=agent_job_id)
+    return ExperimentRunActionResponse(
+        run=_run_to_response(run), agent_job_id=agent_job_id
+    )
 
 
 @router.post("/runs/{run_id}/append-to-note", response_model=ResearchNoteResponse)

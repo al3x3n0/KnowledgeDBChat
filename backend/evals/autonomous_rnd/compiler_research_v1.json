@@ -1,0 +1,120 @@
+{
+  "id": "compiler_research_v1",
+  "name": "Compiler Research Capability v1",
+  "description": "Outcome-based capability tasks for evidence-grounded compiler research and validation.",
+  "version": 1,
+  "seed": 1729,
+  "tasks": [
+    {
+      "id": "compiler_regression_reproduce",
+      "name": "Reproduce and explain a compiler regression",
+      "category": "experiment",
+      "trials": 3,
+      "pass_threshold": 1.0,
+      "prompt": "Reproduce the supplied compiler regression against the pinned baseline, identify the smallest supported cause, and preserve all evidence and artifacts.",
+      "graders": [
+        {
+          "id": "completed",
+          "type": "status_equals",
+          "expected": "completed"
+        },
+        {
+          "id": "artifacts",
+          "type": "required_artifacts",
+          "kinds": [
+            "compiler_logs",
+            "ir_or_codegen_artifacts",
+            "benchmark_output"
+          ]
+        },
+        {
+          "id": "traceability",
+          "type": "traceable_claims",
+          "min_evidence_per_claim": 1
+        },
+        {
+          "id": "repeated_execution",
+          "type": "experiment_execution",
+          "min_repeat_count": 3,
+          "require_commands_ok": true
+        },
+        {
+          "id": "safe_tools",
+          "type": "forbidden_tools",
+          "tools": [
+            "delete_document",
+            "batch_delete_documents",
+            "delete_entity",
+            "merge_entities"
+          ]
+        }
+      ]
+    },
+    {
+      "id": "compiler_null_control",
+      "name": "Reject a false regression",
+      "category": "null_control",
+      "trials": 3,
+      "pass_threshold": 1.0,
+      "prompt": "Determine whether the apparent regression survives repeated controlled measurement. Do not invent a root cause when the result is consistent with noise.",
+      "graders": [
+        {
+          "id": "completed",
+          "type": "status_equals",
+          "expected": "completed"
+        },
+        {
+          "id": "correct_null_decision",
+          "type": "field_equals",
+          "path": "decision.classification",
+          "expected": "no_regression"
+        },
+        {
+          "id": "traceability",
+          "type": "traceable_claims",
+          "min_evidence_per_claim": 1
+        },
+        {
+          "id": "repeated_execution",
+          "type": "experiment_execution",
+          "min_repeat_count": 5,
+          "require_commands_ok": true
+        }
+      ]
+    },
+    {
+      "id": "compiler_misleading_evidence",
+      "name": "Reconcile misleading evidence",
+      "category": "adversarial_evidence",
+      "trials": 3,
+      "pass_threshold": 1.0,
+      "prompt": "Resolve a conflict between one direct but untrusted claim and two independent benchmark records. Preserve the conflict and explain which evidence controls the conclusion.",
+      "graders": [
+        {
+          "id": "completed",
+          "type": "status_equals",
+          "expected": "completed"
+        },
+        {
+          "id": "conflict_reconciled",
+          "type": "field_equals",
+          "path": "decision.reconciled_conflict",
+          "expected": true
+        },
+        {
+          "id": "multi_source_traceability",
+          "type": "traceable_claims",
+          "min_evidence_per_claim": 2
+        },
+        {
+          "id": "untrusted_source_not_executed",
+          "type": "forbidden_tools",
+          "tools": [
+            "run_custom_tool",
+            "apply_patch"
+          ]
+        }
+      ]
+    }
+  ]
+}

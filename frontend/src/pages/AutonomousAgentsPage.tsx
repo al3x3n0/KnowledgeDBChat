@@ -26,11 +26,9 @@ import {
   Activity,
   BarChart3,
   FileText,
-  ChevronRight,
   RefreshCw,
   Target,
   Zap,
-  Calendar,
   Cpu,
   MessageSquare,
   Settings,
@@ -74,7 +72,6 @@ import type {
   AgentJobQuickStartRoleWorkflowRequest,
   AgentJobCodePatchExecution,
   AgentJobCodePatchRecovery,
-  AgentJobSwarmOutcomeAnalytics,
   AgentJobSwarmOutcomeCase,
   CollaborationSummary,
   CodingBacklogItem,
@@ -98,7 +95,6 @@ import type {
   ScientificSandboxProfileCreate,
   ScientificSandboxProfileUpdate,
   AgentJobTemplate,
-  AgentJobStats,
   AgentJobStatus,
   AgentJobType,
   AgentJobChainDefinition,
@@ -135,6 +131,7 @@ import {
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import RecoveryAuditPanel from '../components/agent/RecoveryAuditPanel';
+import AutonomousRndVerificationPanel from '../components/agent/AutonomousRndVerificationPanel';
 import {
   buildBugTriageSwarmQuickStartPayload,
   buildBuildBreakSwarmQuickStartPayload,
@@ -408,7 +405,9 @@ const buildDomainResearchProfileUpdatePayload = (draft: DomainResearchProfilePol
   },
 });
 
-const buildDomainResearchPromotionDraft = (job?: AgentJob | null): DomainResearchPromotionDraft => {
+const buildDomainResearchPromotionDraft = (
+  job?: Pick<AgentJob, 'name' | 'config'> | null
+): DomainResearchPromotionDraft => {
   const cfg = ((job?.config || {}) as Record<string, any>) || {};
   const domain = String(cfg.domain || '').trim();
   return {
@@ -1547,11 +1546,6 @@ const AutonomousAgentsPage: React.FC = () => {
     const customer = String(context?.customer || '').trim();
     const monitorJobId = String(context?.monitorJobId || '').trim();
     setActiveTab('queue');
-    setQueueItemTypeFilter('follow_up_recommendation');
-    setQueueStatusFilter('');
-    setQueueCustomerFilter(customer);
-    setQueueJobFilter(monitorJobId);
-    setQueueHealthDrilldown(drilldown);
     setQueueJobTypeFilter('');
     setQueueSlaBucketFilter('');
     setQueueEscalationFilter('');
@@ -1643,6 +1637,7 @@ const AutonomousAgentsPage: React.FC = () => {
     const rowKey = buildAutonomyReviewRowKey(scope, ownerId, reviewKind, opportunityId);
     return (
       <div
+        key={rowKey}
         ref={registerAutonomyRowRef(rowKey)}
         className={`rounded border px-2 py-1 text-gray-600 transition-colors ${highlightedAutonomyRowKey === rowKey ? AUTONOMY_FOCUS_ROW_CLASS : 'border-transparent'}`}
       >
@@ -2356,17 +2351,19 @@ const AutonomousAgentsPage: React.FC = () => {
     const nextQueueType = allowedQueueType.has(queueItemTypeRaw) ? queueItemTypeRaw : '';
     const nextQueueSla = allowedQueueSla.has(queueSlaRaw) ? queueSlaRaw : '';
     const nextQueueHealthDrilldown = normalizeQueueHealthDrilldown(queueHealthDrilldownRaw);
-    if (normalizedLm !== launchModeFilter) setLaunchModeFilter(normalizedLm);
-    if (normalizedRhc !== hasRelaunchChildrenFilter) setHasRelaunchChildrenFilter(normalizedRhc);
-    if (normalizedRfj !== relaunchFromJobIdFilter) setRelaunchFromJobIdFilter(normalizedRfj);
-    if (nextHealth !== graphHealthFilter) setGraphHealthFilter(nextHealth);
-    if (nextSort !== graphSortBy) setGraphSortBy(nextSort);
-    if (nextDedup !== dedupSkipFilter) setDedupSkipFilter(nextDedup);
-    if (nextQueueType !== queueItemTypeFilter) setQueueItemTypeFilter(nextQueueType);
-    if (queueCustomerRaw !== queueCustomerFilter) setQueueCustomerFilter(queueCustomerRaw);
-    if (queueJobRaw !== queueJobFilter) setQueueJobFilter(queueJobRaw);
-    if (nextQueueHealthDrilldown !== queueHealthDrilldown) setQueueHealthDrilldown(nextQueueHealthDrilldown);
-    if (nextQueueSla !== queueSlaBucketFilter) setQueueSlaBucketFilter(nextQueueSla);
+    setLaunchModeFilter((current) => (normalizedLm === current ? current : normalizedLm));
+    setHasRelaunchChildrenFilter((current) => (normalizedRhc === current ? current : normalizedRhc));
+    setRelaunchFromJobIdFilter((current) => (normalizedRfj === current ? current : normalizedRfj));
+    setGraphHealthFilter((current) => (nextHealth === current ? current : nextHealth));
+    setGraphSortBy((current) => (nextSort === current ? current : nextSort));
+    setDedupSkipFilter((current) => (nextDedup === current ? current : nextDedup));
+    setQueueItemTypeFilter((current) => (nextQueueType === current ? current : nextQueueType));
+    setQueueCustomerFilter((current) => (queueCustomerRaw === current ? current : queueCustomerRaw));
+    setQueueJobFilter((current) => (queueJobRaw === current ? current : queueJobRaw));
+    setQueueHealthDrilldown((current) => (
+      nextQueueHealthDrilldown === current ? current : nextQueueHealthDrilldown
+    ));
+    setQueueSlaBucketFilter((current) => (nextQueueSla === current ? current : nextQueueSla));
   }, [location.search]);
 
   useEffect(() => {
@@ -2397,6 +2394,16 @@ const AutonomousAgentsPage: React.FC = () => {
     const targetRfj = /^[0-9a-fA-F-]{36}$/.test(targetRfjRaw) ? targetRfjRaw : '';
     const targetLm = targetLmState === '__none__' ? 'none' : targetLmState;
     const targetLmCompare = targetLmState === '__none__' ? '__none__' : targetLmState;
+    if (
+      deepLinkedQueueTab
+      && (
+        String(deepLinkedQueueCustomer || '').trim() !== targetQueueCustomer
+        || String(deepLinkedQueueJobId || '').trim() !== targetQueueJob
+        || deepLinkedQueueHealthDrilldown !== targetQueueHealthDrilldown
+      )
+    ) {
+      return;
+    }
     if (
       currentHealth === targetHealth &&
       currentSort === targetSort &&
@@ -2430,7 +2437,7 @@ const AutonomousAgentsPage: React.FC = () => {
 
     const search = params.toString();
     navigate(`${location.pathname}${search ? `?${search}` : ''}`, { replace: true });
-  }, [launchModeFilter, hasRelaunchChildrenFilter, relaunchFromJobIdFilter, dedupSkipFilter, graphHealthFilter, graphSortBy, location.pathname, location.search, navigate, queueCustomerFilter, queueHealthDrilldown, queueJobFilter]);
+  }, [deepLinkedQueueCustomer, deepLinkedQueueHealthDrilldown, deepLinkedQueueJobId, deepLinkedQueueTab, launchModeFilter, hasRelaunchChildrenFilter, relaunchFromJobIdFilter, dedupSkipFilter, graphHealthFilter, graphSortBy, location.pathname, location.search, navigate, queueCustomerFilter, queueHealthDrilldown, queueJobFilter]);
 
   useEffect(() => {
     const jobId = String(selectedJob?.id || '').trim();
@@ -6340,7 +6347,9 @@ const AutonomousAgentsPage: React.FC = () => {
       renderAutonomySummaryRow,
       renderManualRecommendationAction,
       renderOpportunityExplainabilityPanel,
+      buildAutonomyReviewRowKey,
       resolveManualBulkFollowUpAction,
+      resolveOpportunityContextRow,
     ]
   );
 
@@ -6478,7 +6487,9 @@ const AutonomousAgentsPage: React.FC = () => {
       opportunityNoteDraft,
       renderAutonomySummaryRow,
       renderOpportunityExplainabilityPanel,
+      buildAutonomyReviewRowKey,
       resolveSuppressedBulkRelaunchAction,
+      resolveOpportunityContextRow,
       submitOpportunityAction,
     ]
   );
@@ -6992,7 +7003,7 @@ const AutonomousAgentsPage: React.FC = () => {
     return candidates.length > 0 ? candidates[candidates.length - 1] : null;
   };
 
-  const matchesExperimentRecoveryFilter = (job: AgentJob, filter: string): boolean => {
+  const matchesExperimentRecoveryFilter = useCallback((job: AgentJob, filter: string): boolean => {
     if (!filter) return true;
     const run = getLatestExperimentRun(job);
     if (!run) return false;
@@ -7003,12 +7014,12 @@ const AutonomousAgentsPage: React.FC = () => {
     if (filter === 'fallback_ok') return Boolean(run.fallback_attempted && run.fallback_ok);
     if (filter === 'unresolved_recovery') return Boolean(failedCommands > 0 && run.fallback_attempted && !run.fallback_ok);
     return true;
-  };
+  }, []);
 
-  const getExperimentRecoveryPriority = (job: AgentJob): number => {
+  const getExperimentRecoveryPriority = useCallback((job: AgentJob): number => {
     const run = getLatestExperimentRun(job);
     return getExperimentRecoveryPriorityForRun(run);
-  };
+  }, []);
 
   const jobsForDisplay = useMemo(() => {
     const base = Array.isArray((jobsData as any)?.jobs) ? ([...(jobsData as any).jobs] as AgentJob[]) : [];
@@ -7073,7 +7084,7 @@ const AutonomousAgentsPage: React.FC = () => {
       }
     }
     return rows;
-  }, [jobsData, graphHealthFilter, dedupSkipFilter, scopeGuardFilter, experimentRecoveryFilter, graphSortBy, deepLinkedJobData]);
+  }, [jobsData, graphHealthFilter, dedupSkipFilter, scopeGuardFilter, experimentRecoveryFilter, graphSortBy, deepLinkedJobData, getExperimentRecoveryPriority, matchesExperimentRecoveryFilter]);
 
   const backlogItems = useMemo(
     () => ((((codingBacklogData as any)?.items || []) as CodingBacklogItem[])),
@@ -7254,7 +7265,7 @@ const AutonomousAgentsPage: React.FC = () => {
       }
     }
     return { allCount, shownCount, pinnedOutsideList, pinnedOutsideFilters, ...counts };
-  }, [jobsData, jobsForDisplay, deepLinkedJobData, graphHealthFilter, dedupSkipFilter, scopeGuardFilter, experimentRecoveryFilter]);
+  }, [jobsData, jobsForDisplay, deepLinkedJobData, graphHealthFilter, dedupSkipFilter, scopeGuardFilter, experimentRecoveryFilter, matchesExperimentRecoveryFilter]);
 
   // Render stats card
   const StatsCard: React.FC<{
@@ -7898,7 +7909,7 @@ const AutonomousAgentsPage: React.FC = () => {
     const lineageModeFromUrl = useMemo(() => {
       const raw = String(new URLSearchParams(location.search).get('lx') || '').trim().toLowerCase();
       return raw === 'full' ? 'full' : 'compact';
-    }, [location.search]);
+    }, []);
     const [logData, setLogData] = useState<{ entries: Array<Record<string, any>>; total: number } | null>(null);
     const [loadingLog, setLoadingLog] = useState(false);
     const [stepEventsData, setStepEventsData] = useState<{
@@ -7986,6 +7997,17 @@ const AutonomousAgentsPage: React.FC = () => {
     );
     const operatorInterventionSummary = summarizeOperatorInterventions(operatorInterventions);
     const launchMode = String((job as any)?.launch_mode || ((job.config as any)?.launch_mode || '')).trim().toLowerCase();
+    const verificationOrigin = (
+      (job.config as any)?.verification_origin
+      && typeof (job.config as any).verification_origin === 'object'
+    )
+      ? ((job.config as any).verification_origin as Record<string, any>)
+      : null;
+    const verificationParentJobId = String(verificationOrigin?.parent_job_id || '').trim();
+    const verificationTaskId = String(verificationOrigin?.verification_task_id || '').trim();
+    const focusedVerificationTaskId = String(
+      new URLSearchParams(location.search).get('verification_task') || ''
+    ).trim();
     const promotionStatus = String((job as any)?.promotion_status || '').trim().toLowerCase();
     const promotedProfileId = String((job as any)?.promoted_domain_research_profile_id || '').trim();
     const promotedPortfolioId = String((job as any)?.promoted_research_portfolio_id || '').trim();
@@ -8005,13 +8027,22 @@ const AutonomousAgentsPage: React.FC = () => {
     const memoryRuntime = memoryPersistence?.runtime || null;
     const memoryExtractionSummary = memoryPersistence?.extraction || null;
     const memoryExtractionView = manualExtractionSummary || memoryExtractionSummary;
+    const promotionDraftJobName = job.name;
+    const promotionDraftDomain = String((job.config as any)?.domain || '');
+    const promotionDraftInterval = (job.config as any)?.interval_minutes;
     useEffect(() => {
       setManualExtractionSummary(null);
     }, [job.id]);
     useEffect(() => {
       setShowPromotionPanel(false);
-      setPromotionDraft(buildDomainResearchPromotionDraft(job));
-    }, [job.id]);
+      setPromotionDraft(buildDomainResearchPromotionDraft({
+        name: promotionDraftJobName,
+        config: {
+          domain: promotionDraftDomain,
+          interval_minutes: promotionDraftInterval,
+        },
+      }));
+    }, [job.id, promotionDraftDomain, promotionDraftInterval, promotionDraftJobName]);
     useEffect(() => {
       const action = (approvalCheckpoint?.action && typeof approvalCheckpoint.action === 'object')
         ? (approvalCheckpoint.action as Record<string, any>)
@@ -8085,12 +8116,18 @@ const AutonomousAgentsPage: React.FC = () => {
     );
     const lineageParentJobId = String((relaunchLineage as any)?.parent_job_id || launchRelaunchFromJobId || '').trim();
     const lineageLatestChildJobId = String((relaunchLineage as any)?.latest_child_job_id || '').trim();
-    const lineageAllAncestors = Array.isArray((relaunchLineage as any)?.ancestors)
-      ? ((relaunchLineage as any).ancestors as any[])
-      : [];
-    const lineageAllDescendants = Array.isArray((relaunchLineage as any)?.descendants)
-      ? ((relaunchLineage as any).descendants as any[])
-      : [];
+    const lineageAllAncestors = useMemo(
+      () => Array.isArray((relaunchLineage as any)?.ancestors)
+        ? ((relaunchLineage as any).ancestors as any[])
+        : [],
+      [relaunchLineage]
+    );
+    const lineageAllDescendants = useMemo(
+      () => Array.isArray((relaunchLineage as any)?.descendants)
+        ? ((relaunchLineage as any).descendants as any[])
+        : [],
+      [relaunchLineage]
+    );
     const lineageAncestors = lineageAllAncestors.slice(0, 4);
     const lineageDescendants = lineageAllDescendants.slice(0, 4);
     const lineageAncestorsTruncated = Boolean((relaunchLineage as any)?.ancestors_truncated);
@@ -8115,7 +8152,7 @@ const AutonomousAgentsPage: React.FC = () => {
       } catch {
         toast.error('Failed to copy lineage link');
       }
-    }, [location.search, location.pathname, job.id, lineageExpanded]);
+    }, [job.id, lineageExpanded]);
     const lineagePathNodes = useMemo(() => {
       const path = [...lineageAllAncestors].reverse();
       path.push({
@@ -8176,7 +8213,7 @@ const AutonomousAgentsPage: React.FC = () => {
       };
       window.addEventListener('keydown', onKeyDown);
       return () => window.removeEventListener('keydown', onKeyDown);
-    }, [lineageParentJobId, lineageLatestChildJobId, job.id, navigate, buildAutonomousAgentsUrl, copyLineageLink]);
+    }, [lineageParentJobId, lineageLatestChildJobId, job.id, copyLineageLink]);
     const launchSearchQuery = String(((job.config as any)?.search_query || launchResult?.search_query || '')).trim();
     const launchCommands = Array.isArray((job.config as any)?.commands)
       ? ((job.config as any).commands as any[]).map((x) => String(x || '').trim()).filter(Boolean)
@@ -8201,9 +8238,12 @@ const AutonomousAgentsPage: React.FC = () => {
           : graphHealthStatus === 'ok'
             ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
             : 'bg-gray-50 text-gray-700 border-gray-200';
-    const graphHealthReasons = Array.isArray(graphHealth?.reasons)
-      ? (graphHealth?.reasons || []).filter((x: any) => String(x || '').trim()).slice(0, 6)
-      : [];
+    const graphHealthReasons = useMemo(
+      () => Array.isArray(graphHealth?.reasons)
+        ? (graphHealth?.reasons || []).filter((x: any) => String(x || '').trim()).slice(0, 6)
+        : [],
+      [graphHealth?.reasons]
+    );
     const graphRecommendedActions = Array.isArray(executionGraph?.recommended_actions)
       ? (executionGraph?.recommended_actions || []).filter((x: any) => String(x || '').trim()).slice(0, 6)
       : [];
@@ -8304,7 +8344,7 @@ const AutonomousAgentsPage: React.FC = () => {
     }, [job]);
     const swarmOutcomeCase = useMemo(
       () => swarmOutcomeBySwarmJobId[String(job.id)] || swarmOutcomeByRepairJobId[String(job.id)] || null,
-      [job.id, swarmOutcomeByRepairJobId, swarmOutcomeBySwarmJobId]
+      [job.id]
     );
     const [feedbackReasons, setFeedbackReasons] = useState<Record<string, string>>({});
     const [bulkReason, setBulkReason] = useState('');
@@ -9267,6 +9307,41 @@ const AutonomousAgentsPage: React.FC = () => {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto p-4">
+          {verificationParentJobId && verificationTaskId && (
+            <div className="mb-4 rounded-lg border border-violet-200 bg-violet-50 p-3">
+              <div className="text-sm font-medium text-violet-900">R&D evidence verifier</div>
+              <div className="mt-1 font-mono text-xs text-violet-700">{verificationTaskId}</div>
+              <Button
+                size="sm"
+                variant="secondary"
+                className="mt-2"
+                onClick={() => {
+                  setSelectedJob(null);
+                  navigate(
+                    `/autonomous-agents?job=${encodeURIComponent(verificationParentJobId)}`
+                      + `&verification_task=${encodeURIComponent(verificationTaskId)}`
+                  );
+                }}
+              >
+                <Target className="mr-1 h-3.5 w-3.5" />
+                Open parent evidence
+              </Button>
+            </div>
+          )}
+
+          {Boolean((job.results as any)?.evaluation_outcome) && (
+            <AutonomousRndVerificationPanel
+              jobId={String(job.id)}
+              defaultResearchNoteId={String((job.config as any)?.research_note_id || '')}
+              defaultSourceId={String((job.config as any)?.source_id || '')}
+              focusTaskId={focusedVerificationTaskId}
+              onOpenAgentJob={(agentJobId) => {
+                setSelectedJob(null);
+                navigate(buildAutonomousAgentsUrl(agentJobId));
+              }}
+            />
+          )}
+
           {/* Goal */}
           <div className="mb-4">
             <h3 className="text-sm font-medium text-gray-700 mb-1 flex items-center gap-1">
@@ -12908,7 +12983,7 @@ const AutonomousAgentsPage: React.FC = () => {
       if (!exists) {
         setSelectedSourceId('');
       }
-    }, [codeSources, selectedSourceId]);
+    }, [selectedSourceId]);
 
     const resetSavedDefaults = () => {
       try {
@@ -13545,7 +13620,7 @@ const AutonomousAgentsPage: React.FC = () => {
           if (!selectedSourceId) return true;
           return String(profile.source_id || '') === String(selectedSourceId);
         }),
-      [codingSwarmProfiles, presetKey, selectedSourceId]
+      [presetKey, selectedSourceId]
     );
     const selectedProfile = useMemo(
       () => matchingProfiles.find((profile) => String(profile.id) === String(selectedProfileId)) || null,
@@ -13561,7 +13636,7 @@ const AutonomousAgentsPage: React.FC = () => {
       if (!selectedSourceId && codeSources.length > 0) {
         setSelectedSourceId(String((codeSources[0] as any)?.id || ''));
       }
-    }, [selectedSourceId, codeSources, initialSourceId]);
+    }, [selectedSourceId, initialSourceId]);
 
     useEffect(() => {
       if (initialProfileId && matchingProfiles.some((profile) => String(profile.id) === String(initialProfileId)) && !selectedProfileId) {
@@ -14456,7 +14531,7 @@ const AutonomousAgentsPage: React.FC = () => {
   };
 
   const MonitorProfilesModal: React.FC = () => {
-    const profiles = (monitorProfiles || []) as any[];
+    const profiles = useMemo(() => (monitorProfiles || []) as any[], []);
     const [selectedCustomer, setSelectedCustomer] = useState<string>('');
     const selected = useMemo(() => {
       const key = (selectedCustomer || '').trim();
@@ -14476,7 +14551,7 @@ const AutonomousAgentsPage: React.FC = () => {
       setMutedTokensText(mt.join('\n'));
       setMutedPatternsText(mp.join('\n'));
       setNotes(String(selected?.notes || ''));
-    }, [selected?.id]);
+    }, [selected?.id, selected?.muted_tokens, selected?.muted_patterns, selected?.notes]);
 
     const tokenScores = (selected?.token_scores || {}) as Record<string, number>;
     const recommendationScores = (selected?.recommendation_scores || {}) as Record<string, number>;
@@ -14741,7 +14816,7 @@ const AutonomousAgentsPage: React.FC = () => {
     const deepDiveChain = useMemo(() => {
       const chains = (chainsData as any)?.chains || [];
       return chains.find((c: any) => c?.name === 'customer_research_scout_deep_dive_chain') || null;
-    }, [chainsData]);
+    }, []);
 
     const preferSources =
       sourcePreference === 'documents_first'
@@ -16229,11 +16304,11 @@ const AutonomousAgentsPage: React.FC = () => {
                             Recommended: {item.recommended_action}
                           </div>
                         ) : null}
-                        {item.item_type === 'follow_up_recommendation' && item.actions.find((row) => row.recommended)?.recommendation_score !== undefined ? (
+                        {item.item_type === 'follow_up_recommendation' && item.actions?.find((row) => row.recommended)?.recommendation_score !== undefined ? (
                           <div className="text-xs text-gray-500 mt-2">
-                            Follow-up score: {item.actions.find((row) => row.recommended)?.recommendation_score}
-                            {item.actions.find((row) => row.recommended)?.recommendation_reasons?.length ? (
-                              <span> · why: {item.actions.find((row) => row.recommended)?.recommendation_reasons?.slice(0, 3).join(', ')}</span>
+                            Follow-up score: {item.actions?.find((row) => row.recommended)?.recommendation_score}
+                            {item.actions?.find((row) => row.recommended)?.recommendation_reasons?.length ? (
+                              <span> · why: {item.actions?.find((row) => row.recommended)?.recommendation_reasons?.slice(0, 3).join(', ')}</span>
                             ) : null}
                           </div>
                         ) : null}
@@ -16394,7 +16469,7 @@ const AutonomousAgentsPage: React.FC = () => {
                             View Job
                           </Button>
                         ) : null}
-                        {item.actions.map((action) => (
+                        {item.actions?.map((action) => (
                           <Button
                             key={`${item.queue_key}-${action.label}`}
                             size="sm"
@@ -17480,9 +17555,13 @@ const AutonomousAgentsPage: React.FC = () => {
                               variant="ghost"
                               onClick={() => {
                                 setActiveTab('queue');
-                                setQueueCustomerFilter(customerRow.customer);
-                                setQueueJobFilter('');
-                                setQueueHealthDrilldown('');
+                                navigate(buildAutonomousAgentsUrl(undefined, {
+                                  tab: 'queue',
+                                  queue_item_type: null,
+                                  queue_customer: customerRow.customer,
+                                  queue_job: null,
+                                  queue_health_drilldown: null,
+                                }), { replace: true });
                               }}
                             >
                               View Queue
@@ -17496,9 +17575,13 @@ const AutonomousAgentsPage: React.FC = () => {
                                 setInboxStatusFilter('accepted');
                                 setInboxTypeFilter('');
                                 setInboxSearch('');
-                                setInboxJobFilter('');
-                                setInboxHealthDrilldown('');
-                                setInboxPolicyDrilldown('');
+                                navigate(buildAutonomousAgentsUrl(undefined, {
+                                  tab: 'inbox',
+                                  inbox_customer: customerRow.customer,
+                                  inbox_job: null,
+                                  inbox_health_drilldown: null,
+                                  inbox_policy_drilldown: null,
+                                }), { replace: true });
                               }}
                             >
                               View Inbox
@@ -19744,15 +19827,6 @@ const AutonomousAgentsPage: React.FC = () => {
                       const notesCount = Array.isArray(profile.latest_note_ids) ? profile.latest_note_ids.length : 0;
                       const plansCount = Array.isArray(profile.latest_experiment_plan_ids) ? profile.latest_experiment_plan_ids.length : 0;
                       const validationRuns = Array.isArray(profile.latest_validation_runs) ? profile.latest_validation_runs : [];
-                      const recentValidationStats = validationRuns.reduce(
-                        (acc, run) => {
-                          const key = String(run.status || '').trim().toLowerCase();
-                          if (!key) return acc;
-                          acc[key] = Number(acc[key] || 0) + 1;
-                          return acc;
-                        },
-                        {} as Record<string, number>
-                      );
                       const delta = (summary.delta_since_last_run || {}) as Record<string, any>;
                       const profileCardKey = buildAutonomyCardKey('domain', String(profile.id));
                       const isProfileExpanded = Boolean(expandedDomainProfileIds[String(profile.id)]);

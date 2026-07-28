@@ -41,6 +41,17 @@ jest.mock('../../services/api', () => ({
   apiClient: {
     listAgentJobs: jest.fn(),
     getAgentJob: jest.fn(),
+    getAutonomousRndJobOutcome: jest.fn(),
+    launchAutonomousRndVerificationTask: jest.fn(),
+    createAutonomousRndVerificationAuditSnapshot: jest.fn(),
+    listExternalAgentConnections: jest.fn(),
+    invokeExternalAgentConnection: jest.fn(),
+    listCompOpsEvidenceSubscriptions: jest.fn(),
+    createCompOpsEvidenceSubscription: jest.fn(),
+    updateCompOpsEvidenceSubscription: jest.fn(),
+    syncCompOpsEvidenceSubscription: jest.fn(),
+    enableCompOpsSubscriptionWebhook: jest.fn(),
+    disableCompOpsSubscriptionWebhook: jest.fn(),
     getAgentJobStats: jest.fn(),
     getAgentJobSwarmAnalytics: jest.fn(),
     getAgentJobSwarmOutcomeAnalytics: jest.fn(),
@@ -252,15 +263,7 @@ const flushMockPromises = async () => {
   await act(async () => {
     for (let pass = 0; pass < 3; pass += 1) {
       await Promise.resolve();
-      const pendingCalls = Object.values(apiClient as Record<string, any>)
-        .filter((candidate) => jest.isMockFunction(candidate))
-        .flatMap((mockFn: any) => mockFn.mock.results || [])
-        .map((result: any) => result?.value)
-        .filter((value: any) => value && typeof value.then === 'function');
-      if (pendingCalls.length === 0) {
-        continue;
-      }
-      await Promise.allSettled(pendingCalls);
+      await new Promise<void>((resolve) => window.setTimeout(resolve, 0));
     }
   });
 };
@@ -312,7 +315,20 @@ const createDeferred = <T,>() => {
   return { promise, resolve, reject };
 };
 
-describe('AutonomousAgentsPage', () => {
+export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount: number) => {
+  if (!Number.isInteger(shardIndex) || !Number.isInteger(shardCount) || shardCount < 1 || shardIndex < 0 || shardIndex >= shardCount) {
+    throw new Error(`Invalid AutonomousAgentsPage test shard ${shardIndex}/${shardCount}`);
+  }
+
+  let testIndex = 0;
+  const shardIt = (name: string, testFn: jest.ProvidesCallback, timeout?: number) => {
+    const registerTest = testIndex % shardCount === shardIndex ? it : it.skip;
+    testIndex += 1;
+    registerTest(name, testFn, Math.max(timeout ?? 0, 30_000));
+  };
+
+  describe(`AutonomousAgentsPage (shard ${shardIndex + 1}/${shardCount})`, () => {
+  jest.setTimeout(30_000);
   beforeEach(() => {
     const shouldIgnoreConsoleMessage = (args: unknown[]) =>
       String(args[0] || '').includes('Warning: An update to JobDetailPanel inside a test was not wrapped in act');
@@ -335,6 +351,25 @@ describe('AutonomousAgentsPage', () => {
       loading: false,
     });
     const job = makeJob();
+    apiClient.getAutonomousRndJobOutcome.mockResolvedValue({
+      job_id: job.id,
+      job_status: job.status,
+      outcome: {},
+      verification_lifecycle: {
+        task_count: 0,
+        launch_status_counts: {},
+        evidence_status_counts: {},
+        tasks: [],
+      },
+    });
+    apiClient.listExternalAgentConnections.mockResolvedValue({
+      agents: [],
+      total: 0,
+    });
+    apiClient.listCompOpsEvidenceSubscriptions.mockResolvedValue({
+      subscriptions: [],
+      total: 0,
+    });
     const cleanJob = makeJob({
       id: 'job-2',
       name: 'Clean Scope Job',
@@ -2176,7 +2211,7 @@ describe('AutonomousAgentsPage', () => {
     jest.clearAllMocks();
   });
 
-  it('renders runtime summary chips in the jobs list for a running job', async () => {
+  shardIt('renders runtime summary chips in the jobs list for a running job', async () => {
     await renderWithProviders('/autonomous-agents');
 
     await expectJobHeading('Autonomous Runtime Job');
@@ -2211,7 +2246,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('shows a system map panel from the page header', async () => {
+  shardIt('shows a system map panel from the page header', async () => {
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
     expect(screen.queryByText('Current operator surface and runtime ownership.')).not.toBeInTheDocument();
@@ -2223,7 +2258,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText(/autonomous_agent_executor/i)).toBeInTheDocument();
   });
 
-  it('renders the decision trace tab with canonical events', async () => {
+  shardIt('renders the decision trace tab with canonical events', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -2371,9 +2406,9 @@ describe('AutonomousAgentsPage', () => {
       limit: 50,
       offset: 0,
     });
-  });
+  }, 10000);
 
-  it('auto-applies the default trace view and labels it in the selector', async () => {
+  shardIt('auto-applies the default trace view and labels it in the selector', async () => {
     apiClient.listAgentDecisionTraceViews.mockResolvedValueOnce({
       items: [
         {
@@ -2405,7 +2440,7 @@ describe('AutonomousAgentsPage', () => {
     }, { timeout: 3000 });
   });
 
-  it('restores explicit trace filters from the URL instead of the default trace view', async () => {
+  shardIt('restores explicit trace filters from the URL instead of the default trace view', async () => {
     apiClient.listAgentDecisionTraceViews.mockResolvedValueOnce({
       items: [
         {
@@ -2481,7 +2516,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('opens a trace permalink event without letting the default view override it', async () => {
+  shardIt('opens a trace permalink event without letting the default view override it', async () => {
     apiClient.listAgentDecisionTraceViews.mockResolvedValueOnce({
       items: [
         {
@@ -2583,7 +2618,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('renders derived job recovery trace metadata with a readable reason label', async () => {
+  shardIt('renders derived job recovery trace metadata with a readable reason label', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -2654,7 +2689,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getAllByText(/Backoff until/i).length).toBeGreaterThan(0);
   });
 
-  it('updates trace assignee and due date through inline controls', async () => {
+  shardIt('updates trace assignee and due date through inline controls', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -2716,7 +2751,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('shows compiler trace context, filters blocked validations, and opens the exact domain target', async () => {
+  shardIt('shows compiler trace context, filters blocked validations, and opens the exact domain target', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -2844,7 +2879,7 @@ describe('AutonomousAgentsPage', () => {
     expect(row.closest('div.border')?.className).toContain('border-cyan-300');
   });
 
-  it('approves a pending follow-up from the decision trace', async () => {
+  shardIt('approves a pending follow-up from the decision trace', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -2915,7 +2950,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('relaunches a failed follow-up from the decision trace', async () => {
+  shardIt('relaunches a failed follow-up from the decision trace', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -2990,7 +3025,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('does not render follow-up controls for derived trace events', async () => {
+  shardIt('does not render follow-up controls for derived trace events', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -3034,7 +3069,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.queryByRole('button', { name: 'Reject' })).not.toBeInTheDocument();
   });
 
-  it('does not render relaunch controls for completed follow-up trace events', async () => {
+  shardIt('does not render relaunch controls for completed follow-up trace events', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -3081,7 +3116,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.queryByRole('button', { name: 'Relaunch Follow-up' })).not.toBeInTheDocument();
   });
 
-  it('renders coding execution metadata for repo bug triage jobs', async () => {
+  shardIt('renders coding execution metadata for repo bug triage jobs', async () => {
     const codingJob = makeJob({
       id: 'job-code-1',
       name: 'Repo Bug Triage Job',
@@ -3179,7 +3214,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getAllByText(/CI=true npm --prefix frontend test -- --watchAll=false/i).length).toBeGreaterThan(0);
   });
 
-  it('shows coding-specific recovery actions for repo bug triage jobs', async () => {
+  shardIt('shows coding-specific recovery actions for repo bug triage jobs', async () => {
     const recoveryJob = makeJob({
       id: 'job-code-recovery',
       name: 'Repo Bug Triage Recovery',
@@ -3256,7 +3291,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('filters the jobs list to unresolved recovery jobs from the summary controls', async () => {
+  shardIt('filters the jobs list to unresolved recovery jobs from the summary controls', async () => {
     await renderWithProviders('/autonomous-agents');
 
     await expectJobHeading('Autonomous Runtime Job');
@@ -3273,7 +3308,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('filters the jobs list to bootstrap-recovered experiment runs from summary controls', async () => {
+  shardIt('filters the jobs list to bootstrap-recovered experiment runs from summary controls', async () => {
     await renderWithProviders('/autonomous-agents');
 
     await expectJobHeading('Autonomous Runtime Job');
@@ -3288,7 +3323,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('renders live execution graph and scope observability for a deep-linked running job', async () => {
+  shardIt('renders live execution graph and scope observability for a deep-linked running job', async () => {
     await renderWithProviders('/autonomous-agents?job=job-1');
 
     expect(await screen.findByText('Execution Graph')).toBeInTheDocument();
@@ -3346,7 +3381,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Failed commands')).toBeInTheDocument();
   });
 
-  it('opens the linked domain opportunity from an inbox row', async () => {
+  shardIt('opens the linked domain opportunity from an inbox row', async () => {
     apiClient.listResearchInboxItems.mockResolvedValue({
       items: [
         {
@@ -3389,7 +3424,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('opens the linked fleet opportunity from an inbox row', async () => {
+  shardIt('opens the linked fleet opportunity from an inbox row', async () => {
     apiClient.listResearchInboxItems.mockResolvedValue({
       items: [
         {
@@ -3432,7 +3467,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('keeps inbox rows without origin metadata job-centric', async () => {
+  shardIt('keeps inbox rows without origin metadata job-centric', async () => {
     apiClient.listResearchInboxItems.mockResolvedValue({
       items: [
         {
@@ -3468,7 +3503,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByRole('button', { name: 'Open Follow-up' })).toBeInTheDocument();
   });
 
-  it('approves a pending inbox follow-up recommendation inline', async () => {
+  shardIt('approves a pending inbox follow-up recommendation inline', async () => {
     apiClient.listResearchInboxItems
       .mockResolvedValueOnce({
         items: [
@@ -3552,7 +3587,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('rejects a pending inbox follow-up recommendation inline and shows the refreshed operator decision', async () => {
+  shardIt('rejects a pending inbox follow-up recommendation inline and shows the refreshed operator decision', async () => {
     apiClient.listResearchInboxItems
       .mockResolvedValueOnce({
         items: [
@@ -3635,7 +3670,7 @@ describe('AutonomousAgentsPage', () => {
     expect(await screen.findByText(/Operator: rejected — Need stronger evidence/i)).toBeInTheDocument();
   });
 
-  it('does not render inbox follow-up approval controls for non-pending rows', async () => {
+  shardIt('does not render inbox follow-up approval controls for non-pending rows', async () => {
     apiClient.listResearchInboxItems.mockResolvedValueOnce({
       items: [
         {
@@ -3672,7 +3707,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.queryByRole('button', { name: 'Reject Follow-up' })).not.toBeInTheDocument();
   });
 
-  it('bulk-approves pending inbox follow-up recommendations for one domain profile', async () => {
+  shardIt('bulk-approves pending inbox follow-up recommendations for one domain profile', async () => {
     apiClient.listResearchInboxItems
       .mockResolvedValueOnce({
         items: [
@@ -3787,7 +3822,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('bulk-rejects pending inbox follow-up recommendations for one research fleet', async () => {
+  shardIt('bulk-rejects pending inbox follow-up recommendations for one research fleet', async () => {
     apiClient.listResearchInboxItems.mockResolvedValueOnce({
       items: [
         {
@@ -3872,7 +3907,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('disables inbox bulk follow-up actions for mixed domain and fleet selections', async () => {
+  shardIt('disables inbox bulk follow-up actions for mixed domain and fleet selections', async () => {
     apiClient.listResearchInboxItems.mockResolvedValueOnce({
       items: [
         {
@@ -3931,13 +3966,14 @@ describe('AutonomousAgentsPage', () => {
     expect(await screen.findByText('Queued domain follow-up')).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('checkbox')[1]);
     fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    await flushMockPromises();
 
     expect(screen.getByRole('button', { name: 'Approve Follow-ups' })).toBeDisabled();
     expect(screen.getByRole('button', { name: 'Reject Follow-ups' })).toBeDisabled();
     expect(screen.getByText('Inbox bulk follow-up actions cannot mix domain and fleet owners.')).toBeInTheDocument();
   });
 
-  it('bulk-relaunches failed inbox follow-ups', async () => {
+  shardIt('bulk-relaunches failed inbox follow-ups', async () => {
     apiClient.listResearchInboxItems.mockResolvedValueOnce({
       items: [
         {
@@ -4014,7 +4050,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('disables inbox bulk relaunch for mixed terminal and pending follow-up selections', async () => {
+  shardIt('disables inbox bulk relaunch for mixed terminal and pending follow-up selections', async () => {
     apiClient.listResearchInboxItems.mockResolvedValueOnce({
       items: [
         {
@@ -4068,12 +4104,13 @@ describe('AutonomousAgentsPage', () => {
     expect(await screen.findByText('Failed follow-up')).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('checkbox')[1]);
     fireEvent.click(screen.getAllByRole('checkbox')[2]);
+    await flushMockPromises();
 
     expect(screen.getByRole('button', { name: 'Relaunch Follow-ups' })).toBeDisabled();
     expect(apiClient.bulkRelaunchInboxFollowUp).not.toHaveBeenCalled();
   });
 
-  it('renders scheduler state in the queue card and job detail panel', async () => {
+  shardIt('renders scheduler state in the queue card and job detail panel', async () => {
     const schedulerJob = makeJob({
       id: 'job-scheduler-1',
       name: 'Scheduler Visibility Job',
@@ -4114,7 +4151,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getAllByText(/Dispatched/i).length).toBeGreaterThan(0);
   });
 
-  it('hides scheduler state when the payload is malformed', async () => {
+  shardIt('hides scheduler state when the payload is malformed', async () => {
     const malformedJob = makeJob({
       id: 'job-scheduler-2',
       name: 'Malformed Scheduler Job',
@@ -4137,7 +4174,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.queryByText(/Last run/i)).not.toBeInTheDocument();
   });
 
-  it('ignores late detail-panel loader responses after unmount', async () => {
+  shardIt('ignores late detail-panel loader responses after unmount', async () => {
     const logDeferred = createDeferred<{ entries: any[]; total: number }>();
     const stepEventsDeferred = createDeferred<{ items: any[]; total: number; source: string }>();
     const memoriesDeferred = createDeferred<{ memories: any[]; total: number; page: number; page_size: number }>();
@@ -4169,7 +4206,7 @@ describe('AutonomousAgentsPage', () => {
     consoleErrorSpy.mockRestore();
   });
 
-  it('renders unresolved recovery status in the experiment run detail panel', async () => {
+  shardIt('renders unresolved recovery status in the experiment run detail panel', async () => {
     const unresolvedJob = makeJob({
       id: 'job-4',
       name: 'Unresolved Recovery Job',
@@ -4245,7 +4282,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('renders autonomy health analytics and filters monitor cards', async () => {
+  shardIt('renders autonomy health analytics and filters monitor cards', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -4264,7 +4301,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('renders customer fleet cards and drills into queue and inbox by customer', async () => {
+  shardIt('renders customer fleet cards and drills into queue and inbox by customer', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -4303,34 +4340,34 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('focuses the top-pressure monitor from a customer fleet card', async () => {
+  shardIt('focuses the top-pressure monitor from a customer fleet card', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
     const customerCard = (await screen.findByRole('heading', { name: 'Beta' })).closest('.border.rounded-lg.p-4') as HTMLElement;
-    fireEvent.click(within(customerCard).getByRole('button', { name: 'Beta Watch' }));
+    fireEvent.click(within(customerCard).getAllByRole('button', { name: 'Beta Watch' })[0]);
 
-    expect(await screen.findByText('Showing Beta monitors · focused on monitor-2')).toBeInTheDocument();
+    expect(await screen.findByText('Showing Beta monitors · focused on Beta Watch')).toBeInTheDocument();
     const monitorCard = (await screen.findByRole('heading', { name: 'Beta Watch' })).closest('.rounded-lg.p-4') as HTMLElement;
     expect(monitorCard.className).toContain('border-cyan-300');
   });
 
-  it('loads health monitor focus from the url and clears only the focus state', async () => {
+  shardIt('loads health monitor focus from the url and clears only the focus state', async () => {
     await renderWithProviders('/autonomous-agents?tab=health&health_customer=Beta&health_monitor=monitor-2');
 
-    expect(await screen.findByText('Showing Beta monitors · focused on monitor-2')).toBeInTheDocument();
+    expect(await screen.findByText('Showing Beta monitors · focused on Beta Watch')).toBeInTheDocument();
     const monitorCard = (await screen.findByRole('heading', { name: 'Beta Watch' })).closest('.rounded-lg.p-4') as HTMLElement;
     expect(monitorCard.className).toContain('border-cyan-300');
 
     fireEvent.click(screen.getByRole('button', { name: 'Clear focus' }));
 
     await waitFor(() => {
-      expect(screen.queryByText('Showing Beta monitors · focused on monitor-2')).not.toBeInTheDocument();
+      expect(screen.queryByText('Showing Beta monitors · focused on Beta Watch')).not.toBeInTheDocument();
     });
     expect(screen.getByDisplayValue('Beta')).toBeInTheDocument();
   });
 
-  it('drills a monitor failed-outcome metric into accepted inbox follow-ups', async () => {
+  shardIt('drills a monitor failed-outcome metric into accepted inbox follow-ups', async () => {
     apiClient.listResearchInboxItems.mockResolvedValue({
       items: [
         {
@@ -4395,7 +4432,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('drills a customer cancelled-outcome metric into accepted inbox follow-ups', async () => {
+  shardIt('drills a customer cancelled-outcome metric into accepted inbox follow-ups', async () => {
     apiClient.listResearchInboxItems.mockResolvedValue({
       items: [
         {
@@ -4460,7 +4497,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('drills monitor suppressed relaunch pressure into accepted inbox follow-ups', async () => {
+  shardIt('drills monitor suppressed relaunch pressure into accepted inbox follow-ups', async () => {
     apiClient.listResearchInboxItems.mockResolvedValue({
       items: [
         {
@@ -4635,7 +4672,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('clears the inbox health drilldown context without clearing other inbox filters', async () => {
+  shardIt('clears the inbox health drilldown context without clearing other inbox filters', async () => {
     apiClient.listResearchInboxItems.mockResolvedValueOnce({
       items: [
         {
@@ -4672,7 +4709,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Monitor filter: monitor-1')).toBeInTheDocument();
   });
 
-  it('drills a monitor pending-approval metric into checkpoint queue follow-up recommendations', async () => {
+  shardIt('drills a monitor pending-approval metric into checkpoint queue follow-up recommendations', async () => {
     apiClient.getResearchMonitorAnalytics.mockResolvedValueOnce({
       generated_at: '2026-03-17T12:00:00Z',
       totals: {
@@ -4781,7 +4818,7 @@ describe('AutonomousAgentsPage', () => {
       ],
       recommendations: [],
     });
-    apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
+    apiClient.getAgentCheckpointQueue.mockResolvedValue({
       items: [
         {
           queue_key: 'queue-pending-match',
@@ -4837,8 +4874,8 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('drills a customer manual metric into checkpoint queue follow-up recommendations', async () => {
-    apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
+  shardIt('drills a customer manual metric into checkpoint queue follow-up recommendations', async () => {
+    apiClient.getAgentCheckpointQueue.mockResolvedValue({
       items: [
         {
           queue_key: 'queue-manual-match',
@@ -4895,8 +4932,8 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('drills a monitor blocked metric into checkpoint queue follow-up recommendations', async () => {
-    apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
+  shardIt('drills a monitor blocked metric into checkpoint queue follow-up recommendations', async () => {
+    apiClient.getAgentCheckpointQueue.mockResolvedValue({
       items: [
         {
           queue_key: 'queue-blocked-match',
@@ -4954,8 +4991,8 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('drills a customer blocked metric into checkpoint queue follow-up recommendations', async () => {
-    apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
+  shardIt('drills a customer blocked metric into checkpoint queue follow-up recommendations', async () => {
+    apiClient.getAgentCheckpointQueue.mockResolvedValue({
       items: [
         {
           queue_key: 'queue-customer-blocked-match',
@@ -5013,8 +5050,8 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('clears the queue health drilldown context without clearing owner filters', async () => {
-    apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
+  shardIt('clears the queue health drilldown context without clearing owner filters', async () => {
+    apiClient.getAgentCheckpointQueue.mockResolvedValue({
       items: [
         {
           queue_key: 'queue-clear-pending',
@@ -5068,7 +5105,7 @@ describe('AutonomousAgentsPage', () => {
     expect(await screen.findByText('Acme manual follow-up')).toBeInTheDocument();
   });
 
-  it('updates shared customer budget caps from autonomy health', async () => {
+  shardIt('updates shared customer budget caps from autonomy health', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -5089,7 +5126,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('previews and applies customer rebalance guidance from autonomy health', async () => {
+  shardIt('previews and applies customer rebalance guidance from autonomy health', async () => {
     const confirmSpy = jest.spyOn(window, 'confirm').mockReturnValue(true);
     await renderWithProviders('/autonomous-agents');
 
@@ -5148,7 +5185,7 @@ describe('AutonomousAgentsPage', () => {
     confirmSpy.mockRestore();
   });
 
-  it('loads customer rebalance outcome details from autonomy health', async () => {
+  shardIt('loads customer rebalance outcome details from autonomy health', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -5162,7 +5199,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getAllByText(/Queue backlog pressure declined/i).length).toBeGreaterThan(0);
   });
 
-  it('applies a guided policy update from autonomy health', async () => {
+  shardIt('applies a guided policy update from autonomy health', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -5194,7 +5231,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('shows policy history and rolls a monitor back from autonomy health', async () => {
+  shardIt('shows policy history and rolls a monitor back from autonomy health', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -5214,7 +5251,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('applies a degrading-policy safeguard from autonomy health', async () => {
+  shardIt('applies a degrading-policy safeguard from autonomy health', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -5229,7 +5266,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('loads before and after policy evaluation details from policy history', async () => {
+  shardIt('loads before and after policy evaluation details from policy history', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -5263,7 +5300,7 @@ describe('AutonomousAgentsPage', () => {
     expect(await screen.findByText('Showing accepted signals for monitor-1 · post-rollout evaluation')).toBeInTheDocument();
   });
 
-  it('previews policy impact from autonomy health', async () => {
+  shardIt('previews policy impact from autonomy health', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -5289,7 +5326,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText(/Accepted signal/i)).toBeInTheDocument();
   });
 
-  it('opens previewed signals in the inbox with the monitor filter and policy drilldown applied', async () => {
+  shardIt('opens previewed signals in the inbox with the monitor filter and policy drilldown applied', async () => {
     await renderWithProviders('/autonomous-agents');
 
     fireEvent.click(await screen.findByText('Autonomy Health'));
@@ -5317,7 +5354,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Accepted signal')).toBeInTheDocument();
   });
 
-  it('clears the inbox policy drilldown context without clearing the monitor filter', async () => {
+  shardIt('clears the inbox policy drilldown context without clearing the monitor filter', async () => {
     await renderWithProviders('/autonomous-agents?tab=inbox&inbox_job=monitor-1&inbox_policy_drilldown=simulated_policy_impact');
 
     expect(await screen.findByText('Showing accepted signals for monitor-1 · simulated policy impact')).toBeInTheDocument();
@@ -5329,7 +5366,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Monitor filter: monitor-1')).toBeInTheDocument();
   });
 
-  it('bulk-approves queue follow-up recommendations for one domain profile', async () => {
+  shardIt('bulk-approves queue follow-up recommendations for one domain profile', async () => {
     apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
       items: [
         {
@@ -5409,7 +5446,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('bulk-rejects queue follow-up recommendations for one research fleet', async () => {
+  shardIt('bulk-rejects queue follow-up recommendations for one research fleet', async () => {
     apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
       items: [
         {
@@ -5489,7 +5526,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('disables queue bulk follow-up actions for mixed domain and fleet selections', async () => {
+  shardIt('disables queue bulk follow-up actions for mixed domain and fleet selections', async () => {
     apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
       items: [
         {
@@ -5545,7 +5582,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.queryByRole('button', { name: 'Reject selected' })).not.toBeInTheDocument();
   });
 
-  it('keeps failed queue follow-up selections selected after a partial bulk result', async () => {
+  shardIt('keeps failed queue follow-up selections selected after a partial bulk result', async () => {
     const queuePayload = {
       items: [
         {
@@ -5614,7 +5651,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('shows compiler queue context and opens the exact domain opportunity from queue', async () => {
+  shardIt('shows compiler queue context and opens the exact domain opportunity from queue', async () => {
     apiClient.getAgentCheckpointQueue.mockResolvedValueOnce({
       items: [
         {
@@ -5745,7 +5782,7 @@ describe('AutonomousAgentsPage', () => {
     expect(row.closest('div.border')?.className).toContain('border-cyan-300');
   });
 
-  it('offers recovery actions and can restart an unresolved recovery run', async () => {
+  shardIt('offers recovery actions and can restart an unresolved recovery run', async () => {
     apiClient.saveAgentJobAsChain.mockResolvedValueOnce({
       id: 'chain-recovery-1',
       name: 'playbook_recovery_unresolved_recovery_job',
@@ -5856,7 +5893,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('sorts recovery playbooks ahead of generic chains in the chain picker', async () => {
+  shardIt('sorts recovery playbooks ahead of generic chains in the chain picker', async () => {
     apiClient.listChainDefinitions.mockResolvedValue({
       total: 2,
       chains: [
@@ -5919,7 +5956,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Recovery')).toBeInTheDocument();
   });
 
-  it('filters the jobs list to scope-guard blocked jobs from the quick filter', async () => {
+  shardIt('filters the jobs list to scope-guard blocked jobs from the quick filter', async () => {
     await renderWithProviders('/autonomous-agents');
 
     await expectJobHeading('Autonomous Runtime Job');
@@ -5931,7 +5968,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Guard blocked 1')).toBeInTheDocument();
   });
 
-  it('sorts scope-guard blocked jobs first from the sort control', async () => {
+  shardIt('sorts scope-guard blocked jobs first from the sort control', async () => {
     const blockedJob = makeJob();
     const cleanJob = makeJob({
       id: 'job-2',
@@ -5991,7 +6028,7 @@ describe('AutonomousAgentsPage', () => {
     expect(jobTitles.indexOf('Autonomous Runtime Job')).toBeLessThan(jobTitles.indexOf('Clean Scope Job'));
   });
 
-  it('sorts experiment recovery jobs by fallback before bootstrap recovery', async () => {
+  shardIt('sorts experiment recovery jobs by fallback before bootstrap recovery', async () => {
     await renderWithProviders('/autonomous-agents');
 
     await expectJobHeading('Autonomous Runtime Job');
@@ -6010,7 +6047,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('builds repo bug triage quick start payload with the expected normalization', () => {
+  shardIt('builds repo bug triage quick start payload with the expected normalization', () => {
     expect(
       buildRepoBugTriageQuickStartPayload({
         name: 'Repo Bug Triage - 3/24/2026',
@@ -6042,7 +6079,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('builds bug triage swarm quick start payload with the expected normalization', () => {
+  shardIt('builds bug triage swarm quick start payload with the expected normalization', () => {
     expect(
       buildBugTriageSwarmQuickStartPayload({
         name: 'Bug Triage Swarm - 3/24/2026',
@@ -6076,7 +6113,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('shows domain research quick start with repo-aware scientific defaults', async () => {
+  shardIt('shows domain research quick start with repo-aware scientific defaults', async () => {
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
     fireEvent.click(screen.getByText('Templates'));
@@ -6156,7 +6193,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('shows bug triage swarm quick start with coding defaults', async () => {
+  shardIt('shows bug triage swarm quick start with coding defaults', async () => {
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
     fireEvent.click(screen.getByText('Templates'));
@@ -6173,7 +6210,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Start Swarm')).toBeInTheDocument();
   });
 
-  it('manages coding swarm profiles from the dedicated profiles tab', async () => {
+  shardIt('manages coding swarm profiles from the dedicated profiles tab', async () => {
     apiClient.listCodingSwarmProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -6234,7 +6271,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('can launch a coding swarm from the dedicated profiles tab', async () => {
+  shardIt('can launch a coding swarm from the dedicated profiles tab', async () => {
     apiClient.listCodingSwarmProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -6287,7 +6324,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('blocks unsafe repo bug triage commands client-side', () => {
+  shardIt('blocks unsafe repo bug triage commands client-side', () => {
     const commands = parseQuickStartCommands(
       'CI=true npm --prefix frontend test -- --watchAll=false\nrm -rf /tmp/example',
       6
@@ -6296,7 +6333,7 @@ describe('AutonomousAgentsPage', () => {
     expect(findUnsafeQuickStartCommands(commands)).toEqual(['rm -rf /tmp/example']);
   });
 
-  it('seeds the compiler and microarchitecture scientific pack with repo-aware defaults', async () => {
+  shardIt('seeds the compiler and microarchitecture scientific pack with repo-aware defaults', async () => {
     apiClient.createDomainResearchProfile
       .mockResolvedValueOnce({ id: 'profile-compiler' })
       .mockResolvedValueOnce({ id: 'profile-microarch' });
@@ -6394,7 +6431,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('creates a coding backlog item with the expected payload', async () => {
+  shardIt('creates a coding backlog item with the expected payload', async () => {
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
     fireEvent.click(screen.getByText('Coding Backlog'));
@@ -6447,7 +6484,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('edits backlog notes inline without prompts', async () => {
+  shardIt('edits backlog notes inline without prompts', async () => {
     const backlogItem = {
       id: 'backlog-inline-1',
       user_id: 'user-1',
@@ -6503,7 +6540,7 @@ describe('AutonomousAgentsPage', () => {
     promptSpy.mockRestore();
   });
 
-  it('renders swarm review analytics and linked backlog lineage', async () => {
+  shardIt('renders swarm review analytics and linked backlog lineage', async () => {
     const swarmJob = makeJob({
       id: 'swarm-root-1',
       name: 'Frontend Regression Swarm Root',
@@ -6643,7 +6680,7 @@ describe('AutonomousAgentsPage', () => {
     promptSpy.mockRestore();
   });
 
-  it('renders swarm outcome funnel analytics and drilldown links', async () => {
+  shardIt('renders swarm outcome funnel analytics and drilldown links', async () => {
     const swarmJob = makeJob({
       id: 'swarm-outcome-1',
       name: 'Frontend Regression Swarm Root',
@@ -6766,7 +6803,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText(/Open repair/i)).toBeInTheDocument();
   });
 
-  it('creates a domain research profile with the expected payload', async () => {
+  shardIt('creates a domain research profile with the expected payload', async () => {
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
     fireEvent.click(screen.getByText('Domain Profiles'));
@@ -6819,7 +6856,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('promotes a completed domain research quick-start job into a monitor and fleet', async () => {
+  shardIt('promotes a completed domain research quick-start job into a monitor and fleet', async () => {
     const promotedJob = makeJob({
       id: 'job-promote',
       name: 'Compiler Optimization Scout',
@@ -6902,7 +6939,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('attaches a promoted domain research quick-start job to an existing fleet', async () => {
+  shardIt('attaches a promoted domain research quick-start job to an existing fleet', async () => {
     const promotedJob = makeJob({
       id: 'job-promote-existing',
       name: 'Compiler Optimization Scout',
@@ -6979,7 +7016,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('shows promotion status links and hides the promotion action once already promoted', async () => {
+  shardIt('shows promotion status links and hides the promotion action once already promoted', async () => {
     const promotedJob = makeJob({
       id: 'job-promoted',
       name: 'Compiler Optimization Scout',
@@ -7019,7 +7056,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.queryByText('Promote to Monitor')).not.toBeInTheDocument();
   });
 
-  it('dispatches domain opportunity actions from the opportunity queue', async () => {
+  shardIt('dispatches domain opportunity actions from the opportunity queue', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -7091,7 +7128,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('materializes a domain opportunity into an experiment and shows the validation job link', async () => {
+  shardIt('materializes a domain opportunity into an experiment and shows the validation job link', async () => {
     apiClient.listDomainResearchProfiles
       .mockResolvedValueOnce({
       items: [
@@ -7231,7 +7268,7 @@ describe('AutonomousAgentsPage', () => {
     expect(await screen.findByText('Open validation job')).toBeInTheDocument();
   });
 
-  it('dispatches fleet opportunity suppression with an operator note', async () => {
+  shardIt('dispatches fleet opportunity suppression with an operator note', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -7290,7 +7327,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('materializes a fleet opportunity into an experiment', async () => {
+  shardIt('materializes a fleet opportunity into an experiment', async () => {
     apiClient.listResearchPortfolios
       .mockResolvedValueOnce({
       items: [
@@ -7399,7 +7436,7 @@ describe('AutonomousAgentsPage', () => {
     expect(await screen.findByText('Open run')).toBeInTheDocument();
   });
 
-  it('lets admins create, edit, and delete scientific sandbox profiles', async () => {
+  shardIt('lets admins create, edit, and delete scientific sandbox profiles', async () => {
     mockUseAuth.mockReturnValue({
       user: { id: 'user-1', username: 'admin', role: 'admin' },
       loading: false,
@@ -7496,7 +7533,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('renders recent scientific validation summaries on domain profiles', async () => {
+  shardIt('renders recent scientific validation summaries on domain profiles', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -7605,7 +7642,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText(/Queued follow-up/i)).toBeInTheDocument();
   });
 
-  it('creates a compiler regression explanation from a domain validation summary row', async () => {
+  shardIt('creates a compiler regression explanation from a domain validation summary row', async () => {
     apiClient.createSynthesisJob.mockResolvedValueOnce({
       id: 'syn-job-1',
       job_type: 'compiler_regression_explanation',
@@ -7689,7 +7726,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('creates a compiler patch draft from a domain validation summary row using the profile repo source', async () => {
+  shardIt('creates a compiler patch draft from a domain validation summary row using the profile repo source', async () => {
     apiClient.createSynthesisJob.mockResolvedValueOnce({
       id: 'syn-job-2',
       job_type: 'compiler_patch_draft',
@@ -7772,7 +7809,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('saves a completed compiler artifact synthesis job as a research note from a validation row', async () => {
+  shardIt('saves a completed compiler artifact synthesis job as a research note from a validation row', async () => {
     apiClient.saveSynthesisJobAsResearchNote.mockResolvedValueOnce({
       id: 'note-expl-1',
       title: 'Compiler explanation note',
@@ -7847,7 +7884,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('renders follow-up outcome metadata on domain opportunities', async () => {
+  shardIt('renders follow-up outcome metadata on domain opportunities', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -7916,7 +7953,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByRole('button', { name: /Open source note/i })).toBeInTheDocument();
   });
 
-  it('renders reevaluation closeout trace actions and preset filtering', async () => {
+  shardIt('renders reevaluation closeout trace actions and preset filtering', async () => {
     apiClient.getAgentDecisionTrace.mockResolvedValue({
       items: [
         {
@@ -7988,7 +8025,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getAllByRole('button', { name: /Open saved note/i }).length).toBeGreaterThan(0);
   });
 
-  it('approves pending domain follow-up recommendations inline', async () => {
+  shardIt('approves pending domain follow-up recommendations inline', async () => {
     apiClient.listDomainResearchProfiles
       .mockResolvedValueOnce({
         items: [
@@ -8099,7 +8136,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('bulk-approves pending domain follow-up recommendations within one profile card', async () => {
+  shardIt('bulk-approves pending domain follow-up recommendations within one profile card', async () => {
     apiClient.listDomainResearchProfiles
       .mockResolvedValueOnce({
         items: [
@@ -8193,7 +8230,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('deep-links directly to a domain opportunity row', async () => {
+  shardIt('deep-links directly to a domain opportunity row', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -8249,7 +8286,7 @@ describe('AutonomousAgentsPage', () => {
     expect(row.closest('div.border')?.className).toContain('border-cyan-300');
   });
 
-  it('shows explainability details for blocked domain opportunities', async () => {
+  shardIt('shows explainability details for blocked domain opportunities', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -8311,7 +8348,7 @@ describe('AutonomousAgentsPage', () => {
     expect(within(blockedSection).getByText(/Benchmark crash in sandbox/i)).toBeInTheDocument();
   });
 
-  it('updates domain profile autonomy controls in place', async () => {
+  shardIt('updates domain profile autonomy controls in place', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -8379,7 +8416,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('creates a research fleet portfolio with the expected payload', async () => {
+  shardIt('creates a research fleet portfolio with the expected payload', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -8447,7 +8484,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('renders recent scientific validation summaries on research fleets', async () => {
+  shardIt('renders recent scientific validation summaries on research fleets', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -8575,7 +8612,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText(/Queued follow-up/i)).toBeInTheDocument();
   });
 
-  it('resolves follow-up outcome details for fleet summary rows from the matching opportunity', async () => {
+  shardIt('resolves follow-up outcome details for fleet summary rows from the matching opportunity', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -8647,7 +8684,7 @@ describe('AutonomousAgentsPage', () => {
     expect((await screen.findAllByText(/job-follow-up-2/i)).length).toBeGreaterThan(0);
   });
 
-  it('relaunches a failed domain follow-up from the opportunity row', async () => {
+  shardIt('relaunches a failed domain follow-up from the opportunity row', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValue({
       items: [
         {
@@ -8727,7 +8764,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('relaunches a failed fleet follow-up from a summary row via the resolved opportunity', async () => {
+  shardIt('relaunches a failed fleet follow-up from a summary row via the resolved opportunity', async () => {
     apiClient.listResearchPortfolios.mockResolvedValue({
       items: [
         {
@@ -8822,7 +8859,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('launches a manual domain follow-up from the summary row via the resolved opportunity', async () => {
+  shardIt('launches a manual domain follow-up from the summary row via the resolved opportunity', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -8899,7 +8936,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('launches a manual fleet follow-up from the summary row via the resolved opportunity', async () => {
+  shardIt('launches a manual fleet follow-up from the summary row via the resolved opportunity', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -8976,7 +9013,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('resolves a manual fleet summary row to relaunch when the linked opportunity is terminal', async () => {
+  shardIt('resolves a manual fleet summary row to relaunch when the linked opportunity is terminal', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -9053,7 +9090,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('bulk-launches resolved manual domain recommendations within one profile card', async () => {
+  shardIt('bulk-launches resolved manual domain recommendations within one profile card', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -9148,7 +9185,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('bulk-launches resolved manual fleet recommendations within one fleet card', async () => {
+  shardIt('bulk-launches resolved manual fleet recommendations within one fleet card', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -9243,7 +9280,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('bulk-relaunches resolved manual fleet recommendations when all selected rows are terminal', async () => {
+  shardIt('bulk-relaunches resolved manual fleet recommendations when all selected rows are terminal', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -9340,7 +9377,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('disables bulk manual actions when selected recommendations mix launch and relaunch modes', async () => {
+  shardIt('disables bulk manual actions when selected recommendations mix launch and relaunch modes', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -9413,7 +9450,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Bulk manual follow-up actions cannot mix launch and relaunch selections.')).toBeInTheDocument();
   });
 
-  it('rejects pending portfolio follow-up recommendations inline', async () => {
+  shardIt('rejects pending portfolio follow-up recommendations inline', async () => {
     apiClient.listResearchPortfolios
       .mockResolvedValueOnce({
         items: [
@@ -9523,7 +9560,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('bulk-rejects pending portfolio follow-up recommendations within one fleet card', async () => {
+  shardIt('bulk-rejects pending portfolio follow-up recommendations within one fleet card', async () => {
     apiClient.listResearchPortfolios
       .mockResolvedValueOnce({
         items: [
@@ -9617,7 +9654,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('relaunches a suppressed domain follow-up from the summary row via the resolved opportunity', async () => {
+  shardIt('relaunches a suppressed domain follow-up from the summary row via the resolved opportunity', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -9692,7 +9729,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('relaunches a suppressed fleet follow-up from the summary row via the resolved opportunity', async () => {
+  shardIt('relaunches a suppressed fleet follow-up from the summary row via the resolved opportunity', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -9767,7 +9804,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('keeps unresolved suppressed relaunch rows informational', async () => {
+  shardIt('keeps unresolved suppressed relaunch rows informational', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -9815,7 +9852,7 @@ describe('AutonomousAgentsPage', () => {
     expect(within(suppressedSection).queryByRole('button', { name: 'Relaunch Follow-up' })).not.toBeInTheDocument();
   });
 
-  it('keeps resolved but non-relaunchable suppressed rows read-only', async () => {
+  shardIt('keeps resolved but non-relaunchable suppressed rows read-only', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -9876,7 +9913,7 @@ describe('AutonomousAgentsPage', () => {
     expect(within(suppressedSection).queryByRole('button', { name: 'Relaunch Follow-up' })).not.toBeInTheDocument();
   });
 
-  it('bulk-relaunches resolved suppressed domain rows within one profile card', async () => {
+  shardIt('bulk-relaunches resolved suppressed domain rows within one profile card', async () => {
     apiClient.listDomainResearchProfiles.mockResolvedValueOnce({
       items: [
         {
@@ -9974,7 +10011,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('bulk-relaunches resolved suppressed fleet rows within one fleet card', async () => {
+  shardIt('bulk-relaunches resolved suppressed fleet rows within one fleet card', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -10072,7 +10109,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('disables bulk follow-up actions when selected rows mix manual launch and suppressed relaunch selections', async () => {
+  shardIt('disables bulk follow-up actions when selected rows mix manual launch and suppressed relaunch selections', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -10149,7 +10186,7 @@ describe('AutonomousAgentsPage', () => {
     expect(screen.getByText('Bulk manual follow-up actions cannot mix launch and relaunch selections.')).toBeInTheDocument();
   });
 
-  it('deep-links to a fleet review row when no detailed opportunity row is present', async () => {
+  shardIt('deep-links to a fleet review row when no detailed opportunity row is present', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -10203,7 +10240,7 @@ describe('AutonomousAgentsPage', () => {
     expect(within(manualRow).getByText(/Reason:/i)).toBeInTheDocument();
   });
 
-  it('keeps unresolved manual follow-up recommendations informational', async () => {
+  shardIt('keeps unresolved manual follow-up recommendations informational', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -10255,7 +10292,7 @@ describe('AutonomousAgentsPage', () => {
     expect(within(manualSection).queryByRole('button', { name: 'Relaunch Follow-up' })).not.toBeInTheDocument();
   });
 
-  it('shows explainability details for waiting fleet opportunities from summary rows', async () => {
+  shardIt('shows explainability details for waiting fleet opportunities from summary rows', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -10322,7 +10359,7 @@ describe('AutonomousAgentsPage', () => {
     expect(within(waitingSection).getByText(/job-child-1/i)).toBeInTheDocument();
   });
 
-  it('updates research fleet autonomy controls in place', async () => {
+  shardIt('updates research fleet autonomy controls in place', async () => {
     apiClient.listResearchPortfolios.mockResolvedValueOnce({
       items: [
         {
@@ -10401,7 +10438,7 @@ describe('AutonomousAgentsPage', () => {
       expect(apiClient.updateResearchPortfolio).toHaveBeenCalledWith('portfolio-1', {
         automation_profile: 'max_autonomy',
         automation_policy: {
-          follow_up_review_mode: 'auto_launch_safe',
+          follow_up_review_mode: 'queue_for_approval',
           confidence_threshold: 0.75,
           experiment_readiness_threshold: 0.72,
           max_auto_follow_up_launches: 4,
@@ -10418,7 +10455,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('renders backlog orchestration progress and promotion history', async () => {
+  shardIt('renders backlog orchestration progress and promotion history', async () => {
     apiClient.listCodingBacklogItems.mockResolvedValueOnce({
       items: [
         {
@@ -10616,7 +10653,7 @@ describe('AutonomousAgentsPage', () => {
     });
   });
 
-  it('sends slice-level operator actions from the backlog tab', async () => {
+  shardIt('sends slice-level operator actions from the backlog tab', async () => {
     apiClient.listCodingBacklogItems.mockResolvedValueOnce({
       items: [
         {
@@ -10758,4 +10795,37 @@ describe('AutonomousAgentsPage', () => {
       });
     });
   });
-});
+
+  shardIt('links an R&D verifier job back to its parent evidence task', async () => {
+    const verifierJob = makeJob({
+      id: 'verifier-job-1',
+      name: 'Verification Run: external evidence',
+      status: 'completed',
+      config: {
+        verification_origin: {
+          parent_job_id: 'parent-job-1',
+          verification_task_id: 'verify-evidence-1',
+          external_evidence_id: 'external-agent:request-1',
+        },
+      },
+      results: {},
+    });
+    apiClient.listAgentJobs.mockResolvedValue({
+      jobs: [verifierJob],
+      total: 1,
+      page: 1,
+      page_size: 50,
+      has_more: false,
+    });
+    apiClient.getAgentJob.mockResolvedValue(verifierJob);
+
+    await renderWithProviders('/autonomous-agents?job=verifier-job-1');
+
+    expect(await screen.findByText('R&D evidence verifier')).toBeInTheDocument();
+    expect(screen.getByText('verify-evidence-1')).toBeInTheDocument();
+    fireEvent.click(screen.getByRole('button', { name: 'Open parent evidence' }));
+
+    await waitFor(() => expect(apiClient.getAgentJob).toHaveBeenCalledWith('parent-job-1'));
+  });
+  });
+};

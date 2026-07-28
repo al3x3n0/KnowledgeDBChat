@@ -28,14 +28,18 @@ class ToolPolicyResponse(BaseModel):
 
 
 class ToolPolicyCreate(BaseModel):
-    tool_name: str = Field(..., min_length=1, max_length=120, description="Exact tool name or '*'")
+    tool_name: str = Field(
+        ..., min_length=1, max_length=120, description="Exact tool name or '*'"
+    )
     effect: str = Field(default="deny", pattern="^(allow|deny)$")
     require_approval: bool = False
     constraints: Optional[Dict[str, Any]] = None
 
 
 class AdminToolPolicyCreate(ToolPolicyCreate):
-    subject_type: str = Field(default="user", pattern="^(global|role|user|agent_definition|api_key)$")
+    subject_type: str = Field(
+        default="user", pattern="^(global|role|user|agent_definition|api_key)$"
+    )
     subject_id: Optional[str] = None
     subject_key: Optional[str] = None
 

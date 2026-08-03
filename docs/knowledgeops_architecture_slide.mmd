@@ -1,0 +1,34 @@
+flowchart LR
+    USER["Researchers, engineers,<br/>reviewers, operators"]
+
+    subgraph LAB["KnowledgeOps Lab"]
+        UI["React operator workspace"]
+        API["FastAPI control plane"]
+        KNOW["Knowledge operations<br/>ingest, retrieve, RAG, graph"]
+        AGENT["Autonomous R&D<br/>plan, act, verify, resume"]
+        CODE["Coding harness<br/>workspace, swarm, test, review"]
+        EVID["Evidence and governance<br/>policy, provenance, audit"]
+    end
+
+    subgraph STATE["Durable platform"]
+        PG[("PostgreSQL<br/>jobs, checkpoints, journal, outbox")]
+        REDIS[("Redis + Celery")]
+        QDRANT[("Qdrant")]
+        MINIO[("MinIO")]
+    end
+
+    EXT["External systems<br/>CompOps, MLflow, MCP,<br/>repositories, model providers"]
+
+    USER --> UI --> API
+    API --> KNOW
+    API --> AGENT
+    API --> CODE
+    KNOW --> EVID
+    AGENT --> EVID
+    CODE --> EVID
+    EVID --> PG
+    API --> REDIS
+    KNOW --> QDRANT
+    KNOW --> MINIO
+    AGENT <--> EXT
+    CODE <--> EXT

@@ -22,7 +22,7 @@ setup: ## Initial setup - create directories and copy env files
 		echo "✅ Created backend/.env"; \
 	fi
 	@if [ ! -f frontend/.env ]; then \
-		cp frontend/.env.example frontend/.env; \
+		cp frontend/.env.example frontend/.env && \
 		echo "✅ Created frontend/.env"; \
 	fi
 	@echo "✅ Setup complete!"
@@ -70,6 +70,12 @@ redis-shell: ## Open Redis CLI
 test-backend: ## Run backend tests
 	$(DC) exec backend pytest
 
+test-rnd-evals: ## Run autonomous R&D evaluation and trajectory regression tests
+	$(DC) exec -T backend pytest -q --no-cov tests/test_autonomous_rnd_eval_service.py tests/test_autonomous_rnd_evidence_verification_service.py tests/test_autonomous_rnd_verification_planner_service.py tests/test_autonomous_rnd_trajectory_service.py tests/test_autonomous_rnd_verification_audit_service.py tests/test_autonomous_rnd_eval_endpoints.py tests/test_agent_experiment_runner_service.py tests/test_benchmark_assets.py
+
+test-external-agents: ## Run external-agent gateway and registry regression tests
+	$(DC) exec -T backend pytest -q --no-cov tests/test_external_agent_gateway_service.py tests/test_external_agents_endpoints.py
+
 test-backend-coverage: ## Run backend tests with CI-style coverage threshold
 	$(DC) exec backend pytest --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=70
 
@@ -98,9 +104,9 @@ check-health: ## Run local health checks (Docker + services)
 
 doctor: validate-env check-health ## Validate env + health checks
 
-fmt-backend: ## Format backend code (black + isort)
-	$(DC) exec backend black .
+fmt-backend: ## Format backend code (isort + black)
 	$(DC) exec backend isort .
+	$(DC) exec backend black .
 
 lint-backend: ## Lint backend code (flake8)
 	$(DC) exec backend flake8

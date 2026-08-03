@@ -15,6 +15,12 @@ services:
       - ./data/postgres-init:/docker-entrypoint-initdb.d
     networks:
       - knowledge_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d knowledge_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   # Redis for caching and task queue
   redis:
@@ -160,8 +166,11 @@ services:
     ports:
       - "8080:8080"
     depends_on:
-      - minio
-      - postgres
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - knowledge_net
     healthcheck:
@@ -182,7 +191,7 @@ services:
     environment:
       - KROKI_MAX_URI_LENGTH=8000
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--output-document=/dev/null", "http://localhost:8000/health"]
       interval: 30s
       timeout: 10s
       retries: 3
@@ -376,6 +385,7 @@ services:
       - CHROMA_TELEMETRY_ENABLED=false
       - RUN_ALEMBIC_MIGRATIONS=false
       - PYTHONDONTWRITEBYTECODE=1
+      - LOG_FILE=/tmp/logs/app.log
       - OPENBLAS_MAIN_FREE=1
       - GOTO_NUM_THREADS=1
       - OMP_NUM_THREADS=1

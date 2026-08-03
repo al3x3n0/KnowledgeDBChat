@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Dict, Optional, Tuple
+
+from app.services import agent_tool_scoring
 
 
 class AgentRuntimePolicyService:
@@ -118,6 +119,4 @@ class AgentRuntimePolicyService:
 
     def _stable_fraction(self, key: str) -> float:
         """Map a key to stable [0,1) fraction."""
-        digest = hashlib.sha256(str(key).encode("utf-8")).hexdigest()
-        bucket = int(digest[:12], 16)
-        return float(bucket % 1_000_000) / 1_000_000
+        return agent_tool_scoring.stable_fraction(key)

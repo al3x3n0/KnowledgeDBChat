@@ -20,7 +20,6 @@ import {
   Clock,
   Eye,
   ExternalLink,
-  MoreVertical,
   Network,
   Plus,
   Sparkles,
@@ -172,8 +171,6 @@ const DocumentsPage: React.FC = () => {
   const transcriptionWebSockets = React.useRef<Record<string, WebSocket>>({});
   const [summarizationProgress, setSummarizationProgress] = useState<Record<string, { progress: number; stage?: string }>>({});
   const summarizationWebSockets = React.useRef<Record<string, WebSocket>>({});
-  const [uploadProgress, setUploadProgress] = useState<Record<string, { progress: number; status: string }>>({});
-  const [uploadStatus, setUploadStatus] = useState<Record<string, string>>({});
   const [streamingSegments, setStreamingSegments] = useState<Record<string, Array<{ start: number; text: string; speaker?: string }>>>({});
   const [gitRepoForm, setGitRepoForm] = useState<GitRepoFormState>(initialGitRepoForm);
   const [arxivForm, setArxivForm] = useState<ArxivFormState>(initialArxivForm);
@@ -283,7 +280,7 @@ const DocumentsPage: React.FC = () => {
   const [ownerPersonaFilter, setOwnerPersonaFilter] = useState<string>('');
   const [speakerPersonaFilter, setSpeakerPersonaFilter] = useState<string>('');
 
-  const getDocFlags = (doc: KnowledgeDocument) => {
+  const getDocFlags = useCallback((doc: KnowledgeDocument) => {
     const override = docStatus[doc.id] || {};
     const sumOverride = docSumStatus[doc.id] || {};
     const isTranscoding = override.is_transcoding ?? (doc.extra_metadata?.is_transcoding === true);
@@ -291,7 +288,7 @@ const DocumentsPage: React.FC = () => {
     const isTranscribed = override.is_transcribed ?? (doc.extra_metadata?.is_transcribed === true);
     const isSummarizing = sumOverride.is_summarizing ?? (doc.extra_metadata?.is_summarizing === true);
     return { isTranscoding, isTranscribing, isTranscribed, isSummarizing };
-  };
+  }, [docStatus, docSumStatus]);
 
   // Helper function to check if document is video/audio
   const isVideoAudio = (doc: KnowledgeDocument): boolean => {
@@ -566,7 +563,7 @@ const DocumentsPage: React.FC = () => {
       }
     });
     
-  }, [documents, queryClient, docStatus]);
+  }, [documents, getDocFlags, queryClient, docStatus]);
 
   // Cleanup transcription progress sockets on unmount
   useEffect(() => {
@@ -676,7 +673,7 @@ const DocumentsPage: React.FC = () => {
       }
     });
 
-  }, [documents, queryClient, docSumStatus]);
+  }, [documents, getDocFlags, queryClient, docSumStatus]);
 
   // Cleanup summarization progress sockets on unmount
   useEffect(() => {
@@ -970,11 +967,9 @@ const DocumentsPage: React.FC = () => {
         if (!active) return;
         setBranchList(branches);
         if (branches.length > 0) {
-          if (!compareBaseBranch) {
-            setCompareBaseBranch(branches[0].name);
-          }
-          if (!compareTargetBranch && branches.length > 1) {
-            setCompareTargetBranch(branches[1].name);
+          setCompareBaseBranch((current) => current || branches[0].name);
+          if (branches.length > 1) {
+            setCompareTargetBranch((current) => current || branches[1].name);
           }
         }
       })
@@ -1891,7 +1886,7 @@ const DocumentsPage: React.FC = () => {
           ? 'ArXiv'
           : 'Documents';
 
-  const activeGitRequests = activeGitStatuses || [];
+  const activeGitRequests = useMemo(() => activeGitStatuses || [], [activeGitStatuses]);
   const activeGitSources = activeGitRequests.map((entry) => entry.source);
 
   // If navigated to Repos for a specific source but it's not active anymore, fall back to Documents tab
@@ -3259,6 +3254,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
   }>;
 
   // Poll for summary updates while modal is open if no summary yet or summarizing
+  const currentChunkCount = (currentDocument as any)?.chunks?.length;
   React.useEffect(() => {
     let timer: any;
     let cancelled = false;
@@ -3290,7 +3286,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
       if (el) el.scrollIntoView({ behavior: 'smooth', block: 'center' });
     }, 250);
     return () => clearTimeout(timer);
-  }, [highlightChunkId, currentDocument?.id, (currentDocument as any)?.chunks?.length]);
+  }, [highlightChunkId, currentDocument?.id, currentChunkCount]);
   // Track only basic state; player handles loading internally
   
   // Check if document is video/audio
@@ -3326,7 +3322,10 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
   const narrationTranscriptId = presentationMeta?.audio_track?.transcript_document_id as string | undefined;
   const resolvedAudioDuration = audioDurationState ?? presentationAudio?.duration ?? presentationMeta?.audio_track?.duration ?? null;
   const ownerPersona = currentDocument.owner_persona;
-  const personaDetections = (currentDocument.persona_detections || []) as DocumentPersonaDetection[];
+  const personaDetections = useMemo(
+    () => (currentDocument.persona_detections || []) as DocumentPersonaDetection[],
+    [currentDocument.persona_detections]
+  );
   const speakerSummary = useMemo(() => {
     const summaryMap = new Map<string, { persona: Persona; count: number }>();
     personaDetections
@@ -3410,9 +3409,11 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
     return `${mins.toString().padStart(2, '0')}:${seconds.toString().padStart(2, '0')}`;
   };
 
+  const hasPresentationAudioTrack = Boolean(presentationMeta?.audio_track);
+  const presentationAudioObjectPath = presentationMeta?.audio_track?.object_path;
   useEffect(() => {
     let active = true;
-    if (presentationMeta?.audio_track) {
+    if (hasPresentationAudioTrack) {
       setPresentationAudioLoading(true);
       apiClient
         .getPresentationAudio(currentDocument.id)
@@ -3438,7 +3439,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
     return () => {
       active = false;
     };
-  }, [currentDocument.id, presentationMeta?.audio_track?.object_path]);
+  }, [currentDocument.id, hasPresentationAudioTrack, presentationAudioObjectPath]);
   useEffect(() => {
     if (presentationAudio?.duration) {
       setAudioDurationState(presentationAudio.duration);
@@ -3706,7 +3707,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
         } catch {} 
       });
     };
-  }, [videoUrl, document.extra_metadata?.is_transcoding, initialSeekSeconds]);
+  }, [videoUrl, document.extra_metadata?.is_transcoding, document.file_type, document.title, initialSeekSeconds]);
   
   const handleDownload = async () => {
     try {
@@ -3764,7 +3765,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
   const meta = document.extra_metadata?.transcription_metadata || {};
   const diarizedSentences = meta.sentence_segments || [];
   const segments = meta.segments || [];
-  const liveSegs = liveSegments || [];
+  const liveSegs = useMemo(() => liveSegments || [], [liveSegments]);
   const playbackSegments: Array<any> = (diarizedSentences.length > 0 ? diarizedSentences : segments);
   
   // Update active transcript item based on current playback time
@@ -4615,14 +4616,17 @@ const PersonaEditRequestModal: React.FC<PersonaEditRequestModalProps> = ({
   isSubmitting,
 }) => {
   const [message, setMessage] = useState('');
+  const documentId = document?.id;
+  const documentTitle = document ? getDisplayTitle(document) : '';
+  const personaName = persona.name;
 
   useEffect(() => {
-    if (document) {
-      setMessage(`Persona "${persona.name}" looks incorrect for document "${getDisplayTitle(document)}". Please update...`);
+    if (documentId) {
+      setMessage(`Persona "${personaName}" looks incorrect for document "${documentTitle}". Please update...`);
     } else {
       setMessage('');
     }
-  }, [persona.id, document?.id]);
+  }, [documentId, documentTitle, persona.id, personaName]);
 
   const isDisabled = message.trim().length < 5 || isSubmitting;
 

@@ -3029,10 +3029,10 @@ export interface ExternalAgentConnection {
   id: string;
   name: string;
   description?: string | null;
-  provider_type: 'generic_agent' | 'compops';
+  provider_type: 'generic_agent' | 'compops' | 'mlflow';
   endpoint_url: string;
   capabilities: string[];
-  auth_type: 'none' | 'bearer' | 'api_key' | string;
+  auth_type: 'none' | 'bearer' | 'api_key' | 'basic' | string;
   secret_id?: string | null;
   auth_header_name?: string | null;
   timeout_seconds: number;

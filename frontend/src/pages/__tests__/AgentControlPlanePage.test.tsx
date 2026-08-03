@@ -191,7 +191,10 @@ const renderPage = (initialEntry = '/agent-control-plane') => {
   });
 
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <QueryClientProvider client={queryClient}>
         <AgentControlPlanePage />
       </QueryClientProvider>
@@ -934,15 +937,21 @@ describe('AgentControlPlanePage', () => {
   });
 
   test('renders useful fallbacks when routing and memory are missing and detail fails', async () => {
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     apiClient.getAgentControlRuns.mockResolvedValue({
       items: [makeRun({ id: 'workflow:wf-1', source_type: 'workflow', title: 'Sparse workflow', routing: null })],
       total: 1,
     });
     apiClient.getAgentControlRun.mockRejectedValue(new Error('not found'));
 
-    renderPage('/agent-control-plane?run=workflow:wf-1');
+    try {
+      renderPage('/agent-control-plane?run=workflow:wf-1');
 
-    expect(await screen.findByText('This control run could not be loaded.')).toBeInTheDocument();
+      expect(await screen.findByText('This control run could not be loaded.')).toBeInTheDocument();
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   test('applies the default saved view when no explicit URL filters are present', async () => {

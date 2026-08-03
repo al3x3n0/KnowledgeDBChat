@@ -2,8 +2,8 @@
  * API Keys management page for creating and managing API keys for external tools.
  */
 
-import React, { useState, useEffect } from 'react';
-import { useMutation, useQuery, useQueryClient } from 'react-query';
+import React, { useState } from 'react';
+import { useMutation, useQuery } from 'react-query';
 import {
   Key,
   Plus,
@@ -22,7 +22,7 @@ import {
 import toast from 'react-hot-toast';
 
 import { apiClient } from '../services/api';
-import { APIKey, APIKeyCreate, APIKeyCreateResponse, APIKeyUsageStats } from '../types';
+import { APIKey, APIKeyCreate, APIKeyCreateResponse } from '../types';
 import Button from '../components/common/Button';
 
 // Available scopes for API keys
@@ -36,7 +36,6 @@ const AVAILABLE_SCOPES = [
 ];
 
 const APIKeysPage: React.FC = () => {
-  const queryClient = useQueryClient();
   const [showCreateModal, setShowCreateModal] = useState(false);
   const [selectedKey, setSelectedKey] = useState<APIKey | null>(null);
   const [newKeySecret, setNewKeySecret] = useState<string | null>(null);

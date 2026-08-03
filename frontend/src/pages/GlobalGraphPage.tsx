@@ -22,9 +22,9 @@ const extractArxivId = (raw: string): string | null => {
   m = v.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?/i);
   if (m?.[1]) return m[1];
   // old-style: cs.CL/0001234
-  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.\-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
+  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
   if (m?.[1]) return m[1];
-  m = v.match(/^([\w.\-]+\/\d+(?:v\d+)?)$/i);
+  m = v.match(/^([\w.-]+\/\d+(?:v\d+)?)$/i);
   if (m?.[1]) return m[1];
   return null;
 };
@@ -91,8 +91,11 @@ const GlobalGraphPage: React.FC = () => {
 
   const { data: kgTypes } = useQuery(['kg-types'], () => apiClient.getKGTypes(), { staleTime: 60000 });
 
-  const nodes = (graphData?.nodes || []) as GlobalGraphNode[];
-  const edges = (graphData?.edges || []) as FGEdge[];
+  const nodes = React.useMemo(
+    () => (graphData?.nodes || []) as GlobalGraphNode[],
+    [graphData?.nodes]
+  );
+  const edges = React.useMemo(() => (graphData?.edges || []) as FGEdge[], [graphData?.edges]);
   const metadata = graphData?.metadata;
 
   const availableEntityTypes = React.useMemo(() => {

@@ -2612,6 +2612,8 @@ const ResearchNotesPage: React.FC = () => {
                   {latestExperimentPlan ? (
                     <div
                       ref={latestPlanRef}
+                      role="region"
+                      aria-label={`Experiment plan ${latestExperimentPlan.title}`}
                       className={`space-y-3 rounded border px-3 py-2 transition-colors ${isDeepLinkedLatestPlan ? 'border-primary-400 bg-primary-50/40' : 'border-transparent'}`}
                     >
                       <div className="text-xs text-gray-600">
@@ -2991,6 +2993,8 @@ const ResearchNotesPage: React.FC = () => {
                                 <div
                                   key={r.id}
                                   ref={registerExperimentRunRef(String(r.id))}
+                                  role="article"
+                                  aria-label={`Experiment run ${r.name}`}
                                   className={`border rounded bg-white p-2 transition-colors ${deepLinkedRunId === String(r.id) ? 'border-primary-400 bg-primary-50/40' : 'border-gray-200'}`}
                                 >
                                   <div className="flex items-center justify-between gap-2">

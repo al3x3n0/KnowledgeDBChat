@@ -59,7 +59,6 @@ const WorkflowsPage: React.FC = () => {
   const searchParams = useMemo(() => new URLSearchParams(location.search), [location.search]);
   const selectedExecutionId = String(searchParams.get('executionId') || '').trim();
   const [workflows, setWorkflows] = useState<WorkflowItem[]>([]);
-  const [recentExecutions, setRecentExecutions] = useState<ExecutionItem[]>([]);
   const [selectedExecution, setSelectedExecution] = useState<ExecutionItem | null>(null);
   const [isLoading, setIsLoading] = useState(true);
   const [searchQuery, setSearchQuery] = useState('');

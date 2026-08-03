@@ -97,7 +97,10 @@ const RoutingObservabilityPage: React.FC = () => {
       }),
     { enabled: Boolean(user) && Boolean(selectedRow?.routing_experiment_id), refetchOnWindowFocus: false }
   );
-  const items: LLMRoutingSummaryItem[] = routingQuery.data?.items || [];
+  const items: LLMRoutingSummaryItem[] = useMemo(
+    () => routingQuery.data?.items || [],
+    [routingQuery.data?.items]
+  );
   const displayedItems: LLMRoutingSummaryItem[] = useMemo(() => {
     let out = items;
     if (providerFilter) {

@@ -16,7 +16,7 @@ const KGAdminPage: React.FC = () => {
   const [limit, setLimit] = React.useState(50);
   const [offset, setOffset] = React.useState(0);
   const { data: page, refetch } = useQuery(['kg-entities', debouncedQ, limit, offset], () => apiClient.searchKGEntities(debouncedQ || undefined, limit, offset));
-  const results = page?.items || [];
+  const results = React.useMemo(() => page?.items || [], [page?.items]);
   const total = page?.total || 0;
 
   const [sourceId, setSourceId] = React.useState<string>('');

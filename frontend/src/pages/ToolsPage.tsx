@@ -29,6 +29,7 @@ import api from '../services/api';
 import { AgentDefinitionSummary } from '../types';
 import JsonViewer from '../components/common/JsonViewer';
 import { CompOpsConnectionsPanel } from '../components/tools/CompOpsConnectionsPanel';
+import { MLflowConnectionsPanel } from '../components/tools/MLflowConnectionsPanel';
 
 // Types
 interface UserTool {
@@ -193,6 +194,7 @@ const ToolsPage: React.FC = () => {
       </div>
 
       <CompOpsConnectionsPanel onConnectionsChanged={loadTools} />
+      <MLflowConnectionsPanel onConnectionsChanged={loadTools} />
 
       {/* Search and Filter */}
       <div className="flex items-center space-x-4 mb-6">

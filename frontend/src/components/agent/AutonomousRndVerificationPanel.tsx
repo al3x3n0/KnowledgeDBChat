@@ -14,6 +14,7 @@ import {
 } from '../../utils/verificationAuditReport';
 import Button from '../common/Button';
 import CompOpsEvidenceImportPanel from './CompOpsEvidenceImportPanel';
+import MLflowEvidenceImportPanel from './MLflowEvidenceImportPanel';
 
 interface Props {
   jobId: string;
@@ -273,13 +274,19 @@ export const AutonomousRndVerificationPanel: React.FC<Props> = ({
   }
   if (outcomeQuery.isError) return null;
 
-  const compOpsImport = (
-    <CompOpsEvidenceImportPanel
-      jobId={jobId}
-      onImported={() => outcomeQuery.refetch()}
-    />
+  const externalEvidenceImports = (
+    <>
+      <CompOpsEvidenceImportPanel
+        jobId={jobId}
+        onImported={() => outcomeQuery.refetch()}
+      />
+      <MLflowEvidenceImportPanel
+        jobId={jobId}
+        onImported={() => outcomeQuery.refetch()}
+      />
+    </>
   );
-  if (tasks.length === 0) return compOpsImport;
+  if (tasks.length === 0) return externalEvidenceImports;
 
   const lifecycleView = outcomeQuery.data!.verification_lifecycle;
   const submitLaunch = (task: AutonomousRndVerificationTask) => {
@@ -319,7 +326,7 @@ export const AutonomousRndVerificationPanel: React.FC<Props> = ({
 
   return (
     <>
-      {compOpsImport}
+      {externalEvidenceImports}
       <section className="mb-4 rounded-lg border border-violet-200 bg-white p-3" aria-label="Evidence verification lifecycle">
       <div className="mb-3 flex items-start justify-between gap-2">
         <div>

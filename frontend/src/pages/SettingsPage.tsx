@@ -37,7 +37,7 @@ function resolveSettingsTab(rawTab: string | null, userRole?: string): string {
 }
 
 const SettingsPage: React.FC = () => {
-  const { user, updateUser } = useAuth();
+  const { user } = useAuth();
   const [searchParams] = useSearchParams();
   const [activeTab, setActiveTab] = useState(() => resolveSettingsTab(searchParams.get('tab'), user?.role));
 
@@ -192,7 +192,7 @@ const ProfileTab: React.FC = () => {
 // Security Tab
 const SecurityTab: React.FC = () => {
   const { user } = useAuth();
-  const { register, handleSubmit, formState: { errors }, watch, reset } = useForm<PasswordChangeForm>();
+  const { register, handleSubmit, formState: { errors }, reset } = useForm<PasswordChangeForm>();
 
   const changePasswordMutation = useMutation(
     async (data: { current_password: string; new_password: string }) => {

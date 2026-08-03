@@ -54,7 +54,10 @@ const renderWithProviders = (initialEntry: string = '/papers?q=all:compiler') =>
   });
 
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <QueryClientProvider client={queryClient}>
         <PapersPage />
       </QueryClientProvider>
@@ -227,8 +230,7 @@ describe('PapersPage', () => {
   it('queues a literature review from the inline topic field', async () => {
     renderWithProviders();
 
-    const importCard = await screen.findByText('arXiv 2401.12345');
-    const card = importCard.closest('.border') as HTMLElement;
+    const card = await screen.findByRole('article', { name: 'arXiv 2401.12345' });
     fireEvent.change(within(card).getByPlaceholderText('Review topic'), {
       target: { value: 'Compiler optimization' },
     });

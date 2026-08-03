@@ -7,19 +7,15 @@ import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { 
   Brain, 
   Search, 
-  Filter, 
   Trash2, 
-  Edit3, 
   Eye, 
   RefreshCw,
-  Plus,
   Tag,
   Clock,
   Star,
   Settings,
   BarChart3,
   FileText,
-  User,
   Target,
   AlertTriangle,
   X
@@ -27,7 +23,6 @@ import {
 import { formatDistanceToNow } from 'date-fns';
 
 import { apiClient } from '../services/api';
-import { useAuth } from '../contexts/AuthContext';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import LoadingSpinner from '../components/common/LoadingSpinner';
@@ -56,7 +51,6 @@ interface MemoryStats {
 }
 
 const MemoryPage: React.FC = () => {
-  const { user } = useAuth();
   const queryClient = useQueryClient();
   
   const [activeTab, setActiveTab] = useState('memories');
@@ -112,30 +106,6 @@ const MemoryPage: React.FC = () => {
       deleteMemoryMutation.mutate(memoryToDelete);
       setDeleteConfirmOpen(false);
       setMemoryToDelete(null);
-    }
-  };
-
-  const getMemoryTypeIcon = (type: string) => {
-    switch (type) {
-      case 'fact': return <FileText className="w-4 h-4 text-blue-500" />;
-      case 'preference': return <Star className="w-4 h-4 text-yellow-500" />;
-      case 'context': return <Brain className="w-4 h-4 text-green-500" />;
-      case 'summary': return <BarChart3 className="w-4 h-4 text-purple-500" />;
-      case 'goal': return <Target className="w-4 h-4 text-red-500" />;
-      case 'constraint': return <AlertTriangle className="w-4 h-4 text-orange-500" />;
-      default: return <Brain className="w-4 h-4 text-gray-500" />;
-    }
-  };
-
-  const getMemoryTypeColor = (type: string) => {
-    switch (type) {
-      case 'fact': return 'bg-blue-100 text-blue-800';
-      case 'preference': return 'bg-yellow-100 text-yellow-800';
-      case 'context': return 'bg-green-100 text-green-800';
-      case 'summary': return 'bg-purple-100 text-purple-800';
-      case 'goal': return 'bg-red-100 text-red-800';
-      case 'constraint': return 'bg-orange-100 text-orange-800';
-      default: return 'bg-gray-100 text-gray-800';
     }
   };
 

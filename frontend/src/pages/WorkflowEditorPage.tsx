@@ -9,7 +9,6 @@ import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft,
   Settings,
-  Save,
   Play,
   Loader2,
   Sparkles,
@@ -99,7 +98,7 @@ const WorkflowEditorPage: React.FC = () => {
     return () => {
       resetWorkflow();
     };
-  }, [id]);
+  }, [applyWorkflowDraft, id, loadWorkflow, navigate, resetWorkflow]);
 
   // Warn before leaving with unsaved changes
   useEffect(() => {

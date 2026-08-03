@@ -35,7 +35,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
-import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document, ResearchNote } from '../types';
+import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document } from '../types';
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { useNotifications } from '../contexts/NotificationContext';
@@ -164,12 +164,6 @@ const SynthesisPage: React.FC = () => {
     {
       refetchInterval: 5000, // Auto-refresh every 5 seconds
     }
-  );
-
-  // Fetch types info
-  const { data: typesInfo } = useQuery(
-    ['synthesis-types-info'],
-    () => apiClient.getSynthesisTypesInfo()
   );
 
   // Mutations

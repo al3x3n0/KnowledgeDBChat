@@ -2959,10 +2959,10 @@ class ApiClient {
   async createExternalAgentConnection(data: {
     name: string;
     description?: string | null;
-    provider_type: 'generic_agent' | 'compops';
+    provider_type: 'generic_agent' | 'compops' | 'mlflow';
     endpoint_url: string;
     capabilities: string[];
-    auth_type: 'none' | 'bearer' | 'api_key';
+    auth_type: 'none' | 'bearer' | 'api_key' | 'basic';
     secret_id?: string | null;
     auth_header_name?: string;
     timeout_seconds?: number;

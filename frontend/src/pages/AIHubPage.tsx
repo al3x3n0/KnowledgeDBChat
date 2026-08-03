@@ -18,26 +18,18 @@ import {
   Play,
   Square,
   Download,
-  Upload,
   Eye,
   Clock,
   CheckCircle2,
   AlertCircle,
   Loader2,
   RefreshCw,
-  Settings,
-  Cpu,
   HardDrive,
   Zap,
-  FileText,
   X,
-  Search,
-  ChevronRight,
-  BarChart3,
   Rocket,
   Activity,
   Sparkles,
-  Flag,
   Edit3,
   Check,
   Server,
@@ -47,18 +39,15 @@ import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
 import type {
   TrainingDataset,
-  TrainingDatasetCreate,
   DatasetType,
   DatasetFormat,
   DatasetStatus,
   TrainingJob,
-  TrainingJobCreate,
   TrainingJobStatus,
   TrainingMethod,
   TrainingBackend,
   ModelAdapter,
   AdapterStatus,
-  BaseModelInfo,
   HyperparametersConfig,
 } from '../types';
 import Button from '../components/common/Button';
@@ -72,8 +61,6 @@ const DATASET_STATUS_CONFIG: Record<DatasetStatus, { color: string; bgColor: str
   error: { color: 'text-red-700', bgColor: 'bg-red-100', icon: AlertCircle },
   archived: { color: 'text-gray-700', bgColor: 'bg-gray-100', icon: X },
 };
-
-type DatasetPresetId = 'repro_checklist' | 'perf_regression_triage' | 'gap_analysis_hypotheses';
 
 type EnabledDatasetPreset = { id: string; name: string; description: string; dataset_type: DatasetType };
 
@@ -102,7 +89,6 @@ type TabType = 'datasets' | 'training' | 'models';
 const AIHubPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<TabType>('datasets');
   const [showAIScientist, setShowAIScientist] = useState(false);
-  const queryClient = useQueryClient();
   const location = useLocation();
   const navigate = useNavigate();
 
@@ -132,11 +118,6 @@ const AIHubPage: React.FC = () => {
     ['training-stats'],
     () => apiClient.getTrainingStats(),
     { refetchInterval: 10000 }
-  );
-
-  const { data: adapterStats } = useQuery(
-    ['adapter-stats'],
-    () => apiClient.getModelAdapterStats()
   );
 
   const tabs: { id: TabType; label: string; icon: React.ComponentType<any>; count?: number }[] = [
@@ -1115,12 +1096,13 @@ const TrainingTab: React.FC = () => {
 
   // Real-time progress updates for the selected job
   useEffect(() => {
-    if (!selectedJob) return;
+    const selectedJobId = selectedJob?.id;
+    if (!selectedJobId) return;
 
     let ws: WebSocket | null = null;
 
     try {
-      ws = apiClient.createTrainingJobProgressWebSocket(selectedJob.id);
+      ws = apiClient.createTrainingJobProgressWebSocket(selectedJobId);
     } catch (e) {
       return;
     }
@@ -1153,7 +1135,7 @@ const TrainingTab: React.FC = () => {
         };
 
         setSelectedJob((prev) => {
-          if (!prev || prev.id !== selectedJob.id) return prev;
+          if (!prev || prev.id !== selectedJobId) return prev;
           return applyUpdate(prev);
         });
 
@@ -1161,7 +1143,7 @@ const TrainingTab: React.FC = () => {
           if (!oldData?.jobs) return oldData;
           return {
             ...oldData,
-            jobs: oldData.jobs.map((j: TrainingJob) => (j.id === selectedJob.id ? applyUpdate(j) : j)),
+            jobs: oldData.jobs.map((j: TrainingJob) => (j.id === selectedJobId ? applyUpdate(j) : j)),
           };
         });
 

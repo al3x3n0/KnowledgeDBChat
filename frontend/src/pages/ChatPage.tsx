@@ -30,7 +30,7 @@ import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
 import { apiClient } from '../services/api';
-import { ChatSession, ChatMessage, RetrievalTrace, WebSocketMessage } from '../types';
+import { ChatMessage, RetrievalTrace, WebSocketMessage } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';

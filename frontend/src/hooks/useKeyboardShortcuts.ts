@@ -58,7 +58,6 @@ export const useKeyboardShortcuts = (
       // Find matching shortcut
       for (const shortcut of shortcuts) {
         const keyMatches = shortcut.key.toLowerCase() === e.key.toLowerCase();
-        const ctrlMatches = shortcut.ctrlKey === undefined ? true : shortcut.ctrlKey === (e.ctrlKey || e.metaKey);
         const metaMatches = shortcut.metaKey === undefined ? true : shortcut.metaKey === e.metaKey;
         const shiftMatches = shortcut.shiftKey === undefined ? true : shortcut.shiftKey === e.shiftKey;
         const altMatches = shortcut.altKey === undefined ? true : shortcut.altKey === e.altKey;
@@ -134,4 +133,3 @@ export const formatShortcut = (shortcut: Omit<KeyboardShortcut, 'handler'>): str
   
   return parts.join(' + ');
 };
-

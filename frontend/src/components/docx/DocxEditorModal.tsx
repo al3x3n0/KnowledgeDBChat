@@ -34,14 +34,7 @@ const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
   const [warnings, setWarnings] = useState<string[]>([]);
   const [hasChanges, setHasChanges] = useState(false);
 
-  // Load document content
-  useEffect(() => {
-    if (isOpen && documentId) {
-      loadDocument();
-    }
-  }, [isOpen, documentId]);
-
-  const loadDocument = async () => {
+  const loadDocument = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
@@ -58,14 +51,21 @@ const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
     } finally {
       setLoading(false);
     }
-  };
+  }, [documentId]);
+
+  // Load document content
+  useEffect(() => {
+    if (isOpen && documentId) {
+      loadDocument();
+    }
+  }, [isOpen, documentId, loadDocument]);
 
   const handleContentChange = useCallback((newHtml: string) => {
     setHtmlContent(newHtml);
     setHasChanges(newHtml !== originalContent);
   }, [originalContent]);
 
-  const handleSave = async () => {
+  const handleSave = useCallback(async () => {
     if (!hasChanges) {
       toast.success('No changes to save');
       return;
@@ -94,16 +94,16 @@ const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
     } finally {
       setSaving(false);
     }
-  };
+  }, [documentId, hasChanges, htmlContent, onSaved, version]);
 
-  const handleClose = () => {
+  const handleClose = useCallback(() => {
     if (hasChanges) {
       if (!window.confirm('You have unsaved changes. Are you sure you want to close?')) {
         return;
       }
     }
     onClose();
-  };
+  }, [hasChanges, onClose]);
 
   // Handle keyboard shortcuts
   useEffect(() => {
@@ -124,7 +124,7 @@ const DocxEditorModal: React.FC<DocxEditorModalProps> = ({
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [isOpen, hasChanges, htmlContent, version]);
+  }, [isOpen, handleClose, handleSave]);
 
   if (!isOpen) return null;
 

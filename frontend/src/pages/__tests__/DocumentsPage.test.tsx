@@ -3,11 +3,12 @@
  */
 
 import React from 'react';
-import { render, screen, waitFor } from '@testing-library/react';
+import { render, screen } from '@testing-library/react';
 import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import DocumentsPage from '../DocumentsPage';
 import { AuthProvider } from '../../contexts/AuthContext';
+import { apiClient } from '../../services/api';
 
 // Mock the auth context
 jest.mock('../../contexts/AuthContext', () => ({
@@ -23,6 +24,9 @@ jest.mock('../../services/api', () => ({
   apiClient: {
     getDocuments: jest.fn().mockResolvedValue([]),
     getDocumentSources: jest.fn().mockResolvedValue([]),
+    getActiveGitSources: jest.fn().mockResolvedValue([]),
+    getGitComparisonJobs: jest.fn().mockResolvedValue([]),
+    listPersonas: jest.fn().mockResolvedValue({ items: [], total: 0 }),
     deleteDocument: jest.fn().mockResolvedValue({}),
     reprocessDocument: jest.fn().mockResolvedValue({}),
   },
@@ -35,7 +39,7 @@ const renderWithProviders = (component: React.ReactElement) => {
     },
   });
   return render(
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           {component}
@@ -46,6 +50,14 @@ const renderWithProviders = (component: React.ReactElement) => {
 };
 
 describe('DocumentsPage', () => {
+  beforeEach(() => {
+    (apiClient.getDocuments as jest.Mock).mockResolvedValue([]);
+    (apiClient.getDocumentSources as jest.Mock).mockResolvedValue([]);
+    (apiClient.getActiveGitSources as jest.Mock).mockResolvedValue([]);
+    (apiClient.getGitComparisonJobs as jest.Mock).mockResolvedValue([]);
+    (apiClient.listPersonas as jest.Mock).mockResolvedValue({ items: [], total: 0 });
+  });
+
   it('renders documents page', async () => {
     renderWithProviders(<DocumentsPage />);
     

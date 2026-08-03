@@ -10,6 +10,9 @@ from sqlalchemy.sql import func
 
 from app.core.database import Base
 
+# A launch is created before its trial jobs exist, so that a crash mid-fan-out
+# leaves an owner for the jobs already committed instead of orphans.
+EVAL_LAUNCH_STATUS_PENDING = "pending"
 EVAL_LAUNCH_STATUS_RUNNING = "running"
 EVAL_LAUNCH_STATUS_COMPLETED = "completed"
 EVAL_LAUNCH_STATUS_FAILED = "failed"

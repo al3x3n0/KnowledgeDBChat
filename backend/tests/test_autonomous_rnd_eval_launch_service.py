@@ -203,3 +203,80 @@ def test_finalize_counts_a_deleted_trial_job_as_a_failed_trial(
         assert run.trial_count == launch.job_count
 
     asyncio.get_event_loop().run_until_complete(_exercise())
+
+
+def test_failed_fan_out_leaves_no_orphan_jobs(
+    db_session, test_user, launch_enabled, monkeypatch
+):
+    """A crash part way through the fan-out must not strand committed jobs."""
+    from sqlalchemy import select
+
+    from app.models.agent_job import AgentJob
+    from app.models.autonomous_rnd_eval_launch import AutonomousRndEvalLaunch
+    from app.services import autonomous_rnd_eval_launch_service as launch_module
+
+    real_create = launch_module.agent_job_creation_service.create
+    calls = {"count": 0}
+
+    async def _failing_create(**kwargs):
+        calls["count"] += 1
+        if calls["count"] == 3:
+            raise RuntimeError("job creation exploded")
+        return await real_create(**kwargs)
+
+    monkeypatch.setattr(
+        launch_module.agent_job_creation_service, "create", _failing_create
+    )
+
+    async def _exercise():
+        with pytest.raises(EvalLaunchError) as excinfo:
+            await autonomous_rnd_eval_launch_service.launch(
+                db_session, user_id=test_user.id, suite=_suite(), trials_override=2
+            )
+        assert "was marked failed" in str(excinfo.value)
+
+        launches = list(
+            (await db_session.execute(select(AutonomousRndEvalLaunch))).scalars().all()
+        )
+        assert len(launches) == 1
+        launch = launches[0]
+        assert launch.status == "failed"
+        assert "job creation exploded" in launch.error
+        assert launch.completed_at is not None
+
+        jobs = list((await db_session.execute(select(AgentJob))).scalars().all())
+        # Every committed job is owned by the failed launch and stopped.
+        assert len(jobs) == 2
+        assert launch.job_count == 2
+        bound = {job_id for ids in launch.task_bindings.values() for job_id in ids}
+        assert {str(job.id) for job in jobs} == bound
+        assert all(job.status == AgentJobStatus.CANCELLED.value for job in jobs)
+
+        # A failed launch is not gradable.
+        assert (
+            await autonomous_rnd_eval_launch_service.finalize(db_session, launch=launch)
+            is None
+        )
+
+    asyncio.get_event_loop().run_until_complete(_exercise())
+
+
+def test_pending_launch_is_never_graded(db_session, test_user, launch_enabled):
+    """finalize() must ignore a launch whose fan-out has not completed."""
+
+    async def _exercise():
+        launch, jobs = await autonomous_rnd_eval_launch_service.launch(
+            db_session, user_id=test_user.id, suite=_suite(), trials_override=1
+        )
+        for job in jobs:
+            job.status = AgentJobStatus.COMPLETED.value
+        launch.status = "pending"
+        await db_session.commit()
+
+        assert (
+            await autonomous_rnd_eval_launch_service.finalize(db_session, launch=launch)
+            is None
+        )
+        assert launch.run_id is None
+
+    asyncio.get_event_loop().run_until_complete(_exercise())

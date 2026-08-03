@@ -25,6 +25,7 @@ from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.autonomous_rnd_eval_launch import (
     EVAL_LAUNCH_STATUS_COMPLETED,
     EVAL_LAUNCH_STATUS_FAILED,
+    EVAL_LAUNCH_STATUS_PENDING,
     EVAL_LAUNCH_STATUS_RUNNING,
     AutonomousRndEvalLaunch,
 )
@@ -93,26 +94,9 @@ class AutonomousRnDEvalLaunchService:
             )
 
         launch_id = uuid4()
-        jobs: List[AgentJob] = []
-        task_bindings: Dict[str, List[str]] = {}
-        for task, trial_count in planned:
-            job_ids: List[str] = []
-            for trial_index in range(trial_count):
-                job = await agent_job_creation_service.create(
-                    spec=self._trial_spec(
-                        suite=suite,
-                        task=task,
-                        trial_index=trial_index,
-                        launch_id=launch_id,
-                        config_overrides=config_overrides,
-                    ),
-                    user_id=user_id,
-                    db=db,
-                )
-                jobs.append(job)
-                job_ids.append(str(job.id))
-            task_bindings[task.id] = job_ids
-
+        # Job creation commits per job, so the launch row has to exist first:
+        # otherwise a failure part way through the fan-out leaves committed
+        # trial jobs that nothing owns, references, or reaps.
         launch = AutonomousRndEvalLaunch(
             id=launch_id,
             user_id=user_id,
@@ -120,14 +104,72 @@ class AutonomousRnDEvalLaunchService:
             suite_name=suite.name,
             suite_version=suite.version,
             label=(label.strip()[:200] or None) if label else None,
-            status=EVAL_LAUNCH_STATUS_RUNNING,
+            status=EVAL_LAUNCH_STATUS_PENDING,
             trials_per_task=max(count for _, count in planned),
             job_count=total_jobs,
-            task_bindings=task_bindings,
+            task_bindings={},
         )
         db.add(launch)
+        await db.commit()
+
+        jobs: List[AgentJob] = []
+        task_bindings: Dict[str, List[str]] = {}
+        try:
+            for task, trial_count in planned:
+                job_ids: List[str] = []
+                for trial_index in range(trial_count):
+                    job = await agent_job_creation_service.create(
+                        spec=self._trial_spec(
+                            suite=suite,
+                            task=task,
+                            trial_index=trial_index,
+                            launch_id=launch_id,
+                            config_overrides=config_overrides,
+                        ),
+                        user_id=user_id,
+                        db=db,
+                    )
+                    jobs.append(job)
+                    job_ids.append(str(job.id))
+                task_bindings[task.id] = job_ids
+                launch.task_bindings = dict(task_bindings)
+        except Exception as exc:  # noqa: BLE001 - recorded on the launch row
+            await self._abandon_partial_fan_out(
+                db, launch=launch, jobs=jobs, bindings=task_bindings, error=str(exc)
+            )
+            raise EvalLaunchError(
+                f"Trial fan-out failed after {len(jobs)} of {total_jobs} jobs; "
+                f"launch {launch_id} was marked failed and its jobs cancelled",
+                status_code=500,
+            ) from exc
+
+        launch.task_bindings = task_bindings
+        # Only a fully created fan-out becomes gradable; a pending launch is
+        # never picked up by finalize().
+        launch.status = EVAL_LAUNCH_STATUS_RUNNING
         await db.flush()
         return launch, jobs
+
+    async def _abandon_partial_fan_out(
+        self,
+        db: AsyncSession,
+        *,
+        launch: AutonomousRndEvalLaunch,
+        jobs: List[AgentJob],
+        bindings: Dict[str, List[str]],
+        error: str,
+    ) -> None:
+        """Cancel jobs from a failed fan-out and settle the launch."""
+        for job in jobs:
+            # None were dispatched yet, so cancelling stops them being picked up
+            # by the scheduler while keeping them attributable to the launch.
+            job.status = AgentJobStatus.CANCELLED.value
+        launch.task_bindings = dict(bindings)
+        launch.job_count = len(jobs)
+        launch.status = EVAL_LAUNCH_STATUS_FAILED
+        launch.error = f"Trial fan-out failed: {error}"[:1000]
+        launch.completed_at = datetime.now(timezone.utc)
+        await db.commit()
 
     def _trial_count(self, task, trials_override: Optional[int]) -> int:
         if trials_override is None:

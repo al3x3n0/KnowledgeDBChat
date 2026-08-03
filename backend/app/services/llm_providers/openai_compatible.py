@@ -20,7 +20,13 @@ from loguru import logger
 
 from app.utils.exceptions import LLMServiceError
 
-from .base import BaseLLMProvider, LLMCompletion, LLMToolCall, to_openai_tools, try_parse_json_object
+from .base import (
+    BaseLLMProvider,
+    LLMCompletion,
+    LLMToolCall,
+    to_openai_tools,
+    try_parse_json_object,
+)
 
 _CLIENT_CACHE: Dict[tuple, Any] = {}
 
@@ -78,7 +84,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
     ) -> LLMCompletion:
         resolved_model = model or self.default_model
         if not resolved_model:
-            raise LLMServiceError(f"No model configured for provider '{self.provider_label}'")
+            raise LLMServiceError(
+                f"No model configured for provider '{self.provider_label}'"
+            )
 
         kwargs: Dict[str, Any] = {
             "model": resolved_model,

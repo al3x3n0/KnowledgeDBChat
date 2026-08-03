@@ -37,12 +37,15 @@ class AgentObservationService:
         elif job_type == "monitor":
             last_actions = state.get("actions_taken", [])
             if last_actions:
-                observation["last_check"] = last_actions[-1].get("result", {}).get("timestamp")
+                observation["last_check"] = (
+                    last_actions[-1].get("result", {}).get("timestamp")
+                )
         elif job_type == "analysis":
             analyzed = [
                 a
                 for a in state.get("actions_taken", [])
-                if a.get("action", {}).get("tool") in ["get_document_details", "summarize_document"]
+                if a.get("action", {}).get("tool")
+                in ["get_document_details", "summarize_document"]
             ]
             observation["documents_analyzed"] = len(analyzed)
         elif job_type == "data_analysis":
@@ -56,7 +59,8 @@ class AgentObservationService:
             charts_created = [
                 a
                 for a in state.get("actions_taken", [])
-                if a.get("action", {}).get("tool") in ["create_chart", "create_correlation_heatmap"]
+                if a.get("action", {}).get("tool")
+                in ["create_chart", "create_correlation_heatmap"]
             ]
             diagrams_created = [
                 a
@@ -75,7 +79,13 @@ class AgentObservationService:
                 a
                 for a in state.get("actions_taken", [])
                 if a.get("action", {}).get("tool")
-                in ["query_data", "filter_data", "aggregate_data", "join_datasets", "transform_data"]
+                in [
+                    "query_data",
+                    "filter_data",
+                    "aggregate_data",
+                    "join_datasets",
+                    "transform_data",
+                ]
             ]
             observation["charts_created"] = len(charts_created)
             observation["diagrams_created"] = len(diagrams_created)

@@ -9,7 +9,9 @@ from app.models.memory import ConversationMemory
 from app.services.agent_job_memory_service import AgentJobMemoryService
 
 
-def _make_job(*, user_id, config=None, status=AgentJobStatus.COMPLETED.value) -> AgentJob:
+def _make_job(
+    *, user_id, config=None, status=AgentJobStatus.COMPLETED.value
+) -> AgentJob:
     return AgentJob(
         id=uuid4(),
         name="Memory Service Test Job",
@@ -99,7 +101,11 @@ async def test_resolve_relaunch_dedup_scope_walks_to_root():
 
     assert scope["is_relaunch_chain"] is True
     assert scope["root_job_id"] == str(root.id)
-    assert {str(v) for v in scope["job_ids"]} == {str(child.id), str(parent.id), str(root.id)}
+    assert {str(v) for v in scope["job_ids"]} == {
+        str(child.id),
+        str(parent.id),
+        str(root.id),
+    }
 
 
 @pytest.mark.asyncio

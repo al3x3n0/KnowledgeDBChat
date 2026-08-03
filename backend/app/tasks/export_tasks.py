@@ -8,19 +8,21 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from celery import current_task
 from loguru import logger
+from sqlalchemy import select
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.export_job import ExportJob
 from app.services.export_service import export_service
-from sqlalchemy import select
 
 
-async def _publish_progress(job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None):
+async def _publish_progress(
+    job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None
+):
     """Publish progress update to Redis for WebSocket subscribers."""
     import redis.asyncio as redis
+
     from app.core.config import settings
 
     try:
@@ -49,9 +51,7 @@ async def _process_export_async(job_id: str):
 
     async with session_factory() as db:
         # Load job from database
-        result = await db.execute(
-            select(ExportJob).where(ExportJob.id == job_uuid)
-        )
+        result = await db.execute(select(ExportJob).where(ExportJob.id == job_uuid))
         job = result.scalar_one_or_none()
 
         if not job:
@@ -69,16 +69,16 @@ async def _process_export_async(job_id: str):
             # Progress callback that publishes to Redis
             def progress_callback(progress: int, stage: str):
                 # Publish progress synchronously (within async context)
-                asyncio.create_task(_publish_progress(job_id, progress, stage, "processing"))
+                asyncio.create_task(
+                    _publish_progress(job_id, progress, stage, "processing")
+                )
                 # Update job in database
                 job.progress = progress
                 job.current_stage = stage
 
             # Process the export job
             await export_service.process_export_job(
-                db=db,
-                job_id=job_uuid,
-                progress_callback=progress_callback
+                db=db, job_id=job_uuid, progress_callback=progress_callback
             )
 
             await _publish_progress(job_id, 100, "completed", "completed")
@@ -158,6 +158,7 @@ def cleanup_old_exports(days: int = 30):
         days: Number of days to keep exports
     """
     from datetime import timedelta
+
     from sqlalchemy import and_
 
     logger.info(f"Starting cleanup of exports older than {days} days")
@@ -166,6 +167,7 @@ def cleanup_old_exports(days: int = 30):
         session_factory = create_celery_session()
         async with session_factory() as db:
             from app.services.storage_service import StorageService
+
             storage = StorageService()
 
             cutoff_date = datetime.utcnow() - timedelta(days=days)
@@ -175,7 +177,7 @@ def cleanup_old_exports(days: int = 30):
                 select(ExportJob).where(
                     and_(
                         ExportJob.created_at < cutoff_date,
-                        ExportJob.status.in_(["completed", "failed", "cancelled"])
+                        ExportJob.status.in_(["completed", "failed", "cancelled"]),
                     )
                 )
             )

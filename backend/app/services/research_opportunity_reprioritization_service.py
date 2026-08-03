@@ -107,8 +107,16 @@ def _merge_dicts(*collections: Any, limit: int = 12) -> list[dict[str, Any]]:
 
 def _extract_scheduler_state(job: AgentJob | None) -> dict[str, Any] | None:
     results = job.results if job and isinstance(job.results, dict) else {}
-    execution = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
-    raw = execution.get("scheduler_state") if isinstance(execution.get("scheduler_state"), dict) else {}
+    execution = (
+        results.get("execution_strategy")
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
+    raw = (
+        execution.get("scheduler_state")
+        if isinstance(execution.get("scheduler_state"), dict)
+        else {}
+    )
     if not raw:
         return None
     return {
@@ -127,16 +135,29 @@ def _extract_scheduler_state(job: AgentJob | None) -> dict[str, Any] | None:
 
 
 def _hypotheses_from_note(note: ResearchNote) -> list[dict[str, Any]]:
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
-    if _text(payload.get("artifact_type")) not in {"hypothesis_reevaluation", "hypothesis_synthesis"}:
+    payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
+    if _text(payload.get("artifact_type")) not in {
+        "hypothesis_reevaluation",
+        "hypothesis_synthesis",
+    }:
         return []
-    rows = payload.get("hypotheses") if isinstance(payload.get("hypotheses"), list) else []
+    rows = (
+        payload.get("hypotheses") if isinstance(payload.get("hypotheses"), list) else []
+    )
     return [dict(row) for row in rows if isinstance(row, dict)]
 
 
 def _priority_delta_reason(note: ResearchNote, hypothesis_id: str) -> str | None:
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
-    rows = payload.get("priority_deltas") if isinstance(payload.get("priority_deltas"), list) else []
+    payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
+    rows = (
+        payload.get("priority_deltas")
+        if isinstance(payload.get("priority_deltas"), list)
+        else []
+    )
     for row in rows:
         if not isinstance(row, dict):
             continue
@@ -149,23 +170,40 @@ def _priority_delta_reason(note: ResearchNote, hypothesis_id: str) -> str | None
 
 
 def _hypothesis_run_ids(hypothesis: dict[str, Any]) -> list[str]:
-    evidence_rows = hypothesis.get("experiment_evidence") if isinstance(hypothesis.get("experiment_evidence"), list) else []
-    return _merge_strings([_text(row.get("run_id")) for row in evidence_rows if isinstance(row, dict)], limit=8)
+    evidence_rows = (
+        hypothesis.get("experiment_evidence")
+        if isinstance(hypothesis.get("experiment_evidence"), list)
+        else []
+    )
+    return _merge_strings(
+        [_text(row.get("run_id")) for row in evidence_rows if isinstance(row, dict)],
+        limit=8,
+    )
 
 
 def _hypothesis_supporting_sources(hypothesis: dict[str, Any]) -> list[dict[str, Any]]:
-    evidence_rows = hypothesis.get("experiment_evidence") if isinstance(hypothesis.get("experiment_evidence"), list) else []
+    evidence_rows = (
+        hypothesis.get("experiment_evidence")
+        if isinstance(hypothesis.get("experiment_evidence"), list)
+        else []
+    )
     evidence_sources = [
         item
         for row in evidence_rows
-        for item in ((row.get("supporting_sources") if isinstance(row, dict) else None) or [])
+        for item in (
+            (row.get("supporting_sources") if isinstance(row, dict) else None) or []
+        )
         if isinstance(item, dict)
     ]
     return _merge_dicts(hypothesis.get("supporting_sources"), evidence_sources, limit=8)
 
 
 def _hypothesis_supporting_evidence(hypothesis: dict[str, Any]) -> list[str]:
-    evidence_rows = hypothesis.get("experiment_evidence") if isinstance(hypothesis.get("experiment_evidence"), list) else []
+    evidence_rows = (
+        hypothesis.get("experiment_evidence")
+        if isinstance(hypothesis.get("experiment_evidence"), list)
+        else []
+    )
     text_rows: list[str] = []
     for row in evidence_rows:
         if not isinstance(row, dict):
@@ -186,7 +224,11 @@ def _collect_autonomous_origins(hypothesis: dict[str, Any]) -> list[dict[str, st
     candidate_rows: list[Any] = []
     if isinstance(hypothesis.get("autonomous_origin"), dict):
         candidate_rows.append(hypothesis.get("autonomous_origin"))
-    evidence_rows = hypothesis.get("experiment_evidence") if isinstance(hypothesis.get("experiment_evidence"), list) else []
+    evidence_rows = (
+        hypothesis.get("experiment_evidence")
+        if isinstance(hypothesis.get("experiment_evidence"), list)
+        else []
+    )
     for row in evidence_rows:
         if isinstance(row, dict) and isinstance(row.get("autonomous_origin"), dict):
             candidate_rows.append(row.get("autonomous_origin"))
@@ -198,8 +240,14 @@ def _collect_autonomous_origins(hypothesis: dict[str, Any]) -> list[dict[str, st
         source_kind = _text(row.get("source_kind")).lower()
         source_id = _text(row.get("source_id"))
         opportunity_id = _text(row.get("opportunity_id"))
-        evidence_revision_at_launch = _text(row.get("evidence_revision_at_launch")) or None
-        if source_kind not in {"profile", "portfolio"} or not source_id or not opportunity_id:
+        evidence_revision_at_launch = (
+            _text(row.get("evidence_revision_at_launch")) or None
+        )
+        if (
+            source_kind not in {"profile", "portfolio"}
+            or not source_id
+            or not opportunity_id
+        ):
             continue
         marker = f"{source_kind}:{source_id}:{opportunity_id}"
         if marker in seen:
@@ -240,7 +288,12 @@ def _matches_origin(
     return opportunity_id == hypothesis_id and note_id in source_note_ids
 
 
-def _resolve_follow_up_review_mode(effective_policy: dict[str, Any], *, explicit_policy: Any, default: str = "auto_launch_safe") -> str:
+def _resolve_follow_up_review_mode(
+    effective_policy: dict[str, Any],
+    *,
+    explicit_policy: Any,
+    default: str = "auto_launch_safe",
+) -> str:
     """Resolve the follow-up review mode for auto-dispatch.
 
     A domain profile has no dedicated ``follow_up_review_mode`` column (only the
@@ -258,15 +311,23 @@ def _resolve_follow_up_review_mode(effective_policy: dict[str, Any], *, explicit
     return raw_mode
 
 
-def _current_follow_up_review_applies(row: dict[str, Any], *, evidence_revision: str) -> bool:
+def _current_follow_up_review_applies(
+    row: dict[str, Any], *, evidence_revision: str
+) -> bool:
     return _text(row.get("follow_up_review_evidence_revision")) == evidence_revision
 
 
 def _follow_up_staging_baseline(row: dict[str, Any]) -> str:
-    return "planned" if _string_list(row.get("linked_experiment_plan_ids"), limit=1) else "accepted"
+    return (
+        "planned"
+        if _string_list(row.get("linked_experiment_plan_ids"), limit=1)
+        else "accepted"
+    )
 
 
-async def _resolve_parent_job_for_profile(db: AsyncSession, profile: DomainResearchProfile) -> AgentJob | None:
+async def _resolve_parent_job_for_profile(
+    db: AsyncSession, profile: DomainResearchProfile
+) -> AgentJob | None:
     parent_job_id = profile.latest_run_job_id or profile.active_job_id
     if not parent_job_id:
         return None
@@ -276,7 +337,9 @@ async def _resolve_parent_job_for_profile(db: AsyncSession, profile: DomainResea
     return parent_job
 
 
-async def _resolve_parent_job_for_portfolio(db: AsyncSession, portfolio: ResearchPortfolio) -> AgentJob | None:
+async def _resolve_parent_job_for_portfolio(
+    db: AsyncSession, portfolio: ResearchPortfolio
+) -> AgentJob | None:
     parent_job_id = portfolio.latest_run_job_id or portfolio.active_job_id
     if not parent_job_id:
         return None
@@ -303,9 +366,17 @@ async def _record_follow_up_dispatch_event(
     metadata: dict[str, Any] | None = None,
 ) -> None:
     deep_link = (
-        {"target_tab": "domain", "params": {"tab": "domain"}, "label": "Open Domain Profiles"}
+        {
+            "target_tab": "domain",
+            "params": {"tab": "domain"},
+            "label": "Open Domain Profiles",
+        }
         if entity_kind == "domain_profile"
-        else {"target_tab": "fleet", "params": {"tab": "fleet", "fleetId": entity_id}, "label": "Open Research Fleet"}
+        else {
+            "target_tab": "fleet",
+            "params": {"tab": "fleet", "fleetId": entity_id},
+            "label": "Open Research Fleet",
+        }
     )
     await record_autonomy_decision_event(
         db=db,
@@ -322,12 +393,18 @@ async def _record_follow_up_dispatch_event(
         severity="medium",
         actor_mode="system",
         summary=summary[:500],
-        reason_label=reason_code.replace("_", " ").strip().title() if reason_code else None,
+        reason_label=reason_code.replace("_", " ").strip().title()
+        if reason_code
+        else None,
         scheduler_state=scheduler_state,
         before_state=opportunity_before,
         after_state=opportunity_after,
         deep_link=deep_link,
-        metadata=metadata or {"opportunity_id": opportunity_after.get("opportunity_id"), "source_note_id": str(note.id)},
+        metadata=metadata
+        or {
+            "opportunity_id": opportunity_after.get("opportunity_id"),
+            "source_note_id": str(note.id),
+        },
     )
 
 
@@ -353,17 +430,27 @@ async def _record_reevaluation_closeout_event(
     deep_link = (
         {
             "target_tab": "domain",
-            "params": {"tab": "domain", "profileId": entity_id, "opportunityId": opportunity_id},
+            "params": {
+                "tab": "domain",
+                "profileId": entity_id,
+                "opportunityId": opportunity_id,
+            },
             "label": "Open Domain Opportunity",
         }
         if entity_kind == "domain_profile"
         else {
             "target_tab": "fleet",
-            "params": {"tab": "fleet", "fleetId": entity_id, "opportunityId": opportunity_id},
+            "params": {
+                "tab": "fleet",
+                "fleetId": entity_id,
+                "opportunityId": opportunity_id,
+            },
             "label": "Open Research Fleet Opportunity",
         }
     )
-    summary = f"{entity_label}: reevaluation {_text(outcome_status).replace('_', ' ')} for {_text(opportunity_after.get('title') or 'opportunity')}".strip()[:500]
+    summary = f"{entity_label}: reevaluation {_text(outcome_status).replace('_', ' ')} for {_text(opportunity_after.get('title') or 'opportunity')}".strip()[
+        :500
+    ]
     await record_autonomy_decision_event(
         db=db,
         user_id=user_id,
@@ -405,16 +492,32 @@ async def _auto_dispatch_profile_follow_ups(
     changed_opportunity_ids: set[str],
     follow_up_review_mode: str,
 ) -> bool:
-    if not changed_opportunity_ids or not bool(effective_policy.get("auto_launch_follow_up", True)):
+    if not changed_opportunity_ids or not bool(
+        effective_policy.get("auto_launch_follow_up", True)
+    ):
         return False
 
-    if follow_up_review_mode not in {"auto_launch_safe", "queue_for_approval", "manual_only"}:
+    if follow_up_review_mode not in {
+        "auto_launch_safe",
+        "queue_for_approval",
+        "manual_only",
+    }:
         follow_up_review_mode = "auto_launch_safe"
 
-    max_auto_launches = max(0, _safe_int(effective_policy.get("max_auto_follow_up_launches"), 1))
-    parent_job = await _resolve_parent_job_for_profile(db, profile) if follow_up_review_mode == "auto_launch_safe" else None
+    max_auto_launches = max(
+        0, _safe_int(effective_policy.get("max_auto_follow_up_launches"), 1)
+    )
+    parent_job = (
+        await _resolve_parent_job_for_profile(db, profile)
+        if follow_up_review_mode == "auto_launch_safe"
+        else None
+    )
     scheduler_state = _extract_scheduler_state(parent_job)
-    executor = AutonomousAgentExecutor() if follow_up_review_mode == "auto_launch_safe" else None
+    executor = (
+        AutonomousAgentExecutor()
+        if follow_up_review_mode == "auto_launch_safe"
+        else None
+    )
     launched_count = 0
     changed_any = False
 
@@ -430,9 +533,13 @@ async def _auto_dispatch_profile_follow_ups(
             continue
         if _string_list(current.get("child_job_ids"), limit=1):
             continue
-        if review_status == "pending_approval" and _current_follow_up_review_applies(current, evidence_revision=evidence_revision):
+        if review_status == "pending_approval" and _current_follow_up_review_applies(
+            current, evidence_revision=evidence_revision
+        ):
             continue
-        if review_status == "rejected" and _current_follow_up_review_applies(current, evidence_revision=evidence_revision):
+        if review_status == "rejected" and _current_follow_up_review_applies(
+            current, evidence_revision=evidence_revision
+        ):
             continue
 
         updated = deepcopy(current)
@@ -458,7 +565,11 @@ async def _auto_dispatch_profile_follow_ups(
             event_type = "follow_up_manual_recommendation"
             reason_code = "manual_follow_up_recommendation"
             summary = f"{str(profile.title or 'Domain profile').strip()}: marked {str(updated.get('title') or 'opportunity').strip()} for manual follow-up review"
-        elif parent_job is not None and launched_count < max_auto_launches and executor is not None:
+        elif (
+            parent_job is not None
+            and launched_count < max_auto_launches
+            and executor is not None
+        ):
             child_job = await executor._create_domain_research_follow_up_job(
                 db=db,
                 job=parent_job,
@@ -471,8 +582,12 @@ async def _auto_dispatch_profile_follow_ups(
                 docs=[],
                 repo_documents=[],
                 papers=[],
-                repo_source_ids=[str(v) for v in (profile.repo_source_ids or []) if _text(v)],
-                benchmark_queries=[str(v) for v in (profile.benchmark_queries or []) if _text(v)],
+                repo_source_ids=[
+                    str(v) for v in (profile.repo_source_ids or []) if _text(v)
+                ],
+                benchmark_queries=[
+                    str(v) for v in (profile.benchmark_queries or []) if _text(v)
+                ],
                 automation_profile=profile.automation_profile,
                 automation_policy=effective_policy,
                 sandbox_profile_id=profile.sandbox_profile_id,
@@ -482,7 +597,9 @@ async def _auto_dispatch_profile_follow_ups(
                 continue
             child_id = str(child_job.id)
             execute_agent_job_task.delay(child_id, str(profile.user_id))
-            updated["child_job_ids"] = _merge_strings(updated.get("child_job_ids"), [child_id], limit=8)
+            updated["child_job_ids"] = _merge_strings(
+                updated.get("child_job_ids"), [child_id], limit=8
+            )
             updated["decision_state"] = "auto_accepted"
             updated["stage"] = "validating"
             updated["follow_up_review_status"] = "approved_launch"
@@ -509,7 +626,8 @@ async def _auto_dispatch_profile_follow_ups(
             opportunity_after=normalized,
             event_type=event_type,
             reason_code=reason_code,
-            summary=summary or "Opportunity follow-up status updated from reevaluation.",
+            summary=summary
+            or "Opportunity follow-up status updated from reevaluation.",
             scheduler_state=scheduler_state,
         )
     return changed_any
@@ -525,16 +643,32 @@ async def _auto_dispatch_portfolio_follow_ups(
     changed_opportunity_ids: set[str],
     follow_up_review_mode: str,
 ) -> bool:
-    if not changed_opportunity_ids or not bool(effective_policy.get("auto_launch_follow_up", True)):
+    if not changed_opportunity_ids or not bool(
+        effective_policy.get("auto_launch_follow_up", True)
+    ):
         return False
 
-    if follow_up_review_mode not in {"auto_launch_safe", "queue_for_approval", "manual_only"}:
+    if follow_up_review_mode not in {
+        "auto_launch_safe",
+        "queue_for_approval",
+        "manual_only",
+    }:
         follow_up_review_mode = "auto_launch_safe"
 
-    max_auto_launches = max(0, _safe_int(effective_policy.get("max_auto_follow_up_launches"), 1))
-    parent_job = await _resolve_parent_job_for_portfolio(db, portfolio) if follow_up_review_mode == "auto_launch_safe" else None
+    max_auto_launches = max(
+        0, _safe_int(effective_policy.get("max_auto_follow_up_launches"), 1)
+    )
+    parent_job = (
+        await _resolve_parent_job_for_portfolio(db, portfolio)
+        if follow_up_review_mode == "auto_launch_safe"
+        else None
+    )
     scheduler_state = _extract_scheduler_state(parent_job)
-    executor = AutonomousAgentExecutor() if follow_up_review_mode == "auto_launch_safe" else None
+    executor = (
+        AutonomousAgentExecutor()
+        if follow_up_review_mode == "auto_launch_safe"
+        else None
+    )
     launched_count = 0
     changed_any = False
 
@@ -550,9 +684,13 @@ async def _auto_dispatch_portfolio_follow_ups(
             continue
         if _string_list(current.get("child_job_ids"), limit=1):
             continue
-        if review_status == "pending_approval" and _current_follow_up_review_applies(current, evidence_revision=evidence_revision):
+        if review_status == "pending_approval" and _current_follow_up_review_applies(
+            current, evidence_revision=evidence_revision
+        ):
             continue
-        if review_status == "rejected" and _current_follow_up_review_applies(current, evidence_revision=evidence_revision):
+        if review_status == "rejected" and _current_follow_up_review_applies(
+            current, evidence_revision=evidence_revision
+        ):
             continue
 
         updated = deepcopy(current)
@@ -578,7 +716,11 @@ async def _auto_dispatch_portfolio_follow_ups(
             event_type = "follow_up_manual_recommendation"
             reason_code = "manual_follow_up_recommendation"
             summary = f"{str(portfolio.title or 'Research fleet').strip()}: marked {str(updated.get('title') or 'opportunity').strip()} for manual follow-up review"
-        elif parent_job is not None and launched_count < max_auto_launches and executor is not None:
+        elif (
+            parent_job is not None
+            and launched_count < max_auto_launches
+            and executor is not None
+        ):
             child_job = await executor._create_domain_research_follow_up_job(
                 db=db,
                 job=parent_job,
@@ -586,12 +728,16 @@ async def _auto_dispatch_portfolio_follow_ups(
                 objective=portfolio.objective,
                 customer_context="research_portfolio",
                 track_type=str(updated.get("track_type") or "generic"),
-                source_scope="kb_plus_arxiv_plus_repo" if updated.get("source_repo_ids") else "kb_plus_arxiv",
+                source_scope="kb_plus_arxiv_plus_repo"
+                if updated.get("source_repo_ids")
+                else "kb_plus_arxiv",
                 top_idea=updated,
                 docs=[],
                 repo_documents=[],
                 papers=[],
-                repo_source_ids=[str(v) for v in (updated.get("source_repo_ids") or []) if _text(v)],
+                repo_source_ids=[
+                    str(v) for v in (updated.get("source_repo_ids") or []) if _text(v)
+                ],
                 benchmark_queries=[],
                 automation_profile=portfolio.automation_profile,
                 automation_policy=effective_policy,
@@ -601,7 +747,9 @@ async def _auto_dispatch_portfolio_follow_ups(
                 continue
             child_id = str(child_job.id)
             execute_agent_job_task.delay(child_id, str(portfolio.user_id))
-            updated["child_job_ids"] = _merge_strings(updated.get("child_job_ids"), [child_id], limit=8)
+            updated["child_job_ids"] = _merge_strings(
+                updated.get("child_job_ids"), [child_id], limit=8
+            )
             updated["decision_state"] = "auto_accepted"
             updated["stage"] = "validating"
             updated["follow_up_review_status"] = "approved_launch"
@@ -652,24 +800,53 @@ def _reprioritize_opportunity(
             min(
                 _safe_float(
                     hypothesis.get("evidence_score"),
-                    _safe_float(hypothesis.get("overall_score"), previous.get("confidence") or 0.0),
+                    _safe_float(
+                        hypothesis.get("overall_score"),
+                        previous.get("confidence") or 0.0,
+                    ),
                 ),
                 1.0,
             ),
         ),
         4,
     )
-    next_readiness = round(max(0.0, min(_safe_float(hypothesis.get("overall_score"), previous.get("readiness") or 0.0), 1.0)), 4)
-    next_novelty = round(max(0.0, min(_safe_float(hypothesis.get("novelty_score"), previous.get("novelty") or 0.0), 1.0)), 4)
+    next_readiness = round(
+        max(
+            0.0,
+            min(
+                _safe_float(
+                    hypothesis.get("overall_score"), previous.get("readiness") or 0.0
+                ),
+                1.0,
+            ),
+        ),
+        4,
+    )
+    next_novelty = round(
+        max(
+            0.0,
+            min(
+                _safe_float(
+                    hypothesis.get("novelty_score"), previous.get("novelty") or 0.0
+                ),
+                1.0,
+            ),
+        ),
+        4,
+    )
     source_run_ids = _hypothesis_run_ids(hypothesis)
     supporting_sources = _hypothesis_supporting_sources(hypothesis)
     supporting_evidence = _hypothesis_supporting_evidence(hypothesis)
     reprioritization_reason = _priority_delta_reason(note, hypothesis_id)
-    merged_source_note_ids = _merge_strings(previous.get("source_note_ids"), [str(note.id)], limit=8)
+    merged_source_note_ids = _merge_strings(
+        previous.get("source_note_ids"), [str(note.id)], limit=8
+    )
 
     if (
-        (_text(hypothesis.get("title")) or previous.get("title")) == previous.get("title")
-        and (_text(hypothesis.get("claim")) or previous.get("hypothesis")) == previous.get("hypothesis")
+        (_text(hypothesis.get("title")) or previous.get("title"))
+        == previous.get("title")
+        and (_text(hypothesis.get("claim")) or previous.get("hypothesis"))
+        == previous.get("hypothesis")
         and next_confidence == previous.get("confidence")
         and next_readiness == previous.get("readiness")
         and next_novelty == previous.get("novelty")
@@ -705,11 +882,14 @@ def _reprioritize_opportunity(
             (previous.get("autonomous_origin") or {}).get("evidence_revision_at_launch")
             if isinstance(previous.get("autonomous_origin"), dict)
             else None
-        ) or previous.get("evidence_revision"),
+        )
+        or previous.get("evidence_revision"),
     }
 
     existing_revision = _text(previous.get("evidence_revision"))
-    updated["evidence_revision"] = compute_research_opportunity_evidence_revision(updated)
+    updated["evidence_revision"] = compute_research_opportunity_evidence_revision(
+        updated
+    )
     evidence_changed = existing_revision != _text(updated.get("evidence_revision"))
 
     if evidence_changed and not _string_list(previous.get("child_job_ids"), limit=1):
@@ -719,20 +899,42 @@ def _reprioritize_opportunity(
         updated["follow_up_review_note"] = None
         updated["follow_up_review_evidence_revision"] = None
 
-    confidence_threshold = max(0.0, min(_safe_float(effective_policy.get("confidence_threshold"), 0.72), 1.0))
-    readiness_threshold = max(0.0, min(_safe_float(effective_policy.get("experiment_readiness_threshold"), 0.8), 1.0))
+    confidence_threshold = max(
+        0.0, min(_safe_float(effective_policy.get("confidence_threshold"), 0.72), 1.0)
+    )
+    readiness_threshold = max(
+        0.0,
+        min(
+            _safe_float(effective_policy.get("experiment_readiness_threshold"), 0.8),
+            1.0,
+        ),
+    )
     has_active_links = any(
         _string_list(previous.get(key), limit=1)
-        for key in ("linked_experiment_plan_ids", "linked_validation_run_ids", "child_job_ids")
+        for key in (
+            "linked_experiment_plan_ids",
+            "linked_validation_run_ids",
+            "child_job_ids",
+        )
     )
 
-    below_policy = next_confidence < confidence_threshold or next_readiness < readiness_threshold
-    if below_policy and not has_active_links and str(previous.get("decision_state") or "") != "suppressed":
+    below_policy = (
+        next_confidence < confidence_threshold or next_readiness < readiness_threshold
+    )
+    if (
+        below_policy
+        and not has_active_links
+        and str(previous.get("decision_state") or "") != "suppressed"
+    ):
         updated["stage"] = "blocked"
         updated["last_blocked_reason_code"] = "reprioritized_below_policy_threshold"
         updated["last_decision_reason_code"] = "reprioritized_from_experiment_evidence"
     else:
-        if str(previous.get("stage") or "") in {"completed", "blocked"} and not has_active_links and str(previous.get("decision_state") or "") != "suppressed":
+        if (
+            str(previous.get("stage") or "") in {"completed", "blocked"}
+            and not has_active_links
+            and str(previous.get("decision_state") or "") != "suppressed"
+        ):
             updated["stage"] = "accepted"
         updated["last_blocked_reason_code"] = None
         updated["last_decision_reason_code"] = "reprioritized_from_experiment_evidence"
@@ -770,7 +972,9 @@ def _reprioritize_opportunity(
     return candidate, changed
 
 
-async def _sync_profile(profile: DomainResearchProfile, opportunities: list[dict[str, Any]]) -> None:
+async def _sync_profile(
+    profile: DomainResearchProfile, opportunities: list[dict[str, Any]]
+) -> None:
     automation_profile, effective_policy = resolve_domain_profile_automation_contract(
         automation_profile=getattr(profile, "automation_profile", None),
         automation_policy=getattr(profile, "automation_policy", None),
@@ -778,7 +982,9 @@ async def _sync_profile(profile: DomainResearchProfile, opportunities: list[dict
     )
     normalized = list_normalized_research_opportunities(opportunities)
     linked_ids = collect_research_opportunity_linked_ids(normalized)
-    summary = dict(profile.latest_summary) if isinstance(profile.latest_summary, dict) else {}
+    summary = (
+        dict(profile.latest_summary) if isinstance(profile.latest_summary, dict) else {}
+    )
     profile.latest_summary = build_autonomy_summary(
         raw_summary=summary,
         opportunities=normalized,
@@ -787,26 +993,50 @@ async def _sync_profile(profile: DomainResearchProfile, opportunities: list[dict
         sandbox_profile_id=profile.sandbox_profile_id,
         config_revision_key="profile_config_revision",
     )
-    profile.latest_note_ids = list(dict.fromkeys([*(_string_list(profile.latest_note_ids, limit=32)), *linked_ids["note_ids"]]))[:20]
+    profile.latest_note_ids = list(
+        dict.fromkeys(
+            [
+                *(_string_list(profile.latest_note_ids, limit=32)),
+                *linked_ids["note_ids"],
+            ]
+        )
+    )[:20]
     profile.latest_experiment_plan_ids = linked_ids["plan_ids"][:20]
     profile.latest_validation_run_ids = linked_ids["run_ids"][:20]
 
 
-async def _sync_portfolio(portfolio: ResearchPortfolio, opportunities: list[dict[str, Any]]) -> None:
+async def _sync_portfolio(
+    portfolio: ResearchPortfolio, opportunities: list[dict[str, Any]]
+) -> None:
     normalized = list_normalized_research_opportunities(opportunities)
     linked_ids = collect_research_opportunity_linked_ids(normalized)
     portfolio.opportunities = normalized
-    summary = dict(portfolio.latest_summary) if isinstance(portfolio.latest_summary, dict) else {}
-    effective_policy = resolve_portfolio_automation_policy(portfolio.automation_profile, portfolio.automation_policy)
+    summary = (
+        dict(portfolio.latest_summary)
+        if isinstance(portfolio.latest_summary, dict)
+        else {}
+    )
+    effective_policy = resolve_portfolio_automation_policy(
+        portfolio.automation_profile, portfolio.automation_policy
+    )
     portfolio.latest_summary = build_autonomy_summary(
         raw_summary=summary,
         opportunities=normalized,
-        automation_profile=normalize_portfolio_automation_profile(portfolio.automation_profile, default="balanced"),
+        automation_profile=normalize_portfolio_automation_profile(
+            portfolio.automation_profile, default="balanced"
+        ),
         effective_policy=effective_policy,
         sandbox_profile_id=portfolio.sandbox_profile_id,
         config_revision_key="portfolio_config_revision",
     )
-    portfolio.latest_note_ids = list(dict.fromkeys([*(_string_list(portfolio.latest_note_ids, limit=48)), *linked_ids["note_ids"]]))[:30]
+    portfolio.latest_note_ids = list(
+        dict.fromkeys(
+            [
+                *(_string_list(portfolio.latest_note_ids, limit=48)),
+                *linked_ids["note_ids"],
+            ]
+        )
+    )[:30]
     portfolio.latest_experiment_plan_ids = linked_ids["plan_ids"][:30]
     portfolio.latest_validation_run_ids = linked_ids["run_ids"][:30]
     portfolio.child_job_ids = linked_ids["child_job_ids"][:50]
@@ -819,7 +1049,11 @@ async def project_note_reevaluation_to_autonomous_opportunities(
 ) -> dict[str, int]:
     hypotheses = _hypotheses_from_note(note)
     if not hypotheses:
-        return {"profiles_updated": 0, "portfolios_updated": 0, "opportunities_updated": 0}
+        return {
+            "profiles_updated": 0,
+            "portfolios_updated": 0,
+            "opportunities_updated": 0,
+        }
 
     hypothesis_by_id = {
         _text(hypothesis.get("id")): hypothesis
@@ -842,7 +1076,8 @@ async def project_note_reevaluation_to_autonomous_opportunities(
         dict.fromkeys(
             origin["source_id"]
             for origin in origin_rows
-            if origin.get("source_kind") == "portfolio" and _text(origin.get("source_id"))
+            if origin.get("source_kind") == "portfolio"
+            and _text(origin.get("source_id"))
         )
     )
     if profile_origin_ids:
@@ -858,9 +1093,13 @@ async def project_note_reevaluation_to_autonomous_opportunities(
         profile_rows = list(
             (
                 await db.execute(
-                    select(DomainResearchProfile).where(DomainResearchProfile.user_id == note.user_id)
+                    select(DomainResearchProfile).where(
+                        DomainResearchProfile.user_id == note.user_id
+                    )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
     if portfolio_origin_ids:
         portfolio_rows: list[ResearchPortfolio] = []
@@ -875,9 +1114,13 @@ async def project_note_reevaluation_to_autonomous_opportunities(
         portfolio_rows = list(
             (
                 await db.execute(
-                    select(ResearchPortfolio).where(ResearchPortfolio.user_id == note.user_id)
+                    select(ResearchPortfolio).where(
+                        ResearchPortfolio.user_id == note.user_id
+                    )
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
 
     profiles_updated = 0
@@ -885,11 +1128,18 @@ async def project_note_reevaluation_to_autonomous_opportunities(
     opportunities_updated = 0
 
     for profile in profile_rows:
-        summary = profile.latest_summary if isinstance(profile.latest_summary, dict) else {}
-        opportunities = list_normalized_research_opportunities(summary.get("opportunities") or summary.get("idea_candidates"))
+        summary = (
+            profile.latest_summary if isinstance(profile.latest_summary, dict) else {}
+        )
+        opportunities = list_normalized_research_opportunities(
+            summary.get("opportunities") or summary.get("idea_candidates")
+        )
         if not opportunities:
             continue
-        _automation_profile, effective_policy = resolve_domain_profile_automation_contract(
+        (
+            _automation_profile,
+            effective_policy,
+        ) = resolve_domain_profile_automation_contract(
             automation_profile=getattr(profile, "automation_profile", None),
             automation_policy=getattr(profile, "automation_policy", None),
             current_snapshot=current_domain_profile_policy_snapshot(profile),
@@ -920,7 +1170,9 @@ async def project_note_reevaluation_to_autonomous_opportunities(
                 )
                 changed_any = changed_any or changed
                 if changed:
-                    changed_opportunity_ids.add(_text(updated_row.get("opportunity_id")))
+                    changed_opportunity_ids.add(
+                        _text(updated_row.get("opportunity_id"))
+                    )
                     opportunities_updated += 1
                 break
             next_rows.append(updated_row)
@@ -945,7 +1197,9 @@ async def project_note_reevaluation_to_autonomous_opportunities(
         opportunities = list_normalized_research_opportunities(portfolio.opportunities)
         if not opportunities:
             continue
-        effective_policy = resolve_portfolio_automation_policy(portfolio.automation_profile, portfolio.automation_policy)
+        effective_policy = resolve_portfolio_automation_policy(
+            portfolio.automation_profile, portfolio.automation_policy
+        )
         changed_any = False
         changed_opportunity_ids: set[str] = set()
         next_rows: list[dict[str, Any]] = []
@@ -972,7 +1226,9 @@ async def project_note_reevaluation_to_autonomous_opportunities(
                 )
                 changed_any = changed_any or changed
                 if changed:
-                    changed_opportunity_ids.add(_text(updated_row.get("opportunity_id")))
+                    changed_opportunity_ids.add(
+                        _text(updated_row.get("opportunity_id"))
+                    )
                     opportunities_updated += 1
                 break
             next_rows.append(updated_row)
@@ -1018,11 +1274,32 @@ async def project_reevaluation_review_to_autonomous_opportunities(
     source_note_value = _text(source_note_id) or str(note.id)
     target_note_value = _text(target_note_id) or None
     if not hypotheses or not review_outcome or not review_job:
-        return {"profiles_updated": 0, "portfolios_updated": 0, "opportunities_updated": 0}
+        return {
+            "profiles_updated": 0,
+            "portfolios_updated": 0,
+            "opportunities_updated": 0,
+        }
 
-    origin_rows = [origin for hypothesis in hypotheses for origin in _collect_autonomous_origins(hypothesis)]
-    profile_origin_ids = list(dict.fromkeys(origin["source_id"] for origin in origin_rows if origin.get("source_kind") == "profile" and _text(origin.get("source_id"))))
-    portfolio_origin_ids = list(dict.fromkeys(origin["source_id"] for origin in origin_rows if origin.get("source_kind") == "portfolio" and _text(origin.get("source_id"))))
+    origin_rows = [
+        origin
+        for hypothesis in hypotheses
+        for origin in _collect_autonomous_origins(hypothesis)
+    ]
+    profile_origin_ids = list(
+        dict.fromkeys(
+            origin["source_id"]
+            for origin in origin_rows
+            if origin.get("source_kind") == "profile" and _text(origin.get("source_id"))
+        )
+    )
+    portfolio_origin_ids = list(
+        dict.fromkeys(
+            origin["source_id"]
+            for origin in origin_rows
+            if origin.get("source_kind") == "portfolio"
+            and _text(origin.get("source_id"))
+        )
+    )
 
     profile_rows: list[DomainResearchProfile] = []
     for value in profile_origin_ids:
@@ -1047,8 +1324,12 @@ async def project_reevaluation_review_to_autonomous_opportunities(
     opportunities_updated = 0
 
     for profile in profile_rows:
-        summary = profile.latest_summary if isinstance(profile.latest_summary, dict) else {}
-        opportunities = list_normalized_research_opportunities(summary.get("opportunities") or summary.get("idea_candidates"))
+        summary = (
+            profile.latest_summary if isinstance(profile.latest_summary, dict) else {}
+        )
+        opportunities = list_normalized_research_opportunities(
+            summary.get("opportunities") or summary.get("idea_candidates")
+        )
         if not opportunities:
             continue
         changed_any = False
@@ -1058,7 +1339,14 @@ async def project_reevaluation_review_to_autonomous_opportunities(
             for hypothesis in hypotheses:
                 hypothesis_id = _text(hypothesis.get("id"))
                 origins = _collect_autonomous_origins(hypothesis)
-                if not _matches_origin(row=updated_row, note=note, hypothesis_id=hypothesis_id, entity_kind="profile", entity_id=str(profile.id), origins=origins):
+                if not _matches_origin(
+                    row=updated_row,
+                    note=note,
+                    hypothesis_id=hypothesis_id,
+                    entity_kind="profile",
+                    entity_id=str(profile.id),
+                    origins=origins,
+                ):
                     continue
                 updated = deepcopy(updated_row)
                 updated["last_reevaluation_review_outcome"] = review_outcome
@@ -1104,7 +1392,14 @@ async def project_reevaluation_review_to_autonomous_opportunities(
             for hypothesis in hypotheses:
                 hypothesis_id = _text(hypothesis.get("id"))
                 origins = _collect_autonomous_origins(hypothesis)
-                if not _matches_origin(row=updated_row, note=note, hypothesis_id=hypothesis_id, entity_kind="portfolio", entity_id=str(portfolio.id), origins=origins):
+                if not _matches_origin(
+                    row=updated_row,
+                    note=note,
+                    hypothesis_id=hypothesis_id,
+                    entity_kind="portfolio",
+                    entity_id=str(portfolio.id),
+                    origins=origins,
+                ):
                     continue
                 updated = deepcopy(updated_row)
                 updated["last_reevaluation_review_outcome"] = review_outcome

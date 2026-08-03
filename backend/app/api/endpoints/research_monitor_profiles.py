@@ -12,7 +12,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
-from sqlalchemy import select, desc, and_
+from sqlalchemy import and_, desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -24,16 +24,15 @@ from app.schemas.research_monitor_profile import (
     ResearchMonitorAnalyticsResponse,
     ResearchMonitorBudgetConfigResponse,
     ResearchMonitorBudgetHistoryEntryResponse,
+    ResearchMonitorBudgetUpdateRequest,
+    ResearchMonitorBudgetUpdateResponse,
     ResearchMonitorCustomerBudgetUpdateRequest,
     ResearchMonitorCustomerBudgetUpdateResponse,
     ResearchMonitorCustomerRebalanceApplyRequest,
     ResearchMonitorCustomerRebalanceApplyResponse,
     ResearchMonitorCustomerRebalanceEvaluationDetailResponse,
-    ResearchMonitorCustomerRebalanceHistoryEntryResponse,
     ResearchMonitorCustomerRebalancePreviewRequest,
     ResearchMonitorCustomerRebalancePreviewResponse,
-    ResearchMonitorBudgetUpdateRequest,
-    ResearchMonitorBudgetUpdateResponse,
     ResearchMonitorPolicyConfigResponse,
     ResearchMonitorPolicyEvaluationDetailResponse,
     ResearchMonitorPolicyHistoryEntryResponse,
@@ -45,17 +44,18 @@ from app.schemas.research_monitor_profile import (
     ResearchMonitorProfileResponse,
     ResearchMonitorProfileUpdateRequest,
 )
-from app.services.auth_service import get_current_user
 from app.services.agent_job_scheduler_state import (
     extract_scheduler_state as _extract_scheduler_state,
 )
+from app.services.auth_service import get_current_user
+from app.services.autonomy_event_service import record_autonomy_decision_event
 from app.services.autonomy_service import (
     build_monitor_policy_compat_fields,
     build_monitor_policy_history_compat_entry,
 )
-from app.services.autonomy_event_service import record_autonomy_decision_event
-from app.services.research_monitor_profile_service import research_monitor_profile_service
-
+from app.services.research_monitor_profile_service import (
+    research_monitor_profile_service,
+)
 
 router = APIRouter()
 POLICY_HISTORY_KEY = "follow_up_policy_history"
@@ -90,7 +90,9 @@ def _normalize_policy_config(raw: object) -> dict[str, Any]:
     policy = raw if isinstance(raw, dict) else {}
     return {
         "mode": _normalize_policy_mode(policy.get("mode")),
-        "allowed_recommendations": _normalize_allowed_recommendations(policy.get("allowed_recommendations")),
+        "allowed_recommendations": _normalize_allowed_recommendations(
+            policy.get("allowed_recommendations")
+        ),
     }
 
 
@@ -115,7 +117,10 @@ def _resolve_monitor_policy_request(
                 "automation_profile": "balanced",
                 "automation_policy": {
                     "follow_up_review_mode": "manual_only",
-                    "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+                    "allowed_recommendations": [
+                        "deep_dive_chain",
+                        "single_research_job",
+                    ],
                 },
             }
         )
@@ -131,7 +136,9 @@ def _resolve_monitor_policy_request(
     if mode is not None:
         next_automation_policy["follow_up_review_mode"] = _normalize_policy_mode(mode)
     if allowed_recommendations is not None:
-        next_automation_policy["allowed_recommendations"] = _normalize_allowed_recommendations(allowed_recommendations)
+        next_automation_policy[
+            "allowed_recommendations"
+        ] = _normalize_allowed_recommendations(allowed_recommendations)
     return _resolve_monitor_automation_contract(
         {
             **current_config,
@@ -148,7 +155,10 @@ def _resolve_monitor_policy_history_snapshot(
     fallback_automation: dict[str, Any],
 ) -> dict[str, Any]:
     automation_profile = (
-        str(entry.get(f"{phase}_automation_profile") or fallback_automation["automation_profile"]).strip()
+        str(
+            entry.get(f"{phase}_automation_profile")
+            or fallback_automation["automation_profile"]
+        ).strip()
         or fallback_automation["automation_profile"]
     )
     automation_policy = (
@@ -166,7 +176,9 @@ def _resolve_monitor_policy_history_snapshot(
         automation_policy = dict(fallback_automation["automation_policy"])
         if compat_policy is not None:
             automation_policy["follow_up_review_mode"] = compat_policy["mode"]
-            automation_policy["allowed_recommendations"] = compat_policy["allowed_recommendations"]
+            automation_policy["allowed_recommendations"] = compat_policy[
+                "allowed_recommendations"
+            ]
     return _resolve_monitor_automation_contract(
         {
             "automation_profile": automation_profile,
@@ -255,23 +267,35 @@ def _normalize_policy_history_entry(raw: object) -> Optional[dict[str, Any]]:
         entry=raw,
         phase="previous",
         fallback_automation={
-            "automation_profile": str(raw.get("previous_automation_profile") or "balanced").strip() or "balanced",
-            "automation_policy": raw.get("previous_automation_policy") if isinstance(raw.get("previous_automation_policy"), dict) else {},
+            "automation_profile": str(
+                raw.get("previous_automation_profile") or "balanced"
+            ).strip()
+            or "balanced",
+            "automation_policy": raw.get("previous_automation_policy")
+            if isinstance(raw.get("previous_automation_policy"), dict)
+            else {},
         },
     )
     next_snapshot = _resolve_monitor_policy_history_snapshot(
         entry=raw,
         phase="next",
         fallback_automation={
-            "automation_profile": str(raw.get("next_automation_profile") or "balanced").strip() or "balanced",
-            "automation_policy": raw.get("next_automation_policy") if isinstance(raw.get("next_automation_policy"), dict) else {},
+            "automation_profile": str(
+                raw.get("next_automation_profile") or "balanced"
+            ).strip()
+            or "balanced",
+            "automation_policy": raw.get("next_automation_policy")
+            if isinstance(raw.get("next_automation_policy"), dict)
+            else {},
         },
     )
     return {
         "id": str(raw.get("id") or "").strip() or str(uuid4()),
         "at": parsed_at,
         "actor_user_id": (str(raw.get("actor_user_id") or "").strip() or None),
-        "change_source": (str(raw.get("change_source") or "").strip() or "manual_override"),
+        "change_source": (
+            str(raw.get("change_source") or "").strip() or "manual_override"
+        ),
         "change_reason": (str(raw.get("change_reason") or "").strip() or None),
         **build_monitor_policy_history_compat_entry(
             previous_snapshot=previous_snapshot,
@@ -283,17 +307,33 @@ def _normalize_policy_history_entry(raw: object) -> Optional[dict[str, Any]]:
         "next_automation_policy": next_snapshot["automation_policy"],
         "previous_effective_policy": previous_snapshot["effective_policy"],
         "next_effective_policy": next_snapshot["effective_policy"],
-        "effective_clamp_state": (str(raw.get("effective_clamp_state") or "").strip() or None),
-        "effective_clamp_reasons": [str(reason).strip() for reason in (raw.get("effective_clamp_reasons") or []) if str(reason).strip()],
-        "analytics_context": _sanitize_policy_analytics_context(raw.get("analytics_context")),
-        "evaluation_target_count": max(3, int(raw.get("evaluation_target_count") or POLICY_EVALUATION_TARGET_COUNT)),
-        "evaluation_state": (str(raw.get("evaluation_state") or "").strip().lower() or "active"),
+        "effective_clamp_state": (
+            str(raw.get("effective_clamp_state") or "").strip() or None
+        ),
+        "effective_clamp_reasons": [
+            str(reason).strip()
+            for reason in (raw.get("effective_clamp_reasons") or [])
+            if str(reason).strip()
+        ],
+        "analytics_context": _sanitize_policy_analytics_context(
+            raw.get("analytics_context")
+        ),
+        "evaluation_target_count": max(
+            3, int(raw.get("evaluation_target_count") or POLICY_EVALUATION_TARGET_COUNT)
+        ),
+        "evaluation_state": (
+            str(raw.get("evaluation_state") or "").strip().lower() or "active"
+        ),
     }
 
 
 def _get_policy_history(job: AgentJob) -> list[dict[str, Any]]:
     results = dict(job.results or {}) if isinstance(job.results, dict) else {}
-    raw_entries = results.get(POLICY_HISTORY_KEY) if isinstance(results.get(POLICY_HISTORY_KEY), list) else []
+    raw_entries = (
+        results.get(POLICY_HISTORY_KEY)
+        if isinstance(results.get(POLICY_HISTORY_KEY), list)
+        else []
+    )
     entries: list[dict[str, Any]] = []
     for raw in raw_entries:
         entry = _normalize_policy_history_entry(raw)
@@ -303,14 +343,22 @@ def _get_policy_history(job: AgentJob) -> list[dict[str, Any]]:
     return entries[:POLICY_HISTORY_LIMIT]
 
 
-def _set_policy_history(job: AgentJob, entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+def _set_policy_history(
+    job: AgentJob, entries: list[dict[str, Any]]
+) -> list[dict[str, Any]]:
     def _history_sort_key(row: dict[str, Any]) -> datetime:
         value = row.get("at")
         if isinstance(value, datetime):
-            return value if value.tzinfo is not None else value.replace(tzinfo=timezone.utc)
+            return (
+                value
+                if value.tzinfo is not None
+                else value.replace(tzinfo=timezone.utc)
+            )
         return datetime.min.replace(tzinfo=timezone.utc)
 
-    normalized = sorted(entries, key=_history_sort_key, reverse=True)[:POLICY_HISTORY_LIMIT]
+    normalized = sorted(entries, key=_history_sort_key, reverse=True)[
+        :POLICY_HISTORY_LIMIT
+    ]
     results = dict(job.results or {}) if isinstance(job.results, dict) else {}
     results[POLICY_HISTORY_KEY] = [
         {
@@ -363,7 +411,11 @@ def _append_policy_history_entry(
         "previous_effective_policy": dict(previous_effective_policy),
         "next_effective_policy": dict(next_effective_policy),
         "effective_clamp_state": (str(effective_clamp_state or "").strip() or None),
-        "effective_clamp_reasons": [str(reason).strip() for reason in (effective_clamp_reasons or []) if str(reason).strip()],
+        "effective_clamp_reasons": [
+            str(reason).strip()
+            for reason in (effective_clamp_reasons or [])
+            if str(reason).strip()
+        ],
         "analytics_context": _sanitize_policy_analytics_context(analytics_context),
         "evaluation_target_count": POLICY_EVALUATION_TARGET_COUNT,
         "evaluation_state": "active",
@@ -384,7 +436,9 @@ async def list_monitor_profiles(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(ResearchMonitorProfile).where(ResearchMonitorProfile.user_id == current_user.id)
+    stmt = select(ResearchMonitorProfile).where(
+        ResearchMonitorProfile.user_id == current_user.id
+    )
     if customer:
         stmt = stmt.where(ResearchMonitorProfile.customer == customer)
     stmt = stmt.order_by(desc(ResearchMonitorProfile.updated_at))
@@ -407,7 +461,10 @@ async def get_monitor_analytics(
     return ResearchMonitorAnalyticsResponse.model_validate(snapshot)
 
 
-@router.post("/{monitor_job_id}/policy/simulate", response_model=ResearchMonitorPolicySimulationResponse)
+@router.post(
+    "/{monitor_job_id}/policy/simulate",
+    response_model=ResearchMonitorPolicySimulationResponse,
+)
 async def simulate_monitor_policy(
     monitor_job_id: str,
     payload: ResearchMonitorPolicySimulationRequest,
@@ -425,9 +482,15 @@ async def simulate_monitor_policy(
     if not monitor_job or monitor_job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Monitor job not found")
     if str(monitor_job.job_type or "").strip().lower() != "monitor":
-        raise HTTPException(status_code=400, detail="Only monitor jobs support policy simulation")
+        raise HTTPException(
+            status_code=400, detail="Only monitor jobs support policy simulation"
+        )
 
-    current_config = dict(monitor_job.config or {}) if isinstance(getattr(monitor_job, "config", None), dict) else {}
+    current_config = (
+        dict(monitor_job.config or {})
+        if isinstance(getattr(monitor_job, "config", None), dict)
+        else {}
+    )
     current_automation = _resolve_monitor_automation_contract(current_config)
     proposed_policy = _resolve_monitor_policy_request(
         current_config=current_config,
@@ -437,7 +500,10 @@ async def simulate_monitor_policy(
         mode=payload.mode,
         allowed_recommendations=payload.allowed_recommendations,
     )
-    monitor_job, snapshot = await research_monitor_profile_service.build_policy_simulation(
+    (
+        monitor_job,
+        snapshot,
+    ) = await research_monitor_profile_service.build_policy_simulation(
         db=db,
         user_id=current_user.id,
         monitor_job_id=job_uuid,
@@ -447,7 +513,9 @@ async def simulate_monitor_policy(
     return ResearchMonitorPolicySimulationResponse.model_validate(snapshot)
 
 
-@router.post("/{monitor_job_id}/policy", response_model=ResearchMonitorPolicyUpdateResponse)
+@router.post(
+    "/{monitor_job_id}/policy", response_model=ResearchMonitorPolicyUpdateResponse
+)
 async def update_monitor_policy(
     monitor_job_id: str,
     payload: ResearchMonitorPolicyUpdateRequest,
@@ -465,7 +533,9 @@ async def update_monitor_policy(
     if not job or job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Monitor job not found")
     if str(job.job_type or "").strip().lower() != "monitor":
-        raise HTTPException(status_code=400, detail="Only monitor jobs support follow-up policy tuning")
+        raise HTTPException(
+            status_code=400, detail="Only monitor jobs support follow-up policy tuning"
+        )
     source_scheduler_state = _extract_scheduler_state(job)
 
     config = dict(job.config or {}) if isinstance(job.config, dict) else {}
@@ -493,7 +563,8 @@ async def update_monitor_policy(
     latest_history_entry = None
     if (
         resolved_next["automation_profile"] != existing_automation["automation_profile"]
-        or resolved_next["automation_policy"] != existing_automation["automation_policy"]
+        or resolved_next["automation_policy"]
+        != existing_automation["automation_policy"]
         or resolved_next["effective_policy"] != existing_automation["effective_policy"]
     ):
         latest_history_entry = _append_policy_history_entry(
@@ -507,7 +578,8 @@ async def update_monitor_policy(
             previous_policy=existing_automation["follow_up_autonomy"],
             next_policy=next_policy,
             actor_user_id=current_user.id,
-            change_source=payload.change_source or ("reset_to_default" if payload.reset_to_default else "manual_override"),
+            change_source=payload.change_source
+            or ("reset_to_default" if payload.reset_to_default else "manual_override"),
             change_reason=payload.change_reason,
             analytics_context=payload.analytics_context,
         )
@@ -521,32 +593,57 @@ async def update_monitor_policy(
             source_label=str(job.name or "Research monitor").strip(),
             customer=None,
             decision_type="policy_updated",
-            reason_code=payload.change_source or ("reset_to_default" if payload.reset_to_default else "manual_override"),
+            reason_code=payload.change_source
+            or ("reset_to_default" if payload.reset_to_default else "manual_override"),
             status="active",
             severity="medium",
             actor_mode="operator",
             summary=f"{str(job.name or 'Research monitor').strip()}: monitor policy updated",
             operator_note=payload.change_reason,
-            reason_label=str(payload.change_source or ("reset_to_default" if payload.reset_to_default else "manual_override")).replace("_", " ").strip().capitalize(),
+            reason_label=str(
+                payload.change_source
+                or (
+                    "reset_to_default"
+                    if payload.reset_to_default
+                    else "manual_override"
+                )
+            )
+            .replace("_", " ")
+            .strip()
+            .capitalize(),
             scheduler_state=source_scheduler_state,
             before_state={"effective_policy": existing_automation["effective_policy"]},
             after_state={"effective_policy": resolved_next["effective_policy"]},
-            deep_link={"target_tab": "health", "params": {"tab": "health"}, "label": "Open Autonomy Health"},
-            metadata={"history_entry_id": latest_history_entry.get("id") if isinstance(latest_history_entry, dict) else None},
+            deep_link={
+                "target_tab": "health",
+                "params": {"tab": "health"},
+                "label": "Open Autonomy Health",
+            },
+            metadata={
+                "history_entry_id": latest_history_entry.get("id")
+                if isinstance(latest_history_entry, dict)
+                else None
+            },
         )
     await db.commit()
 
     return ResearchMonitorPolicyUpdateResponse(
         monitor_job_id=job.id,
-        follow_up_autonomy=ResearchMonitorPolicyConfigResponse.model_validate(next_policy),
+        follow_up_autonomy=ResearchMonitorPolicyConfigResponse.model_validate(
+            next_policy
+        ),
         automation_profile=resolved_next["automation_profile"],
         automation_policy=resolved_next["automation_policy"],
         effective_policy=resolved_next["effective_policy"],
         latest_history_entry=(
-            ResearchMonitorPolicyHistoryEntryResponse.model_validate(latest_history_entry)
+            ResearchMonitorPolicyHistoryEntryResponse.model_validate(
+                latest_history_entry
+            )
             if latest_history_entry is not None
             else (
-                ResearchMonitorPolicyHistoryEntryResponse.model_validate(_latest_policy_history_entry(job))
+                ResearchMonitorPolicyHistoryEntryResponse.model_validate(
+                    _latest_policy_history_entry(job)
+                )
                 if _latest_policy_history_entry(job) is not None
                 else None
             )
@@ -555,7 +652,10 @@ async def update_monitor_policy(
     )
 
 
-@router.post("/{monitor_job_id}/policy/rollback", response_model=ResearchMonitorPolicyUpdateResponse)
+@router.post(
+    "/{monitor_job_id}/policy/rollback",
+    response_model=ResearchMonitorPolicyUpdateResponse,
+)
 async def rollback_monitor_policy(
     monitor_job_id: str,
     payload: ResearchMonitorPolicyRollbackRequest,
@@ -573,17 +673,31 @@ async def rollback_monitor_policy(
     if not job or job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Monitor job not found")
     if str(job.job_type or "").strip().lower() != "monitor":
-        raise HTTPException(status_code=400, detail="Only monitor jobs support follow-up policy rollback")
+        raise HTTPException(
+            status_code=400,
+            detail="Only monitor jobs support follow-up policy rollback",
+        )
     source_scheduler_state = _extract_scheduler_state(job)
 
     history = _get_policy_history(job)
-    target = next((entry for entry in history if entry["id"] == payload.history_entry_id), None)
+    target = next(
+        (entry for entry in history if entry["id"] == payload.history_entry_id), None
+    )
     if target is None:
         raise HTTPException(status_code=404, detail="Policy history entry not found")
     results = dict(job.results or {}) if isinstance(job.results, dict) else {}
-    raw_history = results.get(POLICY_HISTORY_KEY) if isinstance(results.get(POLICY_HISTORY_KEY), list) else []
+    raw_history = (
+        results.get(POLICY_HISTORY_KEY)
+        if isinstance(results.get(POLICY_HISTORY_KEY), list)
+        else []
+    )
     raw_target = next(
-        (entry for entry in raw_history if isinstance(entry, dict) and str(entry.get("id") or "").strip() == payload.history_entry_id),
+        (
+            entry
+            for entry in raw_history
+            if isinstance(entry, dict)
+            and str(entry.get("id") or "").strip() == payload.history_entry_id
+        ),
         {},
     )
 
@@ -601,11 +715,17 @@ async def rollback_monitor_policy(
         default_allowed=["deep_dive_chain", "single_research_job"],
     )
     if (
-        resolved_restored["automation_profile"] == existing_automation["automation_profile"]
-        and resolved_restored["automation_policy"] == existing_automation["automation_policy"]
-        and resolved_restored["effective_policy"] == existing_automation["effective_policy"]
+        resolved_restored["automation_profile"]
+        == existing_automation["automation_profile"]
+        and resolved_restored["automation_policy"]
+        == existing_automation["automation_policy"]
+        and resolved_restored["effective_policy"]
+        == existing_automation["effective_policy"]
     ):
-        raise HTTPException(status_code=400, detail="Selected history entry already matches the current policy")
+        raise HTTPException(
+            status_code=400,
+            detail="Selected history entry already matches the current policy",
+        )
 
     config["automation_profile"] = resolved_restored["automation_profile"]
     config["automation_policy"] = resolved_restored["automation_policy"]
@@ -623,7 +743,8 @@ async def rollback_monitor_policy(
         next_policy=compat_fields["follow_up_autonomy"],
         actor_user_id=current_user.id,
         change_source="rollback",
-        change_reason=payload.change_reason or f"Rollback of history entry {payload.history_entry_id}",
+        change_reason=payload.change_reason
+        or f"Rollback of history entry {payload.history_entry_id}",
         analytics_context={},
     )
     await record_autonomy_decision_event(
@@ -645,23 +766,37 @@ async def rollback_monitor_policy(
         scheduler_state=source_scheduler_state,
         before_state={"effective_policy": existing_automation["effective_policy"]},
         after_state={"effective_policy": resolved_restored["effective_policy"]},
-        deep_link={"target_tab": "health", "params": {"tab": "health"}, "label": "Open Autonomy Health"},
-        metadata={"history_entry_id": latest_history_entry.get("id") if isinstance(latest_history_entry, dict) else None},
+        deep_link={
+            "target_tab": "health",
+            "params": {"tab": "health"},
+            "label": "Open Autonomy Health",
+        },
+        metadata={
+            "history_entry_id": latest_history_entry.get("id")
+            if isinstance(latest_history_entry, dict)
+            else None
+        },
     )
     await db.commit()
 
     return ResearchMonitorPolicyUpdateResponse(
         monitor_job_id=job.id,
-        follow_up_autonomy=ResearchMonitorPolicyConfigResponse.model_validate(compat_fields["follow_up_autonomy"]),
+        follow_up_autonomy=ResearchMonitorPolicyConfigResponse.model_validate(
+            compat_fields["follow_up_autonomy"]
+        ),
         automation_profile=resolved_restored["automation_profile"],
         automation_policy=resolved_restored["automation_policy"],
         effective_policy=resolved_restored["effective_policy"],
-        latest_history_entry=ResearchMonitorPolicyHistoryEntryResponse.model_validate(latest_history_entry),
+        latest_history_entry=ResearchMonitorPolicyHistoryEntryResponse.model_validate(
+            latest_history_entry
+        ),
         policy_history_count=len(_get_policy_history(job)),
     )
 
 
-@router.post("/{monitor_job_id}/budget", response_model=ResearchMonitorBudgetUpdateResponse)
+@router.post(
+    "/{monitor_job_id}/budget", response_model=ResearchMonitorBudgetUpdateResponse
+)
 async def update_monitor_budget(
     monitor_job_id: str,
     payload: ResearchMonitorBudgetUpdateRequest,
@@ -679,7 +814,9 @@ async def update_monitor_budget(
     if not job or job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Monitor job not found")
     if str(job.job_type or "").strip().lower() != "monitor":
-        raise HTTPException(status_code=400, detail="Only monitor jobs support autonomy budgets")
+        raise HTTPException(
+            status_code=400, detail="Only monitor jobs support autonomy budgets"
+        )
     source_scheduler_state = _extract_scheduler_state(job)
 
     config = dict(job.config or {}) if isinstance(job.config, dict) else {}
@@ -691,19 +828,28 @@ async def update_monitor_budget(
         for key in DEFAULT_AUTONOMY_BUDGET.keys():
             value = getattr(payload, key, None)
             if value is not None:
-                next_budget[key] = _normalize_budget_int(value, fallback=DEFAULT_AUTONOMY_BUDGET[key])
+                next_budget[key] = _normalize_budget_int(
+                    value, fallback=DEFAULT_AUTONOMY_BUDGET[key]
+                )
 
     config["autonomy_budget"] = next_budget
     job.config = config
     latest_history_entry = None
     if next_budget != existing_budget:
-        latest_history_entry = research_monitor_profile_service.append_budget_history_entry(
-            job=job,
-            previous_budget=existing_budget,
-            next_budget=next_budget,
-            actor_user_id=current_user.id,
-            change_source=payload.change_source or ("reset_to_default" if payload.reset_to_default else "manual_override"),
-            change_reason=payload.change_reason,
+        latest_history_entry = (
+            research_monitor_profile_service.append_budget_history_entry(
+                job=job,
+                previous_budget=existing_budget,
+                next_budget=next_budget,
+                actor_user_id=current_user.id,
+                change_source=payload.change_source
+                or (
+                    "reset_to_default"
+                    if payload.reset_to_default
+                    else "manual_override"
+                ),
+                change_reason=payload.change_reason,
+            )
         )
         await record_autonomy_decision_event(
             db,
@@ -714,18 +860,37 @@ async def update_monitor_budget(
             source_id=str(job.id),
             source_label=str(job.name or "Research monitor").strip(),
             decision_type="budget_clamped",
-            reason_code=payload.change_source or ("reset_to_default" if payload.reset_to_default else "manual_override"),
+            reason_code=payload.change_source
+            or ("reset_to_default" if payload.reset_to_default else "manual_override"),
             status="budget_updated",
             severity="medium",
             actor_mode="operator",
             summary=f"{str(job.name or 'Research monitor').strip()}: monitor budget updated",
             operator_note=payload.change_reason,
-            reason_label=str(payload.change_source or ("reset_to_default" if payload.reset_to_default else "manual_override")).replace("_", " ").strip().capitalize(),
+            reason_label=str(
+                payload.change_source
+                or (
+                    "reset_to_default"
+                    if payload.reset_to_default
+                    else "manual_override"
+                )
+            )
+            .replace("_", " ")
+            .strip()
+            .capitalize(),
             scheduler_state=source_scheduler_state,
             before_state={"autonomy_budget": existing_budget},
             after_state={"autonomy_budget": next_budget},
-            deep_link={"target_tab": "health", "params": {"tab": "health"}, "label": "Open Autonomy Health"},
-            metadata={"history_entry_id": latest_history_entry.get('id') if isinstance(latest_history_entry, dict) else None},
+            deep_link={
+                "target_tab": "health",
+                "params": {"tab": "health"},
+                "label": "Open Autonomy Health",
+            },
+            metadata={
+                "history_entry_id": latest_history_entry.get("id")
+                if isinstance(latest_history_entry, dict)
+                else None
+            },
         )
     await db.commit()
 
@@ -733,10 +898,14 @@ async def update_monitor_budget(
         monitor_job_id=job.id,
         autonomy_budget=ResearchMonitorBudgetConfigResponse.model_validate(next_budget),
         latest_history_entry=(
-            ResearchMonitorBudgetHistoryEntryResponse.model_validate(latest_history_entry)
+            ResearchMonitorBudgetHistoryEntryResponse.model_validate(
+                latest_history_entry
+            )
             if latest_history_entry is not None
             else (
-                ResearchMonitorBudgetHistoryEntryResponse.model_validate(_get_budget_history(job)[0])
+                ResearchMonitorBudgetHistoryEntryResponse.model_validate(
+                    _get_budget_history(job)[0]
+                )
                 if _get_budget_history(job)
                 else None
             )
@@ -744,7 +913,9 @@ async def update_monitor_budget(
     )
 
 
-@router.post("/customer-budget", response_model=ResearchMonitorCustomerBudgetUpdateResponse)
+@router.post(
+    "/customer-budget", response_model=ResearchMonitorCustomerBudgetUpdateResponse
+)
 async def update_customer_budget(
     payload: ResearchMonitorCustomerBudgetUpdateRequest,
     current_user: User = Depends(get_current_user),
@@ -754,12 +925,16 @@ async def update_customer_budget(
     if not customer:
         raise HTTPException(status_code=400, detail="Customer is required")
 
-    stmt = select(ResearchMonitorProfile).where(
-        and_(
-            ResearchMonitorProfile.user_id == current_user.id,
-            ResearchMonitorProfile.customer == customer,
+    stmt = (
+        select(ResearchMonitorProfile)
+        .where(
+            and_(
+                ResearchMonitorProfile.user_id == current_user.id,
+                ResearchMonitorProfile.customer == customer,
+            )
         )
-    ).limit(1)
+        .limit(1)
+    )
     profile = (await db.execute(stmt)).scalar_one_or_none()
     if profile is None:
         profile = ResearchMonitorProfile(
@@ -779,15 +954,25 @@ async def update_customer_budget(
         db.add(profile)
         await db.flush()
 
-    current_budget = _normalize_customer_budget_config(getattr(profile, "customer_budget_config", None))
+    current_budget = _normalize_customer_budget_config(
+        getattr(profile, "customer_budget_config", None)
+    )
     if payload.reset_to_default:
         next_budget = _normalize_customer_budget_config(None)
     else:
         next_budget = {
-            "auto_launch_limit_24h": current_budget["auto_launch_limit_24h"] if payload.auto_launch_limit_24h is None else int(payload.auto_launch_limit_24h),
-            "approval_queue_limit_24h": current_budget["approval_queue_limit_24h"] if payload.approval_queue_limit_24h is None else int(payload.approval_queue_limit_24h),
-            "alert_limit_24h": current_budget["alert_limit_24h"] if payload.alert_limit_24h is None else int(payload.alert_limit_24h),
-            "queue_backlog_cap": current_budget["queue_backlog_cap"] if payload.queue_backlog_cap is None else int(payload.queue_backlog_cap),
+            "auto_launch_limit_24h": current_budget["auto_launch_limit_24h"]
+            if payload.auto_launch_limit_24h is None
+            else int(payload.auto_launch_limit_24h),
+            "approval_queue_limit_24h": current_budget["approval_queue_limit_24h"]
+            if payload.approval_queue_limit_24h is None
+            else int(payload.approval_queue_limit_24h),
+            "alert_limit_24h": current_budget["alert_limit_24h"]
+            if payload.alert_limit_24h is None
+            else int(payload.alert_limit_24h),
+            "queue_backlog_cap": current_budget["queue_backlog_cap"]
+            if payload.queue_backlog_cap is None
+            else int(payload.queue_backlog_cap),
         }
         next_budget = _normalize_customer_budget_config(next_budget)
 
@@ -800,7 +985,10 @@ async def update_customer_budget(
     )
 
 
-@router.post("/customer-rebalance/preview", response_model=ResearchMonitorCustomerRebalancePreviewResponse)
+@router.post(
+    "/customer-rebalance/preview",
+    response_model=ResearchMonitorCustomerRebalancePreviewResponse,
+)
 async def preview_customer_rebalance(
     payload: ResearchMonitorCustomerRebalancePreviewRequest,
     current_user: User = Depends(get_current_user),
@@ -830,7 +1018,10 @@ async def preview_customer_rebalance(
     return ResearchMonitorCustomerRebalancePreviewResponse.model_validate(preview)
 
 
-@router.post("/customer-rebalance/apply", response_model=ResearchMonitorCustomerRebalanceApplyResponse)
+@router.post(
+    "/customer-rebalance/apply",
+    response_model=ResearchMonitorCustomerRebalanceApplyResponse,
+)
 async def apply_customer_rebalance(
     payload: ResearchMonitorCustomerRebalanceApplyRequest,
     current_user: User = Depends(get_current_user),
@@ -840,10 +1031,14 @@ async def apply_customer_rebalance(
     if not customer:
         raise HTTPException(status_code=400, detail="Customer is required")
 
-    stmt = select(ResearchMonitorProfile).where(
-        ResearchMonitorProfile.user_id == current_user.id,
-        ResearchMonitorProfile.customer == customer,
-    ).limit(1)
+    stmt = (
+        select(ResearchMonitorProfile)
+        .where(
+            ResearchMonitorProfile.user_id == current_user.id,
+            ResearchMonitorProfile.customer == customer,
+        )
+        .limit(1)
+    )
     profile = (await db.execute(stmt)).scalar_one_or_none()
     if profile is None:
         profile = ResearchMonitorProfile(
@@ -863,20 +1058,22 @@ async def apply_customer_rebalance(
         db.add(profile)
         await db.flush()
 
-    before_preview = await research_monitor_profile_service.build_customer_rebalance_preview(
-        db=db,
-        user_id=current_user.id,
-        customer=customer,
-        monitor_budget_updates=[
-            {
-                "monitor_job_id": row.monitor_job_id,
-                "auto_launch_limit_24h": row.auto_launch_limit_24h,
-                "approval_queue_limit_24h": row.approval_queue_limit_24h,
-                "alert_limit_24h": row.alert_limit_24h,
-                "queue_backlog_cap": row.queue_backlog_cap,
-            }
-            for row in payload.monitor_budget_updates
-        ],
+    before_preview = (
+        await research_monitor_profile_service.build_customer_rebalance_preview(
+            db=db,
+            user_id=current_user.id,
+            customer=customer,
+            monitor_budget_updates=[
+                {
+                    "monitor_job_id": row.monitor_job_id,
+                    "auto_launch_limit_24h": row.auto_launch_limit_24h,
+                    "approval_queue_limit_24h": row.approval_queue_limit_24h,
+                    "alert_limit_24h": row.alert_limit_24h,
+                    "queue_backlog_cap": row.queue_backlog_cap,
+                }
+                for row in payload.monitor_budget_updates
+            ],
+        )
     )
 
     latest_history_entries: list[dict[str, Any]] = []
@@ -884,9 +1081,13 @@ async def apply_customer_rebalance(
     for row in payload.monitor_budget_updates:
         job = await db.get(AgentJob, row.monitor_job_id)
         if not job or job.user_id != current_user.id:
-            raise HTTPException(status_code=404, detail=f"Monitor job not found: {row.monitor_job_id}")
+            raise HTTPException(
+                status_code=404, detail=f"Monitor job not found: {row.monitor_job_id}"
+            )
         if str(job.job_type or "").strip().lower() != "monitor":
-            raise HTTPException(status_code=400, detail="Only monitor jobs support autonomy budgets")
+            raise HTTPException(
+                status_code=400, detail="Only monitor jobs support autonomy budgets"
+            )
 
         config = dict(job.config or {}) if isinstance(job.config, dict) else {}
         previous_budget = _normalize_budget_config(config.get("autonomy_budget"))
@@ -908,7 +1109,8 @@ async def apply_customer_rebalance(
             next_budget=next_budget,
             actor_user_id=current_user.id,
             change_source="customer_rebalance_guidance",
-            change_reason=payload.change_reason or f"Customer rebalance applied for {customer}",
+            change_reason=payload.change_reason
+            or f"Customer rebalance applied for {customer}",
             guidance_context={"customer": customer},
         )
         latest_history_entries.append(entry)
@@ -919,7 +1121,8 @@ async def apply_customer_rebalance(
             profile=profile,
             actor_user_id=current_user.id,
             change_source="customer_rebalance_guidance",
-            change_reason=payload.change_reason or f"Customer rebalance applied for {customer}",
+            change_reason=payload.change_reason
+            or f"Customer rebalance applied for {customer}",
             changes=list(before_preview.get("changes") or []),
             before_capacity=dict(before_preview.get("before_capacity") or {}),
             after_capacity=dict(before_preview.get("after_capacity") or {}),
@@ -944,7 +1147,11 @@ async def apply_customer_rebalance(
             operator_note=payload.change_reason,
             before_state={"before_capacity": before_preview.get("before_capacity")},
             after_state={"after_capacity": before_preview.get("after_capacity")},
-            deep_link={"target_tab": "health", "params": {"tab": "health", "health_customer": customer}, "label": "Open Autonomy Health"},
+            deep_link={
+                "target_tab": "health",
+                "params": {"tab": "health", "health_customer": customer},
+                "label": "Open Autonomy Health",
+            },
             metadata={"updated_monitor_ids": [str(v) for v in updated_monitor_ids]},
         )
 
@@ -966,7 +1173,10 @@ async def apply_customer_rebalance(
     )
 
 
-@router.get("/customer-rebalance/{customer}/history/{history_entry_id}/evaluation", response_model=ResearchMonitorCustomerRebalanceEvaluationDetailResponse)
+@router.get(
+    "/customer-rebalance/{customer}/history/{history_entry_id}/evaluation",
+    response_model=ResearchMonitorCustomerRebalanceEvaluationDetailResponse,
+)
 async def get_customer_rebalance_evaluation(
     customer: str,
     history_entry_id: str,
@@ -977,18 +1187,31 @@ async def get_customer_rebalance_evaluation(
     if not customer_name:
         raise HTTPException(status_code=400, detail="Customer is required")
 
-    stmt = select(ResearchMonitorProfile).where(
-        ResearchMonitorProfile.user_id == current_user.id,
-        ResearchMonitorProfile.customer == customer_name,
-    ).limit(1)
+    stmt = (
+        select(ResearchMonitorProfile)
+        .where(
+            ResearchMonitorProfile.user_id == current_user.id,
+            ResearchMonitorProfile.customer == customer_name,
+        )
+        .limit(1)
+    )
     profile = (await db.execute(stmt)).scalar_one_or_none()
     if profile is None:
-        raise HTTPException(status_code=404, detail="Customer rebalance history not found")
+        raise HTTPException(
+            status_code=404, detail="Customer rebalance history not found"
+        )
 
-    history = research_monitor_profile_service._customer_rebalance_history_for_profile(profile)
-    target = next((entry for entry in history if str(entry.get("id") or "") == history_entry_id), None)
+    history = research_monitor_profile_service._customer_rebalance_history_for_profile(
+        profile
+    )
+    target = next(
+        (entry for entry in history if str(entry.get("id") or "") == history_entry_id),
+        None,
+    )
     if target is None:
-        raise HTTPException(status_code=404, detail="Customer rebalance history entry not found")
+        raise HTTPException(
+            status_code=404, detail="Customer rebalance history entry not found"
+        )
 
     inbox_stmt = (
         select(ResearchInboxItem)
@@ -1004,24 +1227,31 @@ async def get_customer_rebalance_evaluation(
     jobs_by_id: dict[Any, AgentJob] = {}
     if job_ids:
         jobs_stmt = select(AgentJob).where(AgentJob.id.in_(job_ids))
-        jobs_by_id = {job.id: job for job in (await db.execute(jobs_stmt)).scalars().all()}
+        jobs_by_id = {
+            job.id: job for job in (await db.execute(jobs_stmt)).scalars().all()
+        }
     snapshot = await research_monitor_profile_service.build_effectiveness_analytics(
         db=db,
         user_id=current_user.id,
         customer=customer_name,
     )
     monitor_rows = [
-        row for row in snapshot.get("monitors", [])
+        row
+        for row in snapshot.get("monitors", [])
         if str(row.get("customer") or "").strip() == customer_name
     ]
-    detail = research_monitor_profile_service.build_customer_rebalance_evaluation_detail(
-        customer=customer_name,
-        history_entry=target,
-        items=items,
-        monitor_rows=monitor_rows,
-        jobs_by_id=jobs_by_id,
+    detail = (
+        research_monitor_profile_service.build_customer_rebalance_evaluation_detail(
+            customer=customer_name,
+            history_entry=target,
+            items=items,
+            monitor_rows=monitor_rows,
+            jobs_by_id=jobs_by_id,
+        )
     )
-    return ResearchMonitorCustomerRebalanceEvaluationDetailResponse.model_validate(detail)
+    return ResearchMonitorCustomerRebalanceEvaluationDetailResponse.model_validate(
+        detail
+    )
 
 
 @router.get(
@@ -1045,7 +1275,9 @@ async def get_monitor_policy_evaluation(
     if not job or job.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Monitor job not found")
     if str(job.job_type or "").strip().lower() != "monitor":
-        raise HTTPException(status_code=400, detail="Only monitor jobs support policy evaluation")
+        raise HTTPException(
+            status_code=400, detail="Only monitor jobs support policy evaluation"
+        )
 
     history = _get_policy_history(job)
     target = next((entry for entry in history if entry["id"] == history_entry_id), None)
@@ -1090,9 +1322,15 @@ async def update_monitor_profile(
         raise HTTPException(status_code=404, detail="Profile not found")
 
     if payload.muted_tokens is not None:
-        profile.muted_tokens = [str(x).strip().lower() for x in (payload.muted_tokens or []) if str(x).strip()]
+        profile.muted_tokens = [
+            str(x).strip().lower()
+            for x in (payload.muted_tokens or [])
+            if str(x).strip()
+        ]
     if payload.muted_patterns is not None:
-        profile.muted_patterns = [str(x).strip() for x in (payload.muted_patterns or []) if str(x).strip()]
+        profile.muted_patterns = [
+            str(x).strip() for x in (payload.muted_patterns or []) if str(x).strip()
+        ]
     if payload.notes is not None:
         profile.notes = (payload.notes or "").strip() or None
 
@@ -1119,7 +1357,9 @@ async def upsert_monitor_profile(
     """
     customer = (payload.customer or "").strip() or None
     try:
-        stmt = select(ResearchMonitorProfile).where(ResearchMonitorProfile.user_id == current_user.id)
+        stmt = select(ResearchMonitorProfile).where(
+            ResearchMonitorProfile.user_id == current_user.id
+        )
         if customer:
             stmt = stmt.where(ResearchMonitorProfile.customer == customer)
         else:
@@ -1143,18 +1383,50 @@ async def upsert_monitor_profile(
             await db.refresh(profile)
 
         if payload.muted_tokens is not None:
-            incoming = [str(x).strip().lower() for x in (payload.muted_tokens or []) if str(x).strip()]
+            incoming = [
+                str(x).strip().lower()
+                for x in (payload.muted_tokens or [])
+                if str(x).strip()
+            ]
             if payload.merge_lists:
-                existing = profile.muted_tokens if isinstance(profile.muted_tokens, list) else []
-                merged = list(dict.fromkeys([*(str(x).strip().lower() for x in existing if str(x).strip()), *incoming]))
+                existing = (
+                    profile.muted_tokens
+                    if isinstance(profile.muted_tokens, list)
+                    else []
+                )
+                merged = list(
+                    dict.fromkeys(
+                        [
+                            *(
+                                str(x).strip().lower()
+                                for x in existing
+                                if str(x).strip()
+                            ),
+                            *incoming,
+                        ]
+                    )
+                )
                 profile.muted_tokens = merged
             else:
                 profile.muted_tokens = incoming
         if payload.muted_patterns is not None:
-            incoming = [str(x).strip() for x in (payload.muted_patterns or []) if str(x).strip()]
+            incoming = [
+                str(x).strip() for x in (payload.muted_patterns or []) if str(x).strip()
+            ]
             if payload.merge_lists:
-                existing = profile.muted_patterns if isinstance(profile.muted_patterns, list) else []
-                merged = list(dict.fromkeys([*(str(x).strip() for x in existing if str(x).strip()), *incoming]))
+                existing = (
+                    profile.muted_patterns
+                    if isinstance(profile.muted_patterns, list)
+                    else []
+                )
+                merged = list(
+                    dict.fromkeys(
+                        [
+                            *(str(x).strip() for x in existing if str(x).strip()),
+                            *incoming,
+                        ]
+                    )
+                )
                 profile.muted_patterns = merged
             else:
                 profile.muted_patterns = incoming

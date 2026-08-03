@@ -8,27 +8,28 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from celery import current_task
 from loguru import logger
+from sqlalchemy import select
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.repo_report import RepoReportJob
 from app.services.repo_analysis_service import RepoAnalysisService
-from app.services.repo_report_generator import RepoReportGenerator
 from app.services.repo_presentation_generator import RepoPresentationGenerator
+from app.services.repo_report_generator import RepoReportGenerator
 from app.services.storage_service import StorageService
-from sqlalchemy import select
 
 
 class RepoReportGenerationError(Exception):
     """Raised when report generation fails."""
-    pass
 
 
-async def _publish_progress(job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None):
+async def _publish_progress(
+    job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None
+):
     """Publish progress update to Redis for WebSocket subscribers."""
     import redis.asyncio as redis
+
     from app.core.config import settings
 
     try:
@@ -120,7 +121,7 @@ async def _generate_repo_report_async(job_id: str, user_id: str):
                 raise RepoReportGenerationError("No source_id or adhoc_url provided")
 
             # Cache analysis data (use mode='json' to serialize datetime objects)
-            job.analysis_data = analysis.model_dump(mode='json')
+            job.analysis_data = analysis.model_dump(mode="json")
             job.status = "generating"
             job.current_stage = "Analysis complete, generating output"
             await db.commit()
@@ -133,8 +134,7 @@ async def _generate_repo_report_async(job_id: str, user_id: str):
 
             if output_format == "pptx":
                 generator = RepoPresentationGenerator(
-                    style=job.style,
-                    custom_theme=job.custom_theme
+                    style=job.style, custom_theme=job.custom_theme
                 )
                 file_bytes = await generator.generate_pptx(
                     analysis=analysis,
@@ -142,35 +142,33 @@ async def _generate_repo_report_async(job_id: str, user_id: str):
                     sections=job.sections,
                     slide_count=job.slide_count or 10,
                     include_diagrams=job.include_diagrams,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
                 )
                 file_extension = "pptx"
                 content_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
 
             elif output_format == "pdf":
                 generator = RepoReportGenerator(
-                    style=job.style,
-                    custom_theme=job.custom_theme
+                    style=job.style, custom_theme=job.custom_theme
                 )
                 file_bytes = await generator.generate_pdf(
                     analysis=analysis,
                     title=job.title,
                     sections=job.sections,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
                 )
                 file_extension = "pdf"
                 content_type = "application/pdf"
 
             else:  # docx (default)
                 generator = RepoReportGenerator(
-                    style=job.style,
-                    custom_theme=job.custom_theme
+                    style=job.style, custom_theme=job.custom_theme
                 )
                 file_bytes = await generator.generate_docx(
                     analysis=analysis,
                     title=job.title,
                     sections=job.sections,
-                    progress_callback=progress_callback
+                    progress_callback=progress_callback,
                 )
                 file_extension = "docx"
                 content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
@@ -185,9 +183,7 @@ async def _generate_repo_report_async(job_id: str, user_id: str):
             file_path = f"repo_reports/{user_id}/{filename}"
 
             await storage.upload_to_path(
-                object_path=file_path,
-                content=file_bytes,
-                content_type=content_type
+                object_path=file_path, content=file_bytes, content_type=content_type
             )
 
             # Update job as completed
@@ -210,7 +206,9 @@ async def _generate_repo_report_async(job_id: str, user_id: str):
             job.completed_at = datetime.utcnow()
             await db.commit()
 
-            await _publish_progress(job_id, job.progress, job.current_stage or "failed", "failed", str(e))
+            await _publish_progress(
+                job_id, job.progress, job.current_stage or "failed", "failed", str(e)
+            )
 
             logger.error(f"Repo report job {job_id} failed: {e}")
 
@@ -291,6 +289,7 @@ def cleanup_old_repo_reports(days: int = 30):
         days: Number of days to keep reports
     """
     from datetime import timedelta
+
     from sqlalchemy import and_
 
     logger.info(f"Starting cleanup of repo reports older than {days} days")
@@ -308,7 +307,7 @@ def cleanup_old_repo_reports(days: int = 30):
                 select(RepoReportJob).where(
                     and_(
                         RepoReportJob.created_at < cutoff_date,
-                        RepoReportJob.status.in_(["completed", "failed", "cancelled"])
+                        RepoReportJob.status.in_(["completed", "failed", "cancelled"]),
                     )
                 )
             )

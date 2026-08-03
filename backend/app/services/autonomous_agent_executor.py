@@ -12,78 +12,79 @@ The executor implements an autonomous loop:
 5. Repeat until goal is met or limits reached
 """
 
-import asyncio
 import hashlib
 import json
 import math
-import os
 import random
 import re
-import uuid
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
-from collections import Counter
 
 from loguru import logger
-from sqlalchemy import select, update, func, desc, or_
+from sqlalchemy import desc, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.agent_job import AgentJob, AgentJobStatus, AgentJobCheckpoint, ChainTriggerCondition
+from app.agent_core.runtime import AgentRuntimeRunner
 from app.models.agent_definition import AgentDefinition
+from app.models.agent_job import (
+    AgentJob,
+    AgentJobCheckpoint,
+    AgentJobStatus,
+    ChainTriggerCondition,
+)
 from app.models.agent_tool_prior import AgentToolPrior
-from app.models.user import User
 from app.models.memory import UserPreferences
-from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.agent_tools import AGENT_TOOLS, AUTONOMOUS_AGENT_TOOLS
-from app.services.data_analysis_tools import DataAnalysisTools, DATA_ANALYSIS_TOOL_DEFINITIONS
-from app.services.search_service import SearchService
-from app.services.arxiv_search_service import ArxivSearchService
-from app.services.vector_store import VectorStoreService
-from app.services.agent_job_memory_service import agent_job_memory_service
-from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
-from app.services.ai_hub_eval_service import ai_hub_eval_service
-from app.services.agent_decision_parser import (
-    AgentDecisionParser,
-    AgentDecision,
-    extract_first_json_object as _extract_json,
+from app.services.agent_action_service import AgentActionService
+from app.services.agent_chain_orchestration_service import (
+    AgentChainOrchestrationService,
+)
+from app.services.agent_checkpoint_service import AgentCheckpointService
+from app.services.agent_coding_runner_service import AgentCodingRunnerService
+from app.services.agent_decision_parser import AgentDecisionParser
+from app.services.agent_deterministic_runner_registry import (
+    build_deterministic_runner_registry,
 )
 from app.services.agent_execution_planner import (
     AgentExecutionPlanner,
     ExecutionPlan,
     PlanStep,
 )
-from app.services.agent_deterministic_runner_registry import build_deterministic_runner_registry
-from app.services.agent_action_service import AgentActionService
-from app.services.agent_coding_runner_service import AgentCodingRunnerService
+from app.services.agent_execution_journal_service import (
+    agent_execution_journal_service,
+)
 from app.services.agent_experiment_runner_service import AgentExperimentRunnerService
-from app.services.agent_ingestion_demo_runner_service import AgentIngestionDemoRunnerService
-from app.services.agent_latex_runner_service import AgentLatexRunnerService
-from app.services.agent_research_runner_service import AgentResearchRunnerService
-from app.services.agent_checkpoint_service import AgentCheckpointService
-from app.services.agent_chain_orchestration_service import AgentChainOrchestrationService
 from app.services.agent_follow_up_job_service import AgentFollowUpJobService
-from app.services.agent_scientific_validation_service import AgentScientificValidationService
 from app.services.agent_goal_contract_service import AgentGoalContractService
+from app.services.agent_ingestion_demo_runner_service import (
+    AgentIngestionDemoRunnerService,
+)
+from app.services.agent_job_memory_service import agent_job_memory_service
+from app.services.agent_latex_runner_service import AgentLatexRunnerService
 from app.services.agent_observation_service import AgentObservationService
-from app.services.agent_progress_evaluation_service import AgentProgressEvaluationService
+from app.services.agent_progress_evaluation_service import (
+    AgentProgressEvaluationService,
+)
+from app.services.agent_research_runner_service import AgentResearchRunnerService
 from app.services.agent_runtime_finalizer import finalize_job
 from app.services.agent_runtime_policy_service import AgentRuntimePolicyService
 from app.services.agent_runtime_state_service import initialize_runtime_state
+from app.services.agent_scientific_validation_service import (
+    AgentScientificValidationService,
+)
 from app.services.agent_skill_profile_service import AgentSkillProfileService
 from app.services.agent_thinking_service import AgentThinkingService
 from app.services.agent_tool_dispatch import (
-    build_autonomous_collaboration_provider,
     AgentToolRegistry,
+    build_autonomous_collaboration_provider,
     build_autonomous_data_analysis_provider,
     build_autonomous_document_authoring_provider,
     build_autonomous_document_provider,
     build_autonomous_kg_provider,
-    build_autonomous_memory_provider,
     build_autonomous_media_provider,
+    build_autonomous_memory_provider,
     build_autonomous_notification_visualization_provider,
     build_autonomous_observability_provider,
     build_autonomous_output_state_provider,
@@ -94,33 +95,23 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_snapshot_provider,
     build_autonomous_symbol_retrieval_provider,
     build_autonomous_web_research_provider,
+    build_autonomous_workflow_provider,
     build_autonomous_workspace_mutation_provider,
     build_autonomous_workspace_read_provider,
-    build_autonomous_workflow_provider,
 )
+from app.services.agent_tools import AGENT_TOOLS, AUTONOMOUS_AGENT_TOOLS
+from app.services.arxiv_search_service import ArxivSearchService
+from app.services.data_analysis_tools import (
+    DATA_ANALYSIS_TOOL_DEFINITIONS,
+    DataAnalysisTools,
+)
+from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.project_profile_service import (
     build_project_profile,
     format_project_profile_for_prompt,
-    infer_project_profile_from_paths,
 )
-from app.agent_core.runtime import AgentRuntimeRunner
-from app.services.research_opportunity_service import (
-    compute_research_opportunity_evidence_revision,
-    compute_research_portfolio_config_revision,
-    collect_research_opportunity_linked_ids,
-    list_normalized_research_opportunities,
-    merge_operator_fields,
-    normalize_research_opportunity,
-    summarize_portfolio_operator_reviews,
-    summarize_research_opportunity_autonomy_states,
-    summarize_research_opportunity_stages,
-)
-from app.services.autonomy_service import (
-    build_domain_profile_compat_policy,
-    current_domain_profile_policy_snapshot,
-    resolve_domain_profile_automation_contract,
-)
-
+from app.services.search_service import SearchService
+from app.services.vector_store import VectorStoreService
 
 # Centralized tool fallback policies keyed by job type.
 # Used when a requested tool is unknown/unimplemented or fails with an error.
@@ -228,7 +219,9 @@ class _AutonomousRuntimeAdapter:
         )
         self.state["observations"].append(observation)
         self.job.current_phase = "observing"
-        self.job.phase_details = f"Gathered {len(observation.get('context', []))} context items"
+        self.job.phase_details = (
+            f"Gathered {len(observation.get('context', []))} context items"
+        )
         resolved_scope = self.executor._resolve_default_source_scope(self.job)
         self.executor._append_scope_event(
             self.state,
@@ -250,7 +243,9 @@ class _AutonomousRuntimeAdapter:
         if used_causal_llm:
             self.job.llm_calls_used += 1
 
-        if self.executor._resolve_execution_mode(self.job, state=self.state) == "plan_and_execute" and not self.state.get("execution_plan"):
+        if self.executor._resolve_execution_mode(
+            self.job, state=self.state
+        ) == "plan_and_execute" and not self.state.get("execution_plan"):
             self.job.current_phase = "planning"
             self.job.phase_details = "Generating execution plan"
         used_plan_llm = await self.executor._ensure_execution_plan(
@@ -267,41 +262,63 @@ class _AutonomousRuntimeAdapter:
         self.executor._ensure_subgoal_chain_config(self.job, self.state)
 
         if self.executor._should_run_critic(self.job, self.state):
-            critic_note = await self.executor._run_critic_pass(self.job, self.state, observation, self.user_settings)
+            critic_note = await self.executor._run_critic_pass(
+                self.job, self.state, observation, self.user_settings
+            )
             if critic_note:
                 notes = self.state.get("critic_notes")
                 if not isinstance(notes, list):
                     notes = []
                 notes.append(critic_note)
-                max_notes = int(self.executor._get_critic_config(self.job).get("max_notes", 6))
-                self.state["critic_notes"] = notes[-max(1, max_notes):]
+                max_notes = int(
+                    self.executor._get_critic_config(self.job).get("max_notes", 6)
+                )
+                self.state["critic_notes"] = notes[-max(1, max_notes) :]
                 self.state["last_critic_iteration"] = int(self.job.iteration or 0)
                 self.job.llm_calls_used += 1
-                trigger_info = self.state.get("critic_last_trigger") if isinstance(self.state.get("critic_last_trigger"), dict) else {}
+                trigger_info = (
+                    self.state.get("critic_last_trigger")
+                    if isinstance(self.state.get("critic_last_trigger"), dict)
+                    else {}
+                )
                 self.job.add_log_entry(
                     {
                         "phase": "critic_pass",
-                        "assessment": str(critic_note.get("trajectory_assessment") or "")[:200],
+                        "assessment": str(
+                            critic_note.get("trajectory_assessment") or ""
+                        )[:200],
                         "pivot": str(critic_note.get("pivot") or "")[:200],
                         "recommended_tools": critic_note.get("recommended_tools") or [],
                         "trigger_reason": str(trigger_info.get("reason") or ""),
-                        "trigger_by_interval": bool(trigger_info.get("by_interval", False)),
+                        "trigger_by_interval": bool(
+                            trigger_info.get("by_interval", False)
+                        ),
                         "trigger_by_stall": bool(trigger_info.get("by_stall", False)),
-                        "trigger_by_uncertainty": bool(trigger_info.get("by_uncertainty", False)),
-                        "uncertainty_score_gap": trigger_info.get("uncertainty_score_gap"),
-                        "uncertainty_effective_threshold": trigger_info.get("uncertainty_effective_threshold"),
+                        "trigger_by_uncertainty": bool(
+                            trigger_info.get("by_uncertainty", False)
+                        ),
+                        "uncertainty_score_gap": trigger_info.get(
+                            "uncertainty_score_gap"
+                        ),
+                        "uncertainty_effective_threshold": trigger_info.get(
+                            "uncertainty_effective_threshold"
+                        ),
                     }
                 )
 
         if self.state.get("execution_plan") and not self.state.get("plan_completed"):
             replan_trigger = self.executor.planner.evaluate_replan_triggers(
-                self.job, self.state, config=self.job.config if isinstance(self.job.config, dict) else None
+                self.job,
+                self.state,
+                config=self.job.config if isinstance(self.job.config, dict) else None,
             )
             if replan_trigger:
                 available_tools = self.executor._get_tools_for_job_type(
                     self.job.job_type,
                     self.job.config,
-                    profile=self.state.get("skill_profile") if isinstance(self.state.get("skill_profile"), dict) else None,
+                    profile=self.state.get("skill_profile")
+                    if isinstance(self.state.get("skill_profile"), dict)
+                    else None,
                 )
                 revised = await self.executor.planner.replan(
                     job=self.job,
@@ -335,17 +352,22 @@ class _AutonomousRuntimeAdapter:
             self.user_settings,
             self.db,
         )
-        decision = self.executor._maybe_apply_critic_pivot_override(self.job, self.state, decision)
+        decision = self.executor._maybe_apply_critic_pivot_override(
+            self.job, self.state, decision
+        )
         self.job.current_phase = "thinking"
         self.job.phase_details = decision.get("reasoning", "")[:200]
         self.job.llm_calls_used += 1
 
-        contract_before = self.executor._evaluate_goal_contract(self.job, self.state, include_result_keys=False)
+        contract_before = self.executor._evaluate_goal_contract(
+            self.job, self.state, include_result_keys=False
+        )
         self.state["goal_contract_last"] = contract_before
 
         if decision.get("goal_achieved"):
             if (
-                self.executor._resolve_execution_mode(self.job, state=self.state) == "plan_and_execute"
+                self.executor._resolve_execution_mode(self.job, state=self.state)
+                == "plan_and_execute"
                 and self.state.get("execution_plan")
                 and not self.executor._is_execution_plan_complete(self.state)
             ):
@@ -354,9 +376,17 @@ class _AutonomousRuntimeAdapter:
                     f"{str(decision.get('reasoning') or '').strip()[:260]} "
                     "Plan-and-execute mode requires completing the active execution plan before final stop."
                 ).strip()
-                self.job.add_log_entry({"phase": "goal_achieved_blocked", "reason": "plan_not_completed"})
-            elif bool(contract_before.get("enabled")) and not bool(contract_before.get("satisfied")):
-                unmet = contract_before.get("missing") if isinstance(contract_before.get("missing"), list) else []
+                self.job.add_log_entry(
+                    {"phase": "goal_achieved_blocked", "reason": "plan_not_completed"}
+                )
+            elif bool(contract_before.get("enabled")) and not bool(
+                contract_before.get("satisfied")
+            ):
+                unmet = (
+                    contract_before.get("missing")
+                    if isinstance(contract_before.get("missing"), list)
+                    else []
+                )
                 decision["goal_achieved"] = False
                 decision["reasoning"] = (
                     f"{str(decision.get('reasoning') or '').strip()[:260]} "
@@ -370,8 +400,12 @@ class _AutonomousRuntimeAdapter:
                     }
                 )
             else:
-                if bool(contract_before.get("enabled")) and not int(self.state.get("goal_contract_satisfied_iteration", 0) or 0):
-                    self.state["goal_contract_satisfied_iteration"] = int(self.job.iteration or 0)
+                if bool(contract_before.get("enabled")) and not int(
+                    self.state.get("goal_contract_satisfied_iteration", 0) or 0
+                ):
+                    self.state["goal_contract_satisfied_iteration"] = int(
+                        self.job.iteration or 0
+                    )
                 logger.info(f"Job {self.job.id} achieved goal")
                 self.job.add_log_entry(
                     {
@@ -383,8 +417,12 @@ class _AutonomousRuntimeAdapter:
                 self.state["goal_progress"] = 100
 
         if decision.get("should_stop"):
-            logger.info(f"Job {self.job.id} decided to stop: {decision.get('stop_reason')}")
-            self.job.add_log_entry({"phase": "voluntary_stop", "reason": decision.get("stop_reason")})
+            logger.info(
+                f"Job {self.job.id} decided to stop: {decision.get('stop_reason')}"
+            )
+            self.job.add_log_entry(
+                {"phase": "voluntary_stop", "reason": decision.get("stop_reason")}
+            )
 
         return decision
 
@@ -393,23 +431,36 @@ class _AutonomousRuntimeAdapter:
         self.selection_explainability = {}
         cf_cfg = self.executor._get_counterfactual_config(self.job)
         if bool(cf_cfg.get("enabled", True)):
-            self.counterfactual_candidates = self.executor._build_counterfactual_candidates(
-                job=self.job,
-                state=self.state,
-                selected_tool=str(((decision.get("action") or {}).get("tool") or "")).strip() or None,
-                limit=int(cf_cfg.get("top_k", 3) or 3),
-                context_tag="iteration_decision",
+            self.counterfactual_candidates = (
+                self.executor._build_counterfactual_candidates(
+                    job=self.job,
+                    state=self.state,
+                    selected_tool=str(
+                        ((decision.get("action") or {}).get("tool") or "")
+                    ).strip()
+                    or None,
+                    limit=int(cf_cfg.get("top_k", 3) or 3),
+                    context_tag="iteration_decision",
+                )
             )
             self.state["counterfactual_last"] = self.counterfactual_candidates
-            self.state["counterfactual_logged_iterations"] = int(self.state.get("counterfactual_logged_iterations", 0) or 0) + 1
+            self.state["counterfactual_logged_iterations"] = (
+                int(self.state.get("counterfactual_logged_iterations", 0) or 0) + 1
+            )
             self.state["counterfactual_last_iteration"] = int(self.job.iteration or 0)
         self.selection_explainability = self.executor._build_selection_explainability(
             state=self.state,
-            selected_tool=str(((decision.get("action") or {}).get("tool") or "")).strip() or None,
+            selected_tool=str(
+                ((decision.get("action") or {}).get("tool") or "")
+            ).strip()
+            or None,
             candidates=self.counterfactual_candidates,
         )
         self.state["selection_explainability_last"] = self.selection_explainability
-        self.state["selection_explainability_logged_iterations"] = int(self.state.get("selection_explainability_logged_iterations", 0) or 0) + 1
+        self.state["selection_explainability_logged_iterations"] = (
+            int(self.state.get("selection_explainability_logged_iterations", 0) or 0)
+            + 1
+        )
 
         action = decision.get("action")
         action_result = None
@@ -433,21 +484,44 @@ class _AutonomousRuntimeAdapter:
                 },
             )
             self.job.add_log_entry(
-                {"phase": "approval_override_applied", "tool": str((approved_override.get("tool") or "")).strip()}
+                {
+                    "phase": "approval_override_applied",
+                    "tool": str((approved_override.get("tool") or "")).strip(),
+                }
             )
         if action:
             if not checkpoint_override_applied:
-                action = self.executor._enforce_plan_step_action(self.job, self.state, action)
+                action = self.executor._enforce_plan_step_action(
+                    self.job, self.state, action
+                )
             decision["action"] = action
-            plan_rows = self.state.get("execution_plan") if isinstance(self.state.get("execution_plan"), list) else []
+            plan_rows = (
+                self.state.get("execution_plan")
+                if isinstance(self.state.get("execution_plan"), list)
+                else []
+            )
             plan_idx = int(self.state.get("plan_step_index", 0) or 0)
             plan_idx = max(0, min(plan_idx, len(plan_rows) - 1)) if plan_rows else 0
-            active_step = plan_rows[plan_idx] if plan_rows and isinstance(plan_rows[plan_idx], dict) else {}
-            active_step_id = str(active_step.get("step_id") or f"step_{plan_idx + 1}").strip()
+            active_step = (
+                plan_rows[plan_idx]
+                if plan_rows and isinstance(plan_rows[plan_idx], dict)
+                else {}
+            )
+            active_step_id = str(
+                active_step.get("step_id") or f"step_{plan_idx + 1}"
+            ).strip()
 
-            effective_action = self.executor._apply_default_scope_to_action(dict(action), self.job)
-            req_params = action.get("params") if isinstance(action.get("params"), dict) else {}
-            eff_params = effective_action.get("params") if isinstance(effective_action.get("params"), dict) else {}
+            effective_action = self.executor._apply_default_scope_to_action(
+                dict(action), self.job
+            )
+            req_params = (
+                action.get("params") if isinstance(action.get("params"), dict) else {}
+            )
+            eff_params = (
+                effective_action.get("params")
+                if isinstance(effective_action.get("params"), dict)
+                else {}
+            )
             self.executor._append_scope_event(
                 self.state,
                 {
@@ -455,23 +529,35 @@ class _AutonomousRuntimeAdapter:
                     "timestamp": datetime.utcnow().isoformat(),
                     "iteration": int(self.job.iteration or 0),
                     "tool": str(action.get("tool") or ""),
-                    "requested_source_id": str(req_params.get("source_id") or "").strip() or None,
-                    "effective_source_id": str(eff_params.get("source_id") or "").strip() or None,
+                    "requested_source_id": str(
+                        req_params.get("source_id") or ""
+                    ).strip()
+                    or None,
+                    "effective_source_id": str(
+                        eff_params.get("source_id") or ""
+                    ).strip()
+                    or None,
                     "scope_source": self.executor._resolve_scope_source(self.job),
                 },
             )
             self.state["approval_checkpoint_pending"] = None
-            checkpoint_gate = self.executor._evaluate_approval_checkpoint(self.job, self.state, action)
+            checkpoint_gate = self.executor._evaluate_approval_checkpoint(
+                self.job, self.state, action
+            )
             if bool(checkpoint_gate.get("required", False)):
                 checkpoint_payload = (
-                    checkpoint_gate.get("checkpoint") if isinstance(checkpoint_gate.get("checkpoint"), dict) else {}
+                    checkpoint_gate.get("checkpoint")
+                    if isinstance(checkpoint_gate.get("checkpoint"), dict)
+                    else {}
                 )
                 checkpoint_payload["plan_step_id"] = active_step_id
                 checkpoint_payload["plan_step_index"] = int(plan_idx)
                 if isinstance(active_step, dict):
                     active_step["status"] = "waiting_approval"
                     active_step["waiting_since"] = datetime.utcnow().isoformat()
-                    active_step["pending_action"] = {"tool": str((action.get("tool") or "")).strip()}
+                    active_step["pending_action"] = {
+                        "tool": str((action.get("tool") or "")).strip()
+                    }
                 self.executor._append_step_event(
                     self.state,
                     {
@@ -480,7 +566,9 @@ class _AutonomousRuntimeAdapter:
                         "plan_step_id": active_step_id,
                         "plan_step_index": int(plan_idx),
                         "tool": str((action.get("tool") or "")).strip() or None,
-                        "reason": str((checkpoint_payload.get("message") or "")).strip()[:260],
+                        "reason": str(
+                            (checkpoint_payload.get("message") or "")
+                        ).strip()[:260],
                     },
                 )
                 self.state["approval_checkpoint_pending"] = checkpoint_payload
@@ -489,7 +577,9 @@ class _AutonomousRuntimeAdapter:
                     events = []
                 events.append(checkpoint_payload)
                 self.state["approval_checkpoint_events"] = events[-20:]
-                results_payload = self.job.results if isinstance(self.job.results, dict) else {}
+                results_payload = (
+                    self.job.results if isinstance(self.job.results, dict) else {}
+                )
                 exec_strategy = (
                     results_payload.get("execution_strategy")
                     if isinstance(results_payload.get("execution_strategy"), dict)
@@ -501,7 +591,9 @@ class _AutonomousRuntimeAdapter:
                     else {}
                 )
                 approval_summary["pending"] = checkpoint_payload
-                approval_summary["events"] = self.state["approval_checkpoint_events"][-20:]
+                approval_summary["events"] = self.state["approval_checkpoint_events"][
+                    -20:
+                ]
                 approval_summary["seen"] = (
                     self.state.get("approval_checkpoint_seen")
                     if isinstance(self.state.get("approval_checkpoint_seen"), list)
@@ -513,20 +605,35 @@ class _AutonomousRuntimeAdapter:
                 self.executor._persist_runtime_execution_strategy(self.job, self.state)
                 self.job.status = AgentJobStatus.PAUSED.value
                 self.job.current_phase = "awaiting_approval"
-                self.job.phase_details = str(checkpoint_payload.get("message") or "Approval required before next action.")[:280]
-                self.job.add_log_entry({"phase": "approval_checkpoint", "checkpoint": checkpoint_payload})
+                self.job.phase_details = str(
+                    checkpoint_payload.get("message")
+                    or "Approval required before next action."
+                )[:280]
+                self.job.add_log_entry(
+                    {"phase": "approval_checkpoint", "checkpoint": checkpoint_payload}
+                )
                 await self.executor._save_checkpoint(self.job, self.state, self.db)
                 await self.db.commit()
                 if self.progress_callback:
-                    self.executor._persist_runtime_execution_strategy(self.job, self.state)
+                    self.executor._persist_runtime_execution_strategy(
+                        self.job, self.state
+                    )
                     exec_runtime = (
-                        ((self.job.results or {}).get("execution_strategy") or {}).get("execution_graph_runtime")
-                        if isinstance((self.job.results or {}).get("execution_strategy"), dict)
+                        ((self.job.results or {}).get("execution_strategy") or {}).get(
+                            "execution_graph_runtime"
+                        )
+                        if isinstance(
+                            (self.job.results or {}).get("execution_strategy"), dict
+                        )
                         else {}
                     )
                     scope_runtime = (
-                        ((self.job.results or {}).get("execution_strategy") or {}).get("scope_observability_runtime")
-                        if isinstance((self.job.results or {}).get("execution_strategy"), dict)
+                        ((self.job.results or {}).get("execution_strategy") or {}).get(
+                            "scope_observability_runtime"
+                        )
+                        if isinstance(
+                            (self.job.results or {}).get("execution_strategy"), dict
+                        )
                         else {}
                     )
                     await self.progress_callback(
@@ -545,7 +652,9 @@ class _AutonomousRuntimeAdapter:
                     "terminal_result": {
                         "status": self.job.status,
                         "progress": int(self.state.get("goal_progress", 0) or 0),
-                        "results": self.job.results if isinstance(self.job.results, dict) else {},
+                        "results": self.job.results
+                        if isinstance(self.job.results, dict)
+                        else {},
                         "iterations": self.job.iteration,
                         "tool_calls": self.job.tool_calls_used,
                         "llm_calls": self.job.llm_calls_used,
@@ -588,7 +697,9 @@ class _AutonomousRuntimeAdapter:
                     "tool": str(action.get("tool") or ""),
                     "success": bool(action_result.get("success", False)),
                     "blocked_by_scope_guard": bool(action_result.get("scope_guard")),
-                    "error": str(action_result.get("error") or "")[:260] if action_result.get("error") else "",
+                    "error": str(action_result.get("error") or "")[:260]
+                    if action_result.get("error")
+                    else "",
                 },
             )
             self.job.current_phase = "acting"
@@ -599,10 +710,39 @@ class _AutonomousRuntimeAdapter:
             if action_result.get("artifacts"):
                 self.state["artifacts"].extend(action_result["artifacts"])
             self.executor._record_tool_outcome(self.state, action, action_result)
-            self.executor._update_skill_profile_metrics(self.state, action, action_result)
+            self.executor._update_skill_profile_metrics(
+                self.state, action, action_result
+            )
+
+            if bool(action_result.get("deferred_external")):
+                await self.executor.checkpoint_service.save_checkpoint(
+                    job=self.job,
+                    state=self.state,
+                    db=self.db,
+                    reason="waiting_external",
+                )
+                return {
+                    "terminal_result": {
+                        "status": self.job.status,
+                        "progress": int(self.state.get("goal_progress", 0) or 0),
+                        "results": self.job.results
+                        if isinstance(self.job.results, dict)
+                        else {},
+                        "iterations": self.job.iteration,
+                        "tool_calls": self.job.tool_calls_used,
+                        "llm_calls": self.job.llm_calls_used,
+                        "external_call": action_result.get("data"),
+                    }
+                }
 
             graph_cfg = self.executor._get_execution_graph_config(self.job)
-            verify_on_tools = set([str(x).strip() for x in (graph_cfg.get("verify_on_tools") or []) if str(x).strip()])
+            verify_on_tools = set(
+                [
+                    str(x).strip()
+                    for x in (graph_cfg.get("verify_on_tools") or [])
+                    if str(x).strip()
+                ]
+            )
             primary_tool = str(action.get("tool") or "").strip()
             should_verify = (
                 bool(graph_cfg.get("enabled", True))
@@ -611,7 +751,9 @@ class _AutonomousRuntimeAdapter:
                 and primary_tool in verify_on_tools
             )
             if should_verify and self.job.tool_calls_used < self.job.max_tool_calls:
-                verification_action = self.executor._build_verification_action(self.job, action, action_result)
+                verification_action = self.executor._build_verification_action(
+                    self.job, action, action_result
+                )
                 if verification_action:
                     verify_node_id = f"{active_step_id}.verify"
                     verification_result = await self.executor.action_service.act(
@@ -652,15 +794,23 @@ class _AutonomousRuntimeAdapter:
                         },
                     )
                     self.job.tool_calls_used += 1
-                    self.state["verification_attempts"] = int(self.state.get("verification_attempts", 0) or 0) + 1
+                    self.state["verification_attempts"] = (
+                        int(self.state.get("verification_attempts", 0) or 0) + 1
+                    )
                     if bool(verification_result.get("success", False)):
-                        self.state["verification_successes"] = int(self.state.get("verification_successes", 0) or 0) + 1
+                        self.state["verification_successes"] = (
+                            int(self.state.get("verification_successes", 0) or 0) + 1
+                        )
                     if verification_result.get("findings"):
                         self.state["findings"].extend(verification_result["findings"])
                     if verification_result.get("artifacts"):
                         self.state["artifacts"].extend(verification_result["artifacts"])
-                    self.executor._record_tool_outcome(self.state, verification_action, verification_result)
-                    self.executor._update_skill_profile_metrics(self.state, verification_action, verification_result)
+                    self.executor._record_tool_outcome(
+                        self.state, verification_action, verification_result
+                    )
+                    self.executor._update_skill_profile_metrics(
+                        self.state, verification_action, verification_result
+                    )
                     ver_rows = self.state.get("verification_actions")
                     if not isinstance(ver_rows, list):
                         ver_rows = []
@@ -700,7 +850,11 @@ class _AutonomousRuntimeAdapter:
                 )
                 if summarize_action:
                     summarize_node_id = f"{active_step_id}.summarize"
-                    summarize_dep = f"{active_step_id}.verify" if isinstance(verification_action, dict) else active_step_id
+                    summarize_dep = (
+                        f"{active_step_id}.verify"
+                        if isinstance(verification_action, dict)
+                        else active_step_id
+                    )
                     summarize_result = await self.executor.action_service.act(
                         self.executor,
                         self.job,
@@ -739,15 +893,23 @@ class _AutonomousRuntimeAdapter:
                         },
                     )
                     self.job.tool_calls_used += 1
-                    self.state["summarization_attempts"] = int(self.state.get("summarization_attempts", 0) or 0) + 1
+                    self.state["summarization_attempts"] = (
+                        int(self.state.get("summarization_attempts", 0) or 0) + 1
+                    )
                     if bool(summarize_result.get("success", False)):
-                        self.state["summarization_successes"] = int(self.state.get("summarization_successes", 0) or 0) + 1
+                        self.state["summarization_successes"] = (
+                            int(self.state.get("summarization_successes", 0) or 0) + 1
+                        )
                     if summarize_result.get("findings"):
                         self.state["findings"].extend(summarize_result["findings"])
                     if summarize_result.get("artifacts"):
                         self.state["artifacts"].extend(summarize_result["artifacts"])
-                    self.executor._record_tool_outcome(self.state, summarize_action, summarize_result)
-                    self.executor._update_skill_profile_metrics(self.state, summarize_action, summarize_result)
+                    self.executor._record_tool_outcome(
+                        self.state, summarize_action, summarize_result
+                    )
+                    self.executor._update_skill_profile_metrics(
+                        self.state, summarize_action, summarize_result
+                    )
                     sum_rows = self.state.get("summarization_actions")
                     if not isinstance(sum_rows, list):
                         sum_rows = []
@@ -778,7 +940,9 @@ class _AutonomousRuntimeAdapter:
             "summarize_result": summarize_result,
         }
 
-    async def evaluate_phase(self, decision: Dict[str, Any], action_bundle: Dict[str, Any]) -> Dict[str, Any]:
+    async def evaluate_phase(
+        self, decision: Dict[str, Any], action_bundle: Dict[str, Any]
+    ) -> Dict[str, Any]:
         action = action_bundle.get("action")
         action_result = action_bundle.get("action_result")
         previous_progress = int(self.state.get("goal_progress", 0) or 0)
@@ -801,13 +965,28 @@ class _AutonomousRuntimeAdapter:
             iteration=int(self.job.iteration or 0),
         )
 
-        contract_after = self.executor._evaluate_goal_contract(self.job, self.state, include_result_keys=False)
+        contract_after = self.executor._evaluate_goal_contract(
+            self.job, self.state, include_result_keys=False
+        )
         self.state["goal_contract_last"] = contract_after
-        if bool(contract_after.get("enabled")) and bool(contract_after.get("satisfied")):
+        if bool(contract_after.get("enabled")) and bool(
+            contract_after.get("satisfied")
+        ):
             if not int(self.state.get("goal_contract_satisfied_iteration", 0) or 0):
-                self.state["goal_contract_satisfied_iteration"] = int(self.job.iteration or 0)
-                self.job.add_log_entry({"phase": "goal_contract_satisfied", "iteration": int(self.job.iteration or 0)})
-            contract_cfg = contract_after.get("contract") if isinstance(contract_after.get("contract"), dict) else {}
+                self.state["goal_contract_satisfied_iteration"] = int(
+                    self.job.iteration or 0
+                )
+                self.job.add_log_entry(
+                    {
+                        "phase": "goal_contract_satisfied",
+                        "iteration": int(self.job.iteration or 0),
+                    }
+                )
+            contract_cfg = (
+                contract_after.get("contract")
+                if isinstance(contract_after.get("contract"), dict)
+                else {}
+            )
             if bool(contract_cfg.get("auto_complete_when_satisfied", True)):
                 self.state["goal_progress"] = 100
                 self.job.progress = 100
@@ -817,7 +996,11 @@ class _AutonomousRuntimeAdapter:
                         "reason": "deterministic goal contract satisfied",
                     }
                 )
-                return {"progress": 100, "should_stop": True, "stop_reason": "goal_contract_autocomplete"}
+                return {
+                    "progress": 100,
+                    "should_stop": True,
+                    "stop_reason": "goal_contract_autocomplete",
+                }
 
         stall_info = self.executor._update_stall_state(
             job=self.job,
@@ -828,14 +1011,31 @@ class _AutonomousRuntimeAdapter:
 
         recovery_triggered = False
         if stall_info.get("should_recover"):
-            recovery_budget = int(self.executor._get_stall_config(self.job).get("max_recovery_actions", 0))
+            recovery_budget = int(
+                self.executor._get_stall_config(self.job).get("max_recovery_actions", 0)
+            )
             used_recoveries = int(self.state.get("recovery_actions_used", 0) or 0)
-            if used_recoveries < recovery_budget and self.job.tool_calls_used < self.job.max_tool_calls:
-                recovery_action = self.executor._build_recovery_action(self.job, self.state, exclude_tool=(action or {}).get("tool"))
+            if (
+                used_recoveries < recovery_budget
+                and self.job.tool_calls_used < self.job.max_tool_calls
+            ):
+                recovery_action = self.executor._build_recovery_action(
+                    self.job, self.state, exclude_tool=(action or {}).get("tool")
+                )
                 if recovery_action:
-                    effective_recovery = self.executor._apply_default_scope_to_action(dict(recovery_action), self.job)
-                    rec_req_params = recovery_action.get("params") if isinstance(recovery_action.get("params"), dict) else {}
-                    rec_eff_params = effective_recovery.get("params") if isinstance(effective_recovery.get("params"), dict) else {}
+                    effective_recovery = self.executor._apply_default_scope_to_action(
+                        dict(recovery_action), self.job
+                    )
+                    rec_req_params = (
+                        recovery_action.get("params")
+                        if isinstance(recovery_action.get("params"), dict)
+                        else {}
+                    )
+                    rec_eff_params = (
+                        effective_recovery.get("params")
+                        if isinstance(effective_recovery.get("params"), dict)
+                        else {}
+                    )
                     self.executor._append_scope_event(
                         self.state,
                         {
@@ -843,9 +1043,17 @@ class _AutonomousRuntimeAdapter:
                             "timestamp": datetime.utcnow().isoformat(),
                             "iteration": int(self.job.iteration or 0),
                             "tool": str(recovery_action.get("tool") or ""),
-                            "requested_source_id": str(rec_req_params.get("source_id") or "").strip() or None,
-                            "effective_source_id": str(rec_eff_params.get("source_id") or "").strip() or None,
-                            "scope_source": self.executor._resolve_scope_source(self.job),
+                            "requested_source_id": str(
+                                rec_req_params.get("source_id") or ""
+                            ).strip()
+                            or None,
+                            "effective_source_id": str(
+                                rec_eff_params.get("source_id") or ""
+                            ).strip()
+                            or None,
+                            "scope_source": self.executor._resolve_scope_source(
+                                self.job
+                            ),
                             "recovery": True,
                         },
                     )
@@ -856,7 +1064,13 @@ class _AutonomousRuntimeAdapter:
                         self.state,
                         self.db,
                     )
-                    self.state["actions_taken"].append({"action": recovery_action, "result": recovery_result, "iteration": self.job.iteration})
+                    self.state["actions_taken"].append(
+                        {
+                            "action": recovery_action,
+                            "result": recovery_result,
+                            "iteration": self.job.iteration,
+                        }
+                    )
                     self.executor._append_scope_event(
                         self.state,
                         {
@@ -865,8 +1079,12 @@ class _AutonomousRuntimeAdapter:
                             "iteration": int(self.job.iteration or 0),
                             "tool": str(recovery_action.get("tool") or ""),
                             "success": bool(recovery_result.get("success", False)),
-                            "blocked_by_scope_guard": bool(recovery_result.get("scope_guard")),
-                            "error": str(recovery_result.get("error") or "")[:260] if recovery_result.get("error") else "",
+                            "blocked_by_scope_guard": bool(
+                                recovery_result.get("scope_guard")
+                            ),
+                            "error": str(recovery_result.get("error") or "")[:260]
+                            if recovery_result.get("error")
+                            else "",
                             "recovery": True,
                         },
                     )
@@ -877,8 +1095,12 @@ class _AutonomousRuntimeAdapter:
                         self.state["findings"].extend(recovery_result["findings"])
                     if recovery_result.get("artifacts"):
                         self.state["artifacts"].extend(recovery_result["artifacts"])
-                    self.executor._record_tool_outcome(self.state, recovery_action, recovery_result)
-                    self.executor._update_skill_profile_metrics(self.state, recovery_action, recovery_result)
+                    self.executor._record_tool_outcome(
+                        self.state, recovery_action, recovery_result
+                    )
+                    self.executor._update_skill_profile_metrics(
+                        self.state, recovery_action, recovery_result
+                    )
                     self.executor._apply_recovery_post_action_updates(
                         job=self.job,
                         state=self.state,
@@ -891,20 +1113,44 @@ class _AutonomousRuntimeAdapter:
                             "trigger_reason": stall_info.get("reason"),
                             "recovery_action": recovery_action.get("tool"),
                             "recovery_success": bool(recovery_result.get("success")),
-                            "forced_exploration": bool(self.state.get("last_recovery_was_forced_exploration", False)),
-                            "forced_exploration_attempts": int(self.state.get("forced_exploration_attempts", 0) or 0),
-                            "forced_exploration_successes": int(self.state.get("forced_exploration_successes", 0) or 0),
-                            "forced_exploration_failures": int(self.state.get("forced_exploration_failures", 0) or 0),
-                            "forced_exploration_used": int(self.state.get("forced_exploration_used", 0) or 0),
-                            "tool_cooldown_blocks": int(self.state.get("tool_cooldown_blocks", 0) or 0),
+                            "forced_exploration": bool(
+                                self.state.get(
+                                    "last_recovery_was_forced_exploration", False
+                                )
+                            ),
+                            "forced_exploration_attempts": int(
+                                self.state.get("forced_exploration_attempts", 0) or 0
+                            ),
+                            "forced_exploration_successes": int(
+                                self.state.get("forced_exploration_successes", 0) or 0
+                            ),
+                            "forced_exploration_failures": int(
+                                self.state.get("forced_exploration_failures", 0) or 0
+                            ),
+                            "forced_exploration_used": int(
+                                self.state.get("forced_exploration_used", 0) or 0
+                            ),
+                            "tool_cooldown_blocks": int(
+                                self.state.get("tool_cooldown_blocks", 0) or 0
+                            ),
                         }
                     )
-                    self.state["stalled_iterations"] = max(0, int(self.state.get("stalled_iterations", 0)) - 1)
+                    self.state["stalled_iterations"] = max(
+                        0, int(self.state.get("stalled_iterations", 0)) - 1
+                    )
 
         if stall_info.get("should_stop") and not recovery_triggered:
-            logger.info(f"Job {self.job.id} stopping due to stall: {stall_info.get('reason')}")
-            self.job.add_log_entry({"phase": "voluntary_stop", "reason": stall_info.get("reason")})
-            return {"progress": progress, "should_stop": True, "stop_reason": str(stall_info.get("reason") or "")}
+            logger.info(
+                f"Job {self.job.id} stopping due to stall: {stall_info.get('reason')}"
+            )
+            self.job.add_log_entry(
+                {"phase": "voluntary_stop", "reason": stall_info.get("reason")}
+            )
+            return {
+                "progress": progress,
+                "should_stop": True,
+                "stop_reason": str(stall_info.get("reason") or ""),
+            }
 
         return {"progress": progress, "should_stop": False}
 
@@ -929,32 +1175,54 @@ class _AutonomousRuntimeAdapter:
                 "action": action.get("tool") if isinstance(action, dict) else None,
                 "progress": progress,
                 "findings_count": findings_count,
-                "verify_tool": verification_action.get("tool") if isinstance(verification_action, dict) else None,
-                "verify_success": bool((verification_result or {}).get("success", False)) if isinstance(verification_result, dict) else None,
-                "summarize_tool": summarize_action.get("tool") if isinstance(summarize_action, dict) else None,
-                "summarize_success": bool((summarize_result or {}).get("success", False)) if isinstance(summarize_result, dict) else None,
+                "verify_tool": verification_action.get("tool")
+                if isinstance(verification_action, dict)
+                else None,
+                "verify_success": bool(
+                    (verification_result or {}).get("success", False)
+                )
+                if isinstance(verification_result, dict)
+                else None,
+                "summarize_tool": summarize_action.get("tool")
+                if isinstance(summarize_action, dict)
+                else None,
+                "summarize_success": bool(
+                    (summarize_result or {}).get("success", False)
+                )
+                if isinstance(summarize_result, dict)
+                else None,
                 "plan_step_index": int(self.state.get("plan_step_index", 0) or 0),
                 "plan_steps_total": len(self.state.get("execution_plan", []) or []),
                 "stalled_iterations": int(self.state.get("stalled_iterations", 0) or 0),
-                "repeated_action_iterations": int(self.state.get("repeated_action_iterations", 0) or 0),
+                "repeated_action_iterations": int(
+                    self.state.get("repeated_action_iterations", 0) or 0
+                ),
                 "counterfactual_candidates": self.counterfactual_candidates[:5],
                 "selection_explainability": self.selection_explainability,
             }
         )
 
-        await self.executor.trigger_progress_chain(self.job, progress, findings_count, self.db)
+        await self.executor.trigger_progress_chain(
+            self.job, progress, findings_count, self.db
+        )
 
         if self.job.iteration % 5 == 0:
             self.executor._persist_runtime_execution_strategy(self.job, self.state)
             await self.executor._save_checkpoint(self.job, self.state, self.db)
 
         if self.progress_callback:
-            exec_runtime = self.executor._get_execution_graph_runtime_snapshot(self.state)
+            exec_runtime = self.executor._get_execution_graph_runtime_snapshot(
+                self.state
+            )
             scope_runtime = {
-                "resolved_scope_id": self.executor._resolve_default_source_scope(self.job),
+                "resolved_scope_id": self.executor._resolve_default_source_scope(
+                    self.job
+                ),
                 "scope_source": self.executor._resolve_scope_source(self.job),
                 "events": (
-                    self.state.get("scope_events") if isinstance(self.state.get("scope_events"), list) else []
+                    self.state.get("scope_events")
+                    if isinstance(self.state.get("scope_events"), list)
+                    else []
                 )[-25:],
             }
             await self.progress_callback(
@@ -1110,9 +1378,17 @@ class AutonomousAgentExecutor:
 
         timeout_seconds = _opt_int("llm_timeout_seconds", "timeout_seconds")
         max_tokens_cap = _opt_int("llm_max_tokens_cap", "max_tokens_cap")
-        cooldown_seconds = _opt_int("llm_unhealthy_cooldown_seconds", "cooldown_seconds")
+        cooldown_seconds = _opt_int(
+            "llm_unhealthy_cooldown_seconds", "cooldown_seconds"
+        )
 
-        if not tier and not fallback_tiers and timeout_seconds is None and max_tokens_cap is None and cooldown_seconds is None:
+        if (
+            not tier
+            and not fallback_tiers
+            and timeout_seconds is None
+            and max_tokens_cap is None
+            and cooldown_seconds is None
+        ):
             return None
 
         routing: Dict[str, Any] = {"tier": tier, "fallback_tiers": fallback_tiers}
@@ -1123,7 +1399,6 @@ class AutonomousAgentExecutor:
         if cooldown_seconds is not None:
             routing["cooldown_seconds"] = max(5, min(cooldown_seconds, 3600))
         return routing
-
 
     async def execute_job(
         self,
@@ -1143,16 +1418,20 @@ class AutonomousAgentExecutor:
             Execution result with status and outputs
         """
         # Load job
-        result = await db.execute(
-            select(AgentJob).where(AgentJob.id == job_id)
-        )
+        result = await db.execute(select(AgentJob).where(AgentJob.id == job_id))
         job = result.scalar_one_or_none()
 
         if not job:
             return {"error": "Job not found", "status": "failed"}
 
-        if job.status not in [AgentJobStatus.PENDING.value, AgentJobStatus.RUNNING.value]:
-            return {"error": f"Job cannot be executed in status: {job.status}", "status": job.status}
+        if job.status not in [
+            AgentJobStatus.PENDING.value,
+            AgentJobStatus.RUNNING.value,
+        ]:
+            return {
+                "error": f"Job cannot be executed in status: {job.status}",
+                "status": job.status,
+            }
 
         # Load user settings
         user_settings = await self._load_user_settings(job.user_id, db)
@@ -1161,7 +1440,9 @@ class AutonomousAgentExecutor:
         agent_def = None
         if job.agent_definition_id:
             agent_result = await db.execute(
-                select(AgentDefinition).where(AgentDefinition.id == job.agent_definition_id)
+                select(AgentDefinition).where(
+                    AgentDefinition.id == job.agent_definition_id
+                )
             )
             agent_def = agent_result.scalar_one_or_none()
 
@@ -1173,7 +1454,10 @@ class AutonomousAgentExecutor:
 
         try:
             det = (job.config or {}).get("deterministic_runner")
-            handled, deterministic_result = await self.deterministic_runner_registry.try_execute(
+            (
+                handled,
+                deterministic_result,
+            ) = await self.deterministic_runner_registry.try_execute(
                 det,
                 job=job,
                 db=db,
@@ -1182,7 +1466,11 @@ class AutonomousAgentExecutor:
 
             if handled:
                 # Ensure chained jobs trigger even for deterministic runners.
-                event = "complete" if job.status == AgentJobStatus.COMPLETED.value else "fail"
+                event = (
+                    "complete"
+                    if job.status == AgentJobStatus.COMPLETED.value
+                    else "fail"
+                )
                 await self._trigger_chained_jobs(job, event, db)
                 return deterministic_result
 
@@ -1214,6 +1502,19 @@ class AutonomousAgentExecutor:
             # Persist workspace artifacts to MinIO before cleanup
             try:
                 for _wid, _ws in list(self.workspace_manager._workspaces.items()):
+                    if _ws.owner_job_id and _ws.owner_job_id != str(job_id):
+                        continue
+                    existing_workspace_ids = {
+                        str(row.get("workspace_id") or "")
+                        for row in (
+                            job.output_artifacts
+                            if isinstance(job.output_artifacts, list)
+                            else []
+                        )
+                        if isinstance(row, dict)
+                    }
+                    if str(_ws.workspace_id) in existing_workspace_ids:
+                        continue
                     persist_result = await self.workspace_manager.persist_workspace(
                         workspace=_ws,
                         job_id=str(job_id),
@@ -1226,12 +1527,16 @@ class AutonomousAgentExecutor:
                         flag_modified(job, "output_artifacts")
                         await db.commit()
             except Exception as persist_err:
-                logger.warning(f"Workspace persistence error for job {job_id}: {persist_err}")
+                logger.warning(
+                    f"Workspace persistence error for job {job_id}: {persist_err}"
+                )
             # Clean up temp directories
             try:
                 self.workspace_manager.cleanup_all()
             except Exception as cleanup_err:
-                logger.warning(f"Workspace cleanup error for job {job_id}: {cleanup_err}")
+                logger.warning(
+                    f"Workspace cleanup error for job {job_id}: {cleanup_err}"
+                )
 
     async def _run_ai_hub_scientist(
         self,
@@ -1347,8 +1652,12 @@ class AutonomousAgentExecutor:
             content_markdown=(content_markdown or "").strip()[:120000],
             tags=[str(tag).strip() for tag in tags if str(tag).strip()][:20] or None,
             source_document_ids=doc_ids or None,
-            attribution=_json_safe(attribution) if isinstance(attribution, dict) else None,
-            structured_payload=_json_safe(structured_payload) if isinstance(structured_payload, dict) else None,
+            attribution=_json_safe(attribution)
+            if isinstance(attribution, dict)
+            else None,
+            structured_payload=_json_safe(structured_payload)
+            if isinstance(structured_payload, dict)
+            else None,
         )
         db.add(note)
         await db.flush()
@@ -1453,25 +1762,27 @@ class AutonomousAgentExecutor:
         originating_job_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """Compatibility wrapper around the extracted orchestration service."""
-        return await self.scientific_validation_service.create_scientific_validation_run(
-            self,
-            db=db,
-            parent_job=parent_job,
-            experiment_plan=experiment_plan,
-            track_type=track_type,
-            objective=objective,
-            hypothesis_title=hypothesis_title,
-            hypothesis_text=hypothesis_text,
-            validation_policy=validation_policy,
-            sandbox_profile_id=sandbox_profile_id,
-            repo_source_ids=repo_source_ids,
-            benchmark_queries=benchmark_queries,
-            supporting_evidence=supporting_evidence,
-            supporting_sources=supporting_sources,
-            profile_id=profile_id,
-            portfolio_id=portfolio_id,
-            hypothesis_id=hypothesis_id,
-            originating_job_id=originating_job_id,
+        return (
+            await self.scientific_validation_service.create_scientific_validation_run(
+                self,
+                db=db,
+                parent_job=parent_job,
+                experiment_plan=experiment_plan,
+                track_type=track_type,
+                objective=objective,
+                hypothesis_title=hypothesis_title,
+                hypothesis_text=hypothesis_text,
+                validation_policy=validation_policy,
+                sandbox_profile_id=sandbox_profile_id,
+                repo_source_ids=repo_source_ids,
+                benchmark_queries=benchmark_queries,
+                supporting_evidence=supporting_evidence,
+                supporting_sources=supporting_sources,
+                profile_id=profile_id,
+                portfolio_id=portfolio_id,
+                hypothesis_id=hypothesis_id,
+                originating_job_id=originating_job_id,
+            )
         )
 
     async def _run_research_fleet_orchestrator(
@@ -1663,17 +1974,14 @@ class AutonomousAgentExecutor:
                 for row in findings:
                     text = ""
                     if isinstance(row, dict):
-                        text = (
-                            str(
-                                row.get("title")
-                                or row.get("summary")
-                                or row.get("message")
-                                or row.get("insight")
-                                or row.get("content")
-                                or ""
-                            )
-                            .strip()
-                        )
+                        text = str(
+                            row.get("title")
+                            or row.get("summary")
+                            or row.get("message")
+                            or row.get("insight")
+                            or row.get("content")
+                            or ""
+                        ).strip()
                     else:
                         text = str(row or "").strip()
                     text = _norm_text(text)
@@ -1722,8 +2030,16 @@ class AutonomousAgentExecutor:
                 value = results.get(key)
                 if isinstance(value, list):
                     buckets.extend(value)
-            code_exec = results.get("code_patch_execution") if isinstance(results.get("code_patch_execution"), dict) else {}
-            workspace = code_exec.get("workspace") if isinstance(code_exec.get("workspace"), dict) else {}
+            code_exec = (
+                results.get("code_patch_execution")
+                if isinstance(results.get("code_patch_execution"), dict)
+                else {}
+            )
+            workspace = (
+                code_exec.get("workspace")
+                if isinstance(code_exec.get("workspace"), dict)
+                else {}
+            )
             for key in ("modified_files", "changed_files", "added_files"):
                 value = workspace.get(key)
                 if isinstance(value, list):
@@ -1755,7 +2071,11 @@ class AutonomousAgentExecutor:
                 value = results.get(key)
                 if isinstance(value, list):
                     buckets.extend(value)
-            experiment = results.get("experiment_run") if isinstance(results.get("experiment_run"), dict) else {}
+            experiment = (
+                results.get("experiment_run")
+                if isinstance(results.get("experiment_run"), dict)
+                else {}
+            )
             for key in ("verification_commands", "commands", "failed_commands"):
                 value = experiment.get(key)
                 if isinstance(value, list):
@@ -1777,20 +2097,30 @@ class AutonomousAgentExecutor:
             normalized = str(path or "").replace("\\", "/").strip().strip("/")
             if not normalized:
                 return []
-            parts = [segment for segment in normalized.split("/") if segment not in {"", ".", ".."}]
+            parts = [
+                segment
+                for segment in normalized.split("/")
+                if segment not in {"", ".", ".."}
+            ]
             if not parts:
                 return []
             keys: List[str] = ["/".join(parts).lower()]
             if len(parts) >= 2:
                 keys.append("/".join(parts[-2:]).lower())
             keys.append(parts[-1].lower())
-            return [key for idx, key in enumerate(keys) if key and key not in keys[:idx]]
+            return [
+                key for idx, key in enumerate(keys) if key and key not in keys[:idx]
+            ]
 
         def _path_cluster_label(path: str) -> str:
             normalized = str(path or "").replace("\\", "/").strip().strip("/")
             if not normalized:
                 return ""
-            parts = [segment for segment in normalized.split("/") if segment not in {"", ".", ".."}]
+            parts = [
+                segment
+                for segment in normalized.split("/")
+                if segment not in {"", ".", ".."}
+            ]
             if not parts:
                 return ""
             return "/".join(parts[-2:]) if len(parts) >= 2 else parts[-1]
@@ -1799,26 +2129,56 @@ class AutonomousAgentExecutor:
             lowered = _norm_text(command).lower()
             if not lowered:
                 return ""
-            lowered = re.sub(r"^\s*(ci=true|node_env=\S+|pythonunbuffered=\S+)\s+", "", lowered)
+            lowered = re.sub(
+                r"^\s*(ci=true|node_env=\S+|pythonunbuffered=\S+)\s+", "", lowered
+            )
             return lowered.strip()
 
         sibling_jobs = payload.get("sibling_jobs")
         if not isinstance(sibling_jobs, list):
             sibling_jobs = []
         coding_swarm_enabled = bool(payload.get("coding_swarm_enabled")) or (
-            str(payload.get("coding_swarm_profile") or "").strip().lower() == "bug_triage"
+            str(payload.get("coding_swarm_profile") or "").strip().lower()
+            == "bug_triage"
         )
-        fallback_paths = [str(p).strip() for p in (payload.get("file_paths") or []) if str(p).strip()] if isinstance(payload.get("file_paths"), list) else []
-        fallback_commands = [str(c).strip() for c in (payload.get("commands") or []) if str(c).strip()] if isinstance(payload.get("commands"), list) else []
-        confidence_threshold = float(payload.get("coding_swarm_confidence_threshold") or 0.70)
-        tiebreaker_threshold = float(payload.get("coding_swarm_tiebreaker_threshold") or 0.50)
+        coding_harness_enabled = bool(payload.get("coding_harness_enabled"))
+        fallback_paths = (
+            [
+                str(p).strip()
+                for p in (payload.get("file_paths") or [])
+                if str(p).strip()
+            ]
+            if isinstance(payload.get("file_paths"), list)
+            else []
+        )
+        fallback_commands = (
+            [str(c).strip() for c in (payload.get("commands") or []) if str(c).strip()]
+            if isinstance(payload.get("commands"), list)
+            else []
+        )
+        confidence_threshold = float(
+            payload.get("coding_swarm_confidence_threshold") or 0.70
+        )
+        tiebreaker_threshold = float(
+            payload.get("coding_swarm_tiebreaker_threshold") or 0.50
+        )
         expected = int(payload.get("expected_siblings", 0) or 0)
         if expected <= 0:
             expected = len(sibling_jobs)
         terminal_count = int(payload.get("terminal_siblings", 0) or 0)
         if terminal_count <= 0:
-            terminal_statuses = {AgentJobStatus.COMPLETED.value, AgentJobStatus.FAILED.value, AgentJobStatus.CANCELLED.value}
-            terminal_count = len([s for s in sibling_jobs if str((s or {}).get("status") or "") in terminal_statuses])
+            terminal_statuses = {
+                AgentJobStatus.COMPLETED.value,
+                AgentJobStatus.FAILED.value,
+                AgentJobStatus.CANCELLED.value,
+            }
+            terminal_count = len(
+                [
+                    s
+                    for s in sibling_jobs
+                    if str((s or {}).get("status") or "") in terminal_statuses
+                ]
+            )
 
         support_map: Dict[str, Dict[str, Any]] = {}
         role_summaries: List[Dict[str, Any]] = []
@@ -1834,7 +2194,9 @@ class AutonomousAgentExecutor:
         for row in sibling_jobs:
             if not isinstance(row, dict):
                 continue
-            role = _norm_text(row.get("role") or row.get("name") or "unknown_role")[:120]
+            role = _norm_text(row.get("role") or row.get("name") or "unknown_role")[
+                :120
+            ]
             status = _norm_text(row.get("status") or "unknown").lower()
             normalized_role = self._normalize_role_token(role)
             if role and role not in roles_ordered:
@@ -1844,7 +2206,9 @@ class AutonomousAgentExecutor:
             if status in {AgentJobStatus.FAILED.value, AgentJobStatus.CANCELLED.value}:
                 failed_roles.append(role or "unknown_role")
 
-            row_results = row.get("results") if isinstance(row.get("results"), dict) else {}
+            row_results = (
+                row.get("results") if isinstance(row.get("results"), dict) else {}
+            )
             points = _extract_points(row_results)
             candidate_paths = _extract_paths(row_results)
             candidate_commands = _extract_commands(row_results)
@@ -1864,13 +2228,43 @@ class AutonomousAgentExecutor:
                 }
             )
             if coding_swarm_enabled:
+                harness_evidence = (
+                    row_results.get("coding_harness")
+                    if isinstance(row_results.get("coding_harness"), dict)
+                    else {}
+                )
+                verification_eligible = bool(
+                    harness_evidence.get("completion_eligible", False)
+                )
+                candidate_snapshot = (
+                    harness_evidence.get("candidate_snapshot")
+                    if isinstance(harness_evidence.get("candidate_snapshot"), dict)
+                    else None
+                )
+                promotion_eligible = not coding_harness_enabled or (
+                    normalized_role == "coder"
+                    and verification_eligible
+                    and bool(candidate_snapshot)
+                )
                 role_bonus = {
                     "coder": 0.18,
                     "critic": 0.14,
                     "verifier": 0.16,
                 }.get(normalized_role, 0.08)
-                completion_bonus = 0.25 if status == AgentJobStatus.COMPLETED.value else 0.0
-                score = completion_bonus + role_bonus + min(0.25, len(points) * 0.04) + min(0.16, len(candidate_paths) * 0.04)
+                completion_bonus = (
+                    0.25 if status == AgentJobStatus.COMPLETED.value else 0.0
+                )
+                score = (
+                    completion_bonus
+                    + role_bonus
+                    + min(0.25, len(points) * 0.04)
+                    + min(0.16, len(candidate_paths) * 0.04)
+                    + (
+                        0.18
+                        if coding_harness_enabled and verification_eligible
+                        else 0.0
+                    )
+                )
                 candidate = {
                     "job_id": str(row.get("job_id") or ""),
                     "role": role,
@@ -1879,10 +2273,23 @@ class AutonomousAgentExecutor:
                     "score": round(score, 4),
                     "suspect_files": candidate_paths[:8],
                     "recommended_commands": candidate_commands[:6],
+                    "verification_eligible": verification_eligible,
+                    "verification_state": str(
+                        harness_evidence.get("verification_state") or "unknown"
+                    ),
+                    "modified_files": (
+                        harness_evidence.get("modified_files")
+                        if isinstance(harness_evidence.get("modified_files"), list)
+                        else []
+                    )[:12],
+                    "candidate_snapshot": deepcopy(candidate_snapshot),
                 }
                 ranked_candidates.append(candidate)
-                if winning_candidate is None or float(candidate.get("score") or 0.0) > float(winning_candidate.get("score") or 0.0):
-                    winning_candidate = candidate
+                if promotion_eligible:
+                    if winning_candidate is None or float(
+                        candidate.get("score") or 0.0
+                    ) > float(winning_candidate.get("score") or 0.0):
+                        winning_candidate = candidate
                 if candidate_paths:
                     role_file_hints.append(
                         {
@@ -1926,10 +2333,19 @@ class AutonomousAgentExecutor:
                     "supporting_roles": roles,
                 }
             )
-        support_rows.sort(key=lambda r: (-int(r.get("support_count", 0) or 0), str(r.get("finding") or "")))
+        support_rows.sort(
+            key=lambda r: (
+                -int(r.get("support_count", 0) or 0),
+                str(r.get("finding") or ""),
+            )
+        )
 
-        consensus = [r for r in support_rows if int(r.get("support_count", 0) or 0) >= 2][:10]
-        singletons = [r for r in support_rows if int(r.get("support_count", 0) or 0) <= 1][:10]
+        consensus = [
+            r for r in support_rows if int(r.get("support_count", 0) or 0) >= 2
+        ][:10]
+        singletons = [
+            r for r in support_rows if int(r.get("support_count", 0) or 0) <= 1
+        ][:10]
 
         conflicts: List[Dict[str, Any]] = []
         if failed_roles and completed_count > 0:
@@ -1972,7 +2388,11 @@ class AutonomousAgentExecutor:
                     seen_role_clusters.add(cluster_key)
                     slot = file_cluster_support.get(cluster_key)
                     if not isinstance(slot, dict):
-                        slot = {"cluster": label or cluster_key, "roles": set(), "support_count": 0}
+                        slot = {
+                            "cluster": label or cluster_key,
+                            "roles": set(),
+                            "support_count": 0,
+                        }
                     roles_set = slot.get("roles")
                     if not isinstance(roles_set, set):
                         roles_set = set()
@@ -2006,17 +2426,27 @@ class AutonomousAgentExecutor:
         if file_cluster_support:
             top_file_cluster = max(
                 file_cluster_support.values(),
-                key=lambda item: (int(item.get("support_count") or 0), str(item.get("cluster") or "")),
+                key=lambda item: (
+                    int(item.get("support_count") or 0),
+                    str(item.get("cluster") or ""),
+                ),
             )
         top_command_cluster = None
         if command_support:
             top_command_cluster = max(
                 command_support.values(),
-                key=lambda item: (int(item.get("support_count") or 0), str(item.get("command") or "")),
+                key=lambda item: (
+                    int(item.get("support_count") or 0),
+                    str(item.get("command") or ""),
+                ),
             )
 
-        file_convergence_support = int((top_file_cluster or {}).get("support_count") or 0)
-        command_convergence_support = int((top_command_cluster or {}).get("support_count") or 0)
+        file_convergence_support = int(
+            (top_file_cluster or {}).get("support_count") or 0
+        )
+        command_convergence_support = int(
+            (top_command_cluster or {}).get("support_count") or 0
+        )
         file_converged = file_convergence_support >= 2
         command_converged = command_convergence_support >= 2
         if coding_swarm_enabled and role_file_hints and not file_converged:
@@ -2024,7 +2454,11 @@ class AutonomousAgentExecutor:
                 {
                     "type": "suspect_file_disagreement",
                     "description": "Roles disagree on the primary suspect file cluster.",
-                    "roles": [str(row.get("role") or "") for row in role_file_hints[:8] if str(row.get("role") or "").strip()],
+                    "roles": [
+                        str(row.get("role") or "")
+                        for row in role_file_hints[:8]
+                        if str(row.get("role") or "").strip()
+                    ],
                 }
             )
         if coding_swarm_enabled and role_command_hints and not command_converged:
@@ -2032,17 +2466,34 @@ class AutonomousAgentExecutor:
                 {
                     "type": "command_disagreement",
                     "description": "Roles disagree on the strongest reproduction or verification command.",
-                    "roles": [str(row.get("role") or "") for row in role_command_hints[:8] if str(row.get("role") or "").strip()],
+                    "roles": [
+                        str(row.get("role") or "")
+                        for row in role_command_hints[:8]
+                        if str(row.get("role") or "").strip()
+                    ],
                 }
             )
 
         coverage = float(min(1.0, float(len(sibling_jobs)) / float(max(1, expected))))
-        completion = float(min(1.0, float(completed_count) / float(max(1, len(sibling_jobs)))))
+        completion = float(
+            min(1.0, float(completed_count) / float(max(1, len(sibling_jobs))))
+        )
         agreement = 0.0
         if consensus:
-            agreement = float(sum(min(1.0, float(int(r.get("support_count", 0) or 0)) / float(max(1, len(sibling_jobs)))) for r in consensus))
+            agreement = float(
+                sum(
+                    min(
+                        1.0,
+                        float(int(r.get("support_count", 0) or 0))
+                        / float(max(1, len(sibling_jobs))),
+                    )
+                    for r in consensus
+                )
+            )
             agreement = max(0.0, min(1.0, agreement / float(max(1, len(consensus)))))
-        overall = max(0.0, min(1.0, (0.35 * coverage) + (0.35 * completion) + (0.3 * agreement)))
+        overall = max(
+            0.0, min(1.0, (0.35 * coverage) + (0.35 * completion) + (0.3 * agreement))
+        )
 
         action_plan: List[Dict[str, Any]] = []
         for row in consensus[:3]:
@@ -2069,15 +2520,24 @@ class AutonomousAgentExecutor:
         review_required = False
         tiebreaker_attempted = bool(payload.get("tie_breaker_attempted"))
         tie_breaker_job_id = str(payload.get("tie_breaker_job_id") or "").strip()
-        tie_breaker_source_job_id = str(payload.get("tie_breaker_source_job_id") or "").strip()
+        tie_breaker_source_job_id = str(
+            payload.get("tie_breaker_source_job_id") or ""
+        ).strip()
         if coding_swarm_enabled:
             ranked_candidates.sort(
-                key=lambda item: (-float(item.get("score") or 0.0), str(item.get("role") or ""))
+                key=lambda item: (
+                    -float(item.get("score") or 0.0),
+                    str(item.get("role") or ""),
+                )
             )
             candidate_paths = ranked_candidates[:6]
             if winning_candidate:
                 recommended_commands.extend(
-                    [str(cmd).strip() for cmd in (winning_candidate.get("recommended_commands") or []) if str(cmd).strip()]
+                    [
+                        str(cmd).strip()
+                        for cmd in (winning_candidate.get("recommended_commands") or [])
+                        if str(cmd).strip()
+                    ]
                 )
             recommended_commands.extend(fallback_commands)
             dedup_commands: List[str] = []
@@ -2093,9 +2553,42 @@ class AutonomousAgentExecutor:
             recommended_commands = dedup_commands
 
             if not candidate_paths and fallback_paths:
-                candidate_paths = [{"job_id": "", "role": "Config scope", "status": "configured", "score": 0.0, "suspect_files": fallback_paths[:8]}]
-            guardrails_met = bool(winning_candidate) and file_converged and command_converged
-            if overall >= confidence_threshold and winning_candidate and guardrails_met:
+                candidate_paths = [
+                    {
+                        "job_id": "",
+                        "role": "Config scope",
+                        "status": "configured",
+                        "score": 0.0,
+                        "suspect_files": fallback_paths[:8],
+                    }
+                ]
+            verification_guardrail_met = bool(
+                winning_candidate
+                and (
+                    not coding_harness_enabled
+                    or (
+                        winning_candidate.get("verification_eligible")
+                        and winning_candidate.get("candidate_snapshot")
+                    )
+                )
+            )
+            guardrails_met = (
+                bool(winning_candidate)
+                and file_converged
+                and command_converged
+                and verification_guardrail_met
+            )
+            if coding_harness_enabled and not winning_candidate:
+                review_state = "needs_review"
+                review_required = True
+                review_reason = (
+                    "No mutation-owner result included both changed files and "
+                    "successful verification evidence."
+                )
+                promotion_reason = review_reason
+            elif (
+                overall >= confidence_threshold and winning_candidate and guardrails_met
+            ):
                 promotion_reason = (
                     f"Auto-promote {str(winning_candidate.get('role') or 'top candidate')} at swarm confidence "
                     f"{overall:.2f}."
@@ -2109,7 +2602,11 @@ class AutonomousAgentExecutor:
                         "rationale": promotion_reason,
                     },
                 )
-            elif overall >= confidence_threshold and winning_candidate and not guardrails_met:
+            elif (
+                overall >= confidence_threshold
+                and winning_candidate
+                and not guardrails_met
+            ):
                 review_state = "needs_review"
                 review_required = True
                 review_reason = (
@@ -2136,7 +2633,9 @@ class AutonomousAgentExecutor:
             else:
                 review_state = "consensus_failed"
                 review_required = True
-                review_reason = f"Confidence {overall:.2f} is too low for automatic repair handoff."
+                review_reason = (
+                    f"Confidence {overall:.2f} is too low for automatic repair handoff."
+                )
                 promotion_reason = review_reason
         if not action_plan and singletons:
             for row in singletons[:2]:
@@ -2159,7 +2658,9 @@ class AutonomousAgentExecutor:
 
         return {
             "swarm_parent_job_id": str(payload.get("swarm_parent_job_id") or ""),
-            "fan_in_group_id": str(fan_in_group_id or payload.get("swarm_fan_in_group_id") or ""),
+            "fan_in_group_id": str(
+                fan_in_group_id or payload.get("swarm_fan_in_group_id") or ""
+            ),
             "expected_siblings": int(expected),
             "received_siblings": int(len(sibling_jobs)),
             "terminal_siblings": int(terminal_count),
@@ -2184,10 +2685,24 @@ class AutonomousAgentExecutor:
             "action_plan": action_plan,
             "winning_slice_id": str((winning_candidate or {}).get("job_id") or ""),
             "winning_role": str((winning_candidate or {}).get("role") or ""),
+            "winning_candidate_snapshot": deepcopy(
+                (winning_candidate or {}).get("candidate_snapshot")
+            ),
             "promotion_reason": promotion_reason,
             "review_state": review_state,
             "review_reason": review_reason,
             "review_required": review_required,
+            "coding_harness_enabled": coding_harness_enabled,
+            "verification_guardrail_met": bool(
+                winning_candidate
+                and (
+                    not coding_harness_enabled
+                    or (
+                        winning_candidate.get("verification_eligible")
+                        and winning_candidate.get("candidate_snapshot")
+                    )
+                )
+            ),
             "tie_breaker_attempted": tiebreaker_attempted,
             "tie_breaker_job_id": tie_breaker_job_id,
             "tie_breaker_source_job_id": tie_breaker_source_job_id,
@@ -2197,7 +2712,13 @@ class AutonomousAgentExecutor:
                 {
                     "cluster": str(top_file_cluster.get("cluster") or ""),
                     "support_count": int(top_file_cluster.get("support_count") or 0),
-                    "roles": sorted([str(role) for role in (top_file_cluster.get("roles") or set()) if str(role).strip()])[:10],
+                    "roles": sorted(
+                        [
+                            str(role)
+                            for role in (top_file_cluster.get("roles") or set())
+                            if str(role).strip()
+                        ]
+                    )[:10],
                 }
                 if isinstance(top_file_cluster, dict)
                 else None
@@ -2208,7 +2729,13 @@ class AutonomousAgentExecutor:
                 {
                     "command": str(top_command_cluster.get("command") or ""),
                     "support_count": int(top_command_cluster.get("support_count") or 0),
-                    "roles": sorted([str(role) for role in (top_command_cluster.get("roles") or set()) if str(role).strip()])[:10],
+                    "roles": sorted(
+                        [
+                            str(role)
+                            for role in (top_command_cluster.get("roles") or set())
+                            if str(role).strip()
+                        ]
+                    )[:10],
                 }
                 if isinstance(top_command_cluster, dict)
                 else None
@@ -2226,7 +2753,11 @@ class AutonomousAgentExecutor:
         tie_breaker_source_job_id: str = "",
     ) -> Dict[str, Any]:
         payload = dict(base_payload or {})
-        sibling_jobs = payload.get("sibling_jobs") if isinstance(payload.get("sibling_jobs"), list) else []
+        sibling_jobs = (
+            payload.get("sibling_jobs")
+            if isinstance(payload.get("sibling_jobs"), list)
+            else []
+        )
         out: List[Dict[str, Any]] = []
         for row in sibling_jobs:
             if not isinstance(row, dict):
@@ -2240,18 +2771,23 @@ class AutonomousAgentExecutor:
                 "job_id": str(tie_breaker_job.id),
                 "name": str(tie_breaker_job.name or "")[:200],
                 "status": str(tie_breaker_job.status or ""),
-                "is_terminal": str(tie_breaker_job.status or "") in {
+                "is_terminal": str(tie_breaker_job.status or "")
+                in {
                     AgentJobStatus.COMPLETED.value,
                     AgentJobStatus.FAILED.value,
                     AgentJobStatus.CANCELLED.value,
                 },
                 "progress": int(tie_breaker_job.progress or 0),
                 "role": str(cfg.get("swarm_role") or "Tie-breaker Verifier"),
-                "results": tie_breaker_job.results if isinstance(tie_breaker_job.results, dict) else {},
+                "results": tie_breaker_job.results
+                if isinstance(tie_breaker_job.results, dict)
+                else {},
             }
         )
         payload["sibling_jobs"] = out
-        payload["expected_siblings"] = max(int(payload.get("expected_siblings", 0) or 0), len(out))
+        payload["expected_siblings"] = max(
+            int(payload.get("expected_siblings", 0) or 0), len(out)
+        )
         payload["terminal_siblings"] = len(
             [
                 row
@@ -2278,7 +2814,16 @@ class AutonomousAgentExecutor:
         swarm_payload: Dict[str, Any],
     ) -> Optional[AgentJob]:
         cfg = fan_in_job.config if isinstance(fan_in_job.config, dict) else {}
-        parent_root_id_raw = cfg.get("swarm_parent_job_id") or fan_in_job.root_job_id or fan_in_job.id
+        from app.services.agent_coding_harness_service import (
+            agent_coding_harness_service,
+        )
+
+        verifier_config = agent_coding_harness_service.get_role_catalog()["verifier"][
+            "config"
+        ]
+        parent_root_id_raw = (
+            cfg.get("swarm_parent_job_id") or fan_in_job.root_job_id or fan_in_job.id
+        )
         try:
             parent_root_id = UUID(str(parent_root_id_raw))
         except Exception:
@@ -2287,22 +2832,53 @@ class AutonomousAgentExecutor:
         failure_symptom = str(cfg.get("failure_symptom") or "").strip()
         disagreement_summary = [
             str(conflict.get("description") or conflict.get("type") or "").strip()
-            for conflict in (merged.get("conflicts") if isinstance(merged.get("conflicts"), list) else [])
-            if isinstance(conflict, dict) and str(conflict.get("description") or conflict.get("type") or "").strip()
+            for conflict in (
+                merged.get("conflicts")
+                if isinstance(merged.get("conflicts"), list)
+                else []
+            )
+            if isinstance(conflict, dict)
+            and str(conflict.get("description") or conflict.get("type") or "").strip()
         ][:4]
-        candidate_rows = merged.get("candidate_paths") if isinstance(merged.get("candidate_paths"), list) else []
+        candidate_rows = (
+            merged.get("candidate_paths")
+            if isinstance(merged.get("candidate_paths"), list)
+            else []
+        )
         top_candidates = []
+        candidate_snapshots: List[Dict[str, Any]] = []
         for row in candidate_rows[:3]:
             if not isinstance(row, dict):
                 continue
-            suspect_files = [str(path).strip() for path in (row.get("suspect_files") or []) if str(path).strip()]
+            suspect_files = [
+                str(path).strip()
+                for path in (row.get("suspect_files") or [])
+                if str(path).strip()
+            ]
             top_candidates.append(
                 {
                     "role": str(row.get("role") or "").strip() or "candidate",
                     "suspect_files": suspect_files[:4],
-                    "recommended_commands": [str(cmd).strip() for cmd in (row.get("recommended_commands") or []) if str(cmd).strip()][:3],
+                    "recommended_commands": [
+                        str(cmd).strip()
+                        for cmd in (row.get("recommended_commands") or [])
+                        if str(cmd).strip()
+                    ][:3],
+                    "snapshot_id": str(
+                        (
+                            row.get("candidate_snapshot")
+                            if isinstance(row.get("candidate_snapshot"), dict)
+                            else {}
+                        ).get("snapshot_id")
+                        or ""
+                    ),
                 }
             )
+            candidate_snapshot = row.get("candidate_snapshot")
+            if isinstance(candidate_snapshot, dict) and str(
+                candidate_snapshot.get("snapshot_id") or ""
+            ):
+                candidate_snapshots.append(deepcopy(candidate_snapshot))
 
         tie_breaker_goal = (
             "Tie-breaker verifier for bug triage swarm.\n"
@@ -2314,7 +2890,9 @@ class AutonomousAgentExecutor:
             f"Top candidates: {json.dumps(top_candidates, ensure_ascii=False)}"
         )
 
-        rerun_group_id = hashlib.sha256(f"swarm_fan_in_rerun:{fan_in_job.id}".encode("utf-8")).hexdigest()[:16]
+        rerun_group_id = hashlib.sha256(
+            f"swarm_fan_in_rerun:{fan_in_job.id}".encode("utf-8")
+        ).hexdigest()[:16]
         rerun_child = {
             "name": "Bug Triage Swarm Tie-Break Fan-in",
             "description": "Auto-generated fan-in rerun after verifier tie-break.",
@@ -2329,9 +2907,16 @@ class AutonomousAgentExecutor:
                 "swarm_fan_in_group_id": rerun_group_id,
                 "swarm_parent_job_id": str(parent_root_id),
                 "coding_swarm_enabled": True,
-                "coding_swarm_profile": str(cfg.get("coding_swarm_profile") or "").strip().lower() or "bug_triage",
-                "coding_swarm_confidence_threshold": cfg.get("coding_swarm_confidence_threshold"),
-                "coding_swarm_tiebreaker_threshold": cfg.get("coding_swarm_tiebreaker_threshold"),
+                "coding_swarm_profile": str(cfg.get("coding_swarm_profile") or "")
+                .strip()
+                .lower()
+                or "bug_triage",
+                "coding_swarm_confidence_threshold": cfg.get(
+                    "coding_swarm_confidence_threshold"
+                ),
+                "coding_swarm_tiebreaker_threshold": cfg.get(
+                    "coding_swarm_tiebreaker_threshold"
+                ),
                 "swarm_child_jobs_enabled": False,
                 "auto_subgoal_child_jobs_enabled": False,
                 "tie_breaker_attempted": True,
@@ -2342,15 +2927,22 @@ class AutonomousAgentExecutor:
                 "error_output": str(cfg.get("error_output") or "").strip(),
                 "scope": str(cfg.get("scope") or "auto").strip().lower() or "auto",
                 "search_query": str(cfg.get("search_query") or "").strip(),
-                "file_paths": cfg.get("file_paths") if isinstance(cfg.get("file_paths"), list) else [],
-                "commands": cfg.get("commands") if isinstance(cfg.get("commands"), list) else [],
+                "file_paths": cfg.get("file_paths")
+                if isinstance(cfg.get("file_paths"), list)
+                else [],
+                "commands": cfg.get("commands")
+                if isinstance(cfg.get("commands"), list)
+                else [],
+                "candidate_snapshots": candidate_snapshots,
                 "apply_patch_to_kb": False,
                 "apply_patch_to_kb_confirm": False,
             },
             "max_iterations": max(6, int((fan_in_job.max_iterations or 20) * 0.4)),
             "max_tool_calls": max(8, int((fan_in_job.max_tool_calls or 50) * 0.4)),
             "max_llm_calls": max(6, int((fan_in_job.max_llm_calls or 30) * 0.4)),
-            "max_runtime_minutes": max(10, int((fan_in_job.max_runtime_minutes or 60) * 0.35)),
+            "max_runtime_minutes": max(
+                10, int((fan_in_job.max_runtime_minutes or 60) * 0.35)
+            ),
         }
 
         tie_breaker = AgentJob(
@@ -2359,6 +2951,7 @@ class AutonomousAgentExecutor:
             job_type="analysis",
             goal=tie_breaker_goal[:2400],
             config={
+                **dict(verifier_config),
                 "origin": "swarm_tie_breaker_verifier",
                 "swarm_role": "Tie-breaker Verifier",
                 "swarm_role_key": "verifier_tiebreaker",
@@ -2373,10 +2966,21 @@ class AutonomousAgentExecutor:
                 "error_output": str(cfg.get("error_output") or "").strip(),
                 "scope": str(cfg.get("scope") or "auto").strip().lower() or "auto",
                 "search_query": str(cfg.get("search_query") or "").strip(),
-                "file_paths": cfg.get("file_paths") if isinstance(cfg.get("file_paths"), list) else [],
-                "commands": cfg.get("commands") if isinstance(cfg.get("commands"), list) else [],
+                "file_paths": cfg.get("file_paths")
+                if isinstance(cfg.get("file_paths"), list)
+                else [],
+                "commands": cfg.get("commands")
+                if isinstance(cfg.get("commands"), list)
+                else [],
+                "candidate_snapshots": candidate_snapshots,
+                "coding_workspace_session_id": str(
+                    cfg.get("coding_workspace_session_id") or ""
+                ).strip(),
                 "coding_swarm_enabled": True,
-                "coding_swarm_profile": str(cfg.get("coding_swarm_profile") or "").strip().lower() or "bug_triage",
+                "coding_swarm_profile": str(cfg.get("coding_swarm_profile") or "")
+                .strip()
+                .lower()
+                or "bug_triage",
                 "apply_patch_to_kb": False,
                 "apply_patch_to_kb_confirm": False,
                 "auto_subgoal_child_jobs_enabled": False,
@@ -2396,13 +3000,19 @@ class AutonomousAgentExecutor:
             max_iterations=max(6, int((fan_in_job.max_iterations or 20) * 0.4)),
             max_tool_calls=max(8, int((fan_in_job.max_tool_calls or 50) * 0.4)),
             max_llm_calls=max(6, int((fan_in_job.max_llm_calls or 30) * 0.4)),
-            max_runtime_minutes=max(10, int((fan_in_job.max_runtime_minutes or 60) * 0.35)),
+            max_runtime_minutes=max(
+                10, int((fan_in_job.max_runtime_minutes or 60) * 0.35)
+            ),
             enable_memory=False,
             results=(
                 {
-                    "swarm_collaboration": deepcopy((fan_in_job.results or {}).get("swarm_collaboration"))
+                    "swarm_collaboration": deepcopy(
+                        (fan_in_job.results or {}).get("swarm_collaboration")
+                    )
                 }
-                if isinstance((fan_in_job.results or {}).get("swarm_collaboration"), dict)
+                if isinstance(
+                    (fan_in_job.results or {}).get("swarm_collaboration"), dict
+                )
                 else None
             ),
         )
@@ -2429,34 +3039,76 @@ class AutonomousAgentExecutor:
             return None
 
         cfg = fan_in_job.config if isinstance(fan_in_job.config, dict) else {}
-        parent_root_id_raw = cfg.get("swarm_parent_job_id") or fan_in_job.root_job_id or fan_in_job.id
+        parent_root_id_raw = (
+            cfg.get("swarm_parent_job_id") or fan_in_job.root_job_id or fan_in_job.id
+        )
         try:
             parent_root_id = UUID(str(parent_root_id_raw))
         except Exception:
             parent_root_id = fan_in_job.root_job_id or fan_in_job.id
-        candidate_rows = merged.get("candidate_paths") if isinstance(merged.get("candidate_paths"), list) else []
+        candidate_rows = (
+            merged.get("candidate_paths")
+            if isinstance(merged.get("candidate_paths"), list)
+            else []
+        )
         selected_candidate = None
         if candidate_job_id:
             for row in candidate_rows:
-                if isinstance(row, dict) and str(row.get("job_id") or "").strip() == str(candidate_job_id).strip():
+                if (
+                    isinstance(row, dict)
+                    and str(row.get("job_id") or "").strip()
+                    == str(candidate_job_id).strip()
+                ):
                     selected_candidate = row
                     break
         if selected_candidate is None and candidate_rows:
-            selected_candidate = candidate_rows[0] if isinstance(candidate_rows[0], dict) else None
+            selected_candidate = (
+                candidate_rows[0] if isinstance(candidate_rows[0], dict) else None
+            )
         commands = []
         if isinstance(selected_candidate, dict):
-            commands.extend([str(c).strip() for c in (selected_candidate.get("recommended_commands") or []) if str(c).strip()])
-        commands.extend([str(c).strip() for c in (merged.get("recommended_commands") or []) if str(c).strip()])
+            commands.extend(
+                [
+                    str(c).strip()
+                    for c in (selected_candidate.get("recommended_commands") or [])
+                    if str(c).strip()
+                ]
+            )
+        commands.extend(
+            [
+                str(c).strip()
+                for c in (merged.get("recommended_commands") or [])
+                if str(c).strip()
+            ]
+        )
         file_paths: List[str] = []
-        candidate_iterable = [selected_candidate] if isinstance(selected_candidate, dict) else []
-        candidate_iterable.extend([row for row in candidate_rows if isinstance(row, dict) and row is not selected_candidate])
+        candidate_iterable = (
+            [selected_candidate] if isinstance(selected_candidate, dict) else []
+        )
+        candidate_iterable.extend(
+            [
+                row
+                for row in candidate_rows
+                if isinstance(row, dict) and row is not selected_candidate
+            ]
+        )
         for row in candidate_iterable:
             if not isinstance(row, dict):
                 continue
-            file_paths.extend([str(p).strip() for p in (row.get("suspect_files") or []) if str(p).strip()])
+            file_paths.extend(
+                [
+                    str(p).strip()
+                    for p in (row.get("suspect_files") or [])
+                    if str(p).strip()
+                ]
+            )
         dedup_file_paths: List[str] = []
         seen_paths: set[str] = set()
-        for path in file_paths + ([str(p).strip() for p in (cfg.get("file_paths") or []) if str(p).strip()] if isinstance(cfg.get("file_paths"), list) else []):
+        for path in file_paths + (
+            [str(p).strip() for p in (cfg.get("file_paths") or []) if str(p).strip()]
+            if isinstance(cfg.get("file_paths"), list)
+            else []
+        ):
             key = path.lower()
             if not path or key in seen_paths:
                 continue
@@ -2465,7 +3117,25 @@ class AutonomousAgentExecutor:
             if len(dedup_file_paths) >= 12:
                 break
 
-        child_config = dict(template.default_config or {})
+        from app.services.agent_coding_harness_service import (
+            agent_coding_harness_service,
+        )
+
+        patcher_config = agent_coding_harness_service.get_role_catalog()["patcher"][
+            "config"
+        ]
+        child_config = {
+            **dict(template.default_config or {}),
+            **dict(patcher_config),
+        }
+        candidate_snapshot = (
+            selected_candidate.get("candidate_snapshot")
+            if isinstance(selected_candidate, dict)
+            and isinstance(selected_candidate.get("candidate_snapshot"), dict)
+            else merged.get("winning_candidate_snapshot")
+            if isinstance(merged.get("winning_candidate_snapshot"), dict)
+            else None
+        )
         child_config.update(
             {
                 "source_id": str(cfg.get("source_id") or ""),
@@ -2479,6 +3149,12 @@ class AutonomousAgentExecutor:
                 "apply_patch_to_kb_confirm": False,
                 "launch_mode": "bug_triage_swarm_repair_handoff",
                 "relaunch_from_job_id": str(parent_root_id),
+                "coding_workspace_session_id": str(
+                    cfg.get("coding_workspace_session_id")
+                    or (candidate_snapshot or {}).get("session_id")
+                    or ""
+                ).strip(),
+                "candidate_snapshot": deepcopy(candidate_snapshot),
                 "swarm_handoff": {
                     "fan_in_job_id": str(fan_in_job.id),
                     "swarm_parent_job_id": str(parent_root_id),
@@ -2491,6 +3167,7 @@ class AutonomousAgentExecutor:
                         else str(merged.get("promotion_reason") or "")
                     ),
                     "manual_promotion": manual_promotion,
+                    "candidate_snapshot": deepcopy(candidate_snapshot),
                 },
             }
         )
@@ -2516,9 +3193,13 @@ class AutonomousAgentExecutor:
             enable_memory=False,
             results=(
                 {
-                    "swarm_collaboration": deepcopy((fan_in_job.results or {}).get("swarm_collaboration"))
+                    "swarm_collaboration": deepcopy(
+                        (fan_in_job.results or {}).get("swarm_collaboration")
+                    )
                 }
-                if isinstance((fan_in_job.results or {}).get("swarm_collaboration"), dict)
+                if isinstance(
+                    (fan_in_job.results or {}).get("swarm_collaboration"), dict
+                )
                 else None
             ),
         )
@@ -2526,12 +3207,22 @@ class AutonomousAgentExecutor:
         await db.flush()
         return child
 
-    def _build_swarm_backlog_collaboration(self, fan_in_job: AgentJob) -> dict[str, Any]:
+    def _build_swarm_backlog_collaboration(
+        self, fan_in_job: AgentJob
+    ) -> dict[str, Any]:
         results = fan_in_job.results if isinstance(fan_in_job.results, dict) else {}
-        raw = results.get("swarm_collaboration") if isinstance(results.get("swarm_collaboration"), dict) else {}
+        raw = (
+            results.get("swarm_collaboration")
+            if isinstance(results.get("swarm_collaboration"), dict)
+            else {}
+        )
         shared_with: list[str] = []
         seen: set[str] = set()
-        for raw_value in raw.get("shared_with_user_ids") if isinstance(raw.get("shared_with_user_ids"), list) else []:
+        for raw_value in (
+            raw.get("shared_with_user_ids")
+            if isinstance(raw.get("shared_with_user_ids"), list)
+            else []
+        ):
             try:
                 value = str(UUID(str(raw_value))).strip()
             except Exception:
@@ -2543,13 +3234,18 @@ class AutonomousAgentExecutor:
         assigned_user_id = str(raw.get("assigned_user_id") or "").strip() or None
         if assigned_user_id and assigned_user_id not in shared_with:
             shared_with.append(assigned_user_id)
-        visibility = "shared" if bool(raw.get("shared_review")) or bool(shared_with) else "private"
+        visibility = (
+            "shared"
+            if bool(raw.get("shared_review")) or bool(shared_with)
+            else "private"
+        )
         return {
             "owner_user_id": str(raw.get("owner_user_id") or fan_in_job.user_id),
             "visibility": visibility,
             "shared_with_user_ids": shared_with,
             "assigned_user_id": assigned_user_id,
-            "assigned_by_user_id": str(raw.get("assigned_by_user_id") or "").strip() or None,
+            "assigned_by_user_id": str(raw.get("assigned_by_user_id") or "").strip()
+            or None,
             "assigned_at": str(raw.get("assigned_at") or "").strip() or None,
             "note": str(raw.get("review_note") or "").strip() or None,
         }
@@ -2563,12 +3259,23 @@ class AutonomousAgentExecutor:
         from app.models.coding_backlog import CodingBacklogItem
 
         rows = (
-            await db.execute(select(CodingBacklogItem).where(CodingBacklogItem.user_id == fan_in_job.user_id))
-        ).scalars().all()
+            (
+                await db.execute(
+                    select(CodingBacklogItem).where(
+                        CodingBacklogItem.user_id == fan_in_job.user_id
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
         target_job_id = str(fan_in_job.id)
         for item in rows:
             lineage = item.lineage if isinstance(item.lineage, dict) else {}
-            if str(lineage.get("originating_swarm_job_id") or "").strip() == target_job_id:
+            if (
+                str(lineage.get("originating_swarm_job_id") or "").strip()
+                == target_job_id
+            ):
                 return item
         return None
 
@@ -2581,18 +3288,46 @@ class AutonomousAgentExecutor:
     ) -> Optional[Any]:
         from app.models.coding_backlog import CodingBacklogItem
 
-        existing = await self._find_existing_swarm_backlog_item(fan_in_job=fan_in_job, db=db)
+        existing = await self._find_existing_swarm_backlog_item(
+            fan_in_job=fan_in_job, db=db
+        )
         if existing is not None:
             merged["backlog_item_id"] = str(existing.id)
-            merged["backlog_route_mode"] = str(((existing.lineage or {}) if isinstance(existing.lineage, dict) else {}).get("originating_swarm_route_mode") or "manual")
+            merged["backlog_route_mode"] = str(
+                (
+                    (existing.lineage or {})
+                    if isinstance(existing.lineage, dict)
+                    else {}
+                ).get("originating_swarm_route_mode")
+                or "manual"
+            )
             merged["backlog_auto_route_suppressed_reason"] = "existing_backlog_link"
             return existing
 
         cfg = fan_in_job.config if isinstance(fan_in_job.config, dict) else {}
-        quick_start = cfg.get("quick_start") if isinstance(cfg.get("quick_start"), dict) else {}
-        candidate_paths = merged.get("candidate_paths") if isinstance(merged.get("candidate_paths"), list) else []
-        top_candidate = candidate_paths[0] if candidate_paths and isinstance(candidate_paths[0], dict) else {}
-        preset_key = str(quick_start.get("preset_key") or cfg.get("coding_swarm_preset_key") or "").strip().lower() or "bug_triage_swarm"
+        quick_start = (
+            cfg.get("quick_start") if isinstance(cfg.get("quick_start"), dict) else {}
+        )
+        candidate_paths = (
+            merged.get("candidate_paths")
+            if isinstance(merged.get("candidate_paths"), list)
+            else []
+        )
+        top_candidate = (
+            candidate_paths[0]
+            if candidate_paths and isinstance(candidate_paths[0], dict)
+            else {}
+        )
+        preset_key = (
+            str(
+                quick_start.get("preset_key")
+                or cfg.get("coding_swarm_preset_key")
+                or ""
+            )
+            .strip()
+            .lower()
+            or "bug_triage_swarm"
+        )
         preset_label = {
             "build_break_swarm": "Build Break Swarm",
             "frontend_regression_swarm": "Frontend Regression Swarm",
@@ -2601,7 +3336,13 @@ class AutonomousAgentExecutor:
         for row in candidate_paths[:4]:
             if not isinstance(row, dict):
                 continue
-            suspect_files.extend([str(value).strip() for value in (row.get("suspect_files") or []) if str(value).strip()])
+            suspect_files.extend(
+                [
+                    str(value).strip()
+                    for value in (row.get("suspect_files") or [])
+                    if str(value).strip()
+                ]
+            )
         dedup_files: list[str] = []
         seen_files: set[str] = set()
         for path in suspect_files:
@@ -2625,21 +3366,35 @@ class AutonomousAgentExecutor:
             user_id=fan_in_job.user_id,
             source_id=source_uuid,
             title=f"{preset_label} review - {str(fan_in_job.name or 'autonomous job')[:72]}",
-            portfolio_goal=str(fan_in_job.goal or "Review coding swarm findings and implement the best repair path").strip()[:2000],
+            portfolio_goal=str(
+                fan_in_job.goal
+                or "Review coding swarm findings and implement the best repair path"
+            ).strip()[:2000],
             status="draft",
             priority=50,
             scope=str(cfg.get("scope") or "auto").strip().lower() or "auto",
             failure_symptom=str(cfg.get("failure_symptom") or "").strip() or None,
             error_output=str(cfg.get("error_output") or "").strip() or None,
             file_paths=dedup_files[:12],
-            commands=[str(value).strip() for value in (merged.get("recommended_commands") or []) if str(value).strip()][:6],
+            commands=[
+                str(value).strip()
+                for value in (merged.get("recommended_commands") or [])
+                if str(value).strip()
+            ][:6],
             auto_apply_enabled=True,
             require_patch_pr=False,
             visibility=str(collaboration.get("visibility") or "private"),
-            shared_with_user_ids=list(collaboration.get("shared_with_user_ids") or []) or None,
-            assigned_user_id=UUID(str(collaboration.get("assigned_user_id"))) if str(collaboration.get("assigned_user_id") or "").strip() else None,
-            assigned_by_user_id=UUID(str(collaboration.get("assigned_by_user_id"))) if str(collaboration.get("assigned_by_user_id") or "").strip() else None,
-            assigned_at=datetime.fromisoformat(str(collaboration.get("assigned_at"))) if str(collaboration.get("assigned_at") or "").strip() else None,
+            shared_with_user_ids=list(collaboration.get("shared_with_user_ids") or [])
+            or None,
+            assigned_user_id=UUID(str(collaboration.get("assigned_user_id")))
+            if str(collaboration.get("assigned_user_id") or "").strip()
+            else None,
+            assigned_by_user_id=UUID(str(collaboration.get("assigned_by_user_id")))
+            if str(collaboration.get("assigned_by_user_id") or "").strip()
+            else None,
+            assigned_at=datetime.fromisoformat(str(collaboration.get("assigned_at")))
+            if str(collaboration.get("assigned_at") or "").strip()
+            else None,
             collaboration=collaboration,
             policy={
                 "max_auto_retries": 1,
@@ -2651,9 +3406,18 @@ class AutonomousAgentExecutor:
             lineage={
                 "originating_swarm_job_id": str(fan_in_job.id),
                 "originating_swarm_preset": preset_key,
-                "originating_swarm_review_reason": str(merged.get("review_reason") or merged.get("promotion_reason") or "").strip() or None,
-                "originating_swarm_candidate_job_id": str(top_candidate.get("job_id") or "").strip() or None,
-                "originating_swarm_candidate_role": str(top_candidate.get("role") or "").strip() or None,
+                "originating_swarm_review_reason": str(
+                    merged.get("review_reason") or merged.get("promotion_reason") or ""
+                ).strip()
+                or None,
+                "originating_swarm_candidate_job_id": str(
+                    top_candidate.get("job_id") or ""
+                ).strip()
+                or None,
+                "originating_swarm_candidate_role": str(
+                    top_candidate.get("role") or ""
+                ).strip()
+                or None,
                 "originating_swarm_candidate_index": 0,
                 "originating_swarm_route_mode": "auto",
                 "originating_swarm_auto_routed_at": now.isoformat(),
@@ -2671,7 +3435,10 @@ class AutonomousAgentExecutor:
                         "actor": "system",
                         "action": "auto_routed_from_swarm",
                         "new_status": "draft",
-                        "note": str(merged.get("review_reason") or "Auto-routed unresolved coding swarm into backlog.")[:5000],
+                        "note": str(
+                            merged.get("review_reason")
+                            or "Auto-routed unresolved coding swarm into backlog."
+                        )[:5000],
                         "metadata": {
                             "swarm_job_id": str(fan_in_job.id),
                             "preset_key": preset_key,
@@ -2814,11 +3581,13 @@ class AutonomousAgentExecutor:
         progress_callback: Optional[callable],
     ) -> Dict[str, Any]:
         """Compatibility wrapper around the extracted deterministic runner service."""
-        return await self.ingestion_demo_runner_service.run_generated_project_demo_check(
-            self,
-            job=job,
-            db=db,
-            progress_callback=progress_callback,
+        return (
+            await self.ingestion_demo_runner_service.run_generated_project_demo_check(
+                self,
+                job=job,
+                db=db,
+                progress_callback=progress_callback,
+            )
         )
 
     async def _run_paper_algorithm_project(
@@ -2862,16 +3631,62 @@ class AutonomousAgentExecutor:
         if checkpoint:
             logger.info(f"Resuming job {job.id} from iteration {checkpoint.iteration}")
         state = initialize_runtime_state(checkpoint.state if checkpoint else None)
+        recovered_completion = agent_execution_journal_service.recover_completed_action(
+            state=state
+        )
+        if recovered_completion:
+            job.add_log_entry(
+                {
+                    "phase": "execution_journal_recovered_result",
+                    "invocation_id": state.get(
+                        "execution_journal_recovered_invocation_id"
+                    ),
+                }
+            )
+        reconciliation = agent_execution_journal_service.reconcile_interrupted(
+            job=job, state=state
+        )
+        if reconciliation:
+            job.status = AgentJobStatus.PAUSED.value
+            job.current_phase = "awaiting_reconciliation"
+            job.phase_details = str(reconciliation.get("message") or "")[:280]
+            job.add_log_entry(
+                {
+                    "phase": "execution_reconciliation",
+                    "checkpoint": reconciliation,
+                }
+            )
+            agent_execution_journal_service._sync_job_summary(job, state)
+            await self.checkpoint_service.save_checkpoint(
+                job=job,
+                state=state,
+                db=db,
+                reason="execution_reconciliation",
+            )
+            return {
+                "status": job.status,
+                "progress": int(state.get("goal_progress", 0) or 0),
+                "results": job.results if isinstance(job.results, dict) else {},
+                "iterations": job.iteration,
+                "tool_calls": job.tool_calls_used,
+                "llm_calls": job.llm_calls_used,
+                "checkpoint": reconciliation,
+            }
 
         # Resolve selection policy assignment once (deterministic; reused in ranking and telemetry).
         try:
-            self._resolve_tool_selection_mode(job, state=state, selection_cfg=self._get_tool_selection_config(job))
+            self._resolve_tool_selection_mode(
+                job, state=state, selection_cfg=self._get_tool_selection_config(job)
+            )
         except Exception:
             pass
 
         # Load deployment-level customer profile + optional per-job customer context.
         # This is a lightweight, stable signal used to tailor the research loop.
-        if state.get("customer_profile") is None and not (state.get("customer_context") or "").strip():
+        if (
+            state.get("customer_profile") is None
+            and not (state.get("customer_context") or "").strip()
+        ):
             try:
                 from app.core.feature_flags import get_str as get_feature_str
                 from app.schemas.customer_profile import CustomerProfile
@@ -2880,26 +3695,36 @@ class AutonomousAgentExecutor:
                 customer_profile = None
                 if raw_profile:
                     try:
-                        customer_profile = CustomerProfile.model_validate(json.loads(raw_profile))
+                        customer_profile = CustomerProfile.model_validate(
+                            json.loads(raw_profile)
+                        )
                     except Exception:
                         customer_profile = None
 
-                customer_context = str((job.config or {}).get("customer_context") or "").strip()
+                customer_context = str(
+                    (job.config or {}).get("customer_context") or ""
+                ).strip()
                 if not customer_context and customer_profile and customer_profile.notes:
                     customer_context = str(customer_profile.notes).strip()
 
-                state["customer_profile"] = customer_profile.model_dump() if customer_profile else None
+                state["customer_profile"] = (
+                    customer_profile.model_dump() if customer_profile else None
+                )
                 state["customer_context"] = customer_context
             except Exception:
                 # Do not fail the job if the customer profile isn't configured.
                 state["customer_profile"] = None
-                state["customer_context"] = str((job.config or {}).get("customer_context") or "").strip()
+                state["customer_context"] = str(
+                    (job.config or {}).get("customer_context") or ""
+                ).strip()
 
         # Resolve skill profile once per run (role-aware prompt/tool constraints).
         try:
             skill_profile = self._resolve_agent_skill_profile(job, state=state)
             state["skill_profile"] = skill_profile
-            if not isinstance(state.get("skill_profile_metrics"), dict) or not state.get("skill_profile_metrics"):
+            if not isinstance(
+                state.get("skill_profile_metrics"), dict
+            ) or not state.get("skill_profile_metrics"):
                 state["skill_profile_metrics"] = {
                     "role": str(skill_profile.get("role") or "researcher"),
                     "actions_total": 0,
@@ -2934,9 +3759,15 @@ class AutonomousAgentExecutor:
         # Build project profile once so planning/actions can follow repo-specific structure.
         try:
             cfg = job.config if isinstance(job.config, dict) else {}
-            auto_bootstrap = self._coerce_bool(cfg.get("project_bootstrap_auto", True), default=True)
-            force_bootstrap = self._coerce_bool(cfg.get("project_bootstrap_force", False), default=False)
-            has_profile = isinstance(state.get("project_profile"), dict) and bool(state.get("project_profile"))
+            auto_bootstrap = self._coerce_bool(
+                cfg.get("project_bootstrap_auto", True), default=True
+            )
+            force_bootstrap = self._coerce_bool(
+                cfg.get("project_bootstrap_force", False), default=False
+            )
+            has_profile = isinstance(state.get("project_profile"), dict) and bool(
+                state.get("project_profile")
+            )
             if auto_bootstrap and (force_bootstrap or not has_profile):
                 source_id = self._resolve_default_source_scope(job)
                 max_files = int(cfg.get("project_bootstrap_max_files", 400) or 400)
@@ -2946,7 +3777,10 @@ class AutonomousAgentExecutor:
                     source_id=source_id,
                     max_files=max_files,
                 )
-                if isinstance(profile, dict) and int(profile.get("sampled_files", 0) or 0) > 0:
+                if (
+                    isinstance(profile, dict)
+                    and int(profile.get("sampled_files", 0) or 0) > 0
+                ):
                     state["project_profile"] = profile
                     job.add_log_entry(
                         {
@@ -2961,13 +3795,17 @@ class AutonomousAgentExecutor:
 
         # Resolve memory persistence policy once per run.
         try:
-            state["memory_extraction_policy"] = self._resolve_memory_extraction_policy(job)
+            state["memory_extraction_policy"] = self._resolve_memory_extraction_policy(
+                job
+            )
         except Exception:
             state["memory_extraction_policy"] = {}
 
         # Inject relevant memories if enabled (with optional per-role overrides).
         memory_runtime = self._resolve_memory_runtime_config(job, state)
-        state["memory_runtime"] = memory_runtime if isinstance(memory_runtime, dict) else {}
+        state["memory_runtime"] = (
+            memory_runtime if isinstance(memory_runtime, dict) else {}
+        )
         if bool(memory_runtime.get("enabled", False)):
             try:
                 memories = await agent_job_memory_service.get_relevant_memories_for_job(
@@ -2991,7 +3829,9 @@ class AutonomousAgentExecutor:
                     ),
                 )
                 if memories:
-                    state["memory_context"] = agent_job_memory_service.format_memories_for_job_context(
+                    state[
+                        "memory_context"
+                    ] = agent_job_memory_service.format_memories_for_job_context(
                         memories, include_metadata=True
                     )
                     state["injected_memories"] = [str(m.id) for m in memories]
@@ -3009,31 +3849,57 @@ class AutonomousAgentExecutor:
                     await db.commit()
                     logger.info(f"Injected {len(memories)} memories into job {job.id}")
                     try:
-                        feedback_learning = agent_job_memory_service.extract_feedback_learning_signals(
-                            memories=memories,
-                            job_type=str(job.job_type or ""),
-                            role=str((state.get("skill_profile") or {}).get("role") or ""),
+                        feedback_learning = (
+                            agent_job_memory_service.extract_feedback_learning_signals(
+                                memories=memories,
+                                job_type=str(job.job_type or ""),
+                                role=str(
+                                    (state.get("skill_profile") or {}).get("role") or ""
+                                ),
+                            )
                         )
-                        state["feedback_learning"] = feedback_learning if isinstance(feedback_learning, dict) else {}
+                        state["feedback_learning"] = (
+                            feedback_learning
+                            if isinstance(feedback_learning, dict)
+                            else {}
+                        )
                     except Exception:
                         state["feedback_learning"] = {}
-                    job.add_log_entry({
-                        "phase": "memory_injection",
-                        "memories_injected": len(memories),
-                        "memory_types": list(set(m.memory_type for m in memories)),
-                        "memory_profile": str(memory_runtime.get("profile") or "") or None,
-                        "memory_limit": memory_runtime.get("limit"),
-                        "memory_role": str(memory_runtime.get("role") or ""),
-                        "feedback_signals": (
-                            {
-                                "feedback_count": int((state.get("feedback_learning") or {}).get("feedback_count", 0) or 0),
-                                "preferred_tools": ((state.get("feedback_learning") or {}).get("preferred_tools") or [])[:5],
-                                "discouraged_tools": ((state.get("feedback_learning") or {}).get("discouraged_tools") or [])[:5],
-                            }
-                            if isinstance(state.get("feedback_learning"), dict)
-                            else {}
-                        ),
-                    })
+                    job.add_log_entry(
+                        {
+                            "phase": "memory_injection",
+                            "memories_injected": len(memories),
+                            "memory_types": list(set(m.memory_type for m in memories)),
+                            "memory_profile": str(memory_runtime.get("profile") or "")
+                            or None,
+                            "memory_limit": memory_runtime.get("limit"),
+                            "memory_role": str(memory_runtime.get("role") or ""),
+                            "feedback_signals": (
+                                {
+                                    "feedback_count": int(
+                                        (state.get("feedback_learning") or {}).get(
+                                            "feedback_count", 0
+                                        )
+                                        or 0
+                                    ),
+                                    "preferred_tools": (
+                                        (state.get("feedback_learning") or {}).get(
+                                            "preferred_tools"
+                                        )
+                                        or []
+                                    )[:5],
+                                    "discouraged_tools": (
+                                        (state.get("feedback_learning") or {}).get(
+                                            "discouraged_tools"
+                                        )
+                                        or []
+                                    )[:5],
+                                }
+                                if isinstance(state.get("feedback_learning"), dict)
+                                else {}
+                            ),
+                        }
+                    )
             except Exception as e:
                 logger.warning(f"Failed to inject memories for job {job.id}: {e}")
 
@@ -3042,10 +3908,12 @@ class AutonomousAgentExecutor:
             priors = await self._load_tool_priors(job, db)
             if priors:
                 state["tool_priors"] = priors
-                job.add_log_entry({
-                    "phase": "tool_priors_loaded",
-                    "tools": len(priors),
-                })
+                job.add_log_entry(
+                    {
+                        "phase": "tool_priors_loaded",
+                        "tools": len(priors),
+                    }
+                )
         except Exception as e:
             logger.warning(f"Failed loading tool priors for job {job.id}: {e}")
 
@@ -3120,7 +3988,9 @@ class AutonomousAgentExecutor:
         except Exception:
             pass
 
-        fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+        fence_match = re.search(
+            r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL
+        )
         if fence_match:
             fenced = fence_match.group(1).strip()
             try:
@@ -3153,7 +4023,7 @@ class AutonomousAgentExecutor:
                 elif ch == "}":
                     depth -= 1
                     if depth == 0:
-                        candidate = text[start:idx + 1]
+                        candidate = text[start : idx + 1]
                         try:
                             parsed = json.loads(candidate)
                             if isinstance(parsed, dict):
@@ -3233,7 +4103,9 @@ class AutonomousAgentExecutor:
             bucket = parent_results.get(bucket_key)
             if not isinstance(bucket, dict):
                 continue
-            value = str(bucket.get("source_id") or bucket.get("target_source_id") or "").strip()
+            value = str(
+                bucket.get("source_id") or bucket.get("target_source_id") or ""
+            ).strip()
             if value:
                 return value
         return None
@@ -3297,14 +4169,24 @@ class AutonomousAgentExecutor:
         write_tools = configured if configured else default_write_tools
 
         return {
-            "enabled": self._coerce_bool(cfg.get("scope_guard_enabled", True), default=True),
-            "enforce": self._coerce_bool(cfg.get("scope_guard_enforce", True), default=True),
-            "allow_cross_source": self._coerce_bool(cfg.get("scope_guard_allow_cross_source", False), default=False),
-            "allow_param_override": self._coerce_bool(cfg.get("scope_guard_allow_param_override", True), default=True),
+            "enabled": self._coerce_bool(
+                cfg.get("scope_guard_enabled", True), default=True
+            ),
+            "enforce": self._coerce_bool(
+                cfg.get("scope_guard_enforce", True), default=True
+            ),
+            "allow_cross_source": self._coerce_bool(
+                cfg.get("scope_guard_allow_cross_source", False), default=False
+            ),
+            "allow_param_override": self._coerce_bool(
+                cfg.get("scope_guard_allow_param_override", True), default=True
+            ),
             "write_tools": write_tools,
         }
 
-    def _validate_action_scope(self, job: AgentJob, action: Dict[str, Any]) -> Optional[str]:
+    def _validate_action_scope(
+        self, job: AgentJob, action: Dict[str, Any]
+    ) -> Optional[str]:
         """Return guard violation message when an action attempts cross-scope writes."""
         if not isinstance(action, dict):
             return None
@@ -3317,7 +4199,9 @@ class AutonomousAgentExecutor:
             return None
 
         tool = str(action.get("tool") or "").strip()
-        write_tools = set([str(x).strip() for x in (cfg.get("write_tools") or []) if str(x).strip()])
+        write_tools = set(
+            [str(x).strip() for x in (cfg.get("write_tools") or []) if str(x).strip()]
+        )
         if tool not in write_tools:
             return None
 
@@ -3325,7 +4209,9 @@ class AutonomousAgentExecutor:
         if not isinstance(params, dict):
             params = {}
 
-        allow_cross_param = self._coerce_bool(params.get("allow_cross_scope"), default=False)
+        allow_cross_param = self._coerce_bool(
+            params.get("allow_cross_scope"), default=False
+        )
         if allow_cross_param and bool(cfg.get("allow_param_override", True)):
             return None
         if bool(cfg.get("allow_cross_source", False)):
@@ -3364,7 +4250,9 @@ class AutonomousAgentExecutor:
                 return f"inherited_data.parent_results.{bucket_key}.target_source_id"
         return "none"
 
-    def _append_scope_event(self, state: Dict[str, Any], event: Dict[str, Any], *, max_events: int = 200) -> None:
+    def _append_scope_event(
+        self, state: Dict[str, Any], event: Dict[str, Any], *, max_events: int = 200
+    ) -> None:
         """Append bounded scope telemetry event to state."""
         if not isinstance(event, dict):
             return
@@ -3372,9 +4260,11 @@ class AutonomousAgentExecutor:
         if not isinstance(events, list):
             events = []
         events.append(event)
-        state["scope_events"] = events[-max(1, min(max_events, 2000)):]
+        state["scope_events"] = events[-max(1, min(max_events, 2000)) :]
 
-    def _append_step_event(self, state: Dict[str, Any], event: Dict[str, Any], *, max_events: int = 800) -> None:
+    def _append_step_event(
+        self, state: Dict[str, Any], event: Dict[str, Any], *, max_events: int = 800
+    ) -> None:
         """Append bounded per-step audit event."""
         if not isinstance(event, dict):
             return
@@ -3384,9 +4274,11 @@ class AutonomousAgentExecutor:
         row = dict(event)
         row.setdefault("at", datetime.utcnow().isoformat())
         rows.append(row)
-        state["step_events"] = rows[-max(50, min(max_events, 5000)):]
+        state["step_events"] = rows[-max(50, min(max_events, 5000)) :]
 
-    def _append_job_result_step_event(self, job: AgentJob, event: Dict[str, Any], *, max_events: int = 300) -> None:
+    def _append_job_result_step_event(
+        self, job: AgentJob, event: Dict[str, Any], *, max_events: int = 300
+    ) -> None:
         """Append a bounded step event directly into persisted job results."""
         if not isinstance(event, dict):
             return
@@ -3396,11 +4288,15 @@ class AutonomousAgentExecutor:
             if isinstance(results.get("execution_strategy"), dict)
             else {}
         )
-        rows = execution.get("step_events") if isinstance(execution.get("step_events"), list) else []
+        rows = (
+            execution.get("step_events")
+            if isinstance(execution.get("step_events"), list)
+            else []
+        )
         row = dict(event)
         row.setdefault("at", datetime.utcnow().isoformat())
         rows.append(row)
-        execution["step_events"] = rows[-max(50, min(max_events, 2000)):]
+        execution["step_events"] = rows[-max(50, min(max_events, 2000)) :]
         results["execution_strategy"] = execution
         job.results = results
 
@@ -3452,7 +4348,9 @@ class AutonomousAgentExecutor:
         }
         return execution
 
-    def _persist_runtime_execution_strategy(self, job: AgentJob, state: Dict[str, Any]) -> None:
+    def _persist_runtime_execution_strategy(
+        self, job: AgentJob, state: Dict[str, Any]
+    ) -> None:
         """Persist synced runtime execution diagnostics into job.results."""
         results = job.results if isinstance(job.results, dict) else {}
         execution = (
@@ -3460,10 +4358,14 @@ class AutonomousAgentExecutor:
             if isinstance(results.get("execution_strategy"), dict)
             else {}
         )
-        results["execution_strategy"] = self._sync_runtime_execution_strategy(job, state, execution)
+        results["execution_strategy"] = self._sync_runtime_execution_strategy(
+            job, state, execution
+        )
         job.results = results
 
-    def _append_execution_graph_node(self, state: Dict[str, Any], node: Dict[str, Any], *, max_nodes: int = 500) -> None:
+    def _append_execution_graph_node(
+        self, state: Dict[str, Any], node: Dict[str, Any], *, max_nodes: int = 500
+    ) -> None:
         """Append bounded execution-graph node telemetry."""
         if not isinstance(node, dict):
             return
@@ -3471,9 +4373,11 @@ class AutonomousAgentExecutor:
         if not isinstance(nodes, list):
             nodes = []
         nodes.append(node)
-        state["execution_graph_nodes"] = nodes[-max(20, min(max_nodes, 5000)):]
+        state["execution_graph_nodes"] = nodes[-max(20, min(max_nodes, 5000)) :]
 
-    def _append_execution_graph_edge(self, state: Dict[str, Any], edge: Dict[str, Any], *, max_edges: int = 1000) -> None:
+    def _append_execution_graph_edge(
+        self, state: Dict[str, Any], edge: Dict[str, Any], *, max_edges: int = 1000
+    ) -> None:
         """Append bounded execution-graph edge telemetry."""
         if not isinstance(edge, dict):
             return
@@ -3481,7 +4385,7 @@ class AutonomousAgentExecutor:
         if not isinstance(edges, list):
             edges = []
         edges.append(edge)
-        state["execution_graph_edges"] = edges[-max(40, min(max_edges, 10000)):]
+        state["execution_graph_edges"] = edges[-max(40, min(max_edges, 10000)) :]
 
     def _build_execution_graph_stats(
         self,
@@ -3537,7 +4441,11 @@ class AutonomousAgentExecutor:
 
         roots = [nid for nid in node_ids if int(indeg.get(nid, 0) or 0) == 0]
         leaves = [nid for nid in node_ids if len(adj.get(nid, set())) == 0]
-        orphans = [nid for nid in node_ids if int(indeg.get(nid, 0) or 0) == 0 and len(adj.get(nid, set())) == 0]
+        orphans = [
+            nid
+            for nid in node_ids
+            if int(indeg.get(nid, 0) or 0) == 0 and len(adj.get(nid, set())) == 0
+        ]
 
         # Kahn topological traversal for cycle detection and longest path estimate.
         indeg_work = {k: int(v or 0) for k, v in indeg.items()}
@@ -3577,10 +4485,16 @@ class AutonomousAgentExecutor:
             "critical_path_length": int(critical_path_length),
         }
 
-    def _build_execution_graph_health(self, dag_stats: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_execution_graph_health(
+        self, dag_stats: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Classify graph runtime quality into compact UI-friendly health status."""
         if not isinstance(dag_stats, dict):
-            return {"status": "unknown", "reasons": ["missing_dag_stats"], "severity_score": 0}
+            return {
+                "status": "unknown",
+                "reasons": ["missing_dag_stats"],
+                "severity_score": 0,
+            }
 
         total_nodes = max(0, int(dag_stats.get("total_nodes", 0) or 0))
         blocked_nodes = max(0, int(dag_stats.get("blocked_nodes", 0) or 0))
@@ -3588,7 +4502,9 @@ class AutonomousAgentExecutor:
         critical_path = max(0, int(dag_stats.get("critical_path_length", 0) or 0))
         orphan_nodes = max(0, int(dag_stats.get("orphan_nodes", 0) or 0))
 
-        blocked_ratio = (float(blocked_nodes) / float(total_nodes)) if total_nodes > 0 else 0.0
+        blocked_ratio = (
+            (float(blocked_nodes) / float(total_nodes)) if total_nodes > 0 else 0.0
+        )
         reasons: List[str] = []
         severity = 0
 
@@ -3631,35 +4547,57 @@ class AutonomousAgentExecutor:
             "blocked_ratio": round(blocked_ratio, 4),
         }
 
-    def _build_execution_graph_recommendations(self, health: Dict[str, Any]) -> List[str]:
+    def _build_execution_graph_recommendations(
+        self, health: Dict[str, Any]
+    ) -> List[str]:
         """Create short remediation hints based on graph health signals."""
         if not isinstance(health, dict):
             return []
         status = str(health.get("status") or "").strip().lower()
-        reasons = [str(x).strip() for x in (health.get("reasons") or []) if str(x).strip()]
+        reasons = [
+            str(x).strip() for x in (health.get("reasons") or []) if str(x).strip()
+        ]
         recs: List[str] = []
 
         if status == "unknown":
-            recs.append("Collect at least one act->verify->summarize cycle to initialize graph diagnostics.")
+            recs.append(
+                "Collect at least one act->verify->summarize cycle to initialize graph diagnostics."
+            )
 
         if "cycle_detected" in reasons:
-            recs.append("Reset or re-plan execution steps to remove cyclic dependencies between nodes.")
-            recs.append("Pin deterministic step_id ordering and avoid referencing future steps in depends_on.")
+            recs.append(
+                "Reset or re-plan execution steps to remove cyclic dependencies between nodes."
+            )
+            recs.append(
+                "Pin deterministic step_id ordering and avoid referencing future steps in depends_on."
+            )
 
         if "high_blocked_ratio" in reasons or "moderate_blocked_ratio" in reasons:
-            recs.append("Review failed/blocked nodes and tighten tool params before retrying affected steps.")
-            recs.append("Enable scoped recovery actions to gather missing evidence before write operations.")
+            recs.append(
+                "Review failed/blocked nodes and tighten tool params before retrying affected steps."
+            )
+            recs.append(
+                "Enable scoped recovery actions to gather missing evidence before write operations."
+            )
 
         if "long_critical_path" in reasons or "moderate_critical_path" in reasons:
-            recs.append("Split large plan steps into smaller nodes to shorten the critical path.")
+            recs.append(
+                "Split large plan steps into smaller nodes to shorten the critical path."
+            )
 
         if "orphan_nodes_detected" in reasons:
-            recs.append("Attach orphan nodes to explicit predecessors using depends_on.")
+            recs.append(
+                "Attach orphan nodes to explicit predecessors using depends_on."
+            )
 
         if not recs and status == "ok":
-            recs.append("Graph health is stable; continue with current execution strategy.")
+            recs.append(
+                "Graph health is stable; continue with current execution strategy."
+            )
         if not recs:
-            recs.append("Inspect execution_graph.nodes and execution_graph.edges for anomalies.")
+            recs.append(
+                "Inspect execution_graph.nodes and execution_graph.edges for anomalies."
+            )
 
         deduped: List[str] = []
         for r in recs:
@@ -3667,10 +4605,20 @@ class AutonomousAgentExecutor:
                 deduped.append(r)
         return deduped[:6]
 
-    def _get_execution_graph_runtime_snapshot(self, state: Dict[str, Any]) -> Dict[str, Any]:
+    def _get_execution_graph_runtime_snapshot(
+        self, state: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Build live execution-graph diagnostics for in-loop observation and planning."""
-        nodes = state.get("execution_graph_nodes") if isinstance(state.get("execution_graph_nodes"), list) else []
-        edges = state.get("execution_graph_edges") if isinstance(state.get("execution_graph_edges"), list) else []
+        nodes = (
+            state.get("execution_graph_nodes")
+            if isinstance(state.get("execution_graph_nodes"), list)
+            else []
+        )
+        edges = (
+            state.get("execution_graph_edges")
+            if isinstance(state.get("execution_graph_edges"), list)
+            else []
+        )
         dag_stats = self._build_execution_graph_stats(nodes, edges)
         health = self._build_execution_graph_health(dag_stats)
         recommendations = self._build_execution_graph_recommendations(health)
@@ -3678,7 +4626,9 @@ class AutonomousAgentExecutor:
             "verification_attempts": int(state.get("verification_attempts", 0) or 0),
             "verification_successes": int(state.get("verification_successes", 0) or 0),
             "summarization_attempts": int(state.get("summarization_attempts", 0) or 0),
-            "summarization_successes": int(state.get("summarization_successes", 0) or 0),
+            "summarization_successes": int(
+                state.get("summarization_successes", 0) or 0
+            ),
             "dag_stats": dag_stats,
             "graph_health": health,
             "recommended_actions": recommendations,
@@ -3693,15 +4643,18 @@ class AutonomousAgentExecutor:
     ) -> bool:
         """Return whether live execution-graph health indicates rescue/recovery pressure."""
         runtime = self._get_execution_graph_runtime_snapshot(state)
-        graph_health = runtime.get("graph_health") if isinstance(runtime.get("graph_health"), dict) else {}
+        graph_health = (
+            runtime.get("graph_health")
+            if isinstance(runtime.get("graph_health"), dict)
+            else {}
+        )
         verification_attempts = int(runtime.get("verification_attempts", 0) or 0)
         verification_successes = int(runtime.get("verification_successes", 0) or 0)
         verification_debt = max(0, verification_attempts - verification_successes)
         graph_severity = int(graph_health.get("severity_score", 0) or 0)
-        return (
-            verification_debt >= max(1, int(verification_debt_threshold or 2))
-            or graph_severity >= max(1, int(severity_threshold or 20))
-        )
+        return verification_debt >= max(
+            1, int(verification_debt_threshold or 2)
+        ) or graph_severity >= max(1, int(severity_threshold or 20))
 
     def _format_execution_graph_for_prompt(self, state: Dict[str, Any]) -> str:
         """Render compact live execution-graph diagnostics for the planner prompt."""
@@ -3713,8 +4666,16 @@ class AutonomousAgentExecutor:
         if not isinstance(runtime, dict):
             return ""
 
-        dag_stats = runtime.get("dag_stats") if isinstance(runtime.get("dag_stats"), dict) else {}
-        health = runtime.get("graph_health") if isinstance(runtime.get("graph_health"), dict) else {}
+        dag_stats = (
+            runtime.get("dag_stats")
+            if isinstance(runtime.get("dag_stats"), dict)
+            else {}
+        )
+        health = (
+            runtime.get("graph_health")
+            if isinstance(runtime.get("graph_health"), dict)
+            else {}
+        )
         total_nodes = int(dag_stats.get("total_nodes", 0) or 0)
         total_edges = int(dag_stats.get("total_edges", 0) or 0)
         if total_nodes <= 0 and total_edges <= 0:
@@ -3725,9 +4686,13 @@ class AutonomousAgentExecutor:
             f"- Health: {str(health.get('status') or 'unknown')} "
             f"(severity={int(health.get('severity_score', 0) or 0)})"
         )
-        reasons = health.get("reasons") if isinstance(health.get("reasons"), list) else []
+        reasons = (
+            health.get("reasons") if isinstance(health.get("reasons"), list) else []
+        )
         if reasons:
-            lines.append(f"- Health reasons: {', '.join([str(x) for x in reasons[:6]])}")
+            lines.append(
+                f"- Health reasons: {', '.join([str(x) for x in reasons[:6]])}"
+            )
         lines.append(
             f"- Nodes={total_nodes}, edges={total_edges}, critical_path={int(dag_stats.get('critical_path_length', 0) or 0)}"
         )
@@ -3738,14 +4703,20 @@ class AutonomousAgentExecutor:
             f"{int(runtime.get('summarization_successes', 0) or 0)}/{int(runtime.get('summarization_attempts', 0) or 0)} "
             "summaries succeeded"
         )
-        recommendations = runtime.get("recommended_actions") if isinstance(runtime.get("recommended_actions"), list) else []
+        recommendations = (
+            runtime.get("recommended_actions")
+            if isinstance(runtime.get("recommended_actions"), list)
+            else []
+        )
         if recommendations:
             lines.append("- Recommended actions:")
             for item in recommendations[:4]:
                 lines.append(f"  - {str(item)[:220]}")
         return "\n".join(lines)
 
-    def _annotate_execution_plan_graph(self, plan: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    def _annotate_execution_plan_graph(
+        self, plan: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
         """Inject stable step IDs and dependency edges into plan steps."""
         if not isinstance(plan, list):
             return []
@@ -3786,9 +4757,21 @@ class AutonomousAgentExecutor:
             return []
 
         max_commands = max(1, min(int(max_commands or 3), 6))
-        command_groups = profile.get("command_groups") if isinstance(profile.get("command_groups"), dict) else {}
-        grouped_primary = command_groups.get("test") if isinstance(command_groups.get("test"), list) else []
-        grouped_fallback = command_groups.get("test_fallback") if isinstance(command_groups.get("test_fallback"), list) else []
+        command_groups = (
+            profile.get("command_groups")
+            if isinstance(profile.get("command_groups"), dict)
+            else {}
+        )
+        grouped_primary = (
+            command_groups.get("test")
+            if isinstance(command_groups.get("test"), list)
+            else []
+        )
+        grouped_fallback = (
+            command_groups.get("test_fallback")
+            if isinstance(command_groups.get("test_fallback"), list)
+            else []
+        )
         selected: List[str] = []
         for bucket in (grouped_primary, grouped_fallback):
             for raw in bucket:
@@ -3799,7 +4782,11 @@ class AutonomousAgentExecutor:
                 if len(selected) >= max_commands:
                     return selected[:max_commands]
 
-        suggested = profile.get("suggested_commands") if isinstance(profile.get("suggested_commands"), list) else []
+        suggested = (
+            profile.get("suggested_commands")
+            if isinstance(profile.get("suggested_commands"), list)
+            else []
+        )
         for raw in suggested:
             cmd = str(raw or "").strip()
             if not cmd:
@@ -3820,7 +4807,11 @@ class AutonomousAgentExecutor:
             if len(selected) >= max_commands:
                 return selected[:max_commands]
 
-        stacks = profile.get("detected_stack") if isinstance(profile.get("detected_stack"), list) else []
+        stacks = (
+            profile.get("detected_stack")
+            if isinstance(profile.get("detected_stack"), list)
+            else []
+        )
         stack_defaults: List[str] = []
         if "python" in stacks:
             stack_defaults.append("python -m pytest -q")
@@ -3853,9 +4844,21 @@ class AutonomousAgentExecutor:
             return {"install": [], "fallback": []}
 
         primary = [str(x).strip() for x in (primary_commands or []) if str(x).strip()]
-        command_groups = profile.get("command_groups") if isinstance(profile.get("command_groups"), dict) else {}
-        install = command_groups.get("install") if isinstance(command_groups.get("install"), list) else []
-        fallback = command_groups.get("test_fallback") if isinstance(command_groups.get("test_fallback"), list) else []
+        command_groups = (
+            profile.get("command_groups")
+            if isinstance(profile.get("command_groups"), dict)
+            else {}
+        )
+        install = (
+            command_groups.get("install")
+            if isinstance(command_groups.get("install"), list)
+            else []
+        )
+        fallback = (
+            command_groups.get("test_fallback")
+            if isinstance(command_groups.get("test_fallback"), list)
+            else []
+        )
 
         install_out: List[str] = []
         for raw in install:
@@ -3876,7 +4879,9 @@ class AutonomousAgentExecutor:
 
         return {"install": install_out, "fallback": fallback_out}
 
-    def _should_bootstrap_after_verification_failure(self, run: Optional[Dict[str, Any]]) -> bool:
+    def _should_bootstrap_after_verification_failure(
+        self, run: Optional[Dict[str, Any]]
+    ) -> bool:
         """Heuristic: decide whether a failed verification run suggests missing environment/tooling."""
         if not isinstance(run, dict):
             return False
@@ -3884,7 +4889,9 @@ class AutonomousAgentExecutor:
             return False
 
         try:
-            exit_code = int(run.get("exit_code")) if run.get("exit_code") is not None else None
+            exit_code = (
+                int(run.get("exit_code")) if run.get("exit_code") is not None else None
+            )
         except Exception:
             exit_code = None
         if exit_code == 127:
@@ -3911,7 +4918,9 @@ class AutonomousAgentExecutor:
         ]
         return any(hint in text for hint in hints)
 
-    def _summarize_experiment_run_phases(self, runs: Optional[List[Dict[str, Any]]]) -> Dict[str, Any]:
+    def _summarize_experiment_run_phases(
+        self, runs: Optional[List[Dict[str, Any]]]
+    ) -> Dict[str, Any]:
         """Summarize experiment phases so retry/bootstrap behavior is visible without parsing raw runs."""
         if not isinstance(runs, list):
             return {
@@ -3945,10 +4954,14 @@ class AutonomousAgentExecutor:
 
         if final_phase:
             final_phase_runs = [
-                run for run in runs
-                if isinstance(run, dict) and str(run.get("phase") or "").strip() == final_phase
+                run
+                for run in runs
+                if isinstance(run, dict)
+                and str(run.get("phase") or "").strip() == final_phase
             ]
-            final_ok = bool(final_phase_runs) and all(bool(run.get("ok")) for run in final_phase_runs)
+            final_ok = bool(final_phase_runs) and all(
+                bool(run.get("ok")) for run in final_phase_runs
+            )
 
         return {
             "phases": phases,
@@ -3958,10 +4971,16 @@ class AutonomousAgentExecutor:
             "failed_commands": failed_commands[:6],
         }
 
-    def _extract_latest_failed_command_output(self, experiment_run: Optional[Dict[str, Any]]) -> str:
+    def _extract_latest_failed_command_output(
+        self, experiment_run: Optional[Dict[str, Any]]
+    ) -> str:
         if not isinstance(experiment_run, dict):
             return ""
-        runs = experiment_run.get("runs") if isinstance(experiment_run.get("runs"), list) else []
+        runs = (
+            experiment_run.get("runs")
+            if isinstance(experiment_run.get("runs"), list)
+            else []
+        )
         for run in reversed(runs):
             if not isinstance(run, dict) or bool(run.get("ok")):
                 continue
@@ -3977,7 +4996,9 @@ class AutonomousAgentExecutor:
         experiment_run: Optional[Dict[str, Any]] = None,
         existing_recovery: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        existing_recovery = existing_recovery if isinstance(existing_recovery, dict) else {}
+        existing_recovery = (
+            existing_recovery if isinstance(existing_recovery, dict) else {}
+        )
         experiment_run = experiment_run if isinstance(experiment_run, dict) else {}
         failed_commands = [
             str(cmd).strip()
@@ -3993,9 +5014,18 @@ class AutonomousAgentExecutor:
         final_phase = str(experiment_run.get("final_phase") or "").strip().lower()
         run_ok = experiment_run.get("ok")
         can_resume = bool(existing_recovery.get("can_resume_verification"))
-        if not can_resume and str(job.status or "").lower() == AgentJobStatus.PAUSED.value:
-            can_resume = final_phase in {"primary", "retry_primary", "fallback"} or bool(failed_commands)
-        recovery_state = str(existing_recovery.get("recovery_state") or "").strip().lower()
+        if (
+            not can_resume
+            and str(job.status or "").lower() == AgentJobStatus.PAUSED.value
+        ):
+            can_resume = final_phase in {
+                "primary",
+                "retry_primary",
+                "fallback",
+            } or bool(failed_commands)
+        recovery_state = (
+            str(existing_recovery.get("recovery_state") or "").strip().lower()
+        )
         if not recovery_state:
             if failed_commands and run_ok is False:
                 recovery_state = "verification_failed"
@@ -4027,12 +5057,22 @@ class AutonomousAgentExecutor:
             "retry_reason": retry_reason or None,
             "resume_hint": (
                 str(existing_recovery.get("resume_hint") or "").strip()
-                or ("Resume verification from the paused job state." if can_resume else None)
+                or (
+                    "Resume verification from the paused job state."
+                    if can_resume
+                    else None
+                )
             ),
             "suggested_operator_actions": suggested_operator_actions,
-            "can_retry_with_refined_plan": bool(existing_recovery.get("can_retry_with_refined_plan", bool(failed_commands))),
+            "can_retry_with_refined_plan": bool(
+                existing_recovery.get(
+                    "can_retry_with_refined_plan", bool(failed_commands)
+                )
+            ),
             "can_resume_verification": can_resume,
-            "latest_failed_output": self._extract_latest_failed_command_output(experiment_run),
+            "latest_failed_output": self._extract_latest_failed_command_output(
+                experiment_run
+            ),
         }
 
     def _normalize_causal_experiment_plan(
@@ -4064,11 +5104,15 @@ class AutonomousAgentExecutor:
                     }
                 )
             elif isinstance(item, dict):
-                statement = str(item.get("statement") or item.get("hypothesis") or "").strip()
+                statement = str(
+                    item.get("statement") or item.get("hypothesis") or ""
+                ).strip()
                 if not statement:
                     continue
                 hid = str(item.get("id") or f"H{i}").strip()[:24] or f"H{i}"
-                rationale = str(item.get("rationale") or item.get("because") or "").strip()[:320]
+                rationale = str(
+                    item.get("rationale") or item.get("because") or ""
+                ).strip()[:320]
                 try:
                     conf = float(item.get("confidence", 0.5) or 0.5)
                 except Exception:
@@ -4087,7 +5131,9 @@ class AutonomousAgentExecutor:
 
         if not hypotheses:
             return {}
-        hyp_ids = [str(h.get("id") or "") for h in hypotheses if str(h.get("id") or "").strip()]
+        hyp_ids = [
+            str(h.get("id") or "") for h in hypotheses if str(h.get("id") or "").strip()
+        ]
 
         experiments_raw = payload.get("experiments")
         if not isinstance(experiments_raw, list):
@@ -4096,19 +5142,30 @@ class AutonomousAgentExecutor:
         for i, item in enumerate(experiments_raw, start=1):
             if not isinstance(item, dict):
                 continue
-            name = str(item.get("name") or item.get("title") or f"Experiment {i}").strip()
+            name = str(
+                item.get("name") or item.get("title") or f"Experiment {i}"
+            ).strip()
             eid = str(item.get("id") or f"E{i}").strip()[:24] or f"E{i}"
-            hypothesis_id = str(item.get("hypothesis_id") or item.get("hypothesis") or "").strip()
+            hypothesis_id = str(
+                item.get("hypothesis_id") or item.get("hypothesis") or ""
+            ).strip()
             if hypothesis_id not in hyp_ids:
                 hypothesis_id = hyp_ids[min(i - 1, len(hyp_ids) - 1)]
-            minimal_design = str(item.get("minimal_design") or item.get("design") or item.get("purpose") or "").strip()
+            minimal_design = str(
+                item.get("minimal_design")
+                or item.get("design")
+                or item.get("purpose")
+                or ""
+            ).strip()
 
             required_data = item.get("required_data")
             if not isinstance(required_data, list):
                 required_data = item.get("data")
             if not isinstance(required_data, list):
                 required_data = []
-            required_data = [str(x).strip()[:140] for x in required_data if str(x).strip()][:8]
+            required_data = [
+                str(x).strip()[:140] for x in required_data if str(x).strip()
+            ][:8]
 
             steps = item.get("steps")
             if not isinstance(steps, list):
@@ -4120,21 +5177,45 @@ class AutonomousAgentExecutor:
                 success_criteria = item.get("metrics")
             if not isinstance(success_criteria, list):
                 success_criteria = []
-            success_criteria = [str(x).strip()[:180] for x in success_criteria if str(x).strip()][:8]
+            success_criteria = [
+                str(x).strip()[:180] for x in success_criteria if str(x).strip()
+            ][:8]
 
             expected = item.get("expected_evidence")
             if not isinstance(expected, dict):
                 expected = {}
-            supports = expected.get("supports") if isinstance(expected.get("supports"), list) else []
-            falsifies = expected.get("falsifies") if isinstance(expected.get("falsifies"), list) else []
-            ambiguous = expected.get("ambiguous") if isinstance(expected.get("ambiguous"), list) else []
+            supports = (
+                expected.get("supports")
+                if isinstance(expected.get("supports"), list)
+                else []
+            )
+            falsifies = (
+                expected.get("falsifies")
+                if isinstance(expected.get("falsifies"), list)
+                else []
+            )
+            ambiguous = (
+                expected.get("ambiguous")
+                if isinstance(expected.get("ambiguous"), list)
+                else []
+            )
             expected_norm = {
-                "supports": [str(x).strip()[:180] for x in supports if str(x).strip()][:6],
-                "falsifies": [str(x).strip()[:180] for x in falsifies if str(x).strip()][:6],
-                "ambiguous": [str(x).strip()[:180] for x in ambiguous if str(x).strip()][:6],
+                "supports": [str(x).strip()[:180] for x in supports if str(x).strip()][
+                    :6
+                ],
+                "falsifies": [
+                    str(x).strip()[:180] for x in falsifies if str(x).strip()
+                ][:6],
+                "ambiguous": [
+                    str(x).strip()[:180] for x in ambiguous if str(x).strip()
+                ][:6],
             }
 
-            effort = str(item.get("estimated_effort") or item.get("effort") or "medium").strip().lower()
+            effort = (
+                str(item.get("estimated_effort") or item.get("effort") or "medium")
+                .strip()
+                .lower()
+            )
             if effort not in {"low", "medium", "high"}:
                 effort = "medium"
 
@@ -4161,14 +5242,18 @@ class AutonomousAgentExecutor:
         if not isinstance(priority_raw, list):
             priority_raw = []
         exp_ids = [str(e.get("id") or "") for e in experiments]
-        priority = [str(x).strip() for x in priority_raw if str(x).strip() in set(exp_ids)]
+        priority = [
+            str(x).strip() for x in priority_raw if str(x).strip() in set(exp_ids)
+        ]
         if not priority:
             priority = exp_ids[:]
 
         decision_rules = payload.get("decision_rules")
         if not isinstance(decision_rules, list):
             decision_rules = []
-        decision_rules = [str(x).strip()[:220] for x in decision_rules if str(x).strip()][:8]
+        decision_rules = [
+            str(x).strip()[:220] for x in decision_rules if str(x).strip()
+        ][:8]
         if not decision_rules:
             decision_rules = [
                 "If >=70% of support criteria are met, treat hypothesis as provisionally supported.",
@@ -4218,9 +5303,19 @@ class AutonomousAgentExecutor:
                 "hypothesis_id": "H1",
                 "name": "Minimal baseline comparison",
                 "minimal_design": "Compare baseline process against the proposed intervention on a small representative sample.",
-                "required_data": ["Representative sample", "Baseline output", "Intervention output"],
-                "steps": ["Define baseline and intervention", "Run both on same sample", "Measure delta on core metric"],
-                "success_criteria": ["Intervention outperforms baseline on primary metric"],
+                "required_data": [
+                    "Representative sample",
+                    "Baseline output",
+                    "Intervention output",
+                ],
+                "steps": [
+                    "Define baseline and intervention",
+                    "Run both on same sample",
+                    "Measure delta on core metric",
+                ],
+                "success_criteria": [
+                    "Intervention outperforms baseline on primary metric"
+                ],
                 "expected_evidence": {
                     "supports": ["Consistent metric lift over baseline"],
                     "falsifies": ["No lift or negative lift vs baseline"],
@@ -4233,8 +5328,15 @@ class AutonomousAgentExecutor:
                 "hypothesis_id": "H2",
                 "name": "Ablation stress test",
                 "minimal_design": "Remove or weaken the suspected causal factor and re-evaluate outcome quality.",
-                "required_data": ["Intervention variant without factor", "Evaluation rubric"],
-                "steps": ["Define ablated variant", "Run same evaluation", "Compare to full intervention"],
+                "required_data": [
+                    "Intervention variant without factor",
+                    "Evaluation rubric",
+                ],
+                "steps": [
+                    "Define ablated variant",
+                    "Run same evaluation",
+                    "Compare to full intervention",
+                ],
                 "success_criteria": ["Ablated variant underperforms full intervention"],
                 "expected_evidence": {
                     "supports": ["Meaningful drop after removing factor"],
@@ -4253,7 +5355,9 @@ class AutonomousAgentExecutor:
                 "Prioritize the experiment with the highest falsifiability and lowest effort first.",
                 "Advance only hypotheses with supporting evidence and no strong falsification signal.",
             ],
-            "assumptions": ["Primary metric is stable and measurable on available data."],
+            "assumptions": [
+                "Primary metric is stable and measurable on available data."
+            ],
             "source": "fallback",
         }
 
@@ -4293,7 +5397,9 @@ class AutonomousAgentExecutor:
             max_exp = 4
         max_exp = max(1, min(max_exp, 12))
 
-        findings = state.get("findings") if isinstance(state.get("findings"), list) else []
+        findings = (
+            state.get("findings") if isinstance(state.get("findings"), list) else []
+        )
         finding_titles: List[str] = []
         for f in findings:
             if not isinstance(f, dict):
@@ -4370,13 +5476,23 @@ class AutonomousAgentExecutor:
 
         if hypotheses:
             hypotheses["generated_at"] = datetime.utcnow().isoformat()
-            hypotheses["source"] = str(hypotheses.get("source") or ("llm" if used_llm else "fallback"))
+            hypotheses["source"] = str(
+                hypotheses.get("source") or ("llm" if used_llm else "fallback")
+            )
             state["causal_experiment_plan"] = hypotheses
             job.add_log_entry(
                 {
                     "phase": "causal_experiment_plan_generated",
-                    "hypotheses": len(hypotheses.get("hypotheses", []) if isinstance(hypotheses.get("hypotheses"), list) else []),
-                    "experiments": len(hypotheses.get("experiments", []) if isinstance(hypotheses.get("experiments"), list) else []),
+                    "hypotheses": len(
+                        hypotheses.get("hypotheses", [])
+                        if isinstance(hypotheses.get("hypotheses"), list)
+                        else []
+                    ),
+                    "experiments": len(
+                        hypotheses.get("experiments", [])
+                        if isinstance(hypotheses.get("experiments"), list)
+                        else []
+                    ),
                     "source": str(hypotheses.get("source") or ""),
                 }
             )
@@ -4396,7 +5512,9 @@ class AutonomousAgentExecutor:
         state.setdefault("plan_replan_count", 0)
         state.setdefault("plan_completed", False)
         execution_mode = self._resolve_execution_mode(job, state=state)
-        plan_then_act_enabled = self._coerce_bool(cfg.get("plan_then_act_enabled"), default=True)
+        plan_then_act_enabled = self._coerce_bool(
+            cfg.get("plan_then_act_enabled"), default=True
+        )
         if execution_mode == "plan_and_execute":
             plan_then_act_enabled = True
         if not plan_then_act_enabled:
@@ -4464,20 +5582,36 @@ class AutonomousAgentExecutor:
             state["plan_completed"] = False
             if isinstance(state["execution_plan"][0], dict):
                 state["execution_plan"][0]["status"] = "in_progress"
-            first_step = state["execution_plan"][0] if isinstance(state["execution_plan"], list) and state["execution_plan"] else {}
+            first_step = (
+                state["execution_plan"][0]
+                if isinstance(state["execution_plan"], list) and state["execution_plan"]
+                else {}
+            )
             self._append_step_event(
                 state,
                 {
                     "type": "plan_initialized",
-                    "plan_steps_total": len(state["execution_plan"]) if isinstance(state.get("execution_plan"), list) else 0,
-                    "plan_step_id": str((first_step.get("step_id") if isinstance(first_step, dict) else "") or "") or None,
+                    "plan_steps_total": len(state["execution_plan"])
+                    if isinstance(state.get("execution_plan"), list)
+                    else 0,
+                    "plan_step_id": str(
+                        (
+                            first_step.get("step_id")
+                            if isinstance(first_step, dict)
+                            else ""
+                        )
+                        or ""
+                    )
+                    or None,
                     "plan_step_index": 0,
                     "execution_mode": execution_mode,
                 },
             )
         return used_llm
 
-    def _apply_revised_plan(self, state: Dict[str, Any], revised: ExecutionPlan) -> None:
+    def _apply_revised_plan(
+        self, state: Dict[str, Any], revised: ExecutionPlan
+    ) -> None:
         """Merge a revised execution plan into state, preserving completed steps."""
         old_plan = state.get("execution_plan") or []
         completed = [
@@ -4500,7 +5634,9 @@ class AutonomousAgentExecutor:
             replan_count=revised.replan_count,
             last_replanned_at=revised.last_replanned_at,
         )
-        state["plan_progress"] = AgentExecutionPlanner.compute_plan_progress(merged_plan)
+        state["plan_progress"] = AgentExecutionPlanner.compute_plan_progress(
+            merged_plan
+        )
         if revised.subgoals:
             state["subgoals"] = [sg.model_dump() for sg in revised.subgoals]
         # Mark first pending step as in_progress
@@ -4540,14 +5676,20 @@ class AutonomousAgentExecutor:
                 normalized.append(step)
             elif isinstance(item, dict):
                 title = str(item.get("title") or item.get("name") or "").strip()
-                objective = str(item.get("objective") or item.get("purpose") or "").strip()
-                exit_criteria = str(item.get("exit_criteria") or item.get("done_when") or "").strip()
+                objective = str(
+                    item.get("objective") or item.get("purpose") or ""
+                ).strip()
+                exit_criteria = str(
+                    item.get("exit_criteria") or item.get("done_when") or ""
+                ).strip()
                 suggested_tools = item.get("suggested_tools")
                 if not isinstance(suggested_tools, list):
                     suggested_tools = item.get("tools")
                 if not isinstance(suggested_tools, list):
                     suggested_tools = []
-                suggested_tools = [str(x).strip() for x in suggested_tools if str(x).strip()]
+                suggested_tools = [
+                    str(x).strip() for x in suggested_tools if str(x).strip()
+                ]
                 if not title and objective:
                     title = objective[:180]
                 if not title:
@@ -4566,7 +5708,9 @@ class AutonomousAgentExecutor:
 
         return normalized
 
-    def _fallback_execution_plan(self, job: AgentJob, max_steps: int = 6) -> List[Dict[str, Any]]:
+    def _fallback_execution_plan(
+        self, job: AgentJob, max_steps: int = 6
+    ) -> List[Dict[str, Any]]:
         """Create a deterministic fallback plan when LLM planning is unavailable."""
         steps: List[Dict[str, Any]] = [
             {
@@ -4602,14 +5746,20 @@ class AutonomousAgentExecutor:
                     "title": "Synthesize findings",
                     "objective": "Convert evidence into conclusions, gaps, and next actions.",
                     "exit_criteria": "Findings are organized and attributable to sources.",
-                    "suggested_tools": ["save_research_finding", "create_synthesis_document"],
+                    "suggested_tools": [
+                        "save_research_finding",
+                        "create_synthesis_document",
+                    ],
                     "status": "pending",
                 },
                 {
                     "title": "Publish results",
                     "objective": "Produce a final output artifact and concise status summary.",
                     "exit_criteria": "Final artifact/report produced and progress reported.",
-                    "suggested_tools": ["create_document_from_text", "write_progress_report"],
+                    "suggested_tools": [
+                        "create_document_from_text",
+                        "write_progress_report",
+                    ],
                     "status": "pending",
                 },
             ]
@@ -4650,7 +5800,11 @@ class AutonomousAgentExecutor:
 
         if not out:
             goal = str(job.goal or "").strip()
-            parts = [p.strip() for p in re.split(r"[.;]|(?:\s+and\s+)|(?:\s+then\s+)|,", goal) if p.strip()]
+            parts = [
+                p.strip()
+                for p in re.split(r"[.;]|(?:\s+and\s+)|(?:\s+then\s+)|,", goal)
+                if p.strip()
+            ]
             if not parts and goal:
                 parts = [goal]
             for p in parts[:max_subgoals]:
@@ -4685,8 +5839,23 @@ class AutonomousAgentExecutor:
         if not isinstance(roles, list):
             roles = []
 
-        trigger = str(cfg.get("swarm_trigger_condition", ChainTriggerCondition.ON_COMPLETE.value) or ChainTriggerCondition.ON_COMPLETE.value).strip().lower()
-        if trigger not in {ChainTriggerCondition.ON_COMPLETE.value, ChainTriggerCondition.ON_ANY_END.value, ChainTriggerCondition.ON_PROGRESS.value, ChainTriggerCondition.ON_FINDINGS.value, ChainTriggerCondition.ON_FAIL.value}:
+        trigger = (
+            str(
+                cfg.get(
+                    "swarm_trigger_condition", ChainTriggerCondition.ON_COMPLETE.value
+                )
+                or ChainTriggerCondition.ON_COMPLETE.value
+            )
+            .strip()
+            .lower()
+        )
+        if trigger not in {
+            ChainTriggerCondition.ON_COMPLETE.value,
+            ChainTriggerCondition.ON_ANY_END.value,
+            ChainTriggerCondition.ON_PROGRESS.value,
+            ChainTriggerCondition.ON_FINDINGS.value,
+            ChainTriggerCondition.ON_FAIL.value,
+        }:
             trigger = ChainTriggerCondition.ON_COMPLETE.value
 
         return {
@@ -4696,19 +5865,43 @@ class AutonomousAgentExecutor:
             "inherit_results": bool(cfg.get("swarm_inherit_results", True)),
             "inherit_config": bool(cfg.get("swarm_inherit_config", False)),
             "trigger_condition": trigger,
-            "max_iterations_ratio": _as_float("swarm_child_max_iterations_ratio", 0.45, 0.1, 1.0),
-            "max_tool_calls_ratio": _as_float("swarm_child_max_tool_calls_ratio", 0.45, 0.1, 1.0),
-            "max_llm_calls_ratio": _as_float("swarm_child_max_llm_calls_ratio", 0.45, 0.1, 1.0),
-            "max_runtime_ratio": _as_float("swarm_child_max_runtime_ratio", 0.5, 0.1, 1.0),
+            "max_iterations_ratio": _as_float(
+                "swarm_child_max_iterations_ratio", 0.45, 0.1, 1.0
+            ),
+            "max_tool_calls_ratio": _as_float(
+                "swarm_child_max_tool_calls_ratio", 0.45, 0.1, 1.0
+            ),
+            "max_llm_calls_ratio": _as_float(
+                "swarm_child_max_llm_calls_ratio", 0.45, 0.1, 1.0
+            ),
+            "max_runtime_ratio": _as_float(
+                "swarm_child_max_runtime_ratio", 0.5, 0.1, 1.0
+            ),
             "min_iterations": _as_int("swarm_child_min_iterations", 6, 1, 100),
             "min_tool_calls": _as_int("swarm_child_min_tool_calls", 8, 1, 200),
             "min_llm_calls": _as_int("swarm_child_min_llm_calls", 6, 1, 200),
-            "min_runtime_minutes": _as_int("swarm_child_min_runtime_minutes", 10, 1, 240),
+            "min_runtime_minutes": _as_int(
+                "swarm_child_min_runtime_minutes", 10, 1, 240
+            ),
             "goal_prefix": str(cfg.get("swarm_goal_prefix", "Swarm role")).strip()[:80],
             "fan_in_enabled": bool(cfg.get("swarm_fan_in_enabled", True)),
-            "fan_in_name": str(cfg.get("swarm_fan_in_name", "Swarm Synthesis")).strip()[:120],
-            "fan_in_job_type": str(cfg.get("swarm_fan_in_job_type", "synthesis") or "synthesis").strip().lower(),
-            "fan_in_trigger_condition": str(cfg.get("swarm_fan_in_trigger_condition", ChainTriggerCondition.ON_ANY_END.value) or ChainTriggerCondition.ON_ANY_END.value).strip().lower(),
+            "fan_in_name": str(cfg.get("swarm_fan_in_name", "Swarm Synthesis")).strip()[
+                :120
+            ],
+            "fan_in_job_type": str(
+                cfg.get("swarm_fan_in_job_type", "synthesis") or "synthesis"
+            )
+            .strip()
+            .lower(),
+            "fan_in_trigger_condition": str(
+                cfg.get(
+                    "swarm_fan_in_trigger_condition",
+                    ChainTriggerCondition.ON_ANY_END.value,
+                )
+                or ChainTriggerCondition.ON_ANY_END.value
+            )
+            .strip()
+            .lower(),
         }
 
     def _ensure_swarm_chain_config(self, job: AgentJob, state: Dict[str, Any]) -> None:
@@ -4725,9 +5918,17 @@ class AutonomousAgentExecutor:
         if isinstance(existing_children, list) and existing_children:
             state["swarm_chain_configured"] = True
             state["swarm_child_jobs_count"] = len(existing_children)
-            chain_data_existing = chain.get("chain_data") if isinstance(chain.get("chain_data"), dict) else {}
-            state["swarm_fan_in_enabled"] = bool(chain_data_existing.get("swarm_fan_in_enabled", False))
-            state["swarm_fan_in_group_id"] = str(chain_data_existing.get("swarm_fan_in_group_id") or "")
+            chain_data_existing = (
+                chain.get("chain_data")
+                if isinstance(chain.get("chain_data"), dict)
+                else {}
+            )
+            state["swarm_fan_in_enabled"] = bool(
+                chain_data_existing.get("swarm_fan_in_enabled", False)
+            )
+            state["swarm_fan_in_group_id"] = str(
+                chain_data_existing.get("swarm_fan_in_group_id") or ""
+            )
             self._append_step_event(
                 state,
                 {
@@ -4742,49 +5943,33 @@ class AutonomousAgentExecutor:
 
         coding_swarm_enabled = bool(
             cfg.get("coding_swarm_enabled")
-            or str(cfg.get("launch_mode") or "").strip().lower() == "quick_start_bug_triage_swarm"
-            or str((cfg.get("quick_start") or {}).get("profile") if isinstance(cfg.get("quick_start"), dict) else "").strip().lower() == "bug_triage_swarm"
+            or str(cfg.get("launch_mode") or "").strip().lower()
+            == "quick_start_bug_triage_swarm"
+            or str(
+                (cfg.get("quick_start") or {}).get("profile")
+                if isinstance(cfg.get("quick_start"), dict)
+                else ""
+            )
+            .strip()
+            .lower()
+            == "bug_triage_swarm"
         )
         if coding_swarm_enabled:
-            role_templates: Dict[str, Dict[str, Any]] = {
-                "reproducer": {
-                    "name": "Reproducer",
-                    "job_type": "analysis",
-                    "objective": "Reproduce the failure, validate the failing command path, and narrow the smallest reproducible surface.",
-                    "agent_role": "verifier",
-                    "config": {"prefer_sources": ["documents"], "create_workspace_from_source": True, "emit_execution_plan": True},
-                },
-                "root_cause": {
-                    "name": "Root Cause Analyst",
-                    "job_type": "analysis",
-                    "objective": "Identify the most likely subsystem, suspect files, and root-cause hypothesis behind the failure.",
-                    "agent_role": "critic",
-                    "config": {"prefer_sources": ["documents"], "create_workspace_from_source": True, "emit_execution_plan": True},
-                },
-                "patcher": {
-                    "name": "Patcher",
-                    "job_type": "analysis",
-                    "objective": "Propose the smallest safe repair path and likely verification strategy for the bug.",
-                    "agent_role": "coder",
-                    "config": {"prefer_sources": ["documents"], "create_workspace_from_source": True, "emit_execution_plan": True},
-                },
-                "verifier": {
-                    "name": "Verifier",
-                    "job_type": "analysis",
-                    "objective": "Challenge the other slices, look for false positives, and confirm the strongest path to fix.",
-                    "agent_role": "verifier",
-                    "config": {"prefer_sources": ["documents"], "create_workspace_from_source": True, "emit_execution_plan": True},
-                },
-            }
-            role_template_aliases = {
-                "repro": "reproducer",
-                "rootcause": "root_cause",
-                "root_cause_analyst": "root_cause",
-                "repairer": "patcher",
-                "qa": "verifier",
-                "validator": "verifier",
-            }
-            default_roles: List[Any] = ["reproducer", "root_cause", "patcher", "verifier"]
+            from app.services.agent_coding_harness_service import (
+                agent_coding_harness_service,
+            )
+            from app.services.agent_coding_workspace_session_service import (
+                agent_coding_workspace_session_service,
+            )
+
+            role_templates = agent_coding_harness_service.get_role_catalog()
+            role_template_aliases = agent_coding_harness_service.role_aliases()
+            default_roles: List[Any] = [
+                "reproducer",
+                "root_cause",
+                "patcher",
+                "verifier",
+            ]
             fallback_role_key = "reproducer"
         else:
             role_templates = {
@@ -4793,21 +5978,33 @@ class AutonomousAgentExecutor:
                     "job_type": "research",
                     "objective": "Gather high-signal evidence from papers and internal knowledge sources.",
                     "agent_role": "researcher",
-                    "config": {"prefer_sources": ["documents", "arxiv"], "max_documents": 10, "max_papers": 8},
+                    "config": {
+                        "prefer_sources": ["documents", "arxiv"],
+                        "max_documents": 10,
+                        "max_papers": 8,
+                    },
                 },
                 "researcher_documents": {
                     "name": "Knowledge Researcher",
                     "job_type": "research",
                     "objective": "Focus on internal documents and existing knowledge-base evidence.",
                     "agent_role": "researcher_documents",
-                    "config": {"prefer_sources": ["documents"], "max_documents": 14, "max_papers": 2},
+                    "config": {
+                        "prefer_sources": ["documents"],
+                        "max_documents": 14,
+                        "max_papers": 2,
+                    },
                 },
                 "researcher_arxiv": {
                     "name": "Literature Researcher",
                     "job_type": "research",
                     "objective": "Focus on external paper discovery and validation.",
                     "agent_role": "researcher_arxiv",
-                    "config": {"prefer_sources": ["arxiv"], "max_documents": 4, "max_papers": 12},
+                    "config": {
+                        "prefer_sources": ["arxiv"],
+                        "max_documents": 4,
+                        "max_papers": 12,
+                    },
                 },
                 "analyst": {
                     "name": "Analyst",
@@ -4883,7 +6080,16 @@ class AutonomousAgentExecutor:
         max_agents = max(1, min(max_agents, 12))
         parent_goal = str(job.goal or "").strip()[:1600]
         fan_in_enabled = bool(swarm_cfg.get("fan_in_enabled", True))
-        fan_in_trigger = str(swarm_cfg.get("fan_in_trigger_condition", ChainTriggerCondition.ON_ANY_END.value) or ChainTriggerCondition.ON_ANY_END.value).strip().lower()
+        fan_in_trigger = (
+            str(
+                swarm_cfg.get(
+                    "fan_in_trigger_condition", ChainTriggerCondition.ON_ANY_END.value
+                )
+                or ChainTriggerCondition.ON_ANY_END.value
+            )
+            .strip()
+            .lower()
+        )
         if fan_in_trigger not in {
             ChainTriggerCondition.ON_COMPLETE.value,
             ChainTriggerCondition.ON_ANY_END.value,
@@ -4895,23 +6101,47 @@ class AutonomousAgentExecutor:
 
         child_max_iterations = max(
             int(swarm_cfg.get("min_iterations", 6) or 6),
-            int((job.max_iterations or 20) * float(swarm_cfg.get("max_iterations_ratio", 0.45) or 0.45)),
+            int(
+                (job.max_iterations or 20)
+                * float(swarm_cfg.get("max_iterations_ratio", 0.45) or 0.45)
+            ),
         )
         child_max_tool_calls = max(
             int(swarm_cfg.get("min_tool_calls", 8) or 8),
-            int((job.max_tool_calls or 50) * float(swarm_cfg.get("max_tool_calls_ratio", 0.45) or 0.45)),
+            int(
+                (job.max_tool_calls or 50)
+                * float(swarm_cfg.get("max_tool_calls_ratio", 0.45) or 0.45)
+            ),
         )
         child_max_llm_calls = max(
             int(swarm_cfg.get("min_llm_calls", 6) or 6),
-            int((job.max_llm_calls or 30) * float(swarm_cfg.get("max_llm_calls_ratio", 0.45) or 0.45)),
+            int(
+                (job.max_llm_calls or 30)
+                * float(swarm_cfg.get("max_llm_calls_ratio", 0.45) or 0.45)
+            ),
         )
         child_max_runtime = max(
             int(swarm_cfg.get("min_runtime_minutes", 10) or 10),
-            int((job.max_runtime_minutes or 60) * float(swarm_cfg.get("max_runtime_ratio", 0.5) or 0.5)),
+            int(
+                (job.max_runtime_minutes or 60)
+                * float(swarm_cfg.get("max_runtime_ratio", 0.5) or 0.5)
+            ),
         )
 
-        allowed_job_types = {"research", "monitor", "analysis", "synthesis", "knowledge_expansion", "custom", "data_analysis"}
-        fan_in_job_type = str(swarm_cfg.get("fan_in_job_type", "synthesis") or "synthesis").strip().lower()
+        allowed_job_types = {
+            "research",
+            "monitor",
+            "analysis",
+            "synthesis",
+            "knowledge_expansion",
+            "custom",
+            "data_analysis",
+        }
+        fan_in_job_type = (
+            str(swarm_cfg.get("fan_in_job_type", "synthesis") or "synthesis")
+            .strip()
+            .lower()
+        )
         if fan_in_job_type not in allowed_job_types:
             fan_in_job_type = "synthesis"
         child_jobs: List[Dict[str, Any]] = []
@@ -4929,16 +6159,51 @@ class AutonomousAgentExecutor:
             role_template_key = "researcher"
 
             if isinstance(raw, dict):
-                role_key = str(raw.get("role") or raw.get("type") or raw.get("name") or "researcher").strip().lower()
+                role_key = (
+                    str(
+                        raw.get("role")
+                        or raw.get("type")
+                        or raw.get("name")
+                        or "researcher"
+                    )
+                    .strip()
+                    .lower()
+                )
                 role_key = role_key.replace("-", "_").replace(" ", "_")
-                role_key = re.sub(r"_+", "_", re.sub(r"[^a-z0-9_]+", "_", role_key)).strip("_")
-                role_template_key = role_key if role_key in role_templates else role_template_aliases.get(role_key, fallback_role_key)
-                tpl = role_templates.get(role_template_key, role_templates[fallback_role_key])
-                role_name = str(raw.get("name") or tpl.get("name") or "Researcher").strip()
-                role_objective = str(raw.get("objective") or tpl.get("objective") or "").strip()
-                role_job_type = str(raw.get("job_type") or tpl.get("job_type") or job.job_type).strip().lower()
-                role_agent_role = str(raw.get("agent_role") or tpl.get("agent_role") or role_template_key).strip().lower()
-                role_cfg = dict(tpl.get("config") if isinstance(tpl.get("config"), dict) else {})
+                role_key = re.sub(
+                    r"_+", "_", re.sub(r"[^a-z0-9_]+", "_", role_key)
+                ).strip("_")
+                role_template_key = (
+                    role_key
+                    if role_key in role_templates
+                    else role_template_aliases.get(role_key, fallback_role_key)
+                )
+                tpl = role_templates.get(
+                    role_template_key, role_templates[fallback_role_key]
+                )
+                role_name = str(
+                    raw.get("name") or tpl.get("name") or "Researcher"
+                ).strip()
+                role_objective = str(
+                    raw.get("objective") or tpl.get("objective") or ""
+                ).strip()
+                role_job_type = (
+                    str(raw.get("job_type") or tpl.get("job_type") or job.job_type)
+                    .strip()
+                    .lower()
+                )
+                role_agent_role = (
+                    str(
+                        raw.get("agent_role")
+                        or tpl.get("agent_role")
+                        or role_template_key
+                    )
+                    .strip()
+                    .lower()
+                )
+                role_cfg = dict(
+                    tpl.get("config") if isinstance(tpl.get("config"), dict) else {}
+                )
                 if isinstance(raw.get("config"), dict):
                     role_cfg.update(raw.get("config") or {})
             else:
@@ -4948,14 +6213,26 @@ class AutonomousAgentExecutor:
                 role_key = role_token.lower().replace("-", "_").replace(" ", "_")
                 if ":" in role_key:
                     role_key, role_tag = [p.strip() for p in role_key.split(":", 1)]
-                role_key = re.sub(r"_+", "_", re.sub(r"[^a-z0-9_]+", "_", role_key)).strip("_")
-                role_template_key = role_key if role_key in role_templates else role_template_aliases.get(role_key, fallback_role_key)
-                tpl = role_templates.get(role_template_key, role_templates[fallback_role_key])
+                role_key = re.sub(
+                    r"_+", "_", re.sub(r"[^a-z0-9_]+", "_", role_key)
+                ).strip("_")
+                role_template_key = (
+                    role_key
+                    if role_key in role_templates
+                    else role_template_aliases.get(role_key, fallback_role_key)
+                )
+                tpl = role_templates.get(
+                    role_template_key, role_templates[fallback_role_key]
+                )
                 role_name = str(tpl.get("name") or "Researcher").strip()
                 role_objective = str(tpl.get("objective") or "").strip()
                 role_job_type = str(tpl.get("job_type") or job.job_type).strip().lower()
-                role_agent_role = str(tpl.get("agent_role") or role_template_key).strip().lower()
-                role_cfg = dict(tpl.get("config") if isinstance(tpl.get("config"), dict) else {})
+                role_agent_role = (
+                    str(tpl.get("agent_role") or role_template_key).strip().lower()
+                )
+                role_cfg = dict(
+                    tpl.get("config") if isinstance(tpl.get("config"), dict) else {}
+                )
                 if role_tag:
                     role_name = f"{role_name} ({role_tag[:40]})"
                     role_objective = f"{role_objective} Focus tag: {role_tag[:120]}."
@@ -4965,7 +6242,9 @@ class AutonomousAgentExecutor:
 
             role_name = role_name[:120] if role_name else f"Role {idx}"
             role_names.append(role_name)
-            goal_prefix = str(swarm_cfg.get("goal_prefix", "Swarm role") or "Swarm role").strip()[:80]
+            goal_prefix = str(
+                swarm_cfg.get("goal_prefix", "Swarm role") or "Swarm role"
+            ).strip()[:80]
             role_goal = (
                 f"{goal_prefix}: {role_name}\n"
                 f"Objective: {role_objective}\n"
@@ -4980,6 +6259,15 @@ class AutonomousAgentExecutor:
                     "goal": role_goal[:2200],
                     "config": {
                         **role_cfg,
+                        **(
+                            agent_coding_workspace_session_service.child_session_config(
+                                job,
+                                role=role_template_key,
+                                role_index=idx,
+                            )
+                            if coding_swarm_enabled
+                            else {}
+                        ),
                         "origin": "swarm_child_agent",
                         "swarm_role": role_name[:120],
                         "swarm_role_key": role_template_key[:80],
@@ -5000,13 +6288,19 @@ class AutonomousAgentExecutor:
         if not child_jobs:
             return
 
-        fan_in_group_id = hashlib.sha256(f"swarm_fan_in:{job.id}:{max_agents}".encode("utf-8")).hexdigest()[:16]
+        fan_in_group_id = hashlib.sha256(
+            f"swarm_fan_in:{job.id}:{max_agents}".encode("utf-8")
+        ).hexdigest()[:16]
         fan_in_template: Optional[Dict[str, Any]] = None
         if fan_in_enabled:
-            coding_swarm_profile = str(cfg.get("coding_swarm_profile") or "").strip().lower()
+            coding_swarm_profile = (
+                str(cfg.get("coding_swarm_profile") or "").strip().lower()
+            )
             if coding_swarm_enabled and not coding_swarm_profile:
                 coding_swarm_profile = "bug_triage"
-            fan_in_name = str(swarm_cfg.get("fan_in_name", "Swarm Synthesis") or "Swarm Synthesis").strip()[:120]
+            fan_in_name = str(
+                swarm_cfg.get("fan_in_name", "Swarm Synthesis") or "Swarm Synthesis"
+            ).strip()[:120]
             fan_in_goal = (
                 f"{fan_in_name}: Merge outputs from {len(child_jobs)} swarm agents.\n"
                 f"Parent goal: {parent_goal}\n\n"
@@ -5026,6 +6320,23 @@ class AutonomousAgentExecutor:
                     "swarm_role_count": len(child_jobs),
                     "coding_swarm_enabled": coding_swarm_enabled,
                     "coding_swarm_profile": coding_swarm_profile or None,
+                    "coding_harness_enabled": bool(
+                        cfg.get("coding_harness_enabled", False)
+                    ),
+                    "coding_harness_version": str(
+                        (
+                            cfg.get("coding_harness")
+                            if isinstance(cfg.get("coding_harness"), dict)
+                            else {}
+                        ).get("version")
+                        or cfg.get("coding_harness_version")
+                        or ""
+                    ).strip()
+                    or None,
+                    "coding_workspace_session_id": str(
+                        cfg.get("coding_workspace_session_id") or ""
+                    ).strip()
+                    or None,
                     "swarm_child_jobs_enabled": False,
                     "auto_subgoal_child_jobs_enabled": False,
                 },
@@ -5037,7 +6348,11 @@ class AutonomousAgentExecutor:
             for child in child_jobs:
                 fan_in_child = {
                     **fan_in_template,
-                    "config": dict(fan_in_template.get("config") if isinstance(fan_in_template.get("config"), dict) else {}),
+                    "config": dict(
+                        fan_in_template.get("config")
+                        if isinstance(fan_in_template.get("config"), dict)
+                        else {}
+                    ),
                 }
                 child["chain_config"] = {
                     "trigger_condition": fan_in_trigger,
@@ -5053,9 +6368,19 @@ class AutonomousAgentExecutor:
                 }
 
         merged = dict(chain)
-        merged.setdefault("trigger_condition", str(swarm_cfg.get("trigger_condition") or ChainTriggerCondition.ON_COMPLETE.value))
-        merged.setdefault("inherit_results", bool(swarm_cfg.get("inherit_results", True)))
-        merged.setdefault("inherit_config", bool(swarm_cfg.get("inherit_config", False)))
+        merged.setdefault(
+            "trigger_condition",
+            str(
+                swarm_cfg.get("trigger_condition")
+                or ChainTriggerCondition.ON_COMPLETE.value
+            ),
+        )
+        merged.setdefault(
+            "inherit_results", bool(swarm_cfg.get("inherit_results", True))
+        )
+        merged.setdefault(
+            "inherit_config", bool(swarm_cfg.get("inherit_config", False))
+        )
         merged.setdefault("chain_data", {})
         if not isinstance(merged.get("chain_data"), dict):
             merged["chain_data"] = {}
@@ -5097,7 +6422,9 @@ class AutonomousAgentExecutor:
             },
         )
 
-    def _ensure_subgoal_chain_config(self, job: AgentJob, state: Dict[str, Any]) -> None:
+    def _ensure_subgoal_chain_config(
+        self, job: AgentJob, state: Dict[str, Any]
+    ) -> None:
         """Create child job chain config from subgoals when enabled and absent."""
         cfg = job.config if isinstance(job.config, dict) else {}
         if not bool(cfg.get("auto_subgoal_child_jobs_enabled", True)):
@@ -5208,24 +6535,56 @@ class AutonomousAgentExecutor:
             "on_stall": bool(cfg.get("critic_on_stall", True)),
             "stall_threshold": _as_int("critic_stall_threshold", 2, 1, 20),
             "on_uncertainty": bool(cfg.get("critic_on_uncertainty", True)),
-            "uncertainty_top_gap_threshold": _as_float("critic_uncertainty_top_gap_threshold", 0.05, 0.0, 2.0),
-            "uncertainty_min_candidates": _as_int("critic_uncertainty_min_candidates", 2, 2, 20),
-            "uncertainty_max_age_iterations": _as_int("critic_uncertainty_max_age_iterations", 2, 1, 50),
-            "uncertainty_min_iterations_since_last": _as_int("critic_uncertainty_min_iterations_since_last", 1, 1, 50),
-            "uncertainty_stage_schedule_enabled": bool(cfg.get("critic_uncertainty_stage_schedule_enabled", True)),
-            "uncertainty_mode_schedule_enabled": bool(cfg.get("critic_uncertainty_mode_schedule_enabled", True)),
-            "uncertainty_stage_multiplier_discovery": _as_float("critic_uncertainty_stage_multiplier_discovery", 1.3, 0.1, 5.0),
-            "uncertainty_stage_multiplier_consolidation": _as_float("critic_uncertainty_stage_multiplier_consolidation", 1.0, 0.1, 5.0),
-            "uncertainty_stage_multiplier_finish": _as_float("critic_uncertainty_stage_multiplier_finish", 0.8, 0.1, 5.0),
-            "uncertainty_stage_multiplier_rescue": _as_float("critic_uncertainty_stage_multiplier_rescue", 1.2, 0.1, 5.0),
-            "uncertainty_mode_multiplier_baseline": _as_float("critic_uncertainty_mode_multiplier_baseline", 0.9, 0.1, 5.0),
-            "uncertainty_mode_multiplier_adaptive": _as_float("critic_uncertainty_mode_multiplier_adaptive", 1.0, 0.1, 5.0),
-            "uncertainty_mode_multiplier_thompson": _as_float("critic_uncertainty_mode_multiplier_thompson", 1.15, 0.1, 5.0),
-            "uncertainty_threshold_min": _as_float("critic_uncertainty_threshold_min", 0.005, 0.0, 2.0),
-            "uncertainty_threshold_max": _as_float("critic_uncertainty_threshold_max", 0.5, 0.0, 2.0),
+            "uncertainty_top_gap_threshold": _as_float(
+                "critic_uncertainty_top_gap_threshold", 0.05, 0.0, 2.0
+            ),
+            "uncertainty_min_candidates": _as_int(
+                "critic_uncertainty_min_candidates", 2, 2, 20
+            ),
+            "uncertainty_max_age_iterations": _as_int(
+                "critic_uncertainty_max_age_iterations", 2, 1, 50
+            ),
+            "uncertainty_min_iterations_since_last": _as_int(
+                "critic_uncertainty_min_iterations_since_last", 1, 1, 50
+            ),
+            "uncertainty_stage_schedule_enabled": bool(
+                cfg.get("critic_uncertainty_stage_schedule_enabled", True)
+            ),
+            "uncertainty_mode_schedule_enabled": bool(
+                cfg.get("critic_uncertainty_mode_schedule_enabled", True)
+            ),
+            "uncertainty_stage_multiplier_discovery": _as_float(
+                "critic_uncertainty_stage_multiplier_discovery", 1.3, 0.1, 5.0
+            ),
+            "uncertainty_stage_multiplier_consolidation": _as_float(
+                "critic_uncertainty_stage_multiplier_consolidation", 1.0, 0.1, 5.0
+            ),
+            "uncertainty_stage_multiplier_finish": _as_float(
+                "critic_uncertainty_stage_multiplier_finish", 0.8, 0.1, 5.0
+            ),
+            "uncertainty_stage_multiplier_rescue": _as_float(
+                "critic_uncertainty_stage_multiplier_rescue", 1.2, 0.1, 5.0
+            ),
+            "uncertainty_mode_multiplier_baseline": _as_float(
+                "critic_uncertainty_mode_multiplier_baseline", 0.9, 0.1, 5.0
+            ),
+            "uncertainty_mode_multiplier_adaptive": _as_float(
+                "critic_uncertainty_mode_multiplier_adaptive", 1.0, 0.1, 5.0
+            ),
+            "uncertainty_mode_multiplier_thompson": _as_float(
+                "critic_uncertainty_mode_multiplier_thompson", 1.15, 0.1, 5.0
+            ),
+            "uncertainty_threshold_min": _as_float(
+                "critic_uncertainty_threshold_min", 0.005, 0.0, 2.0
+            ),
+            "uncertainty_threshold_max": _as_float(
+                "critic_uncertainty_threshold_max", 0.5, 0.0, 2.0
+            ),
             "max_notes": _as_int("critic_max_notes", 6, 1, 20),
             "force_pivot_on_high": bool(cfg.get("critic_force_pivot_on_high", True)),
-            "force_min_confidence": _as_float("critic_force_min_confidence", 0.6, 0.0, 1.0),
+            "force_min_confidence": _as_float(
+                "critic_force_min_confidence", 0.6, 0.0, 1.0
+            ),
         }
 
     def _effective_uncertainty_gap_threshold(
@@ -5243,23 +6602,44 @@ class AutonomousAgentExecutor:
             stage = self._derive_goal_stage(state, self._get_tool_selection_config(job))
         if bool(cfg.get("uncertainty_stage_schedule_enabled", True)):
             stage_multipliers = {
-                "discovery": float(cfg.get("uncertainty_stage_multiplier_discovery", 1.3) or 1.3),
-                "consolidation": float(cfg.get("uncertainty_stage_multiplier_consolidation", 1.0) or 1.0),
-                "finish": float(cfg.get("uncertainty_stage_multiplier_finish", 0.8) or 0.8),
-                "rescue": float(cfg.get("uncertainty_stage_multiplier_rescue", 1.2) or 1.2),
+                "discovery": float(
+                    cfg.get("uncertainty_stage_multiplier_discovery", 1.3) or 1.3
+                ),
+                "consolidation": float(
+                    cfg.get("uncertainty_stage_multiplier_consolidation", 1.0) or 1.0
+                ),
+                "finish": float(
+                    cfg.get("uncertainty_stage_multiplier_finish", 0.8) or 0.8
+                ),
+                "rescue": float(
+                    cfg.get("uncertainty_stage_multiplier_rescue", 1.2) or 1.2
+                ),
             }
             threshold *= float(stage_multipliers.get(stage, 1.0))
 
         mode = str(state.get("tool_selection_effective_mode") or "").strip().lower()
         if mode not in {"baseline", "adaptive", "thompson"}:
-            mode = str(self._get_tool_selection_config(job).get("policy_mode", "adaptive") or "adaptive").strip().lower()
+            mode = (
+                str(
+                    self._get_tool_selection_config(job).get("policy_mode", "adaptive")
+                    or "adaptive"
+                )
+                .strip()
+                .lower()
+            )
             if mode not in {"baseline", "adaptive", "thompson"}:
                 mode = "adaptive"
         if bool(cfg.get("uncertainty_mode_schedule_enabled", True)):
             mode_multipliers = {
-                "baseline": float(cfg.get("uncertainty_mode_multiplier_baseline", 0.9) or 0.9),
-                "adaptive": float(cfg.get("uncertainty_mode_multiplier_adaptive", 1.0) or 1.0),
-                "thompson": float(cfg.get("uncertainty_mode_multiplier_thompson", 1.15) or 1.15),
+                "baseline": float(
+                    cfg.get("uncertainty_mode_multiplier_baseline", 0.9) or 0.9
+                ),
+                "adaptive": float(
+                    cfg.get("uncertainty_mode_multiplier_adaptive", 1.0) or 1.0
+                ),
+                "thompson": float(
+                    cfg.get("uncertainty_mode_multiplier_thompson", 1.15) or 1.15
+                ),
             }
             threshold *= float(mode_multipliers.get(mode, 1.0))
 
@@ -5302,8 +6682,12 @@ class AutonomousAgentExecutor:
         iteration = int(job.iteration or 0)
         last_iter = int(state.get("last_critic_iteration", 0) or 0)
         by_interval = (iteration - last_iter) >= int(cfg.get("every_n_iterations", 4))
-        by_stall = bool(cfg.get("on_stall", True)) and int(state.get("stalled_iterations", 0) or 0) >= int(cfg.get("stall_threshold", 2))
-        by_graph = bool(cfg.get("on_stall", True)) and self._has_graph_recovery_pressure(
+        by_stall = bool(cfg.get("on_stall", True)) and int(
+            state.get("stalled_iterations", 0) or 0
+        ) >= int(cfg.get("stall_threshold", 2))
+        by_graph = bool(
+            cfg.get("on_stall", True)
+        ) and self._has_graph_recovery_pressure(
             state,
             verification_debt_threshold=int(cfg.get("stall_threshold", 2) or 2),
             severity_threshold=20,
@@ -5311,23 +6695,42 @@ class AutonomousAgentExecutor:
         by_uncertainty = False
         uncertainty_gap: Optional[float] = None
         uncertainty_threshold: Optional[float] = None
-        uncertainty_stage = str(state.get("tool_selection_goal_stage") or "").strip().lower()
-        uncertainty_mode = str(state.get("tool_selection_effective_mode") or "").strip().lower()
+        uncertainty_stage = (
+            str(state.get("tool_selection_goal_stage") or "").strip().lower()
+        )
+        uncertainty_mode = (
+            str(state.get("tool_selection_effective_mode") or "").strip().lower()
+        )
         uncertainty_candidates = 0
         if bool(cfg.get("on_uncertainty", True)):
-            min_since_last = int(cfg.get("uncertainty_min_iterations_since_last", 1) or 1)
+            min_since_last = int(
+                cfg.get("uncertainty_min_iterations_since_last", 1) or 1
+            )
             if (iteration - last_iter) >= min_since_last:
                 rows = state.get("counterfactual_last")
                 min_candidates = int(cfg.get("uncertainty_min_candidates", 2) or 2)
                 uncertainty_candidates = len(rows) if isinstance(rows, list) else 0
                 if uncertainty_candidates >= min_candidates:
                     max_age = int(cfg.get("uncertainty_max_age_iterations", 2) or 2)
-                    last_cf_iteration = int(state.get("counterfactual_last_iteration", 0) or 0)
-                    fresh_enough = True if last_cf_iteration <= 0 else (iteration - last_cf_iteration) <= max_age
+                    last_cf_iteration = int(
+                        state.get("counterfactual_last_iteration", 0) or 0
+                    )
+                    fresh_enough = (
+                        True
+                        if last_cf_iteration <= 0
+                        else (iteration - last_cf_iteration) <= max_age
+                    )
                     if fresh_enough:
                         uncertainty_gap = self._counterfactual_top_score_gap(state)
-                        uncertainty_threshold, uncertainty_stage, uncertainty_mode = self._effective_uncertainty_gap_threshold(job, state, cfg)
-                        if uncertainty_gap is not None and uncertainty_gap <= uncertainty_threshold:
+                        (
+                            uncertainty_threshold,
+                            uncertainty_stage,
+                            uncertainty_mode,
+                        ) = self._effective_uncertainty_gap_threshold(job, state, cfg)
+                        if (
+                            uncertainty_gap is not None
+                            and uncertainty_gap <= uncertainty_threshold
+                        ):
                             by_uncertainty = True
 
         triggered = by_interval or by_stall or by_graph or by_uncertainty
@@ -5394,8 +6797,14 @@ class AutonomousAgentExecutor:
             if isinstance(state.get("skill_profile"), dict)
             else self._resolve_agent_skill_profile(job, state=state)
         )
-        available_tools = self._get_tools_for_job_type(job.job_type, job.config, profile=profile)
-        recent_actions = state.get("actions_taken", []) if isinstance(state.get("actions_taken"), list) else []
+        available_tools = self._get_tools_for_job_type(
+            job.job_type, job.config, profile=profile
+        )
+        recent_actions = (
+            state.get("actions_taken", [])
+            if isinstance(state.get("actions_taken"), list)
+            else []
+        )
         recent = recent_actions[-6:]
         system_prompt = (
             "You are a strict critic for an autonomous agent.\n"
@@ -5451,9 +6860,7 @@ class AutonomousAgentExecutor:
         if not isinstance(rec_tools, list):
             rec_tools = []
         rec_tools = [
-            str(t).strip()
-            for t in rec_tools
-            if str(t).strip() in set(available_tools)
+            str(t).strip() for t in rec_tools if str(t).strip() in set(available_tools)
         ][:5]
 
         risks = payload.get("risks")
@@ -5477,7 +6884,9 @@ class AutonomousAgentExecutor:
 
         return {
             "iteration": int(job.iteration or 0),
-            "trajectory_assessment": str(payload.get("trajectory_assessment") or "").strip()[:350],
+            "trajectory_assessment": str(
+                payload.get("trajectory_assessment") or ""
+            ).strip()[:350],
             "risks": risks,
             "pivot": str(payload.get("pivot") or "").strip()[:320],
             "recommended_tools": rec_tools,
@@ -5502,13 +6911,21 @@ class AutonomousAgentExecutor:
             if isinstance(state.get("skill_profile"), dict)
             else self._resolve_agent_skill_profile(job, state=state)
         )
-        available = set(self._get_tools_for_job_type(job.job_type, job.config, profile=profile))
+        available = set(
+            self._get_tools_for_job_type(job.job_type, job.config, profile=profile)
+        )
         combined_stats = self._merge_tool_stats(
-            state.get("tool_priors") if isinstance(state.get("tool_priors"), dict) else {},
-            state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {},
+            state.get("tool_priors")
+            if isinstance(state.get("tool_priors"), dict)
+            else {},
+            state.get("tool_stats")
+            if isinstance(state.get("tool_stats"), dict)
+            else {},
         )
         exclude = str(exclude_tool or "").strip()
-        findings = state.get("findings", []) if isinstance(state.get("findings"), list) else []
+        findings = (
+            state.get("findings", []) if isinstance(state.get("findings"), list) else []
+        )
         doc_ids = []
         for f in findings:
             if not isinstance(f, dict):
@@ -5571,12 +6988,20 @@ class AutonomousAgentExecutor:
         except Exception:
             confidence = 0.0
 
-        if severity != "high" or confidence < float(cfg.get("force_min_confidence", 0.6)):
+        if severity != "high" or confidence < float(
+            cfg.get("force_min_confidence", 0.6)
+        ):
             return decision
 
-        current_action = decision.get("action") if isinstance(decision.get("action"), dict) else {}
+        current_action = (
+            decision.get("action") if isinstance(decision.get("action"), dict) else {}
+        )
         current_tool = str(current_action.get("tool") or "").strip()
-        recommended = note.get("recommended_tools") if isinstance(note.get("recommended_tools"), list) else []
+        recommended = (
+            note.get("recommended_tools")
+            if isinstance(note.get("recommended_tools"), list)
+            else []
+        )
         if current_tool and current_tool in [str(t).strip() for t in recommended]:
             return decision
 
@@ -5592,9 +7017,9 @@ class AutonomousAgentExecutor:
         reasoning = str(decision.get("reasoning") or "").strip()
         pivot_txt = str(note.get("pivot") or "").strip()
         decision["action"] = pivot_action
-        decision["reasoning"] = (
-            f"{reasoning[:350]} Critic override applied (high risk): {pivot_txt[:220]}".strip()
-        )
+        decision[
+            "reasoning"
+        ] = f"{reasoning[:350]} Critic override applied (high risk): {pivot_txt[:220]}".strip()
         return decision
 
     def _record_tool_outcome(
@@ -5629,7 +7054,11 @@ class AutonomousAgentExecutor:
         state["tool_stats"] = stats
 
         # Track live mode outcomes for policy fallback guardrails.
-        mode = str(state.get("tool_selection_effective_mode") or "adaptive").strip().lower()
+        mode = (
+            str(state.get("tool_selection_effective_mode") or "adaptive")
+            .strip()
+            .lower()
+        )
         if mode not in {"baseline", "adaptive", "thompson"}:
             mode = "adaptive"
         mode_metrics = state.get("tool_selection_mode_metrics")
@@ -5671,8 +7100,12 @@ class AutonomousAgentExecutor:
             norm = self._normalize_tool_stats_map(smap)
             for tool, val in norm.items():
                 cur = merged.get(tool) or {"success": 0, "failure": 0, "last_error": ""}
-                cur["success"] = int(cur.get("success", 0) or 0) + int(val.get("success", 0) or 0)
-                cur["failure"] = int(cur.get("failure", 0) or 0) + int(val.get("failure", 0) or 0)
+                cur["success"] = int(cur.get("success", 0) or 0) + int(
+                    val.get("success", 0) or 0
+                )
+                cur["failure"] = int(cur.get("failure", 0) or 0) + int(
+                    val.get("failure", 0) or 0
+                )
                 if val.get("last_error"):
                     cur["last_error"] = str(val.get("last_error") or "")[:200]
                 merged[tool] = cur
@@ -5713,40 +7146,102 @@ class AutonomousAgentExecutor:
 
         return {
             "policy_mode": policy_mode,
-            "exploration_enabled": bool(cfg.get("tool_selection_exploration_enabled", True)),
-            "exploration_bonus": _as_float("tool_selection_exploration_bonus", 0.15, 0.0, 2.0),
-            "cold_start_bonus": _as_float("tool_selection_cold_start_bonus", 0.05, 0.0, 1.0),
+            "exploration_enabled": bool(
+                cfg.get("tool_selection_exploration_enabled", True)
+            ),
+            "exploration_bonus": _as_float(
+                "tool_selection_exploration_bonus", 0.15, 0.0, 2.0
+            ),
+            "cold_start_bonus": _as_float(
+                "tool_selection_cold_start_bonus", 0.05, 0.0, 1.0
+            ),
             "min_trials": _as_int("tool_selection_min_trials", 3, 0, 100),
-            "failure_penalty": _as_float("tool_selection_failure_penalty", 0.08, 0.0, 1.0),
-            "thompson_alpha_prior": _as_float("tool_selection_thompson_alpha_prior", 1.0, 0.1, 100.0),
-            "thompson_beta_prior": _as_float("tool_selection_thompson_beta_prior", 1.0, 0.1, 100.0),
-            "thompson_temperature": _as_float("tool_selection_thompson_temperature", 1.0, 0.1, 5.0),
+            "failure_penalty": _as_float(
+                "tool_selection_failure_penalty", 0.08, 0.0, 1.0
+            ),
+            "thompson_alpha_prior": _as_float(
+                "tool_selection_thompson_alpha_prior", 1.0, 0.1, 100.0
+            ),
+            "thompson_beta_prior": _as_float(
+                "tool_selection_thompson_beta_prior", 1.0, 0.1, 100.0
+            ),
+            "thompson_temperature": _as_float(
+                "tool_selection_thompson_temperature", 1.0, 0.1, 5.0
+            ),
             "ab_test_enabled": bool(cfg.get("tool_selection_ab_test_enabled", False)),
             "ab_test_split": _as_float("tool_selection_ab_test_split", 0.5, 0.0, 1.0),
-            "ab_test_variant_a": _as_mode("tool_selection_ab_test_variant_a", "adaptive"),
-            "ab_test_variant_b": _as_mode("tool_selection_ab_test_variant_b", "thompson"),
-            "live_fallback_enabled": bool(cfg.get("tool_selection_live_fallback_enabled", True)),
-            "live_fallback_min_samples": _as_int("tool_selection_live_fallback_min_samples", 8, 1, 10_000),
-            "live_fallback_min_success_rate": _as_float("tool_selection_live_fallback_min_success_rate", 0.2, 0.0, 1.0),
-            "live_fallback_to_mode": _as_mode("tool_selection_live_fallback_to_mode", "adaptive"),
-            "live_fallback_reset_enabled": bool(cfg.get("tool_selection_live_fallback_reset_enabled", True)),
-            "live_fallback_reset_min_samples": _as_int("tool_selection_live_fallback_reset_min_samples", 10, 1, 10_000),
-            "live_fallback_reset_min_success_rate": _as_float("tool_selection_live_fallback_reset_min_success_rate", 0.55, 0.0, 1.0),
-            "stage_schedule_enabled": bool(cfg.get("tool_selection_stage_schedule_enabled", False)),
-            "stage_discovery_mode": _as_mode("tool_selection_stage_discovery_mode", "thompson"),
-            "stage_consolidation_mode": _as_mode("tool_selection_stage_consolidation_mode", "adaptive"),
-            "stage_finish_mode": _as_mode("tool_selection_stage_finish_mode", "baseline"),
-            "stage_rescue_mode": _as_mode("tool_selection_stage_rescue_mode", "adaptive"),
-            "stage_rescue_stall_threshold": _as_int("tool_selection_stage_rescue_stall_threshold", 3, 1, 100),
-            "stage_finish_progress": _as_int("tool_selection_stage_finish_progress", 80, 10, 100),
-            "stage_discovery_progress": _as_int("tool_selection_stage_discovery_progress", 35, 0, 90),
-            "family_diversification_enabled": bool(cfg.get("tool_selection_family_diversification_enabled", True)),
-            "family_diversification_window": _as_int("tool_selection_family_diversification_window", 6, 1, 100),
-            "family_diversification_bonus": _as_float("tool_selection_family_diversification_bonus", 0.08, 0.0, 1.0),
-            "family_diversification_target_unique": _as_int("tool_selection_family_diversification_target_unique", 3, 1, 20),
-            "feedback_learning_enabled": bool(cfg.get("feedback_learning_enabled", True)),
-            "feedback_learning_weight": _as_float("feedback_learning_weight", 0.08, 0.0, 0.6),
-            "feedback_learning_max_abs_bias": _as_float("feedback_learning_max_abs_bias", 0.3, 0.0, 1.0),
+            "ab_test_variant_a": _as_mode(
+                "tool_selection_ab_test_variant_a", "adaptive"
+            ),
+            "ab_test_variant_b": _as_mode(
+                "tool_selection_ab_test_variant_b", "thompson"
+            ),
+            "live_fallback_enabled": bool(
+                cfg.get("tool_selection_live_fallback_enabled", True)
+            ),
+            "live_fallback_min_samples": _as_int(
+                "tool_selection_live_fallback_min_samples", 8, 1, 10_000
+            ),
+            "live_fallback_min_success_rate": _as_float(
+                "tool_selection_live_fallback_min_success_rate", 0.2, 0.0, 1.0
+            ),
+            "live_fallback_to_mode": _as_mode(
+                "tool_selection_live_fallback_to_mode", "adaptive"
+            ),
+            "live_fallback_reset_enabled": bool(
+                cfg.get("tool_selection_live_fallback_reset_enabled", True)
+            ),
+            "live_fallback_reset_min_samples": _as_int(
+                "tool_selection_live_fallback_reset_min_samples", 10, 1, 10_000
+            ),
+            "live_fallback_reset_min_success_rate": _as_float(
+                "tool_selection_live_fallback_reset_min_success_rate", 0.55, 0.0, 1.0
+            ),
+            "stage_schedule_enabled": bool(
+                cfg.get("tool_selection_stage_schedule_enabled", False)
+            ),
+            "stage_discovery_mode": _as_mode(
+                "tool_selection_stage_discovery_mode", "thompson"
+            ),
+            "stage_consolidation_mode": _as_mode(
+                "tool_selection_stage_consolidation_mode", "adaptive"
+            ),
+            "stage_finish_mode": _as_mode(
+                "tool_selection_stage_finish_mode", "baseline"
+            ),
+            "stage_rescue_mode": _as_mode(
+                "tool_selection_stage_rescue_mode", "adaptive"
+            ),
+            "stage_rescue_stall_threshold": _as_int(
+                "tool_selection_stage_rescue_stall_threshold", 3, 1, 100
+            ),
+            "stage_finish_progress": _as_int(
+                "tool_selection_stage_finish_progress", 80, 10, 100
+            ),
+            "stage_discovery_progress": _as_int(
+                "tool_selection_stage_discovery_progress", 35, 0, 90
+            ),
+            "family_diversification_enabled": bool(
+                cfg.get("tool_selection_family_diversification_enabled", True)
+            ),
+            "family_diversification_window": _as_int(
+                "tool_selection_family_diversification_window", 6, 1, 100
+            ),
+            "family_diversification_bonus": _as_float(
+                "tool_selection_family_diversification_bonus", 0.08, 0.0, 1.0
+            ),
+            "family_diversification_target_unique": _as_int(
+                "tool_selection_family_diversification_target_unique", 3, 1, 20
+            ),
+            "feedback_learning_enabled": bool(
+                cfg.get("feedback_learning_enabled", True)
+            ),
+            "feedback_learning_weight": _as_float(
+                "feedback_learning_weight", 0.08, 0.0, 0.6
+            ),
+            "feedback_learning_max_abs_bias": _as_float(
+                "feedback_learning_max_abs_bias", 0.3, 0.0, 1.0
+            ),
         }
 
     def _stable_fraction(self, key: str) -> float:
@@ -5763,11 +7258,17 @@ class AutonomousAgentExecutor:
         """Derive a coarse execution stage for policy scheduling."""
         progress = int(state.get("goal_progress", 0) or 0)
         stalled = int(state.get("stalled_iterations", 0) or 0)
-        findings = len(state.get("findings", []) if isinstance(state.get("findings"), list) else [])
+        findings = len(
+            state.get("findings", []) if isinstance(state.get("findings"), list) else []
+        )
 
-        rescue_threshold = int(selection_cfg.get("stage_rescue_stall_threshold", 3) or 3)
+        rescue_threshold = int(
+            selection_cfg.get("stage_rescue_stall_threshold", 3) or 3
+        )
         finish_progress = int(selection_cfg.get("stage_finish_progress", 80) or 80)
-        discovery_progress = int(selection_cfg.get("stage_discovery_progress", 35) or 35)
+        discovery_progress = int(
+            selection_cfg.get("stage_discovery_progress", 35) or 35
+        )
         graph_pressure = self._has_graph_recovery_pressure(
             state,
             verification_debt_threshold=max(1, rescue_threshold),
@@ -5828,7 +7329,9 @@ class AutonomousAgentExecutor:
         """Clear an existing fallback override when the override mode recovers."""
         if not bool(selection_cfg.get("live_fallback_reset_enabled", True)):
             return
-        current_override = str(state.get("tool_selection_mode_override") or "").strip().lower()
+        current_override = (
+            str(state.get("tool_selection_mode_override") or "").strip().lower()
+        )
         if current_override not in {"baseline", "adaptive", "thompson"}:
             return
 
@@ -5842,11 +7345,15 @@ class AutonomousAgentExecutor:
         success = int(slot.get("success", 0) or 0)
         failure = int(slot.get("failure", 0) or 0)
         samples = success + failure
-        min_samples = int(selection_cfg.get("live_fallback_reset_min_samples", 10) or 10)
+        min_samples = int(
+            selection_cfg.get("live_fallback_reset_min_samples", 10) or 10
+        )
         if samples < min_samples:
             return
         success_rate = float(success) / float(max(1, samples))
-        min_rate = float(selection_cfg.get("live_fallback_reset_min_success_rate", 0.55) or 0.55)
+        min_rate = float(
+            selection_cfg.get("live_fallback_reset_min_success_rate", 0.55) or 0.55
+        )
         if success_rate < min_rate:
             return
 
@@ -5880,7 +7387,11 @@ class AutonomousAgentExecutor:
         if not bool(selection_cfg.get("live_fallback_enabled", True)):
             return current_mode
 
-        fallback_mode = str(selection_cfg.get("live_fallback_to_mode", "adaptive") or "adaptive").strip().lower()
+        fallback_mode = (
+            str(selection_cfg.get("live_fallback_to_mode", "adaptive") or "adaptive")
+            .strip()
+            .lower()
+        )
         if fallback_mode not in {"baseline", "adaptive", "thompson"}:
             fallback_mode = "adaptive"
         if current_mode == fallback_mode:
@@ -5901,7 +7412,9 @@ class AutonomousAgentExecutor:
             return current_mode
 
         success_rate = float(success) / float(max(1, samples))
-        min_rate = float(selection_cfg.get("live_fallback_min_success_rate", 0.2) or 0.2)
+        min_rate = float(
+            selection_cfg.get("live_fallback_min_success_rate", 0.2) or 0.2
+        )
         if success_rate >= min_rate:
             return current_mode
 
@@ -5961,23 +7474,39 @@ class AutonomousAgentExecutor:
             except Exception:
                 return 0.0
 
-        top_score = _as_float(top_row.get("priority_score") if isinstance(top_row, dict) else 0.0)
-        selected_score = _as_float(selected_row.get("priority_score") if isinstance(selected_row, dict) else 0.0)
-        runner_score = _as_float(runner_row.get("priority_score") if isinstance(runner_row, dict) else 0.0)
+        top_score = _as_float(
+            top_row.get("priority_score") if isinstance(top_row, dict) else 0.0
+        )
+        selected_score = _as_float(
+            selected_row.get("priority_score")
+            if isinstance(selected_row, dict)
+            else 0.0
+        )
+        runner_score = _as_float(
+            runner_row.get("priority_score") if isinstance(runner_row, dict) else 0.0
+        )
 
         return {
             "selected_tool": tool,
             "effective_mode": str(state.get("tool_selection_effective_mode") or ""),
             "goal_stage": str(state.get("tool_selection_goal_stage") or ""),
             "mode_override": str(state.get("tool_selection_mode_override") or ""),
-            "selected_rank": int(selected_row.get("rank", 0) or 0) if isinstance(selected_row, dict) else 0,
+            "selected_rank": int(selected_row.get("rank", 0) or 0)
+            if isinstance(selected_row, dict)
+            else 0,
             "selected_score": round(selected_score, 6),
-            "top_tool": str(top_row.get("tool") or "") if isinstance(top_row, dict) else "",
+            "top_tool": str(top_row.get("tool") or "")
+            if isinstance(top_row, dict)
+            else "",
             "top_score": round(top_score, 6),
             "score_gap_to_top": round(top_score - selected_score, 6),
             "score_gap_top_vs_runner_up": round(top_score - runner_score, 6),
             "candidate_count": len(ranked),
-            "fallback_event_count": len(state.get("tool_selection_fallback_events", []) if isinstance(state.get("tool_selection_fallback_events"), list) else []),
+            "fallback_event_count": len(
+                state.get("tool_selection_fallback_events", [])
+                if isinstance(state.get("tool_selection_fallback_events"), list)
+                else []
+            ),
         }
 
     def _tool_observation_count(self, stat: Dict[str, Any]) -> int:
@@ -5993,15 +7522,46 @@ class AutonomousAgentExecutor:
         t = str(tool or "").strip().lower()
         if not t:
             return "unknown"
-        if any(tok in t for tok in ("chart", "diagram", "heatmap", "flowchart", "gantt", "drawio")):
+        if any(
+            tok in t
+            for tok in ("chart", "diagram", "heatmap", "flowchart", "gantt", "drawio")
+        ):
             return "visualization"
         if t.startswith(("search_", "find_", "get_", "list_")):
             return "retrieval"
         if t.startswith(("ingest_", "batch_ingest_", "load_", "monitor_")):
             return "ingestion"
-        if t.startswith(("read_", "summarize_", "extract_", "analyze_", "compare_", "identify_", "describe_", "query_", "filter_", "aggregate_", "join_", "transform_", "detect_", "calculate_")):
+        if t.startswith(
+            (
+                "read_",
+                "summarize_",
+                "extract_",
+                "analyze_",
+                "compare_",
+                "identify_",
+                "describe_",
+                "query_",
+                "filter_",
+                "aggregate_",
+                "join_",
+                "transform_",
+                "detect_",
+                "calculate_",
+            )
+        ):
             return "analysis"
-        if t.startswith(("create_", "generate_", "write_", "save_", "link_", "add_", "export_", "suggest_")):
+        if t.startswith(
+            (
+                "create_",
+                "generate_",
+                "write_",
+                "save_",
+                "link_",
+                "add_",
+                "export_",
+                "suggest_",
+            )
+        ):
             return "synthesis"
         return "other"
 
@@ -6039,12 +7599,16 @@ class AutonomousAgentExecutor:
         if not family_counts:
             return 0.0
 
-        target_unique = max(1, int(cfg.get("family_diversification_target_unique", 3) or 3))
+        target_unique = max(
+            1, int(cfg.get("family_diversification_target_unique", 3) or 3)
+        )
         raw_bonus = float(cfg.get("family_diversification_bonus", 0.08) or 0.08)
         current_family = self._tool_family(tool)
         used_count = int(family_counts.get(current_family, 0) or 0)
         unique_used = len(family_counts)
-        diversity_pressure = max(0.0, float(target_unique - unique_used) / float(target_unique))
+        diversity_pressure = max(
+            0.0, float(target_unique - unique_used) / float(target_unique)
+        )
 
         if used_count <= 0:
             return raw_bonus * (1.0 + 0.5 * diversity_pressure)
@@ -6088,7 +7652,11 @@ class AutonomousAgentExecutor:
             f = max(0, int((stat or {}).get("failure", 0) or 0))
 
             iter_part = int(getattr(job, "iteration", 0) or 0) if job is not None else 0
-            forced_part = int((state or {}).get("forced_exploration_attempts", 0) or 0) if isinstance(state, dict) else 0
+            forced_part = (
+                int((state or {}).get("forced_exploration_attempts", 0) or 0)
+                if isinstance(state, dict)
+                else 0
+            )
             seed_key = f"{getattr(job, 'id', '')}:{tool_name}:{context_tag}:{iter_part}:{forced_part}:{total_trials}"
             seed = int(hashlib.sha256(seed_key.encode("utf-8")).hexdigest()[:16], 16)
             rng = random.Random(seed)
@@ -6101,7 +7669,9 @@ class AutonomousAgentExecutor:
             return ratio + feedback_adjustment
 
         n = self._tool_observation_count(stat)
-        failures = int((stat or {}).get("failure", 0) or 0) if isinstance(stat, dict) else 0
+        failures = (
+            int((stat or {}).get("failure", 0) or 0) if isinstance(stat, dict) else 0
+        )
 
         exploration_bonus = float(cfg.get("exploration_bonus", 0.15) or 0.15)
         cold_start_bonus = float(cfg.get("cold_start_bonus", 0.05) or 0.05)
@@ -6111,13 +7681,24 @@ class AutonomousAgentExecutor:
         uncertainty_bonus = exploration_bonus / math.sqrt(float(n) + 1.0)
         ucb_bonus = 0.0
         if total_trials > 0:
-            ucb_bonus = 0.5 * exploration_bonus * math.sqrt(
-                max(0.0, math.log(float(total_trials) + 1.0) / (float(n) + 1.0))
+            ucb_bonus = (
+                0.5
+                * exploration_bonus
+                * math.sqrt(
+                    max(0.0, math.log(float(total_trials) + 1.0) / (float(n) + 1.0))
+                )
             )
         cold_bonus = cold_start_bonus if n < min_trials else 0.0
         penalty = failure_penalty * (float(failures) / float(n + 1))
 
-        return ratio + uncertainty_bonus + ucb_bonus + cold_bonus - penalty + feedback_adjustment
+        return (
+            ratio
+            + uncertainty_bonus
+            + ucb_bonus
+            + cold_bonus
+            - penalty
+            + feedback_adjustment
+        )
 
     def _rank_tools_for_selection(
         self,
@@ -6133,8 +7714,12 @@ class AutonomousAgentExecutor:
             return []
         stats = combined_stats if isinstance(combined_stats, dict) else {}
         cfg = self._get_tool_selection_config(job)
-        mode, _assignment = self._resolve_tool_selection_mode(job, state=state, selection_cfg=cfg)
-        total_trials = sum(self._tool_observation_count(stats.get(t, {})) for t in tools)
+        mode, _assignment = self._resolve_tool_selection_mode(
+            job, state=state, selection_cfg=cfg
+        )
+        total_trials = sum(
+            self._tool_observation_count(stats.get(t, {})) for t in tools
+        )
         scored: List[Tuple[str, float, float]] = []
         for tool in [str(t).strip() for t in tools if str(t).strip()]:
             base_score = self._tool_priority_score(
@@ -6182,13 +7767,19 @@ class AutonomousAgentExecutor:
             if isinstance(state.get("skill_profile"), dict)
             else self._resolve_agent_skill_profile(job, state=state)
         )
-        available = self._get_tools_for_job_type(job.job_type, job.config, profile=profile)
+        available = self._get_tools_for_job_type(
+            job.job_type, job.config, profile=profile
+        )
         if not available:
             return []
 
         combined_stats = self._merge_tool_stats(
-            state.get("tool_priors") if isinstance(state.get("tool_priors"), dict) else {},
-            state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {},
+            state.get("tool_priors")
+            if isinstance(state.get("tool_priors"), dict)
+            else {},
+            state.get("tool_stats")
+            if isinstance(state.get("tool_stats"), dict)
+            else {},
         )
         ranked = self._rank_tools_for_selection(
             job,
@@ -6198,14 +7789,26 @@ class AutonomousAgentExecutor:
             context_tag=context_tag or "counterfactual",
         )
         cfg = self._get_tool_selection_config(job)
-        mode = str(state.get("tool_selection_effective_mode") or cfg.get("policy_mode") or "adaptive").strip().lower()
-        total_trials = sum(self._tool_observation_count(combined_stats.get(t, {})) for t in available)
+        mode = (
+            str(
+                state.get("tool_selection_effective_mode")
+                or cfg.get("policy_mode")
+                or "adaptive"
+            )
+            .strip()
+            .lower()
+        )
+        total_trials = sum(
+            self._tool_observation_count(combined_stats.get(t, {})) for t in available
+        )
         selected = str(selected_tool or "").strip()
         top_k = max(1, min(int(limit or 3), 10))
 
         out: List[Dict[str, Any]] = []
         for idx, tool in enumerate(ranked[:top_k], start=1):
-            stat = combined_stats.get(tool, {}) if isinstance(combined_stats, dict) else {}
+            stat = (
+                combined_stats.get(tool, {}) if isinstance(combined_stats, dict) else {}
+            )
             base_priority = self._tool_priority_score(
                 stat,
                 total_trials=total_trials,
@@ -6256,7 +7859,9 @@ class AutonomousAgentExecutor:
         then runs synthetic bandit episodes for each policy mode.
         """
         stats = self._normalize_tool_stats_map(tool_stats)
-        tools = sorted([t for t, s in stats.items() if self._tool_observation_count(s) > 0])
+        tools = sorted(
+            [t for t, s in stats.items() if self._tool_observation_count(s) > 0]
+        )
         if not tools:
             return {
                 "steps": 0,
@@ -6266,7 +7871,11 @@ class AutonomousAgentExecutor:
             }
 
         total_steps = max(10, min(int(steps or 200), 50_000))
-        modes = policy_modes if isinstance(policy_modes, list) and policy_modes else ["baseline", "adaptive", "thompson"]
+        modes = (
+            policy_modes
+            if isinstance(policy_modes, list) and policy_modes
+            else ["baseline", "adaptive", "thompson"]
+        )
         modes = [str(m or "").strip().lower() for m in modes if str(m or "").strip()]
         modes = [m for m in modes if m in {"baseline", "adaptive", "thompson"}]
         if not modes:
@@ -6303,7 +7912,9 @@ class AutonomousAgentExecutor:
             cumulative_expected_regret = 0.0
 
             for step_idx in range(1, total_steps + 1):
-                total_trials = sum(self._tool_observation_count(sim_stats[t]) for t in tools)
+                total_trials = sum(
+                    self._tool_observation_count(sim_stats[t]) for t in tools
+                )
                 ranked = sorted(
                     tools,
                     key=lambda tool: (
@@ -6328,10 +7939,16 @@ class AutonomousAgentExecutor:
                 cumulative_expected_regret += max(0.0, best_rate - chosen_rate)
 
                 draw_key = f"reward:{seed}:{mode}:{step_idx}:{chosen}"
-                draw_seed = int(hashlib.sha256(draw_key.encode("utf-8")).hexdigest()[:16], 16)
+                draw_seed = int(
+                    hashlib.sha256(draw_key.encode("utf-8")).hexdigest()[:16], 16
+                )
                 rng = random.Random(draw_seed)
                 reward = rng.random() < chosen_rate
-                slot = sim_stats.get(chosen) or {"success": 0, "failure": 0, "last_error": ""}
+                slot = sim_stats.get(chosen) or {
+                    "success": 0,
+                    "failure": 0,
+                    "last_error": "",
+                }
                 if reward:
                     slot["success"] = int(slot.get("success", 0) or 0) + 1
                     successes += 1
@@ -6347,9 +7964,12 @@ class AutonomousAgentExecutor:
                 "failures": failures,
                 "mean_reward": float(successes) / float(max(1, total_steps)),
                 "best_possible_mean_reward": best_rate,
-                "realized_regret_vs_best": max(0.0, best_rate - (float(successes) / float(max(1, total_steps)))),
+                "realized_regret_vs_best": max(
+                    0.0, best_rate - (float(successes) / float(max(1, total_steps)))
+                ),
                 "cumulative_expected_regret": cumulative_expected_regret,
-                "mean_expected_regret": cumulative_expected_regret / float(max(1, total_steps)),
+                "mean_expected_regret": cumulative_expected_regret
+                / float(max(1, total_steps)),
                 "unique_tools_selected": len(selected_tools),
                 "selection_counts": selection_counts,
             }
@@ -6360,13 +7980,26 @@ class AutonomousAgentExecutor:
                 {
                     "mode": mode,
                     "mean_reward": float(stats_out.get("mean_reward", 0.0) or 0.0),
-                    "realized_regret_vs_best": float(stats_out.get("realized_regret_vs_best", 0.0) or 0.0),
-                    "cumulative_expected_regret": float(stats_out.get("cumulative_expected_regret", 0.0) or 0.0),
-                    "mean_expected_regret": float(stats_out.get("mean_expected_regret", 0.0) or 0.0),
-                    "unique_tools_selected": int(stats_out.get("unique_tools_selected", 0) or 0),
+                    "realized_regret_vs_best": float(
+                        stats_out.get("realized_regret_vs_best", 0.0) or 0.0
+                    ),
+                    "cumulative_expected_regret": float(
+                        stats_out.get("cumulative_expected_regret", 0.0) or 0.0
+                    ),
+                    "mean_expected_regret": float(
+                        stats_out.get("mean_expected_regret", 0.0) or 0.0
+                    ),
+                    "unique_tools_selected": int(
+                        stats_out.get("unique_tools_selected", 0) or 0
+                    ),
                 }
             )
-        comparison.sort(key=lambda r: (-float(r.get("mean_reward", 0.0) or 0.0), float(r.get("cumulative_expected_regret", 0.0) or 0.0)))
+        comparison.sort(
+            key=lambda r: (
+                -float(r.get("mean_reward", 0.0) or 0.0),
+                float(r.get("cumulative_expected_regret", 0.0) or 0.0),
+            )
+        )
 
         return {
             "steps": total_steps,
@@ -6404,10 +8037,18 @@ class AutonomousAgentExecutor:
 
         return {
             "enabled": bool(cfg.get("tool_selection_forced_exploration_enabled", True)),
-            "every_n_stalled_iterations": _as_int("tool_selection_forced_exploration_every_n", 2, 1, 20),
-            "min_stalled_iterations": _as_int("tool_selection_forced_exploration_min_stalled", 2, 1, 50),
-            "max_observations": _as_int("tool_selection_forced_exploration_max_observations", 2, 0, 100),
-            "max_failures_per_tool": _as_int("tool_selection_forced_exploration_max_failures", 8, 0, 100),
+            "every_n_stalled_iterations": _as_int(
+                "tool_selection_forced_exploration_every_n", 2, 1, 20
+            ),
+            "min_stalled_iterations": _as_int(
+                "tool_selection_forced_exploration_min_stalled", 2, 1, 50
+            ),
+            "max_observations": _as_int(
+                "tool_selection_forced_exploration_max_observations", 2, 0, 100
+            ),
+            "max_failures_per_tool": _as_int(
+                "tool_selection_forced_exploration_max_failures", 8, 0, 100
+            ),
             "tools": [str(t).strip() for t in tools if str(t).strip()],
         }
 
@@ -6424,10 +8065,16 @@ class AutonomousAgentExecutor:
 
         return {
             "enabled": bool(cfg.get("tool_selection_cooldown_enabled", True)),
-            "cooldown_iterations": _as_int("tool_selection_cooldown_iterations", 2, 1, 30),
+            "cooldown_iterations": _as_int(
+                "tool_selection_cooldown_iterations", 2, 1, 30
+            ),
             "forced_only": bool(cfg.get("tool_selection_cooldown_forced_only", True)),
-            "on_failure_extra_iterations": _as_int("tool_selection_cooldown_failure_extra_iterations", 2, 0, 30),
-            "on_success_shorten_by": _as_int("tool_selection_cooldown_success_shorten_by", 1, 0, 30),
+            "on_failure_extra_iterations": _as_int(
+                "tool_selection_cooldown_failure_extra_iterations", 2, 0, 30
+            ),
+            "on_success_shorten_by": _as_int(
+                "tool_selection_cooldown_success_shorten_by", 1, 0, 30
+            ),
         }
 
     def _is_tool_in_cooldown(
@@ -6478,9 +8125,13 @@ class AutonomousAgentExecutor:
         cfg = self._get_tool_cooldown_config(job)
 
         if success:
-            state["forced_exploration_successes"] = int(state.get("forced_exploration_successes", 0) or 0) + 1
+            state["forced_exploration_successes"] = (
+                int(state.get("forced_exploration_successes", 0) or 0) + 1
+            )
         else:
-            state["forced_exploration_failures"] = int(state.get("forced_exploration_failures", 0) or 0) + 1
+            state["forced_exploration_failures"] = (
+                int(state.get("forced_exploration_failures", 0) or 0) + 1
+            )
 
         # Annotate latest matching history entry if present; otherwise append.
         history = state.get("forced_exploration_history")
@@ -6543,7 +8194,9 @@ class AutonomousAgentExecutor:
 
         cadence = int(cfg.get("every_n_stalled_iterations", 2) or 2)
         cadence = max(1, cadence)
-        return ((stalled >= min_stalled) and (stalled % cadence == 0)) or ((repeated >= min_stalled) and (repeated % cadence == 0))
+        return ((stalled >= min_stalled) and (stalled % cadence == 0)) or (
+            (repeated >= min_stalled) and (repeated % cadence == 0)
+        )
 
     def _build_action_for_tool(
         self,
@@ -6568,13 +8221,29 @@ class AutonomousAgentExecutor:
             return out
 
         if t == "search_documents":
-            return {"tool": t, "params": _with_source({"query": goal[:200], "limit": 10}), "purpose": purpose}
+            return {
+                "tool": t,
+                "params": _with_source({"query": goal[:200], "limit": 10}),
+                "purpose": purpose,
+            }
         if t == "project_bootstrap":
-            return {"tool": t, "params": _with_source({"max_files": 400}), "purpose": purpose}
+            return {
+                "tool": t,
+                "params": _with_source({"max_files": 400}),
+                "purpose": purpose,
+            }
         if t == "search_arxiv":
-            return {"tool": t, "params": {"query": goal[:140], "max_results": 8}, "purpose": purpose}
+            return {
+                "tool": t,
+                "params": {"query": goal[:140], "max_results": 8},
+                "purpose": purpose,
+            }
         if t == "search_with_filters":
-            return {"tool": t, "params": _with_source({"query": goal[:200], "limit": 20}), "purpose": purpose}
+            return {
+                "tool": t,
+                "params": _with_source({"query": goal[:200], "limit": 20}),
+                "purpose": purpose,
+            }
         if t in {"read_document_content", "summarize_document"}:
             if not docs:
                 return None
@@ -6710,7 +8379,9 @@ class AutonomousAgentExecutor:
             return dt.astimezone(timezone.utc).replace(tzinfo=None)
 
         try:
-            age_days = (_to_utc_naive(now_dt) - _to_utc_naive(updated_at)).total_seconds() / 86400.0
+            age_days = (
+                _to_utc_naive(now_dt) - _to_utc_naive(updated_at)
+            ).total_seconds() / 86400.0
         except Exception:
             return s, f
         if age_days <= 0:
@@ -6755,7 +8426,9 @@ class AutonomousAgentExecutor:
                     AgentToolPrior.user_id == job.user_id,
                     AgentToolPrior.job_type == job.job_type,
                 )
-                .order_by(desc(AgentToolPrior.updated_at), desc(AgentToolPrior.success_count))
+                .order_by(
+                    desc(AgentToolPrior.updated_at), desc(AgentToolPrior.success_count)
+                )
                 .limit(max_tools)
             )
             rows = res.all()
@@ -6811,7 +8484,9 @@ class AutonomousAgentExecutor:
                 AgentJob.user_id == job.user_id,
                 AgentJob.job_type == job.job_type,
                 AgentJob.id != job.id,
-                AgentJob.status.in_([AgentJobStatus.COMPLETED.value, AgentJobStatus.FAILED.value]),
+                AgentJob.status.in_(
+                    [AgentJobStatus.COMPLETED.value, AgentJobStatus.FAILED.value]
+                ),
             )
             .order_by(desc(AgentJob.completed_at), desc(AgentJob.created_at))
             .limit(lookback_jobs)
@@ -6821,8 +8496,16 @@ class AutonomousAgentExecutor:
         aggregated: Dict[str, Dict[str, Any]] = {}
         for prev in rows:
             prev_results = prev.results if isinstance(prev.results, dict) else {}
-            strategy = prev_results.get("execution_strategy") if isinstance(prev_results.get("execution_strategy"), dict) else {}
-            stats = strategy.get("tool_stats") if isinstance(strategy.get("tool_stats"), dict) else {}
+            strategy = (
+                prev_results.get("execution_strategy")
+                if isinstance(prev_results.get("execution_strategy"), dict)
+                else {}
+            )
+            stats = (
+                strategy.get("tool_stats")
+                if isinstance(strategy.get("tool_stats"), dict)
+                else {}
+            )
             aggregated = self._merge_tool_stats(aggregated, stats)
 
         return aggregated
@@ -6898,14 +8581,25 @@ class AutonomousAgentExecutor:
     ) -> str:
         """Resolve execution mode for the autonomous loop."""
         cfg = job.config if isinstance(job.config, dict) else {}
-        quick_start = cfg.get("quick_start") if isinstance(cfg.get("quick_start"), dict) else {}
+        quick_start = (
+            cfg.get("quick_start") if isinstance(cfg.get("quick_start"), dict) else {}
+        )
         mode_raw = (
             cfg.get("execution_mode")
             or quick_start.get("execution_mode")
-            or ("plan_and_execute" if self._coerce_bool(cfg.get("plan_and_execute_enabled"), default=False) else "")
+            or (
+                "plan_and_execute"
+                if self._coerce_bool(cfg.get("plan_and_execute_enabled"), default=False)
+                else ""
+            )
         )
         token = str(mode_raw or "").strip().lower().replace("-", "_").replace(" ", "_")
-        if token in {"plan_and_execute", "plan_then_act", "plan_execute", "planner_executor"}:
+        if token in {
+            "plan_and_execute",
+            "plan_then_act",
+            "plan_execute",
+            "planner_executor",
+        }:
             mode = "plan_and_execute"
         else:
             mode = "adaptive"
@@ -6925,11 +8619,15 @@ class AutonomousAgentExecutor:
                 return False
         return True
 
-    def _collect_recent_document_ids(self, state: Dict[str, Any], limit: int = 8) -> List[str]:
+    def _collect_recent_document_ids(
+        self, state: Dict[str, Any], limit: int = 8
+    ) -> List[str]:
         """Collect deduplicated document ids from findings/action history."""
         out: List[str] = []
         max_items = max(1, min(int(limit or 8), 30))
-        findings = state.get("findings") if isinstance(state.get("findings"), list) else []
+        findings = (
+            state.get("findings") if isinstance(state.get("findings"), list) else []
+        )
         for row in findings:
             if not isinstance(row, dict):
                 continue
@@ -6939,12 +8637,20 @@ class AutonomousAgentExecutor:
                 if len(out) >= max_items:
                     return out
 
-        actions_taken = state.get("actions_taken") if isinstance(state.get("actions_taken"), list) else []
+        actions_taken = (
+            state.get("actions_taken")
+            if isinstance(state.get("actions_taken"), list)
+            else []
+        )
         for row in reversed(actions_taken[-40:]):
             if not isinstance(row, dict):
                 continue
             result = row.get("result") if isinstance(row.get("result"), dict) else {}
-            artifacts = result.get("artifacts") if isinstance(result.get("artifacts"), list) else []
+            artifacts = (
+                result.get("artifacts")
+                if isinstance(result.get("artifacts"), list)
+                else []
+            )
             for art in artifacts:
                 if not isinstance(art, dict):
                     continue
@@ -6969,13 +8675,21 @@ class AutonomousAgentExecutor:
         if self._resolve_execution_mode(job, state=state) != "plan_and_execute":
             return action
 
-        plan = state.get("execution_plan") if isinstance(state.get("execution_plan"), list) else []
+        plan = (
+            state.get("execution_plan")
+            if isinstance(state.get("execution_plan"), list)
+            else []
+        )
         if not plan:
             return action
         idx = int(state.get("plan_step_index", 0) or 0)
         idx = max(0, min(idx, len(plan) - 1))
         step = plan[idx] if isinstance(plan[idx], dict) else {}
-        suggested = step.get("suggested_tools") if isinstance(step.get("suggested_tools"), list) else []
+        suggested = (
+            step.get("suggested_tools")
+            if isinstance(step.get("suggested_tools"), list)
+            else []
+        )
         if not suggested:
             return action
 
@@ -6984,7 +8698,9 @@ class AutonomousAgentExecutor:
             if isinstance(state.get("skill_profile"), dict)
             else self._resolve_agent_skill_profile(job, state=state)
         )
-        available = set(self._get_tools_for_job_type(job.job_type, job.config, profile=profile))
+        available = set(
+            self._get_tools_for_job_type(job.job_type, job.config, profile=profile)
+        )
         ordered_suggested: List[str] = []
         seen: set[str] = set()
         for raw in suggested:
@@ -7017,7 +8733,9 @@ class AutonomousAgentExecutor:
                 {
                     "type": "plan_action_adjusted",
                     "iteration": int(job.iteration or 0),
-                    "plan_step_id": str(step.get("step_id") or f"step_{idx + 1}").strip(),
+                    "plan_step_id": str(
+                        step.get("step_id") or f"step_{idx + 1}"
+                    ).strip(),
                     "plan_step_index": int(idx),
                     "from_tool": selected or None,
                     "to_tool": candidate,
@@ -7054,25 +8772,67 @@ class AutonomousAgentExecutor:
         unmet: List[str] = []
         wants_findings = any(
             token in criteria
-            for token in ["finding", "evidence", "insight", "fact", "source", "collect", "gather", "retrieve", "search"]
+            for token in [
+                "finding",
+                "evidence",
+                "insight",
+                "fact",
+                "source",
+                "collect",
+                "gather",
+                "retrieve",
+                "search",
+            ]
         )
         if wants_findings and findings_count <= 0 and int(progress_delta or 0) < 2:
             unmet.append("findings")
 
         wants_output = any(
             token in criteria
-            for token in ["summary", "synthesis", "report", "artifact", "document", "write", "draft"]
+            for token in [
+                "summary",
+                "synthesis",
+                "report",
+                "artifact",
+                "document",
+                "write",
+                "draft",
+            ]
         )
-        output_tools = {"create_synthesis_document", "create_document_from_text", "write_progress_report"}
+        output_tools = {
+            "create_synthesis_document",
+            "create_document_from_text",
+            "write_progress_report",
+        }
         if wants_output and artifacts_count <= 0 and action_tool not in output_tools:
             unmet.append("output_artifact")
 
         wants_analysis = any(
             token in criteria
-            for token in ["analy", "compare", "validate", "verify", "review", "critique", "gap", "contradiction", "risk"]
+            for token in [
+                "analy",
+                "compare",
+                "validate",
+                "verify",
+                "review",
+                "critique",
+                "gap",
+                "contradiction",
+                "risk",
+            ]
         )
-        analysis_tools = {"compare_documents", "compare_methodologies", "identify_research_gaps", "build_research_graph"}
-        if wants_analysis and findings_count <= 0 and action_tool not in analysis_tools and int(progress_delta or 0) < 3:
+        analysis_tools = {
+            "compare_documents",
+            "compare_methodologies",
+            "identify_research_gaps",
+            "build_research_graph",
+        }
+        if (
+            wants_analysis
+            and findings_count <= 0
+            and action_tool not in analysis_tools
+            and int(progress_delta or 0) < 3
+        ):
             unmet.append("analysis_signal")
 
         if unmet:
@@ -7111,13 +8871,31 @@ class AutonomousAgentExecutor:
             should_advance = True
         elif action_success and artifacts_count > 0:
             should_advance = True
-        elif action_success and action_tool in {"create_synthesis_document", "create_document_from_text", "write_progress_report"}:
+        elif action_success and action_tool in {
+            "create_synthesis_document",
+            "create_document_from_text",
+            "write_progress_report",
+        }:
             should_advance = True
 
         # Keep at least one chance for the current step before advancing solely on small wins.
         step = plan[idx] if isinstance(plan[idx], dict) else {}
-        completions = int(step.get("completions", 0) or 0) if isinstance(step, dict) else 0
-        if should_advance and delta < 4 and completions < 1 and mode != "plan_and_execute":
+        if bool((action_result or {}).get("deferred_external")):
+            if isinstance(step, dict):
+                step["status"] = "waiting_external"
+                data = (action_result or {}).get("data")
+                if isinstance(data, dict) and data.get("outbox_id"):
+                    step["external_outbox_id"] = str(data["outbox_id"])
+            return
+        completions = (
+            int(step.get("completions", 0) or 0) if isinstance(step, dict) else 0
+        )
+        if (
+            should_advance
+            and delta < 4
+            and completions < 1
+            and mode != "plan_and_execute"
+        ):
             should_advance = False
         if mode == "plan_and_execute" and not action_success:
             should_advance = False
@@ -7131,17 +8909,23 @@ class AutonomousAgentExecutor:
             if not criteria_ok:
                 should_advance = False
                 if isinstance(step, dict):
-                    blocked_iter = int(step.get("exit_criteria_blocked_iteration", -1) or -1)
+                    blocked_iter = int(
+                        step.get("exit_criteria_blocked_iteration", -1) or -1
+                    )
                     if blocked_iter != int(iteration or 0):
                         self._append_step_event(
                             state,
                             {
                                 "type": "step_exit_not_met",
                                 "iteration": int(iteration or 0),
-                                "plan_step_id": str(step.get("step_id") or f"step_{idx + 1}").strip(),
+                                "plan_step_id": str(
+                                    step.get("step_id") or f"step_{idx + 1}"
+                                ).strip(),
                                 "plan_step_index": int(idx),
                                 "reason": criteria_reason,
-                                "exit_criteria": str(step.get("exit_criteria") or "")[:220],
+                                "exit_criteria": str(step.get("exit_criteria") or "")[
+                                    :220
+                                ],
                                 "tool": action_tool or None,
                             },
                         )
@@ -7164,7 +8948,9 @@ class AutonomousAgentExecutor:
                 {
                     "type": "step_completed",
                     "iteration": int(iteration or 0),
-                    "plan_step_id": str(step.get("step_id") or f"step_{idx + 1}").strip(),
+                    "plan_step_id": str(
+                        step.get("step_id") or f"step_{idx + 1}"
+                    ).strip(),
                     "plan_step_index": int(idx),
                     "tool": action_tool or None,
                     "progress_before": int(previous_progress or 0),
@@ -7173,16 +8959,26 @@ class AutonomousAgentExecutor:
             )
         next_idx = min(len(plan) - 1, idx + 1)
         state["plan_step_index"] = next_idx
-        if next_idx != idx and isinstance(plan[next_idx], dict) and plan[next_idx].get("status") != "done":
+        if (
+            next_idx != idx
+            and isinstance(plan[next_idx], dict)
+            and plan[next_idx].get("status") != "done"
+        ):
             plan[next_idx]["status"] = "in_progress"
             self._append_step_event(
                 state,
                 {
                     "type": "step_started",
                     "iteration": int(iteration or 0),
-                    "plan_step_id": str(plan[next_idx].get("step_id") or f"step_{next_idx + 1}").strip(),
+                    "plan_step_id": str(
+                        plan[next_idx].get("step_id") or f"step_{next_idx + 1}"
+                    ).strip(),
                     "plan_step_index": int(next_idx),
-                    "triggered_by_step_id": str(step.get("step_id") or f"step_{idx + 1}").strip() if isinstance(step, dict) else None,
+                    "triggered_by_step_id": str(
+                        step.get("step_id") or f"step_{idx + 1}"
+                    ).strip()
+                    if isinstance(step, dict)
+                    else None,
                 },
             )
         if next_idx == idx and self._is_execution_plan_complete(state):
@@ -7205,7 +9001,11 @@ class AutonomousAgentExecutor:
                 subgoals[sidx]["status"] = "done"
             next_sidx = min(len(subgoals) - 1, sidx + 1)
             state["subgoal_index"] = next_sidx
-            if next_sidx != sidx and isinstance(subgoals[next_sidx], dict) and subgoals[next_sidx].get("status") != "done":
+            if (
+                next_sidx != sidx
+                and isinstance(subgoals[next_sidx], dict)
+                and subgoals[next_sidx].get("status") != "done"
+            ):
                 subgoals[next_sidx]["status"] = "in_progress"
 
     def _get_execution_graph_config(self, job: AgentJob) -> Dict[str, Any]:
@@ -7237,9 +9037,15 @@ class AutonomousAgentExecutor:
             summarize_every = 1
 
         return {
-            "enabled": self._coerce_bool(cfg.get("execution_graph_enabled", True), default=True),
-            "verify_enabled": self._coerce_bool(cfg.get("execution_graph_verify_enabled", True), default=True),
-            "summarize_enabled": self._coerce_bool(cfg.get("execution_graph_summarize_enabled", True), default=True),
+            "enabled": self._coerce_bool(
+                cfg.get("execution_graph_enabled", True), default=True
+            ),
+            "verify_enabled": self._coerce_bool(
+                cfg.get("execution_graph_verify_enabled", True), default=True
+            ),
+            "summarize_enabled": self._coerce_bool(
+                cfg.get("execution_graph_summarize_enabled", True), default=True
+            ),
             "verify_on_tools": verify_tools,
             "summarize_every_n_iterations": max(1, min(summarize_every, 20)),
         }
@@ -7255,9 +9061,19 @@ class AutonomousAgentExecutor:
         if not tool or not bool((primary_result or {}).get("success", False)):
             return None
 
-        source_id = str(((primary_action or {}).get("params") or {}).get("source_id") or "").strip() or self._resolve_default_source_scope(job)
-        data = primary_result.get("data") if isinstance(primary_result.get("data"), dict) else {}
-        artifacts = primary_result.get("artifacts") if isinstance(primary_result.get("artifacts"), list) else []
+        source_id = str(
+            ((primary_action or {}).get("params") or {}).get("source_id") or ""
+        ).strip() or self._resolve_default_source_scope(job)
+        data = (
+            primary_result.get("data")
+            if isinstance(primary_result.get("data"), dict)
+            else {}
+        )
+        artifacts = (
+            primary_result.get("artifacts")
+            if isinstance(primary_result.get("artifacts"), list)
+            else []
+        )
 
         def _doc_id_from_result() -> Optional[str]:
             did = str(data.get("document_id") or "").strip()
@@ -7267,7 +9083,9 @@ class AutonomousAgentExecutor:
                 if not isinstance(art, dict):
                     continue
                 if str(art.get("type") or "").strip() == "document":
-                    candidate = str(art.get("id") or art.get("document_id") or "").strip()
+                    candidate = str(
+                        art.get("id") or art.get("document_id") or ""
+                    ).strip()
                     if candidate:
                         return candidate
             return None
@@ -7287,7 +9105,9 @@ class AutonomousAgentExecutor:
             }
 
         if tool == "save_research_finding":
-            category = str(((primary_action or {}).get("params") or {}).get("category") or "").strip()
+            category = str(
+                ((primary_action or {}).get("params") or {}).get("category") or ""
+            ).strip()
             params: Dict[str, Any] = {"limit": 20}
             if category:
                 params["category"] = category
@@ -7298,7 +9118,9 @@ class AutonomousAgentExecutor:
             }
 
         if tool == "add_to_reading_list":
-            list_name = str(((primary_action or {}).get("params") or {}).get("list_name") or "").strip()
+            list_name = str(
+                ((primary_action or {}).get("params") or {}).get("list_name") or ""
+            ).strip()
             params: Dict[str, Any] = {"include_items": True}
             if list_name:
                 params["list_name"] = list_name
@@ -7338,7 +9160,9 @@ class AutonomousAgentExecutor:
         action_tool = str((primary_action or {}).get("tool") or "").strip()
         verify_tool = str((verification_action or {}).get("tool") or "").strip()
         verify_ok = bool((verification_result or {}).get("success", False))
-        findings_total = len(state.get("findings", []) if isinstance(state.get("findings"), list) else [])
+        findings_total = len(
+            state.get("findings", []) if isinstance(state.get("findings"), list) else []
+        )
 
         summary = (
             f"Execution graph summary (iteration {int(job.iteration or 0)}): "
@@ -7350,10 +9174,13 @@ class AutonomousAgentExecutor:
             "tool": "write_progress_report",
             "params": {
                 "summary": summary,
-                "completed_tasks": [f"act:{action_tool}"] + ([f"verify:{verify_tool}"] if verify_tool else []),
+                "completed_tasks": [f"act:{action_tool}"]
+                + ([f"verify:{verify_tool}"] if verify_tool else []),
                 "pending_tasks": [],
                 "key_findings": [],
-                "blockers": [] if verify_ok or not verify_tool else [f"verification failed for {verify_tool}"],
+                "blockers": []
+                if verify_ok or not verify_tool
+                else [f"verification failed for {verify_tool}"],
                 "next_steps": ["Continue next planned step with scoped evidence."],
             },
             "purpose": "Summarize act+verify node outcomes for deterministic traceability.",
@@ -7372,7 +9199,9 @@ class AutonomousAgentExecutor:
         lines = ["EXECUTION PLAN (Plan-Then-Act):"]
         lines.append(f"- Execution mode: {mode}")
         current = plan[idx] if isinstance(plan[idx], dict) else {}
-        lines.append(f"- Current step {idx + 1}/{len(plan)}: {str(current.get('title') or 'Untitled')[:220]}")
+        lines.append(
+            f"- Current step {idx + 1}/{len(plan)}: {str(current.get('title') or 'Untitled')[:220]}"
+        )
         objective = str(current.get("objective") or "").strip()
         if objective:
             lines.append(f"- Current objective: {objective[:400]}")
@@ -7400,8 +9229,12 @@ class AutonomousAgentExecutor:
         plan = state.get("causal_experiment_plan")
         if not isinstance(plan, dict):
             return ""
-        hypotheses = plan.get("hypotheses") if isinstance(plan.get("hypotheses"), list) else []
-        experiments = plan.get("experiments") if isinstance(plan.get("experiments"), list) else []
+        hypotheses = (
+            plan.get("hypotheses") if isinstance(plan.get("hypotheses"), list) else []
+        )
+        experiments = (
+            plan.get("experiments") if isinstance(plan.get("experiments"), list) else []
+        )
         if not hypotheses or not experiments:
             return ""
 
@@ -7415,13 +9248,21 @@ class AutonomousAgentExecutor:
             if statement:
                 lines.append(f"  - {hid or 'H?'}: {statement[:220]}")
 
-        priority = plan.get("priority_order") if isinstance(plan.get("priority_order"), list) else []
+        priority = (
+            plan.get("priority_order")
+            if isinstance(plan.get("priority_order"), list)
+            else []
+        )
         exp_map = {
             str(e.get("id") or "").strip(): e
             for e in experiments
             if isinstance(e, dict) and str(e.get("id") or "").strip()
         }
-        ordered = [eid for eid in [str(x).strip() for x in priority if str(x).strip()] if eid in exp_map]
+        ordered = [
+            eid
+            for eid in [str(x).strip() for x in priority if str(x).strip()]
+            if eid in exp_map
+        ]
         if not ordered:
             ordered = list(exp_map.keys())
         next_ids = ordered[:2]
@@ -7434,9 +9275,21 @@ class AutonomousAgentExecutor:
             name = str(exp.get("name") or "").strip()
             hid = str(exp.get("hypothesis_id") or "").strip()
             lines.append(f"  - {eid} ({hid}): {name[:180]}")
-            expected = exp.get("expected_evidence") if isinstance(exp.get("expected_evidence"), dict) else {}
-            supports = expected.get("supports") if isinstance(expected.get("supports"), list) else []
-            falsifies = expected.get("falsifies") if isinstance(expected.get("falsifies"), list) else []
+            expected = (
+                exp.get("expected_evidence")
+                if isinstance(exp.get("expected_evidence"), dict)
+                else {}
+            )
+            supports = (
+                expected.get("supports")
+                if isinstance(expected.get("supports"), list)
+                else []
+            )
+            falsifies = (
+                expected.get("falsifies")
+                if isinstance(expected.get("falsifies"), list)
+                else []
+            )
             if supports:
                 lines.append(f"    support signal: {str(supports[0])[:180]}")
             if falsifies:
@@ -7454,7 +9307,9 @@ class AutonomousAgentExecutor:
         current = subgoals[idx] if isinstance(subgoals[idx], dict) else {}
 
         lines = ["SUBGOALS:"]
-        lines.append(f"- Current subgoal {idx + 1}/{len(subgoals)}: {str(current.get('title') or '').strip()[:220]}")
+        lines.append(
+            f"- Current subgoal {idx + 1}/{len(subgoals)}: {str(current.get('title') or '').strip()[:220]}"
+        )
         done = 0
         for sg in subgoals:
             if isinstance(sg, dict) and str(sg.get("status") or "").lower() == "done":
@@ -7489,7 +9344,9 @@ class AutonomousAgentExecutor:
             lines.append(f"- Pivot: {pivot[:280]}")
         tools = latest.get("recommended_tools")
         if isinstance(tools, list) and tools:
-            lines.append(f"- Recommended tools: {', '.join([str(t) for t in tools[:6]])}")
+            lines.append(
+                f"- Recommended tools: {', '.join([str(t) for t in tools[:6]])}"
+            )
         risks = latest.get("risks")
         if isinstance(risks, list) and risks:
             lines.append(f"- Top risk: {str(risks[0])[:220]}")
@@ -7497,8 +9354,14 @@ class AutonomousAgentExecutor:
 
     def _format_tool_stats_for_prompt(self, state: Dict[str, Any]) -> str:
         """Render per-tool outcomes as prompt hints."""
-        current_stats = state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {}
-        prior_stats = state.get("tool_priors") if isinstance(state.get("tool_priors"), dict) else {}
+        current_stats = (
+            state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {}
+        )
+        prior_stats = (
+            state.get("tool_priors")
+            if isinstance(state.get("tool_priors"), dict)
+            else {}
+        )
         merged_stats = self._merge_tool_stats(prior_stats, current_stats)
         if not merged_stats:
             return ""
@@ -7573,6 +9436,8 @@ class AutonomousAgentExecutor:
             "rootcause": "critic",
             "patcher": "coder",
             "repairer": "coder",
+            "implementer": "coder",
+            "primary_implementer": "coder",
         }
         if token in alias_map:
             return alias_map[token]
@@ -7580,7 +9445,11 @@ class AutonomousAgentExecutor:
         parts = [p for p in token.split("_") if p]
         if "analyst" in parts or "critic" in parts or "reviewer" in parts:
             return "critic"
-        if any(p.startswith("synth") for p in parts) or "aggregator" in parts or "writer" in parts:
+        if (
+            any(p.startswith("synth") for p in parts)
+            or "aggregator" in parts
+            or "writer" in parts
+        ):
             return "synthesizer"
         if (
             "monitor" in parts
@@ -7592,9 +9461,14 @@ class AutonomousAgentExecutor:
             return "verifier"
         if "root" in parts or "cause" in parts:
             return "critic"
-        if "researcher" in parts or "research" in parts or "arxiv" in parts or "literature" in parts:
+        if (
+            "researcher" in parts
+            or "research" in parts
+            or "arxiv" in parts
+            or "literature" in parts
+        ):
             return "researcher"
-        if "patch" in parts or "repair" in parts:
+        if "patch" in parts or "repair" in parts or "implementer" in parts:
             return "coder"
         return token
 
@@ -7606,14 +9480,25 @@ class AutonomousAgentExecutor:
         elif isinstance(value, str):
             raw = [str(v).strip().lower() for v in value.split(",") if str(v).strip()]
 
-        allowed = {"finding", "insight", "pattern", "lesson", "fact", "preference", "context", "summary"}
+        allowed = {
+            "finding",
+            "insight",
+            "pattern",
+            "lesson",
+            "fact",
+            "preference",
+            "context",
+            "summary",
+        }
         out: List[str] = []
         for mem_type in raw:
             if mem_type in allowed and mem_type not in out:
                 out.append(mem_type)
         return out[:12]
 
-    def _resolve_memory_runtime_config(self, job: AgentJob, state: Dict[str, Any]) -> Dict[str, Any]:
+    def _resolve_memory_runtime_config(
+        self, job: AgentJob, state: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Resolve per-job memory injection settings, including role-specific overrides."""
         cfg = job.config if isinstance(job.config, dict) else {}
         memory_cfg = cfg.get("memory") if isinstance(cfg.get("memory"), dict) else {}
@@ -7641,10 +9526,18 @@ class AutonomousAgentExecutor:
         memory_types = self._normalize_memory_types(memory_cfg.get("memory_types"))
         include_chat: Optional[bool] = None
         if isinstance(memory_cfg, dict) and "include_chat_memory" in memory_cfg:
-            include_chat = self._coerce_bool(memory_cfg.get("include_chat_memory"), default=True)
+            include_chat = self._coerce_bool(
+                memory_cfg.get("include_chat_memory"), default=True
+            )
 
-        role_profiles = memory_cfg.get("role_profiles") if isinstance(memory_cfg.get("role_profiles"), dict) else {}
-        role_cfg = role_profiles.get(role) if isinstance(role_profiles.get(role), dict) else {}
+        role_profiles = (
+            memory_cfg.get("role_profiles")
+            if isinstance(memory_cfg.get("role_profiles"), dict)
+            else {}
+        )
+        role_cfg = (
+            role_profiles.get(role) if isinstance(role_profiles.get(role), dict) else {}
+        )
         if not role_cfg and role_profiles:
             for key, value in role_profiles.items():
                 if not isinstance(value, dict):
@@ -7665,7 +9558,9 @@ class AutonomousAgentExecutor:
             if role_types:
                 memory_types = role_types
             if "include_chat_memory" in role_cfg:
-                include_chat = self._coerce_bool(role_cfg.get("include_chat_memory"), default=True)
+                include_chat = self._coerce_bool(
+                    role_cfg.get("include_chat_memory"), default=True
+                )
 
         return {
             "enabled": bool(enabled),
@@ -7684,9 +9579,15 @@ class AutonomousAgentExecutor:
         raw_statuses = memory_cfg.get("extract_on_statuses")
         statuses_raw: List[str] = []
         if isinstance(raw_statuses, list):
-            statuses_raw = [str(v).strip().lower() for v in raw_statuses if str(v).strip()]
+            statuses_raw = [
+                str(v).strip().lower() for v in raw_statuses if str(v).strip()
+            ]
         elif isinstance(raw_statuses, str):
-            statuses_raw = [str(v).strip().lower() for v in raw_statuses.split(",") if str(v).strip()]
+            statuses_raw = [
+                str(v).strip().lower()
+                for v in raw_statuses.split(",")
+                if str(v).strip()
+            ]
 
         allowed_statuses = {"completed", "failed", "cancelled"}
         statuses: List[str] = []
@@ -7698,10 +9599,14 @@ class AutonomousAgentExecutor:
             if self._coerce_bool(memory_cfg.get("extract_on_failure"), default=True):
                 statuses.append("failed")
 
-        failed_types = self._normalize_memory_types(memory_cfg.get("failed_extraction_types"))
+        failed_types = self._normalize_memory_types(
+            memory_cfg.get("failed_extraction_types")
+        )
         if not failed_types:
             failed_types = ["pattern", "lesson", "insight"]
-        completed_types = self._normalize_memory_types(memory_cfg.get("completed_extraction_types"))
+        completed_types = self._normalize_memory_types(
+            memory_cfg.get("completed_extraction_types")
+        )
 
         return {
             "extract_on_statuses": statuses,
@@ -7726,7 +9631,11 @@ class AutonomousAgentExecutor:
 
     def _format_skill_profile_for_prompt(self, state: Dict[str, Any]) -> str:
         """Render active role profile for the planner prompt."""
-        profile = state.get("skill_profile") if isinstance(state.get("skill_profile"), dict) else {}
+        profile = (
+            state.get("skill_profile")
+            if isinstance(state.get("skill_profile"), dict)
+            else {}
+        )
         if not profile:
             return ""
         lines = [
@@ -7740,15 +9649,23 @@ class AutonomousAgentExecutor:
                     lines.append(f"- {text}")
         preferred = profile.get("preferred_tools")
         if isinstance(preferred, list) and preferred:
-            lines.append(f"- Preferred tools: {', '.join([str(t) for t in preferred[:8]])}")
+            lines.append(
+                f"- Preferred tools: {', '.join([str(t) for t in preferred[:8]])}"
+            )
         discouraged = profile.get("discouraged_tools")
         if isinstance(discouraged, list) and discouraged:
-            lines.append(f"- Discouraged tools: {', '.join([str(t) for t in discouraged[:6]])}")
+            lines.append(
+                f"- Discouraged tools: {', '.join([str(t) for t in discouraged[:6]])}"
+            )
         return "\n".join(lines)
 
     def _format_feedback_learning_for_prompt(self, state: Dict[str, Any]) -> str:
         """Render compact human-feedback guidance for prompt conditioning."""
-        feedback = state.get("feedback_learning") if isinstance(state.get("feedback_learning"), dict) else {}
+        feedback = (
+            state.get("feedback_learning")
+            if isinstance(state.get("feedback_learning"), dict)
+            else {}
+        )
         if not feedback:
             return ""
         if int(feedback.get("feedback_count", 0) or 0) <= 0:
@@ -7810,7 +9727,11 @@ class AutonomousAgentExecutor:
         """Track role-specific execution metrics for observability."""
         if not isinstance(state, dict) or not isinstance(action, dict):
             return
-        profile = state.get("skill_profile") if isinstance(state.get("skill_profile"), dict) else {}
+        profile = (
+            state.get("skill_profile")
+            if isinstance(state.get("skill_profile"), dict)
+            else {}
+        )
         role = str(profile.get("role") or "researcher").strip().lower()
         tool = str(action.get("tool") or "").strip()
         if not tool:
@@ -7844,11 +9765,22 @@ class AutonomousAgentExecutor:
 
         if role == "researcher":
             if family in {"retrieval", "analysis", "ingestion"}:
-                counters["evidence_actions"] = int(counters.get("evidence_actions", 0) or 0) + 1
-            counters["evidence_findings"] = int(counters.get("evidence_findings", 0) or 0) + findings_count
+                counters["evidence_actions"] = (
+                    int(counters.get("evidence_actions", 0) or 0) + 1
+                )
+            counters["evidence_findings"] = (
+                int(counters.get("evidence_findings", 0) or 0) + findings_count
+            )
         elif role == "critic":
-            if tool in {"compare_documents", "compare_methodologies", "identify_research_gaps", "build_research_graph"}:
-                counters["challenge_actions"] = int(counters.get("challenge_actions", 0) or 0) + 1
+            if tool in {
+                "compare_documents",
+                "compare_methodologies",
+                "identify_research_gaps",
+                "build_research_graph",
+            }:
+                counters["challenge_actions"] = (
+                    int(counters.get("challenge_actions", 0) or 0) + 1
+                )
             risk_count = 0
             if isinstance(findings, list):
                 for item in findings:
@@ -7857,16 +9789,26 @@ class AutonomousAgentExecutor:
                     cat = str(item.get("category") or "").strip().lower()
                     if cat in {"contradiction", "gap", "risk"}:
                         risk_count += 1
-            counters["risk_findings"] = int(counters.get("risk_findings", 0) or 0) + risk_count
+            counters["risk_findings"] = (
+                int(counters.get("risk_findings", 0) or 0) + risk_count
+            )
         elif role == "synthesizer":
             if family == "synthesis":
-                counters["synthesis_actions"] = int(counters.get("synthesis_actions", 0) or 0) + 1
-            counters["artifacts_created"] = int(counters.get("artifacts_created", 0) or 0) + artifacts_count
+                counters["synthesis_actions"] = (
+                    int(counters.get("synthesis_actions", 0) or 0) + 1
+                )
+            counters["artifacts_created"] = (
+                int(counters.get("artifacts_created", 0) or 0) + artifacts_count
+            )
         elif role == "verifier":
             if family in {"analysis", "retrieval"}:
-                counters["verification_actions"] = int(counters.get("verification_actions", 0) or 0) + 1
+                counters["verification_actions"] = (
+                    int(counters.get("verification_actions", 0) or 0) + 1
+                )
             if not success:
-                counters["failed_checks"] = int(counters.get("failed_checks", 0) or 0) + 1
+                counters["failed_checks"] = (
+                    int(counters.get("failed_checks", 0) or 0) + 1
+                )
 
         metrics["role_counters"] = counters
         metrics["updated_at"] = datetime.utcnow().isoformat()
@@ -7888,7 +9830,9 @@ class AutonomousAgentExecutor:
         `_build_thinking_prompt_volatile` (per-iteration context, placed in
         the user message after the cached prefix).
         """
-        stable = self._build_thinking_prompt_stable(job, agent_def, state, profile=profile)
+        stable = self._build_thinking_prompt_stable(
+            job, agent_def, state, profile=profile
+        )
         volatile = self._build_thinking_prompt_volatile(job, state)
         if volatile:
             return f"{stable}\n\n{volatile}"
@@ -7911,20 +9855,44 @@ GOAL:
 {job.goal}
 
 """
-        inherited_data = (job.config or {}).get("inherited_data") if isinstance(job.config, dict) else None
+        inherited_data = (
+            (job.config or {}).get("inherited_data")
+            if isinstance(job.config, dict)
+            else None
+        )
         if isinstance(inherited_data, dict) and inherited_data:
-            parent_results = inherited_data.get("parent_results") if isinstance(inherited_data.get("parent_results"), dict) else None
-            parent_findings = inherited_data.get("parent_findings") if isinstance(inherited_data.get("parent_findings"), list) else []
+            parent_results = (
+                inherited_data.get("parent_results")
+                if isinstance(inherited_data.get("parent_results"), dict)
+                else None
+            )
+            parent_findings = (
+                inherited_data.get("parent_findings")
+                if isinstance(inherited_data.get("parent_findings"), list)
+                else []
+            )
 
             base_prompt += "\nINHERITED DATA (from parent job):\n"
             if parent_results:
                 summary = str(parent_results.get("summary") or "").strip()
-                research_bundle = parent_results.get("research_bundle") if isinstance(parent_results.get("research_bundle"), dict) else None
+                research_bundle = (
+                    parent_results.get("research_bundle")
+                    if isinstance(parent_results.get("research_bundle"), dict)
+                    else None
+                )
                 if summary:
                     base_prompt += f"- Parent summary: {summary[:600]}\n"
                 if research_bundle:
-                    top_docs = research_bundle.get("top_documents") if isinstance(research_bundle.get("top_documents"), list) else []
-                    top_papers = research_bundle.get("top_papers") if isinstance(research_bundle.get("top_papers"), list) else []
+                    top_docs = (
+                        research_bundle.get("top_documents")
+                        if isinstance(research_bundle.get("top_documents"), list)
+                        else []
+                    )
+                    top_papers = (
+                        research_bundle.get("top_papers")
+                        if isinstance(research_bundle.get("top_papers"), list)
+                        else []
+                    )
                     base_prompt += f"- Parent top_documents: {len(top_docs)}\n"
                     base_prompt += f"- Parent top_papers: {len(top_papers)}\n"
             if parent_findings:
@@ -7996,7 +9964,11 @@ AGENT INSTRUCTIONS:
 """
 
         # Add handoff contract if present (from create_handoff in parent)
-        handoff_contract = (job.config or {}).get("handoff_contract") if isinstance(job.config, dict) else None
+        handoff_contract = (
+            (job.config or {}).get("handoff_contract")
+            if isinstance(job.config, dict)
+            else None
+        )
         if isinstance(handoff_contract, dict):
             base_prompt += "\nHANDOFF CONTRACT (from parent agent):\n"
             ctx = str(handoff_contract.get("context", ""))[:1000]
@@ -8004,10 +9976,18 @@ AGENT INSTRUCTIONS:
                 base_prompt += f"- Context: {ctx}\n"
             outputs = handoff_contract.get("expected_outputs", [])
             if isinstance(outputs, list) and outputs:
-                base_prompt += f"- Expected outputs: {', '.join(str(o) for o in outputs[:10])}\n"
-            base_prompt += "- You MUST produce results that satisfy the expected outputs.\n"
+                base_prompt += (
+                    f"- Expected outputs: {', '.join(str(o) for o in outputs[:10])}\n"
+                )
+            base_prompt += (
+                "- You MUST produce results that satisfy the expected outputs.\n"
+            )
 
-        active_profile = profile if isinstance(profile, dict) else self._resolve_agent_skill_profile(job, state=state)
+        active_profile = (
+            profile
+            if isinstance(profile, dict)
+            else self._resolve_agent_skill_profile(job, state=state)
+        )
         role_context = self._format_skill_profile_for_prompt(
             {
                 **(state if isinstance(state, dict) else {}),
@@ -8018,6 +9998,22 @@ AGENT INSTRUCTIONS:
             base_prompt += f"""
 
 {role_context}
+"""
+
+        try:
+            from app.services.agent_coding_harness_service import (
+                agent_coding_harness_service,
+            )
+
+            coding_harness_context = agent_coding_harness_service.format_prompt_context(
+                job, state
+            )
+        except Exception:
+            coding_harness_context = ""
+        if coding_harness_context:
+            base_prompt += f"""
+
+{coding_harness_context}
 """
 
         feedback_context = self._format_feedback_learning_for_prompt(state)
@@ -8097,134 +10093,278 @@ RESPONSE FORMAT:
         """Get available tools based on job type."""
         # Base tools available to all autonomous jobs
         base_tools = [
-            "search_documents", "get_document_details", "read_document_content",
-            "save_research_finding", "get_research_findings", "write_progress_report",
-            "suggest_next_action", "search_with_filters", "project_bootstrap",
+            "search_documents",
+            "get_document_details",
+            "read_document_content",
+            "save_research_finding",
+            "get_research_findings",
+            "write_progress_report",
+            "suggest_next_action",
+            "search_with_filters",
+            "project_bootstrap",
             # Structured reasoning (available to all job types)
-            "reflect", "hypothesize", "weigh_evidence", "critique_plan",
+            "reflect",
+            "hypothesize",
+            "weigh_evidence",
+            "critique_plan",
             # Multi-agent coordination
-            "delegate_subtask", "wait_for_subtask", "share_findings", "request_review",
+            "delegate_subtask",
+            "wait_for_subtask",
+            "share_findings",
+            "request_review",
             # Code execution
             "execute_python",
             # Memory (available to all job types)
-            "create_memory", "search_memories", "recall_memories", "get_memory_stats",
+            "create_memory",
+            "search_memories",
+            "recall_memories",
+            "get_memory_stats",
             # Workflow orchestration (available to all job types)
-            "list_available_workflows", "execute_workflow", "get_workflow_status",
+            "list_available_workflows",
+            "execute_workflow",
+            "get_workflow_status",
             # Agent-to-agent communication
-            "send_message_to_agent", "read_agent_messages",
+            "send_message_to_agent",
+            "read_agent_messages",
             # Research
-            "search_web", "fetch_url_content",
+            "search_web",
+            "fetch_url_content",
             # Notification/alerting
-            "send_notification", "send_email_alert",
+            "send_notification",
+            "send_email_alert",
             # Data visualization
-            "create_chart", "render_diagram",
+            "create_chart",
+            "render_diagram",
             # Knowledge graph (read)
-            "query_kg_entities", "get_entity_context", "query_kg_graph",
+            "query_kg_entities",
+            "get_entity_context",
+            "query_kg_graph",
             # Scheduling
-            "schedule_job", "cancel_scheduled_job",
+            "schedule_job",
+            "cancel_scheduled_job",
             # Document authoring (read)
             "list_documents_by_tag",
             # Self-reflection
-            "get_job_history", "get_job_metrics",
+            "get_job_history",
+            "get_job_metrics",
             # Tool analytics
-            "get_tool_usage_stats", "get_tool_failure_analysis",
+            "get_tool_usage_stats",
+            "get_tool_failure_analysis",
             # Batch processing
-            "batch_search", "batch_summarize",
+            "batch_search",
+            "batch_summarize",
             # Conditional execution
-            "evaluate_condition", "count_findings", "check_goal_status",
+            "evaluate_condition",
+            "count_findings",
+            "check_goal_status",
             # Context window management
-            "compress_history", "summarize_findings",
+            "compress_history",
+            "summarize_findings",
             # Agent collaboration
-            "create_handoff", "get_sibling_status", "broadcast_to_siblings",
+            "create_handoff",
+            "get_sibling_status",
+            "broadcast_to_siblings",
             # Prompt template management
-            "switch_strategy", "set_focus_directive", "get_available_strategies",
+            "switch_strategy",
+            "set_focus_directive",
+            "get_available_strategies",
             # Output formatting
-            "format_as_table", "format_as_report", "set_output_schema",
+            "format_as_table",
+            "format_as_report",
+            "set_output_schema",
             # Multi-modal ingestion
-            "transcribe_document", "analyze_image", "get_media_info",
+            "transcribe_document",
+            "analyze_image",
+            "get_media_info",
             # Workspace snapshots
-            "capture_snapshot", "compare_snapshots", "detect_drift",
+            "capture_snapshot",
+            "compare_snapshots",
+            "detect_drift",
         ]
 
         # Type-specific tools
         type_tools = {
             "research": [
-                "search_arxiv", "summarize_document", "find_similar_documents",
-                "get_knowledge_base_stats", "add_to_reading_list", "get_reading_lists",
-                "extract_paper_insights", "find_related_papers", "build_research_graph",
-                "compare_methodologies", "identify_research_gaps", "create_synthesis_document",
-                "generate_research_presentation", "ingest_paper_by_id", "batch_ingest_papers",
-                "analyze_document_cluster", "create_knowledge_base_entry", "create_document_from_text",
+                "search_arxiv",
+                "summarize_document",
+                "find_similar_documents",
+                "get_knowledge_base_stats",
+                "add_to_reading_list",
+                "get_reading_lists",
+                "extract_paper_insights",
+                "find_related_papers",
+                "build_research_graph",
+                "compare_methodologies",
+                "identify_research_gaps",
+                "create_synthesis_document",
+                "generate_research_presentation",
+                "ingest_paper_by_id",
+                "batch_ingest_papers",
+                "analyze_document_cluster",
+                "create_knowledge_base_entry",
+                "create_document_from_text",
                 "summarize_url",
-                "create_kg_entity", "create_kg_relationship",
+                "create_kg_entity",
+                "create_kg_relationship",
                 "merge_documents",
             ],
             "monitor": [
-                "search_arxiv", "search_documents", "get_knowledge_base_stats",
-                "monitor_arxiv_topic", "ingest_paper_by_id", "add_to_reading_list",
-                "get_reading_lists"
+                "search_arxiv",
+                "search_documents",
+                "get_knowledge_base_stats",
+                "monitor_arxiv_topic",
+                "ingest_paper_by_id",
+                "add_to_reading_list",
+                "get_reading_lists",
             ],
             "analysis": [
-                "search_documents", "get_document_details", "summarize_document",
-                "find_similar_documents", "compare_documents", "extract_paper_insights",
-                "compare_methodologies", "analyze_document_cluster", "build_research_graph",
-                "identify_research_gaps", "create_synthesis_document", "create_document_from_text",
+                "search_documents",
+                "get_document_details",
+                "summarize_document",
+                "find_similar_documents",
+                "compare_documents",
+                "extract_paper_insights",
+                "compare_methodologies",
+                "analyze_document_cluster",
+                "build_research_graph",
+                "identify_research_gaps",
+                "create_synthesis_document",
+                "create_document_from_text",
                 # Coding tools available in analysis
-                "clone_and_index_repo", "browse_repo_files", "read_file", "write_file",
-                "apply_patch", "run_command", "search_code", "get_workspace_status",
-                "retrieve_repo_symbols", "get_symbol_context", "find_tests_for_symbol",
+                "clone_and_index_repo",
+                "browse_repo_files",
+                "read_file",
+                "write_file",
+                "apply_patch",
+                "run_command",
+                "search_code",
+                "get_workspace_status",
+                "create_workspace_checkpoint",
+                "list_workspace_checkpoints",
+                "restore_workspace_checkpoint",
+                "hydrate_candidate_snapshot",
+                "persist_durable_workspace_checkpoint",
+                "list_durable_workspace_checkpoints",
+                "restore_durable_workspace_checkpoint",
+                "retrieve_repo_symbols",
+                "get_symbol_context",
+                "find_tests_for_symbol",
                 "get_workspace_artifact_url",
                 "summarize_url",
-                "create_kg_entity", "create_kg_relationship",
+                "create_kg_entity",
+                "create_kg_relationship",
                 "merge_documents",
             ],
             "synthesis": [
-                "search_documents", "get_document_details", "summarize_document",
-                "generate_diagram", "create_synthesis_document", "generate_research_presentation",
-                "create_knowledge_base_entry", "link_entities", "create_document_from_text",
+                "search_documents",
+                "get_document_details",
+                "summarize_document",
+                "generate_diagram",
+                "create_synthesis_document",
+                "generate_research_presentation",
+                "create_knowledge_base_entry",
+                "link_entities",
+                "create_document_from_text",
                 # Document authoring tools available in synthesis
-                "plan_document", "write_section", "revise_section", "assemble_document",
-                "export_document", "insert_figure",
+                "plan_document",
+                "write_section",
+                "revise_section",
+                "assemble_document",
+                "export_document",
+                "insert_figure",
                 "merge_documents",
             ],
             "coding": [
-                "clone_and_index_repo", "browse_repo_files", "read_file", "write_file",
-                "apply_patch", "run_command", "search_code", "get_workspace_status",
-                "search_documents", "get_document_details", "read_document_content",
+                "clone_and_index_repo",
+                "browse_repo_files",
+                "read_file",
+                "write_file",
+                "apply_patch",
+                "run_command",
+                "search_code",
+                "get_workspace_status",
+                "create_workspace_checkpoint",
+                "list_workspace_checkpoints",
+                "restore_workspace_checkpoint",
+                "hydrate_candidate_snapshot",
+                "persist_durable_workspace_checkpoint",
+                "list_durable_workspace_checkpoints",
+                "restore_durable_workspace_checkpoint",
+                "search_documents",
+                "get_document_details",
+                "read_document_content",
                 # Symbol-aware code retrieval
-                "retrieve_repo_symbols", "get_symbol_context", "find_tests_for_symbol",
+                "retrieve_repo_symbols",
+                "get_symbol_context",
+                "find_tests_for_symbol",
                 # Workspace artifact access
                 "get_workspace_artifact_url",
             ],
             "document_authoring": [
-                "plan_document", "write_section", "revise_section", "assemble_document",
-                "export_document", "insert_figure",
-                "search_documents", "get_document_details", "read_document_content",
-                "summarize_document", "create_document_from_text",
+                "plan_document",
+                "write_section",
+                "revise_section",
+                "assemble_document",
+                "export_document",
+                "insert_figure",
+                "search_documents",
+                "get_document_details",
+                "read_document_content",
+                "summarize_document",
+                "create_document_from_text",
             ],
             "knowledge_expansion": [
-                "search_arxiv", "search_documents", "find_similar_documents",
-                "get_knowledge_base_stats", "ingest_paper_by_id", "batch_ingest_papers",
-                "find_related_papers", "build_research_graph", "link_entities",
-                "create_knowledge_base_entry"
+                "search_arxiv",
+                "search_documents",
+                "find_similar_documents",
+                "get_knowledge_base_stats",
+                "ingest_paper_by_id",
+                "batch_ingest_papers",
+                "find_related_papers",
+                "build_research_graph",
+                "link_entities",
+                "create_knowledge_base_entry",
             ],
             "custom": [
                 # Custom jobs get most tools
-                "search_arxiv", "summarize_document", "find_similar_documents",
-                "add_to_reading_list", "extract_paper_insights", "create_synthesis_document", "create_document_from_text"
+                "search_arxiv",
+                "summarize_document",
+                "find_similar_documents",
+                "add_to_reading_list",
+                "extract_paper_insights",
+                "create_synthesis_document",
+                "create_document_from_text",
             ],
             "data_analysis": [
                 # Data analysis, ETL, and visualization tools
-                "load_csv_data", "load_json_data", "create_dataset", "list_datasets",
-                "describe_dataset", "query_data", "filter_data", "aggregate_data",
-                "join_datasets", "transform_data", "detect_anomalies", "calculate_correlations",
-                "create_chart", "create_correlation_heatmap", "create_flowchart",
-                "create_sequence_diagram", "create_er_diagram", "create_architecture_diagram",
-                "create_drawio_diagram", "create_gantt_chart", "export_dataset_csv",
-                "export_dataset_json", "search_documents", "get_document_details",
+                "load_csv_data",
+                "load_json_data",
+                "create_dataset",
+                "list_datasets",
+                "describe_dataset",
+                "query_data",
+                "filter_data",
+                "aggregate_data",
+                "join_datasets",
+                "transform_data",
+                "detect_anomalies",
+                "calculate_correlations",
+                "create_chart",
+                "create_correlation_heatmap",
+                "create_flowchart",
+                "create_sequence_diagram",
+                "create_er_diagram",
+                "create_architecture_diagram",
+                "create_drawio_diagram",
+                "create_gantt_chart",
+                "export_dataset_csv",
+                "export_dataset_json",
+                "search_documents",
+                "get_document_details",
                 "read_document_content",
                 # Code execution tools for data jobs
-                "execute_data_pipeline", "write_and_run_script",
+                "execute_data_pipeline",
+                "write_and_run_script",
             ],
         }
 
@@ -8263,60 +10403,118 @@ RESPONSE FORMAT:
             "compare_documents",
             "project_bootstrap",
             # Structured reasoning tools
-            "reflect", "hypothesize", "weigh_evidence", "critique_plan",
+            "reflect",
+            "hypothesize",
+            "weigh_evidence",
+            "critique_plan",
             # Multi-agent coordination tools
-            "delegate_subtask", "wait_for_subtask", "share_findings", "request_review",
+            "delegate_subtask",
+            "wait_for_subtask",
+            "share_findings",
+            "request_review",
             # Code execution tools
-            "execute_python", "execute_data_pipeline", "write_and_run_script",
+            "execute_python",
+            "execute_data_pipeline",
+            "write_and_run_script",
             # Coding workspace tools
-            "clone_and_index_repo", "browse_repo_files", "read_file", "write_file",
-            "apply_patch", "run_command", "search_code", "get_workspace_status",
+            "clone_and_index_repo",
+            "browse_repo_files",
+            "read_file",
+            "write_file",
+            "apply_patch",
+            "run_command",
+            "search_code",
+            "get_workspace_status",
+            "create_workspace_checkpoint",
+            "list_workspace_checkpoints",
+            "restore_workspace_checkpoint",
+            "hydrate_candidate_snapshot",
+            "persist_durable_workspace_checkpoint",
+            "list_durable_workspace_checkpoints",
+            "restore_durable_workspace_checkpoint",
             # Document authoring tools
-            "plan_document", "write_section", "revise_section", "assemble_document",
-            "export_document", "insert_figure",
+            "plan_document",
+            "write_section",
+            "revise_section",
+            "assemble_document",
+            "export_document",
+            "insert_figure",
             # Workspace artifact retrieval
             "get_workspace_artifact_url",
             # Memory tools
-            "create_memory", "search_memories", "recall_memories", "get_memory_stats",
+            "create_memory",
+            "search_memories",
+            "recall_memories",
+            "get_memory_stats",
             # Symbol-aware code retrieval
-            "retrieve_repo_symbols", "get_symbol_context", "find_tests_for_symbol",
+            "retrieve_repo_symbols",
+            "get_symbol_context",
+            "find_tests_for_symbol",
             # Workflow orchestration
-            "list_available_workflows", "execute_workflow", "get_workflow_status",
+            "list_available_workflows",
+            "execute_workflow",
+            "get_workflow_status",
             # Agent-to-agent communication
-            "send_message_to_agent", "read_agent_messages",
+            "send_message_to_agent",
+            "read_agent_messages",
             # Research
-            "search_web", "summarize_url", "fetch_url_content",
+            "search_web",
+            "summarize_url",
+            "fetch_url_content",
             # Notification/alerting
-            "send_notification", "send_email_alert",
+            "send_notification",
+            "send_email_alert",
             # Data visualization
-            "create_chart", "render_diagram",
+            "create_chart",
+            "render_diagram",
             # Knowledge graph
-            "query_kg_entities", "get_entity_context", "create_kg_entity",
-            "create_kg_relationship", "query_kg_graph",
+            "query_kg_entities",
+            "get_entity_context",
+            "create_kg_entity",
+            "create_kg_relationship",
+            "query_kg_graph",
             # Scheduling
-            "schedule_job", "cancel_scheduled_job",
+            "schedule_job",
+            "cancel_scheduled_job",
             # Document authoring
-            "list_documents_by_tag", "merge_documents",
+            "list_documents_by_tag",
+            "merge_documents",
             # Self-reflection
-            "get_job_history", "get_job_metrics",
+            "get_job_history",
+            "get_job_metrics",
             # Tool analytics
-            "get_tool_usage_stats", "get_tool_failure_analysis",
+            "get_tool_usage_stats",
+            "get_tool_failure_analysis",
             # Batch processing
-            "batch_search", "batch_summarize",
+            "batch_search",
+            "batch_summarize",
             # Conditional execution
-            "evaluate_condition", "count_findings", "check_goal_status",
+            "evaluate_condition",
+            "count_findings",
+            "check_goal_status",
             # Context window management
-            "compress_history", "summarize_findings",
+            "compress_history",
+            "summarize_findings",
             # Agent collaboration
-            "create_handoff", "get_sibling_status", "broadcast_to_siblings",
+            "create_handoff",
+            "get_sibling_status",
+            "broadcast_to_siblings",
             # Prompt template management
-            "switch_strategy", "set_focus_directive", "get_available_strategies",
+            "switch_strategy",
+            "set_focus_directive",
+            "get_available_strategies",
             # Output formatting
-            "format_as_table", "format_as_report", "set_output_schema",
+            "format_as_table",
+            "format_as_report",
+            "set_output_schema",
             # Multi-modal ingestion
-            "transcribe_document", "analyze_image", "get_media_info",
+            "transcribe_document",
+            "analyze_image",
+            "get_media_info",
             # Workspace snapshots
-            "capture_snapshot", "compare_snapshots", "detect_drift",
+            "capture_snapshot",
+            "compare_snapshots",
+            "detect_drift",
         }
         supported_tools.update(set(DATA_ANALYSIS_TOOL_DEFINITIONS.keys()))
 
@@ -8342,8 +10540,12 @@ RESPONSE FORMAT:
 
         role_profile = profile if isinstance(profile, dict) else {}
         blocked = set(_as_list(role_profile.get("blocked_tools")))
-        preferred = [t for t in _as_list(role_profile.get("preferred_tools")) if t in proposed]
-        discouraged = [t for t in _as_list(role_profile.get("discouraged_tools")) if t in proposed]
+        preferred = [
+            t for t in _as_list(role_profile.get("preferred_tools")) if t in proposed
+        ]
+        discouraged = [
+            t for t in _as_list(role_profile.get("discouraged_tools")) if t in proposed
+        ]
         if blocked:
             proposed = [t for t in proposed if t not in blocked]
 
@@ -8355,7 +10557,9 @@ RESPONSE FORMAT:
                 preferred_ordered.append(t)
 
         discouraged_set = set(discouraged)
-        middle = [t for t in proposed if t not in preferred_seen and t not in discouraged_set]
+        middle = [
+            t for t in proposed if t not in preferred_seen and t not in discouraged_set
+        ]
         tail = []
         for t in discouraged:
             if t in proposed and t not in preferred_seen and t not in tail:
@@ -8381,8 +10585,20 @@ RESPONSE FORMAT:
         """Format available tools for the prompt."""
         tools = self._get_tools_for_job_type(job_type, config, profile=profile)
         role_profile = profile if isinstance(profile, dict) else {}
-        preferred = set([str(x).strip() for x in (role_profile.get("preferred_tools") or []) if str(x).strip()])
-        discouraged = set([str(x).strip() for x in (role_profile.get("discouraged_tools") or []) if str(x).strip()])
+        preferred = set(
+            [
+                str(x).strip()
+                for x in (role_profile.get("preferred_tools") or [])
+                if str(x).strip()
+            ]
+        )
+        discouraged = set(
+            [
+                str(x).strip()
+                for x in (role_profile.get("discouraged_tools") or [])
+                if str(x).strip()
+            ]
+        )
         tool_descriptions = []
 
         # Combine all tool definitions
@@ -8447,13 +10663,21 @@ RESPONSE FORMAT:
         return {
             "enabled": bool(cfg.get("stall_detection_enabled", True)),
             "min_progress_delta": _as_int("stall_min_progress_delta", 2, 0, 100),
-            "max_iterations_without_progress": _as_int("stall_max_iterations_without_progress", 4, 1, 50),
+            "max_iterations_without_progress": _as_int(
+                "stall_max_iterations_without_progress", 4, 1, 50
+            ),
             "max_repeated_actions": _as_int("stall_max_repeated_actions", 3, 2, 50),
             "hard_stop_iterations": _as_int("stall_hard_stop_iterations", 8, 2, 200),
             "max_recovery_actions": _as_int("stall_max_recovery_actions", 3, 0, 50),
-            "graph_recovery_enabled": bool(cfg.get("stall_graph_recovery_enabled", True)),
-            "graph_recovery_verification_debt": _as_int("stall_graph_recovery_verification_debt", 2, 1, 100),
-            "graph_recovery_severity": _as_int("stall_graph_recovery_severity", 20, 1, 100),
+            "graph_recovery_enabled": bool(
+                cfg.get("stall_graph_recovery_enabled", True)
+            ),
+            "graph_recovery_verification_debt": _as_int(
+                "stall_graph_recovery_verification_debt", 2, 1, 100
+            ),
+            "graph_recovery_severity": _as_int(
+                "stall_graph_recovery_severity", 20, 1, 100
+            ),
         }
 
     def _get_goal_contract_config(self, job: AgentJob) -> Dict[str, Any]:
@@ -8498,29 +10722,59 @@ RESPONSE FORMAT:
             default=enabled_default,
         )
         required_finding_types = _as_str_list(
-            raw.get("required_finding_types", cfg.get("goal_contract_required_finding_types", []))
+            raw.get(
+                "required_finding_types",
+                cfg.get("goal_contract_required_finding_types", []),
+            )
         )
         required_artifact_types = _as_str_list(
-            raw.get("required_artifact_types", cfg.get("goal_contract_required_artifact_types", []))
+            raw.get(
+                "required_artifact_types",
+                cfg.get("goal_contract_required_artifact_types", []),
+            )
         )
         required_result_keys = _as_str_list(
-            raw.get("required_result_keys", cfg.get("goal_contract_required_result_keys", []))
+            raw.get(
+                "required_result_keys",
+                cfg.get("goal_contract_required_result_keys", []),
+            )
         )
 
         return {
             "enabled": bool(enabled),
-            "min_progress": _as_int(raw.get("min_progress", cfg.get("goal_contract_min_progress", 100)), 100, 0, 100),
-            "min_findings": _as_int(raw.get("min_findings", cfg.get("goal_contract_min_findings", 0)), 0, 0, 100_000),
-            "min_artifacts": _as_int(raw.get("min_artifacts", cfg.get("goal_contract_min_artifacts", 0)), 0, 0, 100_000),
+            "min_progress": _as_int(
+                raw.get("min_progress", cfg.get("goal_contract_min_progress", 100)),
+                100,
+                0,
+                100,
+            ),
+            "min_findings": _as_int(
+                raw.get("min_findings", cfg.get("goal_contract_min_findings", 0)),
+                0,
+                0,
+                100_000,
+            ),
+            "min_artifacts": _as_int(
+                raw.get("min_artifacts", cfg.get("goal_contract_min_artifacts", 0)),
+                0,
+                0,
+                100_000,
+            ),
             "required_finding_types": required_finding_types[:24],
             "required_artifact_types": required_artifact_types[:24],
             "required_result_keys": required_result_keys[:24],
             "auto_complete_when_satisfied": self._coerce_bool(
-                raw.get("auto_complete_when_satisfied", cfg.get("goal_contract_auto_complete_when_satisfied", True)),
+                raw.get(
+                    "auto_complete_when_satisfied",
+                    cfg.get("goal_contract_auto_complete_when_satisfied", True),
+                ),
                 default=True,
             ),
             "strict_completion": self._coerce_bool(
-                raw.get("strict_completion", cfg.get("goal_contract_strict_completion", False)),
+                raw.get(
+                    "strict_completion",
+                    cfg.get("goal_contract_strict_completion", False),
+                ),
                 default=False,
             ),
         }
@@ -8590,13 +10844,22 @@ RESPONSE FORMAT:
         )
         enabled_default = bool(raw) or bool(flat_checkpoint_present)
         enabled = self._coerce_bool(
-            raw.get("enabled", cfg.get("approval_checkpoints_enabled", enabled_default)),
+            raw.get(
+                "enabled", cfg.get("approval_checkpoints_enabled", enabled_default)
+            ),
             default=enabled_default,
         )
         tools = _as_str_list(raw.get("tools", cfg.get("approval_checkpoint_tools", [])))
-        iterations = _as_int_list(raw.get("iterations", cfg.get("approval_checkpoint_iterations", [])))
+        iterations = _as_int_list(
+            raw.get("iterations", cfg.get("approval_checkpoint_iterations", []))
+        )
         try:
-            progress_at_or_above = int(raw.get("progress_at_or_above", cfg.get("approval_checkpoint_progress_at_or_above", -1)))
+            progress_at_or_above = int(
+                raw.get(
+                    "progress_at_or_above",
+                    cfg.get("approval_checkpoint_progress_at_or_above", -1),
+                )
+            )
         except Exception:
             progress_at_or_above = -1
         progress_at_or_above = max(-1, min(progress_at_or_above, 100))
@@ -8607,13 +10870,19 @@ RESPONSE FORMAT:
             "iterations": iterations[:200],
             "progress_at_or_above": progress_at_or_above,
             "once_per_checkpoint": self._coerce_bool(
-                raw.get("once_per_checkpoint", cfg.get("approval_checkpoint_once_per_checkpoint", True)),
+                raw.get(
+                    "once_per_checkpoint",
+                    cfg.get("approval_checkpoint_once_per_checkpoint", True),
+                ),
                 default=True,
             ),
             "message_prefix": str(
                 raw.get(
                     "message_prefix",
-                    cfg.get("approval_checkpoint_message_prefix", "Approval required before autonomous action"),
+                    cfg.get(
+                        "approval_checkpoint_message_prefix",
+                        "Approval required before autonomous action",
+                    ),
                 )
                 or "Approval required before autonomous action"
             ).strip()[:160],
@@ -8636,13 +10905,17 @@ RESPONSE FORMAT:
 
         reasons: List[str] = []
         reason_keys: List[str] = []
-        watch_tools = set(str(x).strip() for x in (cfg.get("tools") or []) if str(x).strip())
+        watch_tools = set(
+            str(x).strip() for x in (cfg.get("tools") or []) if str(x).strip()
+        )
         if watch_tools and tool in watch_tools:
             reasons.append(f"tool:{tool}")
             reason_keys.append(f"tool:{tool}")
 
         iteration = int(getattr(job, "iteration", 0) or 0)
-        watch_iterations = set(int(x) for x in (cfg.get("iterations") or []) if isinstance(x, int))
+        watch_iterations = set(
+            int(x) for x in (cfg.get("iterations") or []) if isinstance(x, int)
+        )
         if watch_iterations and iteration in watch_iterations:
             reasons.append(f"iteration:{iteration}")
             reason_keys.append(f"iteration:{iteration}")
@@ -8672,7 +10945,9 @@ RESPONSE FORMAT:
             "iteration": iteration,
             "action": {
                 "tool": tool,
-                "params": action.get("params") if isinstance(action.get("params"), dict) else {},
+                "params": action.get("params")
+                if isinstance(action.get("params"), dict)
+                else {},
                 "purpose": str(action.get("purpose") or "").strip()[:220],
             },
             "reasons": reasons[:8],
@@ -8686,7 +10961,9 @@ RESPONSE FORMAT:
             "checkpoint": checkpoint,
         }
 
-    def _build_executive_digest(self, job: AgentJob, state: Dict[str, Any]) -> Dict[str, Any]:
+    def _build_executive_digest(
+        self, job: AgentJob, state: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Compatibility wrapper around goal-contract service digest builder."""
         return self.goal_contract_service.build_executive_digest(self, job, state)
 
@@ -8701,7 +10978,9 @@ RESPONSE FORMAT:
         params = action.get("params")
         if not isinstance(params, dict):
             params = {}
-        stable_params = {k: v for k, v in params.items() if not str(k).startswith("_fallback_")}
+        stable_params = {
+            k: v for k, v in params.items() if not str(k).startswith("_fallback_")
+        }
         try:
             params_blob = json.dumps(stable_params, sort_keys=True, default=str)
         except Exception:
@@ -8732,7 +11011,9 @@ RESPONSE FORMAT:
 
         min_delta = int(cfg["min_progress_delta"])
         if delta <= min_delta:
-            state["stalled_iterations"] = int(state.get("stalled_iterations", 0) or 0) + 1
+            state["stalled_iterations"] = (
+                int(state.get("stalled_iterations", 0) or 0) + 1
+            )
         else:
             state["stalled_iterations"] = 0
 
@@ -8743,7 +11024,9 @@ RESPONSE FORMAT:
             state["last_action_signature"] = sig
         elif sig:
             if sig == state.get("last_action_signature"):
-                state["repeated_action_iterations"] = int(state.get("repeated_action_iterations", 0) or 0) + 1
+                state["repeated_action_iterations"] = (
+                    int(state.get("repeated_action_iterations", 0) or 0) + 1
+                )
             else:
                 state["repeated_action_iterations"] = 1
                 state["last_action_signature"] = sig
@@ -8760,9 +11043,15 @@ RESPONSE FORMAT:
         stalled = int(state.get("stalled_iterations", 0) or 0)
         repeated = int(state.get("repeated_action_iterations", 0) or 0)
         runtime_graph = self._get_execution_graph_runtime_snapshot(state)
-        graph_health = runtime_graph.get("graph_health") if isinstance(runtime_graph.get("graph_health"), dict) else {}
+        graph_health = (
+            runtime_graph.get("graph_health")
+            if isinstance(runtime_graph.get("graph_health"), dict)
+            else {}
+        )
         verification_attempts = int(runtime_graph.get("verification_attempts", 0) or 0)
-        verification_successes = int(runtime_graph.get("verification_successes", 0) or 0)
+        verification_successes = int(
+            runtime_graph.get("verification_successes", 0) or 0
+        )
         verification_debt = max(0, verification_attempts - verification_successes)
         graph_severity = int(graph_health.get("severity_score", 0) or 0)
         graph_reasons = [
@@ -8770,21 +11059,18 @@ RESPONSE FORMAT:
             for x in (graph_health.get("reasons") or [])
             if str(x).strip()
         ]
-        graph_recovery = (
-            bool(cfg.get("graph_recovery_enabled", True))
-            and (
-                verification_debt >= int(cfg.get("graph_recovery_verification_debt", 2) or 2)
-                or graph_severity >= int(cfg.get("graph_recovery_severity", 20) or 20)
-            )
+        graph_recovery = bool(cfg.get("graph_recovery_enabled", True)) and (
+            verification_debt
+            >= int(cfg.get("graph_recovery_verification_debt", 2) or 2)
+            or graph_severity >= int(cfg.get("graph_recovery_severity", 20) or 20)
         )
         should_recover = (
-            stalled >= int(cfg["max_iterations_without_progress"]) or
-            repeated >= int(cfg["max_repeated_actions"]) or
-            graph_recovery
+            stalled >= int(cfg["max_iterations_without_progress"])
+            or repeated >= int(cfg["max_repeated_actions"])
+            or graph_recovery
         )
-        should_stop = (
-            stalled >= int(cfg["hard_stop_iterations"])
-            or repeated >= int(cfg["hard_stop_iterations"])
+        should_stop = stalled >= int(cfg["hard_stop_iterations"]) or repeated >= int(
+            cfg["hard_stop_iterations"]
         )
 
         reason_parts = []
@@ -8825,14 +11111,32 @@ RESPONSE FORMAT:
             if isinstance(state.get("skill_profile"), dict)
             else self._resolve_agent_skill_profile(job, state=state)
         )
-        available = set(self._get_tools_for_job_type(job.job_type, job.config, profile=profile))
-        findings = state.get("findings", []) if isinstance(state.get("findings"), list) else []
-        recent_actions = state.get("actions_taken", []) if isinstance(state.get("actions_taken"), list) else []
-        current_stats = state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {}
-        prior_stats = state.get("tool_priors") if isinstance(state.get("tool_priors"), dict) else {}
+        available = set(
+            self._get_tools_for_job_type(job.job_type, job.config, profile=profile)
+        )
+        findings = (
+            state.get("findings", []) if isinstance(state.get("findings"), list) else []
+        )
+        recent_actions = (
+            state.get("actions_taken", [])
+            if isinstance(state.get("actions_taken"), list)
+            else []
+        )
+        current_stats = (
+            state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {}
+        )
+        prior_stats = (
+            state.get("tool_priors")
+            if isinstance(state.get("tool_priors"), dict)
+            else {}
+        )
         combined_stats = self._merge_tool_stats(prior_stats, current_stats)
         forced_cfg = self._get_forced_exploration_config(job)
-        forced_tools = set(forced_cfg.get("tools", [])) if isinstance(forced_cfg.get("tools"), list) else set()
+        forced_tools = (
+            set(forced_cfg.get("tools", []))
+            if isinstance(forced_cfg.get("tools"), list)
+            else set()
+        )
         cooldown_cfg = self._get_tool_cooldown_config(job)
         cooldowns = state.get("tool_cooldowns")
         if not isinstance(cooldowns, dict):
@@ -8869,14 +11173,23 @@ RESPONSE FORMAT:
                 return False
             if bool(cooldown_cfg.get("enabled", True)):
                 apply_cooldown = True
-                if bool(cooldown_cfg.get("forced_only", True)) and forced_tools and tool not in forced_tools:
+                if (
+                    bool(cooldown_cfg.get("forced_only", True))
+                    and forced_tools
+                    and tool not in forced_tools
+                ):
                     apply_cooldown = False
-                if apply_cooldown and self._is_tool_in_cooldown(tool, cooldowns, cur_iter):
-                    state["tool_cooldown_blocks"] = int(state.get("tool_cooldown_blocks", 0) or 0) + 1
+                if apply_cooldown and self._is_tool_in_cooldown(
+                    tool, cooldowns, cur_iter
+                ):
+                    state["tool_cooldown_blocks"] = (
+                        int(state.get("tool_cooldown_blocks", 0) or 0) + 1
+                    )
                     return False
-            tstats = combined_stats.get(tool) if isinstance(combined_stats, dict) else None
+            tstats = (
+                combined_stats.get(tool) if isinstance(combined_stats, dict) else None
+            )
             if isinstance(tstats, dict):
-                success = int(tstats.get("success", 0) or 0)
                 failure = int(tstats.get("failure", 0) or 0)
                 ratio = self._tool_success_ratio(tstats)
                 if failure >= 5 and ratio < 0.2:
@@ -8895,23 +11208,35 @@ RESPONSE FORMAT:
 
         doc_ids = _doc_ids()
         has_documents = bool(doc_ids)
-        has_papers = any(isinstance(f, dict) and f.get("type") == "paper" for f in findings)
+        has_papers = any(
+            isinstance(f, dict) and f.get("type") == "paper" for f in findings
+        )
 
         runtime_graph = self._get_execution_graph_runtime_snapshot(state)
-        graph_health = runtime_graph.get("graph_health") if isinstance(runtime_graph.get("graph_health"), dict) else {}
+        graph_health = (
+            runtime_graph.get("graph_health")
+            if isinstance(runtime_graph.get("graph_health"), dict)
+            else {}
+        )
         graph_reasons = {
             str(x).strip()
             for x in (graph_health.get("reasons") or [])
             if str(x).strip()
         }
-        substantive_graph_reasons = {reason for reason in graph_reasons if reason != "empty_graph"}
+        substantive_graph_reasons = {
+            reason for reason in graph_reasons if reason != "empty_graph"
+        }
         verification_attempts = int(runtime_graph.get("verification_attempts", 0) or 0)
-        verification_successes = int(runtime_graph.get("verification_successes", 0) or 0)
+        verification_successes = int(
+            runtime_graph.get("verification_successes", 0) or 0
+        )
         has_verification_debt = verification_attempts > verification_successes
 
         # Periodically force exploration of under-sampled tools to avoid local optima.
         if self._should_force_exploration(job, state):
-            state["forced_exploration_attempts"] = int(state.get("forced_exploration_attempts", 0) or 0) + 1
+            state["forced_exploration_attempts"] = (
+                int(state.get("forced_exploration_attempts", 0) or 0) + 1
+            )
             forced = self._build_forced_exploration_action(
                 job=job,
                 state=state,
@@ -8922,30 +11247,44 @@ RESPONSE FORMAT:
                 recent_tools=recent_tools,
             )
             if forced and _can_use(str(forced.get("tool") or "").strip()):
-                state["forced_exploration_used"] = int(state.get("forced_exploration_used", 0) or 0) + 1
+                state["forced_exploration_used"] = (
+                    int(state.get("forced_exploration_used", 0) or 0) + 1
+                )
                 state["last_recovery_was_forced_exploration"] = True
                 forced_tool = str(forced.get("tool") or "").strip()
                 if forced_tool:
                     history = state.get("forced_exploration_history")
                     if not isinstance(history, list):
                         history = []
-                    history.append({
-                        "iteration": cur_iter,
-                        "tool": forced_tool,
-                        "success": None,
-                    })
+                    history.append(
+                        {
+                            "iteration": cur_iter,
+                            "tool": forced_tool,
+                            "success": None,
+                        }
+                    )
                     state["forced_exploration_history"] = history[-20:]
                     if bool(cooldown_cfg.get("enabled", True)):
-                        until = cur_iter + int(cooldown_cfg.get("cooldown_iterations", 2) or 2)
+                        until = cur_iter + int(
+                            cooldown_cfg.get("cooldown_iterations", 2) or 2
+                        )
                         prior_until = int(cooldowns.get(forced_tool, 0) or 0)
                         cooldowns[forced_tool] = max(prior_until, until)
                         state["tool_cooldowns"] = cooldowns
                 return forced
 
         # Prioritize the latest critic recommendation when viable.
-        critic_notes = state.get("critic_notes") if isinstance(state.get("critic_notes"), list) else []
+        critic_notes = (
+            state.get("critic_notes")
+            if isinstance(state.get("critic_notes"), list)
+            else []
+        )
         if critic_notes and isinstance(critic_notes[-1], dict):
-            rec_tools = critic_notes[-1].get("recommended_tools") if isinstance(critic_notes[-1].get("recommended_tools"), list) else []
+            rec_tools = (
+                critic_notes[-1].get("recommended_tools")
+                if isinstance(critic_notes[-1].get("recommended_tools"), list)
+                else []
+            )
             rec_action = self._build_action_from_recommended_tools(
                 job=job,
                 state=state,
@@ -8956,7 +11295,9 @@ RESPONSE FORMAT:
                 return rec_action
 
         if substantive_graph_reasons or has_verification_debt:
-            if not isinstance(state.get("project_profile"), dict) or not state.get("project_profile"):
+            if not isinstance(state.get("project_profile"), dict) or not state.get(
+                "project_profile"
+            ):
                 if _can_use("project_bootstrap"):
                     action = self._build_action_for_tool(
                         tool="project_bootstrap",
@@ -8967,7 +11308,11 @@ RESPONSE FORMAT:
                     if action:
                         return action
 
-            if has_verification_debt and has_documents and _can_use("read_document_content"):
+            if (
+                has_verification_debt
+                and has_documents
+                and _can_use("read_document_content")
+            ):
                 action = self._build_action_for_tool(
                     tool="read_document_content",
                     job=job,
@@ -8977,7 +11322,10 @@ RESPONSE FORMAT:
                 if action:
                     return action
 
-            if ("cycle_detected" in substantive_graph_reasons or "long_critical_path" in substantive_graph_reasons) and _can_use("suggest_next_action"):
+            if (
+                "cycle_detected" in substantive_graph_reasons
+                or "long_critical_path" in substantive_graph_reasons
+            ) and _can_use("suggest_next_action"):
                 action = self._build_action_for_tool(
                     tool="suggest_next_action",
                     job=job,
@@ -8988,7 +11336,11 @@ RESPONSE FORMAT:
                     return action
 
         # Then prefer current plan step suggested tools.
-        plan = state.get("execution_plan") if isinstance(state.get("execution_plan"), list) else []
+        plan = (
+            state.get("execution_plan")
+            if isinstance(state.get("execution_plan"), list)
+            else []
+        )
         idx = int(state.get("plan_step_index", 0) or 0)
         if plan and 0 <= idx < len(plan) and isinstance(plan[idx], dict):
             suggested = plan[idx].get("suggested_tools")
@@ -9193,6 +11545,23 @@ RESPONSE FORMAT:
         db: AsyncSession,
     ) -> None:
         """Compatibility wrapper around checkpoint service."""
+        try:
+            from app.services.agent_coding_durable_checkpoint_service import (
+                agent_coding_durable_checkpoint_service,
+            )
+
+            await agent_coding_durable_checkpoint_service.persist(
+                self,
+                job,
+                state,
+                label=f"Runtime iteration {int(job.iteration or 0)}",
+                reason="runtime_checkpoint",
+                db=db,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Failed to persist durable coding checkpoint for job {job.id}: {exc}"
+            )
         await self.checkpoint_service.save_checkpoint(job=job, state=state, db=db)
 
     async def _load_latest_checkpoint(
@@ -9201,7 +11570,9 @@ RESPONSE FORMAT:
         db: AsyncSession,
     ) -> Optional[AgentJobCheckpoint]:
         """Compatibility wrapper around checkpoint service."""
-        return await self.checkpoint_service.load_latest_checkpoint(job_id=job_id, db=db)
+        return await self.checkpoint_service.load_latest_checkpoint(
+            job_id=job_id, db=db
+        )
 
     async def _load_user_settings(
         self,
@@ -9224,7 +11595,9 @@ RESPONSE FORMAT:
         """Pause a running job."""
         result = await db.execute(
             update(AgentJob)
-            .where(AgentJob.id == job_id, AgentJob.status == AgentJobStatus.RUNNING.value)
+            .where(
+                AgentJob.id == job_id, AgentJob.status == AgentJobStatus.RUNNING.value
+            )
             .values(status=AgentJobStatus.PAUSED.value)
         )
         await db.commit()
@@ -9234,7 +11607,9 @@ RESPONSE FORMAT:
         """Resume a paused job."""
         result = await db.execute(
             update(AgentJob)
-            .where(AgentJob.id == job_id, AgentJob.status == AgentJobStatus.PAUSED.value)
+            .where(
+                AgentJob.id == job_id, AgentJob.status == AgentJobStatus.PAUSED.value
+            )
             .values(status=AgentJobStatus.RUNNING.value)
         )
         await db.commit()
@@ -9246,7 +11621,13 @@ RESPONSE FORMAT:
             update(AgentJob)
             .where(
                 AgentJob.id == job_id,
-                AgentJob.status.in_([AgentJobStatus.PENDING.value, AgentJobStatus.RUNNING.value, AgentJobStatus.PAUSED.value])
+                AgentJob.status.in_(
+                    [
+                        AgentJobStatus.PENDING.value,
+                        AgentJobStatus.RUNNING.value,
+                        AgentJobStatus.PAUSED.value,
+                    ]
+                ),
             )
             .values(status=AgentJobStatus.CANCELLED.value)
         )

@@ -80,6 +80,33 @@ def test_registers_compops_as_a_typed_external_system(client, auth_headers):
     assert created["capabilities"][0] == "compops.operators.list"
 
 
+def test_registers_mlflow_as_a_typed_external_system(client, auth_headers):
+    response = client.post(
+        "/api/v1/external-agents",
+        headers=auth_headers,
+        json=_create_payload(
+            name="MLflow Research Tracking",
+            provider_type="mlflow",
+            endpoint_url="https://mlflow.example.test",
+            capabilities=[
+                "mlflow.experiments.search",
+                "mlflow.runs.get",
+                "mlflow.artifacts.list",
+            ],
+        ),
+    )
+
+    assert response.status_code == 201
+    created = response.json()
+    assert created["provider_type"] == "mlflow"
+    assert created["endpoint_url"] == "https://mlflow.example.test"
+    assert created["capabilities"] == [
+        "mlflow.experiments.search",
+        "mlflow.runs.get",
+        "mlflow.artifacts.list",
+    ]
+
+
 def test_invocation_is_audited(
     client,
     auth_headers,
@@ -223,6 +250,96 @@ def test_compops_invocation_links_sanitized_evidence_to_owned_rnd_job(
     assert parent.results["evaluation_outcome"]["verification_plan"]["task_count"] == 1
     assert "sensitive remote compiler output" not in repr(parent.results)
     assert "sensitive remote compiler output" in repr(audit.tool_output)
+
+
+def test_mlflow_run_links_sanitized_evidence_to_owned_rnd_job(
+    client,
+    auth_headers,
+    db_session,
+    test_user,
+    monkeypatch,
+):
+    parent = AgentJob(
+        name="Tracked compiler research",
+        goal="Compare optimization measurements",
+        job_type="research",
+        user_id=test_user.id,
+        status=AgentJobStatus.COMPLETED.value,
+        results={"evaluation_outcome": {"claims": [], "evidence": [], "actions": []}},
+        output_artifacts=[],
+    )
+
+    async def _seed():
+        db_session.add(parent)
+        await db_session.commit()
+        await db_session.refresh(parent)
+
+    asyncio.get_event_loop().run_until_complete(_seed())
+    created = client.post(
+        "/api/v1/external-agents",
+        headers=auth_headers,
+        json=_create_payload(
+            name="MLflow evidence source",
+            provider_type="mlflow",
+            endpoint_url="https://mlflow.example.test",
+            capabilities=["mlflow.runs.get"],
+        ),
+    ).json()
+    invoke = AsyncMock(
+        return_value={
+            "output": {
+                "run": {
+                    "info": {"run_id": "run-mlflow-1"},
+                    "data": {"metrics": [{"key": "cycles", "value": 900}]},
+                }
+            },
+            "provenance": {
+                "external_agent_id": created["id"],
+                "external_agent_name": "MLflow evidence source",
+                "endpoint_origin": "https://mlflow.example.test",
+                "provider_type": "mlflow",
+                "capability": "mlflow.runs.get",
+                "request_id": "mlflow-import-1",
+                "received_at": "2026-07-28T12:00:00+00:00",
+                "response_sha256": "c" * 64,
+                "response_bytes": 128,
+                "execution_time_ms": 9,
+                "remote_references": {"run_id": "run-mlflow-1"},
+            },
+        }
+    )
+    monkeypatch.setattr(external_agent_gateway_service, "invoke", invoke)
+
+    response = client.post(
+        f"/api/v1/external-agents/{created['id']}/invoke",
+        headers=auth_headers,
+        json={
+            "capability": "mlflow.runs.get",
+            "payload": {"run_id": "run-mlflow-1"},
+            "request_id": "mlflow-import-1",
+            "agent_job_id": str(parent.id),
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "completed"
+    assert payload["evidence_linked"] is True
+    assert payload["output"] is None
+
+    async def _load():
+        await db_session.refresh(parent)
+
+    asyncio.get_event_loop().run_until_complete(_load())
+    external = next(
+        item
+        for item in parent.results["evaluation_outcome"]["evidence"]
+        if item["kind"] == "external_system_response"
+        and item["external_system_type"] == "mlflow"
+    )
+    assert external["remote_references"] == {"run_id": "run-mlflow-1"}
+    assert external["verification_status"] == "unverified"
+    assert "cycles" not in repr(parent.results)
 
 
 def test_rejects_insecure_external_agent_endpoint(client, auth_headers):

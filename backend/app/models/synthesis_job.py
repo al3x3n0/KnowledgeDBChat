@@ -6,13 +6,10 @@ Tracks multi-document synthesis and report generation jobs.
 
 import enum
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict
 from uuid import uuid4
 
-from sqlalchemy import (
-    Column, String, Text, DateTime, ForeignKey, Integer,
-    JSON, Enum, Boolean
-)
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -21,26 +18,32 @@ from app.core.database import Base
 
 class SynthesisJobType(str, enum.Enum):
     """Type of synthesis job."""
-    MULTI_DOC_SUMMARY = "multi_doc_summary"        # Summarize multiple documents
+
+    MULTI_DOC_SUMMARY = "multi_doc_summary"  # Summarize multiple documents
     COMPARATIVE_ANALYSIS = "comparative_analysis"  # Compare documents
-    THEME_EXTRACTION = "theme_extraction"          # Extract common themes
-    KNOWLEDGE_SYNTHESIS = "knowledge_synthesis"    # Synthesize into new knowledge
-    RESEARCH_REPORT = "research_report"            # Generate research report
-    EXECUTIVE_BRIEF = "executive_brief"            # Executive briefing
-    DECISION_MEMO = "decision_memo"                # Citation-aware decision memo
-    GAP_ANALYSIS_HYPOTHESES = "gap_analysis_hypotheses"  # Identify gaps & propose testable hypotheses
+    THEME_EXTRACTION = "theme_extraction"  # Extract common themes
+    KNOWLEDGE_SYNTHESIS = "knowledge_synthesis"  # Synthesize into new knowledge
+    RESEARCH_REPORT = "research_report"  # Generate research report
+    EXECUTIVE_BRIEF = "executive_brief"  # Executive briefing
+    DECISION_MEMO = "decision_memo"  # Citation-aware decision memo
+    GAP_ANALYSIS_HYPOTHESES = (
+        "gap_analysis_hypotheses"  # Identify gaps & propose testable hypotheses
+    )
     HYPOTHESIS_REEVALUATION = "hypothesis_reevaluation"  # Re-score/re-rank hypotheses using experiment evidence
-    COMPILER_REGRESSION_EXPLANATION = "compiler_regression_explanation"  # Explain compared compiler benchmark runs
+    COMPILER_REGRESSION_EXPLANATION = (
+        "compiler_regression_explanation"  # Explain compared compiler benchmark runs
+    )
     COMPILER_PATCH_PROPOSAL = "compiler_patch_proposal"  # Propose a bounded compiler change from a regression explanation
     COMPILER_PATCH_DRAFT = "compiler_patch_draft"  # Draft repo-aware file/symbol changes from a compiler patch proposal
 
 
 class SynthesisJobStatus(str, enum.Enum):
     """Status of synthesis job."""
+
     PENDING = "pending"
-    ANALYZING = "analyzing"       # Analyzing source documents
-    SYNTHESIZING = "synthesizing" # Generating synthesis
-    GENERATING = "generating"     # Generating output document
+    ANALYZING = "analyzing"  # Analyzing source documents
+    SYNTHESIZING = "synthesizing"  # Generating synthesis
+    GENERATING = "generating"  # Generating output document
     COMPLETED = "completed"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -53,13 +56,18 @@ class SynthesisJob(Base):
     Supports multi-document summarization, comparative analysis,
     theme extraction, and report generation with export options.
     """
+
     __tablename__ = "synthesis_jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
 
     # Job configuration
-    job_type = Column(String(50), nullable=False, default=SynthesisJobType.MULTI_DOC_SUMMARY.value)
+    job_type = Column(
+        String(50), nullable=False, default=SynthesisJobType.MULTI_DOC_SUMMARY.value
+    )
     title = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
 
@@ -68,7 +76,11 @@ class SynthesisJob(Base):
     # Optional extracted papers (list of research_paper IDs)
     paper_ids = Column(JSON, nullable=False, default=list)
     # Optional originating research note
-    research_note_id = Column(UUID(as_uuid=True), ForeignKey("research_notes.id", ondelete="SET NULL"), nullable=True)
+    research_note_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("research_notes.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     # Optional search query to find additional documents
     search_query = Column(Text, nullable=True)
     # Topic/focus for the synthesis
@@ -88,11 +100,15 @@ class SynthesisJob(Base):
     # - language: str
 
     # Output configuration
-    output_format = Column(String(20), nullable=False, default="markdown")  # markdown, docx, pdf, pptx
+    output_format = Column(
+        String(20), nullable=False, default="markdown"
+    )  # markdown, docx, pdf, pptx
     output_style = Column(String(50), nullable=False, default="professional")
 
     # Job status
-    status = Column(String(20), nullable=False, default=SynthesisJobStatus.PENDING.value)
+    status = Column(
+        String(20), nullable=False, default=SynthesisJobStatus.PENDING.value
+    )
     progress = Column(Integer, nullable=False, default=0)
     current_stage = Column(String(100), nullable=True)
 
@@ -137,7 +153,9 @@ class SynthesisJob(Base):
             "description": self.description,
             "document_ids": self.document_ids,
             "paper_ids": self.paper_ids,
-            "research_note_id": str(self.research_note_id) if self.research_note_id else None,
+            "research_note_id": str(self.research_note_id)
+            if self.research_note_id
+            else None,
             "search_query": self.search_query,
             "topic": self.topic,
             "options": self.options,
@@ -154,5 +172,7 @@ class SynthesisJob(Base):
             "error": self.error,
             "created_at": self.created_at.isoformat() if self.created_at else None,
             "started_at": self.started_at.isoformat() if self.started_at else None,
-            "completed_at": self.completed_at.isoformat() if self.completed_at else None,
+            "completed_at": self.completed_at.isoformat()
+            if self.completed_at
+            else None,
         }

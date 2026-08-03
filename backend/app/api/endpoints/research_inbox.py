@@ -10,12 +10,16 @@ from __future__ import annotations
 from typing import Optional
 from uuid import UUID
 
+import sqlalchemy as sa
 from fastapi import APIRouter, Depends, HTTPException, Query
 from loguru import logger
-import sqlalchemy as sa
-from sqlalchemy import select, desc, or_, func
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.endpoints.agent_jobs import (
+    _apply_follow_up_policy_on_accept,
+    _relaunch_follow_up_inbox_item,
+)
 from app.core.database import get_db
 from app.models.agent_job import AgentJob
 from app.models.research_inbox import ResearchInboxItem
@@ -26,18 +30,17 @@ from app.schemas.research_inbox import (
     ResearchInboxBulkFollowUpRelaunchResult,
     ResearchInboxFollowUpRelaunchRequest,
     ResearchInboxItemResponse,
-    ResearchInboxListResponse,
     ResearchInboxItemUpdateRequest,
+    ResearchInboxListResponse,
     ResearchInboxStatsResponse,
 )
-from app.api.endpoints.agent_jobs import (
-    _apply_follow_up_policy_on_accept,
-    _relaunch_follow_up_inbox_item,
-)
 from app.services.auth_service import get_current_user
-from app.services.research_inbox_follow_up_service import _resolve_follow_up_opportunity_origin
-from app.services.research_monitor_profile_service import research_monitor_profile_service
-
+from app.services.research_inbox_follow_up_service import (
+    _resolve_follow_up_opportunity_origin,
+)
+from app.services.research_monitor_profile_service import (
+    research_monitor_profile_service,
+)
 
 router = APIRouter()
 
@@ -56,7 +59,11 @@ async def _serialize_research_inbox_item(
     origin_source_id = None
     origin_opportunity_id = None
     if job is not None:
-        origin_source_kind, origin_source_id, origin_opportunity_id = _resolve_follow_up_opportunity_origin(job)
+        (
+            origin_source_kind,
+            origin_source_id,
+            origin_opportunity_id,
+        ) = _resolve_follow_up_opportunity_origin(job)
 
     response = ResearchInboxItemResponse.model_validate(item)
     return response.model_copy(
@@ -68,6 +75,7 @@ async def _serialize_research_inbox_item(
         }
     )
 
+
 def _extract_repo_urls(text: str) -> list[dict]:
     """
     Extract GitHub/GitLab repo URLs from a blob of text.
@@ -76,12 +84,14 @@ def _extract_repo_urls(text: str) -> list[dict]:
     """
     import re
 
-    s = (text or "")
+    s = text or ""
     out: list[dict] = []
     seen: set[str] = set()
 
     # GitHub patterns
-    for m in re.finditer(r"(https?://github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+))", s):
+    for m in re.finditer(
+        r"(https?://github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+))", s
+    ):
         url = m.group(1)
         owner = m.group(2)
         repo = m.group(3)
@@ -112,16 +122,22 @@ def _extract_repo_urls(text: str) -> list[dict]:
 @router.get("", response_model=ResearchInboxListResponse)
 async def list_inbox_items(
     status: Optional[str] = Query(None, description="new | accepted | rejected"),
-    item_type: Optional[str] = Query(None, description="Filter by type (e.g. document, arxiv)"),
+    item_type: Optional[str] = Query(
+        None, description="Filter by type (e.g. document, arxiv)"
+    ),
     customer: Optional[str] = Query(None, description="Filter by customer tag"),
     job_id: Optional[str] = Query(None, description="Filter by source monitor job id"),
-    q: Optional[str] = Query(None, min_length=2, max_length=200, description="Search title/summary"),
+    q: Optional[str] = Query(
+        None, min_length=2, max_length=200, description="Search title/summary"
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(ResearchInboxItem).where(ResearchInboxItem.user_id == current_user.id)
+    query = select(ResearchInboxItem).where(
+        ResearchInboxItem.user_id == current_user.id
+    )
 
     if status:
         query = query.where(ResearchInboxItem.status == status)
@@ -147,13 +163,23 @@ async def list_inbox_items(
     total_result = await db.execute(count_query)
     total = int(total_result.scalar() or 0)
 
-    query = query.order_by(desc(ResearchInboxItem.discovered_at)).offset(offset).limit(limit)
+    query = (
+        query.order_by(desc(ResearchInboxItem.discovered_at))
+        .offset(offset)
+        .limit(limit)
+    )
     result = await db.execute(query)
     items = list(result.scalars().all())
     jobs_by_id: dict[object, AgentJob] = {}
-    follow_up_job_ids = [item.follow_up_job_id for item in items if getattr(item, "follow_up_job_id", None)]
+    follow_up_job_ids = [
+        item.follow_up_job_id
+        for item in items
+        if getattr(item, "follow_up_job_id", None)
+    ]
     if follow_up_job_ids:
-        jobs_result = await db.execute(select(AgentJob).where(AgentJob.id.in_(follow_up_job_ids)))
+        jobs_result = await db.execute(
+            select(AgentJob).where(AgentJob.id.in_(follow_up_job_ids))
+        )
         jobs_by_id = {job.id: job for job in jobs_result.scalars().all()}
 
     return ResearchInboxListResponse(
@@ -245,11 +271,15 @@ async def update_inbox_item(
         item.feedback = (payload.feedback or "").strip() or None
 
     if payload.metadata_patch is not None:
-        patch = payload.metadata_patch if isinstance(payload.metadata_patch, dict) else {}
+        patch = (
+            payload.metadata_patch if isinstance(payload.metadata_patch, dict) else {}
+        )
         meta = item.item_metadata if isinstance(item.item_metadata, dict) else {}
         # Allowlisted metadata updates (avoid clobbering system-populated fields like repos).
         if "paper_algo_run_demo_check" in patch:
-            meta["paper_algo_run_demo_check"] = bool(patch.get("paper_algo_run_demo_check"))
+            meta["paper_algo_run_demo_check"] = bool(
+                patch.get("paper_algo_run_demo_check")
+            )
         if "paper_algo_entrypoint" in patch:
             ep_val = patch.get("paper_algo_entrypoint")
             if ep_val is None:
@@ -266,13 +296,25 @@ async def update_inbox_item(
                 while ep.startswith("./"):
                     ep = ep[2:]
                 if ep.startswith("/") or ep.startswith("~") or ":" in ep:
-                    raise HTTPException(status_code=422, detail="Invalid paper_algo_entrypoint (absolute paths not allowed)")
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Invalid paper_algo_entrypoint (absolute paths not allowed)",
+                    )
                 if any(part == ".." for part in ep.split("/")):
-                    raise HTTPException(status_code=422, detail="Invalid paper_algo_entrypoint ('..' not allowed)")
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Invalid paper_algo_entrypoint ('..' not allowed)",
+                    )
                 if any(ch.isspace() for ch in ep):
-                    raise HTTPException(status_code=422, detail="Invalid paper_algo_entrypoint (whitespace not allowed)")
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Invalid paper_algo_entrypoint (whitespace not allowed)",
+                    )
                 if not ep.endswith(".py"):
-                    raise HTTPException(status_code=422, detail="Invalid paper_algo_entrypoint (must end with .py)")
+                    raise HTTPException(
+                        status_code=422,
+                        detail="Invalid paper_algo_entrypoint (must end with .py)",
+                    )
                 meta["paper_algo_entrypoint"] = ep[:200]
         item.item_metadata = meta
 
@@ -330,8 +372,7 @@ async def bulk_update_inbox_items(
     # Capture impacted customers so we can recompute profiles after update.
     try:
         cust_res = await db.execute(
-            select(ResearchInboxItem.customer)
-            .where(
+            select(ResearchInboxItem.customer).where(
                 ResearchInboxItem.user_id == current_user.id,
                 ResearchInboxItem.id.in_(payload.item_ids),
             )
@@ -438,7 +479,9 @@ async def relaunch_inbox_follow_up(
     if not item or item.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Inbox item not found")
     if str(item.status or "").strip().lower() != "accepted":
-        raise HTTPException(status_code=400, detail="Only accepted inbox items can relaunch a follow-up")
+        raise HTTPException(
+            status_code=400, detail="Only accepted inbox items can relaunch a follow-up"
+        )
 
     await _relaunch_follow_up_inbox_item(
         item=item,
@@ -452,7 +495,9 @@ async def relaunch_inbox_follow_up(
     return await _serialize_research_inbox_item(item, db)
 
 
-@router.post("/follow-up-bulk-relaunch", response_model=ResearchInboxBulkFollowUpRelaunchResponse)
+@router.post(
+    "/follow-up-bulk-relaunch", response_model=ResearchInboxBulkFollowUpRelaunchResponse
+)
 async def bulk_relaunch_inbox_follow_up(
     payload: ResearchInboxBulkFollowUpRelaunchRequest,
     current_user: User = Depends(get_current_user),
@@ -495,7 +540,11 @@ async def bulk_relaunch_inbox_follow_up(
                 )
             )
         except HTTPException as exc:
-            detail = exc.detail if isinstance(exc.detail, str) else "Failed to relaunch follow-up"
+            detail = (
+                exc.detail
+                if isinstance(exc.detail, str)
+                else "Failed to relaunch follow-up"
+            )
             results.append(
                 ResearchInboxBulkFollowUpRelaunchResult(
                     item_id=item_id,
@@ -540,10 +589,20 @@ async def extract_repos_for_inbox_item(
         raise HTTPException(status_code=404, detail="Inbox item not found")
 
     if item.item_type != "arxiv":
-        raise HTTPException(status_code=422, detail="Only supported for arxiv inbox items")
+        raise HTTPException(
+            status_code=422, detail="Only supported for arxiv inbox items"
+        )
 
     meta = item.item_metadata if isinstance(item.item_metadata, dict) else {}
-    combined = " ".join([str(item.title or ""), str(item.summary or ""), str(item.url or ""), str(meta.get("entry_url") or ""), str(meta.get("pdf_url") or "")])
+    combined = " ".join(
+        [
+            str(item.title or ""),
+            str(item.summary or ""),
+            str(item.url or ""),
+            str(meta.get("entry_url") or ""),
+            str(meta.get("pdf_url") or ""),
+        ]
+    )
     repos = _extract_repo_urls(combined)
 
     # If none found, try fetching the arXiv abs page (best-effort).
@@ -553,7 +612,9 @@ async def extract_repos_for_inbox_item(
 
             entry_url = str(meta.get("entry_url") or item.url or "").strip()
             if entry_url:
-                async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": "KnowledgeDBChat-RepoScout"}) as client:
+                async with httpx.AsyncClient(
+                    timeout=20.0, headers={"User-Agent": "KnowledgeDBChat-RepoScout"}
+                ) as client:
                     resp = await client.get(entry_url)
                     if resp.status_code == 200:
                         repos = _extract_repo_urls(resp.text)

@@ -38,7 +38,9 @@ def test_skill_profile_service_honors_explicit_override():
     service = AgentSkillProfileService()
     job = _make_job(config={"agent_role": "researcher"})
 
-    profile = service.resolve_agent_skill_profile(executor, job, state={}, override_role="author")
+    profile = service.resolve_agent_skill_profile(
+        executor, job, state={}, override_role="author"
+    )
 
     assert profile["role"] == "author"
     assert "plan_document" in profile["preferred_tools"]

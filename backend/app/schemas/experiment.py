@@ -27,8 +27,13 @@ EXPERIMENT_RUN_STATUS_PATTERN = "^(pending|planned|queued|provisioning|running|p
 class ExperimentPlanGenerateRequest(BaseModel):
     note_id: UUID
     max_note_chars: int = Field(default=12000, ge=500, le=60000)
-    prefer_section: str = Field(default="hypothesis", pattern="^(hypothesis|full_note)$")
-    plan_mode: Optional[str] = Field(default=None, pattern="^(aggregate_note|single_hypothesis|compiler_regression_followup)$")
+    prefer_section: str = Field(
+        default="hypothesis", pattern="^(hypothesis|full_note)$"
+    )
+    plan_mode: Optional[str] = Field(
+        default=None,
+        pattern="^(aggregate_note|single_hypothesis|compiler_regression_followup)$",
+    )
     hypothesis_id: Optional[str] = None
     benchmark_suite_id: Optional[str] = Field(default=None, max_length=120)
     benchmark_case_ids: List[str] = Field(default_factory=list, max_length=24)

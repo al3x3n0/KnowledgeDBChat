@@ -8,19 +8,18 @@ Integrates the memory system with agent processing by:
 - Tracking memory usage in conversations
 """
 
-from typing import List, Optional, Dict, Any
-from uuid import UUID
 from datetime import datetime
-import asyncio
+from typing import Any, Dict, List, Optional
+from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc
 from loguru import logger
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.memory import ConversationMemory, UserPreferences
 from app.models.agent_definition import AgentMemoryInjection
-from app.services.memory_service import MemoryService
+from app.models.memory import ConversationMemory, UserPreferences
 from app.services.llm_service import LLMService
+from app.services.memory_service import MemoryService
 
 
 class AgentMemoryIntegration:
@@ -44,7 +43,7 @@ class AgentMemoryIntegration:
         message: str,
         conversation_id: Optional[UUID],
         preferences: UserPreferences,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> List[ConversationMemory]:
         """
         Fetch memories relevant to the current message context.
@@ -64,7 +63,11 @@ class AgentMemoryIntegration:
 
         try:
             # Get memory types to inject
-            allowed_types = preferences.memory_injection_types or ["fact", "preference", "context"]
+            allowed_types = preferences.memory_injection_types or [
+                "fact",
+                "preference",
+                "context",
+            ]
             max_memories = preferences.max_injected_memories or 5
 
             # Search memories using the memory service
@@ -73,7 +76,7 @@ class AgentMemoryIntegration:
                 query=message,
                 memory_types=allowed_types,
                 limit=max_memories * 2,  # Get extra for relevance filtering
-                db=db
+                db=db,
             )
 
             # Filter to top N by relevance (already sorted by search_memories)
@@ -90,9 +93,7 @@ class AgentMemoryIntegration:
             return []
 
     def format_memories_for_prompt(
-        self,
-        memories: List[ConversationMemory],
-        include_metadata: bool = False
+        self, memories: List[ConversationMemory], include_metadata: bool = False
     ) -> str:
         """
         Format memories as a context section for agent prompts.
@@ -134,7 +135,7 @@ class AgentMemoryIntegration:
         conversation_id: UUID,
         messages: List[Dict[str, Any]],
         preferences: UserPreferences,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> List[ConversationMemory]:
         """
         Extract and store new memories from conversation messages.
@@ -171,9 +172,7 @@ class AgentMemoryIntegration:
 
             # Use memory service to extract memories
             new_memories = await self.memory_service.extract_memories_from_conversation(
-                user_id=user_id,
-                messages=message_texts,
-                db=db
+                user_id=user_id, messages=message_texts, db=db
             )
 
             logger.info(
@@ -193,7 +192,7 @@ class AgentMemoryIntegration:
         turn_number: int,
         relevance_score: float,
         injection_type: str,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> AgentMemoryInjection:
         """
         Record that a memory was injected into a conversation turn.
@@ -215,7 +214,7 @@ class AgentMemoryIntegration:
                 memory_id=memory_id,
                 turn_number=turn_number,
                 relevance_score=relevance_score,
-                injection_type=injection_type
+                injection_type=injection_type,
             )
             db.add(injection)
             await db.commit()
@@ -237,7 +236,7 @@ class AgentMemoryIntegration:
         memories: List[ConversationMemory],
         turn_number: int,
         injection_type: str,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> List[AgentMemoryInjection]:
         """
         Record multiple memory injections at once.
@@ -264,7 +263,7 @@ class AgentMemoryIntegration:
                 memory_id=mem.id,
                 turn_number=turn_number,
                 relevance_score=relevance,
-                injection_type=injection_type
+                injection_type=injection_type,
             )
             db.add(injection)
             injections.append(injection)
@@ -298,9 +297,7 @@ class AgentMemoryIntegration:
             logger.error(f"Error updating memory access: {e}")
 
     async def get_conversation_memory_injections(
-        self,
-        conversation_id: UUID,
-        db: AsyncSession
+        self, conversation_id: UUID, db: AsyncSession
     ) -> List[Dict[str, Any]]:
         """
         Get all memory injections for a conversation.
@@ -310,23 +307,31 @@ class AgentMemoryIntegration:
         try:
             result = await db.execute(
                 select(AgentMemoryInjection, ConversationMemory)
-                .join(ConversationMemory, AgentMemoryInjection.memory_id == ConversationMemory.id)
+                .join(
+                    ConversationMemory,
+                    AgentMemoryInjection.memory_id == ConversationMemory.id,
+                )
                 .where(AgentMemoryInjection.conversation_id == conversation_id)
-                .order_by(AgentMemoryInjection.turn_number, desc(AgentMemoryInjection.relevance_score))
+                .order_by(
+                    AgentMemoryInjection.turn_number,
+                    desc(AgentMemoryInjection.relevance_score),
+                )
             )
 
             injections = []
             for injection, memory in result.all():
-                injections.append({
-                    "injection_id": str(injection.id),
-                    "memory_id": str(memory.id),
-                    "turn_number": injection.turn_number,
-                    "relevance_score": injection.relevance_score,
-                    "injection_type": injection.injection_type,
-                    "memory_type": memory.memory_type,
-                    "memory_content": memory.content,
-                    "created_at": injection.created_at.isoformat()
-                })
+                injections.append(
+                    {
+                        "injection_id": str(injection.id),
+                        "memory_id": str(memory.id),
+                        "turn_number": injection.turn_number,
+                        "relevance_score": injection.relevance_score,
+                        "injection_type": injection.injection_type,
+                        "memory_type": memory.memory_type,
+                        "memory_content": memory.content,
+                        "created_at": injection.created_at.isoformat(),
+                    }
+                )
 
             return injections
 
@@ -335,11 +340,7 @@ class AgentMemoryIntegration:
             return []
 
     async def manually_inject_memory(
-        self,
-        conversation_id: UUID,
-        memory_id: UUID,
-        turn_number: int,
-        db: AsyncSession
+        self, conversation_id: UUID, memory_id: UUID, turn_number: int, db: AsyncSession
     ) -> Optional[AgentMemoryInjection]:
         """
         Manually inject a specific memory into the conversation context.
@@ -352,5 +353,5 @@ class AgentMemoryIntegration:
             turn_number=turn_number,
             relevance_score=1.0,  # Manual = maximum relevance
             injection_type="manual",
-            db=db
+            db=db,
         )

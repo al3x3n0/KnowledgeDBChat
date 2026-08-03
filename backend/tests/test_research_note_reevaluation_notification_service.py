@@ -4,7 +4,10 @@ from uuid import uuid4
 import pytest
 
 from app.models.notification import Notification, NotificationType
-from app.services.research_note_reevaluation_notification_service import maybe_emit_reevaluation_notification, resolve_reevaluation_notifications
+from app.services.research_note_reevaluation_notification_service import (
+    maybe_emit_reevaluation_notification,
+    resolve_reevaluation_notifications,
+)
 
 
 class _EmptyResult:
@@ -89,7 +92,10 @@ async def test_maybe_emit_reevaluation_notification_builds_origin_link(monkeypat
     assert result is not None
     assert captured["notification_type"] == "hypothesis_reevaluation_update"
     assert captured["action_url"] == f"/research-notes?note={note.id}"
-    assert captured["data"]["origin_action_url"] == "/autonomous-agents?tab=domain&profileId=profile-1&opportunityId=opp-1"
+    assert (
+        captured["data"]["origin_action_url"]
+        == "/autonomous-agents?tab=domain&profileId=profile-1&opportunityId=opp-1"
+    )
     assert captured["data"]["source_run_ids"] == ["run-1"]
     assert captured["title"] == "Reevaluation ready: Compiler note"
 

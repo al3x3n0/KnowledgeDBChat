@@ -61,7 +61,9 @@ class PatchPRFromChainRequest(BaseModel):
     root_job_id: str = Field(..., min_length=1)
     title: Optional[str] = Field(default=None, max_length=500)
     description: Optional[str] = Field(default=None, max_length=20000)
-    proposal_strategy: str = Field(default="best_passing", pattern="^(best_passing|latest)$")
+    proposal_strategy: str = Field(
+        default="best_passing", pattern="^(best_passing|latest)$"
+    )
     open_after_create: bool = True
 
 
@@ -88,4 +90,3 @@ class PatchPRMergeResponse(BaseModel):
     selected_proposal_id: Optional[str] = None
     applied_files: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
-

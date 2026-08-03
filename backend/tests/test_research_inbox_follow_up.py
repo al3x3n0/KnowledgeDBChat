@@ -1,33 +1,40 @@
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from uuid import uuid4
-from datetime import datetime, timedelta, timezone
 
 import pytest
 
 from app.api.endpoints import agent_jobs as agent_jobs_endpoint
 from app.api.endpoints import research_inbox as research_inbox_endpoint
-from app.api.endpoints import research_monitor_profiles as research_monitor_profiles_endpoint
+from app.api.endpoints import (
+    research_monitor_profiles as research_monitor_profiles_endpoint,
+)
 from app.models.agent_job import AgentJob
 from app.models.domain_research_profile import DomainResearchProfile
-from app.models.research_inbox import ResearchInboxItem
-from app.models.research_portfolio import ResearchPortfolio
-from app.models.research_monitor_profile import ResearchMonitorProfile
 from app.models.notification import NotificationType
+from app.models.research_inbox import ResearchInboxItem
+from app.models.research_monitor_profile import ResearchMonitorProfile
+from app.models.research_portfolio import ResearchPortfolio
+from app.schemas.agent_job import (
+    AgentCheckpointQueueBulkFollowUpActionRequest,
+    AgentCheckpointQueueFollowUpActionRequest,
+)
 from app.schemas.research_inbox import (
     ResearchInboxBulkFollowUpRelaunchRequest,
     ResearchInboxFollowUpRelaunchRequest,
 )
-from app.schemas.agent_job import AgentCheckpointQueueFollowUpActionRequest, AgentCheckpointQueueBulkFollowUpActionRequest
 from app.schemas.research_monitor_profile import (
+    ResearchMonitorBudgetUpdateRequest,
     ResearchMonitorCustomerRebalanceApplyMonitorRequest,
     ResearchMonitorCustomerRebalanceApplyRequest,
-    ResearchMonitorBudgetUpdateRequest,
     ResearchMonitorPolicyRollbackRequest,
     ResearchMonitorPolicyUpdateRequest,
 )
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
-from app.services.research_monitor_profile_service import research_monitor_profile_service
+from app.services.research_monitor_profile_service import (
+    research_monitor_profile_service,
+)
 
 
 class _FakeScalarResult:
@@ -126,13 +133,6 @@ class _FakeInboxSerializeDb:
         return None
 
     async def refresh(self, _obj):
-        return None
-
-    async def get(self, model, lookup_id):
-        if model is DomainResearchProfile and self.profile is not None and self.profile.id == lookup_id:
-            return self.profile
-        if model is ResearchPortfolio and self.portfolio is not None and self.portfolio.id == lookup_id:
-            return self.portfolio
         return None
 
 
@@ -250,9 +250,13 @@ async def test_apply_follow_up_policy_auto_launches_safe_chain(monkeypatch):
         return None
 
     async def fake_create_job_from_chain(request, db, current_user):
-        return SimpleNamespace(id=uuid4(), chain_definition_id=request.chain_definition_id)
+        return SimpleNamespace(
+            id=uuid4(), chain_definition_id=request.chain_definition_id
+        )
 
-    monkeypatch.setattr(agent_jobs_endpoint, "create_job_from_chain", fake_create_job_from_chain)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "create_job_from_chain", fake_create_job_from_chain
+    )
 
     db = SimpleNamespace(get=fake_get, execute=_empty_execute)
     current_user = SimpleNamespace(id=item.user_id)
@@ -332,9 +336,13 @@ async def test_perform_follow_up_queue_action_approves_and_launches(monkeypatch)
     )
 
     async def fake_create_job_from_chain(request, db, current_user):
-        return SimpleNamespace(id=uuid4(), chain_definition_id=request.chain_definition_id)
+        return SimpleNamespace(
+            id=uuid4(), chain_definition_id=request.chain_definition_id
+        )
 
-    monkeypatch.setattr(agent_jobs_endpoint, "create_job_from_chain", fake_create_job_from_chain)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "create_job_from_chain", fake_create_job_from_chain
+    )
 
     response = await agent_jobs_endpoint._perform_follow_up_queue_action(
         item=item,
@@ -381,7 +389,9 @@ async def test_perform_follow_up_queue_action_rejects_without_launch():
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_follow_up_action_threads_source_job_scheduler_state(monkeypatch):
+async def test_checkpoint_queue_follow_up_action_threads_source_job_scheduler_state(
+    monkeypatch,
+):
     item = ResearchInboxItem(
         id=uuid4(),
         user_id=uuid4(),
@@ -434,8 +444,12 @@ async def test_checkpoint_queue_follow_up_action_threads_source_job_scheduler_st
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
         AgentCheckpointQueueFollowUpActionRequest(
@@ -457,7 +471,9 @@ async def test_checkpoint_queue_follow_up_action_threads_source_job_scheduler_st
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_follow_up_action_omits_malformed_source_job_scheduler_state(monkeypatch):
+async def test_checkpoint_queue_follow_up_action_omits_malformed_source_job_scheduler_state(
+    monkeypatch,
+):
     item = ResearchInboxItem(
         id=uuid4(),
         user_id=uuid4(),
@@ -502,8 +518,12 @@ async def test_checkpoint_queue_follow_up_action_omits_malformed_source_job_sche
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
         AgentCheckpointQueueFollowUpActionRequest(
@@ -521,7 +541,9 @@ async def test_checkpoint_queue_follow_up_action_omits_malformed_source_job_sche
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_follow_up_action_threads_profile_parent_job_scheduler_state(monkeypatch):
+async def test_checkpoint_queue_follow_up_action_threads_profile_parent_job_scheduler_state(
+    monkeypatch,
+):
     profile = DomainResearchProfile(
         id=uuid4(),
         user_id=uuid4(),
@@ -585,8 +607,12 @@ async def test_checkpoint_queue_follow_up_action_threads_profile_parent_job_sche
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
         AgentCheckpointQueueFollowUpActionRequest(
@@ -609,7 +635,9 @@ async def test_checkpoint_queue_follow_up_action_threads_profile_parent_job_sche
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_follow_up_action_omits_malformed_profile_parent_job_scheduler_state(monkeypatch):
+async def test_checkpoint_queue_follow_up_action_omits_malformed_profile_parent_job_scheduler_state(
+    monkeypatch,
+):
     profile = DomainResearchProfile(
         id=uuid4(),
         user_id=uuid4(),
@@ -665,8 +693,12 @@ async def test_checkpoint_queue_follow_up_action_omits_malformed_profile_parent_
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
         AgentCheckpointQueueFollowUpActionRequest(
@@ -685,7 +717,9 @@ async def test_checkpoint_queue_follow_up_action_omits_malformed_profile_parent_
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_bulk_follow_up_action_processes_profile_rows(monkeypatch):
+async def test_checkpoint_queue_bulk_follow_up_action_processes_profile_rows(
+    monkeypatch,
+):
     profile = DomainResearchProfile(
         id=uuid4(),
         user_id=uuid4(),
@@ -702,7 +736,11 @@ async def test_checkpoint_queue_bulk_follow_up_action_processes_profile_rows(mon
         goal="Track compiler opportunities",
         job_type="monitor",
         status="failed",
-        results={"execution_strategy": {"scheduler_state": {"queue_reason": "scheduled_recovery"}}},
+        results={
+            "execution_strategy": {
+                "scheduler_state": {"queue_reason": "scheduled_recovery"}
+            }
+        },
     )
     captured_actions = []
     captured_events = []
@@ -723,7 +761,9 @@ async def test_checkpoint_queue_bulk_follow_up_action_processes_profile_rows(mon
         opportunity_id = kwargs.get("profile_opportunity_id")
         captured_actions.append(opportunity_id)
         if opportunity_id == "opp-fail":
-            raise agent_jobs_endpoint.HTTPException(status_code=400, detail="Already launched")
+            raise agent_jobs_endpoint.HTTPException(
+                status_code=400, detail="Already launched"
+            )
         return SimpleNamespace(
             follow_up_launch_status="launched",
             follow_up_operator_decision="approved_launch",
@@ -735,8 +775,12 @@ async def test_checkpoint_queue_bulk_follow_up_action_processes_profile_rows(mon
         captured_events.append(kwargs)
         return None
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "_record_follow_up_queue_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_record_follow_up_queue_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_bulk_follow_up_action(
         AgentCheckpointQueueBulkFollowUpActionRequest(
@@ -763,7 +807,9 @@ async def test_checkpoint_queue_bulk_follow_up_action_processes_profile_rows(mon
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_follow_up_action_threads_portfolio_parent_job_scheduler_state(monkeypatch):
+async def test_checkpoint_queue_follow_up_action_threads_portfolio_parent_job_scheduler_state(
+    monkeypatch,
+):
     portfolio = ResearchPortfolio(
         id=uuid4(),
         user_id=uuid4(),
@@ -824,8 +870,12 @@ async def test_checkpoint_queue_follow_up_action_threads_portfolio_parent_job_sc
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
         AgentCheckpointQueueFollowUpActionRequest(
@@ -848,7 +898,9 @@ async def test_checkpoint_queue_follow_up_action_threads_portfolio_parent_job_sc
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_bulk_follow_up_action_processes_portfolio_rows(monkeypatch):
+async def test_checkpoint_queue_bulk_follow_up_action_processes_portfolio_rows(
+    monkeypatch,
+):
     portfolio = ResearchPortfolio(
         id=uuid4(),
         user_id=uuid4(),
@@ -864,7 +916,11 @@ async def test_checkpoint_queue_bulk_follow_up_action_processes_portfolio_rows(m
         goal="Track scientific opportunities",
         job_type="research",
         status="failed",
-        results={"execution_strategy": {"scheduler_state": {"queue_reason": "execution_failure"}}},
+        results={
+            "execution_strategy": {
+                "scheduler_state": {"queue_reason": "execution_failure"}
+            }
+        },
     )
     captured_actions = []
     captured_events = []
@@ -895,8 +951,12 @@ async def test_checkpoint_queue_bulk_follow_up_action_processes_portfolio_rows(m
         captured_events.append(kwargs)
         return None
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "_record_follow_up_queue_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_record_follow_up_queue_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_bulk_follow_up_action(
         AgentCheckpointQueueBulkFollowUpActionRequest(
@@ -914,12 +974,17 @@ async def test_checkpoint_queue_bulk_follow_up_action_processes_portfolio_rows(m
     assert response.applied == 2
     assert response.failed == 0
     assert all(row.ok for row in response.results)
-    assert {row.portfolio_opportunity_id for row in response.results} == {"opp-1", "opp-2"}
+    assert {row.portfolio_opportunity_id for row in response.results} == {
+        "opp-1",
+        "opp-2",
+    }
     assert len(captured_events) == 2
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_follow_up_action_omits_malformed_portfolio_parent_job_scheduler_state(monkeypatch):
+async def test_checkpoint_queue_follow_up_action_omits_malformed_portfolio_parent_job_scheduler_state(
+    monkeypatch,
+):
     portfolio = ResearchPortfolio(
         id=uuid4(),
         user_id=uuid4(),
@@ -972,8 +1037,12 @@ async def test_checkpoint_queue_follow_up_action_omits_malformed_portfolio_paren
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
         AgentCheckpointQueueFollowUpActionRequest(
@@ -992,7 +1061,9 @@ async def test_checkpoint_queue_follow_up_action_omits_malformed_portfolio_paren
 
 
 @pytest.mark.asyncio
-async def test_checkpoint_queue_follow_up_action_omits_scheduler_state_without_source_job(monkeypatch):
+async def test_checkpoint_queue_follow_up_action_omits_scheduler_state_without_source_job(
+    monkeypatch,
+):
     item = ResearchInboxItem(
         id=uuid4(),
         user_id=uuid4(),
@@ -1026,8 +1097,12 @@ async def test_checkpoint_queue_follow_up_action_omits_scheduler_state_without_s
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action)
-    monkeypatch.setattr(agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_action
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint, "record_autonomy_decision_event", _fake_record
+    )
 
     response = await agent_jobs_endpoint.checkpoint_queue_follow_up_action(
         AgentCheckpointQueueFollowUpActionRequest(
@@ -1053,7 +1128,9 @@ async def test_sync_follow_up_outcome_for_job_records_completed_summary():
         goal="Investigate the accepted signal",
         job_type="research",
         status="completed",
-        results={"summary": "Produced a concise follow-up report with concrete next steps."},
+        results={
+            "summary": "Produced a concise follow-up report with concrete next steps."
+        },
     )
     item = ResearchInboxItem(
         id=uuid4(),
@@ -1066,12 +1143,17 @@ async def test_sync_follow_up_outcome_for_job_records_completed_summary():
         follow_up_launch_status="launched",
     )
 
-    updated = await sync_follow_up_outcome_for_job(_FakeInboxOutcomeSession([item]), job)
+    updated = await sync_follow_up_outcome_for_job(
+        _FakeInboxOutcomeSession([item]), job
+    )
 
     assert updated == 1
     assert item.follow_up_outcome_status == "completed"
     assert item.follow_up_outcome_recorded_at is not None
-    assert item.follow_up_outcome_summary == "Produced a concise follow-up report with concrete next steps."
+    assert (
+        item.follow_up_outcome_summary
+        == "Produced a concise follow-up report with concrete next steps."
+    )
 
 
 @pytest.mark.asyncio
@@ -1303,7 +1385,10 @@ async def test_sync_follow_up_outcome_for_job_projects_completed_profile_opportu
     assert updated == 1
     row = profile.latest_summary["opportunities"][0]
     assert row["follow_up_outcome_status"] == "completed"
-    assert row["follow_up_outcome_summary"] == "Validated the hotspot and documented next steps."
+    assert (
+        row["follow_up_outcome_summary"]
+        == "Validated the hotspot and documented next steps."
+    )
     assert row["follow_up_last_job_id"] == str(job.id)
     assert row["last_decision_type"] == "follow_up_completed"
     assert row["last_decision_reason_code"] == "follow_up_completed"
@@ -1365,7 +1450,10 @@ async def test_sync_follow_up_outcome_for_job_projects_failed_portfolio_opportun
     assert updated == 1
     row = portfolio.opportunities[0]
     assert row["follow_up_outcome_status"] == "failed"
-    assert row["follow_up_outcome_summary"] == "Verification failed in the benchmark harness."
+    assert (
+        row["follow_up_outcome_summary"]
+        == "Verification failed in the benchmark harness."
+    )
     assert row["follow_up_last_job_id"] == str(job.id)
     assert row["last_decision_type"] == "follow_up_failed"
 
@@ -1374,11 +1462,31 @@ async def test_sync_follow_up_outcome_for_job_projects_failed_portfolio_opportun
 async def test_recompute_profile_rewards_completed_follow_up_outcomes():
     session = _FakeProfileSession(
         [
-            _FakeExecuteResult(rows=[("accepted", "Latency regression note", "API latency regression found")]),
             _FakeExecuteResult(
                 rows=[
-                    ("single_research_job", "launched", "approved_launch", "document", "completed"),
-                    ("deep_dive_chain", "launched", "approved_launch", "document", "failed"),
+                    (
+                        "accepted",
+                        "Latency regression note",
+                        "API latency regression found",
+                    )
+                ]
+            ),
+            _FakeExecuteResult(
+                rows=[
+                    (
+                        "single_research_job",
+                        "launched",
+                        "approved_launch",
+                        "document",
+                        "completed",
+                    ),
+                    (
+                        "deep_dive_chain",
+                        "launched",
+                        "approved_launch",
+                        "document",
+                        "failed",
+                    ),
                 ]
             ),
             _FakeExecuteResult(scalar=None),
@@ -1391,7 +1499,10 @@ async def test_recompute_profile_rewards_completed_follow_up_outcomes():
         customer="Acme",
     )
 
-    assert profile.recommendation_scores["single_research_job"] > profile.recommendation_scores["deep_dive_chain"]
+    assert (
+        profile.recommendation_scores["single_research_job"]
+        > profile.recommendation_scores["deep_dive_chain"]
+    )
     assert profile.outcome_counters["completed_follow_up"] == 1
     assert profile.outcome_counters["failed_follow_up"] == 1
 
@@ -1486,11 +1597,17 @@ def test_build_effectiveness_snapshot_scores_monitor_health_and_recommendations(
                             "change_source": "guided_recommendation",
                             "previous_follow_up_autonomy": {
                                 "mode": "manual_only",
-                                "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+                                "allowed_recommendations": [
+                                    "deep_dive_chain",
+                                    "single_research_job",
+                                ],
                             },
                             "next_follow_up_autonomy": {
                                 "mode": "auto_launch_safe",
-                                "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+                                "allowed_recommendations": [
+                                    "deep_dive_chain",
+                                    "single_research_job",
+                                ],
                             },
                             "analytics_context": {"health_bucket": "strong"},
                         }
@@ -1536,16 +1653,25 @@ def test_build_effectiveness_snapshot_scores_monitor_health_and_recommendations(
     assert snapshot["recommendations"][0]["recommendation_key"] == "deep_dive_chain"
     assert snapshot["recommendations"][0]["score_trend"] == "positive"
 
-    strong_monitor = next(row for row in snapshot["monitors"] if row["monitor_name"] == "Acme Monitor")
-    weak_monitor = next(row for row in snapshot["monitors"] if row["monitor_name"] == "Beta Watch")
+    strong_monitor = next(
+        row for row in snapshot["monitors"] if row["monitor_name"] == "Acme Monitor"
+    )
+    weak_monitor = next(
+        row for row in snapshot["monitors"] if row["monitor_name"] == "Beta Watch"
+    )
 
     assert strong_monitor["health_bucket"] == "strong"
     assert strong_monitor["follow_up_completed_count"] == 2
-    assert strong_monitor["top_recommendations"][0]["recommendation_key"] == "deep_dive_chain"
+    assert (
+        strong_monitor["top_recommendations"][0]["recommendation_key"]
+        == "deep_dive_chain"
+    )
     assert strong_monitor["recommended_policy_mode"] == "auto_launch_safe"
     assert strong_monitor["policy_history_count"] == 1
     assert strong_monitor["budget_history_count"] == 1
-    assert strong_monitor["latest_budget_change_source"] == "customer_rebalance_guidance"
+    assert (
+        strong_monitor["latest_budget_change_source"] == "customer_rebalance_guidance"
+    )
     assert strong_monitor["latest_policy_change_source"] == "guided_recommendation"
     assert strong_monitor["recent_policy_history"][0]["id"] == "history-1"
     assert "deep_dive_chain" in strong_monitor["recommended_allowed_recommendations"]
@@ -1554,8 +1680,12 @@ def test_build_effectiveness_snapshot_scores_monitor_health_and_recommendations(
     assert "manual_only" in weak_monitor["policy_mode_counts"]
     assert weak_monitor["recommended_policy_mode"] == "manual_only"
 
-    acme_customer = next(row for row in snapshot["customers"] if row["customer"] == "Acme")
-    beta_customer = next(row for row in snapshot["customers"] if row["customer"] == "Beta")
+    acme_customer = next(
+        row for row in snapshot["customers"] if row["customer"] == "Acme"
+    )
+    beta_customer = next(
+        row for row in snapshot["customers"] if row["customer"] == "Beta"
+    )
 
     assert acme_customer["monitor_count"] == 1
     assert acme_customer["strong_monitor_count"] == 1
@@ -1617,7 +1747,12 @@ def test_customer_rebalance_guidance_identifies_pressure_and_relief_monitors():
         },
     ]
 
-    status, reasons, summary, changes = research_monitor_profile_service._build_customer_rebalance_guidance(
+    (
+        status,
+        reasons,
+        summary,
+        changes,
+    ) = research_monitor_profile_service._build_customer_rebalance_guidance(
         customer_row=customer_row,
         monitor_rows=monitor_rows,
     )
@@ -1625,10 +1760,20 @@ def test_customer_rebalance_guidance_identifies_pressure_and_relief_monitors():
     assert status == "actionable"
     assert "Pressure Monitor" in summary
     assert len(changes) == 2
-    pressure_change = next(change for change in changes if change["monitor_name"] == "Pressure Monitor")
-    relief_change = next(change for change in changes if change["monitor_name"] == "Relief Monitor")
-    assert pressure_change["proposed_budget"]["auto_launch_limit_24h"] < pressure_change["current_budget"]["auto_launch_limit_24h"]
-    assert relief_change["proposed_budget"]["auto_launch_limit_24h"] > relief_change["current_budget"]["auto_launch_limit_24h"]
+    pressure_change = next(
+        change for change in changes if change["monitor_name"] == "Pressure Monitor"
+    )
+    relief_change = next(
+        change for change in changes if change["monitor_name"] == "Relief Monitor"
+    )
+    assert (
+        pressure_change["proposed_budget"]["auto_launch_limit_24h"]
+        < pressure_change["current_budget"]["auto_launch_limit_24h"]
+    )
+    assert (
+        relief_change["proposed_budget"]["auto_launch_limit_24h"]
+        > relief_change["current_budget"]["auto_launch_limit_24h"]
+    )
 
 
 def test_build_effectiveness_snapshot_evaluates_policy_change_before_and_after():
@@ -1711,7 +1856,12 @@ def test_build_effectiveness_snapshot_evaluates_policy_change_before_and_after()
                 goal="Monitor Acme updates",
                 job_type="monitor",
                 status="completed",
-                config={"follow_up_autonomy": {"mode": "auto_launch_safe", "allowed_recommendations": ["deep_dive_chain"]}},
+                config={
+                    "follow_up_autonomy": {
+                        "mode": "auto_launch_safe",
+                        "allowed_recommendations": ["deep_dive_chain"],
+                    }
+                },
                 results={
                     "follow_up_policy_history": [
                         {
@@ -1721,7 +1871,10 @@ def test_build_effectiveness_snapshot_evaluates_policy_change_before_and_after()
                             "change_source": "guided_recommendation",
                             "previous_follow_up_autonomy": {
                                 "mode": "manual_only",
-                                "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+                                "allowed_recommendations": [
+                                    "deep_dive_chain",
+                                    "single_research_job",
+                                ],
                             },
                             "next_follow_up_autonomy": {
                                 "mode": "auto_launch_safe",
@@ -1741,10 +1894,19 @@ def test_build_effectiveness_snapshot_evaluates_policy_change_before_and_after()
     assert monitor["latest_policy_evaluation_status"] == "improving"
     assert monitor["latest_policy_evaluation_sample_count"] == 2
     assert monitor["recent_policy_history"][0]["evaluation_status"] == "improving"
-    assert monitor["recent_policy_history"][0]["after_counts"]["follow_up_completed_count"] == 2
+    assert (
+        monitor["recent_policy_history"][0]["after_counts"]["follow_up_completed_count"]
+        == 2
+    )
     assert monitor["recent_policy_history"][0]["before_counts"]["blocked_count"] == 1
-    assert monitor["recent_policy_history"][0]["delta_counts"]["follow_up_completed_count"] == 1
-    assert any("Completion rate improved" in reason for reason in monitor["latest_policy_evaluation_reasons"])
+    assert (
+        monitor["recent_policy_history"][0]["delta_counts"]["follow_up_completed_count"]
+        == 1
+    )
+    assert any(
+        "Completion rate improved" in reason
+        for reason in monitor["latest_policy_evaluation_reasons"]
+    )
     assert monitor["recent_policy_history"][0]["sample_items"][0]["period"] == "before"
     assert monitor["recent_policy_history"][0]["sample_items"][-1]["period"] == "after"
 
@@ -1805,7 +1967,12 @@ def test_build_policy_simulation_snapshot_estimates_policy_impact():
         goal="Monitor Acme updates",
         job_type="monitor",
         status="completed",
-        config={"follow_up_autonomy": {"mode": "manual_only", "allowed_recommendations": ["deep_dive_chain", "single_research_job"]}},
+        config={
+            "follow_up_autonomy": {
+                "mode": "manual_only",
+                "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+            }
+        },
     )
     items = [
         ResearchInboxItem(
@@ -1835,7 +2002,10 @@ def test_build_policy_simulation_snapshot_estimates_policy_impact():
     snapshot = research_monitor_profile_service.build_policy_simulation_snapshot(
         monitor_job=monitor_job,
         items=items,
-        proposed_policy={"mode": "auto_launch_safe", "allowed_recommendations": ["deep_dive_chain", "single_research_job"]},
+        proposed_policy={
+            "mode": "auto_launch_safe",
+            "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+        },
         learning_profile={
             "token_scores": {},
             "phrase_scores": {},
@@ -1854,7 +2024,9 @@ def test_build_policy_simulation_snapshot_estimates_policy_impact():
 
 
 @pytest.mark.asyncio
-async def test_relaunch_inbox_follow_up_relaunches_failed_safe_recommendation(monkeypatch):
+async def test_relaunch_inbox_follow_up_relaunches_failed_safe_recommendation(
+    monkeypatch,
+):
     item = ResearchInboxItem(
         id=uuid4(),
         user_id=uuid4(),
@@ -1871,7 +2043,9 @@ async def test_relaunch_inbox_follow_up_relaunches_failed_safe_recommendation(mo
     )
 
     async def fake_create_job_from_chain(request, db, current_user):
-        return SimpleNamespace(id=uuid4(), chain_definition_id=request.chain_definition_id)
+        return SimpleNamespace(
+            id=uuid4(), chain_definition_id=request.chain_definition_id
+        )
 
     class _RelaunchDb:
         async def get(self, model, lookup_id):
@@ -1885,18 +2059,30 @@ async def test_relaunch_inbox_follow_up_relaunches_failed_safe_recommendation(mo
         async def refresh(self, _obj):
             return None
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_load_follow_up_learning_profile", AsyncMock(return_value={
-        "token_scores": {},
-        "phrase_scores": {},
-        "recommendation_scores": {},
-        "source_type_scores": {},
-        "outcome_counters": {},
-    }))
-    monkeypatch.setattr(agent_jobs_endpoint, "_launch_follow_up_action", AsyncMock(return_value=SimpleNamespace(id=uuid4())))
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_load_follow_up_learning_profile",
+        AsyncMock(
+            return_value={
+                "token_scores": {},
+                "phrase_scores": {},
+                "recommendation_scores": {},
+                "source_type_scores": {},
+                "outcome_counters": {},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_launch_follow_up_action",
+        AsyncMock(return_value=SimpleNamespace(id=uuid4())),
+    )
 
     response = await research_inbox_endpoint.relaunch_inbox_follow_up(
         str(item.id),
-        ResearchInboxFollowUpRelaunchRequest(operator_note="Retry this bounded follow-up."),
+        ResearchInboxFollowUpRelaunchRequest(
+            operator_note="Retry this bounded follow-up."
+        ),
         current_user=SimpleNamespace(id=item.user_id),
         db=_RelaunchDb(),
     )
@@ -1907,7 +2093,9 @@ async def test_relaunch_inbox_follow_up_relaunches_failed_safe_recommendation(mo
 
 
 @pytest.mark.asyncio
-async def test_relaunch_inbox_follow_up_projects_relaunch_to_profile_opportunity(monkeypatch):
+async def test_relaunch_inbox_follow_up_projects_relaunch_to_profile_opportunity(
+    monkeypatch,
+):
     profile = DomainResearchProfile(
         id=uuid4(),
         user_id=uuid4(),
@@ -1977,18 +2165,30 @@ async def test_relaunch_inbox_follow_up_projects_relaunch_to_profile_opportunity
         async def refresh(self, _obj):
             return None
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_load_follow_up_learning_profile", AsyncMock(return_value={
-        "token_scores": {},
-        "phrase_scores": {},
-        "recommendation_scores": {},
-        "source_type_scores": {},
-        "outcome_counters": {},
-    }))
-    monkeypatch.setattr(agent_jobs_endpoint, "_launch_follow_up_action", AsyncMock(return_value=launched_job))
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_load_follow_up_learning_profile",
+        AsyncMock(
+            return_value={
+                "token_scores": {},
+                "phrase_scores": {},
+                "recommendation_scores": {},
+                "source_type_scores": {},
+                "outcome_counters": {},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_launch_follow_up_action",
+        AsyncMock(return_value=launched_job),
+    )
 
     response = await research_inbox_endpoint.relaunch_inbox_follow_up(
         str(item.id),
-        ResearchInboxFollowUpRelaunchRequest(operator_note="Retry this bounded follow-up."),
+        ResearchInboxFollowUpRelaunchRequest(
+            operator_note="Retry this bounded follow-up."
+        ),
         current_user=SimpleNamespace(id=item.user_id),
         db=_RelaunchDb(),
     )
@@ -2007,7 +2207,9 @@ async def test_relaunch_inbox_follow_up_projects_relaunch_to_profile_opportunity
 
 
 @pytest.mark.asyncio
-async def test_relaunch_inbox_follow_up_projects_relaunch_to_portfolio_opportunity(monkeypatch):
+async def test_relaunch_inbox_follow_up_projects_relaunch_to_portfolio_opportunity(
+    monkeypatch,
+):
     portfolio = ResearchPortfolio(
         id=uuid4(),
         user_id=uuid4(),
@@ -2074,18 +2276,30 @@ async def test_relaunch_inbox_follow_up_projects_relaunch_to_portfolio_opportuni
         async def refresh(self, _obj):
             return None
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_load_follow_up_learning_profile", AsyncMock(return_value={
-        "token_scores": {},
-        "phrase_scores": {},
-        "recommendation_scores": {},
-        "source_type_scores": {},
-        "outcome_counters": {},
-    }))
-    monkeypatch.setattr(agent_jobs_endpoint, "_launch_follow_up_action", AsyncMock(return_value=launched_job))
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_load_follow_up_learning_profile",
+        AsyncMock(
+            return_value={
+                "token_scores": {},
+                "phrase_scores": {},
+                "recommendation_scores": {},
+                "source_type_scores": {},
+                "outcome_counters": {},
+            }
+        ),
+    )
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_launch_follow_up_action",
+        AsyncMock(return_value=launched_job),
+    )
 
     response = await research_inbox_endpoint.relaunch_inbox_follow_up(
         str(item.id),
-        ResearchInboxFollowUpRelaunchRequest(operator_note="Retry this bounded follow-up."),
+        ResearchInboxFollowUpRelaunchRequest(
+            operator_note="Retry this bounded follow-up."
+        ),
         current_user=SimpleNamespace(id=item.user_id),
         db=_RelaunchDb(),
     )
@@ -2155,14 +2369,18 @@ async def test_bulk_relaunch_inbox_follow_up_relaunches_multiple_items(monkeypat
     monkeypatch.setattr(
         research_inbox_endpoint,
         "_relaunch_follow_up_inbox_item",
-        AsyncMock(side_effect=[
-            SimpleNamespace(follow_up_job_id=uuid4()),
-            SimpleNamespace(follow_up_job_id=uuid4()),
-        ]),
+        AsyncMock(
+            side_effect=[
+                SimpleNamespace(follow_up_job_id=uuid4()),
+                SimpleNamespace(follow_up_job_id=uuid4()),
+            ]
+        ),
     )
 
     response = await research_inbox_endpoint.bulk_relaunch_inbox_follow_up(
-        ResearchInboxBulkFollowUpRelaunchRequest(item_ids=[item_a.id, item_b.id], operator_note="Retry in bulk."),
+        ResearchInboxBulkFollowUpRelaunchRequest(
+            item_ids=[item_a.id, item_b.id], operator_note="Retry in bulk."
+        ),
         current_user=SimpleNamespace(id=user_id),
         db=db,
     )
@@ -2228,10 +2446,15 @@ async def test_bulk_relaunch_inbox_follow_up_reports_partial_failures(monkeypatc
     monkeypatch.setattr(
         research_inbox_endpoint,
         "_relaunch_follow_up_inbox_item",
-        AsyncMock(side_effect=[
-            SimpleNamespace(follow_up_job_id=uuid4()),
-            agent_jobs_endpoint.HTTPException(status_code=400, detail="Only failed or cancelled launched follow-ups can be relaunched"),
-        ]),
+        AsyncMock(
+            side_effect=[
+                SimpleNamespace(follow_up_job_id=uuid4()),
+                agent_jobs_endpoint.HTTPException(
+                    status_code=400,
+                    detail="Only failed or cancelled launched follow-ups can be relaunched",
+                ),
+            ]
+        ),
     )
 
     response = await research_inbox_endpoint.bulk_relaunch_inbox_follow_up(
@@ -2245,7 +2468,10 @@ async def test_bulk_relaunch_inbox_follow_up_reports_partial_failures(monkeypatc
     assert response.failed == 1
     assert response.results[0].ok is True
     assert response.results[1].ok is False
-    assert response.results[1].error == "Only failed or cancelled launched follow-ups can be relaunched"
+    assert (
+        response.results[1].error
+        == "Only failed or cancelled launched follow-ups can be relaunched"
+    )
 
 
 @pytest.mark.asyncio
@@ -2376,7 +2602,12 @@ async def test_update_monitor_policy_updates_follow_up_autonomy(monkeypatch):
         goal="Monitor updates",
         job_type="monitor",
         status="running",
-        config={"follow_up_autonomy": {"mode": "manual_only", "allowed_recommendations": ["deep_dive_chain"]}},
+        config={
+            "follow_up_autonomy": {
+                "mode": "manual_only",
+                "allowed_recommendations": ["deep_dive_chain"],
+            }
+        },
         results={
             "execution_strategy": {
                 "scheduler_state": {
@@ -2402,7 +2633,11 @@ async def test_update_monitor_policy_updates_follow_up_autonomy(monkeypatch):
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(research_monitor_profiles_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        research_monitor_profiles_endpoint,
+        "record_autonomy_decision_event",
+        _fake_record,
+    )
 
     response = await research_monitor_profiles_endpoint.update_monitor_policy(
         str(job.id),
@@ -2420,24 +2655,40 @@ async def test_update_monitor_policy_updates_follow_up_autonomy(monkeypatch):
     assert response.monitor_job_id == job.id
     assert response.automation_profile == "balanced"
     assert response.automation_policy["follow_up_review_mode"] == "queue_for_approval"
-    assert response.automation_policy["allowed_recommendations"] == ["single_research_job"]
+    assert response.automation_policy["allowed_recommendations"] == [
+        "single_research_job"
+    ]
     assert response.effective_policy["follow_up_review_mode"] == "queue_for_approval"
     assert response.follow_up_autonomy.mode == "queue_for_approval"
-    assert response.follow_up_autonomy.allowed_recommendations == ["single_research_job"]
+    assert response.follow_up_autonomy.allowed_recommendations == [
+        "single_research_job"
+    ]
     assert response.policy_history_count == 1
     assert response.latest_history_entry is not None
     assert response.latest_history_entry.change_source == "guided_recommendation"
     assert response.latest_history_entry.change_reason == "Monitor performance improved"
     assert job.config["automation_profile"] == "balanced"
-    assert job.config["automation_policy"]["follow_up_review_mode"] == "queue_for_approval"
-    assert job.config["automation_policy"]["allowed_recommendations"] == ["single_research_job"]
-    assert job.config["follow_up_autonomy"]["mode"] == "queue_for_approval"
-    assert job.results["follow_up_policy_history"][0]["next_automation_profile"] == "balanced"
     assert (
-        job.results["follow_up_policy_history"][0]["next_automation_policy"]["follow_up_review_mode"]
+        job.config["automation_policy"]["follow_up_review_mode"] == "queue_for_approval"
+    )
+    assert job.config["automation_policy"]["allowed_recommendations"] == [
+        "single_research_job"
+    ]
+    assert job.config["follow_up_autonomy"]["mode"] == "queue_for_approval"
+    assert (
+        job.results["follow_up_policy_history"][0]["next_automation_profile"]
+        == "balanced"
+    )
+    assert (
+        job.results["follow_up_policy_history"][0]["next_automation_policy"][
+            "follow_up_review_mode"
+        ]
         == "queue_for_approval"
     )
-    assert job.results["follow_up_policy_history"][0]["next_follow_up_autonomy"]["mode"] == "queue_for_approval"
+    assert (
+        job.results["follow_up_policy_history"][0]["next_follow_up_autonomy"]["mode"]
+        == "queue_for_approval"
+    )
     assert captured["reason_label"] == "Guided recommendation"
     # scheduler_state is the full normalized 11-key dict from extract_scheduler_state.
     assert captured["scheduler_state"] == {
@@ -2456,7 +2707,9 @@ async def test_update_monitor_policy_updates_follow_up_autonomy(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_rollback_monitor_policy_restores_previous_follow_up_autonomy(monkeypatch):
+async def test_rollback_monitor_policy_restores_previous_follow_up_autonomy(
+    monkeypatch,
+):
     job = AgentJob(
         id=uuid4(),
         user_id=uuid4(),
@@ -2470,7 +2723,10 @@ async def test_rollback_monitor_policy_restores_previous_follow_up_autonomy(monk
                 "follow_up_review_mode": "auto_launch_safe",
                 "allowed_recommendations": ["deep_dive_chain"],
             },
-            "follow_up_autonomy": {"mode": "auto_launch_safe", "allowed_recommendations": ["deep_dive_chain"]},
+            "follow_up_autonomy": {
+                "mode": "auto_launch_safe",
+                "allowed_recommendations": ["deep_dive_chain"],
+            },
         },
         results={
             "execution_strategy": {
@@ -2489,7 +2745,10 @@ async def test_rollback_monitor_policy_restores_previous_follow_up_autonomy(monk
                     "previous_automation_profile": "balanced",
                     "previous_automation_policy": {
                         "follow_up_review_mode": "manual_only",
-                        "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+                        "allowed_recommendations": [
+                            "deep_dive_chain",
+                            "single_research_job",
+                        ],
                     },
                     "next_automation_profile": "max_autonomy",
                     "next_automation_policy": {
@@ -2516,7 +2775,11 @@ async def test_rollback_monitor_policy_restores_previous_follow_up_autonomy(monk
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(research_monitor_profiles_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        research_monitor_profiles_endpoint,
+        "record_autonomy_decision_event",
+        _fake_record,
+    )
 
     response = await research_monitor_profiles_endpoint.rollback_monitor_policy(
         str(job.id),
@@ -2579,7 +2842,11 @@ async def test_update_monitor_budget_omits_malformed_scheduler_state(monkeypatch
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr(research_monitor_profiles_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        research_monitor_profiles_endpoint,
+        "record_autonomy_decision_event",
+        _fake_record,
+    )
 
     response = await research_monitor_profiles_endpoint.update_monitor_budget(
         str(job.id),
@@ -2666,16 +2933,30 @@ def test_customer_rebalance_evaluation_scores_before_and_after():
         }
     ]
 
-    detail = research_monitor_profile_service.build_customer_rebalance_evaluation_detail(
-        customer="Beta",
-        history_entry=history_entry,
-        items=items,
-        monitor_rows=monitor_rows,
-        jobs_by_id={monitor_id: AgentJob(id=monitor_id, user_id=user_id, name="Beta Watch", goal="", job_type="monitor", status="completed")},
+    detail = (
+        research_monitor_profile_service.build_customer_rebalance_evaluation_detail(
+            customer="Beta",
+            history_entry=history_entry,
+            items=items,
+            monitor_rows=monitor_rows,
+            jobs_by_id={
+                monitor_id: AgentJob(
+                    id=monitor_id,
+                    user_id=user_id,
+                    name="Beta Watch",
+                    goal="",
+                    job_type="monitor",
+                    status="completed",
+                )
+            },
+        )
     )
 
     assert detail["evaluation_status"] in {"improving", "mixed"}
-    assert detail["after_counts"]["follow_up_completed_count"] >= detail["before_counts"]["follow_up_completed_count"]
+    assert (
+        detail["after_counts"]["follow_up_completed_count"]
+        >= detail["before_counts"]["follow_up_completed_count"]
+    )
     assert detail["history_entry_id"] == "rebalance-1"
 
 
@@ -2701,7 +2982,14 @@ async def test_apply_customer_rebalance_records_customer_history(monkeypatch):
         goal="Monitor Beta",
         job_type="monitor",
         status="running",
-        config={"autonomy_budget": {"auto_launch_limit_24h": 3, "approval_queue_limit_24h": 6, "alert_limit_24h": 4, "queue_backlog_cap": 8}},
+        config={
+            "autonomy_budget": {
+                "auto_launch_limit_24h": 3,
+                "approval_queue_limit_24h": 6,
+                "alert_limit_24h": 4,
+                "queue_backlog_cap": 8,
+            }
+        },
     )
 
     class _ScalarResult:
@@ -2745,16 +3033,41 @@ async def test_apply_customer_rebalance_records_customer_history(monkeypatch):
             "guidance_status": "actionable",
             "guidance_summary": "Shift budget headroom from Beta Watch.",
             "guidance_reasons": [],
-            "before_capacity": {"auto_launch_limit_24h": 3, "approval_queue_limit_24h": 6, "alert_limit_24h": 4, "queue_backlog_cap": 8},
-            "after_capacity": {"auto_launch_limit_24h": 2, "approval_queue_limit_24h": 5, "alert_limit_24h": 3, "queue_backlog_cap": 7},
+            "before_capacity": {
+                "auto_launch_limit_24h": 3,
+                "approval_queue_limit_24h": 6,
+                "alert_limit_24h": 4,
+                "queue_backlog_cap": 8,
+            },
+            "after_capacity": {
+                "auto_launch_limit_24h": 2,
+                "approval_queue_limit_24h": 5,
+                "alert_limit_24h": 3,
+                "queue_backlog_cap": 7,
+            },
             "changes": [
                 {
                     "monitor_job_id": job.id,
                     "monitor_name": "Beta Watch",
                     "customer": "Beta",
-                    "current_budget": {"auto_launch_limit_24h": 3, "approval_queue_limit_24h": 6, "alert_limit_24h": 4, "queue_backlog_cap": 8},
-                    "proposed_budget": {"auto_launch_limit_24h": 2, "approval_queue_limit_24h": 5, "alert_limit_24h": 3, "queue_backlog_cap": 7},
-                    "delta_budget": {"auto_launch_limit_24h": 1, "approval_queue_limit_24h": 1, "alert_limit_24h": 1, "queue_backlog_cap": 1},
+                    "current_budget": {
+                        "auto_launch_limit_24h": 3,
+                        "approval_queue_limit_24h": 6,
+                        "alert_limit_24h": 4,
+                        "queue_backlog_cap": 8,
+                    },
+                    "proposed_budget": {
+                        "auto_launch_limit_24h": 2,
+                        "approval_queue_limit_24h": 5,
+                        "alert_limit_24h": 3,
+                        "queue_backlog_cap": 7,
+                    },
+                    "delta_budget": {
+                        "auto_launch_limit_24h": 1,
+                        "approval_queue_limit_24h": 1,
+                        "alert_limit_24h": 1,
+                        "queue_backlog_cap": 1,
+                    },
                     "reasons": ["Reduce pressure"],
                 }
             ],
@@ -2768,7 +3081,11 @@ async def test_apply_customer_rebalance_records_customer_history(monkeypatch):
 
     original_preview = research_monitor_profile_service.build_customer_rebalance_preview
     research_monitor_profile_service.build_customer_rebalance_preview = _fake_preview
-    monkeypatch.setattr(research_monitor_profiles_endpoint, "record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        research_monitor_profiles_endpoint,
+        "record_autonomy_decision_event",
+        _fake_record,
+    )
     try:
         response = await research_monitor_profiles_endpoint.apply_customer_rebalance(
             ResearchMonitorCustomerRebalanceApplyRequest(
@@ -2788,11 +3105,16 @@ async def test_apply_customer_rebalance_records_customer_history(monkeypatch):
             db=_Db(),
         )
     finally:
-        research_monitor_profile_service.build_customer_rebalance_preview = original_preview
+        research_monitor_profile_service.build_customer_rebalance_preview = (
+            original_preview
+        )
 
     assert response.customer == "Beta"
     assert profile.customer_rebalance_history
-    assert profile.customer_rebalance_history[0]["change_reason"] == "Reduce customer pressure"
+    assert (
+        profile.customer_rebalance_history[0]["change_reason"]
+        == "Reduce customer pressure"
+    )
     assert captured["event_type"] == "customer_rebalanced"
     assert captured["reason_label"] == "Customer rebalance guidance"
     assert captured["scheduler_state"] is None

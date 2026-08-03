@@ -4,49 +4,17 @@ from __future__ import annotations
 
 import asyncio
 import json
-import math
 import os
-import random
 import re
-import uuid
-from collections import Counter
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from datetime import datetime, timedelta
+from typing import Any, Dict, Optional
 from uuid import UUID
 
-from loguru import logger
-from sqlalchemy import desc, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.agent_job import AgentJob, AgentJobStatus, ChainTriggerCondition
-from app.models.agent_definition import AgentDefinition
-from app.models.agent_tool_prior import AgentToolPrior
+from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
-from app.models.memory import UserPreferences
-from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
-from app.services.ai_hub_eval_service import ai_hub_eval_service
-from app.services.project_profile_service import (
-    build_project_profile,
-    format_project_profile_for_prompt,
-    infer_project_profile_from_paths,
-)
-from app.services.research_opportunity_service import (
-    collect_research_opportunity_linked_ids,
-    compute_research_opportunity_evidence_revision,
-    compute_research_portfolio_config_revision,
-    list_normalized_research_opportunities,
-    merge_operator_fields,
-    normalize_research_opportunity,
-    summarize_research_opportunity_autonomy_states,
-    summarize_research_opportunity_stages,
-)
-from app.services.autonomy_service import (
-    build_domain_profile_compat_policy,
-    current_domain_profile_policy_snapshot,
-    resolve_domain_profile_automation_contract,
-)
 
 
 class AgentIngestionDemoRunnerService:
@@ -61,7 +29,6 @@ class AgentIngestionDemoRunnerService:
         """
         Deterministic runner: extract GitHub/GitLab repo links for an arXiv Research Inbox item.
         """
-        import re
         import httpx
 
         from app.models.research_inbox import ResearchInboxItem
@@ -71,14 +38,22 @@ class AgentIngestionDemoRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "arxiv_inbox_extract_repos", "result": details})
+            job.add_log_entry(
+                {
+                    "phase": phase,
+                    "action": "arxiv_inbox_extract_repos",
+                    "result": details,
+                }
+            )
 
         def _extract(text: str) -> list[dict]:
             s = text or ""
             out: list[dict] = []
             seen: set[str] = set()
 
-            for m in re.finditer(r"(https?://github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+))", s):
+            for m in re.finditer(
+                r"(https?://github\\.com/([A-Za-z0-9_.-]+)/([A-Za-z0-9_.-]+))", s
+            ):
                 url = m.group(1)
                 owner = m.group(2)
                 repo = m.group(3)
@@ -148,7 +123,10 @@ class AgentIngestionDemoRunnerService:
             if entry_url:
                 _emit(45, "fetching", "Fetching arXiv page for repo links")
                 try:
-                    async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": "KnowledgeDBChat-RepoScout"}) as client:
+                    async with httpx.AsyncClient(
+                        timeout=20.0,
+                        headers={"User-Agent": "KnowledgeDBChat-RepoScout"},
+                    ) as client:
                         resp = await client.get(entry_url)
                         if resp.status_code == 200:
                             repos = _extract(resp.text)
@@ -160,7 +138,11 @@ class AgentIngestionDemoRunnerService:
         await db.commit()
 
         job.results = job.results or {}
-        job.results["repos_extracted"] = {"inbox_item_id": str(item.id), "count": len(repos), "repos": repos}
+        job.results["repos_extracted"] = {
+            "inbox_item_id": str(item.id),
+            "count": len(repos),
+            "repos": repos,
+        }
         _emit(100, "completed", f"Found {len(repos)} repos")
         job.status = AgentJobStatus.COMPLETED.value
         job.completed_at = datetime.utcnow()
@@ -196,11 +178,10 @@ class AgentIngestionDemoRunnerService:
         """
         Deterministic runner: create a git repo document source and wait until code files are available.
         """
-        import re
         from urllib.parse import urlparse
         from uuid import uuid4
 
-        from app.models.document import Document, DocumentSource
+        from app.models.document import Document
         from app.services.document_service import DocumentService
         from app.tasks.ingestion_tasks import ingest_from_source
 
@@ -209,7 +190,9 @@ class AgentIngestionDemoRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "git_repo_ingest_wait", "result": details})
+            job.add_log_entry(
+                {"phase": phase, "action": "git_repo_ingest_wait", "result": details}
+            )
 
         def _normalize_repo(provider: str, raw: str) -> str:
             s = (raw or "").strip()
@@ -247,10 +230,18 @@ class AgentIngestionDemoRunnerService:
             inherited = cfg.get("inherited_data") if isinstance(cfg, dict) else None
             parent_results = None
             if isinstance(inherited, dict):
-                parent_results = inherited.get("parent_results") if isinstance(inherited.get("parent_results"), dict) else None
+                parent_results = (
+                    inherited.get("parent_results")
+                    if isinstance(inherited.get("parent_results"), dict)
+                    else None
+                )
             repos: list[Any] = []
             if isinstance(parent_results, dict):
-                extracted = parent_results.get("repos_extracted") if isinstance(parent_results.get("repos_extracted"), dict) else None
+                extracted = (
+                    parent_results.get("repos_extracted")
+                    if isinstance(parent_results.get("repos_extracted"), dict)
+                    else None
+                )
                 if extracted and isinstance(extracted.get("repos"), list):
                     repos = extracted.get("repos") or []
 
@@ -364,7 +355,9 @@ class AgentIngestionDemoRunnerService:
         svc = DocumentService()
         name = f"{provider.title()} repo ({repo}) #{uuid4().hex[:6]}"
         _emit(10, "creating_source", f"Creating source for {provider}:{repo}")
-        source = await svc.create_document_source(name=name, source_type=provider, config=config, db=db)
+        source = await svc.create_document_source(
+            name=name, source_type=provider, config=config, db=db
+        )
         await db.commit()
         await db.refresh(source)
 
@@ -454,8 +447,6 @@ class AgentIngestionDemoRunnerService:
           - optional job.config.timeout_seconds (default: server config)
         """
         import asyncio
-        import json as _json
-        import os
         import subprocess
         import sys
         import tempfile
@@ -463,21 +454,31 @@ class AgentIngestionDemoRunnerService:
         from uuid import UUID as _UUID
 
         from app.core.config import settings as app_settings
-        from app.core.feature_flags import get_flag as get_feature_flag, get_str as get_feature_str
+        from app.core.feature_flags import get_flag as get_feature_flag
+        from app.core.feature_flags import get_str as get_feature_str
         from app.models.document import Document, DocumentSource
-        from app.models.user import User
 
         def _emit(progress: int, phase: str, details: str):
             job.progress = max(0, min(100, int(progress)))
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "generated_project_demo_check", "result": details})
+            job.add_log_entry(
+                {
+                    "phase": phase,
+                    "action": "generated_project_demo_check",
+                    "result": details,
+                }
+            )
 
         cfg = job.config if isinstance(job.config, dict) else {}
         source_id_raw = cfg.get("source_id")
         entrypoint = str(cfg.get("entrypoint") or "demo.py").strip() or "demo.py"
-        timeout_seconds = int(cfg.get("timeout_seconds") or cfg.get("behavioral_timeout_seconds") or getattr(app_settings, "UNSAFE_CODE_EXEC_TIMEOUT_SECONDS", 10))
+        timeout_seconds = int(
+            cfg.get("timeout_seconds")
+            or cfg.get("behavioral_timeout_seconds")
+            or getattr(app_settings, "UNSAFE_CODE_EXEC_TIMEOUT_SECONDS", 10)
+        )
         timeout_seconds = max(2, min(timeout_seconds, 60))
 
         if not source_id_raw:
@@ -504,8 +505,14 @@ class AgentIngestionDemoRunnerService:
         # Access control: admin or requested_by_user_id matches.
         user = await db.get(User, job.user_id)
         is_admin = bool(user and getattr(user, "role", None) == "admin")
-        requested_by_user_id = str((source.config or {}).get("requested_by_user_id") or "").strip()
-        if not is_admin and requested_by_user_id and requested_by_user_id != str(job.user_id):
+        requested_by_user_id = str(
+            (source.config or {}).get("requested_by_user_id") or ""
+        ).strip()
+        if (
+            not is_admin
+            and requested_by_user_id
+            and requested_by_user_id != str(job.user_id)
+        ):
             job.status = AgentJobStatus.FAILED.value
             job.error = "Not authorized for this source"
             await db.commit()
@@ -536,7 +543,7 @@ class AgentIngestionDemoRunnerService:
             path = _safe_relpath(d.file_path or d.source_identifier or d.title or "")
             if not path:
                 continue
-            content = (d.content or "")
+            content = d.content or ""
             if len(content) > 50000:
                 content = content[:50000]
             files_list.append({"path": path, "content": content})
@@ -544,13 +551,31 @@ class AgentIngestionDemoRunnerService:
                 break
 
         enabled_override = await get_feature_flag("unsafe_code_execution_enabled")
-        enabled_effective = bool(enabled_override) if enabled_override is not None else bool(getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
+        enabled_effective = (
+            bool(enabled_override)
+            if enabled_override is not None
+            else bool(getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
+        )
         backend_override = await get_feature_str("unsafe_code_exec_backend")
-        backend_effective = str(backend_override or getattr(app_settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess") or "subprocess").strip().lower()
+        backend_effective = (
+            str(
+                backend_override
+                or getattr(app_settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess")
+                or "subprocess"
+            )
+            .strip()
+            .lower()
+        )
         if backend_effective not in {"subprocess", "docker"}:
             backend_effective = "subprocess"
         image_override = await get_feature_str("unsafe_code_exec_docker_image")
-        image_effective = str(image_override or getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim") or "python:3.11-slim").strip()
+        image_effective = str(
+            image_override
+            or getattr(
+                app_settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim"
+            )
+            or "python:3.11-slim"
+        ).strip()
 
         if not enabled_effective:
             job.status = AgentJobStatus.FAILED.value
@@ -560,7 +585,12 @@ class AgentIngestionDemoRunnerService:
                 "source_id": str(source.id),
                 "entrypoint": entrypoint,
                 "ok": False,
-                "behavioral": {"enabled": False, "ran": False, "ok": False, "skipped_reason": "unsafe_code_execution_enabled=false"},
+                "behavioral": {
+                    "enabled": False,
+                    "ran": False,
+                    "ok": False,
+                    "skipped_reason": "unsafe_code_execution_enabled=false",
+                },
             }
             await db.commit()
             return {"status": "failed", "error": job.error, "results": job.results}
@@ -568,8 +598,12 @@ class AgentIngestionDemoRunnerService:
         _emit(35, "running", f"Running {entrypoint} (backend={backend_effective})")
         await db.commit()
 
-        stdout_cap = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS", 20000))
-        stderr_cap = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDERR_CHARS", 20000))
+        stdout_cap = int(
+            getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS", 20000)
+        )
+        stderr_cap = int(
+            getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDERR_CHARS", 20000)
+        )
 
         def _limit_resources():
             try:
@@ -578,9 +612,13 @@ class AgentIngestionDemoRunnerService:
                 cpu = int(max(1, min(timeout_seconds + 1, 120)))
                 resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
                 resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
-                resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+                resource.setrlimit(
+                    resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024)
+                )
                 resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
-                mem_mb = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512))
+                mem_mb = int(
+                    getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
+                )
                 mem = mem_mb * 1024 * 1024
                 resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
             except Exception:
@@ -629,9 +667,16 @@ class AgentIngestionDemoRunnerService:
                     "LC_ALL": os.environ.get("LC_ALL", "C.UTF-8"),
                 }
                 if backend_effective == "docker":
-                    mem_mb = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512))
-                    cpus = float(getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_CPUS", 1.0) or 1.0)
-                    pids = int(getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128))
+                    mem_mb = int(
+                        getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
+                    )
+                    cpus = float(
+                        getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_CPUS", 1.0)
+                        or 1.0
+                    )
+                    pids = int(
+                        getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128)
+                    )
                     cmd = [
                         "docker",
                         "run",
@@ -689,15 +734,21 @@ class AgentIngestionDemoRunnerService:
                 except subprocess.TimeoutExpired as e:
                     behavior["ran"] = True
                     behavior["timed_out"] = True
-                    behavior["stdout"] = str(getattr(e, "stdout", "") or "")[:stdout_cap]
-                    behavior["stderr"] = str(getattr(e, "stderr", "") or "")[:stderr_cap]
+                    behavior["stdout"] = str(getattr(e, "stdout", "") or "")[
+                        :stdout_cap
+                    ]
+                    behavior["stderr"] = str(getattr(e, "stderr", "") or "")[
+                        :stderr_cap
+                    ]
                 except FileNotFoundError as e:
                     behavior["ran"] = True
                     behavior["error"] = f"Execution backend not available: {e}"
                 except Exception as e:
                     behavior["error"] = str(e)
                 finally:
-                    behavior["duration_ms"] = int((datetime.utcnow() - start).total_seconds() * 1000)
+                    behavior["duration_ms"] = int(
+                        (datetime.utcnow() - start).total_seconds() * 1000
+                    )
 
         job.results = job.results or {}
         job.results["demo_check"] = {
@@ -709,7 +760,13 @@ class AgentIngestionDemoRunnerService:
         }
         if job.output_artifacts is None:
             job.output_artifacts = []
-        job.output_artifacts.append({"type": "demo_check", "source_id": str(source.id), "title": f"Demo check: {source.name}"})
+        job.output_artifacts.append(
+            {
+                "type": "demo_check",
+                "source_id": str(source.id),
+                "title": f"Demo check: {source.name}",
+            }
+        )
 
         if behavior.get("ok"):
             _emit(100, "completed", "Demo check OK")
@@ -746,21 +803,25 @@ class AgentIngestionDemoRunnerService:
           - job.output_artifacts includes a 'generated_project' entry for UI
         """
         import hashlib
-        import re
         from uuid import UUID as _UUID
 
         from app.models.document import Document, DocumentSource
         from app.models.research_inbox import ResearchInboxItem
-        from app.models.user import User
 
         def _emit(progress: int, phase: str, details: str):
             job.progress = max(0, min(100, int(progress)))
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "paper_algorithm_project", "result": details})
+            job.add_log_entry(
+                {"phase": phase, "action": "paper_algorithm_project", "result": details}
+            )
 
-        inbox_item_id = (job.config or {}).get("inbox_item_id") if isinstance(job.config, dict) else None
+        inbox_item_id = (
+            (job.config or {}).get("inbox_item_id")
+            if isinstance(job.config, dict)
+            else None
+        )
         if not inbox_item_id:
             job.status = AgentJobStatus.FAILED.value
             job.error = "Missing config.inbox_item_id"
@@ -790,7 +851,8 @@ class AgentIngestionDemoRunnerService:
         cfg = job.config if isinstance(job.config, dict) else {}
         language = str(cfg.get("language") or "python").strip().lower()
         from app.core.config import settings as app_settings
-        from app.core.feature_flags import get_flag as get_feature_flag, get_str as get_feature_str
+        from app.core.feature_flags import get_flag as get_feature_flag
+        from app.core.feature_flags import get_str as get_feature_str
 
         include_tests = bool(cfg.get("include_tests", True))
         use_repo_context = bool(cfg.get("use_repo_context", False))
@@ -799,7 +861,10 @@ class AgentIngestionDemoRunnerService:
         repair_max_attempts = max(0, min(repair_max_attempts, 2))
         entrypoint = str(cfg.get("entrypoint") or "demo.py").strip() or "demo.py"
         behavioral_check = bool(cfg.get("behavioral_check", False))
-        behavioral_timeout_seconds = int(cfg.get("behavioral_timeout_seconds") or getattr(app_settings, "UNSAFE_CODE_EXEC_TIMEOUT_SECONDS", 10))
+        behavioral_timeout_seconds = int(
+            cfg.get("behavioral_timeout_seconds")
+            or getattr(app_settings, "UNSAFE_CODE_EXEC_TIMEOUT_SECONDS", 10)
+        )
         behavioral_timeout_seconds = max(2, min(behavioral_timeout_seconds, 60))
         max_repo_files = int(cfg.get("max_repo_files") or 8)
         max_repo_files = max(1, min(max_repo_files, 20))
@@ -843,9 +908,17 @@ class AgentIngestionDemoRunnerService:
             inherited = cfg.get("inherited_data") if isinstance(cfg, dict) else None
             parent_results = None
             if isinstance(inherited, dict):
-                parent_results = inherited.get("parent_results") if isinstance(inherited.get("parent_results"), dict) else None
-            if isinstance(parent_results, dict) and isinstance(parent_results.get("repo_ingest"), dict):
-                inherited_repo_source_id = parent_results["repo_ingest"].get("source_id")
+                parent_results = (
+                    inherited.get("parent_results")
+                    if isinstance(inherited.get("parent_results"), dict)
+                    else None
+                )
+            if isinstance(parent_results, dict) and isinstance(
+                parent_results.get("repo_ingest"), dict
+            ):
+                inherited_repo_source_id = parent_results["repo_ingest"].get(
+                    "source_id"
+                )
                 inherited_provider = parent_results["repo_ingest"].get("provider")
                 inherited_repo = parent_results["repo_ingest"].get("repo")
 
@@ -854,9 +927,13 @@ class AgentIngestionDemoRunnerService:
                 await db.commit()
                 try:
                     from app.services.search_service import SearchService
+
                     search_service = SearchService()
                     # Use paper title/abstract as a rough query to pull relevant code.
-                    query = (str(cfg.get("search_query") or "").strip() or f"{title}\n{summary}").strip()
+                    query = (
+                        str(cfg.get("search_query") or "").strip()
+                        or f"{title}\n{summary}"
+                    ).strip()
                     results, _total, _took = await search_service.search(
                         query=query[:800],
                         mode="smart",
@@ -865,9 +942,14 @@ class AgentIngestionDemoRunnerService:
                         source_id=str(inherited_repo_source_id),
                         db=db,
                     )
-                    ids = [r.get("id") for r in (results or []) if isinstance(r, dict) and r.get("id")]
+                    ids = [
+                        r.get("id")
+                        for r in (results or [])
+                        if isinstance(r, dict) and r.get("id")
+                    ]
                     repo_docs: list[Document] = []
                     from uuid import UUID as _UUID2
+
                     for doc_id in ids[:max_repo_files]:
                         try:
                             d = await db.get(Document, _UUID2(str(doc_id)))
@@ -878,7 +960,12 @@ class AgentIngestionDemoRunnerService:
                     if repo_docs:
                         blocks: list[str] = []
                         for d in repo_docs[:max_repo_files]:
-                            p = d.title or d.source_identifier or d.file_path or str(d.id)
+                            p = (
+                                d.title
+                                or d.source_identifier
+                                or d.file_path
+                                or str(d.id)
+                            )
                             c = (d.content or "")[:max_chars_per_repo_file]
                             blocks.append(f"### REPO FILE: {p}\n```text\n{c}\n```\n")
                         repo_context_block = (
@@ -911,7 +998,11 @@ class AgentIngestionDemoRunnerService:
             f"- Package name should be '{pkg}'.\n"
             f"- Include a simple synthetic demo script at '{entrypoint}'.\n"
             f"- {entrypoint} must finish quickly (<5 seconds) and print a short success message.\n"
-            + ("- Include unit tests (pytest) that check shapes/invariants.\n" if include_tests else "")
+            + (
+                "- Include unit tests (pytest) that check shapes/invariants.\n"
+                if include_tests
+                else ""
+            )
             + "- If the paper omits details, implement a reasonable approximation and list assumptions in limitations.\n\n"
             f"PAPER TITLE:\n{title}\n\n"
             f"ABSTRACT/SUMMARY:\n{summary[:6000]}\n\n"
@@ -937,13 +1028,23 @@ class AgentIngestionDemoRunnerService:
             job.status = AgentJobStatus.FAILED.value
             job.error = "LLM did not return valid JSON for generated project"
             await db.commit()
-            return {"status": "failed", "error": job.error, "raw": (response or "")[:2000]}
+            return {
+                "status": "failed",
+                "error": job.error,
+                "raw": (response or "")[:2000],
+            }
 
         files = payload.get("files") if isinstance(payload.get("files"), list) else []
-        project_name = str(payload.get("project_name") or f"Paper Algorithm: {title}")[:200].strip()
+        project_name = str(payload.get("project_name") or f"Paper Algorithm: {title}")[
+            :200
+        ].strip()
         summary_out = str(payload.get("summary") or "").strip()
         run_instructions = str(payload.get("run_instructions") or "").strip()
-        limitations = payload.get("limitations") if isinstance(payload.get("limitations"), list) else []
+        limitations = (
+            payload.get("limitations")
+            if isinstance(payload.get("limitations"), list)
+            else []
+        )
         limitations = [str(x)[:300] for x in limitations if str(x).strip()][:20]
 
         def _sanitize_path(p: str) -> str:
@@ -978,12 +1079,13 @@ class AgentIngestionDemoRunnerService:
             await db.commit()
             return {"status": "failed", "error": job.error}
 
-        def _run_behavioral_demo(files_list: list[dict], *, effective_backend: str, effective_image: str) -> Dict[str, Any]:
+        def _run_behavioral_demo(
+            files_list: list[dict], *, effective_backend: str, effective_image: str
+        ) -> Dict[str, Any]:
             """
             Best-effort behavioral check by running demo.py.
             This is explicitly gated by config + server setting.
             """
-            import os
             import subprocess
             import sys
             import tempfile
@@ -1020,18 +1122,26 @@ class AgentIngestionDemoRunnerService:
                     resource.setrlimit(resource.RLIMIT_CPU, (cpu, cpu))
                     resource.setrlimit(resource.RLIMIT_CORE, (0, 0))
                     # 10MB max file size
-                    resource.setrlimit(resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024))
+                    resource.setrlimit(
+                        resource.RLIMIT_FSIZE, (10 * 1024 * 1024, 10 * 1024 * 1024)
+                    )
                     # Basic FD cap
                     resource.setrlimit(resource.RLIMIT_NOFILE, (64, 64))
                     # Memory cap (address space)
-                    mem_mb = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512))
+                    mem_mb = int(
+                        getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
+                    )
                     mem = mem_mb * 1024 * 1024
                     resource.setrlimit(resource.RLIMIT_AS, (mem, mem))
                 except Exception:
                     return
 
-            stdout_cap = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS", 20000))
-            stderr_cap = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDERR_CHARS", 20000))
+            stdout_cap = int(
+                getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS", 20000)
+            )
+            stderr_cap = int(
+                getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDERR_CHARS", 20000)
+            )
 
             with tempfile.TemporaryDirectory(prefix="paper_demo_") as tmp:
                 from pathlib import Path
@@ -1065,9 +1175,16 @@ class AgentIngestionDemoRunnerService:
                 cmd: list[str]
                 if backend == "docker":
                     image = str(effective_image or "python:3.11-slim")
-                    mem_mb = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512))
-                    cpus = float(getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_CPUS", 1.0) or 1.0)
-                    pids = int(getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128))
+                    mem_mb = int(
+                        getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
+                    )
+                    cpus = float(
+                        getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_CPUS", 1.0)
+                        or 1.0
+                    )
+                    pids = int(
+                        getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128)
+                    )
                     # Docker sandbox: no network, drop caps, no-new-privileges, resource caps, run as nobody.
                     cmd = [
                         "docker",
@@ -1160,14 +1277,26 @@ class AgentIngestionDemoRunnerService:
                         }
                     )
                 except Exception as e:
-                    errors.append({"path": p, "line": 0, "offset": 0, "message": f"Compile error: {e}", "text": ""})
+                    errors.append(
+                        {
+                            "path": p,
+                            "line": 0,
+                            "offset": 0,
+                            "message": f"Compile error: {e}",
+                            "text": "",
+                        }
+                    )
             return errors
 
         sanity_errors = _compile_python(normalized_files)
         repaired_files: list[str] = []
         repair_attempts = 0
         if sanity_errors and auto_repair and repair_max_attempts > 0:
-            _emit(55, "repairing", f"Found {len(sanity_errors)} syntax errors; attempting auto-repair")
+            _emit(
+                55,
+                "repairing",
+                f"Found {len(sanity_errors)} syntax errors; attempting auto-repair",
+            )
             await db.commit()
             while sanity_errors and repair_attempts < repair_max_attempts:
                 repair_attempts += 1
@@ -1200,10 +1329,18 @@ class AgentIngestionDemoRunnerService:
                     repair_payload = json.loads(repair_response)
                 except Exception:
                     break
-                changed = repair_payload.get("files") if isinstance(repair_payload.get("files"), list) else []
+                changed = (
+                    repair_payload.get("files")
+                    if isinstance(repair_payload.get("files"), list)
+                    else []
+                )
                 if not changed:
                     break
-                path_to_idx = {ff["path"]: i for i, ff in enumerate(normalized_files) if isinstance(ff.get("path"), str)}
+                path_to_idx = {
+                    ff["path"]: i
+                    for i, ff in enumerate(normalized_files)
+                    if isinstance(ff.get("path"), str)
+                }
                 any_applied = False
                 for ch in changed:
                     if not isinstance(ch, dict):
@@ -1225,13 +1362,31 @@ class AgentIngestionDemoRunnerService:
         if not sanity_errors and behavioral_check:
             # Explicitly gated server-side.
             enabled_override = await get_feature_flag("unsafe_code_execution_enabled")
-            enabled_effective = bool(enabled_override) if enabled_override is not None else bool(getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
+            enabled_effective = (
+                bool(enabled_override)
+                if enabled_override is not None
+                else bool(getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
+            )
             backend_override = await get_feature_str("unsafe_code_exec_backend")
-            backend_effective = str(backend_override or getattr(app_settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess") or "subprocess").strip().lower()
+            backend_effective = (
+                str(
+                    backend_override
+                    or getattr(app_settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess")
+                    or "subprocess"
+                )
+                .strip()
+                .lower()
+            )
             if backend_effective not in {"subprocess", "docker"}:
                 backend_effective = "subprocess"
             image_override = await get_feature_str("unsafe_code_exec_docker_image")
-            image_effective = str(image_override or getattr(app_settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim") or "python:3.11-slim").strip()
+            image_effective = str(
+                image_override
+                or getattr(
+                    app_settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim"
+                )
+                or "python:3.11-slim"
+            ).strip()
 
             if not enabled_effective:
                 behavior = {
@@ -1243,7 +1398,11 @@ class AgentIngestionDemoRunnerService:
             else:
                 _emit(62, "checking", "Running demo.py behavioral check (unsafe)")
                 await db.commit()
-                behavior = _run_behavioral_demo(normalized_files, effective_backend=backend_effective, effective_image=image_effective)
+                behavior = _run_behavioral_demo(
+                    normalized_files,
+                    effective_backend=backend_effective,
+                    effective_image=image_effective,
+                )
 
         # Create a generated document source and persist files as Documents.
         _emit(70, "persisting", "Creating generated project source and saving files")
@@ -1268,14 +1427,18 @@ class AgentIngestionDemoRunnerService:
             "entrypoint": entrypoint,
             "repo_context": {
                 "enabled": bool(repo_context_block),
-                "source_id": str(inherited_repo_source_id) if inherited_repo_source_id else None,
+                "source_id": str(inherited_repo_source_id)
+                if inherited_repo_source_id
+                else None,
                 "provider": str(inherited_provider) if inherited_provider else None,
                 "repo": str(inherited_repo) if inherited_repo else None,
             },
             "job_id": str(job.id),
         }
 
-        source = DocumentSource(name=source_name, source_type="generated", config=source_cfg)
+        source = DocumentSource(
+            name=source_name, source_type="generated", config=source_cfg
+        )
         db.add(source)
         await db.commit()
         await db.refresh(source)
@@ -1294,7 +1457,11 @@ class AgentIngestionDemoRunnerService:
                 file_path=path[:1000],
                 file_type="text/plain",
                 is_processed=False,
-                extra_metadata={"generated": True, "project_name": project_name, "language": language},
+                extra_metadata={
+                    "generated": True,
+                    "project_name": project_name,
+                    "language": language,
+                },
             )
             db.add(doc)
             created += 1
@@ -1324,7 +1491,12 @@ class AgentIngestionDemoRunnerService:
         if job.output_artifacts is None:
             job.output_artifacts = []
         job.output_artifacts.append(
-            {"type": "generated_project", "source_id": str(source.id), "title": project_name, "language": language}
+            {
+                "type": "generated_project",
+                "source_id": str(source.id),
+                "title": project_name,
+                "language": language,
+            }
         )
 
         if sanity_errors:
@@ -1332,13 +1504,21 @@ class AgentIngestionDemoRunnerService:
             job.error = f"Generated project has {len(sanity_errors)} syntax errors"
             _emit(100, "failed", job.error)
             await db.commit()
-        elif behavioral_check and behavior and behavior.get("enabled") and behavior.get("ran") and not bool(behavior.get("ok")):
+        elif (
+            behavioral_check
+            and behavior
+            and behavior.get("enabled")
+            and behavior.get("ran")
+            and not bool(behavior.get("ok"))
+        ):
             job.status = AgentJobStatus.FAILED.value
             job.error = "Behavioral check failed (demo.py)"
             _emit(100, "failed", job.error)
             await db.commit()
         else:
-            _emit(100, "completed", f"Generated project: {project_name} ({created} files)")
+            _emit(
+                100, "completed", f"Generated project: {project_name} ({created} files)"
+            )
             job.status = AgentJobStatus.COMPLETED.value
             job.completed_at = datetime.utcnow()
             await db.commit()

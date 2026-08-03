@@ -8,18 +8,19 @@ extraction methods.
 
 from __future__ import annotations
 
-import re
 import json
+import re
 from dataclasses import dataclass
-from typing import List, Dict, Optional, Tuple, Any, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional, Tuple
+
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.knowledge_graph import Entity, EntityMention, Relationship
-from app.models.document import Document, DocumentChunk
 from app.core.config import settings
+from app.models.document import Document, DocumentChunk
+from app.models.knowledge_graph import Entity, EntityMention, Relationship
 
 if TYPE_CHECKING:
     from app.services.llm_service import LLMService, UserLLMSettings
@@ -79,11 +80,15 @@ class KnowledgeExtractor:
         # Naive person: Firstname Lastname (Title Case)
         self.person_re = re.compile(r"\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b")
         # Naive org: Words ending with Inc.|LLC|Ltd.|JSC|Corp.|Company
-        self.org_re = re.compile(r"\b([A-Z][\w&.-]+(?:\s+[A-Z][\w&.-]+)*\s+(?:Inc\.|LLC|Ltd\.|JSC|Corp\.|Company))\b")
+        self.org_re = re.compile(
+            r"\b([A-Z][\w&.-]+(?:\s+[A-Z][\w&.-]+)*\s+(?:Inc\.|LLC|Ltd\.|JSC|Corp\.|Company))\b"
+        )
 
         # Relation patterns: "X at Y", "X from Y"
         self.works_for_patterns = [
-            re.compile(r"\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b\s+(?:at|@|from)\s+\b([A-Z][\w&.-]+(?:\s+[A-Z][\w&.-]+)*\b)")
+            re.compile(
+                r"\b([A-Z][a-z]+\s+[A-Z][a-z]+)\b\s+(?:at|@|from)\s+\b([A-Z][\w&.-]+(?:\s+[A-Z][\w&.-]+)*\b)"
+            )
         ]
 
     def _sentences(self, text: str) -> List[str]:
@@ -114,20 +119,30 @@ class KnowledgeExtractor:
 
         return entities
 
-    def extract_relations(self, text: str, entities: List[ExtractedEntity]) -> List[ExtractedRelation]:
+    def extract_relations(
+        self, text: str, entities: List[ExtractedEntity]
+    ) -> List[ExtractedRelation]:
         relations: List[ExtractedRelation] = []
         # Build quick lookup for person/org in each sentence
         for sent in self._sentences(text):
             for pat in self.works_for_patterns:
                 for m in pat.finditer(sent):
                     head, tail = m.group(1), m.group(2)
-                    relations.append(ExtractedRelation(head, tail, "works_for", 0.7, sent))
+                    relations.append(
+                        ExtractedRelation(head, tail, "works_for", 0.7, sent)
+                    )
         # Mentions: email/url mentioned by org/person in same sentence
         # Keep basic for now; can be extended
         return relations
 
-    async def _get_or_create_entity(self, db: AsyncSession, name: str, etype: str) -> Entity:
-        q = await db.execute(select(Entity).where(Entity.canonical_name == name, Entity.entity_type == etype))
+    async def _get_or_create_entity(
+        self, db: AsyncSession, name: str, etype: str
+    ) -> Entity:
+        q = await db.execute(
+            select(Entity).where(
+                Entity.canonical_name == name, Entity.entity_type == etype
+            )
+        )
         ent = q.scalar_one_or_none()
         if ent:
             return ent
@@ -136,7 +151,9 @@ class KnowledgeExtractor:
         await db.flush()
         return ent
 
-    async def index_chunk(self, db: AsyncSession, document: Document, chunk: DocumentChunk) -> Tuple[int, int]:
+    async def index_chunk(
+        self, db: AsyncSession, document: Document, chunk: DocumentChunk
+    ) -> Tuple[int, int]:
         """Extract entities and relations from a chunk and persist.
 
         Returns: (entities_created_or_linked, relations_created)
@@ -177,7 +194,11 @@ class KnowledgeExtractor:
             for e in ents:
                 ent_map.setdefault(e.text, None)
             if ent_map:
-                q = await db.execute(select(Entity).where(Entity.canonical_name.in_(list(ent_map.keys()))))
+                q = await db.execute(
+                    select(Entity).where(
+                        Entity.canonical_name.in_(list(ent_map.keys()))
+                    )
+                )
                 for ent in q.scalars().all():
                     ent_map[ent.canonical_name] = ent
 
@@ -187,9 +208,13 @@ class KnowledgeExtractor:
                 if not head or not tail:
                     # Try to create lazily if missing
                     if not head:
-                        head = await self._get_or_create_entity(db, r.head_text[:512], "person")
+                        head = await self._get_or_create_entity(
+                            db, r.head_text[:512], "person"
+                        )
                     if not tail:
-                        tail = await self._get_or_create_entity(db, r.tail_text[:512], "org")
+                        tail = await self._get_or_create_entity(
+                            db, r.tail_text[:512], "org"
+                        )
 
                 # Upsert-like: rely on unique constraint per doc
                 rel = Relationship(
@@ -295,6 +320,7 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
         """Lazy-load LLM service to avoid circular imports."""
         if self._llm_service is None:
             from app.services.llm_service import LLMService
+
             self._llm_service = LLMService()
         return self._llm_service
 
@@ -302,14 +328,28 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
         # Small in-process TTL cache to avoid a DISTINCT scan per chunk.
         try:
             from time import time as _time
+
             now = _time()
             ttl_s = 300.0
             cached = self._known_types_cache or {}
             if cached.get("ts") and (now - float(cached["ts"])) < ttl_s:
-                return cached.get("entity_types", []) or [], cached.get("relation_types", []) or []
+                return (
+                    cached.get("entity_types", []) or [],
+                    cached.get("relation_types", []) or [],
+                )
 
-            et = (await db.execute(select(Entity.entity_type).distinct().order_by(Entity.entity_type))).fetchall()
-            rt = (await db.execute(select(Relationship.relation_type).distinct().order_by(Relationship.relation_type))).fetchall()
+            et = (
+                await db.execute(
+                    select(Entity.entity_type).distinct().order_by(Entity.entity_type)
+                )
+            ).fetchall()
+            rt = (
+                await db.execute(
+                    select(Relationship.relation_type)
+                    .distinct()
+                    .order_by(Relationship.relation_type)
+                )
+            ).fetchall()
             entity_types = [r[0] for r in et if r and r[0]]
             relation_types = [r[0] for r in rt if r and r[0]]
 
@@ -317,7 +357,11 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
             entity_types = entity_types[:100]
             relation_types = relation_types[:100]
 
-            self._known_types_cache = {"ts": now, "entity_types": entity_types, "relation_types": relation_types}
+            self._known_types_cache = {
+                "ts": now,
+                "entity_types": entity_types,
+                "relation_types": relation_types,
+            }
             return entity_types, relation_types
         except Exception:
             return [], []
@@ -336,7 +380,7 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
         response = response.strip()
 
         # Try to find JSON object in the response
-        json_match = re.search(r'\{.*\}', response, re.DOTALL)
+        json_match = re.search(r"\{.*\}", response, re.DOTALL)
         if json_match:
             try:
                 return json.loads(json_match.group())
@@ -422,11 +466,19 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
 
         This reduces taxonomy drift without hardcoding a fixed set of types.
         """
-        if not extraction or (not extraction.get("entities") and not extraction.get("relationships")):
+        if not extraction or (
+            not extraction.get("entities") and not extraction.get("relationships")
+        ):
             return extraction
 
-        ent_allowed = [t for t in (allowed_entity_types or []) if isinstance(t, str) and t.strip()]
-        rel_allowed = [t for t in (allowed_relation_types or []) if isinstance(t, str) and t.strip()]
+        ent_allowed = [
+            t for t in (allowed_entity_types or []) if isinstance(t, str) and t.strip()
+        ]
+        rel_allowed = [
+            t
+            for t in (allowed_relation_types or [])
+            if isinstance(t, str) and t.strip()
+        ]
         if not ent_allowed and not rel_allowed:
             return extraction
 
@@ -469,21 +521,25 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
 
         # Post-enforce membership + normalization.
         out_ents: List[Any] = []
-        for e in (resolved.get("entities") or []):
+        for e in resolved.get("entities") or []:
             if not isinstance(e, dict) or "text" not in e:
                 continue
             if ent_allowed:
-                e["type"] = self._coerce_allowed(e.get("type", "other"), ent_allowed, "other")
+                e["type"] = self._coerce_allowed(
+                    e.get("type", "other"), ent_allowed, "other"
+                )
             else:
                 e["type"] = self._normalize_entity_type(e.get("type", "other"))
             out_ents.append(e)
 
         out_rels: List[Any] = []
-        for r in (resolved.get("relationships") or []):
+        for r in resolved.get("relationships") or []:
             if not isinstance(r, dict) or "source" not in r or "target" not in r:
                 continue
             if rel_allowed:
-                r["type"] = self._coerce_allowed(r.get("type", "related_to"), rel_allowed, "related_to")
+                r["type"] = self._coerce_allowed(
+                    r.get("type", "related_to"), rel_allowed, "related_to"
+                )
             else:
                 r["type"] = self._normalize_relation_type(r.get("type", "related_to"))
             out_rels.append(r)
@@ -499,11 +555,13 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
             if not isinstance(e, dict) or "text" not in e:
                 continue
             etype = self._normalize_entity_type(e.get("type", "other"))
-            entities.append(ExtractedEntity(
-                text=e["text"][:512],
-                entity_type=etype,
-                sentence=e.get("description"),
-            ))
+            entities.append(
+                ExtractedEntity(
+                    text=e["text"][:512],
+                    entity_type=etype,
+                    sentence=e.get("description"),
+                )
+            )
 
         return entities
 
@@ -523,13 +581,15 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
             # Clamp confidence to valid range
             confidence = max(0.0, min(1.0, confidence))
 
-            relations.append(ExtractedRelation(
-                head_text=r["source"][:512],
-                tail_text=r["target"][:512],
-                relation_type=rtype,
-                confidence=confidence,
-                sentence=r.get("evidence"),
-            ))
+            relations.append(
+                ExtractedRelation(
+                    head_text=r["source"][:512],
+                    tail_text=r["target"][:512],
+                    relation_type=rtype,
+                    confidence=confidence,
+                    sentence=r.get("evidence"),
+                )
+            )
 
         return relations
 
@@ -670,10 +730,14 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
                 )
             return (0, 0)
 
-    async def _get_or_create_entity(self, db: AsyncSession, name: str, etype: str) -> Entity:
+    async def _get_or_create_entity(
+        self, db: AsyncSession, name: str, etype: str
+    ) -> Entity:
         """Get existing entity or create new one."""
         q = await db.execute(
-            select(Entity).where(Entity.canonical_name == name, Entity.entity_type == etype)
+            select(Entity).where(
+                Entity.canonical_name == name, Entity.entity_type == etype
+            )
         )
         ent = q.scalar_one_or_none()
         if ent:
@@ -688,7 +752,7 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
         db: AsyncSession,
         document: Document,
         chunk: DocumentChunk,
-        rule_extractor: KnowledgeExtractor
+        rule_extractor: KnowledgeExtractor,
     ) -> Tuple[int, int]:
         """Fallback to rule-based extraction."""
         return await rule_extractor.index_chunk(db, document, chunk)

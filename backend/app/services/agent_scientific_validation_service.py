@@ -3,16 +3,14 @@
 from __future__ import annotations
 
 from copy import deepcopy
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
+from datetime import datetime
+from typing import Any, Optional
 from uuid import UUID
 
-from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services.autonomy_service import build_domain_profile_compat_policy
 from app.services.project_profile_service import build_project_profile
 
 
@@ -55,16 +53,30 @@ class AgentScientificValidationService:
             except Exception:
                 profile = None
             if profile is not None:
-                rows = [str(v).strip() for v in (profile.latest_validation_run_ids or []) if str(v).strip()]
+                rows = [
+                    str(v).strip()
+                    for v in (profile.latest_validation_run_ids or [])
+                    if str(v).strip()
+                ]
                 if run_id_text not in rows:
                     rows.append(run_id_text)
                 profile.latest_validation_run_ids = rows[-20:]
-                summary = profile.latest_summary if isinstance(profile.latest_summary, dict) else {}
-                validation_runs = summary.get("validation_runs") if isinstance(summary.get("validation_runs"), list) else []
+                summary = (
+                    profile.latest_summary
+                    if isinstance(profile.latest_summary, dict)
+                    else {}
+                )
+                validation_runs = (
+                    summary.get("validation_runs")
+                    if isinstance(summary.get("validation_runs"), list)
+                    else []
+                )
                 if isinstance(run_record, dict):
                     validation_runs = [
-                        row for row in validation_runs
-                        if isinstance(row, dict) and str(row.get("run_id") or "").strip() != run_id_text
+                        row
+                        for row in validation_runs
+                        if isinstance(row, dict)
+                        and str(row.get("run_id") or "").strip() != run_id_text
                     ]
                     validation_runs.append(run_record)
                 summary["validation_runs"] = validation_runs[-20:]
@@ -77,20 +89,36 @@ class AgentScientificValidationService:
             except Exception:
                 portfolio = None
             if portfolio is not None:
-                rows = [str(v).strip() for v in (portfolio.latest_validation_run_ids or []) if str(v).strip()]
+                rows = [
+                    str(v).strip()
+                    for v in (portfolio.latest_validation_run_ids or [])
+                    if str(v).strip()
+                ]
                 if run_id_text not in rows:
                     rows.append(run_id_text)
                 portfolio.latest_validation_run_ids = rows[-30:]
-                summary = portfolio.latest_summary if isinstance(portfolio.latest_summary, dict) else {}
-                validation_runs = summary.get("validation_runs") if isinstance(summary.get("validation_runs"), list) else []
+                summary = (
+                    portfolio.latest_summary
+                    if isinstance(portfolio.latest_summary, dict)
+                    else {}
+                )
+                validation_runs = (
+                    summary.get("validation_runs")
+                    if isinstance(summary.get("validation_runs"), list)
+                    else []
+                )
                 if isinstance(run_record, dict):
                     validation_runs = [
-                        row for row in validation_runs
-                        if isinstance(row, dict) and str(row.get("run_id") or "").strip() != run_id_text
+                        row
+                        for row in validation_runs
+                        if isinstance(row, dict)
+                        and str(row.get("run_id") or "").strip() != run_id_text
                     ]
                     validation_runs.append(run_record)
                 summary["validation_runs"] = validation_runs[-30:]
-                summary["latest_validation_run_ids"] = portfolio.latest_validation_run_ids
+                summary[
+                    "latest_validation_run_ids"
+                ] = portfolio.latest_validation_run_ids
                 portfolio.latest_summary = summary
 
     async def create_scientific_validation_run(
@@ -115,7 +143,6 @@ class AgentScientificValidationService:
         hypothesis_id: Optional[str] = None,
         originating_job_id: Optional[str] = None,
     ) -> dict[str, Any]:
-        from app.models.document import Document
         from app.models.experiment import ExperimentRun
         from app.services.scientific_validation_service import (
             build_scientific_validation_recipe,
@@ -128,7 +155,9 @@ class AgentScientificValidationService:
         normalized_policy = normalize_validation_policy(validation_policy)
         run_status = "blocked"
         source_id = str((repo_source_ids or [None])[0] or "").strip()
-        sandbox_profile = await get_scientific_sandbox_profile(db, sandbox_profile_id, track_type=track_type)
+        sandbox_profile = await get_scientific_sandbox_profile(
+            db, sandbox_profile_id, track_type=track_type
+        )
         runtime_limits = get_scientific_validation_runtime_limits()
         context_key = executor._scientific_validation_context_key(
             profile_id=profile_id,
@@ -141,7 +170,10 @@ class AgentScientificValidationService:
             "reason_code": "",
             "source_id": source_id or None,
             "recipe_family": None,
-            "sandbox_profile_id": str((sandbox_profile or {}).get("id") or sandbox_profile_id or "").strip() or None,
+            "sandbox_profile_id": str(
+                (sandbox_profile or {}).get("id") or sandbox_profile_id or ""
+            ).strip()
+            or None,
             "job_id": None,
         }
 
@@ -150,8 +182,12 @@ class AgentScientificValidationService:
         elif not sandbox_profile:
             decision["reason_code"] = "missing_sandbox_profile"
         else:
-            project_profile = await build_project_profile(parent_job, db, source_id=source_id, max_files=300)
-            verification_commands = executor._select_verification_commands_from_profile(project_profile, max_commands=4)
+            project_profile = await build_project_profile(
+                parent_job, db, source_id=source_id, max_files=300
+            )
+            verification_commands = executor._select_verification_commands_from_profile(
+                project_profile, max_commands=4
+            )
             retry_profile = executor._get_bootstrap_and_fallback_commands_from_profile(
                 project_profile,
                 primary_commands=verification_commands,
@@ -165,12 +201,18 @@ class AgentScientificValidationService:
                 hypothesis_text=hypothesis_text,
                 benchmark_queries=benchmark_queries,
                 verification_commands=verification_commands,
-                bootstrap_commands=retry_profile.get("install") if isinstance(retry_profile.get("install"), list) else [],
-                fallback_commands=retry_profile.get("fallback") if isinstance(retry_profile.get("fallback"), list) else [],
+                bootstrap_commands=retry_profile.get("install")
+                if isinstance(retry_profile.get("install"), list)
+                else [],
+                fallback_commands=retry_profile.get("fallback")
+                if isinstance(retry_profile.get("fallback"), list)
+                else [],
                 supporting_evidence=supporting_evidence,
                 supporting_sources=supporting_sources,
             )
-            decision["recipe_family"] = str(recipe.get("recipe_family") or "").strip() or None
+            decision["recipe_family"] = (
+                str(recipe.get("recipe_family") or "").strip() or None
+            )
             capability_check = evaluate_scientific_validation_capabilities(
                 source_id=source_id,
                 sandbox_profile=sandbox_profile,
@@ -179,12 +221,18 @@ class AgentScientificValidationService:
             decision["capability_check"] = capability_check
             budget_limit = min(
                 float(normalized_policy.get("max_validation_budget_per_run") or 25.0),
-                float((sandbox_profile or {}).get("budget_limit_default") or runtime_limits["max_budget_per_run"]),
+                float(
+                    (sandbox_profile or {}).get("budget_limit_default")
+                    or runtime_limits["max_budget_per_run"]
+                ),
                 float(runtime_limits["max_budget_per_run"]),
             )
             timeout_seconds = min(
                 int(normalized_policy.get("max_validation_runtime_minutes") or 20) * 60,
-                int((sandbox_profile or {}).get("timeout_seconds") or runtime_limits["max_timeout_seconds"]),
+                int(
+                    (sandbox_profile or {}).get("timeout_seconds")
+                    or runtime_limits["max_timeout_seconds"]
+                ),
                 int(runtime_limits["max_timeout_seconds"]),
             )
 
@@ -200,7 +248,11 @@ class AgentScientificValidationService:
             latest_failure_at: Optional[datetime] = None
             for recent in recent_runs:
                 cfg = recent.config if isinstance(recent.config, dict) else {}
-                meta = cfg.get("scientific_validation") if isinstance(cfg.get("scientific_validation"), dict) else {}
+                meta = (
+                    cfg.get("scientific_validation")
+                    if isinstance(cfg.get("scientific_validation"), dict)
+                    else {}
+                )
                 if str(meta.get("context_key") or "").strip() != context_key:
                     continue
                 if recent.status in {"queued", "provisioning", "running"}:
@@ -209,43 +261,76 @@ class AgentScientificValidationService:
                     break
                 consecutive_failures += 1
                 if latest_failure_at is None:
-                    latest_failure_at = recent.completed_at or recent.updated_at or recent.created_at
+                    latest_failure_at = (
+                        recent.completed_at or recent.updated_at or recent.created_at
+                    )
 
-            backoff = normalized_policy.get("validation_backoff_policy") if isinstance(normalized_policy.get("validation_backoff_policy"), dict) else {}
-            cooldown_minutes = max(5, min(int(backoff.get("cooldown_minutes") or 180), 10080))
-            max_consecutive_failures = max(1, min(int(backoff.get("max_consecutive_failures") or 2), 10))
+            backoff = (
+                normalized_policy.get("validation_backoff_policy")
+                if isinstance(normalized_policy.get("validation_backoff_policy"), dict)
+                else {}
+            )
+            cooldown_minutes = max(
+                5, min(int(backoff.get("cooldown_minutes") or 180), 10080)
+            )
+            max_consecutive_failures = max(
+                1, min(int(backoff.get("max_consecutive_failures") or 2), 10)
+            )
 
             recipe_benchmark_family = str(recipe.get("benchmark_family") or "").strip()
             profile_benchmark_families = set(
-                str(item).strip() for item in ((sandbox_profile or {}).get("allowed_benchmark_families") or []) if str(item).strip()
+                str(item).strip()
+                for item in (
+                    (sandbox_profile or {}).get("allowed_benchmark_families") or []
+                )
+                if str(item).strip()
             )
             profile_perf_collectors = set(
-                str(item).strip() for item in ((sandbox_profile or {}).get("allowed_perf_collectors") or []) if str(item).strip()
+                str(item).strip()
+                for item in (
+                    (sandbox_profile or {}).get("allowed_perf_collectors") or []
+                )
+                if str(item).strip()
             )
             recipe_perf_collectors = set(
-                str(item).strip() for item in (recipe.get("allowed_perf_collectors") or []) if str(item).strip()
+                str(item).strip()
+                for item in (recipe.get("allowed_perf_collectors") or [])
+                if str(item).strip()
             )
-            if str((sandbox_profile or {}).get("backend") or "").strip().lower() not in {"docker", "subprocess"}:
+            if str(
+                (sandbox_profile or {}).get("backend") or ""
+            ).strip().lower() not in {"docker", "subprocess"}:
                 decision["reason_code"] = "unsupported_backend"
-            elif (
-                str((sandbox_profile or {}).get("backend") or "").strip().lower() == "docker"
-                and str((sandbox_profile or {}).get("docker_image") or "").strip() not in set(runtime_limits["allowed_docker_images"])
+            elif str(
+                (sandbox_profile or {}).get("backend") or ""
+            ).strip().lower() == "docker" and str(
+                (sandbox_profile or {}).get("docker_image") or ""
+            ).strip() not in set(
+                runtime_limits["allowed_docker_images"]
             ):
                 decision["reason_code"] = "disallowed_image"
-            elif recipe_benchmark_family and recipe_benchmark_family not in profile_benchmark_families:
+            elif (
+                recipe_benchmark_family
+                and recipe_benchmark_family not in profile_benchmark_families
+            ):
                 decision["reason_code"] = "unsupported_benchmark_family"
-            elif recipe_perf_collectors and not recipe_perf_collectors.issubset(profile_perf_collectors):
+            elif recipe_perf_collectors and not recipe_perf_collectors.issubset(
+                profile_perf_collectors
+            ):
                 decision["reason_code"] = "recipe_profile_mismatch"
             elif not bool(capability_check.get("ok")):
                 decision["reason_code"] = "missing_capability"
             elif not recipe.get("commands"):
                 decision["reason_code"] = "recipe_compile_failed"
-            elif active_count >= int(normalized_policy.get("max_concurrent_validation_runs") or 1):
+            elif active_count >= int(
+                normalized_policy.get("max_concurrent_validation_runs") or 1
+            ):
                 decision["reason_code"] = "concurrency_limit"
             elif (
                 consecutive_failures >= max_consecutive_failures
                 and latest_failure_at is not None
-                and (datetime.utcnow() - latest_failure_at).total_seconds() < cooldown_minutes * 60
+                and (datetime.utcnow() - latest_failure_at).total_seconds()
+                < cooldown_minutes * 60
             ):
                 decision["reason_code"] = "backoff_cooldown"
             else:
@@ -254,28 +339,77 @@ class AgentScientificValidationService:
 
             run_config = {
                 "source_id": source_id,
-                "commands": recipe.get("commands") if isinstance(recipe.get("commands"), list) else [],
-                "bootstrap_commands": recipe.get("bootstrap_commands") if isinstance(recipe.get("bootstrap_commands"), list) else [],
-                "fallback_commands": recipe.get("fallback_commands") if isinstance(recipe.get("fallback_commands"), list) else [],
+                "commands": recipe.get("commands")
+                if isinstance(recipe.get("commands"), list)
+                else [],
+                "bootstrap_commands": recipe.get("bootstrap_commands")
+                if isinstance(recipe.get("bootstrap_commands"), list)
+                else [],
+                "fallback_commands": recipe.get("fallback_commands")
+                if isinstance(recipe.get("fallback_commands"), list)
+                else [],
                 "timeout_seconds": timeout_seconds,
-                "unsafe_code_exec_backend": str((sandbox_profile or {}).get("backend") or "docker"),
-                "unsafe_code_exec_docker_image": str((sandbox_profile or {}).get("docker_image") or ""),
-                "unsafe_code_exec_max_memory_mb": int((((sandbox_profile or {}).get("resource_caps") or {}).get("memory_mb") or 2048)),
-                "unsafe_code_exec_docker_cpus": float((((sandbox_profile or {}).get("resource_caps") or {}).get("cpus") or 1.0)),
-                "unsafe_code_exec_docker_pids_limit": int((((sandbox_profile or {}).get("resource_caps") or {}).get("pids_limit") or 128)),
+                "unsafe_code_exec_backend": str(
+                    (sandbox_profile or {}).get("backend") or "docker"
+                ),
+                "unsafe_code_exec_docker_image": str(
+                    (sandbox_profile or {}).get("docker_image") or ""
+                ),
+                "unsafe_code_exec_max_memory_mb": int(
+                    (
+                        ((sandbox_profile or {}).get("resource_caps") or {}).get(
+                            "memory_mb"
+                        )
+                        or 2048
+                    )
+                ),
+                "unsafe_code_exec_docker_cpus": float(
+                    (
+                        ((sandbox_profile or {}).get("resource_caps") or {}).get("cpus")
+                        or 1.0
+                    )
+                ),
+                "unsafe_code_exec_docker_pids_limit": int(
+                    (
+                        ((sandbox_profile or {}).get("resource_caps") or {}).get(
+                            "pids_limit"
+                        )
+                        or 128
+                    )
+                ),
                 "execution_handoff": {
                     "execution_handoff_version": 1,
-                    "selected_hypothesis_ids": [str(hypothesis_id or "").strip()] if str(hypothesis_id or "").strip() else [],
+                    "selected_hypothesis_ids": [str(hypothesis_id or "").strip()]
+                    if str(hypothesis_id or "").strip()
+                    else [],
                     "supporting_sources": supporting_sources[:8],
                     "autonomous_origin": {
-                        "source_kind": "profile" if str(profile_id or "").strip() else ("portfolio" if str(portfolio_id or "").strip() else None),
-                        "source_id": str(profile_id or portfolio_id or "").strip() or None,
+                        "source_kind": "profile"
+                        if str(profile_id or "").strip()
+                        else ("portfolio" if str(portfolio_id or "").strip() else None),
+                        "source_id": str(profile_id or portfolio_id or "").strip()
+                        or None,
                         "opportunity_id": str(hypothesis_id or "").strip() or None,
                         "evidence_revision_at_launch": str(
-                            ((experiment_plan.generator_details or {}) if isinstance(experiment_plan.generator_details, dict) else {}).get("evidence_revision_at_launch")
-                            or ((((experiment_plan.plan or {}) if isinstance(experiment_plan.plan, dict) else {}).get("provenance") or {}).get("autonomous_origin") or {}).get("evidence_revision_at_launch")
+                            (
+                                (experiment_plan.generator_details or {})
+                                if isinstance(experiment_plan.generator_details, dict)
+                                else {}
+                            ).get("evidence_revision_at_launch")
+                            or (
+                                (
+                                    (
+                                        (experiment_plan.plan or {})
+                                        if isinstance(experiment_plan.plan, dict)
+                                        else {}
+                                    ).get("provenance")
+                                    or {}
+                                ).get("autonomous_origin")
+                                or {}
+                            ).get("evidence_revision_at_launch")
                             or ""
-                        ).strip() or None,
+                        ).strip()
+                        or None,
                     },
                 },
                 "scientific_validation": {
@@ -288,13 +422,25 @@ class AgentScientificValidationService:
                     "recipe_version": int(recipe.get("recipe_version") or 1),
                     "benchmark_family": str(recipe.get("benchmark_family") or ""),
                     "benchmark_queries": benchmark_queries[:8],
-                    "allowed_perf_collectors": recipe.get("allowed_perf_collectors") if isinstance(recipe.get("allowed_perf_collectors"), list) else [],
-                    "required_capabilities": recipe.get("required_capabilities") if isinstance(recipe.get("required_capabilities"), list) else [],
+                    "allowed_perf_collectors": recipe.get("allowed_perf_collectors")
+                    if isinstance(recipe.get("allowed_perf_collectors"), list)
+                    else [],
+                    "required_capabilities": recipe.get("required_capabilities")
+                    if isinstance(recipe.get("required_capabilities"), list)
+                    else [],
                     "capability_check": capability_check,
-                    "artifact_collection_rules": recipe.get("artifact_collection_rules") if isinstance(recipe.get("artifact_collection_rules"), list) else [],
-                    "success_criteria": recipe.get("success_criteria") if isinstance(recipe.get("success_criteria"), list) else [],
-                    "decision_summary": str(recipe.get("decision_summary") or "")[:2000],
-                    "baseline_comparison": recipe.get("baseline_comparison") if isinstance(recipe.get("baseline_comparison"), dict) else {},
+                    "artifact_collection_rules": recipe.get("artifact_collection_rules")
+                    if isinstance(recipe.get("artifact_collection_rules"), list)
+                    else [],
+                    "success_criteria": recipe.get("success_criteria")
+                    if isinstance(recipe.get("success_criteria"), list)
+                    else [],
+                    "decision_summary": str(recipe.get("decision_summary") or "")[
+                        :2000
+                    ],
+                    "baseline_comparison": recipe.get("baseline_comparison")
+                    if isinstance(recipe.get("baseline_comparison"), dict)
+                    else {},
                     "domain_research_profile_id": str(profile_id or "").strip() or None,
                     "research_portfolio_id": str(portfolio_id or "").strip() or None,
                     "hypothesis_id": str(hypothesis_id or "").strip() or None,
@@ -317,7 +463,10 @@ class AgentScientificValidationService:
                 progress=0 if run_status == "queued" else 100,
                 config=run_config,
                 summary=(
-                    str(recipe.get("decision_summary") or f"Validation run for {hypothesis_title}").strip()[:20000]
+                    str(
+                        recipe.get("decision_summary")
+                        or f"Validation run for {hypothesis_title}"
+                    ).strip()[:20000]
                 ),
                 completed_at=datetime.utcnow() if run_status == "blocked" else None,
             )
@@ -363,7 +512,16 @@ class AgentScientificValidationService:
                     max_iterations=1,
                     max_tool_calls=0,
                     max_llm_calls=0,
-                    max_runtime_minutes=max(5, min(int(normalized_policy.get("max_validation_runtime_minutes") or 20), 240)),
+                    max_runtime_minutes=max(
+                        5,
+                        min(
+                            int(
+                                normalized_policy.get("max_validation_runtime_minutes")
+                                or 20
+                            ),
+                            240,
+                        ),
+                    ),
                 )
                 db.add(child_job)
                 await db.flush()

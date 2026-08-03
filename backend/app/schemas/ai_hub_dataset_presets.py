@@ -16,4 +16,3 @@ class DatasetPresetInfo(BaseModel):
 
 class DatasetPresetsResponse(BaseModel):
     presets: List[DatasetPresetInfo]
-

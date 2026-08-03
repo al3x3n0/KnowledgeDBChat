@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-
 DecisionType = Literal["pass", "revise", "escalate"]
 StatusType = Literal["pr_ready", "needs_human_review", "blocked"]
 ResultType = Literal["pass", "fail"]

@@ -4,10 +4,10 @@ Research notes API endpoints.
 Research-native notes intended for labs: hypotheses, experiment plans, insights.
 """
 
-from copy import deepcopy
-from datetime import datetime
 import json
 import re
+from copy import deepcopy
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
@@ -26,21 +26,25 @@ from app.schemas.research_note import (
     ResearchNoteCreate,
     ResearchNoteEnforceCitationsRequest,
     ResearchNoteLintCitationsRequest,
+    ResearchNoteListResponse,
+    ResearchNoteResponse,
     ResearchNotesLintRecentRequest,
     ResearchNotesLintRecentResponse,
     ResearchNoteUpdate,
-    ResearchNoteResponse,
-    ResearchNoteListResponse,
 )
 from app.services.auth_service import get_current_user
 from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.research_note_reevaluation_notification_service import maybe_emit_reevaluation_notification
+from app.services.research_note_reevaluation_notification_service import (
+    maybe_emit_reevaluation_notification,
+)
 from app.services.vector_store import vector_store_service
 
 router = APIRouter()
 
 
-def _trim_attribution(attribution: Optional[Dict[str, Any]], *, include_details: bool) -> Optional[Dict[str, Any]]:
+def _trim_attribution(
+    attribution: Optional[Dict[str, Any]], *, include_details: bool
+) -> Optional[Dict[str, Any]]:
     if not isinstance(attribution, dict):
         return None
 
@@ -70,7 +74,9 @@ def _trim_attribution(attribution: Optional[Dict[str, Any]], *, include_details:
         "unknown_citation_keys",
         "lint",
     }
-    trimmed: Dict[str, Any] = {k: attribution.get(k) for k in keep_root_keys if k in attribution}
+    trimmed: Dict[str, Any] = {
+        k: attribution.get(k) for k in keep_root_keys if k in attribution
+    }
 
     # Trim lint too (avoid long example lists in list view).
     lint = trimmed.get("lint")
@@ -92,7 +98,9 @@ def _trim_attribution(attribution: Optional[Dict[str, Any]], *, include_details:
     return trimmed
 
 
-def _to_response(note: ResearchNote, *, include_attribution_details: bool = True) -> ResearchNoteResponse:
+def _to_response(
+    note: ResearchNote, *, include_attribution_details: bool = True
+) -> ResearchNoteResponse:
     source_doc_ids = None
     if isinstance(note.source_document_ids, list):
         source_doc_ids = []
@@ -114,7 +122,9 @@ def _to_response(note: ResearchNote, *, include_attribution_details: bool = True
         content_markdown=note.content_markdown,
         tags=tags,
         attribution=attribution,
-        structured_payload=note.structured_payload if isinstance(note.structured_payload, dict) else None,
+        structured_payload=note.structured_payload
+        if isinstance(note.structured_payload, dict)
+        else None,
         source_synthesis_job_id=note.source_synthesis_job_id,
         source_document_ids=source_doc_ids,
         created_at=note.created_at,
@@ -134,7 +144,10 @@ async def _reconcile_pending_reevaluation_status(
     # the existing dict in place is not tracked by the JSON column and would be lost
     # on the subsequent db.refresh().
     payload = deepcopy(note.structured_payload)
-    if str(payload.get("artifact_type") or "").strip() != SynthesisJobType.HYPOTHESIS_REEVALUATION.value:
+    if (
+        str(payload.get("artifact_type") or "").strip()
+        != SynthesisJobType.HYPOTHESIS_REEVALUATION.value
+    ):
         return False
 
     pending_job_id = str(payload.get("pending_reevaluation_job_id") or "").strip()
@@ -155,7 +168,11 @@ async def _reconcile_pending_reevaluation_status(
         return True
 
     job = await db.get(SynthesisJob, job_uuid)
-    if not job or job.user_id != current_user.id or job.job_type != SynthesisJobType.HYPOTHESIS_REEVALUATION.value:
+    if (
+        not job
+        or job.user_id != current_user.id
+        or job.job_type != SynthesisJobType.HYPOTHESIS_REEVALUATION.value
+    ):
         payload.pop("pending_reevaluation_job_id", None)
         payload.pop("pending_reevaluation_created_at", None)
         payload.pop("pending_reevaluation_reason", None)
@@ -166,25 +183,46 @@ async def _reconcile_pending_reevaluation_status(
         note.structured_payload = payload
         return True
 
-    new_status = str(payload.get("pending_reevaluation_status") or "pending").strip() or "pending"
+    new_status = (
+        str(payload.get("pending_reevaluation_status") or "pending").strip()
+        or "pending"
+    )
     completed_at_value = payload.get("pending_reevaluation_completed_at")
     error_value = payload.get("pending_reevaluation_error")
 
     if job.status == SynthesisJobStatus.COMPLETED.value:
         new_status = "completed"
-        completed_at_value = job.completed_at.isoformat() if job.completed_at else datetime.utcnow().isoformat()
+        completed_at_value = (
+            job.completed_at.isoformat()
+            if job.completed_at
+            else datetime.utcnow().isoformat()
+        )
         error_value = None
         last_appended_at = str(payload.get("last_appended_at") or "").strip()
         if last_appended_at and completed_at_value:
             try:
-                if datetime.fromisoformat(last_appended_at.replace("Z", "+00:00")) > datetime.fromisoformat(str(completed_at_value).replace("Z", "+00:00")):
+                if datetime.fromisoformat(
+                    last_appended_at.replace("Z", "+00:00")
+                ) > datetime.fromisoformat(
+                    str(completed_at_value).replace("Z", "+00:00")
+                ):
                     new_status = "stale"
             except Exception:
                 pass
-    elif job.status in {SynthesisJobStatus.FAILED.value, SynthesisJobStatus.CANCELLED.value}:
+    elif job.status in {
+        SynthesisJobStatus.FAILED.value,
+        SynthesisJobStatus.CANCELLED.value,
+    }:
         new_status = "failed"
-        completed_at_value = job.completed_at.isoformat() if job.completed_at else datetime.utcnow().isoformat()
-        error_value = str(job.error or "Reevaluation draft failed").strip() or "Reevaluation draft failed"
+        completed_at_value = (
+            job.completed_at.isoformat()
+            if job.completed_at
+            else datetime.utcnow().isoformat()
+        )
+        error_value = (
+            str(job.error or "Reevaluation draft failed").strip()
+            or "Reevaluation draft failed"
+        )
     else:
         new_status = "pending"
         completed_at_value = None
@@ -216,9 +254,14 @@ async def _reconcile_pending_reevaluation_status(
                 user_id=current_user.id,
                 reevaluation_job_id=pending_job_id,
                 status=new_status,
-                source_run_ids=payload.get("pending_reevaluation_source_run_ids") if isinstance(payload.get("pending_reevaluation_source_run_ids"), list) else [],
+                source_run_ids=payload.get("pending_reevaluation_source_run_ids")
+                if isinstance(payload.get("pending_reevaluation_source_run_ids"), list)
+                else [],
                 error=str(error_value or "").strip(),
-                created_at=str(payload.get("pending_reevaluation_created_at") or "").strip() or None,
+                created_at=str(
+                    payload.get("pending_reevaluation_created_at") or ""
+                ).strip()
+                or None,
                 completed_at=str(completed_at_value or "").strip() or None,
                 commit=False,
                 push=False,
@@ -277,7 +320,7 @@ async def _build_sources_payload(
                             "excerpt": text,
                         }
                     )
-                    snippet += (text + " ")
+                    snippet += text + " "
                 snippet = snippet.strip()[:max_source_chars]
             except Exception as exc:
                 logger.warning(f"Vector snippet search failed for doc {doc.id}: {exc}")
@@ -305,7 +348,9 @@ async def _build_sources_payload(
 async def list_research_notes(
     q: Optional[str] = Query(None, description="Search in title/content"),
     tag: Optional[str] = Query(None, description="Filter by a single tag"),
-    include_attribution_details: bool = Query(False, description="Include full attribution payloads (larger responses)"),
+    include_attribution_details: bool = Query(
+        False, description="Include full attribution payloads (larger responses)"
+    ),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
@@ -317,17 +362,30 @@ async def list_research_notes(
         if q:
             like = f"%{q.strip()}%"
             base = base.where(
-                (ResearchNote.title.ilike(like)) | (ResearchNote.content_markdown.ilike(like))
+                (ResearchNote.title.ilike(like))
+                | (ResearchNote.content_markdown.ilike(like))
             )
 
         if tag:
             # Tags are stored as JSON array; use a simple textual match for portability.
             base = base.where(ResearchNote.tags.cast(str).ilike(f"%{tag.strip()}%"))
 
-        total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
-        result = await db.execute(base.order_by(desc(ResearchNote.updated_at)).offset(offset).limit(limit))
-        items = [_to_response(n, include_attribution_details=include_attribution_details) for n in result.scalars().all()]
-        return ResearchNoteListResponse(items=items, total=total, limit=limit, offset=offset)
+        total = int(
+            (
+                await db.execute(select(func.count()).select_from(base.subquery()))
+            ).scalar()
+            or 0
+        )
+        result = await db.execute(
+            base.order_by(desc(ResearchNote.updated_at)).offset(offset).limit(limit)
+        )
+        items = [
+            _to_response(n, include_attribution_details=include_attribution_details)
+            for n in result.scalars().all()
+        ]
+        return ResearchNoteListResponse(
+            items=items, total=total, limit=limit, offset=offset
+        )
     except Exception as exc:
         logger.error(f"Failed to list research notes: {exc}")
         raise HTTPException(status_code=500, detail="Failed to list research notes")
@@ -353,8 +411,11 @@ async def create_research_note(
             content_markdown=payload.content_markdown,
             tags=payload.tags,
             source_synthesis_job_id=synthesis_job_id,
-            source_document_ids=[str(x) for x in (payload.source_document_ids or [])] or None,
-            structured_payload=payload.structured_payload if isinstance(payload.structured_payload, dict) else None,
+            source_document_ids=[str(x) for x in (payload.source_document_ids or [])]
+            or None,
+            structured_payload=payload.structured_payload
+            if isinstance(payload.structured_payload, dict)
+            else None,
         )
         db.add(note)
         await db.commit()
@@ -377,7 +438,9 @@ async def get_research_note(
     note = await db.get(ResearchNote, note_id)
     if not note or note.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Research note not found")
-    if await _reconcile_pending_reevaluation_status(note, db=db, current_user=current_user):
+    if await _reconcile_pending_reevaluation_status(
+        note, db=db, current_user=current_user
+    ):
         await db.commit()
         await db.refresh(note)
     return _to_response(note)
@@ -445,7 +508,11 @@ async def enforce_research_note_citations(
 
         if not doc_ids and note.source_synthesis_job_id:
             job = await db.get(SynthesisJob, note.source_synthesis_job_id)
-            if job and job.user_id == current_user.id and isinstance(job.document_ids, list):
+            if (
+                job
+                and job.user_id == current_user.id
+                and isinstance(job.document_ids, list)
+            ):
                 for x in job.document_ids:
                     try:
                         doc_ids.append(UUID(str(x)))
@@ -460,7 +527,9 @@ async def enforce_research_note_citations(
 
     doc_ids = doc_ids[: payload.max_sources]
     result = await db.execute(select(Document).where(Document.id.in_(doc_ids)))
-    documents_by_id: Dict[str, Document] = {str(d.id): d for d in result.scalars().all()}
+    documents_by_id: Dict[str, Document] = {
+        str(d.id): d for d in result.scalars().all()
+    }
     documents: List[Document] = []
     for doc_id in doc_ids:
         doc = documents_by_id.get(str(doc_id))
@@ -468,11 +537,15 @@ async def enforce_research_note_citations(
             documents.append(doc)
 
     if not documents:
-        raise HTTPException(status_code=400, detail="No source documents found for provided IDs")
+        raise HTTPException(
+            status_code=400, detail="No source documents found for provided IDs"
+        )
 
     note_markdown = (note.content_markdown or "").strip()
     if len(note_markdown) > payload.max_note_chars:
-        note_markdown = note_markdown[: payload.max_note_chars].rstrip() + "\n\n[TRUNCATED]\n"
+        note_markdown = (
+            note_markdown[: payload.max_note_chars].rstrip() + "\n\n[TRUNCATED]\n"
+        )
 
     chunk_query = (payload.chunk_query or "").strip()
     if not chunk_query:
@@ -520,10 +593,10 @@ async def enforce_research_note_citations(
         f"{strict_block}"
         "Output ONLY a JSON object with this shape:\n"
         "{\n"
-        '  \"content_markdown_cited\": \"string\",\n'
-        '  \"sources\": [ { \"key\": \"S1\", \"doc_id\": \"uuid\", \"title\": \"string\", \"url\": \"string|null\" } ],\n'
-        '  \"unsupported_claims\": [ { \"claim\": \"string\", \"reason\": \"string\", \"suggested_fix\": \"string\" } ],\n'
-        '  \"coverage\": number\n'
+        '  "content_markdown_cited": "string",\n'
+        '  "sources": [ { "key": "S1", "doc_id": "uuid", "title": "string", "url": "string|null" } ],\n'
+        '  "unsupported_claims": [ { "claim": "string", "reason": "string", "suggested_fix": "string" } ],\n'
+        '  "coverage": number\n'
         "}\n\n"
         f"policy: {payload.policy}\n\n"
         f"SOURCES (JSON):\n{json.dumps(sources_payload, ensure_ascii=True)}\n\n"
@@ -532,7 +605,9 @@ async def enforce_research_note_citations(
 
     user_settings: Optional[UserLLMSettings] = None
     try:
-        prefs_result = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+        prefs_result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
         user_prefs = prefs_result.scalar_one_or_none()
         if user_prefs:
             user_settings = UserLLMSettings.from_preferences(user_prefs)
@@ -551,7 +626,9 @@ async def enforce_research_note_citations(
         data = _extract_json(response_text)
     except Exception as exc:
         logger.error(f"Citation enforcement failed: {exc}")
-        raise HTTPException(status_code=500, detail="Failed to enforce citations") from exc
+        raise HTTPException(
+            status_code=500, detail="Failed to enforce citations"
+        ) from exc
 
     generated_markdown = (data.get("content_markdown_cited") or "").strip()
 
@@ -635,7 +712,11 @@ async def enforce_research_note_citations(
         "uncited_examples": uncited_examples,
         "total_citable_lines": total_citable_lines or None,
         "cited_citable_lines": cited_citable_lines or None,
-        "line_citation_coverage": (float(cited_citable_lines) / float(total_citable_lines)) if total_citable_lines else None,
+        "line_citation_coverage": (
+            float(cited_citable_lines) / float(total_citable_lines)
+        )
+        if total_citable_lines
+        else None,
         "used_citation_keys": used_citation_keys,
         "unknown_citation_keys": unknown_citation_keys,
         "coverage": data.get("coverage"),
@@ -676,7 +757,11 @@ async def lint_research_note_citations(
 
         if not doc_ids and note.source_synthesis_job_id:
             job = await db.get(SynthesisJob, note.source_synthesis_job_id)
-            if job and job.user_id == current_user.id and isinstance(job.document_ids, list):
+            if (
+                job
+                and job.user_id == current_user.id
+                and isinstance(job.document_ids, list)
+            ):
                 for x in job.document_ids:
                     try:
                         doc_ids.append(UUID(str(x)))
@@ -691,7 +776,9 @@ async def lint_research_note_citations(
 
     doc_ids = doc_ids[: payload.max_sources]
     result = await db.execute(select(Document).where(Document.id.in_(doc_ids)))
-    documents_by_id: Dict[str, Document] = {str(d.id): d for d in result.scalars().all()}
+    documents_by_id: Dict[str, Document] = {
+        str(d.id): d for d in result.scalars().all()
+    }
     documents: List[Document] = []
     for doc_id in doc_ids:
         doc = documents_by_id.get(str(doc_id))
@@ -752,7 +839,9 @@ async def lint_research_note_citations(
             if len(uncited_examples) >= payload.max_uncited_examples:
                 break
 
-    bibliography_present = bool(re.search(r"^##\\s+Sources\\s*$", markdown, flags=re.MULTILINE))
+    bibliography_present = bool(
+        re.search(r"^##\\s+Sources\\s*$", markdown, flags=re.MULTILINE)
+    )
     bibliography_keys: List[str] = []
     if bibliography_present:
         for m in re.finditer(r"\\*\\*S(\\d+)\\*\\*", markdown):
@@ -769,7 +858,11 @@ async def lint_research_note_citations(
         "unknown_citation_keys": unknown_citation_keys,
         "total_citable_lines": total_citable_lines or None,
         "cited_citable_lines": cited_citable_lines or None,
-        "line_citation_coverage": (float(cited_citable_lines) / float(total_citable_lines)) if total_citable_lines else None,
+        "line_citation_coverage": (
+            float(cited_citable_lines) / float(total_citable_lines)
+        )
+        if total_citable_lines
+        else None,
         "uncited_examples": uncited_examples,
     }
 
@@ -835,9 +928,15 @@ async def lint_recent_research_notes(
     for note in notes:
         processed += 1
         attribution = note.attribution if isinstance(note.attribution, dict) else {}
-        lint = attribution.get("lint") if isinstance(attribution.get("lint"), dict) else None
+        lint = (
+            attribution.get("lint")
+            if isinstance(attribution.get("lint"), dict)
+            else None
+        )
         last_linted_at = _parse_ts(str(lint.get("generated_at")) if lint else None)
-        note_updated_at = note.updated_at.replace(tzinfo=None) if note.updated_at else None
+        note_updated_at = (
+            note.updated_at.replace(tzinfo=None) if note.updated_at else None
+        )
         if last_linted_at and note_updated_at and last_linted_at >= note_updated_at:
             skipped += 1
             continue
@@ -851,7 +950,11 @@ async def lint_recent_research_notes(
                     pass
         if not doc_ids and note.source_synthesis_job_id:
             job = await db.get(SynthesisJob, note.source_synthesis_job_id)
-            if job and job.user_id == current_user.id and isinstance(job.document_ids, list):
+            if (
+                job
+                and job.user_id == current_user.id
+                and isinstance(job.document_ids, list)
+            ):
                 for x in job.document_ids:
                     try:
                         doc_ids.append(UUID(str(x)))
@@ -864,7 +967,9 @@ async def lint_recent_research_notes(
 
         doc_ids = doc_ids[: int(payload.max_sources)]
         doc_res = await db.execute(select(Document).where(Document.id.in_(doc_ids)))
-        documents_by_id: Dict[str, Document] = {str(d.id): d for d in doc_res.scalars().all()}
+        documents_by_id: Dict[str, Document] = {
+            str(d.id): d for d in doc_res.scalars().all()
+        }
         documents: List[Document] = []
         for did in doc_ids:
             d = documents_by_id.get(str(did))
@@ -906,7 +1011,9 @@ async def lint_recent_research_notes(
                 if len(uncited_examples) >= int(payload.max_uncited_examples):
                     break
 
-        bibliography_present = bool(re.search(r"^##\\s+Sources\\s*$", markdown, flags=re.MULTILINE))
+        bibliography_present = bool(
+            re.search(r"^##\\s+Sources\\s*$", markdown, flags=re.MULTILINE)
+        )
         lint_report = {
             "generated_at": now.isoformat(),
             "document_ids_used": [str(x) for x in doc_ids],
@@ -916,7 +1023,11 @@ async def lint_recent_research_notes(
             "unknown_citation_keys": unknown_citation_keys,
             "total_citable_lines": total_citable_lines or None,
             "cited_citable_lines": cited_citable_lines or None,
-            "line_citation_coverage": (float(cited_citable_lines) / float(total_citable_lines)) if total_citable_lines else None,
+            "line_citation_coverage": (
+                float(cited_citable_lines) / float(total_citable_lines)
+            )
+            if total_citable_lines
+            else None,
             "uncited_examples": uncited_examples,
         }
 

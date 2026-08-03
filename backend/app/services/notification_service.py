@@ -2,18 +2,23 @@
 Notification service for creating and managing user notifications.
 """
 
-from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple
-from uuid import UUID
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, update, and_, or_
-from loguru import logger
 import json
-import redis
+from datetime import datetime
+from typing import Any, Dict, List, Optional, Tuple
+from uuid import UUID
 
-from app.models.notification import Notification, NotificationPreferences, NotificationType
-from app.models.user import User
+import redis
+from loguru import logger
+from sqlalchemy import func, or_, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
+from app.models.notification import (
+    Notification,
+    NotificationPreferences,
+    NotificationType,
+)
+from app.models.user import User
 
 
 class NotificationService:
@@ -35,6 +40,7 @@ class NotificationService:
         NotificationType.ADMIN_BROADCAST: "notify_admin_broadcasts",
         NotificationType.RESEARCH_NOTE_CITATION_ISSUE: "notify_research_note_citation_issues",
         NotificationType.EXPERIMENT_RUN_UPDATE: "notify_experiment_run_updates",
+        NotificationType.AUTONOMOUS_RND_VERIFICATION_UPDATE: "notify_experiment_run_updates",
         NotificationType.HYPOTHESIS_REEVALUATION_UPDATE: "notify_hypothesis_reevaluation_updates",
         NotificationType.QUEUE_URGENCY_ALERT: "notify_queue_urgency_alerts",
         NotificationType.FOLLOW_UP_OUTCOME_ALERT: "notify_follow_up_outcome_alerts",
@@ -78,7 +84,9 @@ class NotificationService:
             # Check if user has opted out of this notification type
             pref_field = self.TYPE_TO_PREFERENCE.get(notification_type)
             if pref_field and prefs and not getattr(prefs, pref_field, True):
-                logger.debug(f"User {user_id} has disabled {notification_type} notifications")
+                logger.debug(
+                    f"User {user_id} has disabled {notification_type} notifications"
+                )
                 return None
 
             # Create notification
@@ -107,7 +115,9 @@ class NotificationService:
             if push:
                 self._push_notification(user_id, notification)
 
-            logger.info(f"Created notification {notification.id} for user {user_id}: {title}")
+            logger.info(
+                f"Created notification {notification.id} for user {user_id}: {title}"
+            )
             return notification
 
         except Exception as e:
@@ -130,7 +140,7 @@ class NotificationService:
         """Create a notification for all users (or filtered by role)."""
         try:
             # Get target users
-            query = select(User.id).where(User.is_active == True)
+            query = select(User.id).where(User.is_active.is_(True))
             if target_roles:
                 query = query.where(User.role.in_(target_roles))
 
@@ -173,22 +183,24 @@ class NotificationService:
             # Build query
             query = select(Notification).where(
                 Notification.user_id == user_id,
-                Notification.is_dismissed == False,
+                Notification.is_dismissed.is_(False),
             )
 
             # Filter expired notifications
             query = query.where(
                 or_(
                     Notification.expires_at.is_(None),
-                    Notification.expires_at > datetime.utcnow()
+                    Notification.expires_at > datetime.utcnow(),
                 )
             )
 
             if unread_only:
-                query = query.where(Notification.is_read == False)
+                query = query.where(Notification.is_read.is_(False))
 
             if notification_types:
-                query = query.where(Notification.notification_type.in_(notification_types))
+                query = query.where(
+                    Notification.notification_type.in_(notification_types)
+                )
 
             # Get total count
             count_query = select(func.count()).select_from(query.subquery())
@@ -197,7 +209,11 @@ class NotificationService:
 
             # Apply pagination and ordering
             skip = (page - 1) * page_size
-            query = query.order_by(Notification.created_at.desc()).offset(skip).limit(page_size)
+            query = (
+                query.order_by(Notification.created_at.desc())
+                .offset(skip)
+                .limit(page_size)
+            )
 
             result = await db.execute(query)
             notifications = list(result.scalars().all())
@@ -213,12 +229,12 @@ class NotificationService:
         try:
             query = select(func.count()).where(
                 Notification.user_id == user_id,
-                Notification.is_read == False,
-                Notification.is_dismissed == False,
+                Notification.is_read.is_(False),
+                Notification.is_dismissed.is_(False),
                 or_(
                     Notification.expires_at.is_(None),
-                    Notification.expires_at > datetime.utcnow()
-                )
+                    Notification.expires_at > datetime.utcnow(),
+                ),
             )
             result = await db.execute(query)
             return result.scalar() or 0
@@ -256,7 +272,7 @@ class NotificationService:
                 update(Notification)
                 .where(
                     Notification.user_id == user_id,
-                    Notification.is_read == False,
+                    Notification.is_read.is_(False),
                 )
                 .values(is_read=True, read_at=datetime.utcnow())
             )
@@ -380,12 +396,16 @@ class NotificationService:
                     "message": notification.message,
                     "priority": notification.priority,
                     "related_entity_type": notification.related_entity_type,
-                    "related_entity_id": str(notification.related_entity_id) if notification.related_entity_id else None,
+                    "related_entity_id": str(notification.related_entity_id)
+                    if notification.related_entity_id
+                    else None,
                     "data": notification.data,
                     "action_url": notification.action_url,
                     "is_read": notification.is_read,
-                    "created_at": notification.created_at.isoformat() if notification.created_at else None,
-                }
+                    "created_at": notification.created_at.isoformat()
+                    if notification.created_at
+                    else None,
+                },
             }
             client.publish(channel, json.dumps(message))
             logger.debug(f"Pushed notification to channel {channel}")
@@ -397,10 +417,9 @@ class NotificationService:
         """Remove expired notifications (for maintenance task)."""
         try:
             from sqlalchemy import delete
+
             result = await db.execute(
-                delete(Notification).where(
-                    Notification.expires_at < datetime.utcnow()
-                )
+                delete(Notification).where(Notification.expires_at < datetime.utcnow())
             )
             await db.commit()
             return result.rowcount

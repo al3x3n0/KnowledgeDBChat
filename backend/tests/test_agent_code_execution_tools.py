@@ -1,7 +1,5 @@
 """Tests for code execution tools (execute_python, execute_data_pipeline, write_and_run_script)."""
 
-import pytest
-
 
 def _make_state():
     """Create a minimal state dict with code execution fields."""
@@ -14,9 +12,18 @@ class TestExecutePython:
     """Tests for execute_python tool logic."""
 
     WHITELISTED_IMPORTS = {
-        "json", "re", "datetime", "math", "collections",
-        "itertools", "statistics", "csv", "textwrap",
-        "hashlib", "base64", "uuid",
+        "json",
+        "re",
+        "datetime",
+        "math",
+        "collections",
+        "itertools",
+        "statistics",
+        "csv",
+        "textwrap",
+        "hashlib",
+        "base64",
+        "uuid",
     }
 
     def test_whitelisted_import_allowed(self):
@@ -116,8 +123,13 @@ class TestWriteAndRunScript:
 
     def test_pip_packages_whitelisted(self):
         allowed_packages = {
-            "numpy", "pandas", "scipy", "scikit-learn",
-            "matplotlib", "seaborn", "requests",
+            "numpy",
+            "pandas",
+            "scipy",
+            "scikit-learn",
+            "matplotlib",
+            "seaborn",
+            "requests",
         }
         requested = ["numpy", "pandas"]
         for pkg in requested:
@@ -125,8 +137,13 @@ class TestWriteAndRunScript:
 
     def test_blocked_pip_package(self):
         allowed_packages = {
-            "numpy", "pandas", "scipy", "scikit-learn",
-            "matplotlib", "seaborn", "requests",
+            "numpy",
+            "pandas",
+            "scipy",
+            "scikit-learn",
+            "matplotlib",
+            "seaborn",
+            "requests",
         }
         blocked = "malicious-package"
         assert blocked not in allowed_packages

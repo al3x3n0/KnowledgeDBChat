@@ -90,7 +90,9 @@ class BuiltinAgentJobChainDefinition:
         return job_config
 
 
-CUSTOMER_RESEARCH_SCOUT_DEEP_DIVE_CHAIN_ID = UUID("9a5e6c41-6c04-4f5b-9adf-2d7fb3cbb5b8")
+CUSTOMER_RESEARCH_SCOUT_DEEP_DIVE_CHAIN_ID = UUID(
+    "9a5e6c41-6c04-4f5b-9adf-2d7fb3cbb5b8"
+)
 ARXIV_REPO_CODE_PATCH_CHAIN_ID = UUID("0b5a8bb2-7a2c-4a2b-8d51-02f9a4f20a77")
 ARXIV_ALGORITHM_PROJECT_CHAIN_ID = UUID("44c0efc8-1f6b-4b67-8e0a-2bbf7fbb0d1d")
 ARXIV_REPO_ALGORITHM_PROJECT_CHAIN_ID = UUID("7d8c4a5a-9d5b-4a55-9b41-6f39d12fb4b8")
@@ -726,7 +728,10 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
                 "step_name": "Persist (1)",
                 "job_type": "analysis",
                 "goal_template": "Persist baseline results for research note {research_note_id}",
-                "config": {"deterministic_runner": "experiment_persist_results", "append_to_note": True},
+                "config": {
+                    "deterministic_runner": "experiment_persist_results",
+                    "append_to_note": True,
+                },
                 "trigger_condition": "on_any_end",
             },
             {
@@ -747,7 +752,10 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
                 "step_name": "Persist (2)",
                 "job_type": "analysis",
                 "goal_template": "Persist ablation results for research note {research_note_id}",
-                "config": {"deterministic_runner": "experiment_persist_results", "append_to_note": True},
+                "config": {
+                    "deterministic_runner": "experiment_persist_results",
+                    "append_to_note": True,
+                },
                 "trigger_condition": "on_any_end",
             },
             {
@@ -768,7 +776,10 @@ BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS: List[BuiltinAgentJobChainDefinition] = [
                 "step_name": "Persist (3)",
                 "job_type": "analysis",
                 "goal_template": "Persist final ablation results for research note {research_note_id}",
-                "config": {"deterministic_runner": "experiment_persist_results", "append_to_note": True},
+                "config": {
+                    "deterministic_runner": "experiment_persist_results",
+                    "append_to_note": True,
+                },
             },
         ],
         default_settings={
@@ -910,7 +921,9 @@ def list_builtin_agent_job_chain_definitions() -> List[BuiltinAgentJobChainDefin
     return [c for c in BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS if c.is_active]
 
 
-def get_builtin_agent_job_chain_definition(chain_id: UUID) -> Optional[BuiltinAgentJobChainDefinition]:
+def get_builtin_agent_job_chain_definition(
+    chain_id: UUID,
+) -> Optional[BuiltinAgentJobChainDefinition]:
     for c in BUILTIN_AGENT_JOB_CHAIN_DEFINITIONS:
         if c.id == chain_id and c.is_active:
             return c

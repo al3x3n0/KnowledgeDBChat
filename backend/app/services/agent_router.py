@@ -6,7 +6,8 @@ from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agent_core.routing import AgentRouter as CoreAgentRouter, CAPABILITY_KEYWORDS
+from app.agent_core.routing import CAPABILITY_KEYWORDS
+from app.agent_core.routing import AgentRouter as CoreAgentRouter
 from app.models.agent_definition import AgentDefinition
 from app.services.llm_service import LLMService
 
@@ -17,7 +18,7 @@ class AgentRouter(CoreAgentRouter):
 
     async def load_agents(self, db: AsyncSession) -> Dict[str, AgentDefinition]:
         result = await db.execute(
-            select(AgentDefinition).where(AgentDefinition.is_active == True)
+            select(AgentDefinition).where(AgentDefinition.is_active.is_(True))
         )
         agents = result.scalars().all()
         cache = {agent.name: agent for agent in agents}
@@ -37,7 +38,7 @@ class AgentRouter(CoreAgentRouter):
         result = await db.execute(
             select(AgentDefinition).where(
                 AgentDefinition.name == name,
-                AgentDefinition.is_active == True,
+                AgentDefinition.is_active.is_(True),
             )
         )
         agent = result.scalar_one_or_none()

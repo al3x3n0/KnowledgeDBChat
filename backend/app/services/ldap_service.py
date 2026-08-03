@@ -7,7 +7,7 @@ We use `ldap3` (pure python) to avoid system-level dependencies.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Any, Optional, Iterable
+from typing import Any, Iterable, Optional
 
 from loguru import logger
 
@@ -78,7 +78,9 @@ class LdapService:
             raise_exceptions=True,
         )
         conn.open()
-        if getattr(settings, "LDAP_START_TLS", False) and not self.uri.lower().startswith("ldaps://"):
+        if getattr(
+            settings, "LDAP_START_TLS", False
+        ) and not self.uri.lower().startswith("ldaps://"):
             conn.start_tls()
         conn.bind()
         return conn
@@ -88,7 +90,9 @@ class LdapService:
         attrs = [x.strip() for x in raw.split(",") if x.strip()]
         return attrs or ["uid", "mail", "cn", "displayName", "memberOf"]
 
-    def _extract(self, attrs: dict[str, Any], *, fallback_username: str, dn: str) -> LdapUser:
+    def _extract(
+        self, attrs: dict[str, Any], *, fallback_username: str, dn: str
+    ) -> LdapUser:
         def _first(attr: str) -> Optional[str]:
             v = attrs.get(attr)
             if v is None:
@@ -99,8 +103,13 @@ class LdapService:
 
         username_attr = getattr(settings, "LDAP_USERNAME_ATTRIBUTE", "uid") or "uid"
         email_attr = getattr(settings, "LDAP_EMAIL_ATTRIBUTE", "mail") or "mail"
-        name_attr = getattr(settings, "LDAP_FULL_NAME_ATTRIBUTE", "displayName") or "displayName"
-        groups_attr = getattr(settings, "LDAP_GROUPS_ATTRIBUTE", "memberOf") or "memberOf"
+        name_attr = (
+            getattr(settings, "LDAP_FULL_NAME_ATTRIBUTE", "displayName")
+            or "displayName"
+        )
+        groups_attr = (
+            getattr(settings, "LDAP_GROUPS_ATTRIBUTE", "memberOf") or "memberOf"
+        )
 
         username = _first(username_attr) or fallback_username
         email = _first(email_attr)
@@ -114,7 +123,9 @@ class LdapService:
             groups = [gv]
 
         if not email:
-            domain = (getattr(settings, "LDAP_DEFAULT_EMAIL_DOMAIN", None) or "").strip()
+            domain = (
+                getattr(settings, "LDAP_DEFAULT_EMAIL_DOMAIN", None) or ""
+            ).strip()
             if domain:
                 email = f"{username}@{domain}"
 
@@ -149,7 +160,9 @@ class LdapService:
         data = entry.entry_attributes_as_dict or {}
         return dn, data
 
-    def authenticate_and_fetch(self, username: str, password: str) -> Optional[LdapUser]:
+    def authenticate_and_fetch(
+        self, username: str, password: str
+    ) -> Optional[LdapUser]:
         """
         Validate username/password against LDAP. Returns user attributes on success.
         """
@@ -165,7 +178,9 @@ class LdapService:
             user_dn = dn_tmpl.format(username=username)
         else:
             bind_dn = (getattr(settings, "LDAP_BIND_DN", None) or "").strip() or None
-            bind_pw = (getattr(settings, "LDAP_BIND_PASSWORD", None) or "").strip() or None
+            bind_pw = (
+                getattr(settings, "LDAP_BIND_PASSWORD", None) or ""
+            ).strip() or None
             try:
                 with self._connect(bind_dn, bind_pw) as conn:
                     found = self._search_user_dn(conn, username)
@@ -187,7 +202,9 @@ class LdapService:
                     found = self._search_user_dn(conn, username)
                     if found:
                         _dn, user_attrs = found
-                return self._extract(user_attrs or {}, fallback_username=username, dn=user_dn)
+                return self._extract(
+                    user_attrs or {}, fallback_username=username, dn=user_dn
+                )
         except Exception as e:
             logger.info(f"LDAP bind failed for {username}: {e}")
             return None
@@ -229,7 +246,12 @@ class LdapService:
                     # fallback_username not meaningful here; best effort from attr
                     out.append(self._extract(data, fallback_username="", dn=dn))
 
-                cookie = conn.result.get("controls", {}).get("1.2.840.113556.1.4.319", {}).get("value", {}).get("cookie")
+                cookie = (
+                    conn.result.get("controls", {})
+                    .get("1.2.840.113556.1.4.319", {})
+                    .get("value", {})
+                    .get("cookie")
+                )
                 if not cookie:
                     break
 
@@ -237,8 +259,14 @@ class LdapService:
 
     def map_role(self, groups: Iterable[str] | None) -> str:
         groups_set = {g.strip().lower() for g in (groups or []) if g}
-        admin_dns = {g.lower() for g in _split_csv(getattr(settings, "LDAP_ADMIN_GROUP_DNS", None))}
-        viewer_dns = {g.lower() for g in _split_csv(getattr(settings, "LDAP_VIEWER_GROUP_DNS", None))}
+        admin_dns = {
+            g.lower()
+            for g in _split_csv(getattr(settings, "LDAP_ADMIN_GROUP_DNS", None))
+        }
+        viewer_dns = {
+            g.lower()
+            for g in _split_csv(getattr(settings, "LDAP_VIEWER_GROUP_DNS", None))
+        }
 
         if admin_dns and (groups_set & admin_dns):
             return "admin"
@@ -248,4 +276,3 @@ class LdapService:
 
 
 ldap_service = LdapService()
-

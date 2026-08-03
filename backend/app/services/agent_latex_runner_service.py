@@ -2,52 +2,15 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
-import json
-import math
-import os
-import random
 import re
-import uuid
-from collections import Counter
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
-from uuid import UUID
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 
-from loguru import logger
-from sqlalchemy import desc, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.agent_job import AgentJob, AgentJobStatus, ChainTriggerCondition
-from app.models.agent_definition import AgentDefinition
-from app.models.agent_tool_prior import AgentToolPrior
-from app.models.user import User
-from app.models.memory import UserPreferences
-from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
-from app.services.ai_hub_eval_service import ai_hub_eval_service
-from app.services.project_profile_service import (
-    build_project_profile,
-    format_project_profile_for_prompt,
-    infer_project_profile_from_paths,
-)
-from app.services.research_opportunity_service import (
-    collect_research_opportunity_linked_ids,
-    compute_research_opportunity_evidence_revision,
-    compute_research_portfolio_config_revision,
-    list_normalized_research_opportunities,
-    merge_operator_fields,
-    normalize_research_opportunity,
-    summarize_research_opportunity_autonomy_states,
-    summarize_research_opportunity_stages,
-)
-from app.services.autonomy_service import (
-    build_domain_profile_compat_policy,
-    current_domain_profile_policy_snapshot,
-    resolve_domain_profile_automation_contract,
-)
+from app.models.agent_job import AgentJob, AgentJobStatus
 
 
 class AgentLatexRunnerService:
@@ -72,11 +35,11 @@ class AgentLatexRunnerService:
           - optional job.config.bib_filename (default 'refs.bib')
         """
         import hashlib as _hashlib
-        import json as _json
         from datetime import datetime as _dt
         from uuid import UUID as _UUID
 
-        from sqlalchemy import String as _String, cast as _cast
+        from sqlalchemy import String as _String
+        from sqlalchemy import cast as _cast
 
         from app.models.document import Document
         from app.models.latex_project import LatexProject
@@ -88,7 +51,9 @@ class AgentLatexRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "latex_citation_sync", "result": details})
+            job.add_log_entry(
+                {"phase": phase, "action": "latex_citation_sync", "result": details}
+            )
 
         def _sanitize_bib_filename(name: str) -> str:
             s = (name or "").strip()
@@ -108,7 +73,7 @@ class AgentLatexRunnerService:
 
         def _insert_before_end_document(source: str, addition: str) -> str:
             marker = "\\end{document}"
-            s = (source or "")
+            s = source or ""
             idx = s.rfind(marker)
             if idx == -1:
                 return (s.rstrip() + "\n\n" + addition.strip() + "\n").lstrip("\n")
@@ -136,7 +101,11 @@ class AgentLatexRunnerService:
             u = (url or "").strip()
             if not u:
                 return None
-            m = re.search(r"arxiv\.org/(abs|pdf)/(?P<id>\d{4}\.\d{4,5}(v\d+)?)(?:\.pdf)?", u, flags=re.I)
+            m = re.search(
+                r"arxiv\.org/(abs|pdf)/(?P<id>\d{4}\.\d{4,5}(v\d+)?)(?:\.pdf)?",
+                u,
+                flags=re.I,
+            )
             if not m:
                 return None
             return (m.group("id") or "").strip() or None
@@ -148,7 +117,20 @@ class AgentLatexRunnerService:
                 month = int(dt.month)
             except Exception:
                 return None
-            months = ["jan", "feb", "mar", "apr", "may", "jun", "jul", "aug", "sep", "oct", "nov", "dec"]
+            months = [
+                "jan",
+                "feb",
+                "mar",
+                "apr",
+                "may",
+                "jun",
+                "jul",
+                "aug",
+                "sep",
+                "oct",
+                "nov",
+                "dec",
+            ]
             if 1 <= month <= 12:
                 return months[month - 1]
             return None
@@ -157,11 +139,6 @@ class AgentLatexRunnerService:
             return f"KDB:{str(doc_id)}"
 
         cfg = job.config if isinstance(job.config, dict) else {}
-        scientific_validation = (
-            cfg.get("scientific_validation")
-            if isinstance(cfg.get("scientific_validation"), dict)
-            else {}
-        )
         enabled_raw = cfg.get("enabled")
         if enabled_raw is None:
             enabled = bool(cfg.get("enable_citation_sync", True))
@@ -200,7 +177,9 @@ class AgentLatexRunnerService:
         mode = str((cfg or {}).get("mode") or "bibtex").strip().lower()
         if mode not in ("bibtex", "thebibliography"):
             mode = "bibtex"
-        bib_filename = _sanitize_bib_filename(str((cfg or {}).get("bib_filename") or "refs.bib"))
+        bib_filename = _sanitize_bib_filename(
+            str((cfg or {}).get("bib_filename") or "refs.bib")
+        )
         stem = _bib_stem(bib_filename)
 
         project = await db.get(LatexProject, project_uuid)
@@ -253,7 +232,11 @@ class AgentLatexRunnerService:
             try:
                 res = await db.execute(
                     select(Document.id)
-                    .where(func.replace(_cast(Document.id, _String), "-", "").ilike(f"{prefix}%"))
+                    .where(
+                        func.replace(_cast(Document.id, _String), "-", "").ilike(
+                            f"{prefix}%"
+                        )
+                    )
                     .limit(2)
                 )
                 ids = [str(x[0]) for x in res.all()]
@@ -279,13 +262,17 @@ class AgentLatexRunnerService:
         # Deterministic ordering: preserve cite key order as it appears in paper.tex.
         docs_by_key: List[Document] = []
         by_id = {str(d.id): d for d in docs}
-        for k in (keys_in_source_order or sorted(resolved.keys())):
+        for k in keys_in_source_order or sorted(resolved.keys()):
             did = resolved.get(k)
             d = by_id.get(str(did)) if did else None
             if d:
                 docs_by_key.append(d)
 
-        _emit(35, "building", f"Building bibliography for {len(docs_by_key)} resolved citations")
+        _emit(
+            35,
+            "building",
+            f"Building bibliography for {len(docs_by_key)} resolved citations",
+        )
         await db.commit()
 
         updated_bib = False
@@ -336,14 +323,18 @@ class AgentLatexRunnerService:
             existing = (
                 await db.execute(
                     select(LatexProjectFile).where(
-                        (LatexProjectFile.project_id == project.id) & (LatexProjectFile.filename == bib_filename)
+                        (LatexProjectFile.project_id == project.id)
+                        & (LatexProjectFile.filename == bib_filename)
                     )
                 )
             ).scalar_one_or_none()
             existing_text = ""
             if existing:
                 try:
-                    existing_text = (await storage_service.get_file_content(existing.file_path) or b"").decode("utf-8", errors="replace")
+                    existing_text = (
+                        await storage_service.get_file_content(existing.file_path)
+                        or b""
+                    ).decode("utf-8", errors="replace")
                 except Exception:
                     existing_text = ""
 
@@ -361,7 +352,11 @@ class AgentLatexRunnerService:
                     continue
                 new_blocks.append(b + "\n")
 
-            merged_text = (existing_text.rstrip() + ("\n\n" if existing_text.strip() and new_blocks else "\n") + "".join(new_blocks)).strip() + "\n"
+            merged_text = (
+                existing_text.rstrip()
+                + ("\n\n" if existing_text.strip() and new_blocks else "\n")
+                + "".join(new_blocks)
+            ).strip() + "\n"
             content_bytes = merged_text.encode("utf-8")
             sha = _hashlib.sha256(content_bytes).hexdigest()
             object_path = await storage_service.upload_file(
@@ -392,7 +387,9 @@ class AgentLatexRunnerService:
             # Ensure bibliography scaffold in LaTeX source.
             if "\\bibliography{" not in source:
                 scaffold = f"\\bibliographystyle{{plain}}\\n\\bibliography{{{stem}}}"
-                project.tex_source = _insert_before_end_document(project.tex_source or "", scaffold)
+                project.tex_source = _insert_before_end_document(
+                    project.tex_source or "", scaffold
+                )
                 await db.commit()
                 updated_tex = True
 
@@ -432,7 +429,9 @@ class AgentLatexRunnerService:
                     flags=re.S,
                 )
             else:
-                project.tex_source = _insert_before_end_document(project.tex_source or "", references_tex)
+                project.tex_source = _insert_before_end_document(
+                    project.tex_source or "", references_tex
+                )
             await db.commit()
             updated_tex = True
 
@@ -449,7 +448,9 @@ class AgentLatexRunnerService:
             "updated_bib": updated_bib,
         }
 
-        _emit(100, "completed", f"Citation sync complete ({len(docs_by_key)} resolved).")
+        _emit(
+            100, "completed", f"Citation sync complete ({len(docs_by_key)} resolved)."
+        )
         job.status = AgentJobStatus.COMPLETED.value
         job.completed_at = datetime.utcnow()
         await db.commit()
@@ -488,7 +489,10 @@ class AgentLatexRunnerService:
         from app.models.latex_project import LatexProject
         from app.models.latex_project_file import LatexProjectFile
         from app.models.user import User as _User
-        from app.services.latex_compiler_service import LatexSafetyError, latex_compiler_service
+        from app.services.latex_compiler_service import (
+            LatexSafetyError,
+            latex_compiler_service,
+        )
         from app.services.storage_service import storage_service
         from app.tasks.latex_tasks import compile_latex_project_job
 
@@ -497,7 +501,9 @@ class AgentLatexRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "latex_compile_project", "result": details})
+            job.add_log_entry(
+                {"phase": phase, "action": "latex_compile_project", "result": details}
+            )
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -534,13 +540,15 @@ class AgentLatexRunnerService:
             return {"status": "failed", "error": job.error}
 
         safe_mode = bool(cfg.get("safe_mode", True))
-        preferred_engine = (cfg.get("preferred_engine") or None)
+        preferred_engine = cfg.get("preferred_engine") or None
         use_worker = cfg.get("use_worker")
         use_worker = True if use_worker is None else bool(use_worker)
         wait_seconds = int(cfg.get("wait_seconds") or 120)
         wait_seconds = max(0, min(wait_seconds, 10 * 60))
         skip_if_unavailable = cfg.get("skip_if_unavailable")
-        skip_if_unavailable = True if skip_if_unavailable is None else bool(skip_if_unavailable)
+        skip_if_unavailable = (
+            True if skip_if_unavailable is None else bool(skip_if_unavailable)
+        )
 
         project = await db.get(LatexProject, project_uuid)
         if not project or project.user_id != job.user_id:
@@ -588,7 +596,9 @@ class AgentLatexRunnerService:
                 return {"status": "failed", "error": job.error}
 
         worker_enabled = bool(getattr(app_settings, "LATEX_COMPILER_USE_CELERY", False))
-        queue = str(getattr(app_settings, "LATEX_COMPILER_CELERY_QUEUE", "latex") or "latex")
+        queue = str(
+            getattr(app_settings, "LATEX_COMPILER_CELERY_QUEUE", "latex") or "latex"
+        )
 
         if use_worker and worker_enabled:
             _emit(20, "queueing", "Enqueuing LaTeX compile job")
@@ -606,7 +616,9 @@ class AgentLatexRunnerService:
             await db.refresh(compile_job)
 
             try:
-                async_result = compile_latex_project_job.apply_async(args=[str(compile_job.id)], queue=queue)
+                async_result = compile_latex_project_job.apply_async(
+                    args=[str(compile_job.id)], queue=queue
+                )
                 compile_job.celery_task_id = async_result.id
                 await db.commit()
             except Exception:
@@ -616,7 +628,9 @@ class AgentLatexRunnerService:
                 await db.commit()
 
             if wait_seconds > 0 and compile_job.status in ("queued", "running"):
-                _emit(40, "waiting", f"Waiting up to {wait_seconds}s for compile result")
+                _emit(
+                    40, "waiting", f"Waiting up to {wait_seconds}s for compile result"
+                )
                 await db.commit()
                 deadline = _dt.utcnow().timestamp() + float(wait_seconds)
                 while _dt.utcnow().timestamp() < deadline:
@@ -640,7 +654,9 @@ class AgentLatexRunnerService:
                 "compile_job_status": compile_job.status,
                 "engine": compile_job.engine,
                 "pdf_file_path": project.pdf_file_path,
-                "finished_at": compile_job.finished_at.isoformat() if compile_job.finished_at else None,
+                "finished_at": compile_job.finished_at.isoformat()
+                if compile_job.finished_at
+                else None,
             }
 
             _emit(100, "completed", f"Compile job status: {compile_job.status}")
@@ -655,13 +671,19 @@ class AgentLatexRunnerService:
 
         additional_files: Dict[str, bytes] = {}
         try:
-            files_result = await db.execute(_select(LatexProjectFile).where(LatexProjectFile.project_id == project.id))
+            files_result = await db.execute(
+                _select(LatexProjectFile).where(
+                    LatexProjectFile.project_id == project.id
+                )
+            )
             for f in files_result.scalars().all():
                 name = (f.filename or "").strip()
                 if not name or "/" in name or "\\" in name:
                     continue
                 try:
-                    additional_files[name] = await storage_service.get_file_content(f.file_path)
+                    additional_files[name] = await storage_service.get_file_content(
+                        f.file_path
+                    )
                 except Exception:
                     continue
         except Exception:
@@ -671,8 +693,12 @@ class AgentLatexRunnerService:
             result = await _asyncio.to_thread(
                 latex_compiler_service.compile_to_pdf,
                 tex_source=project.tex_source or "",
-                timeout_seconds=int(getattr(app_settings, "LATEX_COMPILER_TIMEOUT_SECONDS", 20)),
-                max_source_chars=int(getattr(app_settings, "LATEX_COMPILER_MAX_SOURCE_CHARS", 100000)),
+                timeout_seconds=int(
+                    getattr(app_settings, "LATEX_COMPILER_TIMEOUT_SECONDS", 20)
+                ),
+                max_source_chars=int(
+                    getattr(app_settings, "LATEX_COMPILER_MAX_SOURCE_CHARS", 100000)
+                ),
                 safe_mode=safe_mode,
                 preferred_engine=preferred_engine,
                 additional_files=additional_files or None,
@@ -791,7 +817,9 @@ class AgentLatexRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "latex_publish_project", "result": details})
+            job.add_log_entry(
+                {"phase": phase, "action": "latex_publish_project", "result": details}
+            )
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -806,8 +834,14 @@ class AgentLatexRunnerService:
                 "latex_project_id": str((cfg or {}).get("latex_project_id") or ""),
                 "published": [],
                 "skipped": [
-                    {"kind": "tex", "reason": "Disabled by config (enable_publish=false)"},
-                    {"kind": "pdf", "reason": "Disabled by config (enable_publish=false)"},
+                    {
+                        "kind": "tex",
+                        "reason": "Disabled by config (enable_publish=false)",
+                    },
+                    {
+                        "kind": "pdf",
+                        "reason": "Disabled by config (enable_publish=false)",
+                    },
                 ],
             }
             _emit(100, "completed", "Skipped (publish disabled)")
@@ -884,7 +918,8 @@ class AgentLatexRunnerService:
                     existing = (
                         await db.execute(
                             _select(Document).where(
-                                (Document.source_id == source.id) & (Document.source_identifier == source_identifier)
+                                (Document.source_id == source.id)
+                                & (Document.source_identifier == source_identifier)
                             )
                         )
                     ).scalar_one_or_none()
@@ -931,7 +966,9 @@ class AgentLatexRunnerService:
                         await db.refresh(tex_doc)
 
                     try:
-                        await document_service.reprocess_document(tex_doc.id, db, user_id=job.user_id)
+                        await document_service.reprocess_document(
+                            tex_doc.id, db, user_id=job.user_id
+                        )
                     except Exception:
                         pass
                     published.append(
@@ -944,26 +981,37 @@ class AgentLatexRunnerService:
                         }
                     )
                 except Exception:
-                    skipped.append({"kind": "tex", "reason": "Failed to publish LaTeX source"})
+                    skipped.append(
+                        {"kind": "tex", "reason": "Failed to publish LaTeX source"}
+                    )
         else:
             skipped.append({"kind": "tex", "reason": "Disabled by request"})
 
         if include_pdf:
             if not project.pdf_file_path:
-                skipped.append({"kind": "pdf", "reason": "No PDF available (compile first)"})
+                skipped.append(
+                    {"kind": "pdf", "reason": "No PDF available (compile first)"}
+                )
             else:
                 _emit(60, "publishing", "Publishing paper.pdf")
                 await db.commit()
                 try:
-                    pdf_bytes = await storage_service.get_file_content(project.pdf_file_path)
+                    pdf_bytes = await storage_service.get_file_content(
+                        project.pdf_file_path
+                    )
                     pdf_hash = _hashlib.sha256(pdf_bytes).hexdigest()
 
                     extracted_text = ""
                     try:
-                        with _tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
+                        with _tempfile.NamedTemporaryFile(
+                            suffix=".pdf", delete=True
+                        ) as tmp:
                             tmp.write(pdf_bytes)
                             tmp.flush()
-                            extracted_text, _ = await document_service.text_processor.extract_text(
+                            (
+                                extracted_text,
+                                _,
+                            ) = await document_service.text_processor.extract_text(
                                 tmp.name,
                                 content_type="application/pdf",
                             )
@@ -974,7 +1022,8 @@ class AgentLatexRunnerService:
                     existing = (
                         await db.execute(
                             _select(Document).where(
-                                (Document.source_id == source.id) & (Document.source_identifier == source_identifier)
+                                (Document.source_id == source.id)
+                                & (Document.source_identifier == source_identifier)
                             )
                         )
                     ).scalar_one_or_none()
@@ -1021,7 +1070,9 @@ class AgentLatexRunnerService:
                         await db.refresh(pdf_doc)
 
                     try:
-                        await document_service.reprocess_document(pdf_doc.id, db, user_id=job.user_id)
+                        await document_service.reprocess_document(
+                            pdf_doc.id, db, user_id=job.user_id
+                        )
                     except Exception:
                         pass
                     published.append(
@@ -1079,7 +1130,13 @@ class AgentLatexRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "latex_apply_unified_diff", "result": details})
+            job.add_log_entry(
+                {
+                    "phase": phase,
+                    "action": "latex_apply_unified_diff",
+                    "result": details,
+                }
+            )
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -1110,8 +1167,14 @@ class AgentLatexRunnerService:
             return {"status": "failed", "error": job.error}
 
         inherited = (cfg or {}).get("inherited_data") if isinstance(cfg, dict) else None
-        parent_results = inherited.get("parent_results") if isinstance(inherited, dict) else None
-        review = parent_results.get("latex_review") if isinstance(parent_results, dict) else None
+        parent_results = (
+            inherited.get("parent_results") if isinstance(inherited, dict) else None
+        )
+        review = (
+            parent_results.get("latex_review")
+            if isinstance(parent_results, dict)
+            else None
+        )
 
         diff_unified = str((cfg or {}).get("diff_unified") or "").strip()
         if not diff_unified and isinstance(review, dict):
@@ -1152,7 +1215,9 @@ class AgentLatexRunnerService:
         await db.commit()
 
         try:
-            patched, warnings = apply_unified_diff_to_text(original=base_tex, diff_unified=diff_unified)
+            patched, warnings = apply_unified_diff_to_text(
+                original=base_tex, diff_unified=diff_unified
+            )
         except ValueError as exc:
             job.status = AgentJobStatus.FAILED.value
             job.error = str(exc)
@@ -1231,6 +1296,7 @@ class AgentLatexRunnerService:
         """
         import json as _json
         from uuid import UUID as _UUID
+
         from app.models.latex_project import LatexProject
 
         def _emit(progress: int, phase: str, details: str):
@@ -1238,7 +1304,9 @@ class AgentLatexRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "latex_reviewer_critic", "result": details})
+            job.add_log_entry(
+                {"phase": phase, "action": "latex_reviewer_critic", "result": details}
+            )
 
         cfg = job.config if isinstance(job.config, dict) else {}
         enabled_raw = cfg.get("enabled")
@@ -1288,7 +1356,11 @@ class AgentLatexRunnerService:
         if len(tex) > 40000:
             tex = tex[:40000]
 
-        _emit(25, "reviewing", "Reviewing LaTeX for citations/clarity/notation consistency")
+        _emit(
+            25,
+            "reviewing",
+            "Reviewing LaTeX for citations/clarity/notation consistency",
+        )
         await db.commit()
 
         user_settings = await executor._load_user_settings(job.user_id, db)
@@ -1332,7 +1404,9 @@ class AgentLatexRunnerService:
             await db.commit()
             return {"status": "failed", "error": job.error}
 
-        issues = payload.get("issues") if isinstance(payload.get("issues"), list) else []
+        issues = (
+            payload.get("issues") if isinstance(payload.get("issues"), list) else []
+        )
         diff_unified = str(payload.get("diff_unified") or "").strip()
 
         job.results = job.results or {}

@@ -3,8 +3,6 @@
 import asyncio
 from types import SimpleNamespace
 
-import pytest
-
 from app.services.agent_context_compaction import (
     AgentContextCompactionService,
     context_compaction_service,
@@ -56,7 +54,7 @@ def _big_state(action_count=12, result_size=8000):
     return {
         "actions_taken": [
             {
-                "action": {"tool": f"search_documents"},
+                "action": {"tool": "search_documents"},
                 "result": {"success": True, "data": {"blob": "x" * result_size}},
                 "iteration": i,
             }
@@ -73,7 +71,9 @@ class TestMaybeCompact:
         job = _job()
         state = _big_state()
 
-        compacted = run(context_compaction_service.maybe_compact(executor, job, state, None))
+        compacted = run(
+            context_compaction_service.maybe_compact(executor, job, state, None)
+        )
 
         assert compacted is True
         assert state["compressed_history"] == "Compacted narrative summary."
@@ -88,14 +88,18 @@ class TestMaybeCompact:
     def test_below_threshold_skips(self):
         executor = _executor()
         state = _big_state(action_count=12, result_size=10)  # tiny
-        compacted = run(context_compaction_service.maybe_compact(executor, _job(), state, None))
+        compacted = run(
+            context_compaction_service.maybe_compact(executor, _job(), state, None)
+        )
         assert compacted is False
         assert "compressed_history" not in state
 
     def test_too_few_actions_skips(self):
         executor = _executor()
         state = _big_state(action_count=4, result_size=50000)
-        compacted = run(context_compaction_service.maybe_compact(executor, _job(), state, None))
+        compacted = run(
+            context_compaction_service.maybe_compact(executor, _job(), state, None)
+        )
         assert compacted is False
 
     def test_cooldown_between_compactions(self):
@@ -103,12 +107,16 @@ class TestMaybeCompact:
         state = _big_state()
         state["auto_compaction_last"] = {"iteration": 9}
         compacted = run(
-            context_compaction_service.maybe_compact(executor, _job(iteration=10), state, None)
+            context_compaction_service.maybe_compact(
+                executor, _job(iteration=10), state, None
+            )
         )
         assert compacted is False
         # After the cooldown window it runs again.
         compacted = run(
-            context_compaction_service.maybe_compact(executor, _job(iteration=12), state, None)
+            context_compaction_service.maybe_compact(
+                executor, _job(iteration=12), state, None
+            )
         )
         assert compacted is True
 
@@ -116,7 +124,9 @@ class TestMaybeCompact:
         executor = _executor()
         state = _big_state()
         job = _job(config={"auto_compaction": False})
-        compacted = run(context_compaction_service.maybe_compact(executor, job, state, None))
+        compacted = run(
+            context_compaction_service.maybe_compact(executor, job, state, None)
+        )
         assert compacted is False
 
     def test_llm_failure_falls_back_to_digest(self):
@@ -124,7 +134,9 @@ class TestMaybeCompact:
         state = _big_state()
         state["compressed_history"] = "prior summary"
 
-        compacted = run(context_compaction_service.maybe_compact(executor, _job(), state, None))
+        compacted = run(
+            context_compaction_service.maybe_compact(executor, _job(), state, None)
+        )
 
         assert compacted is True
         assert "prior summary" in state["compressed_history"]

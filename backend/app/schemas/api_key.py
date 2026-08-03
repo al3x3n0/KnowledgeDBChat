@@ -3,31 +3,42 @@ Pydantic schemas for API key operations.
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
 class APIKeyCreate(BaseModel):
     """Schema for creating a new API key."""
-    name: str = Field(..., min_length=1, max_length=100, description="Human-readable name for the key")
-    description: Optional[str] = Field(None, max_length=500, description="Optional description")
+
+    name: str = Field(
+        ..., min_length=1, max_length=100, description="Human-readable name for the key"
+    )
+    description: Optional[str] = Field(
+        None, max_length=500, description="Optional description"
+    )
     scopes: Optional[List[str]] = Field(
         None,
-        description="List of allowed scopes. None means full access. Options: read, write, chat, documents, workflows, admin"
+        description="List of allowed scopes. None means full access. Options: read, write, chat, documents, workflows, admin",
     )
     expires_in_days: Optional[int] = Field(
         None,
         ge=1,
         le=365,
-        description="Days until expiration. None means never expires"
+        description="Days until expiration. None means never expires",
     )
-    rate_limit_per_minute: int = Field(60, ge=1, le=1000, description="Max requests per minute")
-    rate_limit_per_day: int = Field(10000, ge=1, le=1000000, description="Max requests per day")
+    rate_limit_per_minute: int = Field(
+        60, ge=1, le=1000, description="Max requests per minute"
+    )
+    rate_limit_per_day: int = Field(
+        10000, ge=1, le=1000000, description="Max requests per day"
+    )
 
 
 class APIKeyUpdate(BaseModel):
     """Schema for updating an API key."""
+
     name: Optional[str] = Field(None, min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=500)
     scopes: Optional[List[str]] = None
@@ -38,6 +49,7 @@ class APIKeyUpdate(BaseModel):
 
 class APIKeyResponse(BaseModel):
     """Schema for API key response (without the actual key)."""
+
     id: UUID
     name: str
     description: Optional[str] = None
@@ -59,6 +71,7 @@ class APIKeyResponse(BaseModel):
 
 class APIKeyCreateResponse(BaseModel):
     """Schema for API key creation response (includes the actual key - shown only once!)."""
+
     id: UUID
     name: str
     description: Optional[str] = None
@@ -74,12 +87,14 @@ class APIKeyCreateResponse(BaseModel):
 
 class APIKeyListResponse(BaseModel):
     """Schema for listing API keys."""
+
     api_keys: List[APIKeyResponse]
     total: int
 
 
 class APIKeyUsageStats(BaseModel):
     """Schema for API key usage statistics."""
+
     key_id: str
     key_name: str
     period_days: int
@@ -91,6 +106,7 @@ class APIKeyUsageStats(BaseModel):
 
 class APIKeyValidationResult(BaseModel):
     """Schema for API key validation result (internal use)."""
+
     is_valid: bool
     user_id: Optional[UUID] = None
     key_id: Optional[UUID] = None

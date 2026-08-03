@@ -23,11 +23,23 @@ class TestListAvailableWorkflows:
             "success": True,
             "data": {
                 "workflows": [
-                    {"id": "wf-1", "name": "Data Pipeline", "description": "ETL", "is_active": True, "node_count": 5},
-                    {"id": "wf-2", "name": "Report Gen", "description": "Weekly", "is_active": True, "node_count": 3},
+                    {
+                        "id": "wf-1",
+                        "name": "Data Pipeline",
+                        "description": "ETL",
+                        "is_active": True,
+                        "node_count": 5,
+                    },
+                    {
+                        "id": "wf-2",
+                        "name": "Report Gen",
+                        "description": "Weekly",
+                        "is_active": True,
+                        "node_count": 3,
+                    },
                 ],
                 "count": 2,
-            }
+            },
         }
         assert result["data"]["count"] == 2
         assert result["data"]["workflows"][0]["node_count"] == 5
@@ -52,12 +64,14 @@ class TestExecuteWorkflow:
 
     def test_uuid_parsing(self):
         from uuid import UUID
+
         valid_id = str(uuid.uuid4())
         parsed = UUID(valid_id)
         assert str(parsed) == valid_id
 
     def test_invalid_uuid_raises(self):
         from uuid import UUID
+
         with pytest.raises(ValueError):
             UUID("not-a-uuid")
 
@@ -86,7 +100,7 @@ class TestExecuteWorkflow:
                 "execution_id": exec_id,
                 "status": "completed",
                 "workflow_id": wf_id,
-            }
+            },
         }
         assert result["data"]["status"] == "completed"
         assert result["data"]["execution_id"] == exec_id
@@ -118,7 +132,7 @@ class TestGetWorkflowStatus:
                 "error": None,
                 "started_at": "2026-01-01T00:00:00",
                 "completed_at": None,
-            }
+            },
         }
         assert result["data"]["status"] == "running"
         assert result["data"]["progress"] == 0.5
@@ -135,7 +149,7 @@ class TestGetWorkflowStatus:
                 "error": None,
                 "started_at": "2026-01-01T00:00:00",
                 "completed_at": "2026-01-01T00:05:00",
-            }
+            },
         }
         assert result["data"]["status"] == "completed"
         assert result["data"]["completed_at"] is not None
@@ -151,7 +165,7 @@ class TestGetWorkflowStatus:
                 "error": "Node 'step3' failed: timeout",
                 "started_at": "2026-01-01T00:00:00",
                 "completed_at": "2026-01-01T00:02:00",
-            }
+            },
         }
         assert result["data"]["status"] == "failed"
         assert "timeout" in result["data"]["error"]
@@ -162,6 +176,7 @@ class TestWorkflowToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "list_available_workflows" in names
         assert "execute_workflow" in names
@@ -169,18 +184,21 @@ class TestWorkflowToolSchemas:
 
     def test_execute_workflow_requires_workflow_id(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("execute_workflow")
         assert tool is not None
         assert "workflow_id" in tool["parameters"].get("required", [])
 
     def test_get_workflow_status_requires_execution_id(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_workflow_status")
         assert tool is not None
         assert "execution_id" in tool["parameters"].get("required", [])
 
     def test_list_workflows_has_no_required_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("list_available_workflows")
         assert tool is not None
         assert tool["parameters"].get("required", []) == []
@@ -191,24 +209,28 @@ class TestWorkflowToolRegistry:
 
     def test_execute_workflow_is_write_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("execute_workflow")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_list_workflows_is_read_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("list_available_workflows")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_get_status_is_read_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("get_workflow_status")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_execute_workflow_is_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("execute_workflow")
         assert meta is not None
         assert meta.cost_tier == "medium"

@@ -55,4 +55,3 @@ class ArtifactDraftApproveRequest(BaseModel):
 
 class ArtifactDraftSubmitRequest(BaseModel):
     note: Optional[str] = Field(None, max_length=1000)
-

@@ -3,8 +3,9 @@ Persona-related Pydantic schemas.
 """
 
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 from uuid import UUID
+
 from pydantic import BaseModel, Field
 
 
@@ -23,8 +24,6 @@ class PersonaBase(BaseModel):
 
 class PersonaCreate(PersonaBase):
     """Schema for creating personas."""
-
-    pass
 
 
 class PersonaUpdate(BaseModel):
@@ -65,8 +64,6 @@ class DocumentPersonaDetectionBase(BaseModel):
 
 class DocumentPersonaDetectionCreate(DocumentPersonaDetectionBase):
     """Schema for creating persona detections."""
-
-    pass
 
 
 class DocumentPersonaDetectionResponse(DocumentPersonaDetectionBase):

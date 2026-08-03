@@ -4,10 +4,7 @@ import asyncio
 import json
 from types import SimpleNamespace
 
-import pytest
-
 from app.services.agent_native_tool_loop import (
-    NativeToolLoopResult,
     NativeToolLoopService,
     native_tool_loop_service,
 )
@@ -32,9 +29,7 @@ def _tool_call(name="search_documents", arguments=None, call_id="tc1"):
 
 
 def _completion(text="", tool_calls=None, structured=None):
-    return LLMCompletion(
-        text=text, tool_calls=tool_calls or [], structured=structured
-    )
+    return LLMCompletion(text=text, tool_calls=tool_calls or [], structured=structured)
 
 
 SAMPLE_TOOLS = [

@@ -13,19 +13,24 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.api.endpoints.agent_jobs import (
-    _build_decision_trace_event,
     _build_checkpoint_queue_items,
+    _build_decision_trace_event,
     _build_memory_graph_response,
     _job_matches_bulk_queue_item_type,
-    _perform_job_action,
     _perform_follow_up_queue_action,
+    _perform_job_action,
     checkpoint_queue_bulk_action,
     checkpoint_queue_bulk_follow_up_action,
 )
-from app.api.endpoints.domain_research_profiles import act_on_domain_research_opportunity
-from app.api.endpoints.research_portfolios import act_on_research_portfolio_opportunity
-from app.api.endpoints.research_monitor_profiles import rollback_monitor_policy, update_monitor_policy
 from app.api.endpoints.auth import get_current_active_user
+from app.api.endpoints.domain_research_profiles import (
+    act_on_domain_research_opportunity,
+)
+from app.api.endpoints.research_monitor_profiles import (
+    rollback_monitor_policy,
+    update_monitor_policy,
+)
+from app.api.endpoints.research_portfolios import act_on_research_portfolio_opportunity
 from app.core.database import get_db
 from app.models.agent_control_plane_view import AgentControlPlaneView
 from app.models.agent_job import AgentJob
@@ -35,19 +40,19 @@ from app.models.research_portfolio import ResearchPortfolio
 from app.models.user import User
 from app.models.workflow import WorkflowExecution
 from app.schemas.agent_control_plane import (
-    AgentControlRunDetail,
     AgentControlRunBulkReviewActionRequest,
     AgentControlRunBulkReviewActionResponse,
     AgentControlRunBulkReviewActionResultResponse,
+    AgentControlRunDetail,
     AgentControlRunEdge,
     AgentControlRunLinkResponse,
     AgentControlRunListResponse,
-    AgentControlRunReviewListResponse,
-    AgentControlRunReviewActionRequest,
-    AgentControlRunReviewActionResponse,
     AgentControlRunNode,
     AgentControlRunReplaySummary,
+    AgentControlRunReviewActionRequest,
+    AgentControlRunReviewActionResponse,
     AgentControlRunReviewItemResponse,
+    AgentControlRunReviewListResponse,
     AgentControlRunRoutingSummary,
     AgentControlRunSummary,
     AgentControlRunViewCreate,
@@ -55,9 +60,16 @@ from app.schemas.agent_control_plane import (
     AgentControlRunViewResponse,
     AgentControlRunViewUpdate,
 )
-from app.schemas.agent_job import AgentCheckpointQueueBulkActionRequest, AgentCheckpointQueueBulkFollowUpActionRequest, AgentJobActionRequest
+from app.schemas.agent_job import (
+    AgentCheckpointQueueBulkActionRequest,
+    AgentCheckpointQueueBulkFollowUpActionRequest,
+    AgentJobActionRequest,
+)
 from app.schemas.domain_research_profile import ResearchOpportunityActionRequest
-from app.schemas.research_monitor_profile import ResearchMonitorPolicyRollbackRequest, ResearchMonitorPolicyUpdateRequest
+from app.schemas.research_monitor_profile import (
+    ResearchMonitorPolicyRollbackRequest,
+    ResearchMonitorPolicyUpdateRequest,
+)
 from app.schemas.research_portfolio import ResearchPortfolioOpportunityActionRequest
 
 router = APIRouter()
@@ -117,7 +129,9 @@ def _normalize_bool(value: Any) -> Optional[bool]:
         return None
 
 
-def _normalize_control_run_view_filters(filters: Optional[dict[str, Any]]) -> dict[str, str]:
+def _normalize_control_run_view_filters(
+    filters: Optional[dict[str, Any]]
+) -> dict[str, str]:
     payload = filters if isinstance(filters, dict) else {}
     normalized: dict[str, str] = {}
     for raw_key, raw_value in payload.items():
@@ -137,7 +151,9 @@ def _normalize_review_sort(value: Any) -> str:
     return "priority"
 
 
-def _review_priority_sort_key(review: AgentControlRunReviewItemResponse) -> tuple[Any, ...]:
+def _review_priority_sort_key(
+    review: AgentControlRunReviewItemResponse,
+) -> tuple[Any, ...]:
     sla_rank = {"overdue": 3, "at_risk": 2, "normal": 1}
     escalation_rank = {"critical": 4, "high": 3, "medium": 2, "normal": 1, "low": 0}
     return (
@@ -151,7 +167,9 @@ def _review_priority_sort_key(review: AgentControlRunReviewItemResponse) -> tupl
     )
 
 
-def _review_created_desc_sort_key(review: AgentControlRunReviewItemResponse) -> tuple[Any, ...]:
+def _review_created_desc_sort_key(
+    review: AgentControlRunReviewItemResponse,
+) -> tuple[Any, ...]:
     return (
         review.created_at or datetime.min,
         float(review.priority_score or 0.0),
@@ -161,7 +179,9 @@ def _review_created_desc_sort_key(review: AgentControlRunReviewItemResponse) -> 
     )
 
 
-def _review_age_desc_sort_key(review: AgentControlRunReviewItemResponse) -> tuple[Any, ...]:
+def _review_age_desc_sort_key(
+    review: AgentControlRunReviewItemResponse,
+) -> tuple[Any, ...]:
     return (
         int(review.age_minutes or 0),
         float(review.priority_score or 0.0),
@@ -184,19 +204,35 @@ def _sort_control_reviews(
 
 
 def _primary_review_status(review: AgentControlRunReviewItemResponse) -> Optional[str]:
-    for value in (review.status, review.follow_up_launch_status, review.follow_up_review_status, review.review_status):
+    for value in (
+        review.status,
+        review.follow_up_launch_status,
+        review.follow_up_review_status,
+        review.review_status,
+    ):
         token = _normalize_string(value)
         if token:
             return token
     return None
 
 
-def _build_control_review_summary(items: list[AgentControlRunReviewItemResponse]) -> dict[str, Any]:
-    by_type = Counter(_normalize_string(item.review_type or item.item_type) or "unknown" for item in items)
-    by_sla_bucket = Counter(_normalize_string(item.sla_bucket) or "unknown" for item in items)
+def _build_control_review_summary(
+    items: list[AgentControlRunReviewItemResponse],
+) -> dict[str, Any]:
+    by_type = Counter(
+        _normalize_string(item.review_type or item.item_type) or "unknown"
+        for item in items
+    )
+    by_sla_bucket = Counter(
+        _normalize_string(item.sla_bucket) or "unknown" for item in items
+    )
     by_status = Counter(_primary_review_status(item) or "unknown" for item in items)
-    by_customer = Counter(_normalize_string(item.customer) or "unassigned" for item in items)
-    by_escalation = Counter(_normalize_string(item.escalation_level) or "unknown" for item in items)
+    by_customer = Counter(
+        _normalize_string(item.customer) or "unassigned" for item in items
+    )
+    by_escalation = Counter(
+        _normalize_string(item.escalation_level) or "unknown" for item in items
+    )
     return {
         "total": len(items),
         "by_type": dict(by_type),
@@ -207,12 +243,16 @@ def _build_control_review_summary(items: list[AgentControlRunReviewItemResponse]
     }
 
 
-def _serialize_control_run_view(row: AgentControlPlaneView) -> AgentControlRunViewResponse:
+def _serialize_control_run_view(
+    row: AgentControlPlaneView,
+) -> AgentControlRunViewResponse:
     return AgentControlRunViewResponse(
         id=str(row.id),
         user_id=str(row.user_id),
         name=str(row.name or "").strip(),
-        filters=_normalize_control_run_view_filters(row.filters if isinstance(row.filters, dict) else {}),
+        filters=_normalize_control_run_view_filters(
+            row.filters if isinstance(row.filters, dict) else {}
+        ),
         is_default=bool(row.is_default),
         created_at=row.created_at,
         updated_at=row.updated_at,
@@ -283,7 +323,9 @@ def _build_autonomous_queue_path(
     return f"/autonomous-agents?{urlencode(params)}"
 
 
-def _build_job_queue_path(*, item_type: Optional[str], job_id: Optional[str]) -> Optional[str]:
+def _build_job_queue_path(
+    *, item_type: Optional[str], job_id: Optional[str]
+) -> Optional[str]:
     normalized_type = _normalize_string(item_type)
     normalized_job_id = _normalize_string(job_id)
     if not normalized_type:
@@ -336,7 +378,12 @@ def _collect_job_linkage(job: AgentJob) -> dict[str, set[str]]:
     keys_map = {
         "note_ids": {"note_id", "note_ids", "research_note_id", "research_note_ids"},
         "plan_ids": {"experiment_plan_id", "experiment_plan_ids"},
-        "run_ids": {"experiment_run_id", "experiment_run_ids", "validation_run_id", "validation_run_ids"},
+        "run_ids": {
+            "experiment_run_id",
+            "experiment_run_ids",
+            "validation_run_id",
+            "validation_run_ids",
+        },
         "workflow_execution_ids": {"workflow_execution_id", "workflow_execution_ids"},
         "synthesis_job_ids": {
             "synthesis_job_id",
@@ -375,13 +422,23 @@ def _collect_routing_lineage(payloads: Iterable[Any]) -> dict[str, set[str]]:
         experiment_ids.update(
             _collect_named_ids(
                 payload,
-                keys={"experiment_id", "experiment_ids", "routing_experiment_id", "routing_experiment_ids"},
+                keys={
+                    "experiment_id",
+                    "experiment_ids",
+                    "routing_experiment_id",
+                    "routing_experiment_ids",
+                },
             )
         )
         variant_ids.update(
             _collect_named_ids(
                 payload,
-                keys={"variant_id", "variant_ids", "routing_experiment_variant_id", "routing_experiment_variant_ids"},
+                keys={
+                    "variant_id",
+                    "variant_ids",
+                    "routing_experiment_variant_id",
+                    "routing_experiment_variant_ids",
+                },
             )
         )
     return {
@@ -414,7 +471,9 @@ def _build_event_response(row: AutonomyDecisionEvent):
         is_derived=bool(row.is_derived),
         record_origin=row.record_origin,
         suffix=str(row.id),
-        operator_context=metadata.get("operator_context") if isinstance(metadata.get("operator_context"), dict) else metadata,
+        operator_context=metadata.get("operator_context")
+        if isinstance(metadata.get("operator_context"), dict)
+        else metadata,
     )
 
 
@@ -433,8 +492,12 @@ def _derive_routing_summary(
         nonlocal request_count
         if not isinstance(payload, dict):
             return
-        provider = _normalize_string(payload.get("provider") or payload.get("routing_tier_provider"))
-        model = _normalize_string(payload.get("model") or payload.get("routing_tier_model"))
+        provider = _normalize_string(
+            payload.get("provider") or payload.get("routing_tier_provider")
+        )
+        model = _normalize_string(
+            payload.get("model") or payload.get("routing_tier_model")
+        )
         routing_tier = _normalize_string(payload.get("routing_tier"))
         requested_tier = _normalize_string(payload.get("routing_requested_tier"))
         if provider:
@@ -487,11 +550,15 @@ def _build_replay_summary(
     decision_count: int,
 ) -> AgentControlRunReplaySummary:
     planner_summary = f"{source_type.title()} run '{title}' targeted phase '{current_phase or 'planning'}'."
-    router_summary = routing.summary if routing and routing.summary else "No routing metadata captured for this run."
-    executor_summary = (
-        f"Status {status}; {child_count} downstream tasks and {decision_count} persisted decisions were linked."
+    router_summary = (
+        routing.summary
+        if routing and routing.summary
+        else "No routing metadata captured for this run."
     )
-    replayability_status = "full_lineage" if decision_count > 0 and child_count > 0 else "partial_lineage"
+    executor_summary = f"Status {status}; {child_count} downstream tasks and {decision_count} persisted decisions were linked."
+    replayability_status = (
+        "full_lineage" if decision_count > 0 and child_count > 0 else "partial_lineage"
+    )
     return AgentControlRunReplaySummary(
         replayability_status=replayability_status,
         planner_summary=planner_summary,
@@ -509,24 +576,35 @@ def _build_control_run_review_item(
     source_id: str,
     latest_note_ids: Iterable[str] | None = None,
 ) -> AgentControlRunReviewItemResponse:
-    note_id = next((item for item in (latest_note_ids or []) if _normalize_string(item)), None)
+    note_id = next(
+        (item for item in (latest_note_ids or []) if _normalize_string(item)), None
+    )
     review_type = _normalize_string(row.get("review_type"))
     available_actions: list[str] = []
-    follow_up_outcome_status = _normalize_string((opportunity or {}).get("follow_up_outcome_status"))
+    follow_up_outcome_status = _normalize_string(
+        (opportunity or {}).get("follow_up_outcome_status")
+    )
     if review_type == "follow_up_recommendation":
         available_actions = ["approve_follow_up", "reject_follow_up"]
     elif review_type == "manual_follow_up_recommendation":
-        if follow_up_outcome_status and follow_up_outcome_status.lower() in {"failed", "cancelled"}:
+        if follow_up_outcome_status and follow_up_outcome_status.lower() in {
+            "failed",
+            "cancelled",
+        }:
             available_actions = ["relaunch_follow_up"]
         else:
             available_actions = ["launch_follow_up"]
     elif review_type == "policy_review":
         available_actions = ["apply_guardrail"]
     customer = _normalize_string(
-        row.get("customer") if row.get("customer") is not None else (opportunity or {}).get("customer")
+        row.get("customer")
+        if row.get("customer") is not None
+        else (opportunity or {}).get("customer")
     )
     monitor_job_id = _normalize_string(
-        row.get("monitor_job_id") if row.get("monitor_job_id") is not None else (opportunity or {}).get("monitor_job_id")
+        row.get("monitor_job_id")
+        if row.get("monitor_job_id") is not None
+        else (opportunity or {}).get("monitor_job_id")
     )
     policy_update_payload = row.get("policy_update_payload")
     if not isinstance(policy_update_payload, dict):
@@ -565,26 +643,56 @@ def _build_control_run_review_item(
         opportunity_id=opportunity_id,
         canonical_key=_normalize_string(row.get("canonical_key")),
         title=_normalize_string(row.get("title")),
-        evidence_revision=_normalize_string(row.get("evidence_revision") or (opportunity or {}).get("evidence_revision")),
-        autonomy_state=_normalize_string(row.get("autonomy_state") or (opportunity or {}).get("autonomy_state")),
-        operator_note=_normalize_string(row.get("operator_note") or (opportunity or {}).get("operator_note")),
-        item_type="follow_up_recommendation" if review_type in {"follow_up_recommendation", "manual_follow_up_recommendation"} else review_type,
+        evidence_revision=_normalize_string(
+            row.get("evidence_revision") or (opportunity or {}).get("evidence_revision")
+        ),
+        autonomy_state=_normalize_string(
+            row.get("autonomy_state") or (opportunity or {}).get("autonomy_state")
+        ),
+        operator_note=_normalize_string(
+            row.get("operator_note") or (opportunity or {}).get("operator_note")
+        ),
+        item_type="follow_up_recommendation"
+        if review_type
+        in {"follow_up_recommendation", "manual_follow_up_recommendation"}
+        else review_type,
         queue_item_key=queue_item_key,
         customer=customer,
         job_id=monitor_job_id,
-        follow_up_launch_status=_normalize_string((opportunity or {}).get("follow_up_launch_status") or (opportunity or {}).get("follow_up_outcome_status")),
-        follow_up_review_status=_normalize_string((opportunity or {}).get("follow_up_review_status")),
-        follow_up_recommendation_key=_normalize_string((opportunity or {}).get("follow_up_recommendation_key")),
-        recommendation_score=_normalize_float(
-            row.get("recommendation_score") if row.get("recommendation_score") is not None else (opportunity or {}).get("recommendation_score")
+        follow_up_launch_status=_normalize_string(
+            (opportunity or {}).get("follow_up_launch_status")
+            or (opportunity or {}).get("follow_up_outcome_status")
         ),
-        follow_up_block_reason=_normalize_string((opportunity or {}).get("follow_up_block_reason")),
-        follow_up_budget_decision=_normalize_string((opportunity or {}).get("follow_up_budget_decision")),
-        follow_up_budget_reason=_normalize_string((opportunity or {}).get("follow_up_budget_reason")),
-        follow_up_customer_budget_decision=_normalize_string((opportunity or {}).get("follow_up_customer_budget_decision")),
-        follow_up_customer_budget_reason=_normalize_string((opportunity or {}).get("follow_up_customer_budget_reason")),
+        follow_up_review_status=_normalize_string(
+            (opportunity or {}).get("follow_up_review_status")
+        ),
+        follow_up_recommendation_key=_normalize_string(
+            (opportunity or {}).get("follow_up_recommendation_key")
+        ),
+        recommendation_score=_normalize_float(
+            row.get("recommendation_score")
+            if row.get("recommendation_score") is not None
+            else (opportunity or {}).get("recommendation_score")
+        ),
+        follow_up_block_reason=_normalize_string(
+            (opportunity or {}).get("follow_up_block_reason")
+        ),
+        follow_up_budget_decision=_normalize_string(
+            (opportunity or {}).get("follow_up_budget_decision")
+        ),
+        follow_up_budget_reason=_normalize_string(
+            (opportunity or {}).get("follow_up_budget_reason")
+        ),
+        follow_up_customer_budget_decision=_normalize_string(
+            (opportunity or {}).get("follow_up_customer_budget_decision")
+        ),
+        follow_up_customer_budget_reason=_normalize_string(
+            (opportunity or {}).get("follow_up_customer_budget_reason")
+        ),
         recommended_action=_normalize_string(
-            row.get("recommended_action") if row.get("recommended_action") is not None else (opportunity or {}).get("recommended_action")
+            row.get("recommended_action")
+            if row.get("recommended_action") is not None
+            else (opportunity or {}).get("recommended_action")
         ),
         policy_update_payload=policy_update_payload,
         policy_rollback_payload=policy_rollback_payload,
@@ -659,14 +767,25 @@ def _build_job_queue_review_item(
         if str(getattr(action, "kind", "")).strip() == "job_action"
         and str(getattr(action, "action", "")).strip()
     ]
-    checkpoint_payload = getattr(row, "checkpoint", None) if isinstance(getattr(row, "checkpoint", None), dict) else None
-    checkpoint_action = checkpoint_payload.get("action") if isinstance(checkpoint_payload, dict) and isinstance(checkpoint_payload.get("action"), dict) else {}
+    checkpoint_payload = (
+        getattr(row, "checkpoint", None)
+        if isinstance(getattr(row, "checkpoint", None), dict)
+        else None
+    )
+    checkpoint_action = (
+        checkpoint_payload.get("action")
+        if isinstance(checkpoint_payload, dict)
+        and isinstance(checkpoint_payload.get("action"), dict)
+        else {}
+    )
     checkpoint_action_draft = None
     if checkpoint_action:
         checkpoint_action_draft = {
             "tool": _normalize_string(checkpoint_action.get("tool")),
             "purpose": _normalize_string(checkpoint_action.get("purpose")),
-            "params": checkpoint_action.get("params") if isinstance(checkpoint_action.get("params"), dict) else {},
+            "params": checkpoint_action.get("params")
+            if isinstance(checkpoint_action.get("params"), dict)
+            else {},
         }
     metadata = {
         "queue_key": _normalize_string(getattr(row, "queue_key", None)),
@@ -674,7 +793,9 @@ def _build_job_queue_review_item(
         "item_type": item_type,
         "checkpoint": checkpoint_payload,
         "checkpoint_action_draft": checkpoint_action_draft,
-        "scheduler_state": getattr(row, "scheduler_state", None) if isinstance(getattr(row, "scheduler_state", None), dict) else None,
+        "scheduler_state": getattr(row, "scheduler_state", None)
+        if isinstance(getattr(row, "scheduler_state", None), dict)
+        else None,
     }
     return AgentControlRunReviewItemResponse(
         review_type=item_type,
@@ -706,7 +827,9 @@ def _build_job_queue_review_item(
         backoff_until=getattr(row, "backoff_until", None),
         checkpoint=checkpoint_payload,
         checkpoint_action_draft=checkpoint_action_draft,
-        scheduler_state=getattr(row, "scheduler_state", None) if isinstance(getattr(row, "scheduler_state", None), dict) else None,
+        scheduler_state=getattr(row, "scheduler_state", None)
+        if isinstance(getattr(row, "scheduler_state", None), dict)
+        else None,
         available_actions=available_actions,
         can_approve="approve" in available_actions,
         can_reject="reject" in available_actions,
@@ -747,7 +870,11 @@ def _build_job_summary(
     routing: Optional[AgentControlRunRoutingSummary],
 ) -> AgentControlRunSummary:
     config = job.config if isinstance(job.config, dict) else {}
-    replayability_status = "full_lineage" if child_job_count > 0 and decision_count > 0 else "partial_lineage"
+    replayability_status = (
+        "full_lineage"
+        if child_job_count > 0 and decision_count > 0
+        else "partial_lineage"
+    )
     return AgentControlRunSummary(
         id=f"job:{job.id}",
         source_type="job",
@@ -779,8 +906,16 @@ def _build_workflow_summary(
     decision_count: int,
     routing: Optional[AgentControlRunRoutingSummary],
 ) -> AgentControlRunSummary:
-    workflow_name = execution.workflow.name if execution.workflow else f"Workflow {execution.workflow_id}"
-    replayability_status = "full_lineage" if (child_execution_count or child_job_count) and decision_count > 0 else "partial_lineage"
+    workflow_name = (
+        execution.workflow.name
+        if execution.workflow
+        else f"Workflow {execution.workflow_id}"
+    )
+    replayability_status = (
+        "full_lineage"
+        if (child_execution_count or child_job_count) and decision_count > 0
+        else "partial_lineage"
+    )
     return AgentControlRunSummary(
         id=f"workflow:{execution.id}",
         source_type="workflow",
@@ -833,7 +968,9 @@ async def _collect_control_run_review_mappings(
                     AgentJob.id.in_(list(parsed_job_ids)),
                 )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     queue_items = _build_checkpoint_queue_items(job_rows, [])
     for queue_item in queue_items:
@@ -849,7 +986,11 @@ async def _collect_control_run_review_mappings(
             counts_by_job_id.setdefault(job_token, Counter())[item.review_type] += 1
 
     def _opportunity_lookup(summary: dict[str, Any]) -> dict[str, dict[str, Any]]:
-        rows = summary.get("opportunities") if isinstance(summary.get("opportunities"), list) else summary.get("idea_candidates")
+        rows = (
+            summary.get("opportunities")
+            if isinstance(summary.get("opportunities"), list)
+            else summary.get("idea_candidates")
+        )
         lookup: dict[str, dict[str, Any]] = {}
         if not isinstance(rows, list):
             return lookup
@@ -871,7 +1012,11 @@ async def _collect_control_run_review_mappings(
     ) -> None:
         opportunity_by_id = _opportunity_lookup(summary)
         merged_rows: list[dict[str, Any]] = []
-        queued_review_rows = summary.get("queued_operator_reviews") if isinstance(summary.get("queued_operator_reviews"), list) else []
+        queued_review_rows = (
+            summary.get("queued_operator_reviews")
+            if isinstance(summary.get("queued_operator_reviews"), list)
+            else []
+        )
         for row in queued_review_rows:
             if isinstance(row, dict):
                 merged_rows.append(row)
@@ -887,7 +1032,8 @@ async def _collect_control_run_review_mappings(
                 {
                     **row,
                     "review_type": "manual_follow_up_recommendation",
-                    "reason_label": row.get("reason_label") or "Manual follow-up recommendation",
+                    "reason_label": row.get("reason_label")
+                    or "Manual follow-up recommendation",
                 }
             )
         if not merged_rows or not job_tokens:
@@ -896,7 +1042,9 @@ async def _collect_control_run_review_mappings(
             bucket = rows_by_job_id.setdefault(job_token, [])
             count_bucket = counts_by_job_id.setdefault(job_token, Counter())
             for row in merged_rows:
-                opportunity = opportunity_by_id.get(_normalize_string(row.get("opportunity_id")) or "")
+                opportunity = opportunity_by_id.get(
+                    _normalize_string(row.get("opportunity_id")) or ""
+                )
                 item = _build_control_run_review_item(
                     row=row,
                     opportunity=opportunity,
@@ -916,11 +1064,15 @@ async def _collect_control_run_review_mappings(
                     DomainResearchProfile.user_id == current_user.id,
                     or_(
                         DomainResearchProfile.active_job_id.in_(list(parsed_job_ids)),
-                        DomainResearchProfile.latest_run_job_id.in_(list(parsed_job_ids)),
+                        DomainResearchProfile.latest_run_job_id.in_(
+                            list(parsed_job_ids)
+                        ),
                     ),
                 )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     portfolio_rows = list(
         (
@@ -933,11 +1085,15 @@ async def _collect_control_run_review_mappings(
                     ),
                 )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
 
     for profile in profile_rows:
-        summary = profile.latest_summary if isinstance(profile.latest_summary, dict) else {}
+        summary = (
+            profile.latest_summary if isinstance(profile.latest_summary, dict) else {}
+        )
         job_tokens = {
             _normalize_string(profile.active_job_id),
             _normalize_string(profile.latest_run_job_id),
@@ -948,16 +1104,24 @@ async def _collect_control_run_review_mappings(
             job_tokens=job_tokens,
             source_kind="profile",
             source_id=str(profile.id),
-            latest_note_ids=profile.latest_note_ids if isinstance(profile.latest_note_ids, list) else [],
+            latest_note_ids=profile.latest_note_ids
+            if isinstance(profile.latest_note_ids, list)
+            else [],
         )
 
     for portfolio in portfolio_rows:
-        summary = portfolio.latest_summary if isinstance(portfolio.latest_summary, dict) else {}
+        summary = (
+            portfolio.latest_summary
+            if isinstance(portfolio.latest_summary, dict)
+            else {}
+        )
         job_tokens = {
             _normalize_string(portfolio.active_job_id),
             _normalize_string(portfolio.latest_run_job_id),
         }
-        child_job_ids = portfolio.child_job_ids if isinstance(portfolio.child_job_ids, list) else []
+        child_job_ids = (
+            portfolio.child_job_ids if isinstance(portfolio.child_job_ids, list) else []
+        )
         job_tokens.update(_normalize_string_list(child_job_ids))
         job_tokens = {token for token in job_tokens if token in job_ids}
         _append_review_rows(
@@ -965,7 +1129,9 @@ async def _collect_control_run_review_mappings(
             job_tokens=job_tokens,
             source_kind="portfolio",
             source_id=str(portfolio.id),
-            latest_note_ids=portfolio.latest_note_ids if isinstance(portfolio.latest_note_ids, list) else [],
+            latest_note_ids=portfolio.latest_note_ids
+            if isinstance(portfolio.latest_note_ids, list)
+            else [],
         )
 
     return rows_by_job_id, counts_by_job_id
@@ -992,9 +1158,15 @@ def _review_matches_filters(
     normalized_queue_health_drilldown = _normalize_string(queue_health_drilldown)
     normalized_queue_preset = _normalize_string(queue_preset)
 
-    if normalized_review_type and _normalize_string(review.review_type) != normalized_review_type:
+    if (
+        normalized_review_type
+        and _normalize_string(review.review_type) != normalized_review_type
+    ):
         return False
-    if normalized_review_status and _normalize_string(review.review_status) != normalized_review_status:
+    if (
+        normalized_review_status
+        and _normalize_string(review.review_status) != normalized_review_status
+    ):
         return False
 
     status_tokens = {
@@ -1008,31 +1180,49 @@ def _review_matches_filters(
     }
     if normalized_queue_status and normalized_queue_status.lower() not in status_tokens:
         return False
-    if normalized_queue_customer and (_normalize_string(review.customer) or "").lower() != normalized_queue_customer.lower():
+    if (
+        normalized_queue_customer
+        and (_normalize_string(review.customer) or "").lower()
+        != normalized_queue_customer.lower()
+    ):
         return False
-    if normalized_queue_sla and (_normalize_string(review.sla_bucket) or "").lower() != normalized_queue_sla.lower():
+    if (
+        normalized_queue_sla
+        and (_normalize_string(review.sla_bucket) or "").lower()
+        != normalized_queue_sla.lower()
+    ):
         return False
-    if normalized_queue_escalation and (_normalize_string(review.escalation_level) or "").lower() != normalized_queue_escalation.lower():
+    if (
+        normalized_queue_escalation
+        and (_normalize_string(review.escalation_level) or "").lower()
+        != normalized_queue_escalation.lower()
+    ):
         return False
 
     if normalized_queue_health_drilldown == "pending_follow_up_approvals":
         if not (
             _normalize_string(review.review_type) == "follow_up_recommendation"
-            and (_normalize_string(review.follow_up_launch_status) or "").lower() == "pending_approval"
+            and (_normalize_string(review.follow_up_launch_status) or "").lower()
+            == "pending_approval"
         ):
             return False
     elif normalized_queue_health_drilldown == "manual_follow_up_recommendations":
         if _normalize_string(review.review_type) != "manual_follow_up_recommendation":
             return False
     elif normalized_queue_health_drilldown == "blocked_follow_up":
-        blocked = bool(_normalize_string(review.follow_up_block_reason)) or _normalize_string(review.review_type) in {"budget_review", "policy_review"}
+        blocked = bool(
+            _normalize_string(review.follow_up_block_reason)
+        ) or _normalize_string(review.review_type) in {"budget_review", "policy_review"}
         if not blocked:
             return False
 
     if normalized_queue_preset == "approval_required":
-        is_approval_required = _normalize_string(review.review_type) == "approval_checkpoint" or (
+        is_approval_required = _normalize_string(
+            review.review_type
+        ) == "approval_checkpoint" or (
             _normalize_string(review.review_type) == "follow_up_recommendation"
-            and (_normalize_string(review.follow_up_launch_status) or "").lower() == "pending_approval"
+            and (_normalize_string(review.follow_up_launch_status) or "").lower()
+            == "pending_approval"
         )
         if not is_approval_required:
             return False
@@ -1094,7 +1284,9 @@ async def _build_control_run_summaries(
                     .order_by(AgentJob.created_at.desc())
                     .limit(limit)
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         if job_rows:
             # Parentless jobs whose only control-plane relevance is a pending
@@ -1129,10 +1321,14 @@ async def _build_control_run_summaries(
             job_rows = primary_job_rows
 
             root_ids = [job.id for job in job_rows]
-            job_linked_job_ids_by_root = {str(job.id): {str(job.id)} for job in job_rows}
+            job_linked_job_ids_by_root = {
+                str(job.id): {str(job.id)} for job in job_rows
+            }
             if anchor_root_id is not None:
                 for queue_job in queue_only_job_rows:
-                    job_linked_job_ids_by_root.setdefault(anchor_root_id, {anchor_root_id}).add(str(queue_job.id))
+                    job_linked_job_ids_by_root.setdefault(
+                        anchor_root_id, {anchor_root_id}
+                    ).add(str(queue_job.id))
             lineage_rows = list(
                 (
                     await db.execute(
@@ -1144,7 +1340,9 @@ async def _build_control_run_summaries(
                             ),
                         )
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
             root_id_tokens = {str(root_id) for root_id in root_ids}
             lineage_ids = {str(row.id) for row in lineage_rows}
@@ -1157,7 +1355,9 @@ async def _build_control_run_summaries(
                             AutonomyDecisionEvent.source_id.in_(lineage_ids),
                         )
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
             child_count_by_root: Counter[str] = Counter()
             note_count_by_root: Counter[str] = Counter()
@@ -1169,32 +1369,46 @@ async def _build_control_run_summaries(
                 if not root_key:
                     continue
                 lineage_root_lookup[str(row.id)] = root_key
-                job_linked_job_ids_by_root.setdefault(root_key, {root_key}).add(str(row.id))
+                job_linked_job_ids_by_root.setdefault(root_key, {root_key}).add(
+                    str(row.id)
+                )
                 child_count_by_root[root_key] += 1
                 linkage = _collect_job_linkage(row)
                 note_count_by_root[root_key] += len(linkage["note_ids"])
-                experiment_count_by_root[root_key] += len(linkage["plan_ids"]) + len(linkage["run_ids"])
+                experiment_count_by_root[root_key] += len(linkage["plan_ids"]) + len(
+                    linkage["run_ids"]
+                )
             for event in event_rows:
                 event_source_id = _normalize_string(event.source_id)
                 if not event_source_id:
                     continue
-                root_key = lineage_root_lookup.get(event_source_id, event_source_id if event_source_id in root_id_tokens else None)
+                root_key = lineage_root_lookup.get(
+                    event_source_id,
+                    event_source_id if event_source_id in root_id_tokens else None,
+                )
                 if root_key:
                     decision_count_by_root[root_key] += 1
             for job in job_rows:
                 root_key = str(job.id)
-                routing = _derive_routing_summary(events=[], root_metadata=job.config if isinstance(job.config, dict) else {})
+                routing = _derive_routing_summary(
+                    events=[],
+                    root_metadata=job.config if isinstance(job.config, dict) else {},
+                )
                 items.append(
                     _build_job_summary(
                         job=job,
                         child_job_count=child_count_by_root.get(root_key, 0),
                         linked_note_count=note_count_by_root.get(root_key, 0),
-                        linked_experiment_count=experiment_count_by_root.get(root_key, 0),
+                        linked_experiment_count=experiment_count_by_root.get(
+                            root_key, 0
+                        ),
                         decision_count=decision_count_by_root.get(root_key, 0),
                         routing=routing,
                     )
                 )
-                root_job_ids_for_reviews.update(job_linked_job_ids_by_root.get(root_key, {root_key}))
+                root_job_ids_for_reviews.update(
+                    job_linked_job_ids_by_root.get(root_key, {root_key})
+                )
 
     if normalized_type in {None, "workflow"}:
         workflow_rows = list(
@@ -1209,7 +1423,9 @@ async def _build_control_run_summaries(
                     .order_by(WorkflowExecution.created_at.desc())
                     .limit(limit)
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         if workflow_rows:
             root_ids = [row.id for row in workflow_rows]
@@ -1221,7 +1437,9 @@ async def _build_control_run_summaries(
                             WorkflowExecution.parent_execution_id.in_(root_ids),
                         )
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
             execution_id_tokens = {str(row.id) for row in workflow_rows}
             execution_id_tokens.update(str(row.id) for row in child_rows)
@@ -1233,11 +1451,24 @@ async def _build_control_run_summaries(
                             AutonomyDecisionEvent.source_id.in_(execution_id_tokens),
                         )
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
-            child_count_by_root: Counter[str] = Counter(str(row.parent_execution_id) for row in child_rows if row.parent_execution_id)
-            execution_root_lookup: dict[str, str] = {str(row.id): str(row.parent_execution_id) for row in child_rows if row.parent_execution_id}
-            inferred_job_ids_by_root: dict[str, set[str]] = {str(row.id): _collect_workflow_inferred_job_ids(row) for row in workflow_rows}
+            child_count_by_root: Counter[str] = Counter(
+                str(row.parent_execution_id)
+                for row in child_rows
+                if row.parent_execution_id
+            )
+            execution_root_lookup: dict[str, str] = {
+                str(row.id): str(row.parent_execution_id)
+                for row in child_rows
+                if row.parent_execution_id
+            }
+            inferred_job_ids_by_root: dict[str, set[str]] = {
+                str(row.id): _collect_workflow_inferred_job_ids(row)
+                for row in workflow_rows
+            }
             all_inferred_job_ids: set[UUID] = set()
             for raw_ids in inferred_job_ids_by_root.values():
                 for raw_id in raw_ids:
@@ -1255,26 +1486,37 @@ async def _build_control_run_summaries(
                                 AgentJob.id.in_(list(all_inferred_job_ids)),
                             )
                         )
-                    ).scalars().all()
+                    )
+                    .scalars()
+                    .all()
                 )
                 existing_job_ids = {str(row) for row in existing_job_rows}
             valid_job_count_by_root: Counter[str] = Counter()
             for root_key, raw_ids in inferred_job_ids_by_root.items():
-                valid_job_count_by_root[root_key] = sum(1 for raw_id in raw_ids if raw_id in existing_job_ids)
+                valid_job_count_by_root[root_key] = sum(
+                    1 for raw_id in raw_ids if raw_id in existing_job_ids
+                )
             decision_count_by_root: Counter[str] = Counter()
             root_id_tokens = {str(root_id) for root_id in root_ids}
             for event in event_rows:
                 event_source_id = _normalize_string(event.source_id)
                 if not event_source_id:
                     continue
-                root_key = execution_root_lookup.get(event_source_id, event_source_id if event_source_id in root_id_tokens else None)
+                root_key = execution_root_lookup.get(
+                    event_source_id,
+                    event_source_id if event_source_id in root_id_tokens else None,
+                )
                 if root_key:
                     decision_count_by_root[root_key] += 1
             for row in workflow_rows:
                 workflow_linked_job_ids_by_root[str(row.id)] = {
-                    raw_id for raw_id in inferred_job_ids_by_root.get(str(row.id), set()) if raw_id in existing_job_ids
+                    raw_id
+                    for raw_id in inferred_job_ids_by_root.get(str(row.id), set())
+                    if raw_id in existing_job_ids
                 }
-                root_job_ids_for_reviews.update(workflow_linked_job_ids_by_root[str(row.id)])
+                root_job_ids_for_reviews.update(
+                    workflow_linked_job_ids_by_root[str(row.id)]
+                )
                 items.append(
                     _build_workflow_summary(
                         execution=row,
@@ -1287,7 +1529,10 @@ async def _build_control_run_summaries(
                     )
                 )
 
-    review_rows_by_job_id, review_counts_by_job_id = await _collect_control_run_review_mappings(
+    (
+        review_rows_by_job_id,
+        review_counts_by_job_id,
+    ) = await _collect_control_run_review_mappings(
         db=db,
         current_user=current_user,
         job_ids=root_job_ids_for_reviews,
@@ -1298,13 +1543,21 @@ async def _build_control_run_summaries(
         queued_reviews: list[AgentControlRunReviewItemResponse] = []
         review_counts: Counter[str] = Counter()
         if item.source_type == "job" and item.root_job_id:
-            for linked_job_id in job_linked_job_ids_by_root.get(item.root_job_id, {item.root_job_id}):
+            for linked_job_id in job_linked_job_ids_by_root.get(
+                item.root_job_id, {item.root_job_id}
+            ):
                 queued_reviews.extend(review_rows_by_job_id.get(linked_job_id, []))
-                review_counts.update(review_counts_by_job_id.get(linked_job_id, Counter()))
+                review_counts.update(
+                    review_counts_by_job_id.get(linked_job_id, Counter())
+                )
         elif item.source_type == "workflow" and item.workflow_execution_id:
-            for linked_job_id in workflow_linked_job_ids_by_root.get(item.workflow_execution_id, set()):
+            for linked_job_id in workflow_linked_job_ids_by_root.get(
+                item.workflow_execution_id, set()
+            ):
                 queued_reviews.extend(review_rows_by_job_id.get(linked_job_id, []))
-                review_counts.update(review_counts_by_job_id.get(linked_job_id, Counter()))
+                review_counts.update(
+                    review_counts_by_job_id.get(linked_job_id, Counter())
+                )
         item.queued_operator_review_count = len(queued_reviews)
         item.queued_operator_reviews_by_type = dict(review_counts)
         if has_operator_review is True and item.queued_operator_review_count <= 0:
@@ -1319,7 +1572,12 @@ async def _build_control_run_summaries(
 
     filtered_items.sort(key=lambda item: item.created_at, reverse=True)
     trimmed = filtered_items[:limit]
-    return trimmed, job_linked_job_ids_by_root, workflow_linked_job_ids_by_root, review_rows_by_job_id
+    return (
+        trimmed,
+        job_linked_job_ids_by_root,
+        workflow_linked_job_ids_by_root,
+        review_rows_by_job_id,
+    )
 
 
 async def _slice_memory_graph_for_job_ids(
@@ -1344,7 +1602,11 @@ async def _slice_memory_graph_for_job_ids(
     if not isinstance(nodes, list) or not isinstance(edges, list):
         return None
 
-    selected = {str(node.get("id")) for node in nodes if str(node.get("job_id") or "") in job_ids}
+    selected = {
+        str(node.get("id"))
+        for node in nodes
+        if str(node.get("job_id") or "") in job_ids
+    }
     if not selected:
         return None
 
@@ -1360,7 +1622,8 @@ async def _slice_memory_graph_for_job_ids(
     filtered_edges = [
         edge
         for edge in edges
-        if str(edge.get("source") or "") in expanded and str(edge.get("target") or "") in expanded
+        if str(edge.get("source") or "") in expanded
+        and str(edge.get("target") or "") in expanded
     ]
     return _build_memory_graph_response(
         graph={
@@ -1383,9 +1646,15 @@ def _collect_event_linkage(events: Iterable[Any]) -> dict[str, set[str]]:
     synthesis_job_ids: set[str] = set()
     for event in events:
         note_ids.update(_normalize_string_list(getattr(event, "linked_note_ids", None)))
-        plan_ids.update(_normalize_string_list(getattr(event, "linked_experiment_plan_ids", None)))
-        run_ids.update(_normalize_string_list(getattr(event, "linked_validation_run_ids", None)))
-        child_job_ids.update(_normalize_string_list(getattr(event, "child_job_ids", None)))
+        plan_ids.update(
+            _normalize_string_list(getattr(event, "linked_experiment_plan_ids", None))
+        )
+        run_ids.update(
+            _normalize_string_list(getattr(event, "linked_validation_run_ids", None))
+        )
+        child_job_ids.update(
+            _normalize_string_list(getattr(event, "child_job_ids", None))
+        )
         metadata = getattr(event, "metadata", None)
         if isinstance(metadata, dict):
             synthesis_job_ids.update(
@@ -1431,8 +1700,12 @@ def _build_routing_query_params(
             params["model"] = model
         if tier:
             params["routing_tier"] = tier
-    experiment_id = next((value for value in (experiment_ids or []) if _normalize_string(value)), None)
-    variant_id = next((value for value in (variant_ids or []) if _normalize_string(value)), None)
+    experiment_id = next(
+        (value for value in (experiment_ids or []) if _normalize_string(value)), None
+    )
+    variant_id = next(
+        (value for value in (variant_ids or []) if _normalize_string(value)), None
+    )
     if experiment_id:
         params["experiment_id"] = experiment_id
     if variant_id:
@@ -1480,7 +1753,11 @@ def _build_related_links(
         )
     synthesis_job_id = next(iter(synthesis_job_ids or []), None)
     if synthesis_job_id:
-        links.append(AgentControlRunLinkResponse(label="Synthesis", path=f"/synthesis?job={synthesis_job_id}"))
+        links.append(
+            AgentControlRunLinkResponse(
+                label="Synthesis", path=f"/synthesis?job={synthesis_job_id}"
+            )
+        )
     elif next(iter(run_ids), None):
         links.append(AgentControlRunLinkResponse(label="Synthesis", path="/synthesis"))
     if next(iter(plan_ids), None) or source_type == "job" or routing:
@@ -1507,9 +1784,14 @@ async def list_agent_control_run_views(
             await db.execute(
                 select(AgentControlPlaneView)
                 .where(AgentControlPlaneView.user_id == current_user.id)
-                .order_by(AgentControlPlaneView.is_default.desc(), AgentControlPlaneView.updated_at.desc())
+                .order_by(
+                    AgentControlPlaneView.is_default.desc(),
+                    AgentControlPlaneView.updated_at.desc(),
+                )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     return AgentControlRunViewListResponse(
         items=[_serialize_control_run_view(row) for row in rows],
@@ -1517,7 +1799,11 @@ async def list_agent_control_run_views(
     )
 
 
-@router.post("/views", response_model=AgentControlRunViewResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/views",
+    response_model=AgentControlRunViewResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_agent_control_run_view(
     request: AgentControlRunViewCreate,
     db: AsyncSession = Depends(get_db),
@@ -1525,7 +1811,10 @@ async def create_agent_control_run_view(
 ):
     name = _normalize_string(request.name)
     if not name:
-        raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Control plane view name is required")
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail="Control plane view name is required",
+        )
     if request.is_default:
         await db.execute(
             AgentControlPlaneView.__table__.update()
@@ -1552,20 +1841,29 @@ async def update_agent_control_run_view(
     current_user: User = Depends(get_current_active_user),
 ):
     row = (
-        await db.execute(
-            select(AgentControlPlaneView).where(
-                AgentControlPlaneView.id == view_id,
-                AgentControlPlaneView.user_id == current_user.id,
+        (
+            await db.execute(
+                select(AgentControlPlaneView).where(
+                    AgentControlPlaneView.id == view_id,
+                    AgentControlPlaneView.user_id == current_user.id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Control plane view not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Control plane view not found"
+        )
 
     if request.name is not None:
         next_name = _normalize_string(request.name)
         if not next_name:
-            raise HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_ENTITY, detail="Control plane view name is required")
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail="Control plane view name is required",
+            )
         row.name = next_name
     if request.filters is not None:
         row.filters = _normalize_control_run_view_filters(request.filters)
@@ -1593,15 +1891,21 @@ async def delete_agent_control_run_view(
     current_user: User = Depends(get_current_active_user),
 ):
     row = (
-        await db.execute(
-            select(AgentControlPlaneView).where(
-                AgentControlPlaneView.id == view_id,
-                AgentControlPlaneView.user_id == current_user.id,
+        (
+            await db.execute(
+                select(AgentControlPlaneView).where(
+                    AgentControlPlaneView.id == view_id,
+                    AgentControlPlaneView.user_id == current_user.id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if row is None:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Control plane view not found")
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND, detail="Control plane view not found"
+        )
     await db.delete(row)
     await db.commit()
     return Response(status_code=status.HTTP_204_NO_CONTENT)
@@ -1619,10 +1923,22 @@ async def act_on_agent_control_review(
     opportunity_id = _normalize_string(payload.opportunity_id)
     action = _normalize_string(payload.action)
     operator_note = _normalize_string(payload.operator_note)
-    checkpoint_action_patch = payload.checkpoint_action_patch if isinstance(payload.checkpoint_action_patch, dict) else None
+    checkpoint_action_patch = (
+        payload.checkpoint_action_patch
+        if isinstance(payload.checkpoint_action_patch, dict)
+        else None
+    )
 
-    if not review_type or not source_kind or not source_id or not opportunity_id or not action:
-        raise HTTPException(status_code=400, detail="Review action payload is incomplete")
+    if (
+        not review_type
+        or not source_kind
+        or not source_id
+        or not opportunity_id
+        or not action
+    ):
+        raise HTTPException(
+            status_code=400, detail="Review action payload is incomplete"
+        )
 
     target: DomainResearchProfile | ResearchPortfolio | None = None
     follow_up_launch_status: Optional[str] = None
@@ -1639,8 +1955,12 @@ async def act_on_agent_control_review(
             source_id=source_id,
         )
         if action not in {"approve_follow_up", "reject_follow_up"}:
-            raise HTTPException(status_code=400, detail="Unsupported control-plane review action")
-        helper_action = "approve_launch" if action == "approve_follow_up" else "reject_launch"
+            raise HTTPException(
+                status_code=400, detail="Unsupported control-plane review action"
+            )
+        helper_action = (
+            "approve_launch" if action == "approve_follow_up" else "reject_launch"
+        )
         if source_kind == "profile":
             helper_response = await _perform_follow_up_queue_action(
                 profile=target,
@@ -1662,7 +1982,11 @@ async def act_on_agent_control_review(
         detail = helper_response.detail
         follow_up_launch_status = helper_response.follow_up_launch_status
         follow_up_operator_decision = helper_response.follow_up_operator_decision
-        follow_up_job_id = str(helper_response.follow_up_job_id) if helper_response.follow_up_job_id else None
+        follow_up_job_id = (
+            str(helper_response.follow_up_job_id)
+            if helper_response.follow_up_job_id
+            else None
+        )
     elif review_type == "manual_follow_up_recommendation":
         target = await _get_control_review_target(
             db=db,
@@ -1671,21 +1995,49 @@ async def act_on_agent_control_review(
             source_id=source_id,
         )
         if action not in {"launch_follow_up", "relaunch_follow_up"}:
-            raise HTTPException(status_code=400, detail="Unsupported control-plane review action")
+            raise HTTPException(
+                status_code=400, detail="Unsupported control-plane review action"
+            )
         if source_kind == "profile":
             response = await act_on_domain_research_opportunity(
                 profile_id=UUID(source_id),
                 opportunity_id=opportunity_id,
-                payload=ResearchOpportunityActionRequest(action=action, operator_note=operator_note),
+                payload=ResearchOpportunityActionRequest(
+                    action=action, operator_note=operator_note
+                ),
                 db=db,
                 current_user=current_user,
             )
-            detail = "Follow-up launched from manual recommendation" if action == "launch_follow_up" else "Follow-up relaunched from manual recommendation"
+            detail = (
+                "Follow-up launched from manual recommendation"
+                if action == "launch_follow_up"
+                else "Follow-up relaunched from manual recommendation"
+            )
             if action == "launch_follow_up":
-                opportunities = response.latest_summary.get("opportunities") if isinstance(response.latest_summary, dict) and isinstance(response.latest_summary.get("opportunities"), list) else response.latest_summary.get("idea_candidates") if isinstance(response.latest_summary, dict) and isinstance(response.latest_summary.get("idea_candidates"), list) else []
-                matched = next((row for row in opportunities if str(row.get("opportunity_id") or "").strip() == opportunity_id), None)
+                opportunities = (
+                    response.latest_summary.get("opportunities")
+                    if isinstance(response.latest_summary, dict)
+                    and isinstance(response.latest_summary.get("opportunities"), list)
+                    else response.latest_summary.get("idea_candidates")
+                    if isinstance(response.latest_summary, dict)
+                    and isinstance(response.latest_summary.get("idea_candidates"), list)
+                    else []
+                )
+                matched = next(
+                    (
+                        row
+                        for row in opportunities
+                        if str(row.get("opportunity_id") or "").strip()
+                        == opportunity_id
+                    ),
+                    None,
+                )
                 if isinstance(matched, dict):
-                    child_ids = [str(v).strip() for v in (matched.get("child_job_ids") or []) if str(v).strip()]
+                    child_ids = [
+                        str(v).strip()
+                        for v in (matched.get("child_job_ids") or [])
+                        if str(v).strip()
+                    ]
                     follow_up_job_id = child_ids[-1] if child_ids else None
                 follow_up_launch_status = "launched"
                 follow_up_operator_decision = "approved_launch"
@@ -1693,32 +2045,71 @@ async def act_on_agent_control_review(
             response = await act_on_research_portfolio_opportunity(
                 portfolio_id=UUID(source_id),
                 opportunity_id=opportunity_id,
-                payload=ResearchPortfolioOpportunityActionRequest(action=action, operator_note=operator_note),
+                payload=ResearchPortfolioOpportunityActionRequest(
+                    action=action, operator_note=operator_note
+                ),
                 db=db,
                 current_user=current_user,
             )
-            detail = "Follow-up launched from manual recommendation" if action == "launch_follow_up" else "Follow-up relaunched from manual recommendation"
+            detail = (
+                "Follow-up launched from manual recommendation"
+                if action == "launch_follow_up"
+                else "Follow-up relaunched from manual recommendation"
+            )
             if action == "launch_follow_up":
-                opportunities = response.opportunities if isinstance(response.opportunities, list) else []
-                matched = next((row for row in opportunities if str(row.get("opportunity_id") or "").strip() == opportunity_id), None)
+                opportunities = (
+                    response.opportunities
+                    if isinstance(response.opportunities, list)
+                    else []
+                )
+                matched = next(
+                    (
+                        row
+                        for row in opportunities
+                        if str(row.get("opportunity_id") or "").strip()
+                        == opportunity_id
+                    ),
+                    None,
+                )
                 if isinstance(matched, dict):
-                    child_ids = [str(v).strip() for v in (matched.get("child_job_ids") or []) if str(v).strip()]
+                    child_ids = [
+                        str(v).strip()
+                        for v in (matched.get("child_job_ids") or [])
+                        if str(v).strip()
+                    ]
                     follow_up_job_id = child_ids[-1] if child_ids else None
                 follow_up_launch_status = "launched"
                 follow_up_operator_decision = "approved_launch"
     elif review_type in {"approval_checkpoint", "job_recovery"}:
         if source_kind != "job":
-            raise HTTPException(status_code=400, detail="Job queue actions require source_kind=job")
-        if action not in {"approve", "edit", "reject", "skip", "restart", "resume", "cancel"}:
-            raise HTTPException(status_code=400, detail="Unsupported control-plane review action")
+            raise HTTPException(
+                status_code=400, detail="Job queue actions require source_kind=job"
+            )
+        if action not in {
+            "approve",
+            "edit",
+            "reject",
+            "skip",
+            "restart",
+            "resume",
+            "cancel",
+        }:
+            raise HTTPException(
+                status_code=400, detail="Unsupported control-plane review action"
+            )
         if action == "edit" and review_type != "approval_checkpoint":
-            raise HTTPException(status_code=400, detail="Only approval checkpoints support edit actions")
+            raise HTTPException(
+                status_code=400, detail="Only approval checkpoints support edit actions"
+            )
         job = await db.get(AgentJob, UUID(source_id))
         if job is None or str(job.user_id) != str(current_user.id):
             raise HTTPException(status_code=404, detail="Review target not found")
         matches, mismatch_reason = _job_matches_bulk_queue_item_type(job, review_type)
         if not matches:
-            raise HTTPException(status_code=400, detail=mismatch_reason or "Job does not match this queue item type")
+            raise HTTPException(
+                status_code=400,
+                detail=mismatch_reason or "Job does not match this queue item type",
+            )
         updated_job = await _perform_job_action(
             job,
             AgentJobActionRequest(
@@ -1739,15 +2130,28 @@ async def act_on_agent_control_review(
             source_id=source_id,
         )
         if action != "apply_guardrail":
-            raise HTTPException(status_code=400, detail="Unsupported control-plane review action")
-        latest_summary = target.latest_summary if isinstance(target.latest_summary, dict) else {}
-        queued_review_rows = latest_summary.get("queued_operator_reviews") if isinstance(latest_summary.get("queued_operator_reviews"), list) else []
-        opportunity_rows = latest_summary.get("opportunities") if isinstance(latest_summary.get("opportunities"), list) else latest_summary.get("idea_candidates")
+            raise HTTPException(
+                status_code=400, detail="Unsupported control-plane review action"
+            )
+        latest_summary = (
+            target.latest_summary if isinstance(target.latest_summary, dict) else {}
+        )
+        queued_review_rows = (
+            latest_summary.get("queued_operator_reviews")
+            if isinstance(latest_summary.get("queued_operator_reviews"), list)
+            else []
+        )
+        opportunity_rows = (
+            latest_summary.get("opportunities")
+            if isinstance(latest_summary.get("opportunities"), list)
+            else latest_summary.get("idea_candidates")
+        )
         if not isinstance(opportunity_rows, list):
             opportunity_rows = []
         review_row = next(
             (
-                row for row in queued_review_rows
+                row
+                for row in queued_review_rows
                 if isinstance(row, dict)
                 and _normalize_string(row.get("review_type")) == "policy_review"
                 and _normalize_string(row.get("opportunity_id")) == opportunity_id
@@ -1756,40 +2160,57 @@ async def act_on_agent_control_review(
         )
         opportunity_row = next(
             (
-                row for row in opportunity_rows
-                if isinstance(row, dict) and _normalize_string(row.get("opportunity_id")) == opportunity_id
+                row
+                for row in opportunity_rows
+                if isinstance(row, dict)
+                and _normalize_string(row.get("opportunity_id")) == opportunity_id
             ),
             None,
         )
         if review_row is None and opportunity_row is None:
-            raise HTTPException(status_code=404, detail="Policy review target not found")
+            raise HTTPException(
+                status_code=404, detail="Policy review target not found"
+            )
         policy_update_payload = (
             review_row.get("policy_update_payload")
-            if isinstance(review_row, dict) and isinstance(review_row.get("policy_update_payload"), dict)
+            if isinstance(review_row, dict)
+            and isinstance(review_row.get("policy_update_payload"), dict)
             else opportunity_row.get("policy_update_payload")
-            if isinstance(opportunity_row, dict) and isinstance(opportunity_row.get("policy_update_payload"), dict)
+            if isinstance(opportunity_row, dict)
+            and isinstance(opportunity_row.get("policy_update_payload"), dict)
             else None
         )
         policy_rollback_payload = (
             review_row.get("policy_rollback_payload")
-            if isinstance(review_row, dict) and isinstance(review_row.get("policy_rollback_payload"), dict)
+            if isinstance(review_row, dict)
+            and isinstance(review_row.get("policy_rollback_payload"), dict)
             else opportunity_row.get("policy_rollback_payload")
-            if isinstance(opportunity_row, dict) and isinstance(opportunity_row.get("policy_rollback_payload"), dict)
+            if isinstance(opportunity_row, dict)
+            and isinstance(opportunity_row.get("policy_rollback_payload"), dict)
             else None
         )
         monitor_job_id = _normalize_string(
             review_row.get("monitor_job_id") if isinstance(review_row, dict) else None
         ) or _normalize_string(
-            opportunity_row.get("monitor_job_id") if isinstance(opportunity_row, dict) else None
+            opportunity_row.get("monitor_job_id")
+            if isinstance(opportunity_row, dict)
+            else None
         )
         if not monitor_job_id:
-            raise HTTPException(status_code=400, detail="Policy review is missing a monitor job id")
-        if isinstance(policy_rollback_payload, dict) and _normalize_string(policy_rollback_payload.get("history_entry_id")):
+            raise HTTPException(
+                status_code=400, detail="Policy review is missing a monitor job id"
+            )
+        if isinstance(policy_rollback_payload, dict) and _normalize_string(
+            policy_rollback_payload.get("history_entry_id")
+        ):
             await rollback_monitor_policy(
                 monitor_job_id=monitor_job_id,
                 payload=ResearchMonitorPolicyRollbackRequest(
-                    history_entry_id=str(policy_rollback_payload.get("history_entry_id")).strip(),
-                    change_reason=operator_note or "Applied from control-plane policy safeguard review",
+                    history_entry_id=str(
+                        policy_rollback_payload.get("history_entry_id")
+                    ).strip(),
+                    change_reason=operator_note
+                    or "Applied from control-plane policy safeguard review",
                 ),
                 current_user=current_user,
                 db=db,
@@ -1799,21 +2220,38 @@ async def act_on_agent_control_review(
             await update_monitor_policy(
                 monitor_job_id=monitor_job_id,
                 payload=ResearchMonitorPolicyUpdateRequest(
-                    automation_profile=_normalize_string(policy_update_payload.get("automation_profile")),
-                    automation_policy=policy_update_payload.get("automation_policy") if isinstance(policy_update_payload.get("automation_policy"), dict) else None,
+                    automation_profile=_normalize_string(
+                        policy_update_payload.get("automation_profile")
+                    ),
+                    automation_policy=policy_update_payload.get("automation_policy")
+                    if isinstance(policy_update_payload.get("automation_policy"), dict)
+                    else None,
                     mode=_normalize_string(policy_update_payload.get("mode")),
-                    allowed_recommendations=policy_update_payload.get("allowed_recommendations") if isinstance(policy_update_payload.get("allowed_recommendations"), list) else None,
+                    allowed_recommendations=policy_update_payload.get(
+                        "allowed_recommendations"
+                    )
+                    if isinstance(
+                        policy_update_payload.get("allowed_recommendations"), list
+                    )
+                    else None,
                     change_source="policy_guardrail",
-                    change_reason=operator_note or "Applied from control-plane policy safeguard review",
+                    change_reason=operator_note
+                    or "Applied from control-plane policy safeguard review",
                 ),
                 current_user=current_user,
                 db=db,
             )
             detail = "Policy safeguard update applied"
         else:
-            raise HTTPException(status_code=400, detail="Policy review is missing an actionable safeguard payload")
+            raise HTTPException(
+                status_code=400,
+                detail="Policy review is missing an actionable safeguard payload",
+            )
     else:
-        raise HTTPException(status_code=400, detail="This review type is currently read-only in the control plane")
+        raise HTTPException(
+            status_code=400,
+            detail="This review type is currently read-only in the control plane",
+        )
     await db.commit()
     return AgentControlRunReviewActionResponse(
         ok=True,
@@ -1830,7 +2268,9 @@ async def act_on_agent_control_review(
     )
 
 
-@router.post("/reviews/bulk-action", response_model=AgentControlRunBulkReviewActionResponse)
+@router.post(
+    "/reviews/bulk-action", response_model=AgentControlRunBulkReviewActionResponse
+)
 async def bulk_act_on_agent_control_reviews(
     payload: AgentControlRunBulkReviewActionRequest,
     db: AsyncSession = Depends(get_db),
@@ -1840,14 +2280,22 @@ async def bulk_act_on_agent_control_reviews(
     action = _normalize_string(payload.action)
     operator_note = _normalize_string(payload.operator_note)
     if not item_type or not action:
-        raise HTTPException(status_code=400, detail="Bulk review action payload is incomplete")
+        raise HTTPException(
+            status_code=400, detail="Bulk review action payload is incomplete"
+        )
 
     if item_type in {"approval_checkpoint", "job_recovery"}:
         request = AgentCheckpointQueueBulkActionRequest(
             item_type=item_type,
             action=action,
-            job_ids=[str(value).strip() for value in (payload.job_ids or []) if str(value).strip()],
-            checkpoint_note=operator_note if item_type == "approval_checkpoint" else None,
+            job_ids=[
+                str(value).strip()
+                for value in (payload.job_ids or [])
+                if str(value).strip()
+            ],
+            checkpoint_note=operator_note
+            if item_type == "approval_checkpoint"
+            else None,
         )
         response = await checkpoint_queue_bulk_action(
             request=request,
@@ -1874,13 +2322,25 @@ async def bulk_act_on_agent_control_reviews(
         )
 
     if item_type == "follow_up_recommendation":
-        domain_research_profile_id = _normalize_string(payload.domain_research_profile_id)
+        domain_research_profile_id = _normalize_string(
+            payload.domain_research_profile_id
+        )
         portfolio_id = _normalize_string(payload.portfolio_id)
         request = AgentCheckpointQueueBulkFollowUpActionRequest(
-            domain_research_profile_id=UUID(domain_research_profile_id) if domain_research_profile_id else None,
-            profile_opportunity_ids=[str(value).strip() for value in (payload.profile_opportunity_ids or []) if str(value).strip()],
+            domain_research_profile_id=UUID(domain_research_profile_id)
+            if domain_research_profile_id
+            else None,
+            profile_opportunity_ids=[
+                str(value).strip()
+                for value in (payload.profile_opportunity_ids or [])
+                if str(value).strip()
+            ],
             portfolio_id=UUID(portfolio_id) if portfolio_id else None,
-            portfolio_opportunity_ids=[str(value).strip() for value in (payload.portfolio_opportunity_ids or []) if str(value).strip()],
+            portfolio_opportunity_ids=[
+                str(value).strip()
+                for value in (payload.portfolio_opportunity_ids or [])
+                if str(value).strip()
+            ],
             action=action,
             operator_note=operator_note,
         )
@@ -1898,24 +2358,32 @@ async def bulk_act_on_agent_control_reviews(
             failed=response.failed,
             results=[
                 AgentControlRunBulkReviewActionResultResponse(
-                    opportunity_id=row.profile_opportunity_id or row.portfolio_opportunity_id,
+                    opportunity_id=row.profile_opportunity_id
+                    or row.portfolio_opportunity_id,
                     ok=bool(row.ok),
                     error=row.error,
                     detail=row.detail,
                     follow_up_launch_status=row.follow_up_launch_status,
                     follow_up_operator_decision=row.follow_up_operator_decision,
-                    follow_up_job_id=str(row.follow_up_job_id) if row.follow_up_job_id else None,
+                    follow_up_job_id=str(row.follow_up_job_id)
+                    if row.follow_up_job_id
+                    else None,
                 )
                 for row in response.results
             ],
         )
 
-    raise HTTPException(status_code=400, detail="Bulk actions are not supported for this control-plane item type")
+    raise HTTPException(
+        status_code=400,
+        detail="Bulk actions are not supported for this control-plane item type",
+    )
 
 
 @router.get("/runs", response_model=AgentControlRunListResponse)
 async def list_agent_control_runs(
-    source_type: Optional[str] = Query(None, description="Filter by control run root type: job|workflow"),
+    source_type: Optional[str] = Query(
+        None, description="Filter by control run root type: job|workflow"
+    ),
     has_operator_review: Optional[bool] = Query(None),
     review_type: Optional[str] = Query(None),
     review_status: Optional[str] = Query(None),
@@ -1923,7 +2391,12 @@ async def list_agent_control_runs(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> AgentControlRunListResponse:
-    trimmed, _job_linked_job_ids_by_root, _workflow_linked_job_ids_by_root, _review_rows_by_job_id = await _build_control_run_summaries(
+    (
+        trimmed,
+        _job_linked_job_ids_by_root,
+        _workflow_linked_job_ids_by_root,
+        _review_rows_by_job_id,
+    ) = await _build_control_run_summaries(
         db=db,
         current_user=current_user,
         source_type=source_type,
@@ -1937,7 +2410,9 @@ async def list_agent_control_runs(
 
 @router.get("/reviews", response_model=AgentControlRunReviewListResponse)
 async def list_agent_control_reviews(
-    source_type: Optional[str] = Query(None, description="Filter by control run root type: job|workflow"),
+    source_type: Optional[str] = Query(
+        None, description="Filter by control run root type: job|workflow"
+    ),
     has_operator_review: Optional[bool] = Query(None),
     review_type: Optional[str] = Query(None),
     review_status: Optional[str] = Query(None),
@@ -1953,7 +2428,12 @@ async def list_agent_control_reviews(
     db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> AgentControlRunReviewListResponse:
-    runs, job_linked_job_ids_by_root, workflow_linked_job_ids_by_root, review_rows_by_job_id = await _build_control_run_summaries(
+    (
+        runs,
+        job_linked_job_ids_by_root,
+        workflow_linked_job_ids_by_root,
+        review_rows_by_job_id,
+    ) = await _build_control_run_summaries(
         db=db,
         current_user=current_user,
         source_type=source_type,
@@ -1967,17 +2447,23 @@ async def list_agent_control_reviews(
     for run in runs:
         linked_job_ids: set[str] = set()
         if run.source_type == "job" and run.root_job_id:
-            linked_job_ids.update(job_linked_job_ids_by_root.get(run.root_job_id, {run.root_job_id}))
+            linked_job_ids.update(
+                job_linked_job_ids_by_root.get(run.root_job_id, {run.root_job_id})
+            )
         elif run.source_type == "workflow" and run.workflow_execution_id:
-            linked_job_ids.update(workflow_linked_job_ids_by_root.get(run.workflow_execution_id, set()))
+            linked_job_ids.update(
+                workflow_linked_job_ids_by_root.get(run.workflow_execution_id, set())
+            )
         for linked_job_id in sorted(linked_job_ids):
             for review in review_rows_by_job_id.get(linked_job_id, []):
-                review_copy = review.model_copy(update={
-                    "run_id": run.id,
-                    "run_title": run.title,
-                    "run_source_type": run.source_type,
-                    "run_status": run.status,
-                })
+                review_copy = review.model_copy(
+                    update={
+                        "run_id": run.id,
+                        "run_title": run.title,
+                        "run_source_type": run.source_type,
+                        "run_status": run.status,
+                    }
+                )
                 if _review_matches_filters(
                     review=review_copy,
                     review_type=review_type,
@@ -2038,7 +2524,9 @@ async def get_agent_control_run_detail(
                     )
                     .order_by(AgentJob.created_at.asc())
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         job_ids = {str(row.id) for row in job_rows}
         event_rows = list(
@@ -2052,7 +2540,9 @@ async def get_agent_control_run_detail(
                     .order_by(AutonomyDecisionEvent.event_time.desc())
                     .limit(80)
                 )
-            ).scalars().all()
+            )
+            .scalars()
+            .all()
         )
         decision_trace = [_build_event_response(row) for row in event_rows]
         linkage = {
@@ -2069,8 +2559,12 @@ async def get_agent_control_run_detail(
             row_linkage = _collect_job_linkage(row)
             for key in linkage:
                 linkage[key].update(row_linkage.get(key, set()))
-            row_routing_lineage = _collect_routing_lineage([row.config, row.results, row.output_artifacts])
-            routing_lineage["experiment_ids"].update(row_routing_lineage["experiment_ids"])
+            row_routing_lineage = _collect_routing_lineage(
+                [row.config, row.results, row.output_artifacts]
+            )
+            routing_lineage["experiment_ids"].update(
+                row_routing_lineage["experiment_ids"]
+            )
             routing_lineage["variant_ids"].update(row_routing_lineage["variant_ids"])
         event_linkage = _collect_event_linkage(decision_trace)
         linkage["note_ids"].update(event_linkage["note_ids"])
@@ -2078,8 +2572,12 @@ async def get_agent_control_run_detail(
         linkage["run_ids"].update(event_linkage["run_ids"])
         linkage["synthesis_job_ids"].update(event_linkage["synthesis_job_ids"])
         job_ids.update(event_linkage["child_job_ids"])
-        event_routing_lineage = _collect_routing_lineage([event.metadata for event in decision_trace])
-        routing_lineage["experiment_ids"].update(event_routing_lineage["experiment_ids"])
+        event_routing_lineage = _collect_routing_lineage(
+            [event.metadata for event in decision_trace]
+        )
+        routing_lineage["experiment_ids"].update(
+            event_routing_lineage["experiment_ids"]
+        )
         routing_lineage["variant_ids"].update(event_routing_lineage["variant_ids"])
 
         workflow_ids: set[UUID] = set()
@@ -2100,10 +2598,18 @@ async def get_agent_control_run_detail(
                             WorkflowExecution.id.in_(workflow_ids),
                         )
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
-        routing = _derive_routing_summary(events=decision_trace, root_metadata=root_job.config if isinstance(root_job.config, dict) else {})
-        review_rows_by_job_id, _review_counts_by_job_id = await _collect_control_run_review_mappings(
+        routing = _derive_routing_summary(
+            events=decision_trace,
+            root_metadata=root_job.config if isinstance(root_job.config, dict) else {},
+        )
+        (
+            review_rows_by_job_id,
+            _review_counts_by_job_id,
+        ) = await _collect_control_run_review_mappings(
             db=db,
             current_user=current_user,
             job_ids=job_ids,
@@ -2120,7 +2626,13 @@ async def get_agent_control_run_detail(
             routing=routing,
         )
         summary.queued_operator_review_count = len(queued_operator_reviews)
-        summary.queued_operator_reviews_by_type = dict(Counter(item.review_type for item in queued_operator_reviews if _normalize_string(item.review_type)))
+        summary.queued_operator_reviews_by_type = dict(
+            Counter(
+                item.review_type
+                for item in queued_operator_reviews
+                if _normalize_string(item.review_type)
+            )
+        )
         replay = _build_replay_summary(
             source_type="job",
             title=root_job.name,
@@ -2131,7 +2643,9 @@ async def get_agent_control_run_detail(
             child_count=max(0, len(job_rows) - 1),
             decision_count=len(decision_trace),
         )
-        memory_graph = await _slice_memory_graph_for_job_ids(db=db, current_user=current_user, job_ids=job_ids)
+        memory_graph = await _slice_memory_graph_for_job_ids(
+            db=db, current_user=current_user, job_ids=job_ids
+        )
 
         nodes: list[AgentControlRunNode] = [
             AgentControlRunNode(
@@ -2165,7 +2679,9 @@ async def get_agent_control_run_detail(
                 AgentControlRunNode(
                     id=f"workflow:{workflow_row.id}",
                     kind="workflow_execution",
-                    label=workflow_row.workflow.name if workflow_row.workflow else f"Workflow {workflow_row.workflow_id}",
+                    label=workflow_row.workflow.name
+                    if workflow_row.workflow
+                    else f"Workflow {workflow_row.workflow_id}",
                     status=workflow_row.status,
                     stage="executor",
                     timestamp=workflow_row.created_at,
@@ -2193,7 +2709,13 @@ async def get_agent_control_run_detail(
                     metadata={"research_note_id": note_id, "note_id": note_id},
                 )
             )
-            edges.append(AgentControlRunEdge(source=f"job:{root_job.id}", target=f"note:{note_id}", relation="references_note"))
+            edges.append(
+                AgentControlRunEdge(
+                    source=f"job:{root_job.id}",
+                    target=f"note:{note_id}",
+                    relation="references_note",
+                )
+            )
         for plan_id in sorted(linkage["plan_ids"]):
             nodes.append(
                 AgentControlRunNode(
@@ -2218,7 +2740,10 @@ async def get_agent_control_run_detail(
                     kind="experiment_run",
                     label=f"Validation run {validation_run_id[:8]}",
                     stage="executor",
-                    metadata={"experiment_run_id": validation_run_id, "run_id": validation_run_id},
+                    metadata={
+                        "experiment_run_id": validation_run_id,
+                        "run_id": validation_run_id,
+                    },
                 )
             )
             edges.append(
@@ -2251,7 +2776,10 @@ async def get_agent_control_run_detail(
                 AgentControlRunNode(
                     id=review_node_id,
                     kind="operator_review",
-                    label=review.title or review.reason_label or review.review_type or "Operator review",
+                    label=review.title
+                    or review.reason_label
+                    or review.review_type
+                    or "Operator review",
                     status=review.review_status,
                     stage="operator_review",
                     metadata={
@@ -2302,10 +2830,12 @@ async def get_agent_control_run_detail(
                             or event_metadata.get("source_synthesis_job_id")
                         ),
                         "routing_experiment_id": _normalize_string(
-                            event_metadata.get("routing_experiment_id") or event_metadata.get("experiment_id")
+                            event_metadata.get("routing_experiment_id")
+                            or event_metadata.get("experiment_id")
                         ),
                         "routing_experiment_variant_id": _normalize_string(
-                            event_metadata.get("routing_experiment_variant_id") or event_metadata.get("variant_id")
+                            event_metadata.get("routing_experiment_variant_id")
+                            or event_metadata.get("variant_id")
                         ),
                     },
                 )
@@ -2330,7 +2860,9 @@ async def get_agent_control_run_detail(
             related_links=_build_related_links(
                 source_type="job",
                 root_job_id=str(root_job.id),
-                workflow_execution_id=str(workflow_rows[0].id) if workflow_rows else None,
+                workflow_execution_id=str(workflow_rows[0].id)
+                if workflow_rows
+                else None,
                 note_ids=sorted(linkage["note_ids"]),
                 plan_ids=sorted(linkage["plan_ids"]),
                 run_ids=sorted(linkage["run_ids"]),
@@ -2342,7 +2874,9 @@ async def get_agent_control_run_detail(
             queued_operator_review_count=len(queued_operator_reviews),
             queued_operator_reviews=queued_operator_reviews,
             policy_summary={
-                "automation_profile": _normalize_string((root_job.config or {}).get("automation_profile"))
+                "automation_profile": _normalize_string(
+                    (root_job.config or {}).get("automation_profile")
+                )
                 if isinstance(root_job.config, dict)
                 else None,
                 "effective_policy": (root_job.config or {}).get("effective_policy")
@@ -2361,7 +2895,10 @@ async def get_agent_control_run_detail(
     execution = (
         await db.execute(
             select(WorkflowExecution)
-            .options(selectinload(WorkflowExecution.workflow), selectinload(WorkflowExecution.node_executions))
+            .options(
+                selectinload(WorkflowExecution.workflow),
+                selectinload(WorkflowExecution.node_executions),
+            )
             .where(
                 WorkflowExecution.id == source_uuid,
                 WorkflowExecution.user_id == current_user.id,
@@ -2385,7 +2922,9 @@ async def get_agent_control_run_detail(
                 )
                 .order_by(WorkflowExecution.created_at.asc())
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     workflow_source_ids = {str(row.id) for row in execution_rows}
     event_rows = list(
@@ -2399,7 +2938,9 @@ async def get_agent_control_run_detail(
                 .order_by(AutonomyDecisionEvent.event_time.desc())
                 .limit(80)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     decision_trace = [_build_event_response(row) for row in event_rows]
 
@@ -2421,14 +2962,30 @@ async def get_agent_control_run_detail(
                             AgentJob.id.in_(valid_job_uuids),
                         )
                     )
-                ).scalars().all()
+                )
+                .scalars()
+                .all()
             )
     job_ids = {str(job.id) for job in job_rows}
-    memory_graph = await _slice_memory_graph_for_job_ids(db=db, current_user=current_user, job_ids=job_ids)
+    memory_graph = await _slice_memory_graph_for_job_ids(
+        db=db, current_user=current_user, job_ids=job_ids
+    )
     event_linkage = _collect_event_linkage(decision_trace)
-    routing_lineage = _collect_routing_lineage([execution.context, execution.trigger_data, *(event.metadata for event in decision_trace)])
-    routing = _derive_routing_summary(events=decision_trace, root_metadata=execution.context if isinstance(execution.context, dict) else {})
-    review_rows_by_job_id, _review_counts_by_job_id = await _collect_control_run_review_mappings(
+    routing_lineage = _collect_routing_lineage(
+        [
+            execution.context,
+            execution.trigger_data,
+            *(event.metadata for event in decision_trace),
+        ]
+    )
+    routing = _derive_routing_summary(
+        events=decision_trace,
+        root_metadata=execution.context if isinstance(execution.context, dict) else {},
+    )
+    (
+        review_rows_by_job_id,
+        _review_counts_by_job_id,
+    ) = await _collect_control_run_review_mappings(
         db=db,
         current_user=current_user,
         job_ids=job_ids,
@@ -2441,15 +2998,24 @@ async def get_agent_control_run_detail(
         child_execution_count=max(0, len(execution_rows) - 1),
         child_job_count=len(job_rows),
         linked_note_count=len(event_linkage["note_ids"]),
-        linked_experiment_count=len(event_linkage["plan_ids"]) + len(event_linkage["run_ids"]),
+        linked_experiment_count=len(event_linkage["plan_ids"])
+        + len(event_linkage["run_ids"]),
         decision_count=len(decision_trace),
         routing=routing,
     )
     summary.queued_operator_review_count = len(queued_operator_reviews)
-    summary.queued_operator_reviews_by_type = dict(Counter(item.review_type for item in queued_operator_reviews if _normalize_string(item.review_type)))
+    summary.queued_operator_reviews_by_type = dict(
+        Counter(
+            item.review_type
+            for item in queued_operator_reviews
+            if _normalize_string(item.review_type)
+        )
+    )
     replay = _build_replay_summary(
         source_type="workflow",
-        title=execution.workflow.name if execution.workflow else f"Workflow {execution.workflow_id}",
+        title=execution.workflow.name
+        if execution.workflow
+        else f"Workflow {execution.workflow_id}",
         status=execution.status,
         current_phase=execution.current_node_id,
         routing=routing,
@@ -2544,7 +3110,10 @@ async def get_agent_control_run_detail(
             AgentControlRunNode(
                 id=review_node_id,
                 kind="operator_review",
-                label=review.title or review.reason_label or review.review_type or "Operator review",
+                label=review.title
+                or review.reason_label
+                or review.review_type
+                or "Operator review",
                 status=review.review_status,
                 stage="operator_review",
                 metadata={

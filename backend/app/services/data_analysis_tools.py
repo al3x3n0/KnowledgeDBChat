@@ -7,16 +7,15 @@ that can be used by autonomous agent jobs.
 
 from __future__ import annotations
 
-import json
 import base64
+import json
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from loguru import logger
 
 _IMPORT_ERROR: str | None = None
 try:
-    from app.services.data_sandbox_service import sandbox_manager, DataSandbox
+    from app.services.data_sandbox_service import DataSandbox, sandbox_manager
     from app.services.visualization_service import visualization_service
 except Exception as e:
     sandbox_manager = None  # type: ignore[assignment]
@@ -305,8 +304,12 @@ class DataAnalysisTools:
         """
         try:
             result = self.sandbox.join_datasets(
-                left_dataset_id, right_dataset_id,
-                on=on, left_on=left_on, right_on=right_on, how=how
+                left_dataset_id,
+                right_dataset_id,
+                on=on,
+                left_on=left_on,
+                right_on=right_on,
+                how=how,
             )
             return {
                 "success": True,
@@ -380,7 +383,9 @@ class DataAnalysisTools:
             Anomaly detection results
         """
         try:
-            result = self.sandbox.detect_anomalies(dataset_id, columns, method, threshold)
+            result = self.sandbox.detect_anomalies(
+                dataset_id, columns, method, threshold
+            )
             return {"success": True, **result}
         except Exception as e:
             logger.error(f"Failed to detect anomalies: {e}")
@@ -492,7 +497,7 @@ class DataAnalysisTools:
             result = visualization_service.create_chart(
                 "heatmap",
                 corr_result["matrix"],
-                {"title": title, "annotate": True, "cmap": "RdYlBu_r"}
+                {"title": title, "annotate": True, "cmap": "RdYlBu_r"},
             )
             return {
                 "success": True,
@@ -531,7 +536,7 @@ class DataAnalysisTools:
             result = diagram_service.create_mermaid_diagram(
                 "flowchart",
                 {"nodes": nodes, "edges": edges},
-                {"title": title, "direction": direction}
+                {"title": title, "direction": direction},
             )
             return {"success": True, **result}
         except Exception as e:
@@ -559,7 +564,7 @@ class DataAnalysisTools:
             result = diagram_service.create_mermaid_diagram(
                 "sequence",
                 {"participants": participants, "messages": messages},
-                {"title": title}
+                {"title": title},
             )
             return {"success": True, **result}
         except Exception as e:
@@ -587,7 +592,7 @@ class DataAnalysisTools:
             result = diagram_service.create_mermaid_diagram(
                 "er",
                 {"entities": entities, "relationships": relationships},
-                {"title": title}
+                {"title": title},
             )
             return {"success": True, **result}
         except Exception as e:
@@ -615,8 +620,7 @@ class DataAnalysisTools:
         """
         try:
             result = diagram_service.create_architecture_diagram(
-                components, connections,
-                {"title": title, "format": format}
+                components, connections, {"title": title, "format": format}
             )
             return {"success": True, **result}
         except Exception as e:
@@ -642,8 +646,7 @@ class DataAnalysisTools:
         """
         try:
             result = diagram_service.create_drawio_diagram(
-                {"nodes": nodes, "edges": edges},
-                {"title": title}
+                {"nodes": nodes, "edges": edges}, {"title": title}
             )
             return {"success": True, **result}
         except Exception as e:
@@ -667,9 +670,7 @@ class DataAnalysisTools:
         """
         try:
             result = diagram_service.create_mermaid_diagram(
-                "pie",
-                {"slices": slices},
-                {"title": title}
+                "pie", {"slices": slices}, {"title": title}
             )
             return {"success": True, **result}
         except Exception as e:
@@ -694,9 +695,7 @@ class DataAnalysisTools:
         """
         try:
             result = diagram_service.create_mermaid_diagram(
-                "gantt",
-                {"sections": sections},
-                {"title": title}
+                "gantt", {"sections": sections}, {"title": title}
             )
             return {"success": True, **result}
         except Exception as e:
@@ -725,7 +724,7 @@ class DataAnalysisTools:
             return {
                 "success": True,
                 "format": "csv",
-                "content_base64": base64.b64encode(csv_bytes).decode('utf-8'),
+                "content_base64": base64.b64encode(csv_bytes).decode("utf-8"),
                 "mime_type": "text/csv",
             }
         except Exception as e:
@@ -799,7 +798,6 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
             "dataset_id": "ID of the dataset to describe",
         },
     },
-
     # Data Transformation
     "query_data": {
         "name": "query_data",
@@ -814,7 +812,7 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
         "description": "Filter dataset based on conditions. Supports operators: eq, ne, gt, gte, lt, lte, in, not_in, contains, startswith, endswith, isnull, notnull",
         "parameters": {
             "dataset_id": "ID of the dataset",
-            "conditions": "Filter conditions as dict, e.g., {\"age\": {\"op\": \"gt\", \"value\": 30}}",
+            "conditions": 'Filter conditions as dict, e.g., {"age": {"op": "gt", "value": 30}}',
         },
     },
     "aggregate_data": {
@@ -823,7 +821,7 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
         "parameters": {
             "dataset_id": "ID of the dataset",
             "group_by": "(optional) Columns to group by",
-            "aggregations": "Aggregations, e.g., {\"sales\": [\"sum\", \"mean\"]}",
+            "aggregations": 'Aggregations, e.g., {"sales": ["sum", "mean"]}',
         },
     },
     "join_datasets": {
@@ -846,7 +844,6 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
             "operations": "List of transformation operations",
         },
     },
-
     # Analysis
     "detect_anomalies": {
         "name": "detect_anomalies",
@@ -867,7 +864,6 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
             "method": "Correlation method: pearson, spearman, kendall",
         },
     },
-
     # Visualization
     "create_chart": {
         "name": "create_chart",
@@ -889,7 +885,6 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
             "title": "(optional) Chart title",
         },
     },
-
     # Diagrams
     "create_flowchart": {
         "name": "create_flowchart",
@@ -946,7 +941,6 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
             "title": "(optional) Chart title",
         },
     },
-
     # Export
     "export_dataset_csv": {
         "name": "export_dataset_csv",

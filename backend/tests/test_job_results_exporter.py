@@ -77,11 +77,15 @@ def test_build_document_content_includes_memory_extraction_metadata_rows():
         }
     )
 
-    content = exporter._build_document_content(job, include_log=False, include_metadata=True)
+    content = exporter._build_document_content(
+        job, include_log=False, include_metadata=True
+    )
     tables = [item for item in content if item.get("type") == "table"]
     assert tables
     rows = tables[0].get("rows") or []
-    row_map = {str(r[0]): str(r[1]) for r in rows if isinstance(r, list) and len(r) >= 2}
+    row_map = {
+        str(r[0]): str(r[1]) for r in rows if isinstance(r, list) and len(r) >= 2
+    }
     assert row_map.get("Memory Extraction") == "COMPLETED"
     assert row_map.get("Memories Created") == "2"
     assert row_map.get("Duplicates Skipped") == "1"
@@ -103,10 +107,17 @@ def test_build_presentation_outline_includes_memory_extraction_stats_line():
         }
     )
 
-    outline = exporter._build_presentation_outline(job, include_log=False, include_metadata=True)
-    stats_slide = next((slide for slide in outline.slides if slide.title == "Job Statistics"), None)
+    outline = exporter._build_presentation_outline(
+        job, include_log=False, include_metadata=True
+    )
+    stats_slide = next(
+        (slide for slide in outline.slides if slide.title == "Job Statistics"), None
+    )
     assert stats_slide is not None
-    assert any("Memory extraction: COMPLETED" in str(line) for line in (stats_slide.content or []))
+    assert any(
+        "Memory extraction: COMPLETED" in str(line)
+        for line in (stats_slide.content or [])
+    )
 
 
 def test_get_operator_intervention_summary_reads_execution_strategy_payload():
@@ -169,7 +180,9 @@ def test_get_experiment_run_summary_reads_recovery_guidance():
             },
             "execution_strategy": {
                 "execution_graph": {
-                    "graph_health": {"reasons": ["fallback verification still failing"]},
+                    "graph_health": {
+                        "reasons": ["fallback verification still failing"]
+                    },
                     "recommended_actions": ["Inspect failing fallback output"],
                 }
             },
@@ -206,18 +219,24 @@ def test_build_document_content_includes_experiment_recovery_metadata_and_stats(
             },
             "execution_strategy": {
                 "execution_graph": {
-                    "graph_health": {"reasons": ["fallback verification still failing"]},
+                    "graph_health": {
+                        "reasons": ["fallback verification still failing"]
+                    },
                     "recommended_actions": ["Inspect failing fallback output"],
                 }
             },
         }
     )
 
-    content = exporter._build_document_content(job, include_log=False, include_metadata=True)
+    content = exporter._build_document_content(
+        job, include_log=False, include_metadata=True
+    )
     tables = [item for item in content if item.get("type") == "table"]
     assert tables
     rows = tables[0].get("rows") or []
-    row_map = {str(r[0]): str(r[1]) for r in rows if isinstance(r, list) and len(r) >= 2}
+    row_map = {
+        str(r[0]): str(r[1]) for r in rows if isinstance(r, list) and len(r) >= 2
+    }
     assert row_map.get("Experiment Final Phase") == "fallback"
     assert row_map.get("Experiment Source") == "Knowledge Repo"
     assert row_map.get("Experiment Source ID") == "repo-8"
@@ -228,11 +247,19 @@ def test_build_document_content_includes_experiment_recovery_metadata_and_stats(
     assert row_map.get("Recovery Next Action") == "Inspect failing fallback output"
 
     bullet_lists = [item for item in content if item.get("type") == "bullet_list"]
-    stats_items = [str(line) for item in bullet_lists for line in (item.get("items") or [])]
+    stats_items = [
+        str(line) for item in bullet_lists for line in (item.get("items") or [])
+    ]
     assert any("Experiment final phase: fallback" in line for line in stats_items)
     assert any("Experiment recovery: OPEN" in line for line in stats_items)
-    assert any("Recovery reason: fallback verification still failing" in line for line in stats_items)
-    assert any("Recovery next action: Inspect failing fallback output" in line for line in stats_items)
+    assert any(
+        "Recovery reason: fallback verification still failing" in line
+        for line in stats_items
+    )
+    assert any(
+        "Recovery next action: Inspect failing fallback output" in line
+        for line in stats_items
+    )
 
 
 def test_build_document_content_includes_operator_intervention_metadata_and_stats():
@@ -255,25 +282,47 @@ def test_build_document_content_includes_operator_intervention_metadata_and_stat
         }
     )
 
-    content = exporter._build_document_content(job, include_log=False, include_metadata=True)
+    content = exporter._build_document_content(
+        job, include_log=False, include_metadata=True
+    )
     tables = [item for item in content if item.get("type") == "table"]
     assert tables
     rows = tables[0].get("rows") or []
-    row_map = {str(r[0]): str(r[1]) for r in rows if isinstance(r, list) and len(r) >= 2}
+    row_map = {
+        str(r[0]): str(r[1]) for r in rows if isinstance(r, list) and len(r) >= 2
+    }
     assert row_map.get("Operator Interventions") == "1"
     assert row_map.get("Latest Intervention") == "restart (failed -> pending)"
     assert row_map.get("Latest Intervention Outcome") == "RESOLVED"
-    assert row_map.get("Latest Intervention Outcome Reason") == "Job completed after intervention"
+    assert (
+        row_map.get("Latest Intervention Outcome Reason")
+        == "Job completed after intervention"
+    )
     assert row_map.get("Latest Intervention Note") == "Retry after fallback failure"
 
     bullet_lists = [item for item in content if item.get("type") == "bullet_list"]
-    stats_items = [str(line) for item in bullet_lists for line in (item.get("items") or [])]
+    stats_items = [
+        str(line) for item in bullet_lists for line in (item.get("items") or [])
+    ]
     assert any("Operator interventions: 1" in line for line in stats_items)
-    assert any("Latest intervention: restart (failed -> pending)" in line for line in stats_items)
+    assert any(
+        "Latest intervention: restart (failed -> pending)" in line
+        for line in stats_items
+    )
     assert any("Latest intervention outcome: RESOLVED" in line for line in stats_items)
-    assert any("Intervention outcome reason: Job completed after intervention" in line for line in stats_items)
-    assert any("Recent Operator Interventions" == str(item.get("text")) for item in content if item.get("type") == "heading")
-    assert any("restart (failed -> pending): Retry after fallback failure [resolved]" in line for line in stats_items)
+    assert any(
+        "Intervention outcome reason: Job completed after intervention" in line
+        for line in stats_items
+    )
+    assert any(
+        "Recent Operator Interventions" == str(item.get("text"))
+        for item in content
+        if item.get("type") == "heading"
+    )
+    assert any(
+        "restart (failed -> pending): Retry after fallback failure [resolved]" in line
+        for line in stats_items
+    )
 
 
 def test_build_presentation_outline_includes_experiment_recovery_stats_line():
@@ -288,20 +337,37 @@ def test_build_presentation_outline_includes_experiment_recovery_stats_line():
             },
             "execution_strategy": {
                 "execution_graph": {
-                    "graph_health": {"reasons": ["fallback verification still failing"]},
+                    "graph_health": {
+                        "reasons": ["fallback verification still failing"]
+                    },
                     "recommended_actions": ["Inspect failing fallback output"],
                 }
             },
         }
     )
 
-    outline = exporter._build_presentation_outline(job, include_log=False, include_metadata=True)
-    stats_slide = next((slide for slide in outline.slides if slide.title == "Job Statistics"), None)
+    outline = exporter._build_presentation_outline(
+        job, include_log=False, include_metadata=True
+    )
+    stats_slide = next(
+        (slide for slide in outline.slides if slide.title == "Job Statistics"), None
+    )
     assert stats_slide is not None
-    assert any("Experiment final phase: fallback" in str(line) for line in (stats_slide.content or []))
-    assert any("Experiment recovery: OPEN" in str(line) for line in (stats_slide.content or []))
-    assert any("Recovery reason: fallback verification still failing" in str(line) for line in (stats_slide.content or []))
-    assert any("Recovery next action: Inspect failing fallback output" in str(line) for line in (stats_slide.content or []))
+    assert any(
+        "Experiment final phase: fallback" in str(line)
+        for line in (stats_slide.content or [])
+    )
+    assert any(
+        "Experiment recovery: OPEN" in str(line) for line in (stats_slide.content or [])
+    )
+    assert any(
+        "Recovery reason: fallback verification still failing" in str(line)
+        for line in (stats_slide.content or [])
+    )
+    assert any(
+        "Recovery next action: Inspect failing fallback output" in str(line)
+        for line in (stats_slide.content or [])
+    )
 
 
 def test_build_presentation_outline_includes_operator_intervention_stats_line():
@@ -322,13 +388,28 @@ def test_build_presentation_outline_includes_operator_intervention_stats_line():
         }
     )
 
-    outline = exporter._build_presentation_outline(job, include_log=False, include_metadata=True)
-    stats_slide = next((slide for slide in outline.slides if slide.title == "Job Statistics"), None)
+    outline = exporter._build_presentation_outline(
+        job, include_log=False, include_metadata=True
+    )
+    stats_slide = next(
+        (slide for slide in outline.slides if slide.title == "Job Statistics"), None
+    )
     assert stats_slide is not None
-    assert any("Operator interventions: 1" in str(line) for line in (stats_slide.content or []))
-    assert any("Latest intervention: restart (failed -> pending)" in str(line) for line in (stats_slide.content or []))
-    assert any("Latest intervention outcome: RESOLVED" in str(line) for line in (stats_slide.content or []))
-    assert any("Intervention outcome reason: Job completed after intervention" in str(line) for line in (stats_slide.content or []))
+    assert any(
+        "Operator interventions: 1" in str(line) for line in (stats_slide.content or [])
+    )
+    assert any(
+        "Latest intervention: restart (failed -> pending)" in str(line)
+        for line in (stats_slide.content or [])
+    )
+    assert any(
+        "Latest intervention outcome: RESOLVED" in str(line)
+        for line in (stats_slide.content or [])
+    )
+    assert any(
+        "Intervention outcome reason: Job completed after intervention" in str(line)
+        for line in (stats_slide.content or [])
+    )
     assert any(
         "Intervention timeline: restart (failed -> pending) [resolved]" in str(line)
         for line in (stats_slide.content or [])

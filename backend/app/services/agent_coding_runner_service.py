@@ -2,52 +2,19 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import math
 import os
-import random
-import re
-import uuid
-from collections import Counter
 from copy import deepcopy
-from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from loguru import logger
-from sqlalchemy import desc, func, or_, select, update
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm.attributes import flag_modified
 
-from app.models.agent_job import AgentJob, AgentJobStatus, ChainTriggerCondition
-from app.models.agent_definition import AgentDefinition
-from app.models.agent_tool_prior import AgentToolPrior
-from app.models.user import User
-from app.models.memory import UserPreferences
-from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
-from app.services.ai_hub_eval_service import ai_hub_eval_service
-from app.services.project_profile_service import (
-    build_project_profile,
-    format_project_profile_for_prompt,
-    infer_project_profile_from_paths,
-)
-from app.services.research_opportunity_service import (
-    collect_research_opportunity_linked_ids,
-    compute_research_opportunity_evidence_revision,
-    compute_research_portfolio_config_revision,
-    list_normalized_research_opportunities,
-    merge_operator_fields,
-    normalize_research_opportunity,
-    summarize_research_opportunity_autonomy_states,
-    summarize_research_opportunity_stages,
-)
-from app.services.autonomy_service import (
-    build_domain_profile_compat_policy,
-    current_domain_profile_policy_snapshot,
-    resolve_domain_profile_automation_contract,
-)
+from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services.project_profile_service import infer_project_profile_from_paths
 
 
 class AgentCodingRunnerService:
@@ -71,24 +38,39 @@ class AgentCodingRunnerService:
           - CodePatchProposal row + artifact reference in job.output_artifacts
         """
         from uuid import UUID as _UUID
-        from app.models.document import Document, DocumentSource
+
         from app.models.code_patch_proposal import CodePatchProposal
+        from app.models.document import Document, DocumentSource
 
         def _emit(progress: int, phase: str, details: str):
             job.progress = max(0, min(100, int(progress)))
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "code_patch_proposer", "result": details})
+            job.add_log_entry(
+                {"phase": phase, "action": "code_patch_proposer", "result": details}
+            )
 
         source_id_raw = None
         if isinstance(job.config, dict):
-            source_id_raw = (job.config or {}).get("source_id") or (job.config or {}).get("target_source_id")
+            source_id_raw = (job.config or {}).get("source_id") or (
+                job.config or {}
+            ).get("target_source_id")
         if not source_id_raw:
-            inherited = (job.config or {}).get("inherited_data") if isinstance(job.config, dict) else None
+            inherited = (
+                (job.config or {}).get("inherited_data")
+                if isinstance(job.config, dict)
+                else None
+            )
             if isinstance(inherited, dict):
-                parent_results = inherited.get("parent_results") if isinstance(inherited.get("parent_results"), dict) else None
-                if parent_results and isinstance(parent_results.get("repo_ingest"), dict):
+                parent_results = (
+                    inherited.get("parent_results")
+                    if isinstance(inherited.get("parent_results"), dict)
+                    else None
+                )
+                if parent_results and isinstance(
+                    parent_results.get("repo_ingest"), dict
+                ):
                     source_id_raw = parent_results["repo_ingest"].get("source_id")
         if not source_id_raw:
             job.status = AgentJobStatus.FAILED.value
@@ -116,14 +98,20 @@ class AgentCodingRunnerService:
         error_output = str(cfg.get("error_output") or "").strip()
         scope = str(cfg.get("scope") or "auto").strip().lower() or "auto"
         emit_execution_plan = bool(cfg.get("emit_execution_plan", True))
-        create_workspace_from_source = bool(cfg.get("create_workspace_from_source", True))
-        max_verification_commands = max(1, min(int(cfg.get("max_verification_commands") or 3), 6))
+        create_workspace_from_source = bool(
+            cfg.get("create_workspace_from_source", True)
+        )
+        max_verification_commands = max(
+            1, min(int(cfg.get("max_verification_commands") or 3), 6)
+        )
 
         _emit(5, "planning", f"Preparing code patch proposal for source: {source.name}")
         await db.commit()
 
         inherited = cfg.get("inherited_data") if isinstance(cfg, dict) else None
-        parent_results = inherited.get("parent_results") if isinstance(inherited, dict) else None
+        parent_results = (
+            inherited.get("parent_results") if isinstance(inherited, dict) else None
+        )
 
         search_query = str(cfg.get("search_query") or "").strip()
         file_paths = cfg.get("file_paths")
@@ -146,7 +134,9 @@ class AgentCodingRunnerService:
         }
         if source_type in {"github", "gitlab"} and create_workspace_from_source:
             try:
-                ws = await executor.workspace_manager.create_from_source(str(source.id), db)
+                ws = await executor.workspace_manager.create_from_source(
+                    str(source.id), db
+                )
                 workspace_meta = {
                     "created": True,
                     "workspace_id": str(ws.workspace_id),
@@ -160,9 +150,20 @@ class AgentCodingRunnerService:
 
         # If we are refining after an ExperimentRunner step, default to the previously-touched files.
         if not file_paths and isinstance(parent_results, dict):
-            prev_patch = parent_results.get("code_patch") if isinstance(parent_results.get("code_patch"), dict) else None
-            prev_touched = prev_patch.get("files_touched") if isinstance(prev_patch, dict) and isinstance(prev_patch.get("files_touched"), list) else []
-            file_paths = [str(p).strip() for p in prev_touched if str(p).strip()][:max_files]
+            prev_patch = (
+                parent_results.get("code_patch")
+                if isinstance(parent_results.get("code_patch"), dict)
+                else None
+            )
+            prev_touched = (
+                prev_patch.get("files_touched")
+                if isinstance(prev_patch, dict)
+                and isinstance(prev_patch.get("files_touched"), list)
+                else []
+            )
+            file_paths = [str(p).strip() for p in prev_touched if str(p).strip()][
+                :max_files
+            ]
 
         # Collect candidate documents (code files)
         docs: list[Document] = []
@@ -196,7 +197,11 @@ class AgentCodingRunnerService:
                         source_id=str(source.id),
                         db=db,
                     )
-                    ids = [r.get("id") for r in (results or []) if isinstance(r, dict) and r.get("id")]
+                    ids = [
+                        r.get("id")
+                        for r in (results or [])
+                        if isinstance(r, dict) and r.get("id")
+                    ]
                     for doc_id in ids[:max_files]:
                         try:
                             d = await db.get(Document, _UUID(str(doc_id)))
@@ -232,44 +237,63 @@ class AgentCodingRunnerService:
             content = (d.content or "")[:max_chars_per_file]
             file_id = str(d.id)
             path = d.title or d.source_identifier or d.file_path or file_id
-            file_meta.append({"document_id": file_id, "path": path, "truncated": len(d.content or "") > len(content)})
+            file_meta.append(
+                {
+                    "document_id": file_id,
+                    "path": path,
+                    "truncated": len(d.content or "") > len(content),
+                }
+            )
             file_blocks.append(f"### FILE: {path}\n```text\n{content}\n```\n")
 
         inferred_project_profile: Dict[str, Any] = {}
         try:
             if workspace_meta.get("created"):
-                ws_obj = executor.workspace_manager.get(str(workspace_meta.get("workspace_id")))
+                ws_obj = executor.workspace_manager.get(
+                    str(workspace_meta.get("workspace_id"))
+                )
                 if ws_obj:
-                    inferred_project_profile = infer_project_profile_from_paths(list((ws_obj.original_hashes or {}).keys()))
+                    inferred_project_profile = infer_project_profile_from_paths(
+                        list((ws_obj.original_hashes or {}).keys())
+                    )
             if not inferred_project_profile:
-                inferred_project_profile = infer_project_profile_from_paths([row.get("path") for row in file_meta if isinstance(row, dict)])
+                inferred_project_profile = infer_project_profile_from_paths(
+                    [row.get("path") for row in file_meta if isinstance(row, dict)]
+                )
         except Exception:
             inferred_project_profile = {}
 
         verification_commands: List[str] = []
-        explicit_commands = cfg.get("commands") if isinstance(cfg.get("commands"), list) else []
+        explicit_commands = (
+            cfg.get("commands") if isinstance(cfg.get("commands"), list) else []
+        )
         for raw in explicit_commands:
             cmd = str(raw or "").strip()
             if cmd and cmd not in verification_commands:
                 verification_commands.append(cmd)
             if len(verification_commands) >= max_verification_commands:
                 break
-        if not verification_commands and bool(cfg.get("auto_commands_from_project_profile", True)):
+        if not verification_commands and bool(
+            cfg.get("auto_commands_from_project_profile", True)
+        ):
             verification_commands = executor._select_verification_commands_from_profile(
                 inferred_project_profile,
                 max_commands=max_verification_commands,
             )
-        bootstrap_and_fallback = executor._get_bootstrap_and_fallback_commands_from_profile(
-            inferred_project_profile,
-            primary_commands=verification_commands,
-            max_install=max_verification_commands,
-            max_fallback=max_verification_commands,
+        bootstrap_and_fallback = (
+            executor._get_bootstrap_and_fallback_commands_from_profile(
+                inferred_project_profile,
+                primary_commands=verification_commands,
+                max_install=max_verification_commands,
+                max_fallback=max_verification_commands,
+            )
         )
         verification_plan = {
             "commands": verification_commands,
             "bootstrap_commands": bootstrap_and_fallback.get("install") or [],
             "fallback_commands": bootstrap_and_fallback.get("fallback") or [],
-            "auto_inferred": not bool(explicit_commands) and bool(verification_commands),
+            "auto_inferred": not bool(explicit_commands)
+            and bool(verification_commands),
         }
         execution_plan_steps = [
             {
@@ -312,25 +336,45 @@ class AgentCodingRunnerService:
         refinement_context: list[str] = []
         previous_diff_excerpt: str | None = None
         if isinstance(parent_results, dict):
-            prev_patch = parent_results.get("code_patch") if isinstance(parent_results.get("code_patch"), dict) else None
-            prev_proposal_id = str(prev_patch.get("proposal_id") or "").strip() if isinstance(prev_patch, dict) else ""
+            prev_patch = (
+                parent_results.get("code_patch")
+                if isinstance(parent_results.get("code_patch"), dict)
+                else None
+            )
+            prev_proposal_id = (
+                str(prev_patch.get("proposal_id") or "").strip()
+                if isinstance(prev_patch, dict)
+                else ""
+            )
             if prev_proposal_id:
                 try:
-                    prev_proposal = await db.get(CodePatchProposal, _UUID(prev_proposal_id))
+                    prev_proposal = await db.get(
+                        CodePatchProposal, _UUID(prev_proposal_id)
+                    )
                 except Exception:
                     prev_proposal = None
                 if prev_proposal and prev_proposal.user_id == job.user_id:
                     prev_summary = str(prev_proposal.summary or "").strip()
                     if prev_summary:
-                        refinement_context.append(f"Previous patch summary:\n{prev_summary}")
+                        refinement_context.append(
+                            f"Previous patch summary:\n{prev_summary}"
+                        )
                     prev_diff = str(prev_proposal.diff_unified or "").strip()
                     if prev_diff:
-                        previous_diff_excerpt = "\n".join(prev_diff.splitlines()[:160])[:6000]
+                        previous_diff_excerpt = "\n".join(prev_diff.splitlines()[:160])[
+                            :6000
+                        ]
 
-            exp = parent_results.get("experiment_run") if isinstance(parent_results.get("experiment_run"), dict) else None
+            exp = (
+                parent_results.get("experiment_run")
+                if isinstance(parent_results.get("experiment_run"), dict)
+                else None
+            )
             if isinstance(exp, dict):
                 runs = exp.get("runs") if isinstance(exp.get("runs"), list) else []
-                failures = [r for r in runs if isinstance(r, dict) and not bool(r.get("ok"))]
+                failures = [
+                    r for r in runs if isinstance(r, dict) and not bool(r.get("ok"))
+                ]
                 if failures:
                     lines: list[str] = []
                     for r in failures[:4]:
@@ -338,12 +382,24 @@ class AgentCodingRunnerService:
                         code = r.get("exit_code")
                         stderr = str(r.get("stderr") or "")[:1200]
                         stdout = str(r.get("stdout") or "")[:800]
-                        lines.append(f"- cmd: {cmd}\n  exit_code: {code}\n  stderr:\n{stderr}\n  stdout:\n{stdout}")
-                    refinement_context.append("Experiment failures (most recent):\n" + "\n".join(lines))
+                        lines.append(
+                            f"- cmd: {cmd}\n  exit_code: {code}\n  stderr:\n{stderr}\n  stdout:\n{stdout}"
+                        )
+                    refinement_context.append(
+                        "Experiment failures (most recent):\n" + "\n".join(lines)
+                    )
 
-            patch_apply = parent_results.get("code_patch_apply") if isinstance(parent_results.get("code_patch_apply"), dict) else None
+            patch_apply = (
+                parent_results.get("code_patch_apply")
+                if isinstance(parent_results.get("code_patch_apply"), dict)
+                else None
+            )
             if isinstance(patch_apply, dict):
-                errs = patch_apply.get("errors") if isinstance(patch_apply.get("errors"), list) else []
+                errs = (
+                    patch_apply.get("errors")
+                    if isinstance(patch_apply.get("errors"), list)
+                    else []
+                )
                 if errs:
                     lines = []
                     for e in errs[:6]:
@@ -356,7 +412,9 @@ class AgentCodingRunnerService:
                         else:
                             lines.append(f"- {err}")
                     if lines:
-                        refinement_context.append("Patch apply errors (most recent):\n" + "\n".join(lines))
+                        refinement_context.append(
+                            "Patch apply errors (most recent):\n" + "\n".join(lines)
+                        )
 
         refinement_block = ""
         if refinement_context or previous_diff_excerpt:
@@ -364,7 +422,8 @@ class AgentCodingRunnerService:
             parts.extend(refinement_context)
             if previous_diff_excerpt:
                 parts.append(
-                    "Previous diff excerpt (for reference; produce a complete diff against FILES below):\n" + previous_diff_excerpt
+                    "Previous diff excerpt (for reference; produce a complete diff against FILES below):\n"
+                    + previous_diff_excerpt
                 )
             refinement_block = "\n\nREFINEMENT CONTEXT:\n" + "\n\n".join(parts) + "\n"
 
@@ -402,14 +461,29 @@ class AgentCodingRunnerService:
         try:
             payload = json.loads(response)
         except Exception:
-            payload = {"title": "Code Patch Proposal", "summary": response[:800], "diff_unified": "", "files_touched": [], "risks": [], "tests_to_run": []}
+            payload = {
+                "title": "Code Patch Proposal",
+                "summary": response[:800],
+                "diff_unified": "",
+                "files_touched": [],
+                "risks": [],
+                "tests_to_run": [],
+            }
 
         title = str(payload.get("title") or "Code Patch Proposal")[:500]
         summary = str(payload.get("summary") or "").strip() or None
         diff_unified = str(payload.get("diff_unified") or "").strip()
-        files_touched = payload.get("files_touched") if isinstance(payload.get("files_touched"), list) else []
+        files_touched = (
+            payload.get("files_touched")
+            if isinstance(payload.get("files_touched"), list)
+            else []
+        )
         risks = payload.get("risks") if isinstance(payload.get("risks"), list) else []
-        tests_to_run = payload.get("tests_to_run") if isinstance(payload.get("tests_to_run"), list) else []
+        tests_to_run = (
+            payload.get("tests_to_run")
+            if isinstance(payload.get("tests_to_run"), list)
+            else []
+        )
 
         if not diff_unified or "---" not in diff_unified or "+++" not in diff_unified:
             job.status = AgentJobStatus.FAILED.value
@@ -447,7 +521,11 @@ class AgentCodingRunnerService:
         await db.refresh(proposal)
 
         job.results = dict(parent_results) if isinstance(parent_results, dict) else {}
-        prev_cp = job.results.get("code_patch") if isinstance(job.results.get("code_patch"), dict) else None
+        prev_cp = (
+            job.results.get("code_patch")
+            if isinstance(job.results.get("code_patch"), dict)
+            else None
+        )
         if isinstance(prev_cp, dict):
             existing = job.results.get("code_patches")
             if not isinstance(existing, list):
@@ -466,7 +544,9 @@ class AgentCodingRunnerService:
             "tests_to_run": tests_to_run,
         }
         job.results["code_patch_execution"] = {
-            "mode": "repo_bug_triage_patch_proposal" if (cfg.get("launch_mode") == "quick_start_repo_bug_triage") else "code_patch_proposal",
+            "mode": "repo_bug_triage_patch_proposal"
+            if (cfg.get("launch_mode") == "quick_start_repo_bug_triage")
+            else "code_patch_proposal",
             "source_id": str(source.id),
             "source_name": str(source.name or ""),
             "source_type": source_type,
@@ -482,14 +562,17 @@ class AgentCodingRunnerService:
                 job=job,
                 experiment_run=(
                     parent_results.get("experiment_run")
-                    if isinstance(parent_results, dict) and isinstance(parent_results.get("experiment_run"), dict)
+                    if isinstance(parent_results, dict)
+                    and isinstance(parent_results.get("experiment_run"), dict)
                     else None
                 ),
             ),
         }
         if job.output_artifacts is None:
             job.output_artifacts = []
-        job.output_artifacts.append({"type": "code_patch_proposal", "id": str(proposal.id), "title": title})
+        job.output_artifacts.append(
+            {"type": "code_patch_proposal", "id": str(proposal.id), "title": title}
+        )
 
         _emit(100, "completed", f"Patch proposal ready: {title}")
         job.status = AgentJobStatus.COMPLETED.value
@@ -544,11 +627,15 @@ class AgentCodingRunnerService:
         from hashlib import sha256 as _sha256
         from uuid import UUID as _UUID
 
-        from sqlalchemy import and_ as _and, or_ as _or
+        from sqlalchemy import and_ as _and
+        from sqlalchemy import or_ as _or
 
         from app.models.code_patch_proposal import CodePatchProposal
         from app.models.document import Document
-        from app.services.code_patch_apply_service import code_patch_apply_service, UnifiedDiffApplyError
+        from app.services.code_patch_apply_service import (
+            UnifiedDiffApplyError,
+            code_patch_apply_service,
+        )
         from app.services.document_service import DocumentService
 
         def _emit(progress: int, phase: str, details: str):
@@ -556,14 +643,21 @@ class AgentCodingRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "code_patch_apply_to_kb", "result": details})
+            job.add_log_entry(
+                {"phase": phase, "action": "code_patch_apply_to_kb", "result": details}
+            )
 
         cfg = job.config if isinstance(job.config, dict) else {}
         inherited = (cfg or {}).get("inherited_data") if isinstance(cfg, dict) else None
-        parent_results = inherited.get("parent_results") if isinstance(inherited, dict) else None
+        parent_results = (
+            inherited.get("parent_results") if isinstance(inherited, dict) else None
+        )
         base_results = dict(parent_results) if isinstance(parent_results, dict) else {}
 
-        enabled_key = str(cfg.get("enabled_key") or "apply_patch_to_kb").strip() or "apply_patch_to_kb"
+        enabled_key = (
+            str(cfg.get("enabled_key") or "apply_patch_to_kb").strip()
+            or "apply_patch_to_kb"
+        )
         enabled = bool(cfg.get(enabled_key, False))
         dry_run = bool(cfg.get("dry_run", True))
         require_experiments_ok = bool(cfg.get("require_experiments_ok", True))
@@ -577,7 +671,10 @@ class AgentCodingRunnerService:
                 "ok": None,
                 "dry_run": dry_run,
                 "did_apply": False,
-                "proposal_strategy": str(cfg.get("proposal_strategy") or "latest").strip().lower() or "latest",
+                "proposal_strategy": str(cfg.get("proposal_strategy") or "latest")
+                .strip()
+                .lower()
+                or "latest",
                 "enabled_key": enabled_key,
                 "note": "Skipped (apply_patch_to_kb=false).",
             }
@@ -587,17 +684,37 @@ class AgentCodingRunnerService:
             await db.commit()
             return {"status": "completed", "results": job.results}
 
-        exp_runs = base_results.get("experiment_runs") if isinstance(base_results.get("experiment_runs"), list) else []
-        exp_cur = base_results.get("experiment_run") if isinstance(base_results.get("experiment_run"), dict) else None
+        exp_runs = (
+            base_results.get("experiment_runs")
+            if isinstance(base_results.get("experiment_runs"), list)
+            else []
+        )
+        exp_cur = (
+            base_results.get("experiment_run")
+            if isinstance(base_results.get("experiment_run"), dict)
+            else None
+        )
         exp_all = [r for r in exp_runs if isinstance(r, dict)]
         if isinstance(exp_cur, dict):
             exp_all.append(exp_cur)
 
         # If we are going to write, require a previous KB dry-run to have succeeded (in-chain).
-        prev_kb_apply = base_results.get("code_patch_kb_apply") if isinstance(base_results.get("code_patch_kb_apply"), dict) else None
+        prev_kb_apply = (
+            base_results.get("code_patch_kb_apply")
+            if isinstance(base_results.get("code_patch_kb_apply"), dict)
+            else None
+        )
         if (not dry_run) and require_dry_run_first:
-            prev_ok = bool(prev_kb_apply.get("ok")) if isinstance(prev_kb_apply, dict) else False
-            prev_dry = bool(prev_kb_apply.get("dry_run")) if isinstance(prev_kb_apply, dict) else False
+            prev_ok = (
+                bool(prev_kb_apply.get("ok"))
+                if isinstance(prev_kb_apply, dict)
+                else False
+            )
+            prev_dry = (
+                bool(prev_kb_apply.get("dry_run"))
+                if isinstance(prev_kb_apply, dict)
+                else False
+            )
             if not (prev_ok and prev_dry):
                 job.results = dict(base_results)
                 job.results["code_patch_kb_apply"] = {
@@ -608,15 +725,29 @@ class AgentCodingRunnerService:
                     "blocked": True,
                     "blocked_reason": "Missing/failed prior dry-run (require_dry_run_first=true).",
                 }
-                _emit(100, "completed" if not fail_on_block else "failed", "Blocked (missing/failed dry-run)")
-                job.status = AgentJobStatus.COMPLETED.value if not fail_on_block else AgentJobStatus.FAILED.value
+                _emit(
+                    100,
+                    "completed" if not fail_on_block else "failed",
+                    "Blocked (missing/failed dry-run)",
+                )
+                job.status = (
+                    AgentJobStatus.COMPLETED.value
+                    if not fail_on_block
+                    else AgentJobStatus.FAILED.value
+                )
                 if fail_on_block:
                     job.error = "Blocked from applying patch to KB"
                 job.completed_at = datetime.utcnow()
                 await db.commit()
-                return {"status": job.status, "results": job.results, "error": job.error}
+                return {
+                    "status": job.status,
+                    "results": job.results,
+                    "error": job.error,
+                }
 
-        proposal_strategy = str(cfg.get("proposal_strategy") or "latest").strip().lower()
+        proposal_strategy = (
+            str(cfg.get("proposal_strategy") or "latest").strip().lower()
+        )
         if proposal_strategy not in {"best_passing", "latest", "explicit"}:
             proposal_strategy = "latest"
 
@@ -635,11 +766,19 @@ class AgentCodingRunnerService:
 
         if proposal_strategy == "latest" and not proposal_id:
             # Prefer the latest proposal_id in inherited code_patch results.
-            code_patch = base_results.get("code_patch") if isinstance(base_results.get("code_patch"), dict) else None
+            code_patch = (
+                base_results.get("code_patch")
+                if isinstance(base_results.get("code_patch"), dict)
+                else None
+            )
             proposal_id = str((code_patch or {}).get("proposal_id") or "").strip()
         if not proposal_id:
             # Fallback: last history entry.
-            hist = base_results.get("code_patches") if isinstance(base_results.get("code_patches"), list) else []
+            hist = (
+                base_results.get("code_patches")
+                if isinstance(base_results.get("code_patches"), list)
+                else []
+            )
             for p in reversed(hist):
                 if isinstance(p, dict) and str(p.get("proposal_id") or "").strip():
                     proposal_id = str(p.get("proposal_id") or "").strip()
@@ -669,7 +808,11 @@ class AgentCodingRunnerService:
                 if str(r.get("proposal_id") or "").strip() == proposal_id:
                     last_for_proposal = r
                     break
-            ok_val = last_for_proposal.get("ok") if isinstance(last_for_proposal, dict) else None
+            ok_val = (
+                last_for_proposal.get("ok")
+                if isinstance(last_for_proposal, dict)
+                else None
+            )
             if ok_val is not True:
                 job.results = dict(base_results)
                 job.results["code_patch_kb_apply"] = {
@@ -683,13 +826,25 @@ class AgentCodingRunnerService:
                     "enabled_key": enabled_key,
                     "blocked_reason": "No passing experiment run found for selected proposal (require_experiments_ok=true).",
                 }
-                _emit(100, "completed" if not fail_on_block else "failed", "Blocked (experiments not passing)")
-                job.status = AgentJobStatus.COMPLETED.value if not fail_on_block else AgentJobStatus.FAILED.value
+                _emit(
+                    100,
+                    "completed" if not fail_on_block else "failed",
+                    "Blocked (experiments not passing)",
+                )
+                job.status = (
+                    AgentJobStatus.COMPLETED.value
+                    if not fail_on_block
+                    else AgentJobStatus.FAILED.value
+                )
                 if fail_on_block:
                     job.error = "Blocked from applying patch to KB"
                 job.completed_at = datetime.utcnow()
                 await db.commit()
-                return {"status": job.status, "results": job.results, "error": job.error}
+                return {
+                    "status": job.status,
+                    "results": job.results,
+                    "error": job.error,
+                }
 
         try:
             proposal_uuid = _UUID(proposal_id)
@@ -714,7 +869,10 @@ class AgentCodingRunnerService:
         # Human-in-the-loop gate: do not allow autonomous jobs to directly write patches to the KB
         # unless explicitly enabled at deployment level.
         from app.core.config import settings as _settings
-        if (not dry_run) and (not bool(getattr(_settings, "AGENT_KB_PATCH_APPLY_ENABLED", False))):
+
+        if (not dry_run) and (
+            not bool(getattr(_settings, "AGENT_KB_PATCH_APPLY_ENABLED", False))
+        ):
             try:
                 from app.models.patch_pr import PatchPR
 
@@ -750,13 +908,25 @@ class AgentCodingRunnerService:
                     "blocked_reason": "Direct KB patch apply is disabled (AGENT_KB_PATCH_APPLY_ENABLED=false).",
                     "patch_pr_id": str(pr.id),
                 }
-                _emit(100, "completed" if not fail_on_block else "failed", "Blocked (requires PatchPR review/merge)")
-                job.status = AgentJobStatus.COMPLETED.value if not fail_on_block else AgentJobStatus.FAILED.value
+                _emit(
+                    100,
+                    "completed" if not fail_on_block else "failed",
+                    "Blocked (requires PatchPR review/merge)",
+                )
+                job.status = (
+                    AgentJobStatus.COMPLETED.value
+                    if not fail_on_block
+                    else AgentJobStatus.FAILED.value
+                )
                 if fail_on_block:
                     job.error = "Blocked from applying patch to KB"
                 job.completed_at = datetime.utcnow()
                 await db.commit()
-                return {"status": job.status, "results": job.results, "error": job.error}
+                return {
+                    "status": job.status,
+                    "results": job.results,
+                    "error": job.error,
+                }
             except Exception:
                 job.results = dict(base_results)
                 job.results["code_patch_kb_apply"] = {
@@ -770,13 +940,25 @@ class AgentCodingRunnerService:
                     "enabled_key": enabled_key,
                     "blocked_reason": "Direct KB patch apply is disabled (AGENT_KB_PATCH_APPLY_ENABLED=false).",
                 }
-                _emit(100, "completed" if not fail_on_block else "failed", "Blocked (requires PatchPR review/merge)")
-                job.status = AgentJobStatus.COMPLETED.value if not fail_on_block else AgentJobStatus.FAILED.value
+                _emit(
+                    100,
+                    "completed" if not fail_on_block else "failed",
+                    "Blocked (requires PatchPR review/merge)",
+                )
+                job.status = (
+                    AgentJobStatus.COMPLETED.value
+                    if not fail_on_block
+                    else AgentJobStatus.FAILED.value
+                )
                 if fail_on_block:
                     job.error = "Blocked from applying patch to KB"
                 job.completed_at = datetime.utcnow()
                 await db.commit()
-                return {"status": job.status, "results": job.results, "error": job.error}
+                return {
+                    "status": job.status,
+                    "results": job.results,
+                    "error": job.error,
+                }
 
         _emit(10, "parsing", "Parsing unified diff")
         await db.commit()
@@ -819,7 +1001,11 @@ class AgentCodingRunnerService:
         applied: list[dict] = []
         errors: list[dict] = []
 
-        _emit(30, "applying", f"Applying patch to {len(file_diffs)} file(s){' (dry-run)' if dry_run else ''}")
+        _emit(
+            30,
+            "applying",
+            f"Applying patch to {len(file_diffs)} file(s){' (dry-run)' if dry_run else ''}",
+        )
         await db.commit()
 
         for idx, fd in enumerate(file_diffs[:200]):
@@ -847,7 +1033,9 @@ class AgentCodingRunnerService:
                 continue
 
             try:
-                new_text, debug = code_patch_apply_service.apply_to_text(doc.content or "", fd)
+                new_text, debug = code_patch_apply_service.apply_to_text(
+                    doc.content or "", fd
+                )
             except UnifiedDiffApplyError as exc:
                 errors.append({"path": path, "error": str(exc)})
                 continue
@@ -864,13 +1052,25 @@ class AgentCodingRunnerService:
                     pass
 
             applied.append({"path": path, "document_id": str(doc.id), "debug": debug})
-            _emit(30 + int(50 * (idx + 1) / max(1, min(len(file_diffs), 200))), "applying", f"Patched: {path}")
+            _emit(
+                30 + int(50 * (idx + 1) / max(1, min(len(file_diffs), 200))),
+                "applying",
+                f"Patched: {path}",
+            )
             await db.commit()
 
         ok = len(errors) == 0
         if not dry_run:
-            proposal.proposal_metadata = proposal.proposal_metadata if isinstance(proposal.proposal_metadata, dict) else {}
-            proposal.proposal_metadata["apply_results"] = {"applied": applied, "errors": errors, "dry_run": False}
+            proposal.proposal_metadata = (
+                proposal.proposal_metadata
+                if isinstance(proposal.proposal_metadata, dict)
+                else {}
+            )
+            proposal.proposal_metadata["apply_results"] = {
+                "applied": applied,
+                "errors": errors,
+                "dry_run": False,
+            }
             proposal.status = "applied" if ok else "proposed"
 
         job.results = dict(base_results)
@@ -888,7 +1088,9 @@ class AgentCodingRunnerService:
         }
 
         _emit(100, "completed" if ok else "failed", "KB patch apply complete")
-        job.status = AgentJobStatus.COMPLETED.value if ok else AgentJobStatus.FAILED.value
+        job.status = (
+            AgentJobStatus.COMPLETED.value if ok else AgentJobStatus.FAILED.value
+        )
         if not ok:
             job.error = "KB patch apply failed"
         job.completed_at = datetime.utcnow()
@@ -904,7 +1106,6 @@ class AgentCodingRunnerService:
         progress_callback: Optional[callable],
     ) -> Dict[str, Any]:
         from app.models.coding_backlog import CodingBacklogItem
-        from app.models.code_patch_proposal import CodePatchProposal
         from app.models.document import DocumentSource
         from app.services.agent_job_templates import (
             REPO_BUG_TRIAGE_REPAIR_TEMPLATE_ID,
@@ -917,14 +1118,22 @@ class AgentCodingRunnerService:
             job.current_phase = phase
             job.phase_details = details
             job.last_activity_at = datetime.utcnow()
-            job.add_log_entry({"phase": phase, "action": "coding_backlog_orchestrator", "result": details})
+            job.add_log_entry(
+                {
+                    "phase": phase,
+                    "action": "coding_backlog_orchestrator",
+                    "result": details,
+                }
+            )
 
         def _normalize_ids(values: Any) -> list[str]:
             if not isinstance(values, list):
                 return []
             return [str(v).strip() for v in values if str(v).strip()]
 
-        def _continuation_chain_config(item_id: UUID, previous_child_kind: str) -> dict[str, Any]:
+        def _continuation_chain_config(
+            item_id: UUID, previous_child_kind: str
+        ) -> dict[str, Any]:
             return {
                 "trigger_condition": "on_any_end",
                 "inherit_results": True,
@@ -937,7 +1146,12 @@ class AgentCodingRunnerService:
                         "config": {
                             "deterministic_runner": "coding_backlog_orchestrator",
                             "coding_backlog_item_id": str(item_id),
-                            "coding_backlog_previous_child_kind": str(previous_child_kind or "").strip().lower() or "repair",
+                            "coding_backlog_previous_child_kind": str(
+                                previous_child_kind or ""
+                            )
+                            .strip()
+                            .lower()
+                            or "repair",
                         },
                         "max_iterations": 1,
                         "max_tool_calls": 0,
@@ -947,30 +1161,44 @@ class AgentCodingRunnerService:
                 ],
             }
 
-        def _attach_terminal_continuation(chain_config: Optional[dict], item_id: UUID, previous_child_kind: str) -> Optional[dict]:
+        def _attach_terminal_continuation(
+            chain_config: Optional[dict], item_id: UUID, previous_child_kind: str
+        ) -> Optional[dict]:
             if not isinstance(chain_config, dict):
                 return None
             updated = deepcopy(chain_config)
             cursor = updated
-            while isinstance(cursor.get("child_jobs"), list) and cursor.get("child_jobs"):
+            while isinstance(cursor.get("child_jobs"), list) and cursor.get(
+                "child_jobs"
+            ):
                 child = cursor["child_jobs"][-1]
                 if not isinstance(child, dict):
                     break
                 if not isinstance(child.get("chain_config"), dict):
-                    child["chain_config"] = _continuation_chain_config(item_id, previous_child_kind)
+                    child["chain_config"] = _continuation_chain_config(
+                        item_id, previous_child_kind
+                    )
                     return updated
                 cursor = child["chain_config"]
             return updated
 
         def _policy(item: CodingBacklogItem) -> dict[str, Any]:
             raw = item.policy if isinstance(item.policy, dict) else {}
-            blocked = raw.get("blocked_path_prefixes") if isinstance(raw.get("blocked_path_prefixes"), list) else []
+            blocked = (
+                raw.get("blocked_path_prefixes")
+                if isinstance(raw.get("blocked_path_prefixes"), list)
+                else []
+            )
             return {
                 "max_files_touched": max(0, int(raw.get("max_files_touched", 3) or 3)),
-                "blocked_path_prefixes": [str(v).strip() for v in blocked if str(v).strip()],
+                "blocked_path_prefixes": [
+                    str(v).strip() for v in blocked if str(v).strip()
+                ],
                 "max_auto_retries": max(0, int(raw.get("max_auto_retries", 1) or 1)),
                 "require_experiments_ok": bool(raw.get("require_experiments_ok", True)),
-                "confidence_threshold": max(0.0, min(float(raw.get("confidence_threshold", 0.55) or 0.55), 1.0)),
+                "confidence_threshold": max(
+                    0.0, min(float(raw.get("confidence_threshold", 0.55) or 0.55), 1.0)
+                ),
             }
 
         def _derive_scope(file_paths: list[str], fallback_scope: str) -> str:
@@ -990,56 +1218,131 @@ class AgentCodingRunnerService:
             file_paths = _normalize_ids(src.get("file_paths"))
             commands = _normalize_ids(src.get("commands"))
             title = str(src.get("title") or "").strip() or (
-                f"Target {os.path.basename(file_paths[0])}" if file_paths else "Triage reported failure"
+                f"Target {os.path.basename(file_paths[0])}"
+                if file_paths
+                else "Triage reported failure"
             )
-            scope = str(src.get("scope") or "").strip().lower() or _derive_scope(file_paths, str(item.scope or "auto").strip().lower() or "auto")
+            scope = str(src.get("scope") or "").strip().lower() or _derive_scope(
+                file_paths, str(item.scope or "auto").strip().lower() or "auto"
+            )
             return {
                 "slice_id": str(src.get("slice_id") or f"slice_{index + 1}"),
                 "title": title[:160],
-                "status": str(src.get("status") or "pending").strip().lower() or "pending",
+                "status": str(src.get("status") or "pending").strip().lower()
+                or "pending",
                 "scope": scope,
                 "file_paths": file_paths,
                 "commands": commands,
                 "search_query": str(src.get("search_query") or "").strip()[:500],
                 "goal": str(src.get("goal") or "").strip()[:2000],
                 "retry_count": max(0, int(src.get("retry_count", 0) or 0)),
-                "selected_proposal_id": str(src.get("selected_proposal_id") or "").strip() or None,
-                "promotion_decision": str(src.get("promotion_decision") or "").strip() or None,
+                "selected_proposal_id": str(
+                    src.get("selected_proposal_id") or ""
+                ).strip()
+                or None,
+                "promotion_decision": str(src.get("promotion_decision") or "").strip()
+                or None,
                 "blocked_reason": str(src.get("blocked_reason") or "").strip() or None,
                 "child_job_id": str(src.get("child_job_id") or "").strip() or None,
                 "apply_job_id": str(src.get("apply_job_id") or "").strip() or None,
-                "proposal_confidence": float(src.get("proposal_confidence", 0.0) or 0.0),
+                "proposal_confidence": float(
+                    src.get("proposal_confidence", 0.0) or 0.0
+                ),
                 "files_touched": _normalize_ids(src.get("files_touched")),
                 "started_at": src.get("started_at"),
                 "completed_at": src.get("completed_at"),
                 "status_reason": str(src.get("status_reason") or "").strip() or None,
-                "timeline": src.get("timeline") if isinstance(src.get("timeline"), list) else [],
-                "job_lineage": src.get("job_lineage") if isinstance(src.get("job_lineage"), dict) else {
+                "timeline": src.get("timeline")
+                if isinstance(src.get("timeline"), list)
+                else [],
+                "job_lineage": src.get("job_lineage")
+                if isinstance(src.get("job_lineage"), dict)
+                else {
                     "repair_job_ids": [],
                     "apply_job_ids": [],
                     "patch_pr_ids": [],
                     "proposal_ids": [],
                     "retry_from_job_ids": [],
                 },
-                "artifact_history": src.get("artifact_history") if isinstance(src.get("artifact_history"), list) else [],
-                "manual_promotion_history": src.get("manual_promotion_history") if isinstance(src.get("manual_promotion_history"), list) else [],
+                "artifact_history": src.get("artifact_history")
+                if isinstance(src.get("artifact_history"), list)
+                else [],
+                "manual_promotion_history": src.get("manual_promotion_history")
+                if isinstance(src.get("manual_promotion_history"), list)
+                else [],
             }
 
         def _normalize_decomposition(item: CodingBacklogItem) -> dict[str, Any]:
             raw = item.decomposition if isinstance(item.decomposition, dict) else {}
-            planned_raw = raw.get("planned_slices") if isinstance(raw.get("planned_slices"), list) else raw.get("slices_planned") if isinstance(raw.get("slices_planned"), list) else []
-            planned = [_normalize_slice(entry, idx) for idx, entry in enumerate(planned_raw)]
-            completed_slices = [str(v).strip() for v in (raw.get("completed_slices") if isinstance(raw.get("completed_slices"), list) else []) if str(v).strip()]
-            failed_slices = [str(v).strip() for v in (raw.get("failed_slices") if isinstance(raw.get("failed_slices"), list) else []) if str(v).strip()]
-            promotion_decisions = [entry for entry in (raw.get("promotion_decisions") if isinstance(raw.get("promotion_decisions"), list) else []) if isinstance(entry, dict)]
-            backlog_timeline = [entry for entry in (raw.get("backlog_timeline") if isinstance(raw.get("backlog_timeline"), list) else []) if isinstance(entry, dict)]
+            planned_raw = (
+                raw.get("planned_slices")
+                if isinstance(raw.get("planned_slices"), list)
+                else raw.get("slices_planned")
+                if isinstance(raw.get("slices_planned"), list)
+                else []
+            )
+            planned = [
+                _normalize_slice(entry, idx) for idx, entry in enumerate(planned_raw)
+            ]
+            completed_slices = [
+                str(v).strip()
+                for v in (
+                    raw.get("completed_slices")
+                    if isinstance(raw.get("completed_slices"), list)
+                    else []
+                )
+                if str(v).strip()
+            ]
+            failed_slices = [
+                str(v).strip()
+                for v in (
+                    raw.get("failed_slices")
+                    if isinstance(raw.get("failed_slices"), list)
+                    else []
+                )
+                if str(v).strip()
+            ]
+            promotion_decisions = [
+                entry
+                for entry in (
+                    raw.get("promotion_decisions")
+                    if isinstance(raw.get("promotion_decisions"), list)
+                    else []
+                )
+                if isinstance(entry, dict)
+            ]
+            backlog_timeline = [
+                entry
+                for entry in (
+                    raw.get("backlog_timeline")
+                    if isinstance(raw.get("backlog_timeline"), list)
+                    else []
+                )
+                if isinstance(entry, dict)
+            ]
             active_slice_id = str(raw.get("active_slice_id") or "").strip() or None
             total = len(planned)
-            auto_applied = sum(1 for entry in planned if str(entry.get("promotion_decision") or "").strip().lower() == "auto_applied")
-            proposal_only = sum(1 for entry in planned if str(entry.get("promotion_decision") or "").strip().lower() in {"proposal_only", "patch_pr"})
-            pending = sum(1 for entry in planned if str(entry.get("status") or "").strip().lower() in {"pending", "repairing", "retrying", "applying"})
+            auto_applied = sum(
+                1
+                for entry in planned
+                if str(entry.get("promotion_decision") or "").strip().lower()
+                == "auto_applied"
+            )
+            proposal_only = sum(
+                1
+                for entry in planned
+                if str(entry.get("promotion_decision") or "").strip().lower()
+                in {"proposal_only", "patch_pr"}
+            )
+            pending = sum(
+                1
+                for entry in planned
+                if str(entry.get("status") or "").strip().lower()
+                in {"pending", "repairing", "retrying", "applying"}
+            )
             return {
-                "strategy": str(raw.get("strategy") or "portfolio_goal").strip() or "portfolio_goal",
+                "strategy": str(raw.get("strategy") or "portfolio_goal").strip()
+                or "portfolio_goal",
                 "planned_slices": planned,
                 "active_slice_id": active_slice_id,
                 "completed_slices": completed_slices,
@@ -1047,11 +1350,28 @@ class AgentCodingRunnerService:
                 "promotion_decisions": promotion_decisions,
                 "backlog_timeline": backlog_timeline,
                 "lineage_summary": {
-                    "repair_job_count": sum(len((entry.get("job_lineage") or {}).get("repair_job_ids") or []) for entry in planned),
-                    "apply_job_count": sum(len((entry.get("job_lineage") or {}).get("apply_job_ids") or []) for entry in planned),
-                    "patch_pr_count": sum(len((entry.get("job_lineage") or {}).get("patch_pr_ids") or []) for entry in planned),
-                    "proposal_count": sum(len((entry.get("job_lineage") or {}).get("proposal_ids") or []) for entry in planned),
-                    "operator_action_count": sum(len(entry.get("manual_promotion_history") or []) for entry in planned),
+                    "repair_job_count": sum(
+                        len(
+                            (entry.get("job_lineage") or {}).get("repair_job_ids") or []
+                        )
+                        for entry in planned
+                    ),
+                    "apply_job_count": sum(
+                        len((entry.get("job_lineage") or {}).get("apply_job_ids") or [])
+                        for entry in planned
+                    ),
+                    "patch_pr_count": sum(
+                        len((entry.get("job_lineage") or {}).get("patch_pr_ids") or [])
+                        for entry in planned
+                    ),
+                    "proposal_count": sum(
+                        len((entry.get("job_lineage") or {}).get("proposal_ids") or [])
+                        for entry in planned
+                    ),
+                    "operator_action_count": sum(
+                        len(entry.get("manual_promotion_history") or [])
+                        for entry in planned
+                    ),
                 },
                 "portfolio_progress": {
                     "total_slices": total,
@@ -1066,7 +1386,18 @@ class AgentCodingRunnerService:
         def _save_decomposition(dec: dict[str, Any]) -> None:
             item.decomposition = dec
 
-        def _timeline_entry(*, actor: str, action: str, previous_status: Optional[str] = None, new_status: Optional[str] = None, note: Optional[str] = None, related_job_id: Optional[str] = None, related_proposal_id: Optional[str] = None, related_patch_pr_id: Optional[str] = None, metadata: Optional[dict[str, Any]] = None) -> dict[str, Any]:
+        def _timeline_entry(
+            *,
+            actor: str,
+            action: str,
+            previous_status: Optional[str] = None,
+            new_status: Optional[str] = None,
+            note: Optional[str] = None,
+            related_job_id: Optional[str] = None,
+            related_proposal_id: Optional[str] = None,
+            related_patch_pr_id: Optional[str] = None,
+            metadata: Optional[dict[str, Any]] = None,
+        ) -> dict[str, Any]:
             row = {
                 "at": datetime.utcnow().isoformat(),
                 "actor": actor,
@@ -1086,33 +1417,73 @@ class AgentCodingRunnerService:
                 row["metadata"] = metadata
             return row
 
-        def _append_backlog_timeline(dec: dict[str, Any], entry: dict[str, Any]) -> None:
-            rows = dec.get("backlog_timeline") if isinstance(dec.get("backlog_timeline"), list) else []
+        def _append_backlog_timeline(
+            dec: dict[str, Any], entry: dict[str, Any]
+        ) -> None:
+            rows = (
+                dec.get("backlog_timeline")
+                if isinstance(dec.get("backlog_timeline"), list)
+                else []
+            )
             rows.append(entry)
             dec["backlog_timeline"] = rows[-100:]
 
-        def _append_slice_timeline(slice_state: dict[str, Any], entry: dict[str, Any]) -> None:
-            rows = slice_state.get("timeline") if isinstance(slice_state.get("timeline"), list) else []
+        def _append_slice_timeline(
+            slice_state: dict[str, Any], entry: dict[str, Any]
+        ) -> None:
+            rows = (
+                slice_state.get("timeline")
+                if isinstance(slice_state.get("timeline"), list)
+                else []
+            )
             rows.append(entry)
             slice_state["timeline"] = rows[-60:]
 
-        def _append_lineage_id(slice_state: dict[str, Any], lineage_key: str, value: Optional[str]) -> None:
-            lineage = slice_state.get("job_lineage") if isinstance(slice_state.get("job_lineage"), dict) else {}
-            existing = lineage.get(lineage_key) if isinstance(lineage.get(lineage_key), list) else []
+        def _append_lineage_id(
+            slice_state: dict[str, Any], lineage_key: str, value: Optional[str]
+        ) -> None:
+            lineage = (
+                slice_state.get("job_lineage")
+                if isinstance(slice_state.get("job_lineage"), dict)
+                else {}
+            )
+            existing = (
+                lineage.get(lineage_key)
+                if isinstance(lineage.get(lineage_key), list)
+                else []
+            )
             lineage[lineage_key] = _append_unique(existing, value)
             slice_state["job_lineage"] = lineage
 
-        def _append_artifact_history(slice_state: dict[str, Any], artifact_type: str, artifact_id: Optional[str], label: Optional[str] = None) -> None:
+        def _append_artifact_history(
+            slice_state: dict[str, Any],
+            artifact_type: str,
+            artifact_id: Optional[str],
+            label: Optional[str] = None,
+        ) -> None:
             if not artifact_id:
                 return
-            rows = slice_state.get("artifact_history") if isinstance(slice_state.get("artifact_history"), list) else []
-            rows.append({"at": datetime.utcnow().isoformat(), "artifact_type": artifact_type, "artifact_id": artifact_id, "label": label or artifact_type})
+            rows = (
+                slice_state.get("artifact_history")
+                if isinstance(slice_state.get("artifact_history"), list)
+                else []
+            )
+            rows.append(
+                {
+                    "at": datetime.utcnow().isoformat(),
+                    "artifact_type": artifact_type,
+                    "artifact_id": artifact_id,
+                    "label": label or artifact_type,
+                }
+            )
             slice_state["artifact_history"] = rows[-40:]
 
         def _current_portfolio_progress() -> dict[str, Any]:
             return _normalize_decomposition(item).get("portfolio_progress") or {}
 
-        def _find_slice(dec: dict[str, Any], slice_id: Optional[str]) -> Optional[dict[str, Any]]:
+        def _find_slice(
+            dec: dict[str, Any], slice_id: Optional[str]
+        ) -> Optional[dict[str, Any]]:
             sid = str(slice_id or "").strip()
             if not sid:
                 return None
@@ -1128,10 +1499,20 @@ class AgentCodingRunnerService:
                 next_values.append(current)
             return next_values
 
-        def _upsert_promotion_decision(dec: dict[str, Any], entry: dict[str, Any]) -> None:
+        def _upsert_promotion_decision(
+            dec: dict[str, Any], entry: dict[str, Any]
+        ) -> None:
             slice_id = str(entry.get("slice_id") or "").strip()
-            decisions = dec.get("promotion_decisions") if isinstance(dec.get("promotion_decisions"), list) else []
-            kept = [row for row in decisions if str((row or {}).get("slice_id") or "").strip() != slice_id]
+            decisions = (
+                dec.get("promotion_decisions")
+                if isinstance(dec.get("promotion_decisions"), list)
+                else []
+            )
+            kept = [
+                row
+                for row in decisions
+                if str((row or {}).get("slice_id") or "").strip() != slice_id
+            ]
             kept.append(entry)
             dec["promotion_decisions"] = kept[-12:]
 
@@ -1147,17 +1528,32 @@ class AgentCodingRunnerService:
             if raw_paths:
                 max_slices = min(3, max(1, len(raw_paths)))
                 chunk_size = max(1, math.ceil(len(raw_paths) / max_slices))
-                groups = [raw_paths[idx: idx + chunk_size] for idx in range(0, len(raw_paths), chunk_size)]
+                groups = [
+                    raw_paths[idx : idx + chunk_size]
+                    for idx in range(0, len(raw_paths), chunk_size)
+                ]
             else:
                 groups = [[]]
             slices: list[dict[str, Any]] = []
             default_scope = str(item.scope or "auto").strip().lower() or "auto"
-            symptom = str(item.failure_symptom or "").strip() or str(item.portfolio_goal or "").strip()[:4000]
+            symptom = (
+                str(item.failure_symptom or "").strip()
+                or str(item.portfolio_goal or "").strip()[:4000]
+            )
             for idx, group in enumerate(groups[:3]):
                 scope = _derive_scope(group, default_scope)
-                search_terms = " ".join(part for part in [("" if scope == "auto" else scope), symptom, " ".join(group[:2])] if part).strip()[:500]
+                search_terms = " ".join(
+                    part
+                    for part in [
+                        ("" if scope == "auto" else scope),
+                        symptom,
+                        " ".join(group[:2]),
+                    ]
+                    if part
+                ).strip()[:500]
                 title = (
-                    f"Target {os.path.basename(group[0])}" + (f" +{len(group) - 1}" if len(group) > 1 else "")
+                    f"Target {os.path.basename(group[0])}"
+                    + (f" +{len(group) - 1}" if len(group) > 1 else "")
                     if group
                     else "Triage reported failure"
                 )
@@ -1194,7 +1590,11 @@ class AgentCodingRunnerService:
         ) -> dict[str, Any]:
             touched = _normalize_ids(code_patch.get("files_touched"))
             risks = _normalize_ids(code_patch.get("risks"))
-            experiment_run = latest_results.get("experiment_run") if isinstance(latest_results.get("experiment_run"), dict) else {}
+            experiment_run = (
+                latest_results.get("experiment_run")
+                if isinstance(latest_results.get("experiment_run"), dict)
+                else {}
+            )
             experiment_ok = experiment_run.get("ok")
             confidence = 0.45
             if experiment_ok is True:
@@ -1206,11 +1606,29 @@ class AgentCodingRunnerService:
             elif len(risks) >= 3:
                 confidence -= 0.15
             confidence = max(0.0, min(1.0, confidence))
-            blocked_prefixes = [str(v).strip() for v in pol.get("blocked_path_prefixes", []) if str(v).strip()]
-            blocked_by_path = any(any(path.startswith(prefix) for prefix in blocked_prefixes) for path in touched) if blocked_prefixes else False
-            blocked_by_count = bool(pol.get("max_files_touched")) and len(touched) > int(pol.get("max_files_touched") or 0)
-            blocked_by_experiments = bool(pol.get("require_experiments_ok", True)) and experiment_ok is not True
-            blocked_by_confidence = confidence < float(pol.get("confidence_threshold", 0.55) or 0.55)
+            blocked_prefixes = [
+                str(v).strip()
+                for v in pol.get("blocked_path_prefixes", [])
+                if str(v).strip()
+            ]
+            blocked_by_path = (
+                any(
+                    any(path.startswith(prefix) for prefix in blocked_prefixes)
+                    for path in touched
+                )
+                if blocked_prefixes
+                else False
+            )
+            blocked_by_count = bool(pol.get("max_files_touched")) and len(
+                touched
+            ) > int(pol.get("max_files_touched") or 0)
+            blocked_by_experiments = (
+                bool(pol.get("require_experiments_ok", True))
+                and experiment_ok is not True
+            )
+            blocked_by_confidence = confidence < float(
+                pol.get("confidence_threshold", 0.55) or 0.55
+            )
             blocked_reason = None
             if blocked_by_path:
                 blocked_reason = "blocked_path_prefix"
@@ -1221,7 +1639,14 @@ class AgentCodingRunnerService:
             elif blocked_by_confidence:
                 blocked_reason = "confidence_below_threshold"
             return {
-                "eligible": not any([blocked_by_path, blocked_by_count, blocked_by_experiments, blocked_by_confidence]),
+                "eligible": not any(
+                    [
+                        blocked_by_path,
+                        blocked_by_count,
+                        blocked_by_experiments,
+                        blocked_by_confidence,
+                    ]
+                ),
                 "blocked_reason": blocked_reason,
                 "files_touched": touched,
                 "files_touched_count": len(touched),
@@ -1271,9 +1696,19 @@ class AgentCodingRunnerService:
         _emit(5, "loading", f"Loaded backlog item {item.title}")
         await db.commit()
 
-        inherited = cfg.get("inherited_data") if isinstance(cfg.get("inherited_data"), dict) else {}
-        inherited_parent_results = inherited.get("parent_results") if isinstance(inherited.get("parent_results"), dict) else None
-        inherited_child_kind = str(cfg.get("coding_backlog_previous_child_kind") or "").strip().lower()
+        inherited = (
+            cfg.get("inherited_data")
+            if isinstance(cfg.get("inherited_data"), dict)
+            else {}
+        )
+        inherited_parent_results = (
+            inherited.get("parent_results")
+            if isinstance(inherited.get("parent_results"), dict)
+            else None
+        )
+        inherited_child_kind = (
+            str(cfg.get("coding_backlog_previous_child_kind") or "").strip().lower()
+        )
 
         if str(item.status or "").lower() in {"paused", "cancelled"}:
             item.latest_summary = {
@@ -1295,18 +1730,40 @@ class AgentCodingRunnerService:
             dec = _normalize_decomposition(item)
             _save_decomposition(dec)
 
-        async def _spawn_repair_child(slice_state: dict[str, Any], *, retry_from: Optional[AgentJob] = None) -> AgentJob:
-            source = await db.get(DocumentSource, item.source_id) if item.source_id else None
-            template = get_builtin_agent_job_template(REPO_BUG_TRIAGE_REPAIR_TEMPLATE_ID)
+        async def _spawn_repair_child(
+            slice_state: dict[str, Any], *, retry_from: Optional[AgentJob] = None
+        ) -> AgentJob:
+            source = (
+                await db.get(DocumentSource, item.source_id) if item.source_id else None
+            )
+            template = get_builtin_agent_job_template(
+                REPO_BUG_TRIAGE_REPAIR_TEMPLATE_ID
+            )
             if not template:
                 raise RuntimeError("Repo bug triage template unavailable")
-            symptom = str(item.failure_symptom or "").strip() or str(slice_state.get("goal") or "").strip() or str(item.portfolio_goal or "").strip()[:4000]
-            scope = str(slice_state.get("scope") or item.scope or "auto").strip().lower() or "auto"
+            symptom = (
+                str(item.failure_symptom or "").strip()
+                or str(slice_state.get("goal") or "").strip()
+                or str(item.portfolio_goal or "").strip()[:4000]
+            )
+            scope = (
+                str(slice_state.get("scope") or item.scope or "auto").strip().lower()
+                or "auto"
+            )
             slice_paths = _normalize_ids(slice_state.get("file_paths"))
             slice_commands = _normalize_ids(slice_state.get("commands"))
-            search_query = str(slice_state.get("search_query") or "").strip() or " ".join(
-                part for part in [("" if scope == "auto" else scope), symptom, " ".join(slice_paths[:2])] if part
-            ).strip()[:500]
+            search_query = (
+                str(slice_state.get("search_query") or "").strip()
+                or " ".join(
+                    part
+                    for part in [
+                        ("" if scope == "auto" else scope),
+                        symptom,
+                        " ".join(slice_paths[:2]),
+                    ]
+                    if part
+                ).strip()[:500]
+            )
             merged_config = dict(template.default_config or {})
             merged_config.update(
                 {
@@ -1319,7 +1776,9 @@ class AgentCodingRunnerService:
                         "profile": "repo_bug_triage",
                         "version": "v2",
                         "source_name": str(getattr(source, "name", "") or ""),
-                        "source_type": str(getattr(source, "source_type", "") or "").strip().lower(),
+                        "source_type": str(getattr(source, "source_type", "") or "")
+                        .strip()
+                        .lower(),
                         "scope": scope,
                         "autonomy_mode": "patch_proposal",
                         "execution_depth": "workspace_planned",
@@ -1343,28 +1802,45 @@ class AgentCodingRunnerService:
                 merged_config["error_output"] = str(item.error_output).strip()
             if retry_from and isinstance(retry_from.results, dict):
                 recovery = (
-                    ((retry_from.results.get("code_patch_execution") or {}).get("recovery"))
+                    (
+                        (retry_from.results.get("code_patch_execution") or {}).get(
+                            "recovery"
+                        )
+                    )
                     if isinstance(retry_from.results.get("code_patch_execution"), dict)
                     else None
                 )
                 if isinstance(recovery, dict):
                     merged_config["coding_recovery"] = {
                         "strategy": "refined_retry",
-                        "retry_reason": str(recovery.get("retry_reason") or "").strip() or None,
-                        "resume_hint": str(recovery.get("resume_hint") or "").strip() or None,
-                        "last_failed_commands": _normalize_ids(recovery.get("last_failed_commands")),
-                        "suggested_operator_actions": _normalize_ids(recovery.get("suggested_operator_actions")),
+                        "retry_reason": str(recovery.get("retry_reason") or "").strip()
+                        or None,
+                        "resume_hint": str(recovery.get("resume_hint") or "").strip()
+                        or None,
+                        "last_failed_commands": _normalize_ids(
+                            recovery.get("last_failed_commands")
+                        ),
+                        "suggested_operator_actions": _normalize_ids(
+                            recovery.get("suggested_operator_actions")
+                        ),
                     }
-                    latest_failed_output = str(recovery.get("latest_failed_output") or "").strip()
+                    latest_failed_output = str(
+                        recovery.get("latest_failed_output") or ""
+                    ).strip()
                     if latest_failed_output:
                         merged_config["error_output"] = latest_failed_output[:4000]
                     merged_config["relaunch_from_job_id"] = str(retry_from.id)
-            chain_config = _attach_terminal_continuation(template.default_chain_config, item.id, "repair")
+            chain_config = _attach_terminal_continuation(
+                template.default_chain_config, item.id, "repair"
+            )
             repair_job = AgentJob(
                 name=f"{str(item.title or '').strip()[:120]} — {str(slice_state.get('title') or 'Repair')[:80]}",
                 description="Repair slice launched from coding backlog orchestrator.",
                 job_type=template.job_type,
-                goal=str(slice_state.get("goal") or item.portfolio_goal or "").strip()[:8000] or template.default_goal,
+                goal=str(slice_state.get("goal") or item.portfolio_goal or "").strip()[
+                    :8000
+                ]
+                or template.default_goal,
                 config=merged_config,
                 user_id=item.user_id,
                 status=AgentJobStatus.PENDING.value,
@@ -1379,13 +1855,21 @@ class AgentCodingRunnerService:
             )
             db.add(repair_job)
             await db.flush()
-            item.child_job_ids = _normalize_ids(item.child_job_ids) + [str(repair_job.id)]
+            item.child_job_ids = _normalize_ids(item.child_job_ids) + [
+                str(repair_job.id)
+            ]
             item.current_job_id = repair_job.id
             slice_state["status"] = "retrying" if retry_from else "repairing"
-            slice_state["retry_count"] = max(0, int(slice_state.get("retry_count", 0) or 0)) + (1 if retry_from else 0)
+            slice_state["retry_count"] = max(
+                0, int(slice_state.get("retry_count", 0) or 0)
+            ) + (1 if retry_from else 0)
             slice_state["child_job_id"] = str(repair_job.id)
-            slice_state["status_reason"] = "refined_retry" if retry_from else "planned_repair"
-            slice_state["started_at"] = slice_state.get("started_at") or datetime.utcnow().isoformat()
+            slice_state["status_reason"] = (
+                "refined_retry" if retry_from else "planned_repair"
+            )
+            slice_state["started_at"] = (
+                slice_state.get("started_at") or datetime.utcnow().isoformat()
+            )
             _append_slice_timeline(
                 slice_state,
                 _timeline_entry(
@@ -1394,12 +1878,16 @@ class AgentCodingRunnerService:
                     previous_status="retrying" if retry_from else "pending",
                     new_status=slice_state["status"],
                     related_job_id=str(repair_job.id),
-                    metadata={"retry_from_job_id": str(retry_from.id) if retry_from else None},
+                    metadata={
+                        "retry_from_job_id": str(retry_from.id) if retry_from else None
+                    },
                 ),
             )
             _append_lineage_id(slice_state, "repair_job_ids", str(repair_job.id))
             if retry_from:
-                _append_lineage_id(slice_state, "retry_from_job_ids", str(retry_from.id))
+                _append_lineage_id(
+                    slice_state, "retry_from_job_ids", str(retry_from.id)
+                )
             dec["active_slice_id"] = str(slice_state.get("slice_id") or "")
             _append_backlog_timeline(
                 dec,
@@ -1424,7 +1912,13 @@ class AgentCodingRunnerService:
             execute_agent_job_task.delay(str(repair_job.id), str(item.user_id))
             return repair_job
 
-        async def _spawn_apply_child(*, parent_results: Dict[str, Any], proposal_id: str, slice_state: dict[str, Any], promotion_eval: dict[str, Any]) -> AgentJob:
+        async def _spawn_apply_child(
+            *,
+            parent_results: Dict[str, Any],
+            proposal_id: str,
+            slice_state: dict[str, Any],
+            promotion_eval: dict[str, Any],
+        ) -> AgentJob:
             apply_job = AgentJob(
                 name=f"{str(item.title or '').strip()[:120]} — Apply {str(slice_state.get('title') or 'Patch')[:74]}",
                 description="Auto-apply repair outcome from coding backlog orchestrator.",
@@ -1457,15 +1951,21 @@ class AgentCodingRunnerService:
             )
             db.add(apply_job)
             await db.flush()
-            item.child_job_ids = _normalize_ids(item.child_job_ids) + [str(apply_job.id)]
+            item.child_job_ids = _normalize_ids(item.child_job_ids) + [
+                str(apply_job.id)
+            ]
             item.current_job_id = apply_job.id
             item.latest_apply_job_id = apply_job.id
             slice_state["status"] = "applying"
             slice_state["apply_job_id"] = str(apply_job.id)
             slice_state["promotion_decision"] = "auto_applied"
             slice_state["selected_proposal_id"] = proposal_id
-            slice_state["proposal_confidence"] = float(promotion_eval.get("proposal_confidence", 0.0) or 0.0)
-            slice_state["files_touched"] = _normalize_ids(promotion_eval.get("files_touched"))
+            slice_state["proposal_confidence"] = float(
+                promotion_eval.get("proposal_confidence", 0.0) or 0.0
+            )
+            slice_state["files_touched"] = _normalize_ids(
+                promotion_eval.get("files_touched")
+            )
             _append_slice_timeline(
                 slice_state,
                 _timeline_entry(
@@ -1479,7 +1979,9 @@ class AgentCodingRunnerService:
             )
             _append_lineage_id(slice_state, "apply_job_ids", str(apply_job.id))
             _append_lineage_id(slice_state, "proposal_ids", proposal_id)
-            _append_artifact_history(slice_state, "proposal", proposal_id, "Selected proposal")
+            _append_artifact_history(
+                slice_state, "proposal", proposal_id, "Selected proposal"
+            )
             dec["active_slice_id"] = str(slice_state.get("slice_id") or "")
             decision_row = {
                 "slice_id": str(slice_state.get("slice_id") or ""),
@@ -1489,7 +1991,9 @@ class AgentCodingRunnerService:
                 "job_id": str(slice_state.get("child_job_id") or ""),
                 "apply_job_id": str(apply_job.id),
                 "blocked_reason": None,
-                "proposal_confidence": float(promotion_eval.get("proposal_confidence", 0.0) or 0.0),
+                "proposal_confidence": float(
+                    promotion_eval.get("proposal_confidence", 0.0) or 0.0
+                ),
             }
             _upsert_promotion_decision(dec, decision_row)
             _save_decomposition(dec)
@@ -1521,7 +2025,11 @@ class AgentCodingRunnerService:
                 job.completed_at = datetime.utcnow()
                 await db.commit()
                 return {"status": "completed", "results": job.results}
-            _emit(25, "planning", f"Launching first repair slice: {str(next_slice.get('title') or '')}")
+            _emit(
+                25,
+                "planning",
+                f"Launching first repair slice: {str(next_slice.get('title') or '')}",
+            )
             await _spawn_repair_child(next_slice)
             item.status = "running"
             job.results = {"coding_backlog": item.latest_summary}
@@ -1530,27 +2038,52 @@ class AgentCodingRunnerService:
             await db.commit()
             return {"status": "completed", "results": job.results}
 
-        child_kind = str(((last_child.config or {}).get("coding_backlog_child_kind") or "repair")).strip().lower()
+        child_kind = (
+            str(
+                ((last_child.config or {}).get("coding_backlog_child_kind") or "repair")
+            )
+            .strip()
+            .lower()
+        )
         last_status = str(last_child.status or "").strip().lower()
-        latest_results = inherited_parent_results if isinstance(inherited_parent_results, dict) and inherited_child_kind in {"repair", "apply"} else (last_child.results if isinstance(last_child.results, dict) else {})
+        latest_results = (
+            inherited_parent_results
+            if isinstance(inherited_parent_results, dict)
+            and inherited_child_kind in {"repair", "apply"}
+            else (last_child.results if isinstance(last_child.results, dict) else {})
+        )
         effective_child_kind = inherited_child_kind or child_kind
         effective_status = last_status
         if inherited_child_kind == "repair" and isinstance(latest_results, dict):
-            experiment_run = latest_results.get("experiment_run") if isinstance(latest_results.get("experiment_run"), dict) else {}
+            experiment_run = (
+                latest_results.get("experiment_run")
+                if isinstance(latest_results.get("experiment_run"), dict)
+                else {}
+            )
             if experiment_run.get("ok") is False:
                 effective_status = AgentJobStatus.FAILED.value
             elif experiment_run.get("ok") is True:
                 effective_status = AgentJobStatus.COMPLETED.value
         elif inherited_child_kind == "apply" and isinstance(latest_results, dict):
-            kb_apply = latest_results.get("code_patch_kb_apply") if isinstance(latest_results.get("code_patch_kb_apply"), dict) else {}
+            kb_apply = (
+                latest_results.get("code_patch_kb_apply")
+                if isinstance(latest_results.get("code_patch_kb_apply"), dict)
+                else {}
+            )
             if kb_apply.get("ok") is False:
                 effective_status = AgentJobStatus.FAILED.value
             elif kb_apply.get("ok") is True:
                 effective_status = AgentJobStatus.COMPLETED.value
         item.current_job_id = last_child.id
-        active_slice = _find_slice(dec, dec.get("active_slice_id")) or _find_slice(dec, (last_child.config or {}).get("coding_backlog_slice_id"))
+        active_slice = _find_slice(dec, dec.get("active_slice_id")) or _find_slice(
+            dec, (last_child.config or {}).get("coding_backlog_slice_id")
+        )
 
-        if last_status in {AgentJobStatus.PENDING.value, AgentJobStatus.RUNNING.value, AgentJobStatus.PAUSED.value}:
+        if last_status in {
+            AgentJobStatus.PENDING.value,
+            AgentJobStatus.RUNNING.value,
+            AgentJobStatus.PAUSED.value,
+        }:
             item.latest_summary = {
                 "status": "waiting_on_child",
                 "current_child_job_id": str(last_child.id),
@@ -1568,7 +2101,9 @@ class AgentCodingRunnerService:
             return {"status": "completed", "results": job.results}
 
         if effective_child_kind == "apply":
-            apply_ok = bool(((latest_results or {}).get("code_patch_kb_apply") or {}).get("ok"))
+            apply_ok = bool(
+                ((latest_results or {}).get("code_patch_kb_apply") or {}).get("ok")
+            )
             if active_slice:
                 active_slice["completed_at"] = datetime.utcnow().isoformat()
                 if apply_ok:
@@ -1582,10 +2117,15 @@ class AgentCodingRunnerService:
                             previous_status="applying",
                             new_status="auto_applied",
                             related_job_id=str(last_child.id),
-                            related_proposal_id=str(active_slice.get("selected_proposal_id") or "") or None,
+                            related_proposal_id=str(
+                                active_slice.get("selected_proposal_id") or ""
+                            )
+                            or None,
                         ),
                     )
-                    dec["completed_slices"] = _append_unique(dec.get("completed_slices") or [], active_slice.get("slice_id"))
+                    dec["completed_slices"] = _append_unique(
+                        dec.get("completed_slices") or [], active_slice.get("slice_id")
+                    )
                     dec["active_slice_id"] = None
                     _append_backlog_timeline(
                         dec,
@@ -1595,14 +2135,20 @@ class AgentCodingRunnerService:
                             previous_status="running",
                             new_status="running",
                             related_job_id=str(last_child.id),
-                            metadata={"slice_id": str(active_slice.get("slice_id") or "")},
+                            metadata={
+                                "slice_id": str(active_slice.get("slice_id") or "")
+                            },
                         ),
                     )
                     _save_decomposition(dec)
                     dec = _normalize_decomposition(item)
                     next_slice = _next_pending_slice(dec)
                     if next_slice:
-                        _emit(88, "planning", f"Auto-apply complete; launching next slice {str(next_slice.get('title') or '')}")
+                        _emit(
+                            88,
+                            "planning",
+                            f"Auto-apply complete; launching next slice {str(next_slice.get('title') or '')}",
+                        )
                         await _spawn_repair_child(next_slice)
                         item.status = "running"
                         job.results = {"coding_backlog": item.latest_summary}
@@ -1621,7 +2167,11 @@ class AgentCodingRunnerService:
             item.status = "completed" if apply_ok else "failed"
             item.completed_at = datetime.utcnow()
             job.results = {"coding_backlog": item.latest_summary}
-            job.status = AgentJobStatus.COMPLETED.value if apply_ok else AgentJobStatus.FAILED.value
+            job.status = (
+                AgentJobStatus.COMPLETED.value
+                if apply_ok
+                else AgentJobStatus.FAILED.value
+            )
             if not apply_ok:
                 job.error = "Auto-apply child failed"
             job.completed_at = datetime.utcnow()
@@ -1630,7 +2180,11 @@ class AgentCodingRunnerService:
 
         retry_count = int((active_slice or {}).get("retry_count", 0) or 0)
 
-        if effective_status == AgentJobStatus.FAILED.value and active_slice and retry_count < int(pol.get("max_auto_retries", 1) or 1):
+        if (
+            effective_status == AgentJobStatus.FAILED.value
+            and active_slice
+            and retry_count < int(pol.get("max_auto_retries", 1) or 1)
+        ):
             _emit(55, "recovery", "Repair failed; launching refined retry")
             active_slice["status"] = "retrying"
             active_slice["status_reason"] = "repair_failed"
@@ -1660,7 +2214,9 @@ class AgentCodingRunnerService:
                         related_job_id=str(last_child.id),
                     ),
                 )
-                dec["failed_slices"] = _append_unique(dec.get("failed_slices") or [], active_slice.get("slice_id"))
+                dec["failed_slices"] = _append_unique(
+                    dec.get("failed_slices") or [], active_slice.get("slice_id")
+                )
                 dec["active_slice_id"] = None
                 _append_backlog_timeline(
                     dec,
@@ -1683,8 +2239,13 @@ class AgentCodingRunnerService:
                 "active_slice_title": str((active_slice or {}).get("title") or ""),
                 "portfolio_progress": _current_portfolio_progress(),
                 "waiting_on_operator_action": bool(active_slice),
-                "allowed_slice_actions": (active_slice or {}).get("allowed_slice_actions") or [],
-                "recommended_next_action": (active_slice or {}).get("recommended_next_action"),
+                "allowed_slice_actions": (active_slice or {}).get(
+                    "allowed_slice_actions"
+                )
+                or [],
+                "recommended_next_action": (active_slice or {}).get(
+                    "recommended_next_action"
+                ),
             }
             item.status = "awaiting_operator"
             item.completed_at = None
@@ -1695,7 +2256,11 @@ class AgentCodingRunnerService:
             await db.commit()
             return {"status": "failed", "results": job.results, "error": job.error}
 
-        code_patch = (latest_results or {}).get("code_patch") if isinstance((latest_results or {}).get("code_patch"), dict) else {}
+        code_patch = (
+            (latest_results or {}).get("code_patch")
+            if isinstance((latest_results or {}).get("code_patch"), dict)
+            else {}
+        )
         proposal_id = str(code_patch.get("proposal_id") or "").strip()
         if not proposal_id:
             item.latest_summary = {
@@ -1722,24 +2287,45 @@ class AgentCodingRunnerService:
             latest_results=latest_results if isinstance(latest_results, dict) else {},
             pol=pol,
         )
-        decision = "auto_applied" if (item.auto_apply_enabled and not item.require_patch_pr and promotion_eval.get("eligible")) else ("patch_pr" if item.require_patch_pr else "proposal_only")
+        decision = (
+            "auto_applied"
+            if (
+                item.auto_apply_enabled
+                and not item.require_patch_pr
+                and promotion_eval.get("eligible")
+            )
+            else ("patch_pr" if item.require_patch_pr else "proposal_only")
+        )
         if active_slice:
             active_slice["selected_proposal_id"] = proposal_id
-            active_slice["proposal_confidence"] = float(promotion_eval.get("proposal_confidence", 0.0) or 0.0)
-            active_slice["files_touched"] = _normalize_ids(promotion_eval.get("files_touched"))
+            active_slice["proposal_confidence"] = float(
+                promotion_eval.get("proposal_confidence", 0.0) or 0.0
+            )
+            active_slice["files_touched"] = _normalize_ids(
+                promotion_eval.get("files_touched")
+            )
             active_slice["promotion_decision"] = decision
-            active_slice["blocked_reason"] = str(promotion_eval.get("blocked_reason") or "").strip() or None
+            active_slice["blocked_reason"] = (
+                str(promotion_eval.get("blocked_reason") or "").strip() or None
+            )
             _append_lineage_id(active_slice, "proposal_ids", proposal_id)
-            _append_artifact_history(active_slice, "proposal", proposal_id, "Selected proposal")
+            _append_artifact_history(
+                active_slice, "proposal", proposal_id, "Selected proposal"
+            )
         decision_row = {
             "slice_id": str((active_slice or {}).get("slice_id") or ""),
             "title": str((active_slice or {}).get("title") or ""),
             "decision": decision,
             "proposal_id": proposal_id,
             "job_id": str(last_child.id),
-            "blocked_reason": str(promotion_eval.get("blocked_reason") or "").strip() or None,
-            "proposal_confidence": float(promotion_eval.get("proposal_confidence", 0.0) or 0.0),
-            "files_touched_count": int(promotion_eval.get("files_touched_count", 0) or 0),
+            "blocked_reason": str(promotion_eval.get("blocked_reason") or "").strip()
+            or None,
+            "proposal_confidence": float(
+                promotion_eval.get("proposal_confidence", 0.0) or 0.0
+            ),
+            "files_touched_count": int(
+                promotion_eval.get("files_touched_count", 0) or 0
+            ),
         }
         _upsert_promotion_decision(dec, decision_row)
         _save_decomposition(dec)
@@ -1747,7 +2333,9 @@ class AgentCodingRunnerService:
         if decision == "auto_applied":
             _emit(80, "promotion", "Launching auto-apply child")
             await _spawn_apply_child(
-                parent_results=latest_results if isinstance(latest_results, dict) else {},
+                parent_results=latest_results
+                if isinstance(latest_results, dict)
+                else {},
                 proposal_id=proposal_id,
                 slice_state=active_slice or {},
                 promotion_eval=promotion_eval,
@@ -1761,15 +2349,28 @@ class AgentCodingRunnerService:
 
         if active_slice:
             active_slice["status"] = decision
-            active_slice["status_reason"] = "promotion_policy_blocked" if promotion_eval.get("blocked_reason") else decision
+            active_slice["status_reason"] = (
+                "promotion_policy_blocked"
+                if promotion_eval.get("blocked_reason")
+                else decision
+            )
             active_slice["completed_at"] = datetime.utcnow().isoformat()
             active_slice["awaiting_operator_action"] = True
-            active_slice["allowed_slice_actions"] = ["apply_override", "create_patch_pr", "keep_proposal_only", "relaunch_slice", "skip_slice"]
+            active_slice["allowed_slice_actions"] = [
+                "apply_override",
+                "create_patch_pr",
+                "keep_proposal_only",
+                "relaunch_slice",
+                "skip_slice",
+            ]
             active_slice["recommended_next_action"] = (
                 "create_patch_pr"
-                if item.require_patch_pr or str(promotion_eval.get("blocked_reason") or "").strip().lower() in {"blocked_path_prefix", "max_files_touched_exceeded"}
+                if item.require_patch_pr
+                or str(promotion_eval.get("blocked_reason") or "").strip().lower()
+                in {"blocked_path_prefix", "max_files_touched_exceeded"}
                 else "apply_override"
-                if str(promotion_eval.get("blocked_reason") or "").strip().lower() == "confidence_below_threshold"
+                if str(promotion_eval.get("blocked_reason") or "").strip().lower()
+                == "confidence_below_threshold"
                 else "keep_proposal_only"
             )
             _append_slice_timeline(
@@ -1781,7 +2382,12 @@ class AgentCodingRunnerService:
                     new_status=decision,
                     related_job_id=str(last_child.id),
                     related_proposal_id=proposal_id,
-                    metadata={"blocked_reason": str(promotion_eval.get("blocked_reason") or "").strip() or None},
+                    metadata={
+                        "blocked_reason": str(
+                            promotion_eval.get("blocked_reason") or ""
+                        ).strip()
+                        or None
+                    },
                 ),
             )
             dec["active_slice_id"] = None
@@ -1794,7 +2400,10 @@ class AgentCodingRunnerService:
                     new_status="awaiting_operator",
                     related_job_id=str(last_child.id),
                     related_proposal_id=proposal_id,
-                    metadata={"slice_id": str(active_slice.get("slice_id") or ""), "decision": decision},
+                    metadata={
+                        "slice_id": str(active_slice.get("slice_id") or ""),
+                        "decision": decision,
+                    },
                 ),
             )
             _save_decomposition(dec)
@@ -1804,7 +2413,8 @@ class AgentCodingRunnerService:
             "current_child_job_id": str(last_child.id),
             "selected_proposal_id": proposal_id,
             "promotion_decision": decision,
-            "blocked_reason": str(promotion_eval.get("blocked_reason") or "").strip() or ("require_patch_pr" if item.require_patch_pr else None),
+            "blocked_reason": str(promotion_eval.get("blocked_reason") or "").strip()
+            or ("require_patch_pr" if item.require_patch_pr else None),
             "active_slice_id": str((active_slice or {}).get("slice_id") or ""),
             "active_slice_title": str((active_slice or {}).get("title") or ""),
             "promotion_evaluation": {
@@ -1814,8 +2424,11 @@ class AgentCodingRunnerService:
             },
             "portfolio_progress": dec.get("portfolio_progress") or {},
             "waiting_on_operator_action": bool(active_slice),
-            "allowed_slice_actions": (active_slice or {}).get("allowed_slice_actions") or [],
-            "recommended_next_action": (active_slice or {}).get("recommended_next_action"),
+            "allowed_slice_actions": (active_slice or {}).get("allowed_slice_actions")
+            or [],
+            "recommended_next_action": (active_slice or {}).get(
+                "recommended_next_action"
+            ),
         }
         item.status = "awaiting_operator"
         item.completed_at = None

@@ -5,7 +5,16 @@ Repository report job models for generating reports and presentations from GitHu
 from datetime import datetime
 from uuid import uuid4
 
-from sqlalchemy import Column, String, Integer, Text, DateTime, Boolean, ForeignKey, JSON
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -23,15 +32,24 @@ class RepoReportJob(Base):
     1. Synced DocumentSource - uses existing configured repository
     2. Ad-hoc URL - one-time analysis of a repository URL
     """
+
     __tablename__ = "repo_report_jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
 
     # Source reference - either synced DocumentSource or ad-hoc URL
-    source_id = Column(UUID(as_uuid=True), ForeignKey("document_sources.id", ondelete="SET NULL"), nullable=True)
+    source_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("document_sources.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     adhoc_url = Column(String(500), nullable=True)  # For one-time repository analysis
-    adhoc_token = Column(String(500), nullable=True)  # Encrypted token for ad-hoc private repos
+    adhoc_token = Column(
+        String(500), nullable=True
+    )  # Encrypted token for ad-hoc private repos
 
     # Repository information (populated during analysis)
     repo_name = Column(String(255), nullable=False)
@@ -52,7 +70,9 @@ class RepoReportJob(Base):
     include_diagrams = Column(Boolean, default=True)  # Include Mermaid diagrams
 
     # Style configuration
-    style = Column(String(50), default="professional")  # professional, technical, casual, etc.
+    style = Column(
+        String(50), default="professional"
+    )  # professional, technical, casual, etc.
     custom_theme = Column(JSON, nullable=True)
     # Example custom_theme:
     # {
@@ -82,7 +102,9 @@ class RepoReportJob(Base):
     # - cancelled: Job cancelled by user
 
     progress = Column(Integer, default=0)  # 0-100
-    current_stage = Column(String(100), nullable=True)  # Human-readable stage description
+    current_stage = Column(
+        String(100), nullable=True
+    )  # Human-readable stage description
 
     # Output file
     file_path = Column(String(500), nullable=True)  # MinIO path to generated file

@@ -28,7 +28,9 @@ def experiment_client(db_session, test_user):
         return test_user
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[experiments.get_current_active_user] = override_current_user
+    app.dependency_overrides[
+        experiments.get_current_active_user
+    ] = override_current_user
 
     with TestClient(app) as test_client:
         yield test_client
@@ -80,7 +82,9 @@ def test_list_experiment_runs_exposes_typed_experiment_run_payload(
                 },
                 "recipe_snapshot": {
                     "recipe_id": "compiler_validation_v1",
-                    "commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+                    "commands": [
+                        "CI=true npm --prefix frontend test -- --watchAll=false"
+                    ],
                 },
             }
         },
@@ -89,7 +93,9 @@ def test_list_experiment_runs_exposes_typed_experiment_run_payload(
             "final_phase": "retry_primary",
             "bootstrap_attempted": True,
             "bootstrap_ok": True,
-            "verification_commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+            "verification_commands": [
+                "CI=true npm --prefix frontend test -- --watchAll=false"
+            ],
             "execution_strategy": {
                 "operator_interventions": [
                     {
@@ -131,7 +137,9 @@ def test_list_experiment_runs_exposes_typed_experiment_run_payload(
     assert payload["runs"][0]["recipe_version"] == 1
     assert payload["runs"][0]["capability_check"]["ok"] is True
     assert payload["runs"][0]["profile_snapshot"]["id"] == "scientific-compiler-sandbox"
-    assert payload["runs"][0]["recipe_snapshot"]["recipe_id"] == "compiler_validation_v1"
+    assert (
+        payload["runs"][0]["recipe_snapshot"]["recipe_id"] == "compiler_validation_v1"
+    )
     interventions = payload["runs"][0]["operator_interventions"]
     assert len(interventions) == 1
     assert interventions[0]["action"] == "restart"
@@ -254,7 +262,11 @@ def test_sync_experiment_run_reconciles_domain_opportunity_outcome(
         user_id=test_user.id,
         status=AgentJobStatus.COMPLETED.value,
         progress=100,
-        results={"experiment_run": {"summary": "Benchmark regression reproduced and explained."}},
+        results={
+            "experiment_run": {
+                "summary": "Benchmark regression reproduced and explained."
+            }
+        },
     )
     profile = DomainResearchProfile(
         user_id=test_user.id,
@@ -512,7 +524,9 @@ def test_sync_experiment_run_auto_appends_to_target_note_when_configured(
             "experiment_run": {
                 "source_id": "repo-auto",
                 "final_phase": "retry_primary",
-                "verification_commands": ["python -m pytest -q backend/tests/test_experiments_endpoints.py"],
+                "verification_commands": [
+                    "python -m pytest -q backend/tests/test_experiments_endpoints.py"
+                ],
             },
             "measurement_summary": {
                 "compile_time_ms": 1204,
@@ -580,12 +594,20 @@ def test_sync_experiment_run_auto_appends_to_target_note_when_configured(
     async def _verify():
         refreshed_note = await db_session.get(ResearchNote, note.id)
         assert refreshed_note is not None
-        assert f"<!-- experiment_run:{run.id} -->" in (refreshed_note.content_markdown or "")
+        assert f"<!-- experiment_run:{run.id} -->" in (
+            refreshed_note.content_markdown or ""
+        )
         hypotheses = refreshed_note.structured_payload["hypotheses"]
         assert len(hypotheses[0]["experiment_evidence"]) == 1
         assert hypotheses[0]["experiment_evidence"][0]["run_id"] == str(run.id)
-        assert hypotheses[0]["experiment_evidence"][0]["artifact_diff_summary"] == "SROA fired earlier than baseline."
-        assert hypotheses[0]["experiment_evidence"][0]["perf_counters"]["instructions"] == 950
+        assert (
+            hypotheses[0]["experiment_evidence"][0]["artifact_diff_summary"]
+            == "SROA fired earlier than baseline."
+        )
+        assert (
+            hypotheses[0]["experiment_evidence"][0]["perf_counters"]["instructions"]
+            == 950
+        )
 
     asyncio.get_event_loop().run_until_complete(_verify())
 
@@ -595,7 +617,9 @@ def test_sync_experiment_run_auto_appends_to_target_note_when_configured(
     async def _verify_idempotent():
         refreshed_note = await db_session.get(ResearchNote, note.id)
         assert refreshed_note is not None
-        assert (refreshed_note.content_markdown or "").count(f"<!-- experiment_run:{run.id} -->") == 1
+        assert (refreshed_note.content_markdown or "").count(
+            f"<!-- experiment_run:{run.id} -->"
+        ) == 1
         hypotheses = refreshed_note.structured_payload["hypotheses"]
         assert len(hypotheses[0]["experiment_evidence"]) == 1
 
@@ -662,7 +686,9 @@ def test_sync_experiment_run_queues_pending_reevaluation_draft_for_reevaluated_n
             "experiment_run": {
                 "source_id": "repo-auto",
                 "final_phase": "retry_primary",
-                "verification_commands": ["python -m pytest -q backend/tests/test_experiments_endpoints.py"],
+                "verification_commands": [
+                    "python -m pytest -q backend/tests/test_experiments_endpoints.py"
+                ],
             }
         },
     )
@@ -716,10 +742,17 @@ def test_sync_experiment_run_queues_pending_reevaluation_draft_for_reevaluated_n
     async def _verify():
         refreshed_note = await db_session.get(ResearchNote, note.id)
         assert refreshed_note is not None
-        pending_job_id = refreshed_note.structured_payload["pending_reevaluation_job_id"]
+        pending_job_id = refreshed_note.structured_payload[
+            "pending_reevaluation_job_id"
+        ]
         assert pending_job_id
-        assert refreshed_note.structured_payload["pending_reevaluation_reason"] == "new_experiment_evidence"
-        assert refreshed_note.structured_payload["pending_reevaluation_source_run_ids"] == [str(run.id)]
+        assert (
+            refreshed_note.structured_payload["pending_reevaluation_reason"]
+            == "new_experiment_evidence"
+        )
+        assert refreshed_note.structured_payload[
+            "pending_reevaluation_source_run_ids"
+        ] == [str(run.id)]
         queued_job = await db_session.get(SynthesisJob, UUID(pending_job_id))
         assert queued_job is not None
         assert queued_job.job_type == "hypothesis_reevaluation"
@@ -802,7 +835,9 @@ def test_sync_experiment_run_records_auto_append_failure_without_overwriting_run
     assert payload["config"]["post_run_actions"]["append_status"] == "failed"
     assert "not found" in payload["config"]["post_run_actions"]["append_error"].lower()
 
-    manual_append_response = experiment_client.post(f"/api/v1/experiments/runs/{run.id}/append-to-note")
+    manual_append_response = experiment_client.post(
+        f"/api/v1/experiments/runs/{run.id}/append-to-note"
+    )
     assert manual_append_response.status_code == 200
 
     async def _verify():
@@ -811,7 +846,9 @@ def test_sync_experiment_run_records_auto_append_failure_without_overwriting_run
         assert refreshed_run is not None
         assert refreshed_note is not None
         assert refreshed_run.config["post_run_actions"]["append_status"] == "completed"
-        assert f"<!-- experiment_run:{run.id} -->" in (refreshed_note.content_markdown or "")
+        assert f"<!-- experiment_run:{run.id} -->" in (
+            refreshed_note.content_markdown or ""
+        )
 
     asyncio.get_event_loop().run_until_complete(_verify())
 
@@ -878,7 +915,9 @@ def test_append_experiment_run_to_note_includes_bootstrap_summary(
             "fallback_attempted": True,
             "fallback_ok": False,
             "inferred_project_profile": {"detected_stack": ["node", "python"]},
-            "verification_commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+            "verification_commands": [
+                "CI=true npm --prefix frontend test -- --watchAll=false"
+            ],
             "bootstrap_commands": ["npm --prefix frontend install"],
             "fallback_commands": ["python3 -m pytest -q backend/tests"],
             "failed_commands": ["npm test"],
@@ -896,7 +935,7 @@ def test_append_experiment_run_to_note_includes_bootstrap_summary(
                         "reasons": ["fallback verification still failing"],
                     },
                     "recommended_actions": ["Inspect failing fallback output"],
-                }
+                },
             },
         },
     )
@@ -913,7 +952,9 @@ def test_append_experiment_run_to_note_includes_bootstrap_summary(
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = experiment_client.post(f"/api/v1/experiments/runs/{run.id}/append-to-note")
+    response = experiment_client.post(
+        f"/api/v1/experiments/runs/{run.id}/append-to-note"
+    )
 
     assert response.status_code == 200
     content = response.json()["content_markdown"]
@@ -954,7 +995,9 @@ def test_append_experiment_run_to_note_includes_bootstrap_summary(
     assert evidence[0]["source_document_ids"] == ["doc-1"]
     assert evidence[0]["supporting_sources"][0]["title"] == "Bootstrap paper"
 
-    second_response = experiment_client.post(f"/api/v1/experiments/runs/{run.id}/append-to-note")
+    second_response = experiment_client.post(
+        f"/api/v1/experiments/runs/{run.id}/append-to-note"
+    )
     assert second_response.status_code == 200
     second_content = second_response.json()["content_markdown"]
     assert second_content.count(f"<!-- experiment_run:{run.id} -->") == 1
@@ -1027,7 +1070,9 @@ def test_append_aggregate_experiment_run_updates_each_selected_hypothesis(
         results={
             "ok": True,
             "final_phase": "aggregate_eval",
-            "verification_commands": ["python -m pytest -q backend/tests/test_experiments_endpoints.py"],
+            "verification_commands": [
+                "python -m pytest -q backend/tests/test_experiments_endpoints.py"
+            ],
         },
     )
 
@@ -1043,7 +1088,9 @@ def test_append_aggregate_experiment_run_updates_each_selected_hypothesis(
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = experiment_client.post(f"/api/v1/experiments/runs/{run.id}/append-to-note")
+    response = experiment_client.post(
+        f"/api/v1/experiments/runs/{run.id}/append-to-note"
+    )
 
     assert response.status_code == 200
     hypotheses = response.json()["structured_payload"]["hypotheses"]
@@ -1212,7 +1259,11 @@ def test_experiment_run_action_retry_creates_child_run_lineage(
 
     response = experiment_client.post(
         f"/api/v1/experiments/runs/{run.id}/action",
-        json={"action": "retry", "note": "Retry after updating the sandbox profile", "start_immediately": False},
+        json={
+            "action": "retry",
+            "note": "Retry after updating the sandbox profile",
+            "start_immediately": False,
+        },
     )
 
     assert response.status_code == 200
@@ -1324,7 +1375,11 @@ def test_experiment_run_action_retry_omits_malformed_scheduler_state(
 
     response = experiment_client.post(
         f"/api/v1/experiments/runs/{run.id}/action",
-        json={"action": "retry", "note": "Retry after updating the sandbox profile", "start_immediately": False},
+        json={
+            "action": "retry",
+            "note": "Retry after updating the sandbox profile",
+            "start_immediately": False,
+        },
     )
 
     assert response.status_code == 200
@@ -1355,7 +1410,9 @@ def test_generate_experiment_plan_uses_structured_hypotheses_for_aggregate_mode(
                     "claim": "If layout transforms are paired with schedule-aware pressure control, locality gains survive register pressure.",
                     "rationale": "Two papers optimize adjacent bottlenecks.",
                     "overall_score": 0.9,
-                    "supporting_sources": [{"id": "paper-1", "title": "Compiler layouts"}],
+                    "supporting_sources": [
+                        {"id": "paper-1", "title": "Compiler layouts"}
+                    ],
                     "recommended_next_step": "Implement on stencil kernels.",
                 },
                 {
@@ -1365,7 +1422,9 @@ def test_generate_experiment_plan_uses_structured_hypotheses_for_aggregate_mode(
                     "claim": "If prefetch distance adapts to phase behavior, stalls decline on irregular kernels.",
                     "rationale": "Static thresholds underfit phase changes.",
                     "overall_score": 0.8,
-                    "supporting_sources": [{"id": "paper-2", "title": "Adaptive prefetching"}],
+                    "supporting_sources": [
+                        {"id": "paper-2", "title": "Adaptive prefetching"}
+                    ],
                     "recommended_next_step": "Evaluate on irregular kernels.",
                 },
             ],
@@ -1383,25 +1442,58 @@ def test_generate_experiment_plan_uses_structured_hypotheses_for_aggregate_mode(
                 "hypothesis": "Aggregate hypothesis program",
                 "hypotheses": [
                     {"id": "hyp-1", "title": "Layout plus scheduling", "claim": "..."},
-                    {"id": "hyp-2", "title": "Adaptive prefetch threshold", "claim": "..."},
+                    {
+                        "id": "hyp-2",
+                        "title": "Adaptive prefetch threshold",
+                        "claim": "...",
+                    },
                 ],
                 "problem_statement": "Need to validate paper-derived ideas.",
                 "success_criteria": ["runtime improves"],
-                "datasets": [{"name": "PolyBench", "source": "suite", "split": None, "notes": None}],
-                "metrics": [{"name": "runtime", "definition": "lower is better", "direction": "lower_better"}],
+                "datasets": [
+                    {
+                        "name": "PolyBench",
+                        "source": "suite",
+                        "split": None,
+                        "notes": None,
+                    }
+                ],
+                "metrics": [
+                    {
+                        "name": "runtime",
+                        "definition": "lower is better",
+                        "direction": "lower_better",
+                    }
+                ],
                 "baselines": [{"name": "baseline", "details": "current compiler"}],
-                "method": {"summary": "Run staged evaluation", "key_components": ["layout", "scheduling"]},
-                "experiments": [{"name": "E1", "purpose": "test", "variables": ["layout"], "expected_outcome": "improves"}],
+                "method": {
+                    "summary": "Run staged evaluation",
+                    "key_components": ["layout", "scheduling"],
+                },
+                "experiments": [
+                    {
+                        "name": "E1",
+                        "purpose": "test",
+                        "variables": ["layout"],
+                        "expected_outcome": "improves",
+                    }
+                ],
                 "ablations": [],
                 "evaluation_protocol": "Compare against baseline.",
-                "compute_budget": {"hardware": None, "time_estimate": None, "notes": None},
+                "compute_budget": {
+                    "hardware": None,
+                    "time_estimate": None,
+                    "notes": None,
+                },
                 "timeline": [],
                 "risks": [],
                 "repro_checklist": [],
             }
         )
 
-    monkeypatch.setattr(experiments.LLMService, "generate_response", _fake_generate_response)
+    monkeypatch.setattr(
+        experiments.LLMService, "generate_response", _fake_generate_response
+    )
 
     async def _seed():
         db_session.add(note)
@@ -1436,7 +1528,9 @@ def test_list_benchmark_suites_returns_builtin_compiler_harnesses(
     assert response.status_code == 200
     payload = response.json()
     assert payload["total"] >= 1
-    assert any(item["benchmark_family"] == "compiler_regression" for item in payload["items"])
+    assert any(
+        item["benchmark_family"] == "compiler_regression" for item in payload["items"]
+    )
     first_suite = payload["items"][0]
     assert isinstance(first_suite["cases"], list)
     assert isinstance(first_suite["baselines"], list)
@@ -1471,24 +1565,59 @@ def test_generate_experiment_plan_carries_benchmark_suite_metadata(
             {
                 "objective": "Validate the hypothesis against a compiler benchmark suite.",
                 "hypothesis": "Benchmark-backed validation",
-                "hypotheses": [{"id": "hyp-1", "title": "Compiler regression hypothesis", "claim": "Compile-time and codegen deltas should be measurable."}],
+                "hypotheses": [
+                    {
+                        "id": "hyp-1",
+                        "title": "Compiler regression hypothesis",
+                        "claim": "Compile-time and codegen deltas should be measurable.",
+                    }
+                ],
                 "problem_statement": "Need benchmark-backed evidence.",
                 "success_criteria": ["compile_time improves"],
-                "datasets": [{"name": "LLVM Regression Core", "source": "benchmark_suite", "split": None, "notes": None}],
-                "metrics": [{"name": "compile_time_ms", "definition": "lower is better", "direction": "lower_better"}],
+                "datasets": [
+                    {
+                        "name": "LLVM Regression Core",
+                        "source": "benchmark_suite",
+                        "split": None,
+                        "notes": None,
+                    }
+                ],
+                "metrics": [
+                    {
+                        "name": "compile_time_ms",
+                        "definition": "lower is better",
+                        "direction": "lower_better",
+                    }
+                ],
                 "baselines": [{"name": "LLVM main baseline", "details": "clang-18"}],
-                "method": {"summary": "Use benchmark harness", "key_components": ["suite", "baseline"]},
-                "experiments": [{"name": "Harness run", "purpose": "measure", "variables": ["suite"], "expected_outcome": "observable deltas"}],
+                "method": {
+                    "summary": "Use benchmark harness",
+                    "key_components": ["suite", "baseline"],
+                },
+                "experiments": [
+                    {
+                        "name": "Harness run",
+                        "purpose": "measure",
+                        "variables": ["suite"],
+                        "expected_outcome": "observable deltas",
+                    }
+                ],
                 "ablations": [],
                 "evaluation_protocol": "Compare against harness baseline.",
-                "compute_budget": {"hardware": None, "time_estimate": None, "notes": None},
+                "compute_budget": {
+                    "hardware": None,
+                    "time_estimate": None,
+                    "notes": None,
+                },
                 "timeline": [],
                 "risks": [],
                 "repro_checklist": [],
             }
         )
 
-    monkeypatch.setattr(experiments.LLMService, "generate_response", _fake_generate_response)
+    monkeypatch.setattr(
+        experiments.LLMService, "generate_response", _fake_generate_response
+    )
 
     async def _seed():
         db_session.add(note)
@@ -1513,7 +1642,10 @@ def test_generate_experiment_plan_carries_benchmark_suite_metadata(
     assert payload["benchmark_suite_id"] == "compiler-llvm-regression-core"
     assert payload["benchmark_case_ids"] == ["case-instcombine-sroa"]
     assert payload["generator_details"]["benchmark_family"] == "compiler_regression"
-    assert payload["plan"]["provenance"]["benchmark_suite_id"] == "compiler-llvm-regression-core"
+    assert (
+        payload["plan"]["provenance"]["benchmark_suite_id"]
+        == "compiler-llvm-regression-core"
+    )
     assert payload["plan"]["benchmark_case_ids"] == ["case-instcombine-sroa"]
 
 
@@ -1549,7 +1681,11 @@ def test_generate_experiment_plan_validates_single_hypothesis_selection(
 
     response = experiment_client.post(
         "/api/v1/experiments/plans/generate",
-        json={"note_id": str(note.id), "plan_mode": "single_hypothesis", "hypothesis_id": "missing"},
+        json={
+            "note_id": str(note.id),
+            "plan_mode": "single_hypothesis",
+            "hypothesis_id": "missing",
+        },
     )
 
     assert response.status_code == 400
@@ -1598,24 +1734,45 @@ def test_generate_experiment_plan_defaults_reevaluated_note_to_top_ranked_hypoth
             {
                 "objective": "Validate the reevaluated top hypothesis.",
                 "hypothesis": "Top ranked hypothesis only",
-                "hypotheses": [{"id": "hyp-1", "title": "Top ranked", "claim": "Claim one"}],
+                "hypotheses": [
+                    {"id": "hyp-1", "title": "Top ranked", "claim": "Claim one"}
+                ],
                 "problem_statement": "Need to test the strongest reevaluated idea.",
                 "success_criteria": ["runtime improves"],
                 "datasets": [],
-                "metrics": [{"name": "runtime", "definition": "lower is better", "direction": "lower_better"}],
+                "metrics": [
+                    {
+                        "name": "runtime",
+                        "definition": "lower is better",
+                        "direction": "lower_better",
+                    }
+                ],
                 "baselines": [{"name": "baseline", "details": "current system"}],
                 "method": {"summary": "Target top idea", "key_components": ["top"]},
-                "experiments": [{"name": "E1", "purpose": "test top", "variables": ["top"], "expected_outcome": "improves"}],
+                "experiments": [
+                    {
+                        "name": "E1",
+                        "purpose": "test top",
+                        "variables": ["top"],
+                        "expected_outcome": "improves",
+                    }
+                ],
                 "ablations": [],
                 "evaluation_protocol": "Compare against baseline.",
-                "compute_budget": {"hardware": None, "time_estimate": None, "notes": None},
+                "compute_budget": {
+                    "hardware": None,
+                    "time_estimate": None,
+                    "notes": None,
+                },
                 "timeline": [],
                 "risks": [],
                 "repro_checklist": [],
             }
         )
 
-    monkeypatch.setattr(experiments.LLMService, "generate_response", _fake_generate_response)
+    monkeypatch.setattr(
+        experiments.LLMService, "generate_response", _fake_generate_response
+    )
 
     async def _seed():
         db_session.add(note)
@@ -1683,28 +1840,69 @@ def test_generate_experiment_plan_defaults_explanation_note_to_followup_mode(
                 "hypotheses": [],
                 "problem_statement": "Need a targeted regression follow-up plan.",
                 "success_criteria": ["compile_time_ms returns to baseline"],
-                "datasets": [{"name": "LLVM Regression Core", "source": "benchmark_suite", "split": None, "notes": None}],
-                "metrics": [
-                    {"name": "compile_time_ms", "definition": "lower is better", "direction": "lower_better"},
-                    {"name": "artifact_diff_score", "definition": "lower is better", "direction": "lower_better"},
+                "datasets": [
+                    {
+                        "name": "LLVM Regression Core",
+                        "source": "benchmark_suite",
+                        "split": None,
+                        "notes": None,
+                    }
                 ],
-                "baselines": [{"name": "LLVM main baseline", "details": "baseline-llvm-main"}],
-                "method": {"summary": "Compare remarks and codegen outputs across the regressed case", "key_components": ["remarks diff", "IR diff"]},
+                "metrics": [
+                    {
+                        "name": "compile_time_ms",
+                        "definition": "lower is better",
+                        "direction": "lower_better",
+                    },
+                    {
+                        "name": "artifact_diff_score",
+                        "definition": "lower is better",
+                        "direction": "lower_better",
+                    },
+                ],
+                "baselines": [
+                    {"name": "LLVM main baseline", "details": "baseline-llvm-main"}
+                ],
+                "method": {
+                    "summary": "Compare remarks and codegen outputs across the regressed case",
+                    "key_components": ["remarks diff", "IR diff"],
+                },
                 "experiments": [
-                    {"name": "Remark diff", "purpose": "diff pass remarks", "variables": ["build"], "expected_outcome": "identify missing vectorization trigger"},
-                    {"name": "IR capture", "purpose": "compare IR outputs", "variables": ["pipeline"], "expected_outcome": "find lowered divergence"},
-                    {"name": "Case replay", "purpose": "re-run benchmark case", "variables": ["baseline", "candidate"], "expected_outcome": "confirm regression scope"},
+                    {
+                        "name": "Remark diff",
+                        "purpose": "diff pass remarks",
+                        "variables": ["build"],
+                        "expected_outcome": "identify missing vectorization trigger",
+                    },
+                    {
+                        "name": "IR capture",
+                        "purpose": "compare IR outputs",
+                        "variables": ["pipeline"],
+                        "expected_outcome": "find lowered divergence",
+                    },
+                    {
+                        "name": "Case replay",
+                        "purpose": "re-run benchmark case",
+                        "variables": ["baseline", "candidate"],
+                        "expected_outcome": "confirm regression scope",
+                    },
                 ],
                 "ablations": [],
                 "evaluation_protocol": "Compare the regressed run against the prior compatible run and baseline.",
-                "compute_budget": {"hardware": None, "time_estimate": None, "notes": None},
+                "compute_budget": {
+                    "hardware": None,
+                    "time_estimate": None,
+                    "notes": None,
+                },
                 "timeline": [],
                 "risks": [],
                 "repro_checklist": [],
             }
         )
 
-    monkeypatch.setattr(experiments.LLMService, "generate_response", _fake_generate_response)
+    monkeypatch.setattr(
+        experiments.LLMService, "generate_response", _fake_generate_response
+    )
 
     async def _seed():
         db_session.add(note)
@@ -1730,7 +1928,10 @@ def test_generate_experiment_plan_defaults_explanation_note_to_followup_mode(
     assert payload["benchmark_case_ids"] == ["case-instcombine-sroa"]
     assert payload["benchmark_baseline_id"] == "baseline-llvm-main"
     assert payload["plan"]["plan_scope"] == "compiler_regression_followup"
-    assert payload["plan"]["provenance"]["benchmark_suite_id"] == "compiler-llvm-regression-core"
+    assert (
+        payload["plan"]["provenance"]["benchmark_suite_id"]
+        == "compiler-llvm-regression-core"
+    )
     assert "Likely causes:" in prompts[0]
     assert "Requested plan scope: compiler_regression_followup" in prompts[0]
     assert "Diff pass remarks across both builds" in prompts[0]
@@ -1758,7 +1959,10 @@ def test_create_experiment_run_seeds_execution_handoff_from_plan(
             "plan_scope": "single_hypothesis",
             "selected_hypothesis_ids": ["hyp-1"],
             "supporting_sources": [{"id": "paper-1", "title": "Compiler layouts"}],
-            "provenance": {"source_paper_ids": ["paper-1"], "source_document_ids": ["doc-1"]},
+            "provenance": {
+                "source_paper_ids": ["paper-1"],
+                "source_document_ids": ["doc-1"],
+            },
         },
         generator_details={
             "plan_mode": "single_hypothesis",
@@ -1786,7 +1990,9 @@ def test_create_experiment_run_seeds_execution_handoff_from_plan(
     assert response.status_code == 201
     payload = response.json()
     assert payload["config"]["execution_handoff"]["plan_scope"] == "single_hypothesis"
-    assert payload["config"]["execution_handoff"]["selected_hypothesis_ids"] == ["hyp-1"]
+    assert payload["config"]["execution_handoff"]["selected_hypothesis_ids"] == [
+        "hyp-1"
+    ]
     assert payload["config"]["execution_handoff"]["source_paper_ids"] == ["paper-1"]
     assert payload["summary"]
 
@@ -1843,7 +2049,9 @@ def test_create_experiment_run_seeds_scientific_validation_for_benchmark_plan(
             "name": "Benchmark-backed run",
             "config": {
                 "source_id": "00000000-0000-0000-0000-000000000001",
-                "commands": ["clang -O3 -S -emit-llvm fixtures/llvm/instcombine_sroa.c -o /tmp/instcombine_sroa.ll"],
+                "commands": [
+                    "clang -O3 -S -emit-llvm fixtures/llvm/instcombine_sroa.c -o /tmp/instcombine_sroa.ll"
+                ],
             },
         },
     )
@@ -1855,9 +2063,22 @@ def test_create_experiment_run_seeds_scientific_validation_for_benchmark_plan(
     assert payload["benchmark_suite_id"] == "compiler-llvm-regression-core"
     assert payload["benchmark_case_ids"] == ["case-instcombine-sroa"]
     assert payload["benchmark_baseline_id"] == "baseline-llvm-main"
-    assert payload["config"]["scientific_validation"]["recipe_family"] == "compiler_validation"
-    assert payload["config"]["scientific_validation"]["compiler_observability"]["capture_ir"] is True
-    assert payload["config"]["scientific_validation"]["compiler_observability"]["capture_remarks"] is True
+    assert (
+        payload["config"]["scientific_validation"]["recipe_family"]
+        == "compiler_validation"
+    )
+    assert (
+        payload["config"]["scientific_validation"]["compiler_observability"][
+            "capture_ir"
+        ]
+        is True
+    )
+    assert (
+        payload["config"]["scientific_validation"]["compiler_observability"][
+            "capture_remarks"
+        ]
+        is True
+    )
     assert payload["measurement_summary"]["artifact_inventory"]
     assert payload["artifact_inventory"]
     assert payload["repeat_count"] == 2
@@ -1929,14 +2150,22 @@ def test_sync_experiment_run_projects_compiler_observability_into_response(
                 "benchmark_baseline_id": "baseline-llvm-main",
                 "measurement_summary": {
                     "status": "pending",
-                    "artifact_inventory": ["compiler_logs", "compiler_remarks", "ir_or_codegen_artifacts"],
+                    "artifact_inventory": [
+                        "compiler_logs",
+                        "compiler_remarks",
+                        "ir_or_codegen_artifacts",
+                    ],
                     "repeat_count": 3,
                 },
                 "compiler_observability": {
                     "capture_asm": True,
                     "capture_remarks": True,
                     "capture_compile_logs": True,
-                    "artifact_inventory": ["compiler_logs", "compiler_remarks", "ir_or_codegen_artifacts"],
+                    "artifact_inventory": [
+                        "compiler_logs",
+                        "compiler_remarks",
+                        "ir_or_codegen_artifacts",
+                    ],
                     "repeat_count": 3,
                 },
             }
@@ -1963,8 +2192,15 @@ def test_sync_experiment_run_projects_compiler_observability_into_response(
     assert response.status_code == 200
     payload = response.json()["run"]
     assert payload["compiler_artifacts"]["capture_asm"] is True
-    assert payload["compiler_artifacts"]["diff_summary"] == "Vectorized inner loop with reduced spill pressure."
-    assert payload["artifact_inventory"] == ["compiler_logs", "compiler_remarks", "ir_or_codegen_artifacts"]
+    assert (
+        payload["compiler_artifacts"]["diff_summary"]
+        == "Vectorized inner loop with reduced spill pressure."
+    )
+    assert payload["artifact_inventory"] == [
+        "compiler_logs",
+        "compiler_remarks",
+        "ir_or_codegen_artifacts",
+    ]
     assert payload["perf_counters"]["instructions"] == 1024
     assert payload["measurement_summary"]["artifact_diff_score"] == 0.14
     assert payload["repeat_count"] == 3
@@ -2035,7 +2271,11 @@ def test_start_experiment_run_forwards_execution_handoff_to_agent_job(
 
     response = experiment_client.post(
         f"/api/v1/experiments/runs/{run.id}/start",
-        json={"source_id": "00000000-0000-0000-0000-000000000001", "commands": ["python -m pytest -q"], "timeout_seconds": 60},
+        json={
+            "source_id": "00000000-0000-0000-0000-000000000001",
+            "commands": ["python -m pytest -q"],
+            "timeout_seconds": 60,
+        },
     )
 
     assert response.status_code == 200
@@ -2047,6 +2287,9 @@ def test_start_experiment_run_forwards_execution_handoff_to_agent_job(
         job = await db_session.get(AgentJob, started_run.agent_job_id)
         assert job is not None
         assert job.config["execution_handoff"]["plan_scope"] == "aggregate_note"
-        assert job.config["execution_handoff"]["selected_hypothesis_ids"] == ["hyp-1", "hyp-2"]
+        assert job.config["execution_handoff"]["selected_hypothesis_ids"] == [
+            "hyp-1",
+            "hyp-2",
+        ]
 
     asyncio.get_event_loop().run_until_complete(_verify())

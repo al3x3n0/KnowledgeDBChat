@@ -8,6 +8,7 @@ from .agent_definition import (
     AgentDefinition,
     AgentMemoryInjection,
 )
+from .agent_external_call_outbox import AgentExternalCallOutbox
 from .agent_job import (
     AgentJob,
     AgentJobChainDefinition,
@@ -117,6 +118,7 @@ __all__ = [
     "AgentToolExecution",
     # Agent definition models
     "AgentDefinition",
+    "AgentExternalCallOutbox",
     "AgentConversationContext",
     "AgentMemoryInjection",
     # Workflow models

@@ -4,16 +4,17 @@ Analytics service for data analysis and visualization tools.
 Provides statistics, charts, and data export capabilities for the knowledge base.
 """
 
-import json
 import csv
 import io
+import json
+from collections import Counter
 from datetime import datetime, timedelta
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
-from collections import Counter, defaultdict
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, and_, desc, text
+
 from loguru import logger
+from sqlalchemy import and_, desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentChunk, DocumentSource
 from app.services.vector_store import vector_store_service
@@ -47,7 +48,7 @@ class AnalyticsService:
             Dictionary with collection statistics
         """
         # Build base query
-        base_conditions = [Document.is_processed == True]
+        base_conditions = [Document.is_processed.is_(True)]
 
         if source_id:
             base_conditions.append(Document.source_id == source_id)
@@ -70,7 +71,7 @@ class AnalyticsService:
         # Total content size
         size_query = select(
             func.sum(func.coalesce(Document.file_size, 0)),
-            func.sum(func.coalesce(func.length(Document.content), 0))
+            func.sum(func.coalesce(func.length(Document.content), 0)),
         ).where(and_(*base_conditions))
         size_result = await db.execute(size_query)
         file_size, content_chars = size_result.one()
@@ -81,37 +82,40 @@ class AnalyticsService:
         estimated_words = content_chars // 5
 
         # Documents by source type
-        source_type_query = select(
-            DocumentSource.source_type,
-            func.count(Document.id)
-        ).join(DocumentSource).where(
-            and_(*base_conditions)
-        ).group_by(DocumentSource.source_type)
+        source_type_query = (
+            select(DocumentSource.source_type, func.count(Document.id))
+            .join(DocumentSource)
+            .where(and_(*base_conditions))
+            .group_by(DocumentSource.source_type)
+        )
         source_type_result = await db.execute(source_type_query)
         docs_by_source_type = dict(source_type_result.fetchall())
 
         # Documents by file type
-        file_type_query = select(
-            Document.file_type,
-            func.count(Document.id)
-        ).where(and_(*base_conditions)).group_by(Document.file_type)
+        file_type_query = (
+            select(Document.file_type, func.count(Document.id))
+            .where(and_(*base_conditions))
+            .group_by(Document.file_type)
+        )
         file_type_result = await db.execute(file_type_query)
         docs_by_file_type = {k or "unknown": v for k, v in file_type_result.fetchall()}
 
         # Documents over time (last 30 days)
         thirty_days_ago = datetime.utcnow() - timedelta(days=30)
-        timeline_query = select(
-            func.date(Document.created_at).label('date'),
-            func.count(Document.id)
-        ).where(
-            and_(*base_conditions, Document.created_at >= thirty_days_ago)
-        ).group_by(func.date(Document.created_at)).order_by(func.date(Document.created_at))
+        timeline_query = (
+            select(
+                func.date(Document.created_at).label("date"), func.count(Document.id)
+            )
+            .where(and_(*base_conditions, Document.created_at >= thirty_days_ago))
+            .group_by(func.date(Document.created_at))
+            .order_by(func.date(Document.created_at))
+        )
         timeline_result = await db.execute(timeline_query)
         timeline_data = [(str(row[0]), row[1]) for row in timeline_result.fetchall()]
 
         # Top tags
         tag_query = select(Document.tags).where(
-            and_(*base_conditions, Document.tags != None)
+            and_(*base_conditions, Document.tags.is_not(None))
         )
         tag_result = await db.execute(tag_query)
         all_tags = []
@@ -121,20 +125,25 @@ class AnalyticsService:
         tag_counts = Counter(all_tags).most_common(20)
 
         # Top authors
-        author_query = select(
-            Document.author,
-            func.count(Document.id)
-        ).where(
-            and_(*base_conditions, Document.author != None)
-        ).group_by(Document.author).order_by(desc(func.count(Document.id))).limit(10)
+        author_query = (
+            select(Document.author, func.count(Document.id))
+            .where(and_(*base_conditions, Document.author.is_not(None)))
+            .group_by(Document.author)
+            .order_by(desc(func.count(Document.id)))
+            .limit(10)
+        )
         author_result = await db.execute(author_query)
         top_authors = [(row[0], row[1]) for row in author_result.fetchall()]
 
         # Chunk statistics
-        chunk_query = select(
-            func.count(DocumentChunk.id),
-            func.avg(func.length(DocumentChunk.content))
-        ).join(Document).where(and_(*base_conditions))
+        chunk_query = (
+            select(
+                func.count(DocumentChunk.id),
+                func.avg(func.length(DocumentChunk.content)),
+            )
+            .join(Document)
+            .where(and_(*base_conditions))
+        )
         chunk_result = await db.execute(chunk_query)
         total_chunks, avg_chunk_size = chunk_result.one()
         total_chunks = total_chunks or 0
@@ -142,17 +151,17 @@ class AnalyticsService:
 
         # Processing status
         processed_query = select(func.count(Document.id)).where(
-            and_(Document.is_processed == True)
+            and_(Document.is_processed.is_(True))
         )
         pending_query = select(func.count(Document.id)).where(
-            and_(Document.is_processed == False)
+            and_(Document.is_processed.is_(False))
         )
         processed_count = (await db.execute(processed_query)).scalar() or 0
         pending_count = (await db.execute(pending_query)).scalar() or 0
 
         # Summarization status
         summarized_query = select(func.count(Document.id)).where(
-            and_(*base_conditions, Document.summary != None)
+            and_(*base_conditions, Document.summary.is_not(None))
         )
         summarized_count = (await db.execute(summarized_query)).scalar() or 0
 
@@ -170,15 +179,15 @@ class AnalyticsService:
             "top_authors": top_authors,
             "processing_status": {
                 "processed": processed_count,
-                "pending": pending_count
+                "pending": pending_count,
             },
             "summarized_documents": summarized_count,
             "filters_applied": {
                 "source_id": str(source_id) if source_id else None,
                 "tag": tag,
                 "date_from": date_from.isoformat() if date_from else None,
-                "date_to": date_to.isoformat() if date_to else None
-            }
+                "date_to": date_to.isoformat() if date_to else None,
+            },
         }
 
     async def get_source_analytics(
@@ -197,26 +206,36 @@ class AnalyticsService:
             List of source analytics
         """
         # Build query for source statistics
-        base_query = select(
-            DocumentSource.id,
-            DocumentSource.name,
-            DocumentSource.source_type,
-            DocumentSource.is_active,
-            DocumentSource.last_sync,
-            DocumentSource.created_at,
-            func.count(Document.id).label('doc_count'),
-            func.sum(func.coalesce(Document.file_size, 0)).label('total_size'),
-            func.sum(func.coalesce(func.length(Document.content), 0)).label('total_chars'),
-            func.max(Document.updated_at).label('last_doc_update'),
-            func.count(Document.id).filter(Document.is_processed == True).label('processed_count'),
-            func.count(Document.id).filter(Document.summary != None).label('summarized_count'),
-        ).outerjoin(Document).group_by(
-            DocumentSource.id,
-            DocumentSource.name,
-            DocumentSource.source_type,
-            DocumentSource.is_active,
-            DocumentSource.last_sync,
-            DocumentSource.created_at
+        base_query = (
+            select(
+                DocumentSource.id,
+                DocumentSource.name,
+                DocumentSource.source_type,
+                DocumentSource.is_active,
+                DocumentSource.last_sync,
+                DocumentSource.created_at,
+                func.count(Document.id).label("doc_count"),
+                func.sum(func.coalesce(Document.file_size, 0)).label("total_size"),
+                func.sum(func.coalesce(func.length(Document.content), 0)).label(
+                    "total_chars"
+                ),
+                func.max(Document.updated_at).label("last_doc_update"),
+                func.count(Document.id)
+                .filter(Document.is_processed.is_(True))
+                .label("processed_count"),
+                func.count(Document.id)
+                .filter(Document.summary.is_not(None))
+                .label("summarized_count"),
+            )
+            .outerjoin(Document)
+            .group_by(
+                DocumentSource.id,
+                DocumentSource.name,
+                DocumentSource.source_type,
+                DocumentSource.is_active,
+                DocumentSource.last_sync,
+                DocumentSource.created_at,
+            )
         )
 
         if source_id:
@@ -231,21 +250,31 @@ class AnalyticsService:
             processed_count = row.processed_count or 0
             summarized_count = row.summarized_count or 0
 
-            sources.append({
-                "id": str(row.id),
-                "name": row.name,
-                "source_type": row.source_type,
-                "is_active": row.is_active,
-                "last_sync": row.last_sync.isoformat() if row.last_sync else None,
-                "created_at": row.created_at.isoformat() if row.created_at else None,
-                "document_count": doc_count,
-                "total_size_bytes": row.total_size or 0,
-                "total_chars": row.total_chars or 0,
-                "last_document_update": row.last_doc_update.isoformat() if row.last_doc_update else None,
-                "processing_rate": f"{(processed_count / doc_count * 100):.1f}%" if doc_count > 0 else "N/A",
-                "summarization_rate": f"{(summarized_count / doc_count * 100):.1f}%" if doc_count > 0 else "N/A",
-                "health_status": "healthy" if row.is_active else "inactive"
-            })
+            sources.append(
+                {
+                    "id": str(row.id),
+                    "name": row.name,
+                    "source_type": row.source_type,
+                    "is_active": row.is_active,
+                    "last_sync": row.last_sync.isoformat() if row.last_sync else None,
+                    "created_at": row.created_at.isoformat()
+                    if row.created_at
+                    else None,
+                    "document_count": doc_count,
+                    "total_size_bytes": row.total_size or 0,
+                    "total_chars": row.total_chars or 0,
+                    "last_document_update": row.last_doc_update.isoformat()
+                    if row.last_doc_update
+                    else None,
+                    "processing_rate": f"{(processed_count / doc_count * 100):.1f}%"
+                    if doc_count > 0
+                    else "N/A",
+                    "summarization_rate": f"{(summarized_count / doc_count * 100):.1f}%"
+                    if doc_count > 0
+                    else "N/A",
+                    "health_status": "healthy" if row.is_active else "inactive",
+                }
+            )
 
         return sources
 
@@ -270,10 +299,7 @@ class AnalyticsService:
 
         # Get recent tags
         tag_query = select(Document.tags).where(
-            and_(
-                Document.created_at >= cutoff_date,
-                Document.tags != None
-            )
+            and_(Document.created_at >= cutoff_date, Document.tags.is_not(None))
         )
         tag_result = await db.execute(tag_query)
 
@@ -290,7 +316,7 @@ class AnalyticsService:
             and_(
                 Document.created_at < cutoff_date,
                 Document.created_at >= cutoff_date - timedelta(days=days),
-                Document.tags != None
+                Document.tags.is_not(None),
             )
         )
         older_result = await db.execute(older_query)
@@ -310,13 +336,19 @@ class AnalyticsService:
             else:
                 growth_rate = float(current_count)  # New topic
 
-            trending.append({
-                "topic": tag,
-                "current_count": current_count,
-                "previous_count": old_count,
-                "growth_rate": round(growth_rate, 2),
-                "trend": "rising" if growth_rate > 0.2 else "stable" if growth_rate >= -0.2 else "declining"
-            })
+            trending.append(
+                {
+                    "topic": tag,
+                    "current_count": current_count,
+                    "previous_count": old_count,
+                    "growth_rate": round(growth_rate, 2),
+                    "trend": "rising"
+                    if growth_rate > 0.2
+                    else "stable"
+                    if growth_rate >= -0.2
+                    else "declining",
+                }
+            )
 
         # Sort by growth rate
         trending.sort(key=lambda x: x["growth_rate"], reverse=True)
@@ -348,7 +380,7 @@ class AnalyticsService:
         Returns:
             Chart data structure
         """
-        base_conditions = [Document.is_processed == True]
+        base_conditions = [Document.is_processed.is_(True)]
 
         if date_from:
             base_conditions.append(Document.created_at >= date_from)
@@ -365,37 +397,52 @@ class AnalyticsService:
 
         # Group by different fields
         if group_by == "source_type":
-            query = select(
-                DocumentSource.source_type.label('label'),
-                agg_func.label('value')
-            ).join(DocumentSource).where(
-                and_(*base_conditions)
-            ).group_by(DocumentSource.source_type).order_by(desc('value')).limit(limit)
+            query = (
+                select(
+                    DocumentSource.source_type.label("label"), agg_func.label("value")
+                )
+                .join(DocumentSource)
+                .where(and_(*base_conditions))
+                .group_by(DocumentSource.source_type)
+                .order_by(desc("value"))
+                .limit(limit)
+            )
 
         elif group_by == "file_type":
-            query = select(
-                func.coalesce(Document.file_type, 'unknown').label('label'),
-                agg_func.label('value')
-            ).where(
-                and_(*base_conditions)
-            ).group_by(Document.file_type).order_by(desc('value')).limit(limit)
+            query = (
+                select(
+                    func.coalesce(Document.file_type, "unknown").label("label"),
+                    agg_func.label("value"),
+                )
+                .where(and_(*base_conditions))
+                .group_by(Document.file_type)
+                .order_by(desc("value"))
+                .limit(limit)
+            )
 
         elif group_by == "author":
-            query = select(
-                func.coalesce(Document.author, 'Unknown').label('label'),
-                agg_func.label('value')
-            ).where(
-                and_(*base_conditions)
-            ).group_by(Document.author).order_by(desc('value')).limit(limit)
+            query = (
+                select(
+                    func.coalesce(Document.author, "Unknown").label("label"),
+                    agg_func.label("value"),
+                )
+                .where(and_(*base_conditions))
+                .group_by(Document.author)
+                .order_by(desc("value"))
+                .limit(limit)
+            )
 
         elif group_by == "date":
             # Group by date for time series
-            query = select(
-                func.date(Document.created_at).label('label'),
-                agg_func.label('value')
-            ).where(
-                and_(*base_conditions)
-            ).group_by(func.date(Document.created_at)).order_by('label')
+            query = (
+                select(
+                    func.date(Document.created_at).label("label"),
+                    agg_func.label("value"),
+                )
+                .where(and_(*base_conditions))
+                .group_by(func.date(Document.created_at))
+                .order_by("label")
+            )
 
         else:
             raise ValueError(f"Unknown group_by: {group_by}")
@@ -415,14 +462,11 @@ class AnalyticsService:
             "group_by": group_by,
             "labels": labels,
             "values": values,
-            "datasets": [{
-                "label": metric.replace("_", " ").title(),
-                "data": values
-            }],
+            "datasets": [{"label": metric.replace("_", " ").title(), "data": values}],
             "options": {
                 "responsive": True,
-                "title": f"{metric.replace('_', ' ').title()} by {group_by.replace('_', ' ').title()}"
-            }
+                "title": f"{metric.replace('_', ' ').title()} by {group_by.replace('_', ' ').title()}",
+            },
         }
 
     async def export_data(
@@ -451,7 +495,7 @@ class AnalyticsService:
             Tuple of (content, filename, content_type)
         """
         # Build query
-        conditions = [Document.is_processed == True]
+        conditions = [Document.is_processed.is_(True)]
         if source_id:
             conditions.append(Document.source_id == source_id)
 
@@ -459,6 +503,7 @@ class AnalyticsService:
 
         if include_chunks:
             from sqlalchemy.orm import selectinload
+
             query = query.options(selectinload(Document.chunks))
 
         result = await db.execute(query)
@@ -491,12 +536,12 @@ class AnalyticsService:
                 row["content"] = doc.content
                 row["summary"] = doc.summary
 
-            if include_chunks and hasattr(doc, 'chunks'):
+            if include_chunks and hasattr(doc, "chunks"):
                 row["chunks"] = [
                     {
                         "index": c.chunk_index,
                         "content": c.content,
-                        "metadata": c.metadata
+                        "metadata": c.metadata,
                     }
                     for c in doc.chunks
                 ]
@@ -567,7 +612,7 @@ class AnalyticsService:
                 "total_results": 0,
                 "relevance_distribution": {},
                 "source_distribution": {},
-                "suggestions": []
+                "suggestions": [],
             }
 
         # Relevance score distribution
@@ -589,7 +634,9 @@ class AnalyticsService:
         for r in results[:10]:
             title = r.get("title", "")
             words = title.lower().split()
-            title_words.extend([w for w in words if len(w) > 3 and w not in query.lower()])
+            title_words.extend(
+                [w for w in words if len(w) > 3 and w not in query.lower()]
+            )
 
         suggested_terms = [term for term, _ in Counter(title_words).most_common(5)]
 

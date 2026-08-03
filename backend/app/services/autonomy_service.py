@@ -13,7 +13,6 @@ from app.services.scientific_validation_service import (
     resolve_portfolio_automation_policy,
 )
 
-
 PROFILE_POLICY_COMPAT_FIELDS = (
     "validation_policy",
     "auto_launch_follow_up",
@@ -22,10 +21,16 @@ PROFILE_POLICY_COMPAT_FIELDS = (
 )
 
 
-def legacy_profile_policy_overrides(payload: Mapping[str, Any] | None) -> dict[str, Any]:
+def legacy_profile_policy_overrides(
+    payload: Mapping[str, Any] | None
+) -> dict[str, Any]:
     source = payload or {}
     overrides: dict[str, Any] = {}
-    validation_policy = source.get("validation_policy") if isinstance(source.get("validation_policy"), dict) else {}
+    validation_policy = (
+        source.get("validation_policy")
+        if isinstance(source.get("validation_policy"), dict)
+        else {}
+    )
     if validation_policy:
         overrides.update(validation_policy)
     for key in (
@@ -82,7 +87,9 @@ def resolve_domain_profile_automation_contract(
     current_snapshot: Mapping[str, Any] | None = None,
     explicit_updates: Mapping[str, Any] | None = None,
 ) -> tuple[str, dict[str, Any]]:
-    normalized_profile = normalize_portfolio_automation_profile(automation_profile, default="balanced")
+    normalized_profile = normalize_portfolio_automation_profile(
+        automation_profile, default="balanced"
+    )
     resolved_policy = resolve_portfolio_automation_policy(
         normalized_profile,
         {
@@ -106,15 +113,23 @@ def build_autonomy_summary(
 ) -> dict[str, Any]:
     summary = dict(raw_summary) if isinstance(raw_summary, dict) else {}
     summary["effective_policy"] = effective_policy
-    summary[config_revision_key] = summary.get(config_revision_key) or compute_research_portfolio_config_revision(
+    summary[config_revision_key] = summary.get(
+        config_revision_key
+    ) or compute_research_portfolio_config_revision(
         automation_profile,
         effective_policy,
         sandbox_profile_id,
     )
     summary["opportunities"] = opportunities
     summary["stage_counts"] = summarize_research_opportunity_stages(opportunities)
-    summary["autonomy_state_counts"] = summarize_research_opportunity_autonomy_states(opportunities)
-    summary.update(summarize_portfolio_operator_reviews(opportunities, effective_policy=effective_policy))
+    summary["autonomy_state_counts"] = summarize_research_opportunity_autonomy_states(
+        opportunities
+    )
+    summary.update(
+        summarize_portfolio_operator_reviews(
+            opportunities, effective_policy=effective_policy
+        )
+    )
     if include_autonomy_mode:
         summary["autonomy_mode"] = automation_profile
     return summary
@@ -156,11 +171,15 @@ def build_monitor_follow_up_autonomy_compat(
         else resolved_effective.get("allowed_recommendations"),
         default_allowed=default_allowed,
     )
-    mode = normalize_monitor_policy_mode(resolved_effective.get("follow_up_review_mode"))
+    mode = normalize_monitor_policy_mode(
+        resolved_effective.get("follow_up_review_mode")
+    )
     return {
         "mode": mode,
         "allowed_recommendations": allowed_recommendations,
-        "automation_profile": normalize_portfolio_automation_profile(automation_profile, default="balanced"),
+        "automation_profile": normalize_portfolio_automation_profile(
+            automation_profile, default="balanced"
+        ),
         "automation_policy": dict(raw_policy) if isinstance(raw_policy, dict) else {},
         "effective_policy": dict(resolved_effective),
     }
@@ -187,7 +206,9 @@ def build_monitor_policy_compat_fields(
         "policy_guardrail_follow_up_autonomy": None,
     }
     if isinstance(target_policy, dict):
-        fields["policy_guardrail_follow_up_autonomy"] = build_monitor_follow_up_autonomy_compat(
+        fields[
+            "policy_guardrail_follow_up_autonomy"
+        ] = build_monitor_follow_up_autonomy_compat(
             automation_profile=automation_profile,
             automation_policy={
                 "follow_up_review_mode": target_policy.get("follow_up_review_mode"),
@@ -216,19 +237,29 @@ def resolve_monitor_automation_contract(
     default_allowed: list[str],
 ) -> dict[str, Any]:
     raw_config = config if isinstance(config, dict) else {}
-    automation_profile = normalize_portfolio_automation_profile(raw_config.get("automation_profile"), default="balanced")
+    automation_profile = normalize_portfolio_automation_profile(
+        raw_config.get("automation_profile"), default="balanced"
+    )
     legacy_policy = {
-        "mode": normalize_monitor_policy_mode((raw_config.get("follow_up_autonomy") or {}).get("mode")),
+        "mode": normalize_monitor_policy_mode(
+            (raw_config.get("follow_up_autonomy") or {}).get("mode")
+        ),
         "allowed_recommendations": normalize_monitor_allowed_recommendations(
             (raw_config.get("follow_up_autonomy") or {}).get("allowed_recommendations"),
             default_allowed=default_allowed,
         ),
     }
-    raw_automation_policy = raw_config.get("automation_policy") if isinstance(raw_config.get("automation_policy"), dict) else {}
+    raw_automation_policy = (
+        raw_config.get("automation_policy")
+        if isinstance(raw_config.get("automation_policy"), dict)
+        else {}
+    )
     policy_input = {
         **legacy_policy,
         **raw_automation_policy,
-        "follow_up_review_mode": raw_automation_policy.get("follow_up_review_mode", legacy_policy.get("mode")),
+        "follow_up_review_mode": raw_automation_policy.get(
+            "follow_up_review_mode", legacy_policy.get("mode")
+        ),
         "allowed_recommendations": normalize_monitor_allowed_recommendations(
             raw_automation_policy.get("allowed_recommendations")
             if isinstance(raw_automation_policy.get("allowed_recommendations"), list)
@@ -236,14 +267,20 @@ def resolve_monitor_automation_contract(
             default_allowed=default_allowed,
         ),
     }
-    effective_policy = resolve_portfolio_automation_policy(automation_profile, policy_input)
-    effective_policy["allowed_recommendations"] = normalize_monitor_allowed_recommendations(
+    effective_policy = resolve_portfolio_automation_policy(
+        automation_profile, policy_input
+    )
+    effective_policy[
+        "allowed_recommendations"
+    ] = normalize_monitor_allowed_recommendations(
         policy_input.get("allowed_recommendations"),
         default_allowed=default_allowed,
     )
     automation_policy = {
         **raw_automation_policy,
-        "follow_up_review_mode": normalize_monitor_policy_mode(policy_input.get("follow_up_review_mode"), default="auto_launch_safe"),
+        "follow_up_review_mode": normalize_monitor_policy_mode(
+            policy_input.get("follow_up_review_mode"), default="auto_launch_safe"
+        ),
         "allowed_recommendations": list(effective_policy["allowed_recommendations"]),
     }
     follow_up_autonomy = build_monitor_follow_up_autonomy_compat(

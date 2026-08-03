@@ -27,6 +27,7 @@ from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.utils.exceptions import LLMServiceError
 
+
 @pytest.fixture(autouse=True)
 def _no_redis_feature_flags(monkeypatch):
     """Serve feature-flag defaults without Redis (no localhost:6379 retries)."""
@@ -88,7 +89,9 @@ def decision(
     reasoning="scripted",
     assessment=None,
 ):
-    action = {"tool": tool, "params": params or {}, "purpose": "scripted"} if tool else None
+    action = (
+        {"tool": tool, "params": params or {}, "purpose": "scripted"} if tool else None
+    )
     return json.dumps(
         {
             "goal_achieved": goal_achieved,
@@ -211,7 +214,9 @@ async def test_golden_research_job_completes_goal(db_session):
         db_session,
         decisions=[
             decision(tool="search_documents", params={"query": "reranking"}),
-            decision(tool="save_research_finding", params={"title": "t", "content": "c"}),
+            decision(
+                tool="save_research_finding", params={"title": "t", "content": "c"}
+            ),
             decision(goal_achieved=True, reasoning="Evidence gathered and saved."),
         ],
         tool_results={
@@ -278,7 +283,9 @@ async def test_golden_goal_contract_blocks_false_completion(db_session):
         db_session,
         decisions=[
             decision(goal_achieved=True, reasoning="premature claim"),
-            decision(tool="save_research_finding", params={"title": "t", "content": "c"}),
+            decision(
+                tool="save_research_finding", params={"title": "t", "content": "c"}
+            ),
             decision(goal_achieved=True, reasoning="now with evidence"),
         ],
         tool_results={"save_research_finding": FINDING_RESULT},

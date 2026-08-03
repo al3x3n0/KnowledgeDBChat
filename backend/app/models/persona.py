@@ -2,12 +2,22 @@
 Persona-related database models.
 """
 
+import uuid
 from datetime import datetime
-from typing import Optional, Dict, Any
-from sqlalchemy import Column, String, Text, DateTime, Boolean, ForeignKey, JSON, Float, UniqueConstraint
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-import uuid
 
 from app.core.database import Base
 
@@ -22,7 +32,12 @@ class Persona(Base):
     # Identity
     name = Column(String(255), nullable=False, index=True)
     platform_id = Column(String(255), nullable=True, unique=True)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Description
     description = Column(Text, nullable=True)
@@ -35,13 +50,21 @@ class Persona(Base):
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     # Relationships
     user = relationship("User", back_populates="personas")
     owned_documents = relationship("Document", back_populates="owner_persona")
-    persona_mentions = relationship("DocumentPersonaDetection", back_populates="persona", cascade="all, delete-orphan")
-    edit_requests = relationship("PersonaEditRequest", back_populates="persona", cascade="all, delete-orphan")
+    persona_mentions = relationship(
+        "DocumentPersonaDetection",
+        back_populates="persona",
+        cascade="all, delete-orphan",
+    )
+    edit_requests = relationship(
+        "PersonaEditRequest", back_populates="persona", cascade="all, delete-orphan"
+    )
 
     def __repr__(self) -> str:
         return f"<Persona(id={self.id}, name='{self.name}', platform_id='{self.platform_id}')>"
@@ -53,11 +76,23 @@ class DocumentPersonaDetection(Base):
     __tablename__ = "document_persona_detections"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False, index=True)
-    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id", ondelete="CASCADE"), nullable=False, index=True)
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    persona_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("personas.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
     # Detection context
-    role = Column(String(50), nullable=False, default="detected")  # detected, diarized, owner, mentioned
+    role = Column(
+        String(50), nullable=False, default="detected"
+    )  # detected, diarized, owner, mentioned
     detection_type = Column(String(50), nullable=True)  # diarization, ner, manual
     confidence = Column(Float, nullable=True)
     start_time = Column(Float, nullable=True)  # Seconds for diarization context
@@ -71,7 +106,14 @@ class DocumentPersonaDetection(Base):
     persona = relationship("Persona", back_populates="persona_mentions")
 
     __table_args__ = (
-        UniqueConstraint("document_id", "persona_id", "role", "start_time", "end_time", name="uq_document_persona_detection"),
+        UniqueConstraint(
+            "document_id",
+            "persona_id",
+            "role",
+            "start_time",
+            "end_time",
+            name="uq_document_persona_detection",
+        ),
     )
 
     def __repr__(self) -> str:
@@ -84,9 +126,23 @@ class PersonaEditRequest(Base):
     __tablename__ = "persona_edit_requests"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    persona_id = Column(UUID(as_uuid=True), ForeignKey("personas.id", ondelete="CASCADE"), nullable=False, index=True)
-    requested_by = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="SET NULL"), nullable=True)
+    persona_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("personas.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    requested_by = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     message = Column(Text, nullable=False)
     status = Column(String(32), nullable=False, default="pending")
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)

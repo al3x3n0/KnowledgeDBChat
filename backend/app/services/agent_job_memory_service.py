@@ -8,21 +8,19 @@ Integrates the memory system with autonomous agent jobs, enabling:
 - Memory sharing between jobs and chat sessions
 """
 
-import json
 import re
 from collections import Counter
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_, or_, desc
 from loguru import logger
+from sqlalchemy import and_, desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.memory import ConversationMemory, UserPreferences
 from app.models.agent_job import AgentJob
+from app.models.memory import ConversationMemory, UserPreferences
 from app.services.llm_service import LLMService, UserLLMSettings
-
 
 # Prompts for LLM-based memory operations
 EXTRACT_MEMORIES_PROMPT = """You are an expert analyst extracting valuable insights from an autonomous agent job's results.
@@ -86,11 +84,51 @@ class AgentJobMemoryService:
     _RELAUNCH_ANCESTOR_LIMIT = 16
     _DEDUP_RECENT_LIMIT = 300
     _GRAPH_STOPWORDS = {
-        "the", "and", "for", "with", "from", "that", "this", "into", "over", "under",
-        "are", "was", "were", "will", "can", "could", "should", "would", "have", "has",
-        "had", "your", "you", "our", "their", "they", "them", "job", "jobs", "agent",
-        "agents", "result", "results", "finding", "findings", "analysis", "research",
-        "lesson", "insight", "pattern", "data", "model", "models", "tool", "tools",
+        "the",
+        "and",
+        "for",
+        "with",
+        "from",
+        "that",
+        "this",
+        "into",
+        "over",
+        "under",
+        "are",
+        "was",
+        "were",
+        "will",
+        "can",
+        "could",
+        "should",
+        "would",
+        "have",
+        "has",
+        "had",
+        "your",
+        "you",
+        "our",
+        "their",
+        "they",
+        "them",
+        "job",
+        "jobs",
+        "agent",
+        "agents",
+        "result",
+        "results",
+        "finding",
+        "findings",
+        "analysis",
+        "research",
+        "lesson",
+        "insight",
+        "pattern",
+        "data",
+        "model",
+        "models",
+        "tool",
+        "tools",
     }
 
     def __init__(self):
@@ -99,7 +137,17 @@ class AgentJobMemoryService:
     def _extract_project_scope(self, job: AgentJob) -> str:
         """Resolve a stable project/customer scope marker from job config."""
         cfg = job.config if isinstance(job.config, dict) else {}
-        for key in ["project_id", "project", "project_name", "customer", "team", "workspace", "repo", "repository", "domain"]:
+        for key in [
+            "project_id",
+            "project",
+            "project_name",
+            "customer",
+            "team",
+            "workspace",
+            "repo",
+            "repository",
+            "domain",
+        ]:
             val = str(cfg.get(key) or "").strip()
             if val:
                 return val[:120]
@@ -108,7 +156,11 @@ class AgentJobMemoryService:
     def _resolve_job_role(self, job: AgentJob) -> str:
         """Best-effort role extraction for swarm/specialized jobs."""
         cfg = job.config if isinstance(job.config, dict) else {}
-        role = str(cfg.get("agent_role") or cfg.get("swarm_role") or cfg.get("role") or "").strip().lower()
+        role = (
+            str(cfg.get("agent_role") or cfg.get("swarm_role") or cfg.get("role") or "")
+            .strip()
+            .lower()
+        )
         role = role.replace("-", "_").replace(" ", "_")
         return role[:80]
 
@@ -220,7 +272,9 @@ class AgentJobMemoryService:
             if parent_job is None:
                 break
 
-            if str(getattr(parent_job, "user_id", "")) != str(getattr(job, "user_id", "")):
+            if str(getattr(parent_job, "user_id", "")) != str(
+                getattr(job, "user_id", "")
+            ):
                 break
 
             next_parent_id = self._extract_relaunch_parent_job_id(
@@ -263,7 +317,9 @@ class AgentJobMemoryService:
         agent_role: str,
     ) -> set[str]:
         """Load dedup signatures from recent existing memories in the current scope."""
-        mem_types = [str(t or "").strip().lower() for t in memory_types if str(t or "").strip()]
+        mem_types = [
+            str(t or "").strip().lower() for t in memory_types if str(t or "").strip()
+        ]
         if not mem_types:
             return set()
 
@@ -272,7 +328,7 @@ class AgentJobMemoryService:
             .where(
                 and_(
                     ConversationMemory.user_id == user_id,
-                    ConversationMemory.is_active == True,
+                    ConversationMemory.is_active.is_(True),
                     ConversationMemory.memory_type.in_(list(set(mem_types))),
                 )
             )
@@ -325,7 +381,7 @@ class AgentJobMemoryService:
             .where(
                 and_(
                     ConversationMemory.user_id == user_id,
-                    ConversationMemory.is_active == True,
+                    ConversationMemory.is_active.is_(True),
                     ConversationMemory.memory_type == mtype,
                 )
             )
@@ -404,7 +460,9 @@ class AgentJobMemoryService:
                 if jaccard >= 0.10:
                     score += min(2.5, jaccard * 4.0)
                     if overlap:
-                        reasons.append(f"topic_overlap:{','.join(sorted(list(overlap))[:3])}")
+                        reasons.append(
+                            f"topic_overlap:{','.join(sorted(list(overlap))[:3])}"
+                        )
 
         left_ctx = left.context if isinstance(left.context, dict) else {}
         right_ctx = right.context if isinstance(right.context, dict) else {}
@@ -452,10 +510,13 @@ class AgentJobMemoryService:
             .where(
                 and_(
                     ConversationMemory.user_id == UUID(user_id),
-                    ConversationMemory.is_active == True,
+                    ConversationMemory.is_active.is_(True),
                 )
             )
-            .order_by(desc(ConversationMemory.importance_score), desc(ConversationMemory.created_at))
+            .order_by(
+                desc(ConversationMemory.importance_score),
+                desc(ConversationMemory.created_at),
+            )
             .limit(max(50, min(int(candidate_limit or 180), 500)))
         )
         candidates = [m for m in result.scalars().all() if str(m.id) not in memory_ids]
@@ -492,7 +553,9 @@ class AgentJobMemoryService:
             "links_created": int(links_created),
         }
 
-    def _connected_components_count(self, node_ids: list[str], edges: list[dict]) -> int:
+    def _connected_components_count(
+        self, node_ids: list[str], edges: list[dict]
+    ) -> int:
         """Estimate connected component count for graph stats."""
         if not node_ids:
             return 0
@@ -538,10 +601,13 @@ class AgentJobMemoryService:
             .where(
                 and_(
                     ConversationMemory.user_id == UUID(user_id),
-                    ConversationMemory.is_active == True,
+                    ConversationMemory.is_active.is_(True),
                 )
             )
-            .order_by(desc(ConversationMemory.importance_score), desc(ConversationMemory.created_at))
+            .order_by(
+                desc(ConversationMemory.importance_score),
+                desc(ConversationMemory.created_at),
+            )
             .limit(lim)
         )
         memories = list(result.scalars().all())
@@ -558,8 +624,10 @@ class AgentJobMemoryService:
                     "job_id": str(m.job_id) if m.job_id else None,
                     "created_at": m.created_at.isoformat() if m.created_at else None,
                     "project_scope": str(context.get("project_scope") or "") or None,
-                    "execution_outcome": str(context.get("execution_outcome") or "") or None,
-                    "strategy_signal": str(context.get("strategy_signal") or "") or None,
+                    "execution_outcome": str(context.get("execution_outcome") or "")
+                    or None,
+                    "strategy_signal": str(context.get("strategy_signal") or "")
+                    or None,
                     "access_count": int(m.access_count or 0),
                 }
             )
@@ -578,7 +646,13 @@ class AgentJobMemoryService:
                         "reasons": reasons,
                     }
                 )
-        edges.sort(key=lambda e: (-float(e.get("weight", 0.0)), str(e.get("source")), str(e.get("target"))))
+        edges.sort(
+            key=lambda e: (
+                -float(e.get("weight", 0.0)),
+                str(e.get("source")),
+                str(e.get("target")),
+            )
+        )
         edges = edges[:edge_cap]
 
         node_ids = [str(n.get("id")) for n in nodes if str(n.get("id"))]
@@ -623,14 +697,18 @@ class AgentJobMemoryService:
         for memory in memories:
             tags = self._normalize_tags(memory.tags)
             context = memory.context if isinstance(memory.context, dict) else {}
-            is_human_feedback = ("human_feedback" in tags) or str(context.get("feedback_type") or "").strip().lower() == "human"
+            is_human_feedback = ("human_feedback" in tags) or str(
+                context.get("feedback_type") or ""
+            ).strip().lower() == "human"
             if not is_human_feedback:
                 continue
 
             ctx_job_type = str(context.get("job_type") or "").strip().lower()
             if job_type_filter and ctx_job_type and ctx_job_type != job_type_filter:
                 continue
-            ctx_role = str(context.get("agent_role") or "").strip().lower().replace("-", "_")
+            ctx_role = (
+                str(context.get("agent_role") or "").strip().lower().replace("-", "_")
+            )
             if role_filter and ctx_role and ctx_role != role_filter:
                 continue
 
@@ -642,8 +720,16 @@ class AgentJobMemoryService:
             if rating > 0:
                 ratings.append(max(1, min(rating, 5)))
 
-            prefer_tools = context.get("preferred_tools") if isinstance(context.get("preferred_tools"), list) else []
-            avoid_tools = context.get("discouraged_tools") if isinstance(context.get("discouraged_tools"), list) else []
+            prefer_tools = (
+                context.get("preferred_tools")
+                if isinstance(context.get("preferred_tools"), list)
+                else []
+            )
+            avoid_tools = (
+                context.get("discouraged_tools")
+                if isinstance(context.get("discouraged_tools"), list)
+                else []
+            )
 
             for t in list(tags):
                 if t.startswith("prefer_tool:"):
@@ -695,9 +781,7 @@ class AgentJobMemoryService:
         }
 
     async def get_user_preferences(
-        self,
-        user_id: UUID,
-        db: AsyncSession
+        self, user_id: UUID, db: AsyncSession
     ) -> UserPreferences:
         """Get or create user preferences."""
         result = await db.execute(
@@ -770,7 +854,9 @@ class AgentJobMemoryService:
         prefs = await self.get_user_preferences(UUID(user_id), db)
 
         if not prefs.auto_extract_job_memories and not force_extract:
-            logger.info(f"Auto-extract disabled for user {user_id}, skipping memory extraction")
+            logger.info(
+                f"Auto-extract disabled for user {user_id}, skipping memory extraction"
+            )
             if isinstance(stats_out, dict):
                 stats_out["status"] = "skipped"
                 stats_out["skip_reason"] = "auto_extract_disabled"
@@ -785,22 +871,25 @@ class AgentJobMemoryService:
         if job.results:
             results_summary = job.results.get("summary", "No summary available")
             if job.results.get("findings"):
-                findings = "\n".join([
-                    f"- {f.get('title', 'Finding')}: {f.get('content', '')}"
-                    for f in job.results.get("findings", [])[:10]
-                ])
+                findings = "\n".join(
+                    [
+                        f"- {f.get('title', 'Finding')}: {f.get('content', '')}"
+                        for f in job.results.get("findings", [])[:10]
+                    ]
+                )
             if job.results.get("actions"):
-                actions = "\n".join([
-                    f"- {a.get('action', 'Action')}: {a.get('result', '')}"
-                    for a in job.results.get("actions", [])[:10]
-                ])
+                actions = "\n".join(
+                    [
+                        f"- {a.get('action', 'Action')}: {a.get('result', '')}"
+                        for a in job.results.get("actions", [])[:10]
+                    ]
+                )
 
         if job.error:
             errors = job.error
         elif job.execution_log:
             error_entries = [
-                entry for entry in job.execution_log
-                if entry.get("error")
+                entry for entry in job.execution_log if entry.get("error")
             ][-5:]
             if error_entries:
                 errors = "\n".join([e.get("error", "") for e in error_entries])
@@ -842,9 +931,17 @@ class AgentJobMemoryService:
             created_memories = []
             allowed_types = prefs.agent_job_memory_types or self.JOB_MEMORY_TYPES
             if isinstance(memory_types_allowlist, list) and memory_types_allowlist:
-                subset = [str(v).strip().lower() for v in memory_types_allowlist if str(v).strip()]
+                subset = [
+                    str(v).strip().lower()
+                    for v in memory_types_allowlist
+                    if str(v).strip()
+                ]
                 if subset:
-                    allowed_types = [t for t in allowed_types if str(t).strip().lower() in set(subset)]
+                    allowed_types = [
+                        t
+                        for t in allowed_types
+                        if str(t).strip().lower() in set(subset)
+                    ]
 
             outcome = self._execution_outcome(job)
             project_scope = self._extract_project_scope(job)
@@ -895,7 +992,9 @@ class AgentJobMemoryService:
             skipped_duplicate_count = 0
             if isinstance(stats_out, dict):
                 stats_out["dedup_existing_signature_count"] = len(existing_signatures)
-                stats_out["is_relaunch_chain"] = bool(dedup_scope.get("is_relaunch_chain"))
+                stats_out["is_relaunch_chain"] = bool(
+                    dedup_scope.get("is_relaunch_chain")
+                )
                 stats_out["relaunch_root_job_id"] = dedup_root_job_id
 
             for memory_data in candidate_memories:
@@ -917,9 +1016,16 @@ class AgentJobMemoryService:
                     memory_tags.append(f"scope:{project_scope.lower()[:60]}")
                 if agent_role:
                     memory_tags.append(f"role:{agent_role}")
-                if outcome == "success" and memory_data["type"] in {"insight", "pattern", "lesson"}:
+                if outcome == "success" and memory_data["type"] in {
+                    "insight",
+                    "pattern",
+                    "lesson",
+                }:
                     memory_tags.append("successful_strategy")
-                if outcome == "failure" and memory_data["type"] in {"pattern", "lesson"}:
+                if outcome == "failure" and memory_data["type"] in {
+                    "pattern",
+                    "lesson",
+                }:
                     memory_tags.append("failed_path")
                 if reason_tag:
                     memory_tags.append(f"extraction:{reason_tag[:60]}")
@@ -943,7 +1049,9 @@ class AgentJobMemoryService:
                 if dedup_root_job_id:
                     context_payload["relaunch_root_job_id"] = dedup_root_job_id
                     context_payload["relaunch_chain"] = True
-                    context_payload["relaunch_lineage_depth"] = max(1, len(dedup_job_ids) - 1)
+                    context_payload["relaunch_lineage_depth"] = max(
+                        1, len(dedup_job_ids) - 1
+                    )
                 if isinstance(context_overrides, dict):
                     for key, value in context_overrides.items():
                         k = str(key or "").strip()
@@ -977,7 +1085,9 @@ class AgentJobMemoryService:
                     db=db,
                 )
             except Exception as graph_exc:
-                logger.warning(f"Failed to link extracted memories in task graph for job {job.id}: {graph_exc}")
+                logger.warning(
+                    f"Failed to link extracted memories in task graph for job {job.id}: {graph_exc}"
+                )
 
             if isinstance(stats_out, dict):
                 stats_out["status"] = "completed"
@@ -1006,10 +1116,7 @@ class AgentJobMemoryService:
             return []
 
     def _parse_extracted_memories(
-        self,
-        llm_response: str,
-        job: AgentJob,
-        user_id: str
+        self, llm_response: str, job: AgentJob, user_id: str
     ) -> List[Dict[str, Any]]:
         """Parse LLM response into memory data."""
         memories = []
@@ -1041,17 +1148,21 @@ class AgentJobMemoryService:
 
                     tags = []
                     if "tags" in parts:
-                        tags = [t.strip() for t in parts["tags"].split(",") if t.strip()]
+                        tags = [
+                            t.strip() for t in parts["tags"].split(",") if t.strip()
+                        ]
 
                     # Add job-related tags
                     tags.extend([job.job_type, f"job:{job.name[:30]}"])
 
-                    memories.append({
-                        "type": memory_type,
-                        "content": parts["content"],
-                        "importance": importance,
-                        "tags": list(set(tags)),
-                    })
+                    memories.append(
+                        {
+                            "type": memory_type,
+                            "content": parts["content"],
+                            "importance": importance,
+                            "tags": list(set(tags)),
+                        }
+                    )
 
             except Exception as e:
                 logger.warning(f"Failed to parse memory line: {line} - {e}")
@@ -1099,7 +1210,9 @@ class AgentJobMemoryService:
         def _normalize_types(value: Any) -> List[str]:
             if not isinstance(value, list):
                 return []
-            allowed = set(self.JOB_MEMORY_TYPES + ["fact", "preference", "context", "summary"])
+            allowed = set(
+                self.JOB_MEMORY_TYPES + ["fact", "preference", "context", "summary"]
+            )
             out: List[str] = []
             for raw in value:
                 mem_type = str(raw or "").strip().lower()
@@ -1129,7 +1242,7 @@ class AgentJobMemoryService:
             .where(
                 and_(
                     ConversationMemory.user_id == UUID(user_id),
-                    ConversationMemory.is_active == True,
+                    ConversationMemory.is_active.is_(True),
                     ConversationMemory.memory_type.in_(memory_types),
                 )
             )
@@ -1168,13 +1281,15 @@ class AgentJobMemoryService:
         memories: List[ConversationMemory],
         user_id: str,
         prefs: UserPreferences,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> List[ConversationMemory]:
         """Use LLM to rank memories by relevance to job."""
-        memory_texts = "\n".join([
-            f"ID: {m.id} | TYPE: {m.memory_type} | CONTENT: {m.content[:200]}"
-            for m in memories
-        ])
+        memory_texts = "\n".join(
+            [
+                f"ID: {m.id} | TYPE: {m.memory_type} | CONTENT: {m.content[:200]}"
+                for m in memories
+            ]
+        )
 
         prompt = RANK_MEMORIES_PROMPT.format(
             goal=job.goal,
@@ -1212,9 +1327,7 @@ class AgentJobMemoryService:
         return ranked
 
     async def _update_memory_access(
-        self,
-        memories: List[ConversationMemory],
-        db: AsyncSession
+        self, memories: List[ConversationMemory], db: AsyncSession
     ):
         """Update access count and timestamp for memories."""
         now = datetime.utcnow()
@@ -1224,9 +1337,7 @@ class AgentJobMemoryService:
         await db.commit()
 
     def format_memories_for_job_context(
-        self,
-        memories: List[ConversationMemory],
-        include_metadata: bool = False
+        self, memories: List[ConversationMemory], include_metadata: bool = False
     ) -> str:
         """
         Format memories for injection into job context.
@@ -1245,7 +1356,7 @@ class AgentJobMemoryService:
             "## Relevant Memories from Past Jobs",
             "",
             "Use these memories to inform your approach:",
-            ""
+            "",
         ]
 
         for i, memory in enumerate(memories, 1):
@@ -1261,17 +1372,12 @@ class AgentJobMemoryService:
                 lines.append(f"{i}. [{type_label}] {memory.content}")
 
         lines.append("")
-        lines.append(
-            "Consider these insights when planning and executing your tasks."
-        )
+        lines.append("Consider these insights when planning and executing your tasks.")
 
         return "\n".join(lines)
 
     async def get_job_memories(
-        self,
-        job_id: UUID,
-        user_id: str,
-        db: AsyncSession
+        self, job_id: UUID, user_id: str, db: AsyncSession
     ) -> List[ConversationMemory]:
         """
         Get all memories created from a specific job.
@@ -1290,7 +1396,7 @@ class AgentJobMemoryService:
                 and_(
                     ConversationMemory.user_id == UUID(user_id),
                     ConversationMemory.job_id == job_id,
-                    ConversationMemory.is_active == True,
+                    ConversationMemory.is_active.is_(True),
                 )
             )
             .order_by(desc(ConversationMemory.importance_score))
@@ -1300,11 +1406,7 @@ class AgentJobMemoryService:
         return list(result.scalars().all())
 
     async def get_memories_by_type(
-        self,
-        user_id: str,
-        memory_type: str,
-        db: AsyncSession,
-        limit: int = 20
+        self, user_id: str, memory_type: str, db: AsyncSession, limit: int = 20
     ) -> List[ConversationMemory]:
         """
         Get memories of a specific type.
@@ -1324,7 +1426,7 @@ class AgentJobMemoryService:
                 and_(
                     ConversationMemory.user_id == UUID(user_id),
                     ConversationMemory.memory_type == memory_type,
-                    ConversationMemory.is_active == True,
+                    ConversationMemory.is_active.is_(True),
                 )
             )
             .order_by(desc(ConversationMemory.importance_score))
@@ -1342,7 +1444,7 @@ class AgentJobMemoryService:
         user_id: str,
         db: AsyncSession,
         importance: float = 0.5,
-        tags: Optional[List[str]] = None
+        tags: Optional[List[str]] = None,
     ) -> ConversationMemory:
         """
         Manually create a memory from a job.
@@ -1435,16 +1537,15 @@ class AgentJobMemoryService:
             )
             await db.refresh(memory)
         except Exception as graph_exc:
-            logger.warning(f"Failed to link manual memory {memory.id} into task graph: {graph_exc}")
+            logger.warning(
+                f"Failed to link manual memory {memory.id} into task graph: {graph_exc}"
+            )
 
         logger.info(f"Created manual memory {memory.id} from job {job.id}")
         return memory
 
     async def delete_job_memories(
-        self,
-        job_id: UUID,
-        user_id: str,
-        db: AsyncSession
+        self, job_id: UUID, user_id: str, db: AsyncSession
     ) -> int:
         """
         Soft delete all memories from a job.
@@ -1457,14 +1558,11 @@ class AgentJobMemoryService:
         Returns:
             Number of memories deleted
         """
-        query = (
-            select(ConversationMemory)
-            .where(
-                and_(
-                    ConversationMemory.user_id == UUID(user_id),
-                    ConversationMemory.job_id == job_id,
-                    ConversationMemory.is_active == True,
-                )
+        query = select(ConversationMemory).where(
+            and_(
+                ConversationMemory.user_id == UUID(user_id),
+                ConversationMemory.job_id == job_id,
+                ConversationMemory.is_active.is_(True),
             )
         )
 
@@ -1480,9 +1578,7 @@ class AgentJobMemoryService:
         return len(memories)
 
     async def get_memory_stats_for_user(
-        self,
-        user_id: str,
-        db: AsyncSession
+        self, user_id: str, db: AsyncSession
     ) -> Dict[str, Any]:
         """
         Get memory statistics for a user.
@@ -1497,13 +1593,10 @@ class AgentJobMemoryService:
         uid = UUID(user_id)
 
         # Total memories
-        total_query = (
-            select(ConversationMemory)
-            .where(
-                and_(
-                    ConversationMemory.user_id == uid,
-                    ConversationMemory.is_active == True,
-                )
+        total_query = select(ConversationMemory).where(
+            and_(
+                ConversationMemory.user_id == uid,
+                ConversationMemory.is_active.is_(True),
             )
         )
         total_result = await db.execute(total_query)
@@ -1523,16 +1616,12 @@ class AgentJobMemoryService:
 
         # Most accessed
         most_accessed = sorted(
-            all_memories,
-            key=lambda m: m.access_count,
-            reverse=True
+            all_memories, key=lambda m: m.access_count, reverse=True
         )[:5]
 
         # Most important
         most_important = sorted(
-            all_memories,
-            key=lambda m: m.importance_score,
-            reverse=True
+            all_memories, key=lambda m: m.importance_score, reverse=True
         )[:5]
 
         return {

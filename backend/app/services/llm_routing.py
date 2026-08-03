@@ -15,7 +15,6 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
 
 from app.core.config import settings
 
-
 FeatureGetStr = Callable[[str], Awaitable[Any]]
 
 
@@ -31,7 +30,9 @@ def _to_str(v: Any) -> Optional[str]:
     return s or None
 
 
-def _clamp_int(v: Any, *, min_v: int, max_v: int, default: Optional[int]) -> Optional[int]:
+def _clamp_int(
+    v: Any, *, min_v: int, max_v: int, default: Optional[int]
+) -> Optional[int]:
     if v is None:
         return default
     try:
@@ -87,7 +88,9 @@ def coerce_routing_config(routing: Any) -> Dict[str, Any]:
     }
 
 
-def compute_attempt_tiers(*, tier: Optional[str], fallback_tiers: List[str]) -> List[Optional[str]]:
+def compute_attempt_tiers(
+    *, tier: Optional[str], fallback_tiers: List[str]
+) -> List[Optional[str]]:
     """Compute tier attempt order.
 
     Matches `LLMService.generate_response` logic: requested tier first, then fallback tiers
@@ -100,7 +103,9 @@ def compute_attempt_tiers(*, tier: Optional[str], fallback_tiers: List[str]) -> 
     return [None]
 
 
-async def resolve_tier_overrides(get_feature_str: FeatureGetStr, tier: Optional[str]) -> Tuple[Optional[str], Optional[str]]:
+async def resolve_tier_overrides(
+    get_feature_str: FeatureGetStr, tier: Optional[str]
+) -> Tuple[Optional[str], Optional[str]]:
     """Resolve provider/model for a tier from feature flags."""
     if not tier:
         return None, None
@@ -118,7 +123,9 @@ async def resolve_tier_overrides(get_feature_str: FeatureGetStr, tier: Optional[
         return None, None
 
 
-async def resolve_feature_default_model(get_feature_str: FeatureGetStr) -> Optional[str]:
+async def resolve_feature_default_model(
+    get_feature_str: FeatureGetStr,
+) -> Optional[str]:
     try:
         m = await get_feature_str("llm_default_model")
         return _to_str(m)
@@ -170,7 +177,9 @@ def resolve_effective_provider_model(
                 model = getattr(user_settings, "model")
 
             if getattr(user_settings, "api_url", None):
-                effective_api_url = str(getattr(user_settings, "api_url")).strip() or None
+                effective_api_url = (
+                    str(getattr(user_settings, "api_url")).strip() or None
+                )
             if getattr(user_settings, "api_key", None):
                 effective_api_key = str(getattr(user_settings, "api_key"))
     except Exception:
@@ -194,9 +203,8 @@ def resolve_effective_provider_model(
         provider_used = "custom"
         model_used = model
     else:
-        use_deepseek = (
-            effective_provider in {"deepseek", "openai"}
-            or (prefer_deepseek and bool(getattr(settings, "DEEPSEEK_API_KEY", None)))
+        use_deepseek = effective_provider in {"deepseek", "openai"} or (
+            prefer_deepseek and bool(getattr(settings, "DEEPSEEK_API_KEY", None))
         )
         if use_deepseek:
             provider_used = "deepseek" if effective_provider == "deepseek" else "openai"

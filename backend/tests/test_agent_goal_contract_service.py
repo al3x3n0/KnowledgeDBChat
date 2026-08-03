@@ -52,14 +52,20 @@ def test_goal_contract_service_builds_executive_digest():
     executor = AutonomousAgentExecutor()
     service = AgentGoalContractService()
     job = _make_job({"goal_contract_enabled": True, "goal_contract_min_findings": 2})
-    job.results = {"summary": "Partial outcome", "research_bundle": {"next_steps": ["Validate metrics"]}}
+    job.results = {
+        "summary": "Partial outcome",
+        "research_bundle": {"next_steps": ["Validate metrics"]},
+    }
     state = {
         "goal_progress": 60,
         "findings": [{"type": "document", "title": "Internal bottleneck"}],
         "artifacts": [{"type": "note", "id": "a1"}],
         "actions_taken": [
             {"action": {"tool": "search_documents"}, "result": {"success": True}},
-            {"action": {"tool": "search_arxiv"}, "result": {"success": False, "error": "timeout"}},
+            {
+                "action": {"tool": "search_arxiv"},
+                "result": {"success": False, "error": "timeout"},
+            },
         ],
         "critic_notes": [{"severity": "high", "pivot": "Need stronger baselines"}],
     }

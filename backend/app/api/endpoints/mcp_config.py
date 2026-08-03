@@ -8,18 +8,17 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from pydantic import BaseModel, Field
-from sqlalchemy import select, delete
-from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+from pydantic import BaseModel
+from sqlalchemy import delete, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.api.endpoints.users import get_current_user
 from app.core.database import get_db
 from app.models.api_key import APIKey
-from app.models.mcp_config import MCPToolConfig, MCPSourceAccess, MCP_TOOLS
 from app.models.document import DocumentSource
+from app.models.mcp_config import MCP_TOOLS, MCPSourceAccess, MCPToolConfig
 from app.models.user import User
-from app.api.endpoints.users import get_current_user
-
 
 router = APIRouter()
 
@@ -28,8 +27,10 @@ router = APIRouter()
 # Pydantic Models
 # =============================================================================
 
+
 class MCPToolInfo(BaseModel):
     """Information about an MCP tool."""
+
     name: str
     display_name: str
     description: str
@@ -40,6 +41,7 @@ class MCPToolInfo(BaseModel):
 
 class MCPToolConfigUpdate(BaseModel):
     """Update tool configuration for an API key."""
+
     tool_name: str
     is_enabled: bool = True
     config: Optional[dict] = None
@@ -47,6 +49,7 @@ class MCPToolConfigUpdate(BaseModel):
 
 class MCPToolConfigResponse(BaseModel):
     """Tool configuration response."""
+
     tool_name: str
     display_name: str
     description: str
@@ -60,6 +63,7 @@ class MCPToolConfigResponse(BaseModel):
 
 class MCPSourceAccessUpdate(BaseModel):
     """Update source access for an API key."""
+
     source_id: UUID
     can_read: bool = True
     can_search: bool = True
@@ -68,6 +72,7 @@ class MCPSourceAccessUpdate(BaseModel):
 
 class MCPSourceAccessResponse(BaseModel):
     """Source access configuration response."""
+
     source_id: UUID
     source_name: str
     source_type: str
@@ -81,6 +86,7 @@ class MCPSourceAccessResponse(BaseModel):
 
 class MCPKeyConfigUpdate(BaseModel):
     """Update MCP configuration for an API key."""
+
     mcp_enabled: Optional[bool] = None
     allowed_tools: Optional[List[str]] = None  # None = all tools, empty list = no tools
     source_access_mode: Optional[str] = None  # "all" or "restricted"
@@ -88,6 +94,7 @@ class MCPKeyConfigUpdate(BaseModel):
 
 class MCPKeyConfigResponse(BaseModel):
     """Full MCP configuration for an API key."""
+
     api_key_id: UUID
     api_key_name: str
     mcp_enabled: bool
@@ -100,6 +107,7 @@ class MCPKeyConfigResponse(BaseModel):
 # =============================================================================
 # Endpoints
 # =============================================================================
+
 
 @router.get("/tools", response_model=List[MCPToolInfo])
 async def list_available_tools():
@@ -141,8 +149,7 @@ async def get_mcp_key_config(
 
     if not api_key:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
         )
 
     # Get tool configs
@@ -155,14 +162,16 @@ async def get_mcp_key_config(
     tool_configs = []
     for tool_name, tool_info in MCP_TOOLS.items():
         tc = tool_configs_db.get(tool_name)
-        tool_configs.append(MCPToolConfigResponse(
-            tool_name=tool_name,
-            display_name=tool_info["display_name"],
-            description=tool_info["description"],
-            category=tool_info["category"],
-            is_enabled=tc.is_enabled if tc else True,
-            config=tc.config if tc else None,
-        ))
+        tool_configs.append(
+            MCPToolConfigResponse(
+                tool_name=tool_name,
+                display_name=tool_info["display_name"],
+                description=tool_info["description"],
+                category=tool_info["category"],
+                is_enabled=tc.is_enabled if tc else True,
+                config=tc.config if tc else None,
+            )
+        )
 
     # Get source access
     source_access_result = await db.execute(
@@ -214,8 +223,7 @@ async def update_mcp_key_config(
 
     if not api_key:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
         )
 
     # Update fields
@@ -228,7 +236,7 @@ async def update_mcp_key_config(
         if invalid_tools:
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Invalid tool names: {invalid_tools}"
+                detail=f"Invalid tool names: {invalid_tools}",
             )
         api_key.allowed_tools = config.allowed_tools if config.allowed_tools else None
 
@@ -236,7 +244,7 @@ async def update_mcp_key_config(
         if config.source_access_mode not in ("all", "restricted"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail="source_access_mode must be 'all' or 'restricted'"
+                detail="source_access_mode must be 'all' or 'restricted'",
             )
         api_key.source_access_mode = config.source_access_mode
 
@@ -271,15 +279,14 @@ async def update_tool_config(
 
     if not api_key:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
         )
 
     # Validate tool name
     if tool_name not in MCP_TOOLS:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Invalid tool name: {tool_name}"
+            detail=f"Invalid tool name: {tool_name}",
         )
 
     # Get or create tool config
@@ -335,8 +342,7 @@ async def list_source_access(
     )
     if not result.scalar_one_or_none():
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
         )
 
     # Get source access
@@ -359,7 +365,9 @@ async def list_source_access(
     ]
 
 
-@router.put("/keys/{key_id}/sources/{source_id}", response_model=MCPSourceAccessResponse)
+@router.put(
+    "/keys/{key_id}/sources/{source_id}", response_model=MCPSourceAccessResponse
+)
 async def update_source_access(
     key_id: UUID,
     source_id: UUID,
@@ -379,8 +387,7 @@ async def update_source_access(
     )
     if not result.scalar_one_or_none():
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
         )
 
     # Verify source exists
@@ -390,8 +397,7 @@ async def update_source_access(
     source = result.scalar_one_or_none()
     if not source:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document source not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document source not found"
         )
 
     # Get or create source access
@@ -429,7 +435,9 @@ async def update_source_access(
     )
 
 
-@router.delete("/keys/{key_id}/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT)
+@router.delete(
+    "/keys/{key_id}/sources/{source_id}", status_code=status.HTTP_204_NO_CONTENT
+)
 async def remove_source_access(
     key_id: UUID,
     source_id: UUID,
@@ -448,8 +456,7 @@ async def remove_source_access(
     )
     if not result.scalar_one_or_none():
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="API key not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="API key not found"
         )
 
     # Delete source access

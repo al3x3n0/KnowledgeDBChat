@@ -8,14 +8,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 
 from app.schemas.experiment import ScientificValidationRunSummaryResponse
 from app.services.scientific_validation_service import (
-    normalize_portfolio_automation_profile,
     normalize_portfolio_automation_policy,
+    normalize_portfolio_automation_profile,
     resolve_portfolio_automation_policy,
 )
 
 
 def _normalize_uuid_list(value: Any, *, max_items: int = 24) -> list[str]:
-    rows = value if isinstance(value, list) else str(value or "").replace("\n", ",").split(",")
+    rows = (
+        value
+        if isinstance(value, list)
+        else str(value or "").replace("\n", ",").split(",")
+    )
     out: list[str] = []
     for row in rows:
         text = str(row or "").strip()
@@ -71,8 +75,12 @@ class ResearchPortfolioCreate(BaseModel):
 
     @model_validator(mode="after")
     def _resolve_policy(self) -> "ResearchPortfolioCreate":
-        self.automation_profile = _normalize_profile(self.automation_profile, default="balanced")
-        self.automation_policy = resolve_portfolio_automation_policy(self.automation_profile, self.automation_policy)
+        self.automation_profile = _normalize_profile(
+            self.automation_profile, default="balanced"
+        )
+        self.automation_policy = resolve_portfolio_automation_policy(
+            self.automation_profile, self.automation_policy
+        )
         return self
 
 
@@ -123,7 +131,10 @@ class ResearchPortfolioActionRequest(BaseModel):
 
 
 class ResearchPortfolioOpportunityActionRequest(BaseModel):
-    action: str = Field(..., description="accept, suppress, reopen, create_plan, launch_validation, materialize_experiment, launch_follow_up, relaunch_follow_up")
+    action: str = Field(
+        ...,
+        description="accept, suppress, reopen, create_plan, launch_validation, materialize_experiment, launch_follow_up, relaunch_follow_up",
+    )
     operator_note: Optional[str] = Field(default=None, max_length=2000)
     start_immediately: Optional[bool] = None
 
@@ -151,7 +162,9 @@ class ResearchPortfolioResponse(BaseModel):
     latest_note_ids: Optional[List[str]] = None
     latest_experiment_plan_ids: Optional[List[str]] = None
     latest_validation_run_ids: Optional[List[str]] = None
-    latest_validation_runs: Optional[List[ScientificValidationRunSummaryResponse]] = None
+    latest_validation_runs: Optional[
+        List[ScientificValidationRunSummaryResponse]
+    ] = None
     child_job_ids: Optional[List[str]] = None
     active_job_id: Optional[UUID] = None
     latest_run_job_id: Optional[UUID] = None

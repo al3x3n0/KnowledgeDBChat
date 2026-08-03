@@ -1,5 +1,5 @@
 from datetime import datetime
-from typing import Any, Dict, Optional, List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -39,7 +39,6 @@ class LLMUsageSummaryResponse(BaseModel):
     date_to: Optional[datetime] = None
 
 
-
 class LLMRoutingSummaryItem(BaseModel):
     provider: str
     model: Optional[str] = None
@@ -74,7 +73,6 @@ class LLMRoutingSummaryResponse(BaseModel):
     truncated: bool
 
 
-
 class LLMRoutingExperimentVariantStat(BaseModel):
     experiment_id: str
     variant_id: str
@@ -96,7 +94,6 @@ class LLMRoutingExperimentRecommendationResponse(BaseModel):
     date_to: Optional[datetime] = None
     scanned_events: int
     truncated: bool
-
 
 
 class LLMRoutingExperimentListItem(BaseModel):

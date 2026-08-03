@@ -2,17 +2,17 @@
 MCP Search tool for semantic document search.
 """
 
-from typing import List, Optional, Any, Dict
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
 from app.mcp.auth import MCPAuthContext
-from app.models.document import Document, DocumentSource
-from app.services.vector_store import vector_store_service
+from app.models.document import Document
 from app.services.search_service import SearchService
+from app.services.vector_store import vector_store_service
 
 
 class SearchTool:
@@ -28,29 +28,26 @@ class SearchTool:
     input_schema = {
         "type": "object",
         "properties": {
-            "query": {
-                "type": "string",
-                "description": "The search query"
-            },
+            "query": {"type": "string", "description": "The search query"},
             "limit": {
                 "type": "integer",
                 "description": "Maximum number of results to return",
                 "default": 10,
                 "minimum": 1,
-                "maximum": 50
+                "maximum": 50,
             },
             "source_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional: Filter by specific source IDs"
+                "description": "Optional: Filter by specific source IDs",
             },
             "file_types": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional: Filter by file types (e.g., 'pdf', 'md', 'docx')"
+                "description": "Optional: Filter by file types (e.g., 'pdf', 'md', 'docx')",
             },
         },
-        "required": ["query"]
+        "required": ["query"],
     }
 
     def __init__(self):
@@ -85,14 +82,16 @@ class SearchTool:
 
         try:
             # Get user's accessible document IDs
-            accessible_doc_ids = await self._get_accessible_documents(auth, db, source_ids)
+            accessible_doc_ids = await self._get_accessible_documents(
+                auth, db, source_ids
+            )
 
             if not accessible_doc_ids:
                 return {
                     "results": [],
                     "total": 0,
                     "query": query,
-                    "message": "No accessible documents found"
+                    "message": "No accessible documents found",
                 }
 
             # Initialize vector store
@@ -100,8 +99,7 @@ class SearchTool:
 
             # Perform search
             raw_results = await vector_store_service.search(
-                query=query,
-                limit=limit * 2  # Get more to filter
+                query=query, limit=limit * 2  # Get more to filter
             )
 
             # Filter results by accessible documents
@@ -119,15 +117,19 @@ class SearchTool:
                         if file_type.lower() not in [ft.lower() for ft in file_types]:
                             continue
 
-                    filtered_results.append({
-                        "content": result.get("content", result.get("page_content", "")),
-                        "document_id": result_doc_id,
-                        "title": metadata.get("title", "Unknown"),
-                        "file_type": metadata.get("file_type"),
-                        "source": metadata.get("source"),
-                        "score": result.get("score", 0),
-                        "chunk_index": metadata.get("chunk_index"),
-                    })
+                    filtered_results.append(
+                        {
+                            "content": result.get(
+                                "content", result.get("page_content", "")
+                            ),
+                            "document_id": result_doc_id,
+                            "title": metadata.get("title", "Unknown"),
+                            "file_type": metadata.get("file_type"),
+                            "source": metadata.get("source"),
+                            "score": result.get("score", 0),
+                            "chunk_index": metadata.get("chunk_index"),
+                        }
+                    )
 
                     if len(filtered_results) >= limit:
                         break
@@ -140,12 +142,7 @@ class SearchTool:
 
         except Exception as e:
             logger.error(f"MCP search error: {e}")
-            return {
-                "results": [],
-                "total": 0,
-                "query": query,
-                "error": str(e)
-            }
+            return {"results": [], "total": 0, "query": query, "error": str(e)}
 
     async def _get_accessible_documents(
         self,

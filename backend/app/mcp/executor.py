@@ -14,12 +14,11 @@ from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp.auth import MCPAuthContext
-from app.mcp.tools.search import SearchTool
-from app.mcp.tools.documents import DocumentsTool
 from app.mcp.tools.chat import ChatTool
+from app.mcp.tools.documents import DocumentsTool
 from app.mcp.tools.generation import GenerationTool
+from app.mcp.tools.search import SearchTool
 from app.mcp.tools.web_scrape import WebScrapeTool
-
 
 _search_tool = SearchTool()
 _documents_tool = DocumentsTool()

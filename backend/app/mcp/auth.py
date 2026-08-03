@@ -10,9 +10,9 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import HTTPException, Request, status
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
 from app.models.api_key import APIKey, APIKeyUsageLog
 from app.models.user import User
@@ -48,7 +48,7 @@ class MCPAuthContext:
         if not self.has_scope(scope):
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
-                detail=f"API key missing required scope: {scope}"
+                detail=f"API key missing required scope: {scope}",
             )
 
 
@@ -83,8 +83,8 @@ async def validate_api_key(
     result = await db.execute(
         select(APIKey)
         .where(APIKey.key_hash == key_hash)
-        .where(APIKey.is_active == True)
-        .where(APIKey.revoked_at == None)
+        .where(APIKey.is_active.is_(True))
+        .where(APIKey.revoked_at.is_(None))
     )
     db_key = result.scalar_one_or_none()
 
@@ -103,9 +103,7 @@ async def validate_api_key(
         return None
 
     # Load the user
-    result = await db.execute(
-        select(User).where(User.id == db_key.user_id)
-    )
+    result = await db.execute(select(User).where(User.id == db_key.user_id))
     user = result.scalar_one_or_none()
 
     if not user or not user.is_active:

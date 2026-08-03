@@ -1,5 +1,6 @@
 import json
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import httpx
@@ -10,6 +11,7 @@ from app.services.external_agent_gateway_service import (
     ExternalAgentGatewayError,
     ExternalAgentGatewayService,
 )
+from app.services.secret_service import SecretService
 
 
 async def _public_resolver(_host, _port):
@@ -47,6 +49,23 @@ def _compops_tool(**config_overrides):
     )
 
 
+def _mlflow_tool(**config_overrides):
+    return _tool(
+        **{
+            "provider_type": "mlflow",
+            "endpoint_url": "https://mlflow.example.test",
+            "capabilities": [
+                "mlflow.experiments.search",
+                "mlflow.runs.get",
+                "mlflow.runs.search",
+                "mlflow.artifacts.list",
+                "mlflow.model_versions.get",
+            ],
+            **config_overrides,
+        }
+    )
+
+
 @pytest.mark.asyncio
 async def test_invokes_allowed_capability_and_returns_provenance():
     received = {}
@@ -77,6 +96,8 @@ async def test_invokes_allowed_capability_and_returns_provenance():
     )
 
     assert received["request"].url.host == "agent.example.test"
+    assert received["request"].headers["Idempotency-Key"] == "request-1"
+    assert received["request"].headers["X-Request-ID"] == "request-1"
     assert result["output"]["status"] == "completed"
     assert result["provenance"]["external_agent_id"] == str(tool.id)
     assert result["provenance"]["capability"] == "research.summarize"
@@ -250,3 +271,140 @@ def test_compops_adapter_rejects_capabilities_outside_typed_surface():
                 "capabilities": ["compops.admin.worker.install"],
             }
         )
+
+
+@pytest.mark.asyncio
+async def test_mlflow_adapter_maps_run_and_artifact_reads_to_rest_v2():
+    requests = []
+
+    def handler(request):
+        requests.append(request)
+        return httpx.Response(200, json={"run": {"info": {"run_id": "run-1"}}})
+
+    service = ExternalAgentGatewayService(
+        transport=httpx.MockTransport(handler),
+        resolver=_public_resolver,
+    )
+    tool = _mlflow_tool()
+
+    result = await service.invoke(
+        tool=tool,
+        user=SimpleNamespace(id=uuid4()),
+        db=None,
+        capability="mlflow.runs.get",
+        payload={"run_id": "run-1"},
+        request_id="mlflow-read-1",
+    )
+    await service.invoke(
+        tool=tool,
+        user=SimpleNamespace(id=uuid4()),
+        db=None,
+        capability="mlflow.artifacts.list",
+        payload={"run_id": "run-1", "path": "benchmarks"},
+    )
+
+    assert requests[0].method == "GET"
+    assert requests[0].url.path == "/api/2.0/mlflow/runs/get"
+    assert requests[0].url.params["run_id"] == "run-1"
+    assert requests[1].url.path == "/api/2.0/mlflow/artifacts/list"
+    assert requests[1].url.params["path"] == "benchmarks"
+    assert result["provenance"]["provider_type"] == "mlflow"
+    assert result["provenance"]["remote_references"]["run_id"] == "run-1"
+
+
+@pytest.mark.asyncio
+async def test_mlflow_adapter_bounds_run_search_and_forwards_json():
+    received = {}
+
+    def handler(request):
+        received["request"] = request
+        return httpx.Response(200, json={"runs": []})
+
+    service = ExternalAgentGatewayService(
+        transport=httpx.MockTransport(handler),
+        resolver=_public_resolver,
+    )
+    await service.invoke(
+        tool=_mlflow_tool(),
+        user=SimpleNamespace(id=uuid4()),
+        db=None,
+        capability="mlflow.runs.search",
+        payload={
+            "experiment_ids": ["1", "2"],
+            "filter": "metrics.cycles < 1000",
+            "max_results": 25,
+            "order_by": ["metrics.cycles ASC"],
+        },
+    )
+
+    request = received["request"]
+    assert request.method == "POST"
+    assert request.url.path == "/api/2.0/mlflow/runs/search"
+    assert json.loads(request.content) == {
+        "experiment_ids": ["1", "2"],
+        "filter": "metrics.cycles < 1000",
+        "max_results": 25,
+        "order_by": ["metrics.cycles ASC"],
+    }
+
+    with pytest.raises(ExternalAgentGatewayError, match="between 1 and 100"):
+        await service.invoke(
+            tool=_mlflow_tool(),
+            user=SimpleNamespace(id=uuid4()),
+            db=None,
+            capability="mlflow.runs.search",
+            payload={"experiment_ids": ["1"], "max_results": 1000},
+        )
+
+
+def test_mlflow_adapter_rejects_untyped_capabilities():
+    service = ExternalAgentGatewayService()
+
+    with pytest.raises(ExternalAgentGatewayError, match="Unsupported MLflow"):
+        service.validate_config(
+            {
+                "provider_type": "mlflow",
+                "endpoint_url": "https://mlflow.example.test",
+                "capabilities": ["mlflow.artifacts.delete"],
+            }
+        )
+
+
+@pytest.mark.asyncio
+async def test_mlflow_basic_auth_uses_vault_secret_without_exposing_it():
+    received = {}
+
+    def handler(request):
+        received["authorization"] = request.headers.get("Authorization")
+        return httpx.Response(200, json={"experiments": []})
+
+    secret_id = uuid4()
+    user_id = uuid4()
+    secret = SimpleNamespace(
+        encrypted_value=SecretService().encrypt("researcher:correct-horse")
+    )
+    db = SimpleNamespace(
+        execute=AsyncMock(
+            return_value=SimpleNamespace(
+                scalar_one_or_none=lambda: secret,
+            )
+        )
+    )
+    service = ExternalAgentGatewayService(
+        transport=httpx.MockTransport(handler),
+        resolver=_public_resolver,
+    )
+    result = await service.invoke(
+        tool=_mlflow_tool(
+            capabilities=["mlflow.experiments.search"],
+            auth_type="basic",
+            secret_id=str(secret_id),
+        ),
+        user=SimpleNamespace(id=user_id),
+        db=db,
+        capability="mlflow.experiments.search",
+        payload={"max_results": 1},
+    )
+
+    assert received["authorization"] == "Basic cmVzZWFyY2hlcjpjb3JyZWN0LWhvcnNl"
+    assert "correct-horse" not in repr(result)

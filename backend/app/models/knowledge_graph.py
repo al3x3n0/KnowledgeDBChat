@@ -2,23 +2,23 @@
 Knowledge graph database models: entities, mentions, and relationships.
 """
 
+import uuid
 from datetime import datetime
-from typing import Optional
+
 from sqlalchemy import (
+    Boolean,
     Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
     String,
     Text,
-    DateTime,
-    ForeignKey,
-    Float,
-    Boolean,
-    Index,
     UniqueConstraint,
-    Integer,
 )
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
-import uuid
 
 from app.core.database import Base
 
@@ -30,16 +30,34 @@ class Entity(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     canonical_name = Column(String(512), nullable=False)
-    entity_type = Column(String(64), nullable=False)  # person, org, location, product, email, url, other
+    entity_type = Column(
+        String(64), nullable=False
+    )  # person, org, location, product, email, url, other
     description = Column(Text, nullable=True)
-    properties = Column(Text, nullable=True)  # JSON string to avoid PG JSON dependency coupling
+    properties = Column(
+        Text, nullable=True
+    )  # JSON string to avoid PG JSON dependency coupling
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     # Relationships
-    mentions = relationship("EntityMention", back_populates="entity", cascade="all, delete-orphan")
-    outgoing = relationship("Relationship", back_populates="source_entity", foreign_keys="Relationship.source_entity_id", cascade="all, delete-orphan")
-    incoming = relationship("Relationship", back_populates="target_entity", foreign_keys="Relationship.target_entity_id", cascade="all, delete-orphan")
+    mentions = relationship(
+        "EntityMention", back_populates="entity", cascade="all, delete-orphan"
+    )
+    outgoing = relationship(
+        "Relationship",
+        back_populates="source_entity",
+        foreign_keys="Relationship.source_entity_id",
+        cascade="all, delete-orphan",
+    )
+    incoming = relationship(
+        "Relationship",
+        back_populates="target_entity",
+        foreign_keys="Relationship.target_entity_id",
+        cascade="all, delete-orphan",
+    )
 
     __table_args__ = (
         Index("ix_kg_entities_type_name", "entity_type", "canonical_name"),
@@ -52,11 +70,23 @@ class EntityMention(Base):
     __tablename__ = "kg_entity_mentions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    entity_id = Column(UUID(as_uuid=True), ForeignKey("kg_entities.id", ondelete="CASCADE"), nullable=False)
+    entity_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
 
     # Provenance
-    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    chunk_id = Column(UUID(as_uuid=True), ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=True)
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("document_chunks.id", ondelete="CASCADE"),
+        nullable=True,
+    )
 
     text = Column(String(512), nullable=False)
     start_pos = Column(Integer, nullable=True)
@@ -78,27 +108,57 @@ class Relationship(Base):
     __tablename__ = "kg_relationships"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    relation_type = Column(String(64), nullable=False)  # works_for, mentions, part_of, references, etc.
+    relation_type = Column(
+        String(64), nullable=False
+    )  # works_for, mentions, part_of, references, etc.
     confidence = Column(Float, default=0.5)
     inferred = Column(Boolean, default=False)
 
     # Endpoints
-    source_entity_id = Column(UUID(as_uuid=True), ForeignKey("kg_entities.id", ondelete="CASCADE"), nullable=False)
-    target_entity_id = Column(UUID(as_uuid=True), ForeignKey("kg_entities.id", ondelete="CASCADE"), nullable=False)
+    source_entity_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    target_entity_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("kg_entities.id", ondelete="CASCADE"),
+        nullable=False,
+    )
 
     # Provenance
-    document_id = Column(UUID(as_uuid=True), ForeignKey("documents.id", ondelete="CASCADE"), nullable=False)
-    chunk_id = Column(UUID(as_uuid=True), ForeignKey("document_chunks.id", ondelete="CASCADE"), nullable=True)
-    evidence = Column(Text, nullable=True)  # sentence or snippet supporting the relation
+    document_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("documents.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    chunk_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("document_chunks.id", ondelete="CASCADE"),
+        nullable=True,
+    )
+    evidence = Column(
+        Text, nullable=True
+    )  # sentence or snippet supporting the relation
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 
-    source_entity = relationship("Entity", foreign_keys=[source_entity_id], back_populates="outgoing")
-    target_entity = relationship("Entity", foreign_keys=[target_entity_id], back_populates="incoming")
+    source_entity = relationship(
+        "Entity", foreign_keys=[source_entity_id], back_populates="outgoing"
+    )
+    target_entity = relationship(
+        "Entity", foreign_keys=[target_entity_id], back_populates="incoming"
+    )
 
     __table_args__ = (
         Index("ix_kg_relations_type", "relation_type"),
         Index("ix_kg_relations_doc", "document_id"),
-        UniqueConstraint("relation_type", "source_entity_id", "target_entity_id", "document_id", name="uq_kg_relation_once_per_doc"),
+        UniqueConstraint(
+            "relation_type",
+            "source_entity_id",
+            "target_entity_id",
+            "document_id",
+            name="uq_kg_relation_once_per_doc",
+        ),
     )
 
 
@@ -109,7 +169,9 @@ class KGAuditLog(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     user_id = Column(UUID(as_uuid=True), nullable=False)
-    action = Column(String(64), nullable=False)  # merge_entities, update_entity, delete_entity
+    action = Column(
+        String(64), nullable=False
+    )  # merge_entities, update_entity, delete_entity
     details = Column(Text, nullable=True)  # JSON string
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
 

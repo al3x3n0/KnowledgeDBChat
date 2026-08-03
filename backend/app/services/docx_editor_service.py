@@ -3,19 +3,14 @@ DOCX Editor Service - handles conversion between DOCX and HTML for web editing.
 """
 
 import hashlib
-import tempfile
-import re
-from typing import Dict, Any, Optional, List, Tuple
-from pathlib import Path
 from io import BytesIO
-from loguru import logger
+from pathlib import Path
+from typing import Any, Dict, Optional
 
 import mammoth
-from docx import Document
-from docx.shared import Pt, Inches
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.style import WD_STYLE_TYPE
 from bs4 import BeautifulSoup, NavigableString
+from docx import Document
+from loguru import logger
 
 
 class DocxEditorService:
@@ -50,10 +45,7 @@ class DocxEditorService:
         """
         try:
             with open(file_path, "rb") as docx_file:
-                result = mammoth.convert_to_html(
-                    docx_file,
-                    style_map=self.style_map
-                )
+                result = mammoth.convert_to_html(docx_file, style_map=self.style_map)
 
             html_content = result.value
             warnings = [msg.message for msg in result.messages]
@@ -101,9 +93,7 @@ class DocxEditorService:
         return str(soup)
 
     async def html_to_docx(
-        self,
-        html_content: str,
-        original_path: Optional[str] = None
+        self, html_content: str, original_path: Optional[str] = None
     ) -> bytes:
         """
         Convert HTML back to DOCX format.
@@ -146,7 +136,6 @@ class DocxEditorService:
     def _setup_default_styles(self, doc: Document) -> None:
         """Setup default styles for a new document."""
         # Styles are automatically available in python-docx
-        pass
 
     def _convert_html_to_docx(self, soup: BeautifulSoup, doc: Document) -> None:
         """Convert parsed HTML to DOCX elements."""

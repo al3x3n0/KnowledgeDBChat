@@ -4,11 +4,11 @@ Connector for ingesting content from the ArXiv API.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-import httpx
-import xml.etree.ElementTree as ET
 
+import httpx
 from loguru import logger
 
 from .base_connector import BaseConnector
@@ -33,10 +33,24 @@ class ArxivConnector(BaseConnector):
         try:
             cfg = config or {}
             self.api_url = (cfg.get("api_url") or self.api_url).rstrip("/")
-            self.queries = [q.strip() for q in (cfg.get("queries") or []) if isinstance(q, str) and q.strip()]
-            categories = [c.strip() for c in (cfg.get("categories") or []) if isinstance(c, str) and c.strip()]
-            self.paper_ids = [self._normalize_id(pid) for pid in (cfg.get("paper_ids") or []) if isinstance(pid, str) and pid.strip()]
-            self.max_results = int(max(1, min(int(cfg.get("max_results", self.max_results)), 200)))
+            self.queries = [
+                q.strip()
+                for q in (cfg.get("queries") or [])
+                if isinstance(q, str) and q.strip()
+            ]
+            categories = [
+                c.strip()
+                for c in (cfg.get("categories") or [])
+                if isinstance(c, str) and c.strip()
+            ]
+            self.paper_ids = [
+                self._normalize_id(pid)
+                for pid in (cfg.get("paper_ids") or [])
+                if isinstance(pid, str) and pid.strip()
+            ]
+            self.max_results = int(
+                max(1, min(int(cfg.get("max_results", self.max_results)), 200))
+            )
             self.start = int(max(0, min(int(cfg.get("start", self.start)), 1000)))
             self.sort_by = cfg.get("sort_by", self.sort_by)
             self.sort_order = cfg.get("sort_order", self.sort_order)
@@ -46,7 +60,9 @@ class ArxivConnector(BaseConnector):
                 self.queries = [combined]
 
             if not self.queries and not self.paper_ids:
-                raise ValueError("ArXiv connector requires at least one search query or paper id.")
+                raise ValueError(
+                    "ArXiv connector requires at least one search query or paper id."
+                )
 
             self.session = httpx.AsyncClient(
                 headers={"User-Agent": "KnowledgeDBChat-ArxivConnector"},
@@ -133,9 +149,15 @@ class ArxivConnector(BaseConnector):
 
         sections = [
             entry.get("title"),
-            f"Authors: {', '.join(entry.get('authors', []))}" if entry.get("authors") else None,
-            f"Categories: {', '.join(entry.get('categories', []))}" if entry.get("categories") else None,
-            f"Primary Category: {entry.get('primary_category')}" if entry.get("primary_category") else None,
+            f"Authors: {', '.join(entry.get('authors', []))}"
+            if entry.get("authors")
+            else None,
+            f"Categories: {', '.join(entry.get('categories', []))}"
+            if entry.get("categories")
+            else None,
+            f"Primary Category: {entry.get('primary_category')}"
+            if entry.get("primary_category")
+            else None,
             f"DOI: {entry.get('doi')}" if entry.get("doi") else None,
             f"Comments: {entry.get('comments')}" if entry.get("comments") else None,
             "Abstract:",
@@ -203,25 +225,38 @@ class ArxivConnector(BaseConnector):
             identifier = entry.findtext("atom:id", default="", namespaces=ns)
             if not identifier:
                 continue
-            title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
-            summary = (entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
-            published_text = entry.findtext("atom:published", default="", namespaces=ns) or ""
-            updated_text = entry.findtext("atom:updated", default="", namespaces=ns) or ""
+            title = (
+                entry.findtext("atom:title", default="", namespaces=ns) or ""
+            ).strip()
+            summary = (
+                entry.findtext("atom:summary", default="", namespaces=ns) or ""
+            ).strip()
+            published_text = (
+                entry.findtext("atom:published", default="", namespaces=ns) or ""
+            )
+            updated_text = (
+                entry.findtext("atom:updated", default="", namespaces=ns) or ""
+            )
             published = self._parse_datetime(updated_text or published_text)
             authors = [
                 (author.findtext("atom:name", default="", namespaces=ns) or "").strip()
                 for author in entry.findall("atom:author", ns)
             ]
             categories = [
-                cat.get("term") for cat in entry.findall("atom:category", ns)
+                cat.get("term")
+                for cat in entry.findall("atom:category", ns)
                 if cat.get("term")
             ]
             pdf_url = None
             for link in entry.findall("atom:link", ns):
                 if link.get("title") == "pdf" or link.get("type") == "application/pdf":
                     pdf_url = link.get("href")
-            doi = (entry.findtext("arxiv:doi", default="", namespaces=ns) or "").strip() or None
-            comments = (entry.findtext("arxiv:comment", default="", namespaces=ns) or "").strip() or None
+            doi = (
+                entry.findtext("arxiv:doi", default="", namespaces=ns) or ""
+            ).strip() or None
+            comments = (
+                entry.findtext("arxiv:comment", default="", namespaces=ns) or ""
+            ).strip() or None
             primary_cat = None
             primary_node = entry.find("arxiv:primary_category", ns)
             if primary_node is not None:
@@ -238,7 +273,7 @@ class ArxivConnector(BaseConnector):
                     "categories": categories,
                     "primary_category": primary_cat,
                     "doi": doi,
-                }
+                },
             }
             entries.append(doc)
             self.entry_cache[identifier] = {

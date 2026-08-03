@@ -4,10 +4,11 @@ Background tasks for template filling.
 
 import asyncio
 import json
-from typing import Dict, Any
+from typing import Any, Dict
 from uuid import UUID
-from loguru import logger
+
 import redis
+from loguru import logger
 
 from app.core.celery import celery_app
 from app.core.config import settings
@@ -55,10 +56,13 @@ async def _async_fill_template(task, job_id: str) -> Dict[str, Any]:
             result = await service.process_template_job(job, db, progress_callback)
 
             if result.get("success"):
-                _publish_complete(job_id, {
-                    "filled_filename": result.get("filled_filename"),
-                    "filled_file_path": result.get("filled_file_path")
-                })
+                _publish_complete(
+                    job_id,
+                    {
+                        "filled_filename": result.get("filled_filename"),
+                        "filled_file_path": result.get("filled_file_path"),
+                    },
+                )
             else:
                 _publish_error(job_id, result.get("error", "Unknown error"))
 
@@ -96,11 +100,13 @@ def _publish_progress(job_id: str, progress: dict):
         client = _get_redis_client()
         if client:
             channel = f"template_progress:{job_id}"
-            msg = json.dumps({
-                "type": "progress",
-                "job_id": job_id,
-                "data": progress,
-            })
+            msg = json.dumps(
+                {
+                    "type": "progress",
+                    "job_id": job_id,
+                    "data": progress,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish template progress: {e}")
@@ -112,11 +118,13 @@ def _publish_complete(job_id: str, result: dict):
         client = _get_redis_client()
         if client:
             channel = f"template_progress:{job_id}"
-            msg = json.dumps({
-                "type": "complete",
-                "job_id": job_id,
-                "result": result,
-            })
+            msg = json.dumps(
+                {
+                    "type": "complete",
+                    "job_id": job_id,
+                    "result": result,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish template complete: {e}")
@@ -128,11 +136,13 @@ def _publish_error(job_id: str, error: str):
         client = _get_redis_client()
         if client:
             channel = f"template_progress:{job_id}"
-            msg = json.dumps({
-                "type": "error",
-                "job_id": job_id,
-                "error": error,
-            })
+            msg = json.dumps(
+                {
+                    "type": "error",
+                    "job_id": job_id,
+                    "error": error,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish template error: {e}")

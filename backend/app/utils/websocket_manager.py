@@ -3,9 +3,9 @@ WebSocket connection manager for real-time updates.
 """
 
 from typing import Dict, List, Set
+
 from fastapi import WebSocket
 from loguru import logger
-import json
 from starlette.websockets import WebSocketState
 
 
@@ -27,7 +27,9 @@ class WebSocketManager:
             self.active_connections[document_id] = set()
 
         self.active_connections[document_id].add(websocket)
-        logger.info(f"WebSocket connected for document {document_id}. Total connections: {len(self.active_connections[document_id])}")
+        logger.info(
+            f"WebSocket connected for document {document_id}. Total connections: {len(self.active_connections[document_id])}"
+        )
 
     def disconnect(self, websocket: WebSocket, document_id: str):
         """Disconnect a WebSocket."""
@@ -63,137 +65,181 @@ class WebSocketManager:
         # Remove disconnected websockets after iteration
         for ws in disconnected:
             self.disconnect(ws, key)
-    
+
     async def send_progress(self, document_id: str, progress: dict):
         """Send progress update to all connected clients for a document."""
-        await self._broadcast(document_id, {
-            "type": "transcription_progress",
-            "document_id": document_id,
-            "progress": progress
-        })
+        await self._broadcast(
+            document_id,
+            {
+                "type": "transcription_progress",
+                "document_id": document_id,
+                "progress": progress,
+            },
+        )
 
     async def send_complete(self, document_id: str, result: dict):
         """Send completion message to all connected clients."""
-        await self._broadcast(document_id, {
-            "type": "transcription_complete",
-            "document_id": document_id,
-            "result": result
-        })
+        await self._broadcast(
+            document_id,
+            {
+                "type": "transcription_complete",
+                "document_id": document_id,
+                "result": result,
+            },
+        )
 
     async def send_error(self, document_id: str, error: str):
         """Send error message to all connected clients."""
-        await self._broadcast(document_id, {
-            "type": "transcription_error",
-            "document_id": document_id,
-            "error": error
-        })
+        await self._broadcast(
+            document_id,
+            {"type": "transcription_error", "document_id": document_id, "error": error},
+        )
 
     async def send_segment(self, document_id: str, segment: dict):
         """Send a partial transcription segment to clients."""
-        await self._broadcast(document_id, {
-            "type": "transcription_segment",
-            "document_id": document_id,
-            "segment": segment,
-        })
+        await self._broadcast(
+            document_id,
+            {
+                "type": "transcription_segment",
+                "document_id": document_id,
+                "segment": segment,
+            },
+        )
 
     async def send_status(self, document_id: str, status: dict):
         """Send document status update (flags) to clients."""
-        await self._broadcast(document_id, {
-            "type": "document_status",
-            "document_id": document_id,
-            "status": status,
-        })
+        await self._broadcast(
+            document_id,
+            {
+                "type": "document_status",
+                "document_id": document_id,
+                "status": status,
+            },
+        )
 
     # Summarization-specific events
     async def send_summarization_progress(self, document_id: str, progress: dict):
         """Send summarization progress to clients."""
-        await self._broadcast(document_id, {
-            "type": "summarization_progress",
-            "document_id": document_id,
-            "progress": progress,
-        })
+        await self._broadcast(
+            document_id,
+            {
+                "type": "summarization_progress",
+                "document_id": document_id,
+                "progress": progress,
+            },
+        )
 
     async def send_summarization_complete(self, document_id: str, result: dict):
         """Send summarization completion to clients."""
-        await self._broadcast(document_id, {
-            "type": "summarization_complete",
-            "document_id": document_id,
-            "result": result,
-        })
+        await self._broadcast(
+            document_id,
+            {
+                "type": "summarization_complete",
+                "document_id": document_id,
+                "result": result,
+            },
+        )
 
     async def send_summarization_error(self, document_id: str, error: str):
         """Send summarization error to clients."""
-        await self._broadcast(document_id, {
-            "type": "summarization_error",
-            "document_id": document_id,
-            "error": error,
-        })
+        await self._broadcast(
+            document_id,
+            {
+                "type": "summarization_error",
+                "document_id": document_id,
+                "error": error,
+            },
+        )
 
     async def send_summarization_status(self, document_id: str, status: dict):
         """Send summarization status to clients."""
-        await self._broadcast(document_id, {
-            "type": "summarization_status",
-            "document_id": document_id,
-            "status": status,
-        })
+        await self._broadcast(
+            document_id,
+            {
+                "type": "summarization_status",
+                "document_id": document_id,
+                "status": status,
+            },
+        )
 
     # Ingestion-specific events (source_id keyed)
     async def send_ingestion_progress(self, source_id: str, progress: dict):
         """Send ingestion progress to clients."""
-        await self._broadcast(source_id, {
-            "type": "ingestion_progress",
-            "source_id": source_id,
-            "progress": progress,
-        })
+        await self._broadcast(
+            source_id,
+            {
+                "type": "ingestion_progress",
+                "source_id": source_id,
+                "progress": progress,
+            },
+        )
 
     async def send_ingestion_complete(self, source_id: str, result: dict):
         """Send ingestion completion to clients."""
-        await self._broadcast(source_id, {
-            "type": "ingestion_complete",
-            "source_id": source_id,
-            "result": result,
-        })
+        await self._broadcast(
+            source_id,
+            {
+                "type": "ingestion_complete",
+                "source_id": source_id,
+                "result": result,
+            },
+        )
 
     async def send_ingestion_error(self, source_id: str, error: str):
         """Send ingestion error to clients."""
-        await self._broadcast(source_id, {
-            "type": "ingestion_error",
-            "source_id": source_id,
-            "error": error,
-        })
+        await self._broadcast(
+            source_id,
+            {
+                "type": "ingestion_error",
+                "source_id": source_id,
+                "error": error,
+            },
+        )
 
     async def send_ingestion_status(self, source_id: str, status: dict):
         """Send ingestion status to clients."""
-        await self._broadcast(source_id, {
-            "type": "ingestion_status",
-            "source_id": source_id,
-            "status": status,
-        })
+        await self._broadcast(
+            source_id,
+            {
+                "type": "ingestion_status",
+                "source_id": source_id,
+                "status": status,
+            },
+        )
 
     # Agent job specific events
     async def send_agent_job_progress(self, job_id: str, progress: dict):
         """Send agent job progress to clients."""
-        await self._broadcast(f"agent_job:{job_id}", {
-            "type": "agent_job_progress",
-            "job_id": job_id,
-            "progress": progress,
-        })
+        await self._broadcast(
+            f"agent_job:{job_id}",
+            {
+                "type": "agent_job_progress",
+                "job_id": job_id,
+                "progress": progress,
+            },
+        )
 
     async def send_agent_job_complete(self, job_id: str, result: dict):
         """Send agent job completion to clients."""
-        await self._broadcast(f"agent_job:{job_id}", {
-            "type": "agent_job_complete",
-            "job_id": job_id,
-            "result": result,
-        })
+        await self._broadcast(
+            f"agent_job:{job_id}",
+            {
+                "type": "agent_job_complete",
+                "job_id": job_id,
+                "result": result,
+            },
+        )
 
     async def send_agent_job_error(self, job_id: str, error: str):
         """Send agent job error to clients."""
-        await self._broadcast(f"agent_job:{job_id}", {
-            "type": "agent_job_error",
-            "job_id": job_id,
-            "error": error,
-        })
+        await self._broadcast(
+            f"agent_job:{job_id}",
+            {
+                "type": "agent_job_error",
+                "job_id": job_id,
+                "error": error,
+            },
+        )
 
     async def connect_agent_job(self, websocket: WebSocket, job_id: str):
         """Connect a WebSocket for a specific agent job."""
@@ -205,7 +251,9 @@ class WebSocketManager:
             self.active_connections[key] = set()
 
         self.active_connections[key].add(websocket)
-        logger.info(f"WebSocket connected for agent job {job_id}. Total connections: {len(self.active_connections[key])}")
+        logger.info(
+            f"WebSocket connected for agent job {job_id}. Total connections: {len(self.active_connections[key])}"
+        )
 
     def disconnect_agent_job(self, websocket: WebSocket, job_id: str):
         """Disconnect a WebSocket for agent job."""

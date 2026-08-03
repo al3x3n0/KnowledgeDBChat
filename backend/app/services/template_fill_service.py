@@ -4,22 +4,21 @@ Template fill service for AI-powered document generation.
 
 import os
 import tempfile
-from pathlib import Path
-from typing import List, Dict, Any, Optional
-from uuid import UUID
 from datetime import datetime
+from typing import Any, Dict, List, Optional
+from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.document import Document
 from app.models.template import TemplateJob
 from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.vector_store import vector_store_service
 from app.services.storage_service import storage_service
+from app.services.vector_store import vector_store_service
 from app.utils.template_parser import TemplateParser
-from app.core.config import settings
 
 
 class TemplateFillService:
@@ -60,7 +59,7 @@ class TemplateFillService:
         section_title: str,
         source_document_ids: List[str],
         db: AsyncSession,
-        max_results: int = 5
+        max_results: int = 5,
     ) -> str:
         """
         Gather relevant context from source documents for a specific section.
@@ -89,14 +88,15 @@ class TemplateFillService:
             documents = result.scalars().all()
 
             if not documents:
-                logger.warning(f"No source documents found for IDs: {source_document_ids}")
+                logger.warning(
+                    f"No source documents found for IDs: {source_document_ids}"
+                )
                 return ""
 
             # Search vector store with the section title as query
             # Filter by document IDs
             search_results = await self.vector_store.search(
-                query=section_title,
-                limit=max_results * 2  # Get more to filter
+                query=section_title, limit=max_results * 2  # Get more to filter
             )
 
             # Filter results to only include our source documents
@@ -114,12 +114,16 @@ class TemplateFillService:
 
             if not filtered_results:
                 # Fallback: get document content directly
-                logger.info(f"No vector search results, using document content directly")
+                logger.info("No vector search results, using document content directly")
                 context_parts = []
                 for doc in documents[:3]:  # Limit to first 3 documents
                     if doc.content:
                         # Truncate if too long
-                        content = doc.content[:3000] if len(doc.content) > 3000 else doc.content
+                        content = (
+                            doc.content[:3000]
+                            if len(doc.content) > 3000
+                            else doc.content
+                        )
                         context_parts.append(f"From '{doc.title}':\n{content}")
                 return "\n\n".join(context_parts)
 
@@ -136,7 +140,9 @@ class TemplateFillService:
                 )
 
             context = "\n\n".join(context_parts)
-            logger.info(f"Gathered context for section '{section_title}': {len(context)} chars from {len(filtered_results)} chunks")
+            logger.info(
+                f"Gathered context for section '{section_title}': {len(context)} chars from {len(filtered_results)} chunks"
+            )
             return context
 
         except Exception as e:
@@ -186,7 +192,9 @@ Write the content for "{section_title}":"""
 
         try:
             # Determine if we should use DeepSeek for heavy content
-            prefer_deepseek = len(context) > settings.SUMMARIZATION_HEAVY_THRESHOLD_CHARS
+            prefer_deepseek = (
+                len(context) > settings.SUMMARIZATION_HEAVY_THRESHOLD_CHARS
+            )
 
             response = await self.llm_service.generate_response(
                 query=prompt,
@@ -196,18 +204,19 @@ Write the content for "{section_title}":"""
                 user_settings=user_settings,
             )
 
-            logger.info(f"Generated {len(response)} chars for section '{section_title}'")
+            logger.info(
+                f"Generated {len(response)} chars for section '{section_title}'"
+            )
             return response.strip()
 
         except Exception as e:
-            logger.error(f"Failed to generate content for section '{section_title}': {e}")
+            logger.error(
+                f"Failed to generate content for section '{section_title}': {e}"
+            )
             return f"[Error generating content for '{section_title}': {str(e)}]"
 
     async def fill_template(
-        self,
-        template_path: str,
-        sections_content: Dict[str, str],
-        output_path: str
+        self, template_path: str, sections_content: Dict[str, str], output_path: str
     ) -> str:
         """
         Fill template with generated content.
@@ -222,9 +231,7 @@ Write the content for "{section_title}":"""
         """
         try:
             result_path = TemplateParser.fill_sections(
-                template_path,
-                sections_content,
-                output_path
+                template_path, sections_content, output_path
             )
             logger.info(f"Filled template saved to {result_path}")
             return result_path
@@ -233,10 +240,7 @@ Write the content for "{section_title}":"""
             raise
 
     async def process_template_job(
-        self,
-        job: TemplateJob,
-        db: AsyncSession,
-        progress_callback=None
+        self, job: TemplateJob, db: AsyncSession, progress_callback=None
     ) -> Dict[str, Any]:
         """
         Process a complete template filling job.
@@ -258,15 +262,20 @@ Write the content for "{section_title}":"""
         user_settings = None
         try:
             from app.models.memory import UserPreferences
+
             result = await db.execute(
                 select(UserPreferences).where(UserPreferences.user_id == job.user_id)
             )
             user_prefs = result.scalar_one_or_none()
             if user_prefs:
                 user_settings = UserLLMSettings.from_preferences(user_prefs)
-                logger.info(f"Loaded user LLM settings for template job: provider={user_settings.provider}, model={user_settings.model}")
+                logger.info(
+                    f"Loaded user LLM settings for template job: provider={user_settings.provider}, model={user_settings.model}"
+                )
         except Exception as e:
-            logger.warning(f"Failed to load user LLM settings for template job, using defaults: {e}")
+            logger.warning(
+                f"Failed to load user LLM settings for template job, using defaults: {e}"
+            )
 
         try:
             # Update job status
@@ -277,13 +286,12 @@ Write the content for "{section_title}":"""
                 progress_callback({"stage": "analyzing", "progress": 5})
 
             # Download template from MinIO
-            temp_template = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
+            temp_template = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
             temp_template.close()
 
             await storage_service.initialize()
             await storage_service.download_file(
-                job.template_file_path,
-                temp_template.name
+                job.template_file_path, temp_template.name
             )
 
             # Analyze template
@@ -303,7 +311,7 @@ Write the content for "{section_title}":"""
             total_sections = len(sections)
 
             for i, section in enumerate(sections):
-                section_title = section.get('title', f'Section {i+1}')
+                section_title = section.get("title", f"Section {i+1}")
                 job.status = "extracting"
                 job.current_section = section_title
                 await db.commit()
@@ -312,19 +320,19 @@ Write the content for "{section_title}":"""
                 progress = 15 + int((i / total_sections) * 60)
 
                 if progress_callback:
-                    progress_callback({
-                        "stage": "extracting",
-                        "progress": progress,
-                        "current_section": section_title,
-                        "section_index": i + 1,
-                        "total_sections": total_sections
-                    })
+                    progress_callback(
+                        {
+                            "stage": "extracting",
+                            "progress": progress,
+                            "current_section": section_title,
+                            "section_index": i + 1,
+                            "total_sections": total_sections,
+                        }
+                    )
 
                 # Gather context
                 context = await self.gather_context_for_section(
-                    section_title,
-                    job.source_document_ids,
-                    db
+                    section_title, job.source_document_ids, db
                 )
 
                 # Generate content
@@ -334,7 +342,7 @@ Write the content for "{section_title}":"""
                 content = await self.generate_section_content(
                     section_title,
                     context,
-                    section.get('placeholder_text', ''),
+                    section.get("placeholder_text", ""),
                     user_settings=user_settings,
                 )
                 sections_content[section_title] = content
@@ -343,13 +351,11 @@ Write the content for "{section_title}":"""
                 progress_callback({"stage": "generating", "progress": 80})
 
             # Generate filled document
-            temp_output = tempfile.NamedTemporaryFile(delete=False, suffix='.docx')
+            temp_output = tempfile.NamedTemporaryFile(delete=False, suffix=".docx")
             temp_output.close()
 
             await self.fill_template(
-                temp_template.name,
-                sections_content,
-                temp_output.name
+                temp_template.name, sections_content, temp_output.name
             )
 
             # Upload to MinIO
@@ -358,7 +364,7 @@ Write the content for "{section_title}":"""
                 job.id,
                 filled_filename,
                 temp_output.name,
-                "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
 
             # Update job
@@ -371,17 +377,19 @@ Write the content for "{section_title}":"""
             await db.commit()
 
             if progress_callback:
-                progress_callback({
-                    "stage": "completed",
-                    "progress": 100,
-                    "filled_filename": filled_filename
-                })
+                progress_callback(
+                    {
+                        "stage": "completed",
+                        "progress": 100,
+                        "filled_filename": filled_filename,
+                    }
+                )
 
             return {
                 "success": True,
                 "job_id": str(job.id),
                 "filled_filename": filled_filename,
-                "filled_file_path": object_path
+                "filled_file_path": object_path,
             }
 
         except Exception as e:
@@ -393,11 +401,7 @@ Write the content for "{section_title}":"""
             if progress_callback:
                 progress_callback({"stage": "failed", "error": str(e)})
 
-            return {
-                "success": False,
-                "job_id": str(job.id),
-                "error": str(e)
-            }
+            return {"success": False, "job_id": str(job.id), "error": str(e)}
 
         finally:
             # Cleanup temp files

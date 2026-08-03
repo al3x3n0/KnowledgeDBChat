@@ -17,8 +17,16 @@ def extract_scheduler_state(job: Optional[AgentJob]) -> Optional[dict]:
     if job is None:
         return None
     results = job.results if isinstance(job.results, dict) else {}
-    execution = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
-    raw = execution.get("scheduler_state") if isinstance(execution.get("scheduler_state"), dict) else {}
+    execution = (
+        results.get("execution_strategy")
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
+    raw = (
+        execution.get("scheduler_state")
+        if isinstance(execution.get("scheduler_state"), dict)
+        else {}
+    )
     if not raw:
         return None
     return {
@@ -53,4 +61,6 @@ def queue_reason_label(reason_code: str) -> str:
     }
     # Fallback matches the sentence-case convention of the labels above
     # (e.g. "Execution failure", not "Execution Failure").
-    return labels.get(code, code.replace("_", " ").strip().capitalize() or "Needs review")
+    return labels.get(
+        code, code.replace("_", " ").strip().capitalize() or "Needs review"
+    )

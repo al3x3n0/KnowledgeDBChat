@@ -15,4 +15,3 @@ def test_web_scrape_tool_requires_url():
     ok, err = validate_tool_params("web_scrape", {"url": "https://example.com"})
     assert ok is True
     assert err == ""
-

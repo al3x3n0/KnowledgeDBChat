@@ -3,25 +3,26 @@ Background tasks for document ingestion and processing.
 """
 
 import asyncio
-from typing import List, Dict, Any, Optional
+import json
+from typing import Any, Dict, Optional
 from uuid import UUID
+
+import redis
 from celery import current_task
-from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.celery import celery_app
+from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.document import Document, DocumentSource, DocumentSourceSyncLog
+from app.services.connectors.arxiv_connector import ArxivConnector
+from app.services.connectors.confluence_connector import ConfluenceConnector
+from app.services.connectors.github_connector import GitHubConnector
+from app.services.connectors.gitlab_connector import GitLabConnector
+from app.services.connectors.web_connector import WebConnector
 from app.services.document_service import DocumentService
 from app.services.persona_service import persona_service
-from app.services.connectors.gitlab_connector import GitLabConnector
-from app.services.connectors.github_connector import GitHubConnector
-from app.services.connectors.confluence_connector import ConfluenceConnector
-from app.services.connectors.web_connector import WebConnector
-from app.services.connectors.arxiv_connector import ArxivConnector
-import json
-import redis
-from app.core.config import settings
 
 
 def _run_async(coroutine):
@@ -40,10 +41,10 @@ def _run_async(coroutine):
 def ingest_from_source(self, source_id: str) -> Dict[str, Any]:
     """
     Ingest documents from a specific data source.
-    
+
     Args:
         source_id: UUID of the document source
-        
+
     Returns:
         Dict with ingestion results
     """
@@ -55,7 +56,7 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
     async with create_celery_session()() as db:
         try:
             logger.info(f"Starting ingestion from source {source_id}")
-            
+
             # Get the document source
             source = await db.get(DocumentSource, UUID(source_id))
             if not source:
@@ -72,7 +73,7 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
             sync_log = DocumentSourceSyncLog(
                 source_id=source.id,
                 task_id=current_task.request.id if current_task else None,
-                status='running'
+                status="running",
             )
             try:
                 db.add(sync_log)
@@ -80,41 +81,42 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                 await db.refresh(sync_log)
             except Exception:
                 sync_log = None
-            
+
             # Update task state
             task.update_state(
                 state="PROGRESS",
                 meta={
                     "current": 0,
                     "total": 0,
-                    "status": f"Connecting to {source.source_type} source: {source.name}"
-                }
+                    "status": f"Connecting to {source.source_type} source: {source.name}",
+                },
             )
-            
+
             # Get appropriate connector
             connector = _get_connector(source)
             if not connector:
-                raise ValueError(f"No connector available for source type: {source.source_type}")
-            
+                raise ValueError(
+                    f"No connector available for source type: {source.source_type}"
+                )
+
             # Initialize connector
             await connector.initialize(source.config)
-            
+
             # Get document list (incremental when possible)
             task.update_state(
                 state="PROGRESS",
-                meta={
-                    "current": 0,
-                    "total": 0,
-                    "status": "Fetching document list..."
-                }
+                meta={"current": 0, "total": 0, "status": "Fetching document list..."},
             )
-            
-            from datetime import datetime, timedelta
+
+            from datetime import datetime
+
             # Determine incremental vs full based on force_full flag and last_sync
             since = None
             try:
                 rc = _get_redis_client()
-                force_full = bool(rc.get(f"ingestion:force_full:{source_id}")) if rc else False
+                force_full = (
+                    bool(rc.get(f"ingestion:force_full:{source_id}")) if rc else False
+                )
             except Exception:
                 force_full = False
             if not force_full:
@@ -138,25 +140,37 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
             else:
                 documents_info = await connector.list_documents()
             total_docs = len(documents_info)
-            
+
             logger.info(f"Found {total_docs} documents in source {source.name}")
-            _publish_ing_progress(source_id, {"stage": "listing", "total": total_docs, "current": 0, "progress": 0, "status": "Fetched list"})
-            
+            _publish_ing_progress(
+                source_id,
+                {
+                    "stage": "listing",
+                    "total": total_docs,
+                    "current": 0,
+                    "progress": 0,
+                    "status": "Fetched list",
+                },
+            )
+
             # Process documents
             import time
+
             start_time = time.time()
             processed = 0
             created = 0
             updated = 0
             errors = 0
-            
+
             for i, doc_info in enumerate(documents_info):
                 try:
                     # Cancellation check
                     try:
                         rc = _get_redis_client()
                         if rc and rc.get(f"ingestion:cancel:{source_id}"):
-                            _publish_ing_status(source_id, {"is_syncing": False, "canceled": True})
+                            _publish_ing_status(
+                                source_id, {"is_syncing": False, "canceled": True}
+                            )
                             # persist state
                             try:
                                 src = await db.get(DocumentSource, UUID(source_id))
@@ -169,7 +183,8 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                             try:
                                 if sync_log:
                                     from datetime import datetime as _dt
-                                    sync_log.status = 'canceled'
+
+                                    sync_log.status = "canceled"
                                     sync_log.finished_at = _dt.utcnow()
                                     sync_log.total_documents = total_docs
                                     sync_log.processed = processed
@@ -197,35 +212,43 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                         meta={
                             "current": i + 1,
                             "total": total_docs,
-                            "status": f"Processing: {doc_info.get('title', 'Unknown')}"
-                        }
+                            "status": f"Processing: {doc_info.get('title', 'Unknown')}",
+                        },
                     )
-                    
+
                     # Check if document exists
                     existing_doc = await _find_existing_document(
                         db, source, doc_info["identifier"]
                     )
-                    
+
                     # Get document content
-                    content = await connector.get_document_content(doc_info["identifier"])
-                    
+                    content = await connector.get_document_content(
+                        doc_info["identifier"]
+                    )
+
                     if existing_doc:
                         # Check if content has changed
                         if await _content_changed(existing_doc, content):
-                            await _update_document(db, source, existing_doc, doc_info, content)
+                            await _update_document(
+                                db, source, existing_doc, doc_info, content
+                            )
                             updated += 1
                             logger.info(f"Updated document: {doc_info['title']}")
                         else:
                             logger.debug(f"No changes in document: {doc_info['title']}")
                     else:
                         # Create new document (skip duplicates by hash)
-                        _, created_flag = await _create_document(db, source, doc_info, content)
+                        _, created_flag = await _create_document(
+                            db, source, doc_info, content
+                        )
                         if created_flag:
                             created += 1
                             logger.info(f"Created document: {doc_info['title']}")
                         else:
-                            logger.info(f"Skipped duplicate document: {doc_info['title']}")
-                    
+                            logger.info(
+                                f"Skipped duplicate document: {doc_info['title']}"
+                            )
+
                     processed += 1
                     pct = int((processed / max(1, total_docs)) * 100)
                     elapsed = max(0.0, time.time() - start_time)
@@ -235,23 +258,29 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                         if rate and rate > 0:
                             remaining = max(0, total_docs - processed)
                             remaining_seconds = int(remaining / rate)
-                    _publish_ing_progress(source_id, {
-                        "stage": "processing",
-                        "total": total_docs,
-                        "current": processed,
-                        "progress": pct,
-                        "status": doc_info.get('title', 'Processing'),
-                        "elapsed": int(elapsed),
-                        "remaining_seconds": remaining_seconds,
-                        "remaining_formatted": _format_seconds(remaining_seconds) if remaining_seconds is not None else None,
-                    })
-                    
+                    _publish_ing_progress(
+                        source_id,
+                        {
+                            "stage": "processing",
+                            "total": total_docs,
+                            "current": processed,
+                            "progress": pct,
+                            "status": doc_info.get("title", "Processing"),
+                            "elapsed": int(elapsed),
+                            "remaining_seconds": remaining_seconds,
+                            "remaining_formatted": _format_seconds(remaining_seconds)
+                            if remaining_seconds is not None
+                            else None,
+                        },
+                    )
+
                 except Exception as e:
-                    logger.error(f"Error processing document {doc_info.get('title', 'Unknown')}: {e}")
+                    logger.error(
+                        f"Error processing document {doc_info.get('title', 'Unknown')}: {e}"
+                    )
                     errors += 1
-            
+
             # Update source sync timestamp
-            from datetime import datetime
             source.last_sync = datetime.utcnow()
             await db.commit()
 
@@ -266,45 +295,79 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                     auto_enrich = bool(cfg.get("auto_enrich_metadata", True))
                     auto_extract = bool(cfg.get("auto_extract_structure", False))
                     # Extract user_id from source config if available
-                    source_user_id = cfg.get("requested_by_user_id") or cfg.get("requestedByUserId")
+                    source_user_id = cfg.get("requested_by_user_id") or cfg.get(
+                        "requestedByUserId"
+                    )
 
                     if auto_summarize:
                         try:
                             from sqlalchemy import select
+
                             from app.models.document import Document as _Doc
-                            from app.tasks.summarization_tasks import summarize_document as _summ_task
+                            from app.tasks.summarization_tasks import (
+                                summarize_document as _summ_task,
+                            )
+
                             docs_result = await db.execute(
-                                select(_Doc.id, _Doc.summary).where(_Doc.source_id == source.id)
+                                select(_Doc.id, _Doc.summary).where(
+                                    _Doc.source_id == source.id
+                                )
                             )
                             for doc_id, doc_summary in docs_result.all():
                                 if doc_summary:
                                     continue
-                                _summ_task.delay(str(doc_id), False, user_id=source_user_id)
+                                _summ_task.delay(
+                                    str(doc_id), False, user_id=source_user_id
+                                )
                         except Exception as _e:
-                            logger.warning(f"Failed to queue arXiv summarization for source {source_id}: {_e}")
+                            logger.warning(
+                                f"Failed to queue arXiv summarization for source {source_id}: {_e}"
+                            )
 
                     if auto_lit_review:
                         try:
-                            from app.tasks.research_tasks import generate_literature_review as _lit_task
+                            from app.tasks.research_tasks import (
+                                generate_literature_review as _lit_task,
+                            )
+
                             _lit_task.delay(str(source.id), user_id=source_user_id)
                         except Exception as _e:
-                            logger.warning(f"Failed to queue literature review for source {source_id}: {_e}")
+                            logger.warning(
+                                f"Failed to queue literature review for source {source_id}: {_e}"
+                            )
                     if auto_enrich:
                         try:
-                            from app.tasks.paper_enrichment_tasks import enrich_arxiv_source as _enrich_task
+                            from app.tasks.paper_enrichment_tasks import (
+                                enrich_arxiv_source as _enrich_task,
+                            )
+
                             _enrich_task.delay(str(source.id), False, 500)
                         except Exception as _e:
-                            logger.warning(f"Failed to queue metadata enrichment for source {source_id}: {_e}")
+                            logger.warning(
+                                f"Failed to queue metadata enrichment for source {source_id}: {_e}"
+                            )
                     if auto_extract:
                         try:
                             from app.models.document import Document as _Doc
                             from app.models.user import User as _User
-                            from app.services.paper_extraction_service import paper_extraction_service
-                            from app.tasks.paper_extraction_tasks import extract_paper_job as _extract_paper_job
-                            owner = await db.get(_User, UUID(str(source_user_id))) if source_user_id else None
+                            from app.services.paper_extraction_service import (
+                                paper_extraction_service,
+                            )
+                            from app.tasks.paper_extraction_tasks import (
+                                extract_paper_job as _extract_paper_job,
+                            )
+
+                            owner = (
+                                await db.get(_User, UUID(str(source_user_id)))
+                                if source_user_id
+                                else None
+                            )
                             if owner:
                                 docs_result = await db.execute(
-                                    select(_Doc).where(_Doc.source_id == source.id).order_by(_Doc.created_at.desc()).limit(500)
+                                    select(_Doc)
+                                    .where(_Doc.source_id == source.id)
+                                    .order_by(_Doc.created_at.desc())
+                                    .limit(500)
                                 )
                                 for doc in docs_result.scalars().all():
                                     try:
@@ -313,15 +376,21 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                                             document=doc,
                                             user_id=owner.id,
                                             force=False,
-                                            dispatch_task=lambda job_id: _extract_paper_job.delay(job_id),
+                                            dispatch_task=lambda job_id: _extract_paper_job.delay(
+                                                job_id
+                                            ),
                                         )
                                     except Exception as inner_exc:
-                                        logger.warning(f"Failed to queue extraction for doc {doc.id}: {inner_exc}")
+                                        logger.warning(
+                                            f"Failed to queue extraction for doc {doc.id}: {inner_exc}"
+                                        )
                         except Exception as _e:
-                            logger.warning(f"Failed to queue structured paper extraction for source {source_id}: {_e}")
+                            logger.warning(
+                                f"Failed to queue structured paper extraction for source {source_id}: {_e}"
+                            )
             except Exception:
                 pass
-            
+
             result = {
                 "source_id": source_id,
                 "source_name": source.name,
@@ -330,9 +399,9 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
                 "created": created,
                 "updated": updated,
                 "errors": errors,
-                "success": True
+                "success": True,
             }
-            
+
             logger.info(f"Ingestion completed for source {source.name}: {result}")
             _publish_ing_complete(source_id, result)
             _publish_ing_status(source_id, {"is_syncing": False})
@@ -344,8 +413,9 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
             # Update sync log
             try:
                 if sync_log:
-                    sync_log.status = 'success'
+                    sync_log.status = "success"
                     from datetime import datetime as _dt
+
                     sync_log.finished_at = _dt.utcnow()
                     sync_log.total_documents = total_docs
                     sync_log.processed = processed
@@ -364,7 +434,7 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
             except Exception:
                 pass
             return result
-            
+
         except Exception as e:
             logger.error(f"Error in ingestion task for source {source_id}: {e}")
             _publish_ing_error(source_id, str(e))
@@ -381,17 +451,14 @@ async def _async_ingest_from_source(task, source_id: str) -> Dict[str, Any]:
             try:
                 if sync_log:
                     from datetime import datetime as _dt
-                    sync_log.status = 'failed'
+
+                    sync_log.status = "failed"
                     sync_log.finished_at = _dt.utcnow()
                     sync_log.error_message = str(e)
                     await db.commit()
             except Exception:
                 pass
-            return {
-                "source_id": source_id,
-                "error": str(e),
-                "success": False
-            }
+            return {"source_id": source_id, "error": str(e), "success": False}
 
         finally:
             # Ensure mapping is cleared on any exit
@@ -416,11 +483,13 @@ def _publish_ing_progress(source_id: str, progress: dict):
         client = _get_redis_client()
         if client:
             channel = f"ingestion_progress:{source_id}"
-            msg = json.dumps({
-                "type": "progress",
-                "document_id": source_id,
-                "progress": progress,
-            })
+            msg = json.dumps(
+                {
+                    "type": "progress",
+                    "document_id": source_id,
+                    "progress": progress,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish ingestion progress: {e}")
@@ -431,11 +500,13 @@ def _publish_ing_complete(source_id: str, result: dict):
         client = _get_redis_client()
         if client:
             channel = f"ingestion_progress:{source_id}"
-            msg = json.dumps({
-                "type": "complete",
-                "document_id": source_id,
-                "result": result,
-            })
+            msg = json.dumps(
+                {
+                    "type": "complete",
+                    "document_id": source_id,
+                    "result": result,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish ingestion complete: {e}")
@@ -446,11 +517,13 @@ def _publish_ing_error(source_id: str, error: str):
         client = _get_redis_client()
         if client:
             channel = f"ingestion_progress:{source_id}"
-            msg = json.dumps({
-                "type": "error",
-                "document_id": source_id,
-                "error": error,
-            })
+            msg = json.dumps(
+                {
+                    "type": "error",
+                    "document_id": source_id,
+                    "error": error,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish ingestion error: {e}")
@@ -461,11 +534,13 @@ def _publish_ing_status(source_id: str, status: dict):
         client = _get_redis_client()
         if client:
             channel = f"ingestion_progress:{source_id}"
-            msg = json.dumps({
-                "type": "status",
-                "document_id": source_id,
-                "status": status,
-            })
+            msg = json.dumps(
+                {
+                    "type": "status",
+                    "document_id": source_id,
+                    "status": status,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish ingestion status: {e}")
@@ -488,10 +563,10 @@ def _format_seconds(seconds: Optional[int]) -> Optional[str]:
 def process_uploaded_document(self, document_id: str) -> Dict[str, Any]:
     """
     Process an uploaded document for indexing.
-    
+
     Args:
         document_id: UUID of the document to process
-        
+
     Returns:
         Dict with processing results
     """
@@ -503,48 +578,44 @@ async def _async_process_uploaded_document(task, document_id: str) -> Dict[str, 
     async with create_celery_session()() as db:
         try:
             logger.info(f"Starting processing of document {document_id}")
-            
+
             # Get the document
             document = await db.get(Document, UUID(document_id))
             if not document:
                 raise ValueError(f"Document {document_id} not found")
-            
+
             task.update_state(
                 state="PROGRESS",
                 meta={
                     "current": 1,
                     "total": 4,
-                    "status": f"Processing document: {document.title}"
-                }
+                    "status": f"Processing document: {document.title}",
+                },
             )
-            
+
             document_service = DocumentService()
-            
+
             # Process the document
             await document_service._process_document_async(document, db)
-            
+
             task.update_state(
                 state="PROGRESS",
-                meta={
-                    "current": 4,
-                    "total": 4,
-                    "status": "Processing completed"
-                }
+                meta={"current": 4, "total": 4, "status": "Processing completed"},
             )
-            
+
             result = {
                 "document_id": document_id,
                 "title": document.title,
                 "success": True,
-                "processed": True
+                "processed": True,
             }
-            
+
             logger.info(f"Document processing completed: {document.title}")
             return result
-            
+
         except Exception as e:
             logger.error(f"Error processing document {document_id}: {e}")
-            
+
             # Update document with error
             try:
                 document = await db.get(Document, UUID(document_id))
@@ -553,13 +624,11 @@ async def _async_process_uploaded_document(task, document_id: str) -> Dict[str, 
                     document.processing_error = str(e)
                     await db.commit()
             except Exception as db_error:
-                logger.error(f"Error updating document with processing error: {db_error}")
-            
-            return {
-                "document_id": document_id,
-                "error": str(e),
-                "success": False
-            }
+                logger.error(
+                    f"Error updating document with processing error: {db_error}"
+                )
+
+            return {"document_id": document_id, "error": str(e), "success": False}
 
 
 def _get_connector(source: DocumentSource):
@@ -579,7 +648,9 @@ def _get_connector(source: DocumentSource):
 
 
 @celery_app.task(bind=True, name="app.tasks.ingestion_tasks.dry_run_source")
-def dry_run_source(self, source_id: str, options: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def dry_run_source(
+    self, source_id: str, options: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Dry-run ingestion for a source: no writes, just report counts and sample documents.
 
     Args:
@@ -589,7 +660,9 @@ def dry_run_source(self, source_id: str, options: Optional[Dict[str, Any]] = Non
     return asyncio.run(_async_dry_run_source(self, source_id, options or {}))
 
 
-async def _async_dry_run_source(task, source_id: str, options: Dict[str, Any]) -> Dict[str, Any]:
+async def _async_dry_run_source(
+    task, source_id: str, options: Dict[str, Any]
+) -> Dict[str, Any]:
     async with create_celery_session()() as db:
         try:
             source = await db.get(DocumentSource, UUID(source_id))
@@ -602,24 +675,33 @@ async def _async_dry_run_source(task, source_id: str, options: Dict[str, Any]) -
             # Apply temporary include_* overrides for dry-run if provided
             try:
                 for key in [
-                    'include_files', 'include_issues', 'include_merge_requests', 'include_pull_requests', 'include_wiki', 'include_wikis'
+                    "include_files",
+                    "include_issues",
+                    "include_merge_requests",
+                    "include_pull_requests",
+                    "include_wiki",
+                    "include_wikis",
                 ]:
                     if key in options and hasattr(connector, key):
                         setattr(connector, key, bool(options[key]))
                 # aliases
-                if 'include_prs' in options and hasattr(connector, 'include_pull_requests'):
-                    connector.include_pull_requests = bool(options['include_prs'])
-                if 'include_mrs' in options and hasattr(connector, 'include_merge_requests'):
-                    connector.include_merge_requests = bool(options['include_mrs'])
+                if "include_prs" in options and hasattr(
+                    connector, "include_pull_requests"
+                ):
+                    connector.include_pull_requests = bool(options["include_prs"])
+                if "include_mrs" in options and hasattr(
+                    connector, "include_merge_requests"
+                ):
+                    connector.include_merge_requests = bool(options["include_mrs"])
             except Exception:
                 pass
             # Prefer incremental
             since = source.last_sync
-            mode = 'full'
+            mode = "full"
             if since:
                 try:
                     docs = await connector.list_changed_documents(since)
-                    mode = 'incremental'
+                    mode = "incremental"
                 except Exception:
                     docs = await connector.list_documents()
             else:
@@ -628,23 +710,35 @@ async def _async_dry_run_source(task, source_id: str, options: Dict[str, Any]) -
             # type counts
             by_type: Dict[str, int] = {}
             for d in docs:
-                t = (d.get('metadata') or {}).get('type') or 'unknown'
+                t = (d.get("metadata") or {}).get("type") or "unknown"
                 by_type[t] = by_type.get(t, 0) + 1
             # Estimate existing vs new by identifier
             from sqlalchemy import select
+
             existing = 0
             for d in docs[:500]:  # scan sample for speed
                 res = await db.execute(
                     select(Document).where(
                         Document.source_id == source.id,
-                        Document.source_identifier == d.get('identifier')
+                        Document.source_identifier == d.get("identifier"),
                     )
                 )
                 if res.scalar_one_or_none():
                     existing += 1
-            est_existing = int((existing / max(1, min(500, total))) * total) if total > 500 else existing
+            est_existing = (
+                int((existing / max(1, min(500, total))) * total)
+                if total > 500
+                else existing
+            )
             est_new = max(0, total - est_existing)
-            sample = [{"title": d.get("title"), "identifier": d.get("identifier"), "type": d.get("metadata", {}).get("type")} for d in docs[:20]]
+            sample = [
+                {
+                    "title": d.get("title"),
+                    "identifier": d.get("identifier"),
+                    "type": d.get("metadata", {}).get("type"),
+                }
+                for d in docs[:20]
+            ]
             return {
                 "source_id": source_id,
                 "source_name": source.name,
@@ -662,17 +756,14 @@ async def _async_dry_run_source(task, source_id: str, options: Dict[str, Any]) -
 
 
 async def _find_existing_document(
-    db: AsyncSession, 
-    source: DocumentSource, 
-    identifier: str
+    db: AsyncSession, source: DocumentSource, identifier: str
 ) -> Optional[Document]:
     """Find existing document by source and identifier."""
     from sqlalchemy import select
-    
+
     result = await db.execute(
         select(Document).where(
-            Document.source_id == source.id,
-            Document.source_identifier == identifier
+            Document.source_id == source.id, Document.source_identifier == identifier
         )
     )
     return result.scalar_one_or_none()
@@ -681,7 +772,7 @@ async def _find_existing_document(
 async def _content_changed(document: Document, new_content: str) -> bool:
     """Check if document content has changed."""
     import hashlib
-    
+
     new_hash = hashlib.sha256(new_content.encode()).hexdigest()
     return document.content_hash != new_hash
 
@@ -691,12 +782,12 @@ async def _update_document(
     source: DocumentSource,
     document: Document,
     doc_info: Dict[str, Any],
-    content: str
+    content: str,
 ):
     """Update existing document with new content."""
     import hashlib
     from datetime import datetime
-    
+
     # Update document fields
     document.content = content
     document.content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -707,26 +798,27 @@ async def _update_document(
     document.updated_at = datetime.utcnow()
     document.is_processed = False  # Will be processed again
     document.processing_error = None
-    
+
     # Update metadata
     if doc_info.get("metadata"):
-        document.extra_metadata = {**(document.extra_metadata or {}), **doc_info["metadata"]}
+        document.extra_metadata = {
+            **(document.extra_metadata or {}),
+            **doc_info["metadata"],
+        }
 
     await _assign_document_owner(db, document, source, doc_info)
     await db.commit()
-    
+
     # Trigger reprocessing
     process_uploaded_document.delay(str(document.id))
 
 
 async def _create_document(
-    db: AsyncSession,
-    source: DocumentSource,
-    doc_info: Dict[str, Any],
-    content: str
+    db: AsyncSession, source: DocumentSource, doc_info: Dict[str, Any], content: str
 ):
     """Create new document from source information."""
     import hashlib
+
     from sqlalchemy import select
 
     content_hash = hashlib.sha256(content.encode()).hexdigest()
@@ -734,8 +826,7 @@ async def _create_document(
     # Skip duplicates (same repo + hash)
     existing = await db.execute(
         select(Document).where(
-            Document.source_id == source.id,
-            Document.content_hash == content_hash
+            Document.source_id == source.id, Document.content_hash == content_hash
         )
     )
     duplicate = existing.scalar_one_or_none()
@@ -744,7 +835,7 @@ async def _create_document(
             f"Skipping duplicate document for source {source.name}: {doc_info.get('title', duplicate.title)}"
         )
         return duplicate, False
-    
+
     document = Document(
         title=doc_info.get("title", "Untitled"),
         content=content,
@@ -756,15 +847,15 @@ async def _create_document(
         author=doc_info.get("author"),
         extra_metadata=doc_info.get("metadata", {}),
         last_modified=doc_info.get("last_modified"),
-        is_processed=False
+        is_processed=False,
     )
-    
+
     db.add(document)
     await db.flush()
     await _assign_document_owner(db, document, source, doc_info)
     await db.commit()
     await db.refresh(document)
-    
+
     # Trigger processing
     process_uploaded_document.delay(str(document.id))
     return document, True
@@ -774,18 +865,24 @@ async def _assign_document_owner(
     db: AsyncSession,
     document: Document,
     source: Optional[DocumentSource],
-    doc_info: Dict[str, Any]
+    doc_info: Dict[str, Any],
 ) -> None:
     """Assign persona ownership for a document based on source metadata."""
     try:
         metadata = doc_info.get("metadata") or {}
-        platform_identifier = metadata.get("author_id") or metadata.get("user_id") or metadata.get("creator_id")
+        platform_identifier = (
+            metadata.get("author_id")
+            or metadata.get("user_id")
+            or metadata.get("creator_id")
+        )
         await persona_service.assign_document_owner(
             db,
             document,
             author_name=doc_info.get("author"),
             platform_scope=(source.source_type if source else None),
-            platform_identifier=str(platform_identifier) if platform_identifier else None,
+            platform_identifier=str(platform_identifier)
+            if platform_identifier
+            else None,
         )
     except Exception as exc:
         logger.debug(f"Persona assignment skipped for document {document.id}: {exc}")

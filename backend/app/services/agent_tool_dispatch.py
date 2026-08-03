@@ -20,21 +20,25 @@ class AgentToolExecutionContext:
     user_id: Any = None
     job: Any = None
     state: Optional[Dict[str, Any]] = None
+    idempotency_key: Optional[str] = None
     extra: Dict[str, Any] = field(default_factory=dict)
 
 
 class AgentToolProvider(Protocol):
     @property
-    def supported_tools(self) -> set[str]: ...
+    def supported_tools(self) -> set[str]:
+        ...
 
-    def can_handle(self, tool_name: str, context: AgentToolExecutionContext) -> bool: ...
+    def can_handle(self, tool_name: str, context: AgentToolExecutionContext) -> bool:
+        ...
 
     async def execute(
         self,
         tool_name: str,
         params: Dict[str, Any],
         context: AgentToolExecutionContext,
-    ) -> Any: ...
+    ) -> Any:
+        ...
 
 
 class FunctionToolProvider:
@@ -44,7 +48,9 @@ class FunctionToolProvider:
         self,
         *,
         name: str,
-        handlers: Dict[str, Callable[[Dict[str, Any], AgentToolExecutionContext], Awaitable[Any]]],
+        handlers: Dict[
+            str, Callable[[Dict[str, Any], AgentToolExecutionContext], Awaitable[Any]]
+        ],
         modes: Optional[Iterable[str]] = None,
     ) -> None:
         self.name = name
@@ -66,6 +72,35 @@ class FunctionToolProvider:
         params: Dict[str, Any],
         context: AgentToolExecutionContext,
     ) -> Any:
+        job_config = (
+            context.job.config
+            if isinstance(getattr(context.job, "config", None), dict)
+            else {}
+        )
+
+        def _tool_set(value: Any) -> set[str]:
+            if isinstance(value, list):
+                return {str(item).strip() for item in value if str(item).strip()}
+            if isinstance(value, str):
+                return {item.strip() for item in value.split(",") if item.strip()}
+            return set()
+
+        allowed_tools = _tool_set(
+            job_config.get("allowed_tools") or job_config.get("tool_allowlist")
+        )
+        blocked_tools = _tool_set(
+            job_config.get("blocked_tools") or job_config.get("tool_denylist")
+        )
+        if tool_name in blocked_tools or (
+            allowed_tools and tool_name not in allowed_tools
+        ):
+            return {
+                "success": False,
+                "error": (
+                    f"Tool '{tool_name}' is not permitted by this agent's "
+                    "enforced tool policy"
+                ),
+            }
         return await self._handlers[tool_name](params, context)
 
 
@@ -78,7 +113,9 @@ class AgentToolRegistry:
     def register(self, provider: AgentToolProvider) -> None:
         self._providers.append(provider)
 
-    def resolve(self, tool_name: str, context: AgentToolExecutionContext) -> Optional[AgentToolProvider]:
+    def resolve(
+        self, tool_name: str, context: AgentToolExecutionContext
+    ) -> Optional[AgentToolProvider]:
         for provider in self._providers:
             if provider.can_handle(tool_name, context):
                 return provider
@@ -99,64 +136,106 @@ class AgentToolRegistry:
 def build_agent_service_document_provider(service: Any) -> FunctionToolProvider:
     """Document-domain tools for AgentService."""
 
-    async def _search_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_search_documents(params, ctx.db)
 
-    async def _get_document_details(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_document_details(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_document_details(params, ctx.db)
 
-    async def _summarize_document(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _summarize_document(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_summarize_document(params, ctx.db)
 
-    async def _delete_document(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _delete_document(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_delete_document(params, ctx.db)
 
-    async def _list_recent_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_recent_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_list_recent_documents(params, ctx.db)
 
-    async def _list_document_sources(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_document_sources(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_list_document_sources(params, ctx.db)
 
-    async def _list_documents_by_source(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_documents_by_source(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_list_documents_by_source(params, ctx.db)
 
-    async def _web_scrape(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _web_scrape(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_web_scrape(params, ctx.user_id, ctx.db)
 
-    async def _create_document_from_text(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_create_document_from_text(params, ctx.user_id, ctx.db)
+    async def _create_document_from_text(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_create_document_from_text(
+            params, ctx.user_id, ctx.db
+        )
 
-    async def _ingest_url(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _ingest_url(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_ingest_url(params, ctx.user_id, ctx.db)
 
-    async def _find_similar_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _find_similar_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_find_similar_documents(params, ctx.db)
 
-    async def _search_documents_by_author(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_documents_by_author(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_search_documents_by_author(params, ctx.db)
 
-    async def _update_document_tags(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _update_document_tags(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_update_document_tags(params, ctx.db)
 
-    async def _get_knowledge_base_stats(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_knowledge_base_stats(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_knowledge_base_stats(ctx.db)
 
-    async def _batch_delete_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _batch_delete_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_batch_delete_documents(params, ctx.db)
 
-    async def _batch_summarize_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _batch_summarize_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_batch_summarize_documents(params, ctx.db)
 
-    async def _search_by_tags(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_by_tags(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_search_by_tags(params, ctx.db)
 
-    async def _list_all_tags(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_all_tags(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_list_all_tags(ctx.db)
 
-    async def _compare_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _compare_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_compare_documents(params, ctx.user_id, ctx.db)
 
-    async def _read_document_content(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _read_document_content(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_read_document_content(params, ctx.db)
 
     return FunctionToolProvider(
@@ -191,34 +270,56 @@ def build_agent_service_document_provider(service: Any) -> FunctionToolProvider:
 def build_agent_service_knowledge_graph_provider(service: Any) -> FunctionToolProvider:
     """Knowledge-graph tools for AgentService."""
 
-    async def _search_entities(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_entities(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_search_entities(params, ctx.db)
 
-    async def _get_entity_relationships(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_entity_relationships(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_entity_relationships(params, ctx.db)
 
-    async def _find_documents_by_entity(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _find_documents_by_entity(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_find_documents_by_entity(params, ctx.db)
 
-    async def _get_document_knowledge_graph(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_document_knowledge_graph(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_document_knowledge_graph(params, ctx.db)
 
-    async def _get_global_knowledge_graph(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_global_knowledge_graph(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_global_knowledge_graph(params, ctx.db)
 
-    async def _get_entity_mentions(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_entity_mentions(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_entity_mentions(params, ctx.db)
 
-    async def _get_kg_stats(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_kg_stats(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_kg_stats(ctx.db)
 
-    async def _rebuild_document_knowledge_graph(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_rebuild_document_knowledge_graph(params, ctx.user_id, ctx.db)
+    async def _rebuild_document_knowledge_graph(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_rebuild_document_knowledge_graph(
+            params, ctx.user_id, ctx.db
+        )
 
-    async def _merge_entities(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _merge_entities(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_merge_entities(params, ctx.user_id, ctx.db)
 
-    async def _delete_entity(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _delete_entity(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_delete_entity(params, ctx.user_id, ctx.db)
 
     return FunctionToolProvider(
@@ -242,34 +343,58 @@ def build_agent_service_knowledge_graph_provider(service: Any) -> FunctionToolPr
 def build_agent_service_workflow_provider(service: Any) -> FunctionToolProvider:
     """Workflow and custom-tool helpers for AgentService."""
 
-    async def _generate_diagram(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _generate_diagram(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_generate_diagram(params, ctx.user_id, ctx.db)
 
-    async def _run_workflow(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _run_workflow(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_run_workflow(params, ctx.user_id, ctx.db)
 
-    async def _propose_workflow_from_description(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_propose_workflow_from_description(params, ctx.user_id, ctx.db)
+    async def _propose_workflow_from_description(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_propose_workflow_from_description(
+            params, ctx.user_id, ctx.db
+        )
 
-    async def _create_workflow_from_description(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_create_workflow_from_description(params, ctx.user_id, ctx.db)
+    async def _create_workflow_from_description(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_create_workflow_from_description(
+            params, ctx.user_id, ctx.db
+        )
 
-    async def _list_workflows(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_workflows(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_list_workflows(params, ctx.user_id, ctx.db)
 
-    async def _run_custom_tool(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _run_custom_tool(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_run_custom_tool(params, ctx.user_id, ctx.db)
 
-    async def _list_custom_tools(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_custom_tools(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_list_custom_tools(params, ctx.user_id, ctx.db)
 
-    async def _start_template_fill(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _start_template_fill(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_start_template_fill(params, ctx.user_id, ctx.db)
 
-    async def _list_template_jobs(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_template_jobs(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_list_template_jobs(params, ctx.user_id, ctx.db)
 
-    async def _get_template_job_status(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_template_job_status(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_template_job_status(params, ctx.user_id, ctx.db)
 
     return FunctionToolProvider(
@@ -293,26 +418,48 @@ def build_agent_service_workflow_provider(service: Any) -> FunctionToolProvider:
 def build_agent_service_research_provider(service: Any) -> FunctionToolProvider:
     """Research and arXiv tools for AgentService."""
 
-    async def _search_arxiv(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_arxiv(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_search_arxiv(params)
 
-    async def _ingest_arxiv_papers(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _ingest_arxiv_papers(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_ingest_arxiv_papers(params, ctx.user_id, ctx.db)
 
-    async def _literature_review_arxiv(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _literature_review_arxiv(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_literature_review_arxiv(params, ctx.user_id, ctx.db)
 
-    async def _summarize_documents_in_source(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_summarize_documents_in_source(params, ctx.user_id, ctx.db)
+    async def _summarize_documents_in_source(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_summarize_documents_in_source(
+            params, ctx.user_id, ctx.db
+        )
 
-    async def _enrich_arxiv_metadata_for_source(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_enrich_arxiv_metadata_for_source(params, ctx.user_id, ctx.db)
+    async def _enrich_arxiv_metadata_for_source(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_enrich_arxiv_metadata_for_source(
+            params, ctx.user_id, ctx.db
+        )
 
-    async def _generate_literature_review_for_source(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_generate_literature_review_for_source(params, ctx.user_id, ctx.db)
+    async def _generate_literature_review_for_source(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_generate_literature_review_for_source(
+            params, ctx.user_id, ctx.db
+        )
 
-    async def _generate_slides_for_source(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_generate_slides_for_source(params, ctx.user_id, ctx.db)
+    async def _generate_slides_for_source(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_generate_slides_for_source(
+            params, ctx.user_id, ctx.db
+        )
 
     return FunctionToolProvider(
         name="agent_service_research_tools",
@@ -329,50 +476,82 @@ def build_agent_service_research_provider(service: Any) -> FunctionToolProvider:
     )
 
 
-def build_agent_service_analytics_content_provider(service: Any) -> FunctionToolProvider:
+def build_agent_service_analytics_content_provider(
+    service: Any,
+) -> FunctionToolProvider:
     """Analytics, search helpers, and content-generation tools for AgentService."""
 
-    async def _get_collection_statistics(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_collection_statistics(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_collection_statistics(params, ctx.db)
 
-    async def _get_source_analytics(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_source_analytics(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_source_analytics(params, ctx.db)
 
-    async def _get_trending_topics(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_trending_topics(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_trending_topics(params, ctx.db)
 
-    async def _generate_chart_data(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _generate_chart_data(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_generate_chart_data(params, ctx.db)
 
-    async def _export_data(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _export_data(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_export_data(params, ctx.db)
 
-    async def _faceted_search(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _faceted_search(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_faceted_search(params, ctx.db)
 
-    async def _get_search_suggestions(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_search_suggestions(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_search_suggestions(params, ctx.db)
 
-    async def _get_related_searches(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_related_searches(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_get_related_searches(params, ctx.db)
 
-    async def _draft_email(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _draft_email(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_draft_email(params, ctx.db)
 
-    async def _generate_meeting_notes(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _generate_meeting_notes(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_generate_meeting_notes(params, ctx.db)
 
-    async def _generate_documentation(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _generate_documentation(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_generate_documentation(params, ctx.db)
 
-    async def _generate_executive_summary(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _generate_executive_summary(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_generate_executive_summary(params, ctx.db)
 
-    async def _generate_report(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _generate_report(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_generate_report(params, ctx.db)
 
-    async def _generate_gitlab_architecture(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return await service._tool_generate_gitlab_architecture(params, ctx.user_id, ctx.db)
+    async def _generate_gitlab_architecture(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return await service._tool_generate_gitlab_architecture(
+            params, ctx.user_id, ctx.db
+        )
 
     return FunctionToolProvider(
         name="agent_service_analytics_content_tools",
@@ -399,7 +578,9 @@ def build_agent_service_analytics_content_provider(service: Any) -> FunctionTool
 def build_agent_service_chat_core_provider(service: Any) -> FunctionToolProvider:
     """Remaining chat-only core tools for AgentService."""
 
-    async def _request_file_upload(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _request_file_upload(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return {
             "action": "upload_requested",
             "message": "Please select a file to upload using the upload button.",
@@ -407,13 +588,19 @@ def build_agent_service_chat_core_provider(service: Any) -> FunctionToolProvider
             "suggested_tags": params.get("suggested_tags", []),
         }
 
-    async def _answer_question(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _answer_question(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_answer_question(params, ctx.user_id, ctx.db)
 
-    async def _delegate_to_agent(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _delegate_to_agent(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_delegate_to_agent(params, ctx.user_id, ctx.db)
 
-    async def _list_available_agents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_available_agents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return await service._tool_list_available_agents(ctx.db)
 
     return FunctionToolProvider(
@@ -431,7 +618,9 @@ def build_agent_service_chat_core_provider(service: Any) -> FunctionToolProvider
 def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     """Research-family tools for AutonomousAgentExecutor."""
 
-    async def _search_arxiv(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_arxiv(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         job = ctx.job
         papers = await executor.arxiv_service.search(
             query=params.get("query", job.goal[:100] if job else ""),
@@ -454,7 +643,9 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             ],
         }
 
-    async def _save_research_finding(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _save_research_finding(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import uuid
         from datetime import datetime
 
@@ -490,49 +681,79 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             "findings": [finding],
         }
 
-    async def _get_research_findings(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_research_findings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         job = ctx.job
         findings = list(executor._job_findings.get(str(job.id), []))
         category = params.get("category")
         if category:
-            findings = [finding for finding in findings if finding.get("category") == category]
+            findings = [
+                finding for finding in findings if finding.get("category") == category
+            ]
         min_confidence = params.get("min_confidence")
         if min_confidence:
-            findings = [finding for finding in findings if finding.get("confidence", 0) >= min_confidence]
+            findings = [
+                finding
+                for finding in findings
+                if finding.get("confidence", 0) >= min_confidence
+            ]
         findings = findings[: params.get("limit", 50)]
         return {
             "success": True,
             "data": {"findings": findings, "total": len(findings)},
         }
 
-    async def _ingest_paper_by_id(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _ingest_paper_by_id(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         arxiv_id = params.get("arxiv_id")
         if not arxiv_id:
             return {"error": "Missing required parameter: arxiv_id"}
-        papers = await executor.arxiv_service.search(query=f"id:{arxiv_id}", max_results=1)
+        papers = await executor.arxiv_service.search(
+            query=f"id:{arxiv_id}", max_results=1
+        )
         if not papers:
             return {"error": f"Paper {arxiv_id} not found"}
         paper = papers[0]
         return {
             "success": True,
             "data": paper,
-            "findings": [{
-                "type": "paper_ingested",
-                "arxiv_id": arxiv_id,
-                "title": paper.get("title"),
-            }],
+            "findings": [
+                {
+                    "type": "paper_ingested",
+                    "arxiv_id": arxiv_id,
+                    "title": paper.get("title"),
+                }
+            ],
         }
 
-    async def _batch_ingest_papers(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _batch_ingest_papers(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import uuid
 
         job = ctx.job
-        arxiv_ids = [x.strip() for x in (params.get("arxiv_ids") or []) if isinstance(x, str) and x.strip()]
-        search_queries = [x.strip() for x in (params.get("search_queries") or []) if isinstance(x, str) and x.strip()]
-        categories = [x.strip() for x in (params.get("categories") or []) if isinstance(x, str) and x.strip()]
+        arxiv_ids = [
+            x.strip()
+            for x in (params.get("arxiv_ids") or [])
+            if isinstance(x, str) and x.strip()
+        ]
+        search_queries = [
+            x.strip()
+            for x in (params.get("search_queries") or [])
+            if isinstance(x, str) and x.strip()
+        ]
+        categories = [
+            x.strip()
+            for x in (params.get("categories") or [])
+            if isinstance(x, str) and x.strip()
+        ]
         max_results = max(1, min(int(params.get("max_results") or 25), 200))
         if not arxiv_ids and not search_queries and not categories:
-            return {"error": "Provide at least one of: arxiv_ids, search_queries, categories"}
+            return {
+                "error": "Provide at least one of: arxiv_ids, search_queries, categories"
+            }
 
         display = params.get("display") or "Autonomous job import"
         source_name = f"ArXiv Import (Job {str(job.id)[:8]}) #{uuid.uuid4().hex[:6]}"
@@ -572,14 +793,31 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
                 "categories_count": len(categories),
                 "max_results": max_results,
             },
-            "findings": [{"type": "arxiv_ingest_requested", "source_id": str(source.id), "queued": queued}],
+            "findings": [
+                {
+                    "type": "arxiv_ingest_requested",
+                    "source_id": str(source.id),
+                    "queued": queued,
+                }
+            ],
             "artifacts": [
-                {"type": "document_source", "id": str(source.id), "name": source.name, "source_type": "arxiv"},
-                {"type": "arxiv_ingest_requested", "source_id": str(source.id), "queued": queued},
+                {
+                    "type": "document_source",
+                    "id": str(source.id),
+                    "name": source.name,
+                    "source_type": "arxiv",
+                },
+                {
+                    "type": "arxiv_ingest_requested",
+                    "source_id": str(source.id),
+                    "queued": queued,
+                },
             ],
         }
 
-    async def _monitor_arxiv_topic(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _monitor_arxiv_topic(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         topic = params.get("topic")
         papers = await executor.arxiv_service.search(
             query=params.get("query") or f"all:{topic}",
@@ -601,46 +839,64 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             ],
         }
 
-    async def _find_related_papers(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.document import Document
+    async def _find_related_papers(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID
+
+        from app.models.document import Document
 
         query = ""
         doc_id = params.get("document_id")
         arxiv_id = params.get("arxiv_id")
         if doc_id:
-            doc_result = await ctx.db.execute(select(Document).where(Document.id == UUID(doc_id)))
+            doc_result = await ctx.db.execute(
+                select(Document).where(Document.id == UUID(doc_id))
+            )
             doc = doc_result.scalar_one_or_none()
             if doc:
                 query = doc.title
         elif arxiv_id:
-            papers = await executor.arxiv_service.search(query=f"id:{arxiv_id}", max_results=1)
+            papers = await executor.arxiv_service.search(
+                query=f"id:{arxiv_id}", max_results=1
+            )
             if papers:
                 query = papers[0].get("title", "")
 
         if not query or not params.get("search_external", True):
             return {"error": "No query could be built"}
 
-        related = await executor.arxiv_service.search(query=query, max_results=params.get("limit", 10))
+        related = await executor.arxiv_service.search(
+            query=query, max_results=params.get("limit", 10)
+        )
         return {
             "success": True,
             "data": related,
             "findings": [
-                {"type": "related_paper", "title": paper.get("title"), "arxiv_id": paper.get("id")}
+                {
+                    "type": "related_paper",
+                    "title": paper.get("title"),
+                    "arxiv_id": paper.get("id"),
+                }
                 for paper in related
             ],
         }
 
-    async def _extract_paper_insights(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _extract_paper_insights(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import json
-        from app.models.document import Document
         from uuid import UUID
+
+        from app.models.document import Document
 
         job = ctx.job
         doc_id = params.get("document_id")
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
-        doc_result = await ctx.db.execute(select(Document).where(Document.id == UUID(doc_id)))
+        doc_result = await ctx.db.execute(
+            select(Document).where(Document.id == UUID(doc_id))
+        )
         doc = doc_result.scalar_one_or_none()
         if not doc or not doc.content:
             return {"error": "Document not found or has no content"}
@@ -672,33 +928,41 @@ Provide structured insights in JSON format:
             return {
                 "success": True,
                 "data": insights,
-                "findings": [{
-                    "type": "paper_insights",
-                    "document_id": doc_id,
-                    "insights": insights,
-                    "source_id": str(doc.source_id) if getattr(doc, "source_id", None) else None,
-                }],
+                "findings": [
+                    {
+                        "type": "paper_insights",
+                        "document_id": doc_id,
+                        "insights": insights,
+                        "source_id": str(doc.source_id)
+                        if getattr(doc, "source_id", None)
+                        else None,
+                    }
+                ],
             }
         except Exception as exc:
             raw = response if "response" in locals() else str(exc)
             return {"success": True, "data": {"raw_analysis": raw}}
 
-    async def _create_synthesis_document(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_synthesis_document(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import hashlib
         import uuid
 
         job = ctx.job
-        state = ctx.state if isinstance(ctx.state, dict) else {}
         title = params.get("title")
         topic = params.get("topic")
         document_ids = params.get("document_ids", [])
-        persist = bool(params.get("persist")) or bool((job.config or {}).get("persist_artifacts", False))
+        persist = bool(params.get("persist")) or bool(
+            (job.config or {}).get("persist_artifacts", False)
+        )
         scoped_source_id = str(params.get("source_id") or "").strip()
 
         findings = list(executor._job_findings.get(str(job.id), []))
         if scoped_source_id:
             findings = [
-                finding for finding in findings
+                finding
+                for finding in findings
                 if not isinstance(finding, dict)
                 or not str(finding.get("source_id") or "").strip()
                 or str(finding.get("source_id") or "").strip() == scoped_source_id
@@ -720,19 +984,27 @@ Provide structured insights in JSON format:
                 "content": synthesis_content,
                 "findings_included": len(findings),
             },
-            "artifacts": [{
-                "type": "synthesis_document",
-                "title": title,
-                "content": synthesis_content,
-            }],
+            "artifacts": [
+                {
+                    "type": "synthesis_document",
+                    "title": title,
+                    "content": synthesis_content,
+                }
+            ],
         }
 
         if persist and title and synthesis_content.strip():
             try:
                 from app.models.document import Document
 
-                notes_source = await executor.document_service._get_or_create_agent_notes_source(ctx.db)
-                content_hash = hashlib.sha256(synthesis_content.encode("utf-8")).hexdigest()
+                notes_source = (
+                    await executor.document_service._get_or_create_agent_notes_source(
+                        ctx.db
+                    )
+                )
+                content_hash = hashlib.sha256(
+                    synthesis_content.encode("utf-8")
+                ).hexdigest()
                 doc = Document(
                     title=str(title).strip(),
                     content=synthesis_content,
@@ -759,17 +1031,23 @@ Provide structured insights in JSON format:
                 await ctx.db.commit()
                 await ctx.db.refresh(doc)
                 try:
-                    await executor.document_service.reprocess_document(doc.id, ctx.db, user_id=job.user_id)
+                    await executor.document_service.reprocess_document(
+                        doc.id, ctx.db, user_id=job.user_id
+                    )
                 except Exception:
                     pass
                 result["data"]["document_id"] = str(doc.id)
-                result["artifacts"].append({"type": "document", "id": str(doc.id), "title": doc.title})
+                result["artifacts"].append(
+                    {"type": "document", "id": str(doc.id), "title": doc.title}
+                )
             except Exception:
                 pass
 
         return result
 
-    async def _compare_methodologies(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _compare_methodologies(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return {
             "success": True,
             "data": {
@@ -779,7 +1057,9 @@ Provide structured insights in JSON format:
             },
         }
 
-    async def _identify_research_gaps(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _identify_research_gaps(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         job = ctx.job
         findings = executor._job_findings.get(str(job.id), [])
         return {
@@ -791,12 +1071,16 @@ Provide structured insights in JSON format:
             },
         }
 
-    async def _add_to_reading_list(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _add_to_reading_list(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from uuid import UUID
+
         from sqlalchemy import func
         from sqlalchemy.exc import IntegrityError
+
         from app.models.document import Document
         from app.models.reading_list import ReadingList, ReadingListItem
-        from uuid import UUID
 
         job = ctx.job
         list_name = (params.get("list_name") or "").strip()
@@ -814,17 +1098,31 @@ Provide structured insights in JSON format:
             return {"error": "Missing required parameter: items"}
 
         rl_res = await ctx.db.execute(
-            select(ReadingList).where(ReadingList.user_id == job.user_id, ReadingList.name == list_name)
+            select(ReadingList).where(
+                ReadingList.user_id == job.user_id, ReadingList.name == list_name
+            )
         )
         rl = rl_res.scalar_one_or_none()
         if not rl:
-            rl = ReadingList(user_id=job.user_id, name=list_name, description=None, source_id=scoped_source_uuid)
+            rl = ReadingList(
+                user_id=job.user_id,
+                name=list_name,
+                description=None,
+                source_id=scoped_source_uuid,
+            )
             ctx.db.add(rl)
             await ctx.db.flush()
 
-        max_pos = int((await ctx.db.execute(
-            select(func.max(ReadingListItem.position)).where(ReadingListItem.reading_list_id == rl.id)
-        )).scalar() or 0)
+        max_pos = int(
+            (
+                await ctx.db.execute(
+                    select(func.max(ReadingListItem.position)).where(
+                        ReadingListItem.reading_list_id == rl.id
+                    )
+                )
+            ).scalar()
+            or 0
+        )
         added = 0
         skipped = 0
         warnings: list[str] = []
@@ -849,7 +1147,11 @@ Provide structured insights in JSON format:
                 if arxiv_id.startswith("arxiv:"):
                     arxiv_id = arxiv_id.split("arxiv:", 1)[1].strip()
                 if arxiv_id:
-                    doc_res = await ctx.db.execute(select(Document).where(Document.source_identifier == arxiv_id).limit(1))
+                    doc_res = await ctx.db.execute(
+                        select(Document)
+                        .where(Document.source_identifier == arxiv_id)
+                        .limit(1)
+                    )
                     doc = doc_res.scalar_one_or_none()
 
             if not doc:
@@ -859,13 +1161,20 @@ Provide structured insights in JSON format:
                 elif doc_id:
                     warnings.append(f"Document not found for id: {doc_id}")
                 continue
-            if scoped_source_uuid and getattr(doc, "source_id", None) != scoped_source_uuid:
+            if (
+                scoped_source_uuid
+                and getattr(doc, "source_id", None) != scoped_source_uuid
+            ):
                 skipped += 1
-                warnings.append(f"Document {doc.id} is outside scoped source {scoped_source_id}")
+                warnings.append(
+                    f"Document {doc.id} is outside scoped source {scoped_source_id}"
+                )
                 continue
 
             exists = await ctx.db.execute(
-                select(func.count()).select_from(ReadingListItem).where(
+                select(func.count())
+                .select_from(ReadingListItem)
+                .where(
                     ReadingListItem.reading_list_id == rl.id,
                     ReadingListItem.document_id == doc.id,
                 )
@@ -902,14 +1211,25 @@ Provide structured insights in JSON format:
                 "items_skipped": skipped,
                 "warnings": warnings[:25],
             },
-            "artifacts": [{"type": "reading_list", "id": str(rl.id), "name": rl.name, "items_added": added}],
+            "artifacts": [
+                {
+                    "type": "reading_list",
+                    "id": str(rl.id),
+                    "name": rl.name,
+                    "items_added": added,
+                }
+            ],
         }
 
-    async def _get_reading_lists(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from sqlalchemy import desc, func
+    async def _get_reading_lists(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from uuid import UUID
+
+        from sqlalchemy import desc
+
         from app.models.document import Document
         from app.models.reading_list import ReadingList, ReadingListItem
-        from uuid import UUID
 
         job = ctx.job
         list_name = (params.get("list_name") or "").strip()
@@ -922,7 +1242,11 @@ Provide structured insights in JSON format:
             except Exception:
                 scoped_source_uuid = None
 
-        q = select(ReadingList).where(ReadingList.user_id == job.user_id).order_by(desc(ReadingList.updated_at))
+        q = (
+            select(ReadingList)
+            .where(ReadingList.user_id == job.user_id)
+            .order_by(desc(ReadingList.updated_at))
+        )
         if list_name:
             q = q.where(ReadingList.name == list_name)
         if scoped_source_uuid:
@@ -943,7 +1267,9 @@ Provide structured insights in JSON format:
                     select(ReadingListItem, Document.title)
                     .join(Document, Document.id == ReadingListItem.document_id)
                     .where(ReadingListItem.reading_list_id == rl.id)
-                    .order_by(ReadingListItem.position.asc(), ReadingListItem.created_at.asc())
+                    .order_by(
+                        ReadingListItem.position.asc(), ReadingListItem.created_at.asc()
+                    )
                 )
                 entry["items"] = [
                     {
@@ -954,14 +1280,21 @@ Provide structured insights in JSON format:
                         "priority": item.priority,
                         "position": item.position,
                         "notes": item.notes,
-                        "created_at": item.created_at.isoformat() if item.created_at else None,
+                        "created_at": item.created_at.isoformat()
+                        if item.created_at
+                        else None,
                     }
                     for item, title in items_res.all()
                 ]
             payload.append(entry)
-        return {"success": True, "data": {"reading_lists": payload, "total": len(payload)}}
+        return {
+            "success": True,
+            "data": {"reading_lists": payload, "total": len(payload)},
+        }
 
-    async def _write_progress_report(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _write_progress_report(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
 
         job = ctx.job
@@ -988,7 +1321,9 @@ Provide structured insights in JSON format:
             "artifacts": [{"type": "progress_report", "report": report}],
         }
 
-    async def _suggest_next_action(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _suggest_next_action(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
         prompt = f"""Given the current research goal and progress, suggest the best next action.
@@ -1019,7 +1354,9 @@ Suggest the single best next action and explain why."""
         except Exception as exc:
             return {"error": str(exc)}
 
-    async def _generate_research_presentation(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _generate_research_presentation(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return {
             "success": True,
             "data": {
@@ -1028,14 +1365,18 @@ Suggest the single best next action and explain why."""
                 "topic": params.get("topic"),
                 "slides": params.get("slide_count", 12),
             },
-            "artifacts": [{
-                "type": "presentation_job",
-                "title": params.get("title"),
-                "status": "queued",
-            }],
+            "artifacts": [
+                {
+                    "type": "presentation_job",
+                    "title": params.get("title"),
+                    "status": "queued",
+                }
+            ],
         }
 
-    async def _analyze_document_cluster(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _analyze_document_cluster(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return {
             "success": True,
             "data": {
@@ -1085,7 +1426,9 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
             )
         return executor._data_analysis_tools[job_id_str]
 
-    async def _execute(tool_name: str, params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _execute(
+        tool_name: str, params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         tools = _get_tools(ctx)
         if tool_name == "load_csv_data":
             tool_result = tools.load_csv_data(
@@ -1207,7 +1550,10 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
         elif tool_name == "export_dataset_json":
             tool_result = tools.export_dataset_json(dataset_id=params.get("dataset_id"))
         else:
-            tool_result = {"success": False, "error": f"Unknown data analysis tool: {tool_name}"}
+            tool_result = {
+                "success": False,
+                "error": f"Unknown data analysis tool: {tool_name}",
+            }
 
         result: Dict[str, Any] = {
             "success": tool_result.get("success", False),
@@ -1255,7 +1601,11 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
             if artifacts:
                 result["artifacts"] = artifacts
 
-            if tool_name in {"detect_anomalies", "calculate_correlations", "describe_dataset"}:
+            if tool_name in {
+                "detect_anomalies",
+                "calculate_correlations",
+                "describe_dataset",
+            }:
                 result["findings"] = [
                     {
                         "type": "data_analysis",
@@ -1267,7 +1617,9 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
         return result
 
     handlers = {
-        tool_name: (lambda params, ctx, _tool_name=tool_name: _execute(_tool_name, params, ctx))
+        tool_name: (
+            lambda params, ctx, _tool_name=tool_name: _execute(_tool_name, params, ctx)
+        )
         for tool_name in DATA_ANALYSIS_TOOL_DEFINITIONS
     }
     return FunctionToolProvider(
@@ -1280,7 +1632,9 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
 def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
     """Memory tools for AutonomousAgentExecutor."""
 
-    async def _create_memory(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_memory(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.schemas.memory import MemoryCreate
 
         job = ctx.job
@@ -1290,7 +1644,9 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
 
         importance = max(0.0, min(1.0, float(params.get("importance", 0.5) or 0.5)))
         category = str(params.get("category", "fact") or "fact")
-        metadata = params.get("metadata") if isinstance(params.get("metadata"), dict) else None
+        metadata = (
+            params.get("metadata") if isinstance(params.get("metadata"), dict) else None
+        )
         tags = []
         if metadata and isinstance(metadata.get("tags"), list):
             metadata = dict(metadata)
@@ -1303,7 +1659,9 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
                 context=metadata,
                 tags=tags or None,
             )
-            mem_resp = await executor.memory_service.create_memory(job.user_id, memory_data, ctx.db)
+            mem_resp = await executor.memory_service.create_memory(
+                job.user_id, memory_data, ctx.db
+            )
             return {
                 "success": True,
                 "data": {"memory_id": str(mem_resp.id), "content": content_str[:200]},
@@ -1311,7 +1669,9 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Failed to create memory: {exc}"}
 
-    async def _search_memories(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_memories(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.schemas.memory import MemorySearchRequest
 
         job = ctx.job
@@ -1330,12 +1690,19 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
                 memory_types=memory_types,
                 min_importance=float(min_imp) if min_imp is not None else None,
             )
-            memories = await executor.memory_service.search_memories(job.user_id, search_req, ctx.db)
+            memories = await executor.memory_service.search_memories(
+                job.user_id, search_req, ctx.db
+            )
             return {
                 "success": True,
                 "data": {
                     "memories": [
-                        {"id": str(m.id), "content": m.content, "importance": m.importance_score, "type": m.memory_type}
+                        {
+                            "id": str(m.id),
+                            "content": m.content,
+                            "importance": m.importance_score,
+                            "type": m.memory_type,
+                        }
                         for m in memories
                     ],
                     "count": len(memories),
@@ -1344,7 +1711,9 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Memory search failed: {exc}"}
 
-    async def _recall_memories(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _recall_memories(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.schemas.memory import MemorySearchRequest
 
         job = ctx.job
@@ -1355,12 +1724,19 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         limit = min(int(params.get("limit", 10) or 10), 50)
         try:
             search_req = MemorySearchRequest(query=topic, limit=limit)
-            memories = await executor.memory_service.search_memories(job.user_id, search_req, ctx.db)
+            memories = await executor.memory_service.search_memories(
+                job.user_id, search_req, ctx.db
+            )
             return {
                 "success": True,
                 "data": {
                     "memories": [
-                        {"id": str(m.id), "content": m.content, "importance": m.importance_score, "type": m.memory_type}
+                        {
+                            "id": str(m.id),
+                            "content": m.content,
+                            "importance": m.importance_score,
+                            "type": m.memory_type,
+                        }
                         for m in memories
                     ],
                     "count": len(memories),
@@ -1369,7 +1745,9 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Memory recall failed: {exc}"}
 
-    async def _get_memory_stats(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_memory_stats(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         job = ctx.job
         try:
             stats = await executor.memory_service.get_memory_stats(job.user_id, ctx.db)
@@ -1399,10 +1777,13 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
 def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
     """Workflow orchestration tools for AutonomousAgentExecutor."""
 
-    async def _list_available_workflows(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.workflow import Workflow
+    async def _list_available_workflows(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from sqlalchemy import select as _select
         from sqlalchemy.orm import selectinload as _selectinload
+
+        from app.models.workflow import Workflow
 
         job = ctx.job
         try:
@@ -1436,10 +1817,13 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Failed to list workflows: {exc}"}
 
-    async def _execute_workflow(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _execute_workflow(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from uuid import UUID as _UUID
+
         from app.models.user import User as _User
         from app.services.workflow_engine import WorkflowEngine
-        from uuid import UUID as _UUID
 
         job = ctx.job
         wf_id_str = str(params.get("workflow_id", "")).strip()
@@ -1453,7 +1837,8 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
             execution = await engine.execute_workflow(
                 workflow_id=_UUID(wf_id_str),
                 trigger_type="agent_job",
-                trigger_data=params.get("trigger_data") or {"source_job_id": str(job.id)},
+                trigger_data=params.get("trigger_data")
+                or {"source_job_id": str(job.id)},
                 initial_context=params.get("inputs"),
             )
             return {
@@ -1467,17 +1852,23 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
         except Exception as exc:
             return {"error": f"Workflow execution failed: {exc}"}
 
-    async def _get_workflow_status(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.workflow import WorkflowExecution
-        from sqlalchemy import select as _select
+    async def _get_workflow_status(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID as _UUID
+
+        from sqlalchemy import select as _select
+
+        from app.models.workflow import WorkflowExecution
 
         exec_id_str = str(params.get("execution_id", "")).strip()
         if not exec_id_str:
             return {"error": "execution_id is required"}
         try:
             exec_result = await ctx.db.execute(
-                _select(WorkflowExecution).where(WorkflowExecution.id == _UUID(exec_id_str))
+                _select(WorkflowExecution).where(
+                    WorkflowExecution.id == _UUID(exec_id_str)
+                )
             )
             execution = exec_result.scalar_one_or_none()
             if not execution:
@@ -1490,12 +1881,230 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
                     "status": execution.status,
                     "progress": execution.progress,
                     "error": execution.error,
-                    "started_at": str(execution.started_at) if execution.started_at else None,
-                    "completed_at": str(execution.completed_at) if execution.completed_at else None,
+                    "started_at": str(execution.started_at)
+                    if execution.started_at
+                    else None,
+                    "completed_at": str(execution.completed_at)
+                    if execution.completed_at
+                    else None,
                 },
             }
         except Exception as exc:
             return {"error": f"Failed to get workflow status: {exc}"}
+
+    async def _enqueue_external_agent_call(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        import hashlib as _hashlib
+        import json as _json
+        from uuid import UUID as _UUID
+
+        from app.models.agent_job import AgentJobStatus as _AgentJobStatus
+        from app.models.user import User as _User
+        from app.models.workflow import UserTool as _UserTool
+        from app.services.agent_external_call_outbox_service import (
+            AgentExternalCallOutboxError,
+            agent_external_call_outbox_service,
+        )
+        from app.services.external_agent_gateway_service import (
+            external_agent_gateway_service,
+        )
+        from app.services.tool_policy_engine import evaluate_tool_policy
+
+        job = ctx.job
+        try:
+            tool_id = _UUID(str(params.get("tool_id") or "").strip())
+        except (TypeError, ValueError):
+            return {"error": "tool_id must be a valid external-agent connection ID"}
+        capability = str(params.get("capability") or "").strip().lower()
+        payload = params.get("payload")
+        if not capability:
+            return {"error": "capability is required"}
+        if not isinstance(payload, dict):
+            return {"error": "payload must be an object"}
+        user = await ctx.db.get(_User, job.user_id)
+        tool = await ctx.db.get(_UserTool, tool_id)
+        if (
+            user is None
+            or tool is None
+            or tool.user_id != job.user_id
+            or tool.tool_type != "external_agent"
+            or not bool(tool.is_enabled)
+        ):
+            return {"error": "Enabled external-agent connection was not found"}
+        try:
+            gateway_config = external_agent_gateway_service.validate_config(
+                tool.config if isinstance(tool.config, dict) else {}
+            )
+        except Exception as exc:
+            return {"error": f"External-agent connection is invalid: {exc}"}
+        if capability not in set(gateway_config.get("capabilities") or []):
+            return {"error": "Capability is not allowed by this connection"}
+        decision = await evaluate_tool_policy(
+            db=ctx.db,
+            tool_name=f"user_tool:{tool.id}",
+            tool_args={
+                "capability": capability,
+                "payload": payload,
+                "agent_job_id": str(job.id),
+                "delivery_mode": "transactional_outbox",
+            },
+            user=user,
+        )
+        if not decision.allowed:
+            return {
+                "error": decision.denied_reason
+                or "External-agent call was denied by tool policy"
+            }
+        if decision.require_approval:
+            return {
+                "error": (
+                    "External-agent call requires approval before it can be " "enqueued"
+                ),
+                "approval_required": True,
+            }
+        idempotency_key = str(
+            params.get("idempotency_key") or ctx.idempotency_key or ""
+        ).strip()
+        if not idempotency_key:
+            fingerprint = _json.dumps(
+                {
+                    "job_id": str(job.id),
+                    "iteration": int(job.iteration or 0),
+                    "tool_id": str(tool.id),
+                    "capability": capability,
+                    "payload": payload,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+                default=str,
+            )
+            idempotency_key = _hashlib.sha256(fingerprint.encode("utf-8")).hexdigest()
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        plan = state.get("execution_plan")
+        plan_step_index = int(state.get("plan_step_index", 0) or 0)
+        plan_step = None
+        if isinstance(plan, list) and plan:
+            plan_step_index = max(0, min(plan_step_index, len(plan) - 1))
+            plan_step = plan[plan_step_index]
+        plan_step_id = (
+            str(plan_step.get("step_id") or f"step_{plan_step_index + 1}")
+            if isinstance(plan_step, dict)
+            else None
+        )
+        correlation = {
+            "job_id": str(job.id),
+            "iteration": int(job.iteration or 0),
+            "plan_step_id": plan_step_id,
+            "plan_step_index": plan_step_index if plan_step_id else None,
+            "journal_idempotency_key": idempotency_key,
+        }
+        try:
+            row, created = await agent_external_call_outbox_service.enqueue(
+                db=ctx.db,
+                job_id=job.id,
+                user_id=job.user_id,
+                tool_id=tool.id,
+                capability=capability,
+                payload=payload,
+                idempotency_key=idempotency_key,
+                max_attempts=params.get("max_attempts", 5),
+                correlation=correlation,
+            )
+        except AgentExternalCallOutboxError as exc:
+            return {"error": str(exc)}
+        deferred = str(row.status) != "succeeded"
+        if deferred:
+            pending = state.setdefault("external_calls_pending", {})
+            pending[str(row.id)] = {
+                **correlation,
+                "capability": capability,
+                "status": str(row.status),
+            }
+            if isinstance(plan_step, dict):
+                plan_step["status"] = "waiting_external"
+                plan_step["external_outbox_id"] = str(row.id)
+                plan_step["external_capability"] = capability
+                plan_step["waiting_since_iteration"] = int(job.iteration or 0)
+            job.status = _AgentJobStatus.PAUSED.value
+            job.current_phase = "awaiting_external"
+            job.phase_details = f"Waiting for external capability: {capability}"[:280]
+        return {
+            "success": True,
+            "deferred_external": deferred,
+            "correlation": correlation,
+            "data": {
+                "outbox_id": str(row.id),
+                "status": str(row.status),
+                "created": created,
+                "idempotency_key": row.idempotency_key,
+                "request_id": row.request_id,
+                "response": row.response if not deferred else None,
+            },
+            "artifacts": [
+                {
+                    "type": "external_call_outbox",
+                    "id": str(row.id),
+                    "status": str(row.status),
+                }
+            ],
+        }
+
+    async def _get_external_call_status(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from uuid import UUID as _UUID
+
+        from app.models.agent_external_call_outbox import (
+            AgentExternalCallOutbox,
+        )
+
+        try:
+            outbox_id = _UUID(str(params.get("outbox_id") or "").strip())
+        except (TypeError, ValueError):
+            return {"error": "outbox_id must be a valid UUID"}
+        row = await ctx.db.get(AgentExternalCallOutbox, outbox_id)
+        if (
+            row is None
+            or row.user_id != ctx.job.user_id
+            or (row.job_id is not None and row.job_id != ctx.job.id)
+        ):
+            return {"error": "External-call outbox row was not found"}
+        return {
+            "success": True,
+            "data": {
+                "outbox_id": str(row.id),
+                "status": str(row.status),
+                "attempts": int(row.attempts or 0),
+                "max_attempts": int(row.max_attempts or 0),
+                "next_attempt_at": (
+                    row.next_attempt_at.isoformat()
+                    if row.next_attempt_at is not None
+                    else None
+                ),
+                "delivered_at": (
+                    row.delivered_at.isoformat()
+                    if row.delivered_at is not None
+                    else None
+                ),
+                "correlated_at": (
+                    row.correlated_at.isoformat()
+                    if row.correlated_at is not None
+                    else None
+                ),
+                "resume_enqueued_at": (
+                    row.resume_enqueued_at.isoformat()
+                    if row.resume_enqueued_at is not None
+                    else None
+                ),
+                "error": str(row.error or "")[:1000] or None,
+                "response": (
+                    row.response
+                    if row.status == "succeeded" and isinstance(row.response, dict)
+                    else None
+                ),
+            },
+        }
 
     return FunctionToolProvider(
         name="autonomous_workflow_tools",
@@ -1504,6 +2113,8 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
             "list_available_workflows": _list_available_workflows,
             "execute_workflow": _execute_workflow,
             "get_workflow_status": _get_workflow_status,
+            "enqueue_external_agent_call": _enqueue_external_agent_call,
+            "get_external_call_status": _get_external_call_status,
         },
     )
 
@@ -1523,15 +2134,28 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
             "iteration": int(job.iteration or 0),
             "topic": str(params.get("topic", ""))[:300],
             "assessment": str(params.get("assessment", ""))[:500],
-            "blind_spots": [str(b)[:200] for b in (params.get("blind_spots") or []) if isinstance(b, str)][:10],
-            "suggested_corrections": [str(c)[:200] for c in (params.get("suggested_corrections") or []) if isinstance(c, str)][:10],
+            "blind_spots": [
+                str(b)[:200]
+                for b in (params.get("blind_spots") or [])
+                if isinstance(b, str)
+            ][:10],
+            "suggested_corrections": [
+                str(c)[:200]
+                for c in (params.get("suggested_corrections") or [])
+                if isinstance(c, str)
+            ][:10],
             "timestamp": datetime.utcnow().isoformat(),
         }
         reflections.append(entry)
         state["reflections"] = reflections[-50:]
-        return {"success": True, "data": {"reflection_count": len(state["reflections"]), "recorded": entry}}
+        return {
+            "success": True,
+            "data": {"reflection_count": len(state["reflections"]), "recorded": entry},
+        }
 
-    async def _hypothesize(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _hypothesize(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -1540,7 +2164,13 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
             hypotheses = []
         hyp_id = str(params.get("hypothesis_id") or "").strip()
         status = str(params.get("status") or "proposed").strip()
-        if status not in {"proposed", "testing", "supported", "refuted", "inconclusive"}:
+        if status not in {
+            "proposed",
+            "testing",
+            "supported",
+            "refuted",
+            "inconclusive",
+        }:
             status = "proposed"
         result: Dict[str, Any] = {}
         if hyp_id:
@@ -1551,21 +2181,29 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
                     if params.get("rationale"):
                         hypothesis["rationale"] = str(params["rationale"])[:400]
                     if params.get("testable_predictions"):
-                        hypothesis["testable_predictions"] = [str(p)[:200] for p in params["testable_predictions"]][:10]
+                        hypothesis["testable_predictions"] = [
+                            str(p)[:200] for p in params["testable_predictions"]
+                        ][:10]
                     hypothesis["updated_at"] = datetime.utcnow().isoformat()
                     updated = True
                     result["data"] = {"hypothesis": hypothesis, "action": "updated"}
                     break
             if not updated:
                 result["error"] = f"Hypothesis {hyp_id} not found"
-                result["data"] = {"available_ids": [h.get("id") for h in hypotheses if isinstance(h, dict)]}
+                result["data"] = {
+                    "available_ids": [
+                        h.get("id") for h in hypotheses if isinstance(h, dict)
+                    ]
+                }
         else:
             hyp_id = f"h-{len(hypotheses) + 1}"
             entry = {
                 "id": hyp_id,
                 "hypothesis": str(params.get("hypothesis", ""))[:500],
                 "rationale": str(params.get("rationale") or "")[:400],
-                "testable_predictions": [str(p)[:200] for p in (params.get("testable_predictions") or [])][:10],
+                "testable_predictions": [
+                    str(p)[:200] for p in (params.get("testable_predictions") or [])
+                ][:10],
                 "status": status,
                 "created_at": datetime.utcnow().isoformat(),
             }
@@ -1575,7 +2213,9 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         result["success"] = not result.get("error")
         return result
 
-    async def _weigh_evidence(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _weigh_evidence(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -1583,7 +2223,13 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         if not isinstance(ledger, list):
             ledger = []
         verdict = str(params.get("verdict") or "neutral").strip()
-        if verdict not in {"strongly_supported", "weakly_supported", "neutral", "weakly_refuted", "strongly_refuted"}:
+        if verdict not in {
+            "strongly_supported",
+            "weakly_supported",
+            "neutral",
+            "weakly_refuted",
+            "strongly_refuted",
+        }:
             verdict = "neutral"
         ev_for = params.get("evidence_for") or []
         ev_against = params.get("evidence_against") or []
@@ -1611,23 +2257,36 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
             "verdict": verdict,
             "timestamp": datetime.utcnow().isoformat(),
         }
-        for_score = sum(e["strength"] for e in entry["evidence_for"]) if entry["evidence_for"] else 0
-        against_score = sum(e["strength"] for e in entry["evidence_against"]) if entry["evidence_against"] else 0
+        for_score = (
+            sum(e["strength"] for e in entry["evidence_for"])
+            if entry["evidence_for"]
+            else 0
+        )
+        against_score = (
+            sum(e["strength"] for e in entry["evidence_against"])
+            if entry["evidence_against"]
+            else 0
+        )
         entry["aggregate_score"] = round(for_score - against_score, 3)
         ledger.append(entry)
         state["evidence_ledger"] = ledger[-100:]
         hyp_id = entry.get("hypothesis_id")
         if hyp_id:
-            for hypothesis in (state.get("hypotheses") or []):
+            for hypothesis in state.get("hypotheses") or []:
                 if isinstance(hypothesis, dict) and hypothesis.get("id") == hyp_id:
                     if verdict in {"strongly_supported", "weakly_supported"}:
                         hypothesis["status"] = "supported"
                     elif verdict in {"strongly_refuted", "weakly_refuted"}:
                         hypothesis["status"] = "refuted"
                     break
-        return {"success": True, "data": {"entry": entry, "ledger_size": len(state["evidence_ledger"])}}
+        return {
+            "success": True,
+            "data": {"entry": entry, "ledger_size": len(state["evidence_ledger"])},
+        }
 
-    async def _critique_plan(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _critique_plan(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
 
         job = ctx.job
@@ -1641,9 +2300,21 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
         entry = {
             "iteration": int(job.iteration or 0),
             "plan_summary": str(params.get("plan_summary", ""))[:500],
-            "weaknesses": [str(w)[:200] for w in (params.get("weaknesses") or []) if isinstance(w, str)][:10],
-            "missing_steps": [str(s)[:200] for s in (params.get("missing_steps") or []) if isinstance(s, str)][:10],
-            "assumptions_challenged": [str(a)[:200] for a in (params.get("assumptions_challenged") or []) if isinstance(a, str)][:10],
+            "weaknesses": [
+                str(w)[:200]
+                for w in (params.get("weaknesses") or [])
+                if isinstance(w, str)
+            ][:10],
+            "missing_steps": [
+                str(s)[:200]
+                for s in (params.get("missing_steps") or [])
+                if isinstance(s, str)
+            ][:10],
+            "assumptions_challenged": [
+                str(a)[:200]
+                for a in (params.get("assumptions_challenged") or [])
+                if isinstance(a, str)
+            ][:10],
             "severity": severity,
             "timestamp": datetime.utcnow().isoformat(),
         }
@@ -1662,7 +2333,13 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
                 }
             )
             state["critic_notes"] = notes[-6:]
-        return {"success": True, "data": {"critique": entry, "critiques_count": len(state["plan_critiques"])}}
+        return {
+            "success": True,
+            "data": {
+                "critique": entry,
+                "critiques_count": len(state["plan_critiques"]),
+            },
+        }
 
     return FunctionToolProvider(
         name="autonomous_reasoning_tools",
@@ -1679,7 +2356,9 @@ def build_autonomous_reasoning_provider(executor: Any) -> FunctionToolProvider:
 def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvider:
     """Collaboration tools for AutonomousAgentExecutor."""
 
-    async def _delegate_subtask(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _delegate_subtask(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import asyncio
 
         from app.models.agent_job import AgentJob, AgentJobStatus
@@ -1702,7 +2381,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         child_type = str(params.get("job_type", "custom")).strip()
         if child_type not in {"research", "analysis", "synthesis", "custom"}:
             child_type = "custom"
-        child_config = params.get("config") if isinstance(params.get("config"), dict) else {}
+        child_config = (
+            params.get("config") if isinstance(params.get("config"), dict) else {}
+        )
         share = params.get("share_findings", True)
         if not isinstance(share, bool):
             share = True
@@ -1759,12 +2440,18 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                         AgentJobStatus.CANCELLED.value,
                     ]:
                         result["data"]["status"] = child.status
-                        result["data"]["results"] = child.results if isinstance(child.results, dict) else {}
-                        state.setdefault("delegated_subtask_results", {})[str(child.id)] = result["data"]["results"]
+                        result["data"]["results"] = (
+                            child.results if isinstance(child.results, dict) else {}
+                        )
+                        state.setdefault("delegated_subtask_results", {})[
+                            str(child.id)
+                        ] = result["data"]["results"]
                         break
                 else:
                     result["data"]["status"] = child.status
-                    result["data"]["note"] = "Timed out waiting; use wait_for_subtask to check later"
+                    result["data"][
+                        "note"
+                    ] = "Timed out waiting; use wait_for_subtask to check later"
 
             try:
                 await executor._save_checkpoint(job, state, ctx.db)
@@ -1774,7 +2461,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to create child job: {exc}"}
 
-    async def _wait_for_subtask(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _wait_for_subtask(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import asyncio
         import uuid
 
@@ -1791,13 +2480,18 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
 
         cached = (state.get("delegated_subtask_results") or {}).get(subtask_id)
         if cached:
-            return {"success": True, "data": {"status": "completed", "results": cached, "source": "cache"}}
+            return {
+                "success": True,
+                "data": {"status": "completed", "results": cached, "source": "cache"},
+            }
 
         timeout = min(int(params.get("timeout_seconds", 30) or 30), 120)
         try:
             subtask_uuid = uuid.UUID(subtask_id)
             child_query = await ctx.db.execute(
-                select(AgentJob).where(AgentJob.id == subtask_uuid, AgentJob.parent_job_id == job.id)
+                select(AgentJob).where(
+                    AgentJob.id == subtask_uuid, AgentJob.parent_job_id == job.id
+                )
             )
             child = child_query.scalar_one_or_none()
             if not child:
@@ -1814,7 +2508,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 waited += 3
                 await ctx.db.refresh(child)
             child_results = child.results if isinstance(child.results, dict) else {}
-            state.setdefault("delegated_subtask_results", {})[subtask_id] = child_results
+            state.setdefault("delegated_subtask_results", {})[
+                subtask_id
+            ] = child_results
             return {
                 "success": True,
                 "data": {
@@ -1829,12 +2525,15 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to check subtask: {exc}"}
 
-    async def _share_findings(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _share_findings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import uuid
         from datetime import datetime
 
-        from app.models.agent_job import AgentJob
         from sqlalchemy.orm.attributes import flag_modified
+
+        from app.models.agent_job import AgentJob
 
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -1842,13 +2541,17 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         if not isinstance(findings_to_share, list) or not findings_to_share:
             return {"error": "No findings provided to share"}
         if not getattr(job, "parent_job_id", None):
-            return {"error": "Cannot share findings: this job has no parent (no siblings)"}
+            return {
+                "error": "Cannot share findings: this job has no parent (no siblings)"
+            }
 
         target_ids = params.get("target_job_ids") or []
         if not isinstance(target_ids, list):
             target_ids = []
         try:
-            query = select(AgentJob).where(AgentJob.parent_job_id == job.parent_job_id, AgentJob.id != job.id)
+            query = select(AgentJob).where(
+                AgentJob.parent_job_id == job.parent_job_id, AgentJob.id != job.id
+            )
             if target_ids:
                 target_uuids = []
                 for tid in target_ids:
@@ -1862,7 +2565,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
             siblings = siblings_result.scalars().all()
             shared_count = 0
             for sibling in siblings:
-                sib_results = sibling.results if isinstance(sibling.results, dict) else {}
+                sib_results = (
+                    sibling.results if isinstance(sibling.results, dict) else {}
+                )
                 shared = sib_results.get("shared_findings", [])
                 if not isinstance(shared, list):
                     shared = []
@@ -1886,11 +2591,19 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 await executor._save_checkpoint(job, state, ctx.db)
             except Exception:
                 pass
-            return {"success": True, "data": {"siblings_updated": shared_count, "findings_shared": len(findings_to_share[:10])}}
+            return {
+                "success": True,
+                "data": {
+                    "siblings_updated": shared_count,
+                    "findings_shared": len(findings_to_share[:10]),
+                },
+            }
         except Exception as exc:
             return {"error": f"Failed to share findings: {exc}"}
 
-    async def _request_review(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _request_review(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
 
         from app.models.agent_job import AgentJob, AgentJobStatus
@@ -1900,7 +2613,11 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         state = ctx.state if isinstance(ctx.state, dict) else {}
         review_type = str(params.get("review_type") or "peer_agent").strip()
         content = str(params.get("content_to_review", ""))[:3000]
-        criteria = [str(c)[:200] for c in (params.get("review_criteria") or []) if isinstance(c, str)][:10]
+        criteria = [
+            str(c)[:200]
+            for c in (params.get("review_criteria") or [])
+            if isinstance(c, str)
+        ][:10]
 
         review_entry = {
             "type": review_type,
@@ -1922,16 +2639,26 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 "review_criteria": criteria,
                 "requested_at": datetime.utcnow().isoformat(),
             }
-            return {"success": True, "data": {"action": "paused_for_human_review", "checkpoint": state["approval_checkpoint_pending"]}}
+            return {
+                "success": True,
+                "data": {
+                    "action": "paused_for_human_review",
+                    "checkpoint": state["approval_checkpoint_pending"],
+                },
+            }
 
         chain_depth = int(getattr(job, "chain_depth", 0) or 0)
         if chain_depth >= 3:
-            return {"error": "Cannot spawn peer review: maximum delegation depth reached"}
+            return {
+                "error": "Cannot spawn peer review: maximum delegation depth reached"
+            }
 
         try:
             review_goal = f"Review the following content and provide feedback:\n\n{content[:1500]}"
             if criteria:
-                review_goal += f"\n\nEvaluate against these criteria:\n" + "\n".join(f"- {c}" for c in criteria)
+                review_goal += "\n\nEvaluate against these criteria:\n" + "\n".join(
+                    f"- {c}" for c in criteria
+                )
             child = AgentJob(
                 name=f"Peer review for {job.name}"[:200],
                 description="Peer review requested by sibling agent",
@@ -1962,16 +2689,25 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 await executor._save_checkpoint(job, state, ctx.db)
             except Exception:
                 pass
-            return {"success": True, "data": {"action": "peer_review_spawned", "review_job_id": str(child.id)}}
+            return {
+                "success": True,
+                "data": {
+                    "action": "peer_review_spawned",
+                    "review_job_id": str(child.id),
+                },
+            }
         except Exception as exc:
             return {"error": f"Failed to spawn peer review: {exc}"}
 
-    async def _send_message_to_agent(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _send_message_to_agent(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
         from uuid import UUID as _UUID
 
-        from app.models.agent_job import AgentJob
         from sqlalchemy.orm.attributes import flag_modified
+
+        from app.models.agent_job import AgentJob
 
         job = ctx.job
         target_job_id_str = str(params.get("target_job_id", "")).strip()
@@ -1986,7 +2722,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
                 return {"error": f"Target job {target_job_id_str} not found"}
             if str(target_job.user_id) != str(job.user_id):
                 return {"error": "Cannot send messages to jobs owned by other users"}
-            target_results = target_job.results if isinstance(target_job.results, dict) else {}
+            target_results = (
+                target_job.results if isinstance(target_job.results, dict) else {}
+            )
             agent_msgs = target_results.get("agent_messages", [])
             if not isinstance(agent_msgs, list):
                 agent_msgs = []
@@ -2015,7 +2753,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to send message: {exc}"}
 
-    async def _read_agent_messages(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _read_agent_messages(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         job = ctx.job
         try:
             job_results = job.results if isinstance(job.results, dict) else {}
@@ -2055,7 +2795,9 @@ def build_autonomous_collaboration_provider(executor: Any) -> FunctionToolProvid
 def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvider:
     """Read-oriented workspace tools for AutonomousAgentExecutor."""
 
-    async def _clone_and_index_repo(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _clone_and_index_repo(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         source_id = str(params.get("source_id") or "").strip()
         repo_url = str(params.get("repo_url") or "").strip()
         branch = str(params.get("branch") or "").strip() or None
@@ -2067,34 +2809,114 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
             return {"error": "Either source_id or repo_url is required"}
         try:
             if source_id:
-                ws = await executor.workspace_manager.create_from_source(source_id, ctx.db)
+                ws = await executor.workspace_manager.create_from_source(
+                    source_id, ctx.db
+                )
             else:
                 from app.core.config import settings as app_settings
-                from app.core.feature_flags import get_feature_flag
+                from app.core.feature_flags import get_flag
 
-                enabled = await get_feature_flag("unsafe_code_execution_enabled")
+                enabled = await get_flag("unsafe_code_execution_enabled")
                 if enabled is None:
-                    enabled = bool(getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
+                    enabled = bool(
+                        getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False)
+                    )
                 if not enabled:
                     return {"error": "Git clone requires unsafe_code_execution_enabled"}
                 ws = await executor.workspace_manager.create_from_url(repo_url, branch)
             state["coding_workspace_id"] = ws.workspace_id
+            ws.owner_job_id = str(job.id)
+            ws.session_id = (
+                str((job.config or {}).get("coding_workspace_session_id") or "").strip()
+                or None
+            )
+            from app.services.agent_coding_harness_service import (
+                agent_coding_harness_service,
+            )
+
+            instruction_context = (
+                agent_coding_harness_service.discover_project_instructions(ws)
+            )
+            state["coding_harness_context"] = instruction_context
+            baseline_checkpoint = None
+            if bool((job.config or {}).get("coding_harness_may_mutate")):
+                (
+                    baseline_checkpoint,
+                    checkpoint_error,
+                ) = executor.workspace_manager.create_checkpoint(
+                    ws,
+                    label="Automatic baseline before mutation",
+                    kind="baseline",
+                )
+                if checkpoint_error:
+                    executor.workspace_manager.cleanup(ws.workspace_id)
+                    state.pop("coding_workspace_id", None)
+                    return {
+                        "error": (
+                            "Failed to create mandatory pre-mutation checkpoint: "
+                            f"{checkpoint_error}"
+                        )
+                    }
+                state["coding_pre_mutation_checkpoint_id"] = str(
+                    baseline_checkpoint.get("checkpoint_id") or ""
+                )
+            restored_durable_checkpoint = None
+            durable_checkpoint_id = str(
+                state.get("coding_last_durable_checkpoint_id") or ""
+            ).strip()
+            if durable_checkpoint_id:
+                try:
+                    from app.services.agent_coding_durable_checkpoint_service import (
+                        agent_coding_durable_checkpoint_service,
+                    )
+
+                    restored_durable_checkpoint = (
+                        await agent_coding_durable_checkpoint_service.restore(
+                            executor,
+                            job,
+                            state,
+                            checkpoint_id=durable_checkpoint_id,
+                        )
+                    )
+                except Exception as exc:
+                    executor.workspace_manager.cleanup(ws.workspace_id)
+                    state.pop("coding_workspace_id", None)
+                    return {
+                        "error": (
+                            "Failed to restore durable coding session checkpoint: "
+                            f"{exc}"
+                        )
+                    }
             return {
                 "success": True,
                 "data": {
                     "workspace_id": ws.workspace_id,
                     "files_count": len(ws.original_hashes),
                     "source": "kb_source" if source_id else "git_clone",
+                    "instruction_files": [
+                        str(item.get("path") or "")
+                        for item in instruction_context.get("files", [])
+                        if isinstance(item, dict)
+                        and str(item.get("path") or "").strip()
+                    ],
+                    "baseline_checkpoint": baseline_checkpoint,
+                    "restored_durable_checkpoint": restored_durable_checkpoint,
                 },
             }
         except Exception as exc:
             return {"error": f"Failed to create workspace: {exc}"}
 
-    async def _browse_repo_files(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _browse_repo_files(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
-            return {"error": "No active coding workspace. Use clone_and_index_repo first."}
+            return {
+                "error": "No active coding workspace. Use clone_and_index_repo first."
+            }
         entries = executor.workspace_manager.browse_files(
             ws,
             path=str(params.get("path", ".") or "."),
@@ -2105,7 +2927,9 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
 
     async def _read_file(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
             return {"error": "No active coding workspace"}
         path = str(params.get("path", "")).strip()
@@ -2120,11 +2944,18 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
         )
         if err:
             return {"error": err}
-        return {"success": True, "data": {"path": path, "content": content, "length": len(content or "")}}
+        return {
+            "success": True,
+            "data": {"path": path, "content": content, "length": len(content or "")},
+        }
 
-    async def _search_code(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_code(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
             return {"error": "No active coding workspace"}
         pattern = str(params.get("pattern", "")).strip()
@@ -2140,15 +2971,70 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
         )
         return {"success": True, "data": {"matches": matches, "count": len(matches)}}
 
-    async def _get_workspace_status(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_workspace_status(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
             return {"error": "No active coding workspace"}
         status = executor.workspace_manager.get_status(ws)
         return {"success": True, "data": status}
 
-    async def _get_workspace_artifact_url(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_workspace_checkpoints(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
+        if not ws:
+            return {"error": "No active coding workspace"}
+        checkpoints = executor.workspace_manager.list_checkpoints(ws)
+        return {
+            "success": True,
+            "data": {
+                "workspace_id": ws.workspace_id,
+                "checkpoints": checkpoints,
+                "count": len(checkpoints),
+            },
+        }
+
+    async def _list_durable_workspace_checkpoints(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        from app.services.agent_coding_durable_checkpoint_service import (
+            agent_coding_durable_checkpoint_service,
+        )
+
+        checkpoints = agent_coding_durable_checkpoint_service.list_checkpoints(
+            ctx.job,
+            state,
+        )
+        rows = [
+            {
+                key: item.get(key)
+                for key in (
+                    "checkpoint_id",
+                    "session_id",
+                    "workspace_state_digest",
+                    "changes_summary",
+                    "persistence_complete",
+                    "label",
+                    "reason",
+                    "persisted_at",
+                )
+            }
+            for item in checkpoints
+        ]
+        return {"success": True, "data": {"checkpoints": rows, "count": len(rows)}}
+
+    async def _get_workspace_artifact_url(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         ws_job_id = str(params.get("job_id", "")).strip()
         ws_file_path = str(params.get("file_path", "")).strip()
         if not ws_job_id or not ws_file_path:
@@ -2172,6 +3058,8 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
             "read_file": _read_file,
             "search_code": _search_code,
             "get_workspace_status": _get_workspace_status,
+            "list_workspace_checkpoints": _list_workspace_checkpoints,
+            "list_durable_workspace_checkpoints": (_list_durable_workspace_checkpoints),
             "get_workspace_artifact_url": _get_workspace_artifact_url,
         },
     )
@@ -2190,8 +3078,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             raise ValueError("User not found for code execution")
         return user
 
-    async def _execute_python(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _execute_python(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
+
         from app.services.custom_tool_service import CustomToolService
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -2223,16 +3114,23 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         except Exception as exc:
             return {"error": f"Python execution failed: {exc}"}
 
-    async def _execute_data_pipeline(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from datetime import datetime
+    async def _execute_data_pipeline(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import json
+        from datetime import datetime
+
         from app.core.config import settings
         from app.services.custom_tool_service import CustomToolService
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         code = str(params.get("code", ""))
         timeout = min(int(params.get("timeout_seconds", 60) or 60), 300)
-        input_data = params.get("input_data") if isinstance(params.get("input_data"), dict) else {}
+        input_data = (
+            params.get("input_data")
+            if isinstance(params.get("input_data"), dict)
+            else {}
+        )
         if not code.strip():
             return {"error": "No code provided"}
         try:
@@ -2259,7 +3157,10 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             else:
                 exec_result = await cts._execute_python(
-                    config={"code": f"input_data = {repr(input_data)}\n{code}", "timeout_seconds": timeout},
+                    config={
+                        "code": f"input_data = {repr(input_data)}\n{code}",
+                        "timeout_seconds": timeout,
+                    },
                     inputs={},
                     user=user,
                 )
@@ -2279,9 +3180,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         except Exception as exc:
             return {"error": f"Data pipeline execution failed: {exc}"}
 
-    async def _write_and_run_script(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from datetime import datetime
+    async def _write_and_run_script(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import json
+        from datetime import datetime
+
         from app.core.config import settings
         from app.services.custom_tool_service import CustomToolService
 
@@ -2289,7 +3193,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         script_name = str(params.get("script_name", "script.py"))[:100]
         script_content = str(params.get("script_content", ""))
         timeout = min(int(params.get("timeout_seconds", 120) or 120), 300)
-        input_data = params.get("input_data") if isinstance(params.get("input_data"), dict) else {}
+        input_data = (
+            params.get("input_data")
+            if isinstance(params.get("input_data"), dict)
+            else {}
+        )
         requirements = params.get("requirements") or []
         arguments = params.get("arguments") or []
         if not isinstance(requirements, list):
@@ -2298,20 +3206,39 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             arguments = []
 
         safe_packages = {
-            "pandas", "numpy", "scipy", "scikit-learn", "matplotlib",
-            "seaborn", "networkx", "requests", "beautifulsoup4", "lxml",
-            "pyyaml", "tabulate", "openpyxl", "xlsxwriter",
+            "pandas",
+            "numpy",
+            "scipy",
+            "scikit-learn",
+            "matplotlib",
+            "seaborn",
+            "networkx",
+            "requests",
+            "beautifulsoup4",
+            "lxml",
+            "pyyaml",
+            "tabulate",
+            "openpyxl",
+            "xlsxwriter",
         }
-        requirements = [r for r in requirements if isinstance(r, str) and r.strip().lower() in safe_packages]
+        requirements = [
+            r
+            for r in requirements
+            if isinstance(r, str) and r.strip().lower() in safe_packages
+        ]
 
         if not script_content.strip():
             return {"error": "No script content provided"}
         if not getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False):
-            return {"error": "Docker execution is not enabled; write_and_run_script requires Docker"}
+            return {
+                "error": "Docker execution is not enabled; write_and_run_script requires Docker"
+            }
         try:
             cts = CustomToolService()
             user = await _resolve_user(ctx)
-            pip_cmd = f"pip install -q {' '.join(requirements)} && " if requirements else ""
+            pip_cmd = (
+                f"pip install -q {' '.join(requirements)} && " if requirements else ""
+            )
             input_cmd = ""
             if input_data:
                 input_cmd = f"echo '{json.dumps(input_data, default=str)}' > /workspace/input.json && "
@@ -2319,7 +3246,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             exec_result = await cts._execute_docker(
                 config={
                     "image": "python:3.11-slim",
-                    "command": ["bash", "-c", f"{pip_cmd}{input_cmd}python /workspace/{script_name} {args_str}"],
+                    "command": [
+                        "bash",
+                        "-c",
+                        f"{pip_cmd}{input_cmd}python /workspace/{script_name} {args_str}",
+                    ],
                     "timeout_seconds": timeout,
                     "memory_limit": "512m",
                     "network_enabled": False,
@@ -2343,9 +3274,13 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         except Exception as exc:
             return {"error": f"Script execution failed: {exc}"}
 
-    async def _write_file(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _write_file(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
             return {"error": "No active coding workspace"}
         path = str(params.get("path", "")).strip()
@@ -2366,11 +3301,207 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         if path not in modified:
             modified.append(path)
         state["coding_modified_files"] = modified[-200:]
-        return {"success": True, "data": {"path": path, "bytes_written": len(content.encode("utf-8"))}}
+        return {
+            "success": True,
+            "data": {"path": path, "bytes_written": len(content.encode("utf-8"))},
+        }
 
-    async def _apply_patch(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_workspace_checkpoint(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
+        if not ws:
+            return {"error": "No active coding workspace"}
+        checkpoint, error = executor.workspace_manager.create_checkpoint(
+            ws,
+            label=str(params.get("label") or "").strip(),
+            kind="manual",
+        )
+        if error:
+            return {"error": error}
+        state["coding_last_checkpoint_id"] = str(
+            (checkpoint or {}).get("checkpoint_id") or ""
+        )
+        return {"success": True, "data": checkpoint}
+
+    async def _restore_workspace_checkpoint(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
+        if not ws:
+            return {"error": "No active coding workspace"}
+        checkpoint_id = str(params.get("checkpoint_id") or "").strip()
+        if not checkpoint_id:
+            return {"error": "checkpoint_id is required"}
+        result, error = executor.workspace_manager.restore_checkpoint(
+            ws,
+            checkpoint_id,
+            preserve_current=bool(params.get("preserve_current", True)),
+        )
+        if error:
+            return {"error": error}
+        status = (result or {}).get("status") or {}
+        state["coding_modified_files"] = list(
+            dict.fromkeys(
+                [
+                    *list(status.get("modified") or []),
+                    *list(status.get("added") or []),
+                    *list(status.get("deleted") or []),
+                ]
+            )
+        )[:200]
+        state["coding_last_restored_checkpoint_id"] = checkpoint_id
+        return {"success": True, "data": result}
+
+    async def _hydrate_candidate_snapshot(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
+        if not ws:
+            return {"error": "No active coding workspace"}
+        config = ctx.job.config if isinstance(ctx.job.config, dict) else {}
+        handoff = (
+            config.get("swarm_handoff")
+            if isinstance(config.get("swarm_handoff"), dict)
+            else {}
+        )
+        configured_manifest = (
+            config.get("candidate_snapshot")
+            if isinstance(config.get("candidate_snapshot"), dict)
+            else handoff.get("candidate_snapshot")
+            if isinstance(handoff.get("candidate_snapshot"), dict)
+            else None
+        )
+        configured_manifests = (
+            config.get("candidate_snapshots")
+            if isinstance(config.get("candidate_snapshots"), list)
+            else []
+        )
+        requested_snapshot_id = str(params.get("snapshot_id") or "").strip()
+        manifest = configured_manifest
+        if requested_snapshot_id:
+            if (
+                isinstance(configured_manifest, dict)
+                and str(configured_manifest.get("snapshot_id") or "")
+                == requested_snapshot_id
+            ):
+                manifest = configured_manifest
+            else:
+                manifest = next(
+                    (
+                        item
+                        for item in configured_manifests
+                        if isinstance(item, dict)
+                        and str(item.get("snapshot_id") or "") == requested_snapshot_id
+                    ),
+                    None,
+                )
+        elif not isinstance(manifest, dict) and len(configured_manifests) == 1:
+            manifest = (
+                configured_manifests[0]
+                if isinstance(configured_manifests[0], dict)
+                else None
+            )
+        if not isinstance(manifest, dict):
+            return {
+                "error": (
+                    "No matching system-provided candidate snapshot is available; "
+                    "supply snapshot_id when multiple candidates exist"
+                )
+            }
+        result, error = await executor.workspace_manager.hydrate_candidate_snapshot(
+            ws,
+            manifest,
+        )
+        if error:
+            return {"error": error}
+        state["coding_hydrated_candidate_snapshot_id"] = str(
+            manifest.get("snapshot_id") or ""
+        )
+        state["coding_modified_files"] = list(
+            dict.fromkeys(
+                [
+                    *list((result or {}).get("hydrated_files") or []),
+                    *list((result or {}).get("deleted_files") or []),
+                ]
+            )
+        )[:200]
+        return {"success": True, "data": result}
+
+    async def _persist_durable_workspace_checkpoint(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        from app.services.agent_coding_durable_checkpoint_service import (
+            agent_coding_durable_checkpoint_service,
+        )
+
+        try:
+            manifest = await agent_coding_durable_checkpoint_service.persist(
+                executor,
+                ctx.job,
+                state,
+                label=str(params.get("label") or "").strip(),
+                reason="agent_requested",
+                db=ctx.db,
+            )
+        except Exception as exc:
+            return {"error": f"Failed to persist durable checkpoint: {exc}"}
+        if not isinstance(manifest, dict):
+            return {"error": "Durable checkpoint was not created"}
+        return {
+            "success": True,
+            "data": {
+                "checkpoint_id": str(manifest.get("checkpoint_id") or ""),
+                "session_id": str(manifest.get("session_id") or ""),
+                "workspace_state_digest": str(
+                    manifest.get("workspace_state_digest") or ""
+                ),
+                "persistence_complete": bool(
+                    manifest.get("persistence_complete", False)
+                ),
+                "changes_summary": manifest.get("changes_summary") or {},
+            },
+        }
+
+    async def _restore_durable_workspace_checkpoint(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        checkpoint_id = str(params.get("checkpoint_id") or "").strip()
+        if not checkpoint_id:
+            return {"error": "checkpoint_id is required"}
+        from app.services.agent_coding_durable_checkpoint_service import (
+            agent_coding_durable_checkpoint_service,
+        )
+
+        try:
+            result = await agent_coding_durable_checkpoint_service.restore(
+                executor,
+                ctx.job,
+                state,
+                checkpoint_id=checkpoint_id,
+            )
+        except Exception as exc:
+            return {"error": f"Failed to restore durable checkpoint: {exc}"}
+        return {"success": True, "data": result}
+
+    async def _apply_patch(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
             return {"error": "No active coding workspace"}
         diff_text = str(params.get("diff", "")).strip()
@@ -2415,29 +3546,49 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         except Exception as exc:
             return {"error": f"Patch failed: {exc}"}
 
-    async def _run_command(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _run_command(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import asyncio
         import os
         from datetime import datetime
+
         from app.core.config import settings as app_settings
-        from app.core.feature_flags import get_feature_flag
+        from app.core.feature_flags import get_flag
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
             return {"error": "No active coding workspace"}
         command = str(params.get("command", "")).strip()
         if not command:
             return {"error": "command is required"}
-        enabled = await get_feature_flag("unsafe_code_execution_enabled")
+        from app.services.agent_job_creation_service import (
+            agent_job_creation_service,
+        )
+
+        unsafe_commands = agent_job_creation_service.find_unsafe_commands([command])
+        if unsafe_commands:
+            return {
+                "success": False,
+                "error": "Command rejected by coding harness safety policy",
+                "data": {"blocked_commands": unsafe_commands},
+            }
+        enabled = await get_flag("unsafe_code_execution_enabled")
         if enabled is None:
             enabled = bool(getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
         if not enabled:
-            return {"error": "Shell execution requires unsafe_code_execution_enabled feature flag"}
+            return {
+                "error": "Shell execution requires unsafe_code_execution_enabled feature flag"
+            }
         timeout = min(int(params.get("timeout_seconds", 30) or 30), 120)
         extra_env = params.get("env") if isinstance(params.get("env"), dict) else {}
         env = {**os.environ, **extra_env, "HOME": str(ws.base_path)}
-        max_output = int(getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS", 20000) or 20000)
+        max_output = int(
+            getattr(app_settings, "UNSAFE_CODE_EXEC_MAX_STDOUT_CHARS", 20000) or 20000
+        )
         try:
             proc = await asyncio.wait_for(
                 asyncio.create_subprocess_exec(
@@ -2451,7 +3602,9 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 ),
                 timeout=5,
             )
-            stdout_bytes, stderr_bytes = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
             stdout_str = stdout_bytes.decode("utf-8", errors="replace")[:max_output]
             stderr_str = stderr_bytes.decode("utf-8", errors="replace")[:max_output]
             history = state.get("coding_command_history")
@@ -2466,8 +3619,9 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 }
             )
             state["coding_command_history"] = history[-50:]
-            return {
-                "success": True,
+            command_succeeded = proc.returncode == 0
+            result = {
+                "success": command_succeeded,
                 "data": {
                     "exit_code": proc.returncode,
                     "stdout": stdout_str,
@@ -2475,6 +3629,35 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     "command": command[:200],
                 },
             }
+            if not command_succeeded:
+                result["error"] = f"Command exited with status {proc.returncode}"
+            elif bool((ctx.job.config or {}).get("coding_harness_may_mutate")):
+                workspace_status = executor.workspace_manager.get_status(ws)
+                if int(workspace_status.get("changes_count") or 0) > 0:
+                    try:
+                        from app.services.agent_coding_durable_checkpoint_service import (
+                            agent_coding_durable_checkpoint_service,
+                        )
+
+                        durable_checkpoint = (
+                            await agent_coding_durable_checkpoint_service.persist(
+                                executor,
+                                ctx.job,
+                                state,
+                                label=f"Verified by {command[:80]}",
+                                reason="successful_verification",
+                                db=ctx.db,
+                            )
+                        )
+                        if isinstance(durable_checkpoint, dict):
+                            result["data"]["durable_checkpoint_id"] = str(
+                                durable_checkpoint.get("checkpoint_id") or ""
+                            )
+                    except Exception as checkpoint_exc:
+                        result["data"]["durable_checkpoint_error"] = str(
+                            checkpoint_exc
+                        )[:500]
+            return result
         except asyncio.TimeoutError:
             return {"error": f"Command timed out after {timeout}s"}
         except Exception as exc:
@@ -2490,6 +3673,15 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "write_file": _write_file,
             "apply_patch": _apply_patch,
             "run_command": _run_command,
+            "create_workspace_checkpoint": _create_workspace_checkpoint,
+            "restore_workspace_checkpoint": _restore_workspace_checkpoint,
+            "hydrate_candidate_snapshot": _hydrate_candidate_snapshot,
+            "persist_durable_workspace_checkpoint": (
+                _persist_durable_workspace_checkpoint
+            ),
+            "restore_durable_workspace_checkpoint": (
+                _restore_durable_workspace_checkpoint
+            ),
         },
     )
 
@@ -2497,19 +3689,29 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolProvider:
     """Symbol-aware retrieval tools for AutonomousAgentExecutor."""
 
-    async def _retrieve_repo_symbols(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _retrieve_repo_symbols(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import asyncio as _asyncio
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         query_str = str(params.get("query", "")).strip()
         if not query_str:
             return {"error": "query is required"}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
-            return {"error": "No active coding workspace. Use clone_and_index_repo first."}
+            return {
+                "error": "No active coding workspace. Use clone_and_index_repo first."
+            }
         lang_filter = params.get("language_filter")
         max_results = min(int(params.get("max_results", 20) or 20), 50)
-        query_keywords = [t.strip() for t in query_str.replace("-", " ").replace("_", " ").split() if t.strip()]
+        query_keywords = [
+            t.strip()
+            for t in query_str.replace("-", " ").replace("_", " ").split()
+            if t.strip()
+        ]
         try:
             retrieve_result = await _asyncio.to_thread(
                 executor.symbol_index_service.retrieve,
@@ -2520,18 +3722,27 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
                 max_snippets=min(max_results, 10),
             )
             if lang_filter:
-                ext_map = {"python": {".py"}, "typescript": {".ts", ".tsx"}, "javascript": {".js", ".jsx"}}
+                ext_map = {
+                    "python": {".py"},
+                    "typescript": {".ts", ".tsx"},
+                    "javascript": {".js", ".jsx"},
+                }
                 allowed_exts = ext_map.get(lang_filter, set())
                 if allowed_exts:
                     retrieve_result["symbol_matches"] = [
-                        s for s in retrieve_result.get("symbol_matches", [])
-                        if any(str(s.get("path", "")).endswith(ext) for ext in allowed_exts)
+                        s
+                        for s in retrieve_result.get("symbol_matches", [])
+                        if any(
+                            str(s.get("path", "")).endswith(ext) for ext in allowed_exts
+                        )
                     ]
             return {"success": True, "data": retrieve_result}
         except Exception as exc:
             return {"error": f"Symbol retrieval failed: {exc}"}
 
-    async def _get_symbol_context(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_symbol_context(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import asyncio as _asyncio
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -2539,7 +3750,9 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         file_path_param = str(params.get("file_path", "")).strip()
         if not symbol_name or not file_path_param:
             return {"error": "symbol_name and file_path are required"}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
             return {"error": "No active coding workspace"}
         try:
@@ -2551,11 +3764,17 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
                 max_symbols=20,
                 max_snippets=10,
             )
-            matches = [s for s in retrieve_result.get("symbol_matches", []) if s.get("path") == file_path_param]
+            matches = [
+                s
+                for s in retrieve_result.get("symbol_matches", [])
+                if s.get("path") == file_path_param
+            ]
             exact = [s for s in matches if s.get("symbol") == symbol_name]
             target = exact[0] if exact else (matches[0] if matches else None)
             if not target:
-                return {"error": f"Symbol '{symbol_name}' not found in {file_path_param}"}
+                return {
+                    "error": f"Symbol '{symbol_name}' not found in {file_path_param}"
+                }
             code_content, _ = executor.workspace_manager.read_file(
                 ws,
                 file_path_param,
@@ -2576,14 +3795,18 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
         except Exception as exc:
             return {"error": f"Symbol context retrieval failed: {exc}"}
 
-    async def _find_tests_for_symbol(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _find_tests_for_symbol(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import asyncio as _asyncio
 
         state = ctx.state if isinstance(ctx.state, dict) else {}
         symbol_name = str(params.get("symbol_name", "")).strip()
         if not symbol_name:
             return {"error": "symbol_name is required"}
-        ws = executor.workspace_manager.get_or_default(params.get("workspace_id"), state)
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
         if not ws:
             return {"error": "No active coding workspace"}
         try:
@@ -2599,7 +3822,11 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
             for sym in retrieve_result.get("symbol_matches", []):
                 path_lower = str(sym.get("path", "")).lower()
                 if executor.symbol_index_service._looks_like_test(path_lower):
-                    entry = {"path": sym.get("path"), "symbol": sym.get("symbol"), "score": sym.get("score", 0)}
+                    entry = {
+                        "path": sym.get("path"),
+                        "symbol": sym.get("symbol"),
+                        "score": sym.get("score", 0),
+                    }
                     if entry not in test_matches:
                         test_matches.append(entry)
             return {
@@ -2627,7 +3854,9 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
 def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolProvider:
     """Document authoring tools for AutonomousAgentExecutor."""
 
-    async def _plan_document(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _plan_document(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         title = str(params.get("title", "")).strip()
         sections = params.get("sections") or []
@@ -2673,7 +3902,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             },
         }
 
-    async def _write_section(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _write_section(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         doc_ws = state.get("document_workspace")
         if not doc_ws or not isinstance(doc_ws, dict) or not doc_ws.get("plan"):
@@ -2711,7 +3942,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             },
         }
 
-    async def _revise_section(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _revise_section(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         doc_ws = state.get("document_workspace")
         if not doc_ws or not isinstance(doc_ws, dict) or not doc_ws.get("plan"):
@@ -2731,7 +3964,7 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
 
         section["content"] = new_content
         section["revision_count"] = section.get("revision_count", 0) + 1
-        for citation in (params.get("additional_citations") or []):
+        for citation in params.get("additional_citations") or []:
             if isinstance(citation, dict) and citation.get("ref_id"):
                 section["citations"].append(citation)
                 doc_ws["citations_registry"][citation["ref_id"]] = {
@@ -2748,7 +3981,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             },
         }
 
-    async def _assemble_document(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _assemble_document(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         doc_ws = state.get("document_workspace")
         if not doc_ws or not isinstance(doc_ws, dict) or not doc_ws.get("plan"):
@@ -2763,7 +3998,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         sections = plan["sections"]
         if isinstance(custom_order, list) and custom_order:
             order_map = {section_id: i for i, section_id in enumerate(custom_order)}
-            sections = sorted(sections, key=lambda section: order_map.get(section["id"], 999))
+            sections = sorted(
+                sections, key=lambda section: order_map.get(section["id"], 999)
+            )
 
         parts = [f"# {plan['title']}\n"]
         if include_abstract and plan.get("abstract"):
@@ -2804,11 +4041,14 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             },
         }
 
-    async def _export_document(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _export_document(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import hashlib
         import re as _re
 
         from loguru import logger
+
         from app.schemas.presentation import PresentationOutline, SlideContent
 
         job = ctx.job
@@ -2819,25 +4059,34 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
 
         fmt = str(params.get("format", "")).strip().lower()
         if fmt not in {"docx", "pdf", "pptx", "latex"}:
-            return {"error": f"Unsupported format: {fmt}. Use docx, pdf, pptx, or latex."}
+            return {
+                "error": f"Unsupported format: {fmt}. Use docx, pdf, pptx, or latex."
+            }
 
         try:
             title = doc_ws["plan"]["title"]
             markdown = doc_ws["assembled_markdown"]
             if len(markdown) > 500_000:
-                return {"error": f"Document too large ({len(markdown)} chars). Max 500,000 chars."}
+                return {
+                    "error": f"Document too large ({len(markdown)} chars). Max 500,000 chars."
+                }
 
             file_bytes = None
             mime_type = ""
             if fmt == "docx":
-                from app.services.docx_builder import DOCXBuilder, markdown_to_content_items
+                from app.services.docx_builder import (
+                    DOCXBuilder,
+                    markdown_to_content_items,
+                )
 
                 content_items = markdown_to_content_items(markdown)
                 builder = DOCXBuilder()
                 file_bytes = builder.build(title=title, content_items=content_items)
                 mime_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
             elif fmt == "pdf":
-                from app.services.docx_builder import markdown_to_content_items as md_to_items
+                from app.services.docx_builder import (
+                    markdown_to_content_items as md_to_items,
+                )
                 from app.services.pdf_builder import PDFBuilder
 
                 content_items = md_to_items(markdown)
@@ -2898,7 +4147,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                     file_bytes = compile_result.pdf_bytes
                     mime_type = "application/pdf"
                 else:
-                    return {"error": f"LaTeX compilation failed: {compile_result.log[:500]}"}
+                    return {
+                        "error": f"LaTeX compilation failed: {compile_result.log[:500]}"
+                    }
 
             artifact = {
                 "type": "exported_document",
@@ -2919,7 +4170,11 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
                         content_hash=hashlib.sha256(markdown.encode()).hexdigest(),
                         file_type=mime_type,
                         file_size=len(file_bytes),
-                        extra_metadata={"origin": "document_author", "job_id": str(job.id), "format": fmt},
+                        extra_metadata={
+                            "origin": "document_author",
+                            "job_id": str(job.id),
+                            "format": fmt,
+                        },
                     )
                     ctx.db.add(doc)
                     await ctx.db.flush()
@@ -2932,7 +4187,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
             logger.error(f"export_document ({fmt}) failed: {exc}")
             return {"error": f"Export failed: {exc}"}
 
-    async def _insert_figure(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _insert_figure(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         doc_ws = state.get("document_workspace")
         if not doc_ws or not isinstance(doc_ws, dict) or not doc_ws.get("plan"):
@@ -2955,7 +4212,9 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
         figure_entry = {
             "type": figure_type,
             "caption": caption,
-            "data": params.get("data") if isinstance(params.get("data"), dict) else None,
+            "data": params.get("data")
+            if isinstance(params.get("data"), dict)
+            else None,
             "diagram_spec": str(params.get("diagram_spec", ""))[:5000] or None,
             "position": str(params.get("position", "inline")),
         }
@@ -2989,15 +4248,21 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
 def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvider:
     """Observability, analytics, and conditional tools for AutonomousAgentExecutor."""
 
-    async def _get_job_history(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_job_history(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.models.agent_job import AgentJob as AgentJobModel
 
         job = ctx.job
         try:
-            stmt = select(AgentJobModel).where(
-                AgentJobModel.user_id == job.user_id,
-                AgentJobModel.id != job.id,
-            ).order_by(AgentJobModel.created_at.desc())
+            stmt = (
+                select(AgentJobModel)
+                .where(
+                    AgentJobModel.user_id == job.user_id,
+                    AgentJobModel.id != job.id,
+                )
+                .order_by(AgentJobModel.created_at.desc())
+            )
             jt_filter = str(params.get("job_type", "")).strip()
             if jt_filter:
                 stmt = stmt.where(AgentJobModel.job_type == jt_filter)
@@ -3022,9 +4287,15 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                             "llm_calls_used": j.llm_calls_used,
                             "tokens_used": j.tokens_used,
                             "error": (j.error or "")[:200] if j.error else None,
-                            "created_at": j.created_at.isoformat() if j.created_at else None,
-                            "completed_at": j.completed_at.isoformat() if j.completed_at else None,
-                            "duration_minutes": round((j.completed_at - j.started_at).total_seconds() / 60, 1)
+                            "created_at": j.created_at.isoformat()
+                            if j.created_at
+                            else None,
+                            "completed_at": j.completed_at.isoformat()
+                            if j.completed_at
+                            else None,
+                            "duration_minutes": round(
+                                (j.completed_at - j.started_at).total_seconds() / 60, 1
+                            )
                             if j.started_at and j.completed_at
                             else None,
                         }
@@ -3036,9 +4307,12 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to get job history: {exc}"}
 
-    async def _get_job_metrics(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.agent_job import AgentJob as AgentJobModel
+    async def _get_job_metrics(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID as _UUID
+
+        from app.models.agent_job import AgentJob as AgentJobModel
 
         job = ctx.job
         try:
@@ -3054,7 +4328,11 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
 
             duration = None
             if target_job.started_at and target_job.completed_at:
-                duration = round((target_job.completed_at - target_job.started_at).total_seconds() / 60, 2)
+                duration = round(
+                    (target_job.completed_at - target_job.started_at).total_seconds()
+                    / 60,
+                    2,
+                )
             tool_counts = {}
             if target_job.execution_log:
                 for entry in target_job.execution_log:
@@ -3079,9 +4357,15 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "duration_minutes": duration,
                     "error_count": target_job.error_count,
                     "tool_usage_breakdown": tool_counts,
-                    "created_at": target_job.created_at.isoformat() if target_job.created_at else None,
-                    "started_at": target_job.started_at.isoformat() if target_job.started_at else None,
-                    "completed_at": target_job.completed_at.isoformat() if target_job.completed_at else None,
+                    "created_at": target_job.created_at.isoformat()
+                    if target_job.created_at
+                    else None,
+                    "started_at": target_job.started_at.isoformat()
+                    if target_job.started_at
+                    else None,
+                    "completed_at": target_job.completed_at.isoformat()
+                    if target_job.completed_at
+                    else None,
                 },
             }
         except ValueError:
@@ -3089,9 +4373,12 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to get job metrics: {exc}"}
 
-    async def _get_tool_usage_stats(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_tool_usage_stats(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from datetime import datetime, timedelta, timezone
+
         from app.models.agent_job import AgentJob as AgentJobModel
-        from datetime import datetime, timezone, timedelta
 
         job = ctx.job
         try:
@@ -3107,17 +4394,21 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
 
             tool_stats = {}
             for row in analyzed_jobs:
-                for entry in (row.execution_log or []):
+                for entry in row.execution_log or []:
                     tool = entry.get("action")
                     if not tool or (tool_name_filter and tool != tool_name_filter):
                         continue
-                    stats = tool_stats.setdefault(tool, {"calls": 0, "successes": 0, "failures": 0})
+                    stats = tool_stats.setdefault(
+                        tool, {"calls": 0, "successes": 0, "failures": 0}
+                    )
                     stats["calls"] += 1
                     if entry.get("error"):
                         stats["failures"] += 1
                     else:
                         stats["successes"] += 1
-            sorted_tools = sorted(tool_stats.items(), key=lambda x: x[1]["calls"], reverse=True)
+            sorted_tools = sorted(
+                tool_stats.items(), key=lambda x: x[1]["calls"], reverse=True
+            )
             return {
                 "success": True,
                 "data": {
@@ -3129,7 +4420,11 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                             "calls": stats["calls"],
                             "successes": stats["successes"],
                             "failures": stats["failures"],
-                            "success_rate": round(stats["successes"] / stats["calls"], 3) if stats["calls"] > 0 else 0.0,
+                            "success_rate": round(
+                                stats["successes"] / stats["calls"], 3
+                            )
+                            if stats["calls"] > 0
+                            else 0.0,
                         }
                         for name, stats in sorted_tools[:50]
                     ],
@@ -3138,9 +4433,12 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to get tool usage stats: {exc}"}
 
-    async def _get_tool_failure_analysis(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_tool_failure_analysis(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from datetime import datetime, timedelta, timezone
+
         from app.models.agent_job import AgentJob as AgentJobModel
-        from datetime import datetime, timezone, timedelta
 
         job = ctx.job
         analysis_tool_name = str(params.get("tool_name", "")).strip()
@@ -3158,7 +4456,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             total_calls = 0
             errors = []
             for row in analyzed_jobs:
-                for entry in (row.execution_log or []):
+                for entry in row.execution_log or []:
                     if entry.get("action") != analysis_tool_name:
                         continue
                     total_calls += 1
@@ -3179,7 +4477,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 pattern["count"] += 1
                 if len(pattern["examples"]) < 3:
                     pattern["examples"].append(err)
-            sorted_patterns = sorted(error_patterns.items(), key=lambda x: x[1]["count"], reverse=True)
+            sorted_patterns = sorted(
+                error_patterns.items(), key=lambda x: x[1]["count"], reverse=True
+            )
             return {
                 "success": True,
                 "data": {
@@ -3187,9 +4487,15 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "period_days": days,
                     "total_calls": total_calls,
                     "total_failures": len(errors),
-                    "failure_rate": round(len(errors) / total_calls, 3) if total_calls > 0 else 0.0,
+                    "failure_rate": round(len(errors) / total_calls, 3)
+                    if total_calls > 0
+                    else 0.0,
                     "error_patterns": [
-                        {"pattern": pat, "count": info["count"], "examples": info["examples"]}
+                        {
+                            "pattern": pat,
+                            "count": info["count"],
+                            "examples": info["examples"],
+                        }
                         for pat, info in sorted_patterns[:10]
                     ],
                     "recent_failures": errors[-10:],
@@ -3198,8 +4504,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to analyze tool failures: {exc}"}
 
-    async def _batch_search(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        job = ctx.job
+    async def _batch_search(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         queries_raw = params.get("queries")
         if not queries_raw or not isinstance(queries_raw, list) or not queries_raw:
             return {"error": "queries is required and must be a non-empty array"}
@@ -3233,9 +4540,18 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                         if doc_id:
                             seen_ids.add(doc_id)
                         query_results.append(row)
-                    all_results.append({"query": query, "results": query_results, "total": total})
+                    all_results.append(
+                        {"query": query, "results": query_results, "total": total}
+                    )
                 except Exception as exc:
-                    all_results.append({"query": query, "results": [], "total": 0, "error": str(exc)[:200]})
+                    all_results.append(
+                        {
+                            "query": query,
+                            "results": [],
+                            "total": 0,
+                            "error": str(exc)[:200],
+                        }
+                    )
             for qr in all_results:
                 for row in qr.get("results", [])[:5]:
                     findings.append(
@@ -3259,9 +4575,12 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to execute batch search: {exc}"}
 
-    async def _batch_summarize(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.document import Document
+    async def _batch_summarize(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID as _UUID
+
+        from app.models.document import Document
 
         job = ctx.job
         doc_ids_raw = params.get("document_ids")
@@ -3275,7 +4594,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 try:
                     doc = await ctx.db.get(Document, _UUID(doc_id_str))
                     if not doc:
-                        summaries.append({"document_id": doc_id_str, "status": "not_found"})
+                        summaries.append(
+                            {"document_id": doc_id_str, "status": "not_found"}
+                        )
                         continue
                     if doc.summary:
                         summaries.append(
@@ -3288,7 +4609,11 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                         )
                     elif generate_missing:
                         try:
-                            summary_text = await executor.document_service.summarize_document(doc.id, ctx.db, user_id=job.user_id)
+                            summary_text = (
+                                await executor.document_service.summarize_document(
+                                    doc.id, ctx.db, user_id=job.user_id
+                                )
+                            )
                             summaries.append(
                                 {
                                     "document_id": doc_id_str,
@@ -3307,10 +4632,18 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                                 }
                             )
                     else:
-                        summaries.append({"document_id": doc_id_str, "title": doc.title, "status": "no_summary"})
+                        summaries.append(
+                            {
+                                "document_id": doc_id_str,
+                                "title": doc.title,
+                                "status": "no_summary",
+                            }
+                        )
                 except Exception:
                     summaries.append({"document_id": doc_id_str, "status": "error"})
-            available = sum(1 for s in summaries if s.get("status") in ("available", "generated"))
+            available = sum(
+                1 for s in summaries if s.get("status") in ("available", "generated")
+            )
             return {
                 "success": True,
                 "data": {
@@ -3323,7 +4656,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to execute batch summarize: {exc}"}
 
-    async def _evaluate_condition(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _evaluate_condition(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             condition = str(params.get("condition", "")).strip()
@@ -3331,57 +4666,126 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             data: Dict[str, Any]
             if condition == "findings_count":
                 count = len(state.get("findings", []))
-                data = {"met": count >= threshold, "actual": count, "threshold": threshold, "condition": condition}
+                data = {
+                    "met": count >= threshold,
+                    "actual": count,
+                    "threshold": threshold,
+                    "condition": condition,
+                }
             elif condition == "findings_has_category":
                 cat = str(params.get("category", "")).strip()
-                matches = [f for f in state.get("findings", []) if f.get("category") == cat]
-                data = {"met": len(matches) >= threshold, "actual": len(matches), "category": cat, "threshold": threshold, "condition": condition}
+                matches = [
+                    f for f in state.get("findings", []) if f.get("category") == cat
+                ]
+                data = {
+                    "met": len(matches) >= threshold,
+                    "actual": len(matches),
+                    "category": cat,
+                    "threshold": threshold,
+                    "condition": condition,
+                }
             elif condition == "documents_count":
                 source_id = str(params.get("source_id", "")).strip() or None
-                _, total, _ = await executor.search_service.search(query="*", mode="smart", page=1, page_size=1, source_id=source_id, db=ctx.db)
-                data = {"met": total >= threshold, "actual": total, "threshold": threshold, "condition": condition}
+                _, total, _ = await executor.search_service.search(
+                    query="*",
+                    mode="smart",
+                    page=1,
+                    page_size=1,
+                    source_id=source_id,
+                    db=ctx.db,
+                )
+                data = {
+                    "met": total >= threshold,
+                    "actual": total,
+                    "threshold": threshold,
+                    "condition": condition,
+                }
             elif condition == "search_has_results":
                 query = str(params.get("query", "")).strip()
                 source_id = str(params.get("source_id", "")).strip() or None
                 if not query:
-                    return {"error": "query parameter required for search_has_results condition"}
-                _, total, _ = await executor.search_service.search(query=query, mode="smart", page=1, page_size=1, source_id=source_id, db=ctx.db)
-                data = {"met": total >= threshold, "actual": total, "query": query, "threshold": threshold, "condition": condition}
+                    return {
+                        "error": "query parameter required for search_has_results condition"
+                    }
+                _, total, _ = await executor.search_service.search(
+                    query=query,
+                    mode="smart",
+                    page=1,
+                    page_size=1,
+                    source_id=source_id,
+                    db=ctx.db,
+                )
+                data = {
+                    "met": total >= threshold,
+                    "actual": total,
+                    "query": query,
+                    "threshold": threshold,
+                    "condition": condition,
+                }
             elif condition == "actions_count":
                 count = len(state.get("actions_taken", []))
-                data = {"met": count >= threshold, "actual": count, "threshold": threshold, "condition": condition}
+                data = {
+                    "met": count >= threshold,
+                    "actual": count,
+                    "threshold": threshold,
+                    "condition": condition,
+                }
             elif condition == "progress_above":
                 progress = state.get("goal_progress", 0)
-                data = {"met": progress >= threshold, "actual": progress, "threshold": threshold, "condition": condition}
+                data = {
+                    "met": progress >= threshold,
+                    "actual": progress,
+                    "threshold": threshold,
+                    "condition": condition,
+                }
             else:
-                return {"error": f"Unknown condition: {condition}. Valid: findings_count, findings_has_category, documents_count, search_has_results, actions_count, progress_above"}
+                return {
+                    "error": f"Unknown condition: {condition}. Valid: findings_count, findings_has_category, documents_count, search_has_results, actions_count, progress_above"
+                }
             return {"success": True, "data": data}
         except Exception as exc:
             return {"error": f"Failed to evaluate condition: {exc}"}
 
-    async def _count_findings(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _count_findings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             findings = state.get("findings", [])
             min_conf = float(params.get("min_confidence", 0.0) or 0.0)
             cat_filter = str(params.get("category", "")).strip() or None
-            filtered = [f for f in findings if float(f.get("confidence", 0.8) or 0.8) >= min_conf]
+            filtered = [
+                f
+                for f in findings
+                if float(f.get("confidence", 0.8) or 0.8) >= min_conf
+            ]
             if cat_filter:
                 filtered = [f for f in filtered if f.get("category") == cat_filter]
             by_category: dict[str, int] = {}
             for finding in filtered:
                 category = str(finding.get("category", "uncategorized"))
                 by_category[category] = by_category.get(category, 0) + 1
-            return {"success": True, "data": {"total": len(filtered), "by_category": by_category, "categories": list(by_category.keys())}}
+            return {
+                "success": True,
+                "data": {
+                    "total": len(filtered),
+                    "by_category": by_category,
+                    "categories": list(by_category.keys()),
+                },
+            }
         except Exception as exc:
             return {"error": f"Failed to count findings: {exc}"}
 
-    async def _check_goal_status(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _check_goal_status(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             exec_plan = state.get("execution_plan")
-            plan_steps_total = len(exec_plan.get("steps", [])) if isinstance(exec_plan, dict) else 0
+            plan_steps_total = (
+                len(exec_plan.get("steps", [])) if isinstance(exec_plan, dict) else 0
+            )
             return {
                 "success": True,
                 "data": {
@@ -3402,26 +4806,44 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to check goal status: {exc}"}
 
-    async def _compress_history(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _compress_history(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         job = ctx.job
         try:
             actions = state.get("actions_taken", [])
             keep_last = min(int(params.get("keep_last", 5) or 5), 20)
             if len(actions) <= keep_last:
-                return {"success": True, "data": {"message": "Not enough history to compress", "actions_count": len(actions)}}
+                return {
+                    "success": True,
+                    "data": {
+                        "message": "Not enough history to compress",
+                        "actions_count": len(actions),
+                    },
+                }
             to_compress = actions[:-keep_last] if keep_last > 0 else list(actions)
             actions_text = ""
             for action in to_compress:
-                tool = action.get("action", {}).get("tool", "unknown") if isinstance(action.get("action"), dict) else "unknown"
+                tool = (
+                    action.get("action", {}).get("tool", "unknown")
+                    if isinstance(action.get("action"), dict)
+                    else "unknown"
+                )
                 res_summary = ""
                 act_result = action.get("result", {})
                 if isinstance(act_result, dict):
                     if act_result.get("success"):
-                        data_keys = list(act_result.get("data", {}).keys()) if isinstance(act_result.get("data"), dict) else []
+                        data_keys = (
+                            list(act_result.get("data", {}).keys())
+                            if isinstance(act_result.get("data"), dict)
+                            else []
+                        )
                         res_summary = f"success, data keys: {data_keys}"
                     else:
-                        res_summary = f"failed: {str(act_result.get('error', ''))[:100]}"
+                        res_summary = (
+                            f"failed: {str(act_result.get('error', ''))[:100]}"
+                        )
                 actions_text += f"- Iteration {action.get('iteration', '?')}: {tool} → {res_summary}\n"
             existing_compressed = state.get("compressed_history", "")
             compress_prompt = (
@@ -3429,7 +4851,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 "Focus on: what was discovered, what worked/failed, key decisions made, and current trajectory.\n\n"
             )
             if existing_compressed:
-                compress_prompt += f"Previous compressed history:\n{existing_compressed}\n\n"
+                compress_prompt += (
+                    f"Previous compressed history:\n{existing_compressed}\n\n"
+                )
             compress_prompt += f"New actions to compress:\n{actions_text}\n\nWrite a concise summary in past tense."
             user_settings = await executor._get_user_settings(job.user_id, ctx.db)
             summary_resp = await executor.llm_service.generate_response(
@@ -3451,7 +4875,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to compress history: {exc}"}
 
-    async def _summarize_findings(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _summarize_findings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import uuid
         from datetime import datetime
 
@@ -3461,9 +4887,16 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             findings = state.get("findings", [])
             cat_filter = str(params.get("category", "")).strip() or None
             consolidate = bool(params.get("consolidate", False))
-            target = [f for f in findings if f.get("category") == cat_filter] if cat_filter else list(findings)
+            target = (
+                [f for f in findings if f.get("category") == cat_filter]
+                if cat_filter
+                else list(findings)
+            )
             if not target:
-                return {"success": True, "data": {"message": "No findings to summarize", "count": 0}}
+                return {
+                    "success": True,
+                    "data": {"message": "No findings to summarize", "count": 0},
+                }
             findings_text = ""
             for finding in target:
                 findings_text += f"- [{finding.get('category', 'general')}] {finding.get('title', 'Untitled')}: {str(finding.get('content', ''))[:300]}\n"
@@ -3489,7 +4922,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             }
             if consolidate:
                 if cat_filter:
-                    state["findings"] = [f for f in findings if f.get("category") != cat_filter]
+                    state["findings"] = [
+                        f for f in findings if f.get("category") != cat_filter
+                    ]
                 else:
                     state["findings"] = []
                 consolidated = {
@@ -3530,7 +4965,9 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
 def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvider:
     """Output shaping, strategy, and handoff tools for AutonomousAgentExecutor."""
 
-    async def _create_handoff(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_handoff(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.models.agent_job import AgentJob, AgentJobStatus
         from app.tasks.agent_job_tasks import execute_agent_job_task
 
@@ -3542,10 +4979,14 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
             if not child_goal:
                 return {"error": "goal parameter is required"}
             if not isinstance(expected_outputs, list) or not expected_outputs:
-                return {"error": "expected_outputs must be a non-empty array of strings"}
+                return {
+                    "error": "expected_outputs must be a non-empty array of strings"
+                }
             chain_depth = int(getattr(job, "chain_depth", 0) or 0)
             if chain_depth >= 3:
-                return {"error": "Maximum chain depth (3) reached — cannot create further handoffs"}
+                return {
+                    "error": "Maximum chain depth (3) reached — cannot create further handoffs"
+                }
             existing_children = state.get("delegated_subtask_ids", [])
             if len(existing_children) >= 5:
                 return {"error": "Maximum child jobs (5) reached for this parent"}
@@ -3605,7 +5046,9 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
         except Exception as exc:
             return {"error": f"Failed to create handoff: {exc}"}
 
-    async def _get_sibling_status(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_sibling_status(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.models.agent_job import AgentJob
 
         job = ctx.job
@@ -3634,16 +5077,27 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                     findings = sibling.results.get("findings", [])
                     if isinstance(findings, list):
                         entry["findings_count"] = len(findings)
-                        entry["finding_titles"] = [str(f.get("title", ""))[:100] for f in findings[:10] if isinstance(f, dict)]
+                        entry["finding_titles"] = [
+                            str(f.get("title", ""))[:100]
+                            for f in findings[:10]
+                            if isinstance(f, dict)
+                        ]
                 sibling_data.append(entry)
-            return {"success": True, "data": {"siblings": sibling_data, "count": len(sibling_data)}}
+            return {
+                "success": True,
+                "data": {"siblings": sibling_data, "count": len(sibling_data)},
+            }
         except Exception as exc:
             return {"error": f"Failed to get sibling status: {exc}"}
 
-    async def _broadcast_to_siblings(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _broadcast_to_siblings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
-        from app.models.agent_job import AgentJob
+
         from sqlalchemy.orm.attributes import flag_modified
+
+        from app.models.agent_job import AgentJob
 
         job = ctx.job
         try:
@@ -3680,22 +5134,42 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 flag_modified(sibling, "results")
                 delivered += 1
             await ctx.db.flush()
-            return {"success": True, "data": {"recipients": delivered, "message_length": len(message)}}
+            return {
+                "success": True,
+                "data": {"recipients": delivered, "message_length": len(message)},
+            }
         except Exception as exc:
             return {"error": f"Failed to broadcast to siblings: {exc}"}
 
-    async def _switch_strategy(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _switch_strategy(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime
 
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
-            valid_roles = {"researcher", "critic", "synthesizer", "verifier", "coder", "author"}
+            valid_roles = {
+                "researcher",
+                "critic",
+                "synthesizer",
+                "verifier",
+                "coder",
+                "author",
+            }
             role = str(params.get("role", "")).strip().lower()
             if role not in valid_roles:
-                return {"error": f"Invalid role: {role}. Valid: {', '.join(sorted(valid_roles))}"}
-            old_role = state.get("skill_profile", {}).get("role", "unknown") if isinstance(state.get("skill_profile"), dict) else "unknown"
-            new_profile = executor._resolve_agent_skill_profile(job, state=state, override_role=role)
+                return {
+                    "error": f"Invalid role: {role}. Valid: {', '.join(sorted(valid_roles))}"
+                }
+            old_role = (
+                state.get("skill_profile", {}).get("role", "unknown")
+                if isinstance(state.get("skill_profile"), dict)
+                else "unknown"
+            )
+            new_profile = executor._resolve_agent_skill_profile(
+                job, state=state, override_role=role
+            )
             state["skill_profile"] = new_profile
             state.setdefault("strategy_switches", []).append(
                 {
@@ -3718,7 +5192,9 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
         except Exception as exc:
             return {"error": f"Failed to switch strategy: {exc}"}
 
-    async def _set_focus_directive(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _set_focus_directive(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             directive = str(params.get("directive", "")).strip()[:1000]
@@ -3732,33 +5208,58 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 state["focus_directive"] = directive
             return {
                 "success": True,
-                "data": {"directive": state["focus_directive"], "mode": "appended" if append else "replaced"},
+                "data": {
+                    "directive": state["focus_directive"],
+                    "mode": "appended" if append else "replaced",
+                },
             }
         except Exception as exc:
             return {"error": f"Failed to set focus directive: {exc}"}
 
-    async def _get_available_strategies(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_available_strategies(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             strategies = []
-            for role_name in ["researcher", "critic", "synthesizer", "verifier", "coder", "author"]:
-                profile = executor._resolve_agent_skill_profile(job, state=state, override_role=role_name)
+            for role_name in [
+                "researcher",
+                "critic",
+                "synthesizer",
+                "verifier",
+                "coder",
+                "author",
+            ]:
+                profile = executor._resolve_agent_skill_profile(
+                    job, state=state, override_role=role_name
+                )
                 strategies.append(
                     {
                         "role": role_name,
                         "display_name": profile.get("display_name", role_name),
-                        "guidance": "; ".join(profile.get("prompt_directives", []))[:300],
+                        "guidance": "; ".join(profile.get("prompt_directives", []))[
+                            :300
+                        ],
                         "preferred_tools": profile.get("preferred_tools", [])[:5],
                         "discouraged_tools": profile.get("discouraged_tools", []),
                     }
                 )
-            current = state.get("skill_profile", {}).get("role", "researcher") if isinstance(state.get("skill_profile"), dict) else "researcher"
-            return {"success": True, "data": {"strategies": strategies, "current_role": current}}
+            current = (
+                state.get("skill_profile", {}).get("role", "researcher")
+                if isinstance(state.get("skill_profile"), dict)
+                else "researcher"
+            )
+            return {
+                "success": True,
+                "data": {"strategies": strategies, "current_role": current},
+            }
         except Exception as exc:
             return {"error": f"Failed to get available strategies: {exc}"}
 
-    async def _format_as_table(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _format_as_table(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             title = str(params.get("title", "")).strip()
@@ -3769,7 +5270,9 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 return {"error": "title parameter is required"}
             if source == "findings":
                 findings = state.get("findings", [])
-                fields = params.get("finding_fields", ["title", "category", "confidence"])
+                fields = params.get(
+                    "finding_fields", ["title", "category", "confidence"]
+                )
                 if not isinstance(fields, list):
                     fields = ["title", "category", "confidence"]
                 fields = [str(f).strip() for f in fields if str(f).strip()][:10]
@@ -3777,8 +5280,15 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 rows = []
                 for finding in findings:
                     if isinstance(finding, dict):
-                        rows.append([str(finding.get(field, ""))[:200] for field in fields])
-            elif not isinstance(columns, list) or not columns or not isinstance(rows, list) or not rows:
+                        rows.append(
+                            [str(finding.get(field, ""))[:200] for field in fields]
+                        )
+            elif (
+                not isinstance(columns, list)
+                or not columns
+                or not isinstance(rows, list)
+                or not rows
+            ):
                 return {"error": "columns and rows are required for custom tables"}
             md = f"## {title}\n\n"
             col_headers = [str(c) for c in columns]
@@ -3786,25 +5296,41 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
             md += "| " + " | ".join("---" for _ in col_headers) + " |\n"
             row_count = 0
             for row in rows[:100]:
-                cells = [str(c).replace("|", "\\|")[:200] for c in (row if isinstance(row, list) else [])]
+                cells = [
+                    str(c).replace("|", "\\|")[:200]
+                    for c in (row if isinstance(row, list) else [])
+                ]
                 while len(cells) < len(col_headers):
                     cells.append("")
                 cells = cells[: len(col_headers)]
                 md += "| " + " | ".join(cells) + " |\n"
                 row_count += 1
             state.setdefault("formatted_outputs", []).append(
-                {"type": "table", "title": title, "markdown": md, "columns": col_headers, "row_count": row_count}
+                {
+                    "type": "table",
+                    "title": title,
+                    "markdown": md,
+                    "columns": col_headers,
+                    "row_count": row_count,
+                }
             )
             return {
                 "success": True,
-                "data": {"markdown": md, "row_count": row_count, "columns": len(col_headers)},
+                "data": {
+                    "markdown": md,
+                    "row_count": row_count,
+                    "columns": len(col_headers),
+                },
                 "artifacts": [{"type": "formatted_table", "title": title}],
             }
         except Exception as exc:
             return {"error": f"Failed to format as table: {exc}"}
 
-    async def _format_as_report(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _format_as_report(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from loguru import logger
+
         from app.models.document import Document
 
         job = ctx.job
@@ -3856,11 +5382,17 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                             if report.get("summary"):
                                 md += f"{report['summary']}\n\n"
             md = md[:50000]
-            state.setdefault("formatted_outputs", []).append({"type": "report", "title": title, "markdown": md})
+            state.setdefault("formatted_outputs", []).append(
+                {"type": "report", "title": title, "markdown": md}
+            )
             doc_id = None
             if params.get("persist", False):
                 try:
-                    notes_source = await executor.document_service._ensure_agent_notes_source(ctx.db, job.user_id)
+                    notes_source = (
+                        await executor.document_service._ensure_agent_notes_source(
+                            ctx.db, job.user_id
+                        )
+                    )
                     doc = Document(
                         title=title[:500],
                         content=md,
@@ -3871,7 +5403,9 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                     ctx.db.add(doc)
                     await ctx.db.flush()
                     doc_id = str(doc.id)
-                    state.setdefault("artifacts", []).append({"type": "document", "id": doc_id, "title": title[:500]})
+                    state.setdefault("artifacts", []).append(
+                        {"type": "document", "id": doc_id, "title": title[:500]}
+                    )
                 except Exception as doc_exc:
                     logger.warning(f"Failed to persist report document: {doc_exc}")
             return {
@@ -3882,7 +5416,9 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
         except Exception as exc:
             return {"error": f"Failed to format as report: {exc}"}
 
-    async def _set_output_schema(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _set_output_schema(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         try:
             schema = params.get("schema")
@@ -3930,10 +5466,13 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
 def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvider:
     """External web research helpers for AutonomousAgentExecutor."""
 
-    async def _search_web(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        import httpx
+    async def _search_web(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import re as _re
         from urllib.parse import unquote
+
+        import httpx
 
         query = str(params.get("query", "")).strip()
         if not query:
@@ -3945,7 +5484,9 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
                 headers={"User-Agent": "Mozilla/5.0 (compatible; KnowledgeDBChat/1.0)"},
                 follow_redirects=True,
             ) as client:
-                resp = await client.get("https://html.duckduckgo.com/html/", params={"q": query})
+                resp = await client.get(
+                    "https://html.duckduckgo.com/html/", params={"q": query}
+                )
                 resp.raise_for_status()
             result_blocks = _re.findall(
                 r'<a[^>]+class="result__a"[^>]+href="([^"]*)"[^>]*>(.*?)</a>.*?'
@@ -3961,13 +5502,26 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
                 url_clean = unquote(url_match.group(1) if url_match else url_raw)
                 if title_clean:
                     results_list.append(
-                        {"title": title_clean[:200], "url": url_clean[:500], "snippet": snippet_clean[:500]}
+                        {
+                            "title": title_clean[:200],
+                            "url": url_clean[:500],
+                            "snippet": snippet_clean[:500],
+                        }
                     )
-            return {"success": True, "data": {"query": query, "results": results_list, "count": len(results_list)}}
+            return {
+                "success": True,
+                "data": {
+                    "query": query,
+                    "results": results_list,
+                    "count": len(results_list),
+                },
+            }
         except Exception as exc:
             return {"error": f"Web search failed: {exc}"}
 
-    async def _fetch_url_content(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _fetch_url_content(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.services.web_scraper_service import WebScraperService
 
         url = str(params.get("url", "")).strip()
@@ -3986,12 +5540,19 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
                 content = scraped[:max_chars]
             return {
                 "success": True,
-                "data": {"url": url, "title": title, "content": content, "content_length": len(content)},
+                "data": {
+                    "url": url,
+                    "title": title,
+                    "content": content,
+                    "content_length": len(content),
+                },
             }
         except Exception as exc:
             return {"error": f"Failed to fetch URL: {exc}"}
 
-    async def _summarize_url(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _summarize_url(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.services.web_scraper_service import WebScraperService
 
         url = str(params.get("url", "")).strip()
@@ -4000,7 +5561,11 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
         try:
             scraper = WebScraperService()
             scraped = await scraper.scrape_url(url, max_content_length=100000)
-            text = str(scraped.get("content", ""))[:50000] if isinstance(scraped, dict) else str(scraped)[:50000]
+            text = (
+                str(scraped.get("content", ""))[:50000]
+                if isinstance(scraped, dict)
+                else str(scraped)[:50000]
+            )
             if not text.strip():
                 return {"error": f"No content extracted from {url}"}
             focus = str(params.get("focus", "")).strip()
@@ -4009,7 +5574,12 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
             summary = await executor.llm_service.generate(prompt, max_tokens=1000)
             return {
                 "success": True,
-                "data": {"url": url, "summary": summary, "content_length": len(text), "focus": focus or None},
+                "data": {
+                    "url": url,
+                    "summary": summary,
+                    "content_length": len(text),
+                    "focus": focus or None,
+                },
             }
         except Exception as exc:
             return {"error": f"URL summarization failed: {exc}"}
@@ -4025,10 +5595,14 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
     )
 
 
-def build_autonomous_notification_visualization_provider(executor: Any) -> FunctionToolProvider:
+def build_autonomous_notification_visualization_provider(
+    executor: Any,
+) -> FunctionToolProvider:
     """Notification and standalone visualization tools for AutonomousAgentExecutor."""
 
-    async def _send_notification(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _send_notification(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.services.notification_service import NotificationService
 
         job = ctx.job
@@ -4068,8 +5642,11 @@ def build_autonomous_notification_visualization_provider(executor: Any) -> Funct
         except Exception as exc:
             return {"error": f"Failed to send notification: {exc}"}
 
-    async def _send_email_alert(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _send_email_alert(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from loguru import logger
+
         from app.services.notification_service import NotificationService
 
         job = ctx.job
@@ -4080,7 +5657,9 @@ def build_autonomous_notification_visualization_provider(executor: Any) -> Funct
         if not body:
             return {"error": "body is required"}
         try:
-            logger.info(f"Email alert requested by job {job.id} (no SMTP configured), falling back to notification")
+            logger.info(
+                f"Email alert requested by job {job.id} (no SMTP configured), falling back to notification"
+            )
             ns = NotificationService()
             priority = str(params.get("priority", "normal")).strip().lower()
             if priority not in {"low", "normal", "high", "urgent"}:
@@ -4110,10 +5689,14 @@ def build_autonomous_notification_visualization_provider(executor: Any) -> Funct
         except Exception as exc:
             return {"error": f"Failed to send email alert: {exc}"}
 
-    async def _create_chart(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_chart(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import base64 as b64
         from uuid import uuid4 as _uuid4
+
         from loguru import logger
+
         from app.services.storage_service import storage_service
         from app.services.visualization_service import VisualizationService
 
@@ -4124,8 +5707,19 @@ def build_autonomous_notification_visualization_provider(executor: Any) -> Funct
             return {"error": "chart_type is required"}
         if not data or not isinstance(data, dict):
             return {"error": "data is required and must be an object"}
-        if chart_type not in {"bar", "line", "pie", "scatter", "histogram", "heatmap", "box", "area"}:
-            return {"error": f"Invalid chart_type: {chart_type}. Must be bar, line, pie, scatter, histogram, heatmap, box, or area"}
+        if chart_type not in {
+            "bar",
+            "line",
+            "pie",
+            "scatter",
+            "histogram",
+            "heatmap",
+            "box",
+            "area",
+        }:
+            return {
+                "error": f"Invalid chart_type: {chart_type}. Must be bar, line, pie, scatter, histogram, heatmap, box, or area"
+            }
         try:
             vs = VisualizationService()
             fmt = str(params.get("format", "png")).strip().lower()
@@ -4136,21 +5730,37 @@ def build_autonomous_notification_visualization_provider(executor: Any) -> Funct
                 val = str(params.get(key, "")).strip()
                 if val:
                     config[key] = val
-            chart_result = vs.create_chart(chart_type=chart_type, data=data, config=config)
+            chart_result = vs.create_chart(
+                chart_type=chart_type, data=data, config=config
+            )
             image_bytes = b64.b64decode(chart_result["image_base64"])
             object_path = f"agent_artifacts/{job.id}/charts/{_uuid4()}.{fmt}"
             await storage_service.initialize()
-            await storage_service.upload_to_path(object_path, image_bytes, chart_result.get("mime_type", f"image/{fmt}"))
+            await storage_service.upload_to_path(
+                object_path, image_bytes, chart_result.get("mime_type", f"image/{fmt}")
+            )
             url = await storage_service.get_presigned_download_url(object_path)
-            return {"success": True, "data": {"chart_type": chart_type, "url": url, "format": fmt, "size_bytes": len(image_bytes)}}
+            return {
+                "success": True,
+                "data": {
+                    "chart_type": chart_type,
+                    "url": url,
+                    "format": fmt,
+                    "size_bytes": len(image_bytes),
+                },
+            }
         except Exception as exc:
             logger.error(f"create_chart failed: {exc}")
             return {"error": f"Failed to create chart: {exc}"}
 
-    async def _render_diagram(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _render_diagram(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import base64 as b64
         from uuid import uuid4 as _uuid4
+
         from loguru import logger
+
         from app.services.storage_service import storage_service
 
         job = ctx.job
@@ -4165,21 +5775,35 @@ def build_autonomous_notification_visualization_provider(executor: Any) -> Funct
             mime = f"image/{fmt}" if fmt == "png" else "image/svg+xml"
             if diagram_type == "graphviz":
                 from app.services.diagram_service import DiagramService
+
                 ds = DiagramService()
-                image_bytes = b64.b64decode(ds._render_graphviz(diagram_code, {"output_format": fmt}))
+                image_bytes = b64.b64decode(
+                    ds._render_graphviz(diagram_code, {"output_format": fmt})
+                )
             else:
                 from app.services.mermaid_renderer import MermaidRenderer
+
                 renderer = MermaidRenderer()
                 if fmt == "svg":
                     svg_str = await renderer.render_to_svg(diagram_code)
-                    image_bytes = svg_str.encode("utf-8") if isinstance(svg_str, str) else svg_str
+                    image_bytes = (
+                        svg_str.encode("utf-8") if isinstance(svg_str, str) else svg_str
+                    )
                 else:
                     image_bytes = await renderer.render_to_png(diagram_code)
             object_path = f"agent_artifacts/{job.id}/diagrams/{_uuid4()}.{fmt}"
             await storage_service.initialize()
             await storage_service.upload_to_path(object_path, image_bytes, mime)
             url = await storage_service.get_presigned_download_url(object_path)
-            return {"success": True, "data": {"url": url, "diagram_type": diagram_type, "format": fmt, "size_bytes": len(image_bytes)}}
+            return {
+                "success": True,
+                "data": {
+                    "url": url,
+                    "diagram_type": diagram_type,
+                    "format": fmt,
+                    "size_bytes": len(image_bytes),
+                },
+            }
         except Exception as exc:
             logger.error(f"render_diagram failed: {exc}")
             return {"error": f"Failed to render diagram: {exc}"}
@@ -4199,24 +5823,73 @@ def build_autonomous_notification_visualization_provider(executor: Any) -> Funct
 def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
     """Knowledge-graph and related placeholder research helpers for AutonomousAgentExecutor."""
 
-    async def _build_research_graph(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return {"success": True, "data": {"documents_analyzed": len(params.get("document_ids", [])), "focus": params.get("focus_on", ["methods", "concepts"]), "entities_found": 0, "relationships_found": 0}}
-
-    async def _link_entities(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return {"success": True, "data": {"relationship_created": True, "source": params.get("source_name"), "target": params.get("target_name"), "type": params.get("relationship_type")}}
-
-    async def _create_knowledge_base_entry(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _build_research_graph(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         return {
             "success": True,
-            "data": {"entry_created": True, "title": params.get("title"), "type": params.get("entry_type")},
-            "artifacts": [{"type": "knowledge_entry", "title": params.get("title"), "content": params.get("content"), "entry_type": params.get("entry_type")}],
+            "data": {
+                "documents_analyzed": len(params.get("document_ids", [])),
+                "focus": params.get("focus_on", ["methods", "concepts"]),
+                "entities_found": 0,
+                "relationships_found": 0,
+            },
         }
 
-    async def _compare_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        return {"success": True, "data": {"documents_compared": [params.get("document_id_1"), params.get("document_id_2")], "similarity_score": 0.0, "common_themes": [], "differences": []}}
+    async def _link_entities(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return {
+            "success": True,
+            "data": {
+                "relationship_created": True,
+                "source": params.get("source_name"),
+                "target": params.get("target_name"),
+                "type": params.get("relationship_type"),
+            },
+        }
 
-    async def _query_kg_entities(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_knowledge_base_entry(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return {
+            "success": True,
+            "data": {
+                "entry_created": True,
+                "title": params.get("title"),
+                "type": params.get("entry_type"),
+            },
+            "artifacts": [
+                {
+                    "type": "knowledge_entry",
+                    "title": params.get("title"),
+                    "content": params.get("content"),
+                    "entry_type": params.get("entry_type"),
+                }
+            ],
+        }
+
+    async def _compare_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        return {
+            "success": True,
+            "data": {
+                "documents_compared": [
+                    params.get("document_id_1"),
+                    params.get("document_id_2"),
+                ],
+                "similarity_score": 0.0,
+                "common_themes": [],
+                "differences": [],
+            },
+        }
+
+    async def _query_kg_entities(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.services.knowledge_graph_service import KnowledgeGraphService
+
         query = str(params.get("query", "")).strip()
         if not query:
             return {"error": "query is required"}
@@ -4227,27 +5900,51 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
             entities = await kg.entities(ctx.db, q=query, limit=limit)
             if entity_type:
                 entities = [e for e in entities if e.entity_type == entity_type]
-            return {"success": True, "data": {"query": query, "entities": [{"id": str(e.id), "canonical_name": e.canonical_name, "entity_type": e.entity_type, "description": e.description or ""} for e in entities], "count": len(entities)}}
+            return {
+                "success": True,
+                "data": {
+                    "query": query,
+                    "entities": [
+                        {
+                            "id": str(e.id),
+                            "canonical_name": e.canonical_name,
+                            "entity_type": e.entity_type,
+                            "description": e.description or "",
+                        }
+                        for e in entities
+                    ],
+                    "count": len(entities),
+                },
+            }
         except Exception as exc:
             return {"error": f"Failed to query KG entities: {exc}"}
 
-    async def _get_entity_context(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_entity_context(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID as _UUID
+
         from app.services.knowledge_graph_service import KnowledgeGraphService
+
         entity_id = str(params.get("entity_id", "")).strip()
         if not entity_id:
             return {"error": "entity_id is required"}
         try:
             kg = KnowledgeGraphService()
-            context = await kg.get_entity_context([_UUID(entity_id)], ctx.db, max_relationships=30)
+            context = await kg.get_entity_context(
+                [_UUID(entity_id)], ctx.db, max_relationships=30
+            )
             return {"success": True, "data": context}
         except ValueError:
             return {"error": f"Invalid entity_id format: {entity_id}"}
         except Exception as exc:
             return {"error": f"Failed to get entity context: {exc}"}
 
-    async def _create_kg_entity(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_kg_entity(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.models.knowledge_graph import Entity as KGEntity
+
         name = str(params.get("name", "")).strip()
         entity_type = str(params.get("entity_type", "")).strip().lower()
         if not name:
@@ -4255,15 +5952,30 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
         if not entity_type:
             return {"error": "entity_type is required"}
         try:
-            entity = KGEntity(canonical_name=name[:512], entity_type=entity_type[:64], description=str(params.get("description", "")).strip() or None)
+            entity = KGEntity(
+                canonical_name=name[:512],
+                entity_type=entity_type[:64],
+                description=str(params.get("description", "")).strip() or None,
+            )
             ctx.db.add(entity)
             await ctx.db.flush()
-            return {"success": True, "data": {"id": str(entity.id), "canonical_name": entity.canonical_name, "entity_type": entity.entity_type, "description": entity.description or ""}}
+            return {
+                "success": True,
+                "data": {
+                    "id": str(entity.id),
+                    "canonical_name": entity.canonical_name,
+                    "entity_type": entity.entity_type,
+                    "description": entity.description or "",
+                },
+            }
         except Exception as exc:
             return {"error": f"Failed to create KG entity: {exc}"}
 
-    async def _create_kg_relationship(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_kg_relationship(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.services.knowledge_graph_service import KnowledgeGraphService
+
         source_id = str(params.get("source_entity_id", "")).strip()
         target_id = str(params.get("target_entity_id", "")).strip()
         relation_type = str(params.get("relation_type", "")).strip()
@@ -4276,19 +5988,42 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
         try:
             kg = KnowledgeGraphService()
             confidence = max(0.0, min(1.0, float(params.get("confidence", 0.8) or 0.8)))
-            rel = await kg.create_relationship(db=ctx.db, source_entity_id=source_id, target_entity_id=target_id, relation_type=relation_type[:128], confidence=confidence, evidence=str(params.get("evidence", "")).strip() or None)
-            return {"success": True, "data": {"id": str(rel.id), "relation_type": rel.relation_type, "source_entity_id": str(rel.source_entity_id), "target_entity_id": str(rel.target_entity_id), "confidence": rel.confidence}}
+            rel = await kg.create_relationship(
+                db=ctx.db,
+                source_entity_id=source_id,
+                target_entity_id=target_id,
+                relation_type=relation_type[:128],
+                confidence=confidence,
+                evidence=str(params.get("evidence", "")).strip() or None,
+            )
+            return {
+                "success": True,
+                "data": {
+                    "id": str(rel.id),
+                    "relation_type": rel.relation_type,
+                    "source_entity_id": str(rel.source_entity_id),
+                    "target_entity_id": str(rel.target_entity_id),
+                    "confidence": rel.confidence,
+                },
+            }
         except Exception as exc:
             return {"error": f"Failed to create KG relationship: {exc}"}
 
-    async def _query_kg_graph(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _query_kg_graph(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.services.knowledge_graph_service import KnowledgeGraphService
+
         try:
             kg = KnowledgeGraphService()
             graph = await kg.global_graph(
                 db=ctx.db,
-                entity_types=params.get("entity_types") if isinstance(params.get("entity_types"), list) else None,
-                relation_types=params.get("relation_types") if isinstance(params.get("relation_types"), list) else None,
+                entity_types=params.get("entity_types")
+                if isinstance(params.get("entity_types"), list)
+                else None,
+                relation_types=params.get("relation_types")
+                if isinstance(params.get("relation_types"), list)
+                else None,
                 min_confidence=float(params.get("min_confidence", 0.0) or 0.0),
                 search=str(params.get("search", "")).strip() or None,
                 limit_nodes=min(int(params.get("limit_nodes", 50) or 50), 200),
@@ -4318,8 +6053,11 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
 def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
     """Scheduling helpers for AutonomousAgentExecutor."""
 
-    async def _schedule_job(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _schedule_job(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from datetime import datetime, timezone
+
         from app.models.agent_job import AgentJob as AgentJobModel
 
         job = ctx.job
@@ -4331,7 +6069,9 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
             return {"error": "schedule_type must be 'once' or 'recurring'"}
         try:
             job_type_param = str(params.get("job_type", "research")).strip().lower()
-            config_param = params.get("config") if isinstance(params.get("config"), dict) else {}
+            config_param = (
+                params.get("config") if isinstance(params.get("config"), dict) else {}
+            )
             next_run = None
             cron_expr = None
             if schedule_type == "once":
@@ -4343,21 +6083,47 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
                     next_run = next_run.replace(tzinfo=timezone.utc)
             else:
                 from croniter import croniter
+
                 cron_expr = str(params.get("cron", "")).strip()
                 if not cron_expr:
                     return {"error": "cron is required for schedule_type=recurring"}
                 if not croniter.is_valid(cron_expr):
                     return {"error": f"Invalid cron expression: {cron_expr}"}
-                next_run = croniter(cron_expr, datetime.now(timezone.utc)).get_next(datetime)
-            new_job = AgentJobModel(user_id=job.user_id, goal=goal[:2000], job_type=job_type_param, schedule_type=schedule_type, schedule_cron=cron_expr, next_run_at=next_run, status="pending", config=config_param, parent_job_id=job.id)
+                next_run = croniter(cron_expr, datetime.now(timezone.utc)).get_next(
+                    datetime
+                )
+            new_job = AgentJobModel(
+                user_id=job.user_id,
+                goal=goal[:2000],
+                job_type=job_type_param,
+                schedule_type=schedule_type,
+                schedule_cron=cron_expr,
+                next_run_at=next_run,
+                status="pending",
+                config=config_param,
+                parent_job_id=job.id,
+            )
             ctx.db.add(new_job)
             await ctx.db.flush()
-            return {"success": True, "data": {"id": str(new_job.id), "goal": new_job.goal, "job_type": new_job.job_type, "schedule_type": schedule_type, "next_run_at": next_run.isoformat(), "cron": cron_expr}}
+            return {
+                "success": True,
+                "data": {
+                    "id": str(new_job.id),
+                    "goal": new_job.goal,
+                    "job_type": new_job.job_type,
+                    "schedule_type": schedule_type,
+                    "next_run_at": next_run.isoformat(),
+                    "cron": cron_expr,
+                },
+            }
         except Exception as exc:
             return {"error": f"Failed to schedule job: {exc}"}
 
-    async def _cancel_scheduled_job(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _cancel_scheduled_job(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID as _UUID
+
         from app.models.agent_job import AgentJob as AgentJobModel
 
         job = ctx.job
@@ -4376,7 +6142,14 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
             target.next_run_at = None
             target.schedule_type = None
             await ctx.db.flush()
-            return {"success": True, "data": {"id": str(target.id), "status": "cancelled", "goal": target.goal}}
+            return {
+                "success": True,
+                "data": {
+                    "id": str(target.id),
+                    "status": "cancelled",
+                    "goal": target.goal,
+                },
+            }
         except ValueError:
             return {"error": f"Invalid job_id format: {cancel_job_id}"}
         except Exception as exc:
@@ -4385,16 +6158,23 @@ def build_autonomous_scheduling_provider(executor: Any) -> FunctionToolProvider:
     return FunctionToolProvider(
         name="autonomous_scheduling_tools",
         modes={"autonomous"},
-        handlers={"schedule_job": _schedule_job, "cancel_scheduled_job": _cancel_scheduled_job},
+        handlers={
+            "schedule_job": _schedule_job,
+            "cancel_scheduled_job": _cancel_scheduled_job,
+        },
     )
 
 
 def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
     """Media ingestion and analysis tools for AutonomousAgentExecutor."""
 
-    async def _transcribe_document(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _transcribe_document(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID as _UUID
+
         from sqlalchemy.orm.attributes import flag_modified
+
         from app.models.document import Document as DocModel
         from app.tasks.transcription_tasks import transcribe_document as transcribe_task
 
@@ -4403,7 +6183,11 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
-            doc_result = await ctx.db.execute(select(DocModel).where(DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id))
+            doc_result = await ctx.db.execute(
+                select(DocModel).where(
+                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
+                )
+            )
             doc = doc_result.scalar_one_or_none()
             if not doc:
                 return {"error": f"Document {doc_id} not found"}
@@ -4411,40 +6195,92 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
                 return {"error": "Document has no associated file"}
             meta = doc.extra_metadata or {}
             if meta.get("is_transcribed"):
-                return {"success": True, "data": {"document_id": doc_id, "status": "already_transcribed", "transcript_document_id": meta.get("transcript_document_id")}}
+                return {
+                    "success": True,
+                    "data": {
+                        "document_id": doc_id,
+                        "status": "already_transcribed",
+                        "transcript_document_id": meta.get("transcript_document_id"),
+                    },
+                }
             if meta.get("is_transcribing"):
-                return {"success": True, "data": {"document_id": doc_id, "status": "in_progress"}}
+                return {
+                    "success": True,
+                    "data": {"document_id": doc_id, "status": "in_progress"},
+                }
             ft = (doc.file_type or "").lower()
             from pathlib import Path as _Path
+
             ext = _Path(doc.file_path).suffix.lower()
-            av_exts = {".mp3", ".mp4", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
-            is_av = any(ft.startswith(p) for p in ("audio/", "video/")) or ext in av_exts
+            av_exts = {
+                ".mp3",
+                ".mp4",
+                ".wav",
+                ".m4a",
+                ".ogg",
+                ".flac",
+                ".aac",
+                ".avi",
+                ".mkv",
+                ".mov",
+                ".webm",
+                ".flv",
+                ".wmv",
+            }
+            is_av = (
+                any(ft.startswith(p) for p in ("audio/", "video/")) or ext in av_exts
+            )
             if not is_av:
                 return {"error": f"Document is not audio/video (type={ft}, ext={ext})"}
             doc.extra_metadata = {**meta, "is_transcribing": True}
             flag_modified(doc, "extra_metadata")
             await ctx.db.commit()
             celery_result = transcribe_task.delay(str(doc.id))
-            return {"success": True, "data": {"document_id": doc_id, "status": "dispatched", "task_id": celery_result.id, "title": doc.title}, "findings": [{"type": "transcription_started", "title": f"Transcription started for {doc.title}", "document_id": doc_id, "task_id": celery_result.id}]}
+            return {
+                "success": True,
+                "data": {
+                    "document_id": doc_id,
+                    "status": "dispatched",
+                    "task_id": celery_result.id,
+                    "title": doc.title,
+                },
+                "findings": [
+                    {
+                        "type": "transcription_started",
+                        "title": f"Transcription started for {doc.title}",
+                        "document_id": doc_id,
+                        "task_id": celery_result.id,
+                    }
+                ],
+            }
         except Exception as exc:
             return {"error": f"Failed to transcribe document: {exc}"}
 
-    async def _analyze_image(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from uuid import UUID as _UUID
+    async def _analyze_image(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import base64
         from pathlib import Path as _Path
+        from uuid import UUID as _UUID
+
+        from app.core.config import settings as _settings
         from app.models.document import Document as DocModel
         from app.services.storage_service import storage_service as _storage
-        from app.core.config import settings as _settings
 
         job = ctx.job
         doc_id = (params.get("document_id") or "").strip()
-        prompt_text = (params.get("prompt") or "").strip() or "Describe this image in detail, including any text, diagrams, charts, or notable visual elements."
+        prompt_text = (
+            params.get("prompt") or ""
+        ).strip() or "Describe this image in detail, including any text, diagrams, charts, or notable visual elements."
         vision_model = (params.get("model") or "").strip()
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
-            doc_result = await ctx.db.execute(select(DocModel).where(DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id))
+            doc_result = await ctx.db.execute(
+                select(DocModel).where(
+                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
+                )
+            )
             doc = doc_result.scalar_one_or_none()
             if not doc:
                 return {"error": f"Document {doc_id} not found"}
@@ -4452,33 +6288,85 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
                 return {"error": "Document has no associated file"}
             ft = (doc.file_type or "").lower()
             ext = _Path(doc.file_path).suffix.lower()
-            image_types = {"image/png", "image/jpeg", "image/jpg", "image/gif", "image/webp", "image/bmp", "image/tiff"}
-            image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
+            image_types = {
+                "image/png",
+                "image/jpeg",
+                "image/jpg",
+                "image/gif",
+                "image/webp",
+                "image/bmp",
+                "image/tiff",
+            }
+            image_exts = {
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".webp",
+                ".bmp",
+                ".tiff",
+                ".tif",
+            }
             if ft not in image_types and ext not in image_exts:
                 return {"error": f"Document is not an image (type={ft}, ext={ext})"}
             image_bytes = await _storage.get_file_content(doc.file_path)
             if not image_bytes:
                 return {"error": "Failed to download image: empty content"}
             if len(image_bytes) > 20 * 1024 * 1024:
-                return {"error": f"Image too large ({len(image_bytes) // (1024*1024)}MB). Max 20MB."}
+                return {
+                    "error": f"Image too large ({len(image_bytes) // (1024*1024)}MB). Max 20MB."
+                }
             if not vision_model:
                 vision_model = getattr(_settings, "VISION_MODEL", "llava") or "llava"
-            payload = {"model": vision_model, "prompt": prompt_text[:2000], "images": [base64.b64encode(image_bytes).decode("utf-8")], "stream": False, "options": {"temperature": 0.3, "num_predict": 2048}}
-            response = await executor.llm_service.client.post(f"{executor.llm_service.base_url}/api/generate", json=payload, timeout=120.0)
+            payload = {
+                "model": vision_model,
+                "prompt": prompt_text[:2000],
+                "images": [base64.b64encode(image_bytes).decode("utf-8")],
+                "stream": False,
+                "options": {"temperature": 0.3, "num_predict": 2048},
+            }
+            response = await executor.llm_service.client.post(
+                f"{executor.llm_service.base_url}/api/generate",
+                json=payload,
+                timeout=120.0,
+            )
             response.raise_for_status()
             analysis_text = (response.json().get("response") or "").strip()
             if not analysis_text:
                 return {"error": "Vision model returned empty response"}
-            return {"success": True, "data": {"document_id": doc_id, "title": doc.title, "analysis": analysis_text[:5000], "model": vision_model, "prompt": prompt_text[:200]}, "findings": [{"type": "image_analysis", "title": f"Image analysis: {doc.title}", "document_id": doc_id, "content": analysis_text[:2000], "model": vision_model}]}
+            return {
+                "success": True,
+                "data": {
+                    "document_id": doc_id,
+                    "title": doc.title,
+                    "analysis": analysis_text[:5000],
+                    "model": vision_model,
+                    "prompt": prompt_text[:200],
+                },
+                "findings": [
+                    {
+                        "type": "image_analysis",
+                        "title": f"Image analysis: {doc.title}",
+                        "document_id": doc_id,
+                        "content": analysis_text[:2000],
+                        "model": vision_model,
+                    }
+                ],
+            }
         except Exception as exc:
             error_msg = str(exc)
             if "404" in error_msg or "not found" in error_msg.lower():
-                return {"error": f"Vision model '{vision_model}' not available. Pull it with: ollama pull {vision_model}"}
+                return {
+                    "error": f"Vision model '{vision_model}' not available. Pull it with: ollama pull {vision_model}"
+                }
             return {"error": f"Failed to analyze image: {error_msg}"}
 
-    async def _get_media_info(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from uuid import UUID as _UUID
+    async def _get_media_info(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from pathlib import Path as _Path
+        from uuid import UUID as _UUID
+
         from app.models.document import Document as DocModel
 
         job = ctx.job
@@ -4486,7 +6374,11 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
         try:
-            doc_result = await ctx.db.execute(select(DocModel).where(DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id))
+            doc_result = await ctx.db.execute(
+                select(DocModel).where(
+                    DocModel.id == _UUID(doc_id), DocModel.user_id == job.user_id
+                )
+            )
             doc = doc_result.scalar_one_or_none()
             if not doc:
                 return {"error": f"Document {doc_id} not found"}
@@ -4494,21 +6386,72 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
                 return {"error": "Document has no associated file"}
             ft = (doc.file_type or "").lower()
             ext = _Path(doc.file_path).suffix.lower()
-            media_info = {"document_id": doc_id, "title": doc.title, "file_type": doc.file_type, "file_size": doc.file_size}
-            av_exts = {".mp3", ".mp4", ".wav", ".m4a", ".ogg", ".flac", ".aac", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
-            image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
-            is_av = any(ft.startswith(p) for p in ("audio/", "video/")) or ext in av_exts
+            media_info = {
+                "document_id": doc_id,
+                "title": doc.title,
+                "file_type": doc.file_type,
+                "file_size": doc.file_size,
+            }
+            av_exts = {
+                ".mp3",
+                ".mp4",
+                ".wav",
+                ".m4a",
+                ".ogg",
+                ".flac",
+                ".aac",
+                ".avi",
+                ".mkv",
+                ".mov",
+                ".webm",
+                ".flv",
+                ".wmv",
+            }
+            image_exts = {
+                ".png",
+                ".jpg",
+                ".jpeg",
+                ".gif",
+                ".webp",
+                ".bmp",
+                ".tiff",
+                ".tif",
+            }
+            is_av = (
+                any(ft.startswith(p) for p in ("audio/", "video/")) or ext in av_exts
+            )
             is_image = ft.startswith("image/") or ext in image_exts
             if is_av:
-                import tempfile, os, subprocess, json
+                import json
+                import os
+                import subprocess
+                import tempfile
+
                 from app.services.storage_service import storage_service as _storage
+
                 temp_path = None
                 try:
-                    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=ext or ".tmp")
+                    tmp = tempfile.NamedTemporaryFile(
+                        delete=False, suffix=ext or ".tmp"
+                    )
                     temp_path = tmp.name
                     tmp.close()
                     await _storage.download_file(doc.file_path, temp_path)
-                    probe_result = subprocess.run(["ffprobe", "-v", "quiet", "-print_format", "json", "-show_format", "-show_streams", temp_path], capture_output=True, text=True, timeout=30)
+                    probe_result = subprocess.run(
+                        [
+                            "ffprobe",
+                            "-v",
+                            "quiet",
+                            "-print_format",
+                            "json",
+                            "-show_format",
+                            "-show_streams",
+                            temp_path,
+                        ],
+                        capture_output=True,
+                        text=True,
+                        timeout=30,
+                    )
                     if probe_result.returncode == 0:
                         probe_data = json.loads(probe_result.stdout)
                         fmt = probe_data.get("format", {})
@@ -4538,8 +6481,11 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
             elif is_image:
                 try:
                     from io import BytesIO
+
                     from PIL import Image
+
                     from app.services.storage_service import storage_service as _storage
+
                     image_bytes = await _storage.get_file_content(doc.file_path)
                     img = Image.open(BytesIO(image_bytes))
                     media_info["width"] = img.width
@@ -4577,7 +6523,9 @@ def build_autonomous_media_provider(executor: Any) -> FunctionToolProvider:
 def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
     """Workspace snapshot and drift-detection tools for AutonomousAgentExecutor."""
 
-    async def _capture_snapshot(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _capture_snapshot(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import re
         from datetime import datetime as _dt
 
@@ -4587,8 +6535,14 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
         if not snap_name:
             return {"error": "Missing required parameter: name"}
         if not re.match(r"^[a-zA-Z0-9_\-]+$", snap_name):
-            return {"error": "Snapshot name must be alphanumeric with underscores/hyphens only"}
-        doc_ids = {str(f.get("document_id") or f.get("source_id")) for f in state.get("findings", []) if f.get("document_id") or f.get("source_id")}
+            return {
+                "error": "Snapshot name must be alphanumeric with underscores/hyphens only"
+            }
+        doc_ids = {
+            str(f.get("document_id") or f.get("source_id"))
+            for f in state.get("findings", [])
+            if f.get("document_id") or f.get("source_id")
+        }
         snapshot = {
             "iteration": state.get("iteration", 0),
             "timestamp": _dt.utcnow().isoformat(),
@@ -4618,9 +6572,22 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
             oldest = min(snapshots, key=lambda n: snapshots[n].get("iteration", 0))
             del snapshots[oldest]
         snapshots[snap_name] = snapshot
-        return {"success": True, "data": {"name": snap_name, "iteration": snapshot["iteration"], "findings_count": snapshot["findings_count"], "actions_count": snapshot["actions_count"], "goal_progress": snapshot["goal_progress"], "documents_found": snapshot["documents_found"], "total_snapshots": len(snapshots)}}
+        return {
+            "success": True,
+            "data": {
+                "name": snap_name,
+                "iteration": snapshot["iteration"],
+                "findings_count": snapshot["findings_count"],
+                "actions_count": snapshot["actions_count"],
+                "goal_progress": snapshot["goal_progress"],
+                "documents_found": snapshot["documents_found"],
+                "total_snapshots": len(snapshots),
+            },
+        }
 
-    async def _compare_snapshots(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _compare_snapshots(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         name_a = str(params.get("snapshot_a", "")).strip()
         name_b = str(params.get("snapshot_b", "")).strip()
@@ -4633,13 +6600,28 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
             return {"error": f"Snapshot '{name_a}' not found"}
         if not snap_b:
             return {"error": f"Snapshot '{name_b}' not found"}
-        numeric_keys = ["findings_count", "actions_count", "goal_progress", "documents_found", "stalled_iterations", "artifacts_count", "formatted_outputs_count"]
+        numeric_keys = [
+            "findings_count",
+            "actions_count",
+            "goal_progress",
+            "documents_found",
+            "stalled_iterations",
+            "artifacts_count",
+            "formatted_outputs_count",
+        ]
         diff = {}
         for key in numeric_keys:
             a_val = float(snap_a.get(key, 0) or 0)
             b_val = float(snap_b.get(key, 0) or 0)
             delta = b_val - a_val
-            diff[key] = {"before": a_val, "after": b_val, "delta": delta, "direction": "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")}
+            diff[key] = {
+                "before": a_val,
+                "after": b_val,
+                "delta": delta,
+                "direction": "increased"
+                if delta > 0
+                else ("decreased" if delta < 0 else "unchanged"),
+            }
         for key in ["focus_directive", "skill_profile_role"]:
             a_val = str(snap_a.get(key, ""))
             b_val = str(snap_b.get(key, ""))
@@ -4648,19 +6630,38 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
         stats_b = snap_b.get("tool_stats", {})
         tools_added = set(stats_b.keys()) - set(stats_a.keys())
         tools_removed = set(stats_a.keys()) - set(stats_b.keys())
-        diff["tool_stats"] = {"tools_added": sorted(list(tools_added)), "tools_removed": sorted(list(tools_removed)), "total_before": len(stats_a), "total_after": len(stats_b)}
+        diff["tool_stats"] = {
+            "tools_added": sorted(list(tools_added)),
+            "tools_removed": sorted(list(tools_removed)),
+            "total_before": len(stats_a),
+            "total_after": len(stats_b),
+        }
         iter_a = snap_a.get("iteration", "?")
         iter_b = snap_b.get("iteration", "?")
         summary_parts = [f"Between iteration {iter_a} and {iter_b}:"]
         if diff["findings_count"]["delta"]:
-            summary_parts.append(f"findings {'+' if diff['findings_count']['delta'] > 0 else ''}{int(diff['findings_count']['delta'])}")
+            summary_parts.append(
+                f"findings {'+' if diff['findings_count']['delta'] > 0 else ''}{int(diff['findings_count']['delta'])}"
+            )
         if diff["goal_progress"]["delta"]:
-            summary_parts.append(f"progress {'+' if diff['goal_progress']['delta'] > 0 else ''}{int(diff['goal_progress']['delta'])}%")
+            summary_parts.append(
+                f"progress {'+' if diff['goal_progress']['delta'] > 0 else ''}{int(diff['goal_progress']['delta'])}%"
+            )
         if tools_added:
             summary_parts.append(f"{len(tools_added)} new tools used")
-        return {"success": True, "data": {"diff": diff, "summary": ' '.join(summary_parts), "snapshot_a_iteration": iter_a, "snapshot_b_iteration": iter_b}}
+        return {
+            "success": True,
+            "data": {
+                "diff": diff,
+                "summary": " ".join(summary_parts),
+                "snapshot_a_iteration": iter_a,
+                "snapshot_b_iteration": iter_b,
+            },
+        }
 
-    async def _detect_drift(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _detect_drift(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
         baseline_name = str(params.get("baseline", "")).strip()
         custom_thresholds = params.get("thresholds", {})
@@ -4670,9 +6671,26 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
         baseline = snapshots.get(baseline_name)
         if not baseline:
             return {"error": f"Baseline snapshot '{baseline_name}' not found"}
-        doc_ids = {str(f.get("document_id") or f.get("source_id")) for f in state.get("findings", []) if f.get("document_id") or f.get("source_id")}
-        current = {"iteration": state.get("iteration", 0), "findings_count": len(state.get("findings", [])), "actions_count": len(state.get("actions_taken", [])), "goal_progress": state.get("goal_progress", 0), "documents_found": len(doc_ids), "stalled_iterations": state.get("stalled_iterations", 0), "artifacts_count": len(state.get("artifacts", []))}
-        thresholds = {"stalled_iterations": 2, "goal_progress_drop": 0, "findings_stale_iterations": 5, "tool_failure_rate": 0.5}
+        doc_ids = {
+            str(f.get("document_id") or f.get("source_id"))
+            for f in state.get("findings", [])
+            if f.get("document_id") or f.get("source_id")
+        }
+        current = {
+            "iteration": state.get("iteration", 0),
+            "findings_count": len(state.get("findings", [])),
+            "actions_count": len(state.get("actions_taken", [])),
+            "goal_progress": state.get("goal_progress", 0),
+            "documents_found": len(doc_ids),
+            "stalled_iterations": state.get("stalled_iterations", 0),
+            "artifacts_count": len(state.get("artifacts", [])),
+        }
+        thresholds = {
+            "stalled_iterations": 2,
+            "goal_progress_drop": 0,
+            "findings_stale_iterations": 5,
+            "tool_failure_rate": 0.5,
+        }
         if isinstance(custom_thresholds, dict):
             for key, val in custom_thresholds.items():
                 if key in thresholds:
@@ -4683,33 +6701,94 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
         iterations_elapsed = current["iteration"] - baseline.get("iteration", 0)
         alerts = []
         if current["stalled_iterations"] > thresholds["stalled_iterations"]:
-            alerts.append({"metric": "stalled_iterations", "baseline_value": baseline.get("stalled_iterations", 0), "current_value": current["stalled_iterations"], "severity": "warning", "message": f"Agent has stalled for {current['stalled_iterations']} iterations"})
+            alerts.append(
+                {
+                    "metric": "stalled_iterations",
+                    "baseline_value": baseline.get("stalled_iterations", 0),
+                    "current_value": current["stalled_iterations"],
+                    "severity": "warning",
+                    "message": f"Agent has stalled for {current['stalled_iterations']} iterations",
+                }
+            )
         progress_drop = baseline.get("goal_progress", 0) - current["goal_progress"]
         if progress_drop > thresholds["goal_progress_drop"]:
-            alerts.append({"metric": "goal_progress", "baseline_value": baseline.get("goal_progress", 0), "current_value": current["goal_progress"], "severity": "critical" if progress_drop > 20 else "warning", "message": f"Goal progress dropped by {progress_drop}% since baseline"})
+            alerts.append(
+                {
+                    "metric": "goal_progress",
+                    "baseline_value": baseline.get("goal_progress", 0),
+                    "current_value": current["goal_progress"],
+                    "severity": "critical" if progress_drop > 20 else "warning",
+                    "message": f"Goal progress dropped by {progress_drop}% since baseline",
+                }
+            )
         findings_delta = current["findings_count"] - baseline.get("findings_count", 0)
-        if findings_delta == 0 and iterations_elapsed >= thresholds["findings_stale_iterations"]:
-            alerts.append({"metric": "findings_count", "baseline_value": baseline.get("findings_count", 0), "current_value": current["findings_count"], "severity": "warning", "message": f"No new findings in {iterations_elapsed} iterations"})
+        if (
+            findings_delta == 0
+            and iterations_elapsed >= thresholds["findings_stale_iterations"]
+        ):
+            alerts.append(
+                {
+                    "metric": "findings_count",
+                    "baseline_value": baseline.get("findings_count", 0),
+                    "current_value": current["findings_count"],
+                    "severity": "warning",
+                    "message": f"No new findings in {iterations_elapsed} iterations",
+                }
+            )
         for tool, stats in state.get("tool_stats", {}).items():
             if isinstance(stats, dict):
                 total = (stats.get("success", 0) or 0) + (stats.get("failure", 0) or 0)
                 if total >= 3:
                     fail_rate = (stats.get("failure", 0) or 0) / total
                     if fail_rate > thresholds["tool_failure_rate"]:
-                        alerts.append({"metric": f"tool_failure:{tool}", "baseline_value": 0, "current_value": round(fail_rate, 2), "severity": "warning", "message": f"Tool '{tool}' failure rate is {round(fail_rate * 100)}%"})
+                        alerts.append(
+                            {
+                                "metric": f"tool_failure:{tool}",
+                                "baseline_value": 0,
+                                "current_value": round(fail_rate, 2),
+                                "severity": "warning",
+                                "message": f"Tool '{tool}' failure rate is {round(fail_rate * 100)}%",
+                            }
+                        )
         if not alerts:
-            alerts.append({"metric": "overall", "baseline_value": baseline.get("goal_progress", 0), "current_value": current["goal_progress"], "severity": "info", "message": f"No drift detected after {iterations_elapsed} iterations"})
+            alerts.append(
+                {
+                    "metric": "overall",
+                    "baseline_value": baseline.get("goal_progress", 0),
+                    "current_value": current["goal_progress"],
+                    "severity": "info",
+                    "message": f"No drift detected after {iterations_elapsed} iterations",
+                }
+            )
         severity_counts = {}
         for alert in alerts:
-            severity_counts[alert["severity"]] = severity_counts.get(alert["severity"], 0) + 1
+            severity_counts[alert["severity"]] = (
+                severity_counts.get(alert["severity"], 0) + 1
+            )
         summary = f"{len(alerts)} alert(s) after {iterations_elapsed} iterations"
         if severity_counts.get("critical"):
             summary += f" ({severity_counts['critical']} critical)"
         elif severity_counts.get("warning"):
             summary += f" ({severity_counts['warning']} warnings)"
-        payload = {"success": True, "data": {"alerts": alerts, "metrics_compared": len(current), "iterations_elapsed": iterations_elapsed, "summary": summary}}
+        payload = {
+            "success": True,
+            "data": {
+                "alerts": alerts,
+                "metrics_compared": len(current),
+                "iterations_elapsed": iterations_elapsed,
+                "summary": summary,
+            },
+        }
         if any(a["severity"] in ("warning", "critical") for a in alerts):
-            payload["findings"] = [{"type": "drift_detected", "title": f"Drift detected: {summary}", "baseline": baseline_name, "alert_count": len(alerts), "severity_counts": severity_counts}]
+            payload["findings"] = [
+                {
+                    "type": "drift_detected",
+                    "title": f"Drift detected: {summary}",
+                    "baseline": baseline_name,
+                    "alert_count": len(alerts),
+                    "severity_counts": severity_counts,
+                }
+            ]
         return payload
 
     return FunctionToolProvider(
@@ -4726,12 +6805,16 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
 def build_autonomous_project_bootstrap_provider(executor: Any) -> FunctionToolProvider:
     """Project bootstrap tool for AutonomousAgentExecutor."""
 
-    async def _project_bootstrap(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _project_bootstrap(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.services.project_profile_service import build_project_profile
 
         job = ctx.job
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        source_id = str(params.get("source_id") or "").strip() or executor._resolve_default_source_scope(job)
+        source_id = str(
+            params.get("source_id") or ""
+        ).strip() or executor._resolve_default_source_scope(job)
         max_files = int(params.get("max_files", 400) or 400)
         profile = await build_project_profile(
             job,
@@ -4776,7 +6859,9 @@ def build_autonomous_project_bootstrap_provider(executor: Any) -> FunctionToolPr
 def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
     """Document-domain tools for AutonomousAgentExecutor."""
 
-    async def _search_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         db = ctx.db
         job = ctx.job
         query = params.get("query", job.goal[:100] if job else "")
@@ -4807,7 +6892,9 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             ],
         }
 
-    async def _search_with_filters(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _search_with_filters(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         query = params.get("query", "")
         limit = params.get("limit", 20)
         source_id = str(params.get("source_id") or "").strip() or None
@@ -4825,8 +6912,11 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         )
         return {"success": True, "data": results}
 
-    async def _web_scrape(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _web_scrape(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from urllib.parse import urlparse
+
         from app.models.document import DocumentSource
         from app.services.web_scraper_service import WebScraperService
 
@@ -4841,7 +6931,7 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             src_res = await ctx.db.execute(
                 select(DocumentSource).where(
                     DocumentSource.source_type == "web",
-                    DocumentSource.is_active == True,
+                    DocumentSource.is_active.is_(True),
                 )
             )
             sources = src_res.scalars().all()
@@ -4854,13 +6944,13 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
 
             for source in sources:
                 cfg = source.config or {}
-                for domain in (cfg.get("allowed_domains") or []):
+                for domain in cfg.get("allowed_domains") or []:
                     if host_matches(domain):
                         allow_private = True
                         break
                 if allow_private:
                     break
-                for base in (cfg.get("base_urls") or []):
+                for base in cfg.get("base_urls") or []:
                     try:
                         base_host = (urlparse(str(base)).hostname or "").lower()
                     except Exception:
@@ -4884,7 +6974,11 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
                 max_content_chars=int(params.get("max_content_chars", 50_000)),
             )
             payload: Dict[str, Any] = {"success": True, "data": scrape_result}
-            pages = scrape_result.get("pages", []) if isinstance(scrape_result, dict) else []
+            pages = (
+                scrape_result.get("pages", [])
+                if isinstance(scrape_result, dict)
+                else []
+            )
             if pages:
                 payload["findings"] = [
                     {
@@ -4899,7 +6993,9 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         finally:
             await scraper.aclose()
 
-    async def _ingest_url(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _ingest_url(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.models.user import User
         from app.services.url_ingestion_service import UrlIngestionService
 
@@ -4930,14 +7026,19 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             return {"error": ingest["error"]}
         return {"success": True, "data": ingest}
 
-    async def _get_document_details(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.document import Document
+    async def _get_document_details(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID
+
+        from app.models.document import Document
 
         doc_id = params.get("document_id")
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
-        doc_result = await ctx.db.execute(select(Document).where(Document.id == UUID(doc_id)))
+        doc_result = await ctx.db.execute(
+            select(Document).where(Document.id == UUID(doc_id))
+        )
         doc = doc_result.scalar_one_or_none()
         if not doc:
             return {"error": "Document not found"}
@@ -4954,15 +7055,20 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             },
         }
 
-    async def _read_document_content(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.document import Document
+    async def _read_document_content(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID
+
+        from app.models.document import Document
 
         doc_id = params.get("document_id")
         max_length = params.get("max_length", 10000)
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
-        doc_result = await ctx.db.execute(select(Document).where(Document.id == UUID(doc_id)))
+        doc_result = await ctx.db.execute(
+            select(Document).where(Document.id == UUID(doc_id))
+        )
         doc = doc_result.scalar_one_or_none()
         if not doc or not doc.content:
             return {"error": "Document not found or has no content"}
@@ -4976,14 +7082,19 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             },
         }
 
-    async def _summarize_document(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.document import Document
+    async def _summarize_document(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID
+
+        from app.models.document import Document
 
         doc_id = params.get("document_id")
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
-        doc_result = await ctx.db.execute(select(Document).where(Document.id == UUID(doc_id)))
+        doc_result = await ctx.db.execute(
+            select(Document).where(Document.id == UUID(doc_id))
+        )
         doc = doc_result.scalar_one_or_none()
         if not doc:
             return {"error": "Document not found"}
@@ -4991,24 +7102,33 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             return {
                 "success": True,
                 "data": {"summary": doc.summary},
-                "findings": [{
-                    "type": "summary",
-                    "document_id": doc_id,
-                    "content": doc.summary[:500],
-                    "source_id": str(doc.source_id) if getattr(doc, "source_id", None) else None,
-                }],
+                "findings": [
+                    {
+                        "type": "summary",
+                        "document_id": doc_id,
+                        "content": doc.summary[:500],
+                        "source_id": str(doc.source_id)
+                        if getattr(doc, "source_id", None)
+                        else None,
+                    }
+                ],
             }
         return {"success": True, "data": {"status": "summarization_queued"}}
 
-    async def _find_similar_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
-        from app.models.document import Document
+    async def _find_similar_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from uuid import UUID
+
+        from app.models.document import Document
 
         doc_id = params.get("document_id")
         limit = params.get("limit", 5)
         if not doc_id:
             return {"error": "Missing required parameter: document_id"}
-        doc_result = await ctx.db.execute(select(Document).where(Document.id == UUID(doc_id)))
+        doc_result = await ctx.db.execute(
+            select(Document).where(Document.id == UUID(doc_id))
+        )
         doc = doc_result.scalar_one_or_none()
         if not doc or not doc.content:
             return {"error": "Document not found or has no content"}
@@ -5035,10 +7155,14 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             ],
         }
 
-    async def _get_knowledge_base_stats(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _get_knowledge_base_stats(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from collections import Counter
         from uuid import UUID
+
         from sqlalchemy import desc, func
+
         from app.models.document import Document, DocumentSource
 
         limit = int(params.get("recent_limit", 25) or 25)
@@ -5055,7 +7179,18 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         if source_uuid:
             docs_count_query = docs_count_query.where(Document.source_id == source_uuid)
         total_docs = int((await ctx.db.execute(docs_count_query)).scalar() or 0)
-        total_sources = 1 if source_uuid else int((await ctx.db.execute(select(func.count()).select_from(DocumentSource))).scalar() or 0)
+        total_sources = (
+            1
+            if source_uuid
+            else int(
+                (
+                    await ctx.db.execute(
+                        select(func.count()).select_from(DocumentSource)
+                    )
+                ).scalar()
+                or 0
+            )
+        )
 
         recent_query = (
             select(Document.id, Document.title, Document.created_at, Document.tags)
@@ -5080,13 +7215,19 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
                     {"id": str(doc_id), "title": title, "created_at": str(created_at)}
                     for doc_id, title, created_at, _ in rows
                 ],
-                "top_tags": [{"tag": tag, "count": count} for tag, count in tag_counter.most_common(10)],
+                "top_tags": [
+                    {"tag": tag, "count": count}
+                    for tag, count in tag_counter.most_common(10)
+                ],
             },
         }
 
-    async def _create_document_from_text(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _create_document_from_text(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import hashlib
         import uuid
+
         from app.models.document import Document
 
         job = ctx.job
@@ -5100,7 +7241,9 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         if not content:
             return {"error": "Content is required"}
 
-        notes_source = await executor.document_service._get_or_create_agent_notes_source(ctx.db)
+        notes_source = (
+            await executor.document_service._get_or_create_agent_notes_source(ctx.db)
+        )
         content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
         doc = Document(
             title=title,
@@ -5127,17 +7270,32 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         await ctx.db.refresh(doc)
 
         try:
-            await executor.document_service.reprocess_document(doc.id, ctx.db, user_id=job.user_id)
+            await executor.document_service.reprocess_document(
+                doc.id, ctx.db, user_id=job.user_id
+            )
         except Exception:
             pass
 
         return {
             "success": True,
-            "data": {"document_id": str(doc.id), "title": doc.title, "source_scope_id": source_scope_id},
-            "artifacts": [{"type": "document", "id": str(doc.id), "title": doc.title, "source_scope_id": source_scope_id}],
+            "data": {
+                "document_id": str(doc.id),
+                "title": doc.title,
+                "source_scope_id": source_scope_id,
+            },
+            "artifacts": [
+                {
+                    "type": "document",
+                    "id": str(doc.id),
+                    "title": doc.title,
+                    "source_scope_id": source_scope_id,
+                }
+            ],
         }
 
-    async def _list_documents_by_tag(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _list_documents_by_tag(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         from app.models.document import Document
 
         tags_param = params.get("tags")
@@ -5166,7 +7324,9 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
                         "tags": doc.tags or [],
                         "file_type": doc.file_type,
                         "summary": (doc.summary or "")[:200],
-                        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                        "created_at": doc.created_at.isoformat()
+                        if doc.created_at
+                        else None,
                     }
                     for doc in matched
                 ],
@@ -5174,10 +7334,13 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             },
         }
 
-    async def _merge_documents(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+    async def _merge_documents(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
         import hashlib
         import uuid
         from uuid import UUID as _UUID
+
         from app.models.document import Document
 
         job = ctx.job
@@ -5208,7 +7371,9 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
             return {"error": "Merged content exceeds 2MB limit"}
 
         content_hash = hashlib.sha256(merged_content.encode("utf-8")).hexdigest()
-        notes_source = await executor.document_service._get_or_create_agent_notes_source(ctx.db)
+        notes_source = (
+            await executor.document_service._get_or_create_agent_notes_source(ctx.db)
+        )
         new_doc = Document(
             title=merge_title,
             content=merged_content,
@@ -5230,7 +7395,9 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
         await ctx.db.refresh(new_doc)
 
         try:
-            await executor.document_service.reprocess_document(new_doc.id, ctx.db, user_id=job.user_id)
+            await executor.document_service.reprocess_document(
+                new_doc.id, ctx.db, user_id=job.user_id
+            )
         except Exception:
             pass
 
@@ -5242,7 +7409,9 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
                 "source_count": len(source_ids),
                 "content_length": len(merged_content),
             },
-            "artifacts": [{"type": "document", "id": str(new_doc.id), "title": new_doc.title}],
+            "artifacts": [
+                {"type": "document", "id": str(new_doc.id), "title": new_doc.title}
+            ],
         }
 
     return FunctionToolProvider(

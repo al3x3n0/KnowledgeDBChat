@@ -2,28 +2,28 @@
 User-related database models.
 """
 
-from datetime import datetime
-from typing import Optional, List
-from sqlalchemy import Column, Integer, String, Text, DateTime, Boolean, JSON
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
 import uuid
+from datetime import datetime
+
+from sqlalchemy import JSON, Boolean, Column, DateTime, Integer, String
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
 
 class User(Base):
     """User model for authentication and authorization."""
-    
+
     __tablename__ = "users"
-    
+
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    
+
     # Basic information
     username = Column(String(50), unique=True, nullable=False, index=True)
     email = Column(String(100), unique=True, nullable=False, index=True)
     full_name = Column(String(200), nullable=True)
-    
+
     # Authentication
     hashed_password = Column(String(128), nullable=False)
     is_active = Column(Boolean, default=True)
@@ -31,65 +31,100 @@ class User(Base):
 
     # External auth (optional)
     # When auth_provider == "ldap", local password is ignored and login is validated against LDAP.
-    auth_provider = Column(String(20), nullable=False, default="local", index=True)  # local, ldap
+    auth_provider = Column(
+        String(20), nullable=False, default="local", index=True
+    )  # local, ldap
     auth_subject = Column(String(512), nullable=True)  # e.g. LDAP DN
     auth_metadata = Column(JSON, nullable=True)
-    
+
     # Authorization
     role = Column(String(20), default="user")  # admin, user, viewer
     permissions = Column(JSON, nullable=True)  # Additional permissions
-    
+
     # Profile
     avatar_url = Column(String(500), nullable=True)
     preferences = Column(JSON, nullable=True)  # User preferences
-    
+
     # Activity tracking
     last_login = Column(DateTime(timezone=True), nullable=True)
     login_count = Column(Integer, default=0)
-    
+
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
-    
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
+
     # Relationships
-    chat_sessions = relationship("ChatSession", back_populates="user", cascade="all, delete-orphan")
-    memories = relationship("ConversationMemory", back_populates="user", cascade="all, delete-orphan")
-    personas = relationship("Persona", back_populates="user", cascade="all, delete-orphan")
-    preferences = relationship("UserPreferences", back_populates="user", cascade="all, delete-orphan", uselist=False)
-    persona_edit_requests = relationship("PersonaEditRequest", back_populates="requested_by_user", passive_deletes=True)
-    agent_conversations = relationship("AgentConversation", back_populates="user", cascade="all, delete-orphan")
+    chat_sessions = relationship(
+        "ChatSession", back_populates="user", cascade="all, delete-orphan"
+    )
+    memories = relationship(
+        "ConversationMemory", back_populates="user", cascade="all, delete-orphan"
+    )
+    personas = relationship(
+        "Persona", back_populates="user", cascade="all, delete-orphan"
+    )
+    preferences = relationship(
+        "UserPreferences",
+        back_populates="user",
+        cascade="all, delete-orphan",
+        uselist=False,
+    )
+    persona_edit_requests = relationship(
+        "PersonaEditRequest", back_populates="requested_by_user", passive_deletes=True
+    )
+    agent_conversations = relationship(
+        "AgentConversation", back_populates="user", cascade="all, delete-orphan"
+    )
 
     # Workflow relationships
-    custom_tools = relationship("UserTool", back_populates="user", cascade="all, delete-orphan")
-    workflows = relationship("Workflow", back_populates="user", cascade="all, delete-orphan")
-    workflow_executions = relationship("WorkflowExecution", back_populates="user", cascade="all, delete-orphan")
+    custom_tools = relationship(
+        "UserTool", back_populates="user", cascade="all, delete-orphan"
+    )
+    workflows = relationship(
+        "Workflow", back_populates="user", cascade="all, delete-orphan"
+    )
+    workflow_executions = relationship(
+        "WorkflowExecution", back_populates="user", cascade="all, delete-orphan"
+    )
 
     # Presentation relationships
-    presentation_jobs = relationship("PresentationJob", back_populates="user", cascade="all, delete-orphan")
-    presentation_templates = relationship("PresentationTemplate", back_populates="user", cascade="all, delete-orphan")
+    presentation_jobs = relationship(
+        "PresentationJob", back_populates="user", cascade="all, delete-orphan"
+    )
+    presentation_templates = relationship(
+        "PresentationTemplate", back_populates="user", cascade="all, delete-orphan"
+    )
 
     # Export relationships
-    export_jobs = relationship("ExportJob", back_populates="user", cascade="all, delete-orphan")
+    export_jobs = relationship(
+        "ExportJob", back_populates="user", cascade="all, delete-orphan"
+    )
 
     # Repository report relationships
-    repo_report_jobs = relationship("RepoReportJob", back_populates="user", cascade="all, delete-orphan")
+    repo_report_jobs = relationship(
+        "RepoReportJob", back_populates="user", cascade="all, delete-orphan"
+    )
 
     # Synthesis job relationships
-    synthesis_jobs = relationship("SynthesisJob", back_populates="user", cascade="all, delete-orphan")
+    synthesis_jobs = relationship(
+        "SynthesisJob", back_populates="user", cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return f"<User(id={self.id}, username='{self.username}', email='{self.email}')>"
-    
+
     def has_permission(self, permission: str) -> bool:
         """Check if user has specific permission."""
         if self.role == "admin":
             return True
-        
+
         if not self.permissions:
             return False
-            
+
         return permission in self.permissions
-    
+
     def is_admin(self) -> bool:
         """Check if user is admin."""
         return self.role == "admin"

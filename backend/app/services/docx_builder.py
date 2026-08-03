@@ -5,20 +5,18 @@ Creates DOCX files from structured content using python-docx.
 """
 
 from io import BytesIO
-from typing import Dict, Optional, Any, List
-from loguru import logger
+from typing import Any, Dict, List, Optional
 
 from docx import Document
-from docx.shared import Inches, Pt, RGBColor
 from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.style import WD_STYLE_TYPE
-from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
+from docx.oxml.ns import qn
+from docx.shared import Inches, Pt, RGBColor
 
 
 def hex_to_rgb(hex_color: str) -> RGBColor:
     """Convert hex color string to RGBColor."""
-    hex_color = hex_color.lstrip('#')
+    hex_color = hex_color.lstrip("#")
     r = int(hex_color[0:2], 16)
     g = int(hex_color[2:4], 16)
     b = int(hex_color[4:6], 16)
@@ -79,9 +77,7 @@ class DOCXBuilder:
     }
 
     def __init__(
-        self,
-        style: str = "professional",
-        custom_theme: Optional[Dict[str, Any]] = None
+        self, style: str = "professional", custom_theme: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize the builder with a style or custom theme.
@@ -148,7 +144,7 @@ class DOCXBuilder:
         title: str,
         content_items: List[Dict[str, Any]],
         author: Optional[str] = None,
-        subject: Optional[str] = None
+        subject: Optional[str] = None,
     ) -> bytes:
         """
         Build a DOCX document from content items.
@@ -202,7 +198,9 @@ class DOCXBuilder:
             elif item_type == "numbered_list":
                 self._add_numbered_list(doc, item.get("items", []))
             elif item_type == "code_block":
-                self._add_code_block(doc, item.get("code", ""), item.get("language", ""))
+                self._add_code_block(
+                    doc, item.get("code", ""), item.get("language", "")
+                )
             elif item_type == "table":
                 self._add_table(doc, item.get("headers", []), item.get("rows", []))
             elif item_type == "quote":
@@ -226,20 +224,20 @@ class DOCXBuilder:
         styles = doc.styles
 
         # Configure Normal style
-        normal = styles['Normal']
+        normal = styles["Normal"]
         normal.font.name = self.style_config["body_font"]
         normal.font.size = Pt(self.style_config["body_size"])
         normal.font.color.rgb = hex_to_rgb(self.style_config["text_color"])
 
         # Configure Heading 1
-        h1 = styles['Heading 1']
+        h1 = styles["Heading 1"]
         h1.font.name = self.style_config["title_font"]
         h1.font.size = Pt(self.style_config["heading1_size"])
         h1.font.bold = True
         h1.font.color.rgb = hex_to_rgb(self.style_config["heading_color"])
 
         # Configure Heading 2
-        h2 = styles['Heading 2']
+        h2 = styles["Heading 2"]
         h2.font.name = self.style_config["title_font"]
         h2.font.size = Pt(self.style_config["heading2_size"])
         h2.font.bold = True
@@ -247,7 +245,7 @@ class DOCXBuilder:
 
         # Try to configure Heading 3
         try:
-            h3 = styles['Heading 3']
+            h3 = styles["Heading 3"]
             h3.font.name = self.style_config["title_font"]
             h3.font.size = Pt(self.style_config["body_size"] + 1)
             h3.font.bold = True
@@ -283,13 +281,13 @@ class DOCXBuilder:
     def _add_bullet_list(self, doc: Document, items: List[str]):
         """Add a bullet list."""
         for item in items:
-            p = doc.add_paragraph(item, style='List Bullet')
+            p = doc.add_paragraph(item, style="List Bullet")
             p.paragraph_format.space_after = Pt(6)
 
     def _add_numbered_list(self, doc: Document, items: List[str]):
         """Add a numbered list."""
         for item in items:
-            p = doc.add_paragraph(item, style='List Number')
+            p = doc.add_paragraph(item, style="List Number")
             p.paragraph_format.space_after = Pt(6)
 
     def _add_code_block(self, doc: Document, code: str, language: str = ""):
@@ -313,8 +311,8 @@ class DOCXBuilder:
         # Add background shading
         p_element = p._element
         pPr = p_element.get_or_add_pPr()
-        shd = OxmlElement('w:shd')
-        shd.set(qn('w:fill'), 'F5F5F5')  # Light gray background
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:fill"), "F5F5F5")  # Light gray background
         pPr.append(shd)
 
         # Set paragraph formatting
@@ -333,7 +331,7 @@ class DOCXBuilder:
             return
 
         table = doc.add_table(rows=1 if headers else 0, cols=num_cols)
-        table.style = 'Table Grid'
+        table.style = "Table Grid"
 
         # Add header row
         if headers:
@@ -345,12 +343,14 @@ class DOCXBuilder:
                 for paragraph in cell.paragraphs:
                     for run in paragraph.runs:
                         run.font.bold = True
-                        run.font.color.rgb = hex_to_rgb(self.style_config["heading_color"])
+                        run.font.color.rgb = hex_to_rgb(
+                            self.style_config["heading_color"]
+                        )
                 # Add background shading to header
                 tc = cell._tc
                 tcPr = tc.get_or_add_tcPr()
-                shd = OxmlElement('w:shd')
-                shd.set(qn('w:fill'), 'E8E8E8')
+                shd = OxmlElement("w:shd")
+                shd.set(qn("w:fill"), "E8E8E8")
                 tcPr.append(shd)
 
         # Add data rows
@@ -378,12 +378,12 @@ class DOCXBuilder:
         # Add vertical bar effect
         p_element = p._element
         pPr = p_element.get_or_add_pPr()
-        pBdr = OxmlElement('w:pBdr')
-        left = OxmlElement('w:left')
-        left.set(qn('w:val'), 'single')
-        left.set(qn('w:sz'), '24')  # border width
-        left.set(qn('w:space'), '4')
-        left.set(qn('w:color'), self.style_config["accent_color"].lstrip('#'))
+        pBdr = OxmlElement("w:pBdr")
+        left = OxmlElement("w:left")
+        left.set(qn("w:val"), "single")
+        left.set(qn("w:sz"), "24")  # border width
+        left.set(qn("w:space"), "4")
+        left.set(qn("w:color"), self.style_config["accent_color"].lstrip("#"))
         pBdr.append(left)
         pPr.append(pBdr)
 
@@ -392,11 +392,11 @@ class DOCXBuilder:
         p = doc.add_paragraph()
         p_element = p._element
         pPr = p_element.get_or_add_pPr()
-        pBdr = OxmlElement('w:pBdr')
-        bottom = OxmlElement('w:bottom')
-        bottom.set(qn('w:val'), 'single')
-        bottom.set(qn('w:sz'), '6')
-        bottom.set(qn('w:color'), self.style_config["accent_color"].lstrip('#'))
+        pBdr = OxmlElement("w:pBdr")
+        bottom = OxmlElement("w:bottom")
+        bottom.set(qn("w:val"), "single")
+        bottom.set(qn("w:sz"), "6")
+        bottom.set(qn("w:color"), self.style_config["accent_color"].lstrip("#"))
         pBdr.append(bottom)
         pPr.append(pBdr)
 
@@ -414,7 +414,7 @@ def markdown_to_content_items(markdown_text: str) -> List[Dict[str, Any]]:
     import re
 
     content_items = []
-    lines = markdown_text.split('\n')
+    lines = markdown_text.split("\n")
     i = 0
 
     while i < len(lines):
@@ -426,7 +426,7 @@ def markdown_to_content_items(markdown_text: str) -> List[Dict[str, Any]]:
             continue
 
         # Heading
-        heading_match = re.match(r'^(#{1,6})\s+(.+)$', line)
+        heading_match = re.match(r"^(#{1,6})\s+(.+)$", line)
         if heading_match:
             level = len(heading_match.group(1))
             text = heading_match.group(2)
@@ -435,28 +435,30 @@ def markdown_to_content_items(markdown_text: str) -> List[Dict[str, Any]]:
             continue
 
         # Code block
-        if line.strip().startswith('```'):
+        if line.strip().startswith("```"):
             language = line.strip()[3:].strip()
             code_lines = []
             i += 1
-            while i < len(lines) and not lines[i].strip().startswith('```'):
+            while i < len(lines) and not lines[i].strip().startswith("```"):
                 code_lines.append(lines[i])
                 i += 1
-            content_items.append({
-                "type": "code_block",
-                "code": '\n'.join(code_lines),
-                "language": language
-            })
+            content_items.append(
+                {
+                    "type": "code_block",
+                    "code": "\n".join(code_lines),
+                    "language": language,
+                }
+            )
             i += 1
             continue
 
         # Bullet list item
-        bullet_match = re.match(r'^[\*\-\+]\s+(.+)$', line)
+        bullet_match = re.match(r"^[\*\-\+]\s+(.+)$", line)
         if bullet_match:
             items = [bullet_match.group(1)]
             i += 1
             while i < len(lines):
-                next_bullet = re.match(r'^[\*\-\+]\s+(.+)$', lines[i])
+                next_bullet = re.match(r"^[\*\-\+]\s+(.+)$", lines[i])
                 if next_bullet:
                     items.append(next_bullet.group(1))
                     i += 1
@@ -466,12 +468,12 @@ def markdown_to_content_items(markdown_text: str) -> List[Dict[str, Any]]:
             continue
 
         # Numbered list item
-        num_match = re.match(r'^\d+\.\s+(.+)$', line)
+        num_match = re.match(r"^\d+\.\s+(.+)$", line)
         if num_match:
             items = [num_match.group(1)]
             i += 1
             while i < len(lines):
-                next_num = re.match(r'^\d+\.\s+(.+)$', lines[i])
+                next_num = re.match(r"^\d+\.\s+(.+)$", lines[i])
                 if next_num:
                     items.append(next_num.group(1))
                     i += 1
@@ -481,22 +483,22 @@ def markdown_to_content_items(markdown_text: str) -> List[Dict[str, Any]]:
             continue
 
         # Blockquote
-        quote_match = re.match(r'^>\s*(.+)$', line)
+        quote_match = re.match(r"^>\s*(.+)$", line)
         if quote_match:
             quote_text = [quote_match.group(1)]
             i += 1
             while i < len(lines):
-                next_quote = re.match(r'^>\s*(.*)$', lines[i])
+                next_quote = re.match(r"^>\s*(.*)$", lines[i])
                 if next_quote:
                     quote_text.append(next_quote.group(1))
                     i += 1
                 else:
                     break
-            content_items.append({"type": "quote", "text": '\n'.join(quote_text)})
+            content_items.append({"type": "quote", "text": "\n".join(quote_text)})
             continue
 
         # Horizontal rule
-        if re.match(r'^[\-\*_]{3,}\s*$', line):
+        if re.match(r"^[\-\*_]{3,}\s*$", line):
             content_items.append({"type": "horizontal_rule"})
             i += 1
             continue
@@ -507,12 +509,13 @@ def markdown_to_content_items(markdown_text: str) -> List[Dict[str, Any]]:
         while i < len(lines):
             next_line = lines[i]
             # Stop at empty line or special markdown syntax
-            if not next_line.strip() or \
-               re.match(r'^(#{1,6}|\*|\-|\+|\d+\.|\>|```|[\-\*_]{3,})', next_line):
+            if not next_line.strip() or re.match(
+                r"^(#{1,6}|\*|\-|\+|\d+\.|\>|```|[\-\*_]{3,})", next_line
+            ):
                 break
             para_lines.append(next_line)
             i += 1
 
-        content_items.append({"type": "paragraph", "text": ' '.join(para_lines)})
+        content_items.append({"type": "paragraph", "text": " ".join(para_lines)})
 
     return content_items

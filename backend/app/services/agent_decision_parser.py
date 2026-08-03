@@ -8,16 +8,15 @@ free-form LLM output using Pydantic validation with graceful fallbacks.
 
 import json
 import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
-
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
 
 class AgentActionDecision(BaseModel):
     """Validated action payload from an LLM decision."""
@@ -91,6 +90,7 @@ class AgentDecision(BaseModel):
 # ---------------------------------------------------------------------------
 # JSON extraction helpers (extracted from executor)
 # ---------------------------------------------------------------------------
+
 
 def extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
     """Extract the first valid JSON object from plain text or fenced markdown."""
@@ -178,6 +178,7 @@ Set "action" to null if goal_achieved or should_stop is true."""
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
 
 class AgentDecisionParser:
     """Parse, validate, retry, and repair LLM decision responses."""

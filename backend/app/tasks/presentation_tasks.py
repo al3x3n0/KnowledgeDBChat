@@ -8,20 +8,25 @@ from datetime import datetime
 from typing import Optional
 from uuid import UUID
 
-from celery import current_task
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.presentation import PresentationJob
-from app.services.presentation_generator import PresentationGeneratorService, PresentationGenerationError
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+from app.services.presentation_generator import (
+    PresentationGenerationError,
+    PresentationGeneratorService,
+)
 
 
-async def _publish_progress(job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None):
+async def _publish_progress(
+    job_id: str, progress: int, stage: str, status: str, error: Optional[str] = None
+):
     """Publish progress update to Redis for WebSocket subscribers."""
     import redis.asyncio as redis
+
     from app.core.config import settings
 
     try:
@@ -87,9 +92,7 @@ async def _generate_presentation_async(job_id: str, user_id: str):
 
             # Generate the presentation
             file_path = await generator.generate_presentation(
-                job=job,
-                db=db,
-                progress_callback=progress_callback
+                job=job, db=db, progress_callback=progress_callback
             )
 
             # Update job as completed
@@ -100,7 +103,9 @@ async def _generate_presentation_async(job_id: str, user_id: str):
 
             await _publish_progress(job_id, 100, "completed", "completed")
 
-            logger.info(f"Presentation job {job_id} completed successfully: {file_path}")
+            logger.info(
+                f"Presentation job {job_id} completed successfully: {file_path}"
+            )
 
         except PresentationGenerationError as e:
             # Known error - update job with error message
@@ -109,7 +114,9 @@ async def _generate_presentation_async(job_id: str, user_id: str):
             job.completed_at = datetime.utcnow()
             await db.commit()
 
-            await _publish_progress(job_id, job.progress, job.current_stage or "failed", "failed", str(e))
+            await _publish_progress(
+                job_id, job.progress, job.current_stage or "failed", "failed", str(e)
+            )
 
             logger.error(f"Presentation job {job_id} failed: {e}")
 
@@ -128,9 +135,10 @@ async def _generate_presentation_async(job_id: str, user_id: str):
             # Clean up Mermaid renderer
             try:
                 from app.services.mermaid_renderer import get_mermaid_renderer
+
                 renderer = get_mermaid_renderer()
                 await renderer.close()
-            except:
+            except Exception:
                 pass
 
 
@@ -201,6 +209,7 @@ def cleanup_old_presentations(days: int = 30):
         days: Number of days to keep presentations
     """
     from datetime import timedelta
+
     from sqlalchemy import and_
 
     logger.info(f"Starting cleanup of presentations older than {days} days")
@@ -209,6 +218,7 @@ def cleanup_old_presentations(days: int = 30):
         session_factory = create_celery_session()
         async with session_factory() as db:
             from app.services.storage_service import StorageService
+
             storage = StorageService()
 
             cutoff_date = datetime.utcnow() - timedelta(days=days)
@@ -218,7 +228,9 @@ def cleanup_old_presentations(days: int = 30):
                 select(PresentationJob).where(
                     and_(
                         PresentationJob.created_at < cutoff_date,
-                        PresentationJob.status.in_(["completed", "failed", "cancelled"])
+                        PresentationJob.status.in_(
+                            ["completed", "failed", "cancelled"]
+                        ),
                     )
                 )
             )

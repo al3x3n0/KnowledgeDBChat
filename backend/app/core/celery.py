@@ -36,6 +36,7 @@ celery_app = Celery(
         "app.tasks.latex_tasks",
         "app.tasks.latex_maintenance_tasks",
         "app.tasks.compops_sync_tasks",
+        "app.tasks.agent_external_call_outbox_tasks",
     ],
 )
 
@@ -106,6 +107,13 @@ celery_app.conf.beat_schedule = {
     "sync-compops-evidence": {
         "task": "app.tasks.compops_sync_tasks.sync_due_compops_evidence",
         "schedule": crontab(minute="*/5"),
+    },
+    # Deliver committed external-agent outbox calls (every minute)
+    "deliver-agent-external-call-outbox": {
+        "task": (
+            "app.tasks.agent_external_call_outbox_tasks." "deliver_external_call_outbox"
+        ),
+        "schedule": crontab(minute="*"),
     },
     # Emit queue urgency notifications from the derived checkpoint queue (every 10 minutes)
     "emit-queue-urgency-alerts": {

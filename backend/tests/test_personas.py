@@ -3,10 +3,13 @@ Tests for persona management endpoints.
 """
 
 from uuid import UUID
+
 from fastapi.testclient import TestClient
 
 
-def test_admin_can_create_persona(client: TestClient, admin_headers: dict, auth_headers: dict):
+def test_admin_can_create_persona(
+    client: TestClient, admin_headers: dict, auth_headers: dict
+):
     payload = {
         "name": "Alice",
         "platform_id": "user-1",
@@ -38,7 +41,9 @@ def test_non_admin_cannot_create_persona(client: TestClient, auth_headers: dict)
 
 
 def test_update_and_delete_persona(client: TestClient, admin_headers: dict):
-    create_resp = client.post("/api/v1/personas/", json={"name": "Temp"}, headers=admin_headers)
+    create_resp = client.post(
+        "/api/v1/personas/", json={"name": "Temp"}, headers=admin_headers
+    )
     persona_id = create_resp.json()["id"]
     assert UUID(persona_id)
 

@@ -5,17 +5,15 @@ Generates diagrams using Mermaid, Graphviz, and Draw.io formats.
 Supports flowcharts, sequence diagrams, ER diagrams, architecture diagrams, and more.
 """
 
-import io
-import json
 import base64
-import tempfile
 import subprocess
-import xml.etree.ElementTree as ET
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union
-from uuid import uuid4
+import tempfile
 import urllib.parse
+import xml.etree.ElementTree as ET
 import zlib
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from loguru import logger
 
@@ -166,7 +164,11 @@ class DiagramService:
             try:
                 image_data = self._render_mermaid(mermaid_code, config)
                 result["image_base64"] = image_data
-                result["mime_type"] = "image/svg+xml" if config.get("output_format", "svg") == "svg" else "image/png"
+                result["mime_type"] = (
+                    "image/svg+xml"
+                    if config.get("output_format", "svg") == "svg"
+                    else "image/png"
+                )
             except Exception as e:
                 logger.warning(f"Failed to render Mermaid diagram: {e}")
                 result["render_error"] = str(e)
@@ -290,11 +292,15 @@ class DiagramService:
             class_lines.append(f"    class {name} {{")
             for attr in attributes:
                 visibility = attr.get("visibility", "+")
-                class_lines.append(f"        {visibility}{attr.get('name')}: {attr.get('type', 'any')}")
+                class_lines.append(
+                    f"        {visibility}{attr.get('name')}: {attr.get('type', 'any')}"
+                )
             for method in methods:
                 visibility = method.get("visibility", "+")
                 params = ", ".join(method.get("params", []))
-                class_lines.append(f"        {visibility}{method.get('name')}({params})")
+                class_lines.append(
+                    f"        {visibility}{method.get('name')}({params})"
+                )
             class_lines.append("    }")
 
         rel_lines = []
@@ -338,18 +344,26 @@ class DiagramService:
             for attr in attributes:
                 key_type = attr.get("key", "")
                 if key_type == "pk":
-                    entity_lines.append(f"        {attr.get('type', 'string')} {attr.get('name')} PK")
+                    entity_lines.append(
+                        f"        {attr.get('type', 'string')} {attr.get('name')} PK"
+                    )
                 elif key_type == "fk":
-                    entity_lines.append(f"        {attr.get('type', 'string')} {attr.get('name')} FK")
+                    entity_lines.append(
+                        f"        {attr.get('type', 'string')} {attr.get('name')} FK"
+                    )
                 else:
-                    entity_lines.append(f"        {attr.get('type', 'string')} {attr.get('name')}")
+                    entity_lines.append(
+                        f"        {attr.get('type', 'string')} {attr.get('name')}"
+                    )
             entity_lines.append("    }")
 
         rel_lines = []
         for rel in relationships:
             source = rel.get("source")
             target = rel.get("target")
-            cardinality = rel.get("cardinality", "||--||")  # ||--||, ||--o{, }o--o{, etc.
+            cardinality = rel.get(
+                "cardinality", "||--||"
+            )  # ||--||, ||--o{, }o--o{, etc.
             label = rel.get("label", "has")
 
             rel_lines.append(f"    {source} {cardinality} {target} : {label}")
@@ -472,24 +486,28 @@ class DiagramService:
         theme = config.get("theme", "default")
         background = config.get("background", "white")
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.mmd', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".mmd", delete=False) as f:
             f.write(code)
             input_file = f.name
 
-        output_file = input_file.replace('.mmd', f'.{output_format}')
+        output_file = input_file.replace(".mmd", f".{output_format}")
 
         try:
             cmd = [
                 "mmdc",
-                "-i", input_file,
-                "-o", output_file,
-                "-t", theme,
-                "-b", background,
+                "-i",
+                input_file,
+                "-o",
+                output_file,
+                "-t",
+                theme,
+                "-b",
+                background,
             ]
             subprocess.run(cmd, capture_output=True, check=True)
 
-            with open(output_file, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
+            with open(output_file, "rb") as f:
+                image_data = base64.b64encode(f.read()).decode("utf-8")
 
             return image_data
         finally:
@@ -531,11 +549,11 @@ class DiagramService:
         edges = data.get("edges", [])
 
         lines = [
-            f'{graph_keyword} {name} {{',
-            f'    rankdir={rankdir};',
+            f"{graph_keyword} {name} {{",
+            f"    rankdir={rankdir};",
             f'    node [shape={node_shape}, fontname="{font}"];',
             f'    edge [fontname="{font}"];',
-            '',
+            "",
         ]
 
         # Add nodes
@@ -558,9 +576,9 @@ class DiagramService:
 
                 lines.append(f'    {node_id} [{", ".join(attrs)}];')
             else:
-                lines.append(f'    {node};')
+                lines.append(f"    {node};")
 
-        lines.append('')
+        lines.append("")
 
         # Add edges
         for edge in edges:
@@ -579,11 +597,11 @@ class DiagramService:
                 attrs.append(f'style="{style}"')
 
             attr_str = f' [{", ".join(attrs)}]' if attrs else ""
-            lines.append(f'    {source} {edge_op} {target}{attr_str};')
+            lines.append(f"    {source} {edge_op} {target}{attr_str};")
 
-        lines.append('}')
+        lines.append("}")
 
-        dot_code = '\n'.join(lines)
+        dot_code = "\n".join(lines)
 
         result = {
             "diagram_type": graph_type,
@@ -608,18 +626,18 @@ class DiagramService:
         output_format = config.get("output_format", "svg")
         layout = config.get("layout", "dot")  # dot, neato, fdp, sfdp, circo, twopi
 
-        with tempfile.NamedTemporaryFile(mode='w', suffix='.dot', delete=False) as f:
+        with tempfile.NamedTemporaryFile(mode="w", suffix=".dot", delete=False) as f:
             f.write(code)
             input_file = f.name
 
-        output_file = input_file.replace('.dot', f'.{output_format}')
+        output_file = input_file.replace(".dot", f".{output_format}")
 
         try:
             cmd = [layout, f"-T{output_format}", "-o", output_file, input_file]
             subprocess.run(cmd, capture_output=True, check=True)
 
-            with open(output_file, 'rb') as f:
-                image_data = base64.b64encode(f.read()).decode('utf-8')
+            with open(output_file, "rb") as f:
+                image_data = base64.b64encode(f.read()).decode("utf-8")
 
             return image_data
         finally:
@@ -698,7 +716,9 @@ class DiagramService:
             # Add colors
             fill_color = node.get("fillColor", scheme["primary"])
             stroke_color = node.get("strokeColor", scheme["border"])
-            font_color = node.get("fontColor", "#FFFFFF" if shape != "rectangle" else scheme["text"])
+            font_color = node.get(
+                "fontColor", "#FFFFFF" if shape != "rectangle" else scheme["text"]
+            )
 
             style = f"{base_style}fillColor={fill_color};strokeColor={stroke_color};fontColor={font_color};"
             cell.set("style", style)
@@ -750,15 +770,15 @@ class DiagramService:
         xml_str = ET.tostring(root, encoding="unicode")
 
         # Create Draw.io file format
-        drawio_xml = f'''<?xml version="1.0" encoding="UTF-8"?>
+        drawio_xml = f"""<?xml version="1.0" encoding="UTF-8"?>
 <mxfile host="app.diagrams.net" modified="{config.get("modified", "2024-01-01T00:00:00.000Z")}" agent="DiagramService" version="1.0">
   <diagram name="Page-1" id="page1">
     {self._compress_drawio(xml_str)}
   </diagram>
-</mxfile>'''
+</mxfile>"""
 
         # Create data URL for embedding
-        encoded = base64.b64encode(drawio_xml.encode('utf-8')).decode('utf-8')
+        encoded = base64.b64encode(drawio_xml.encode("utf-8")).decode("utf-8")
         data_url = f"data:application/vnd.jgraph.mxfile+xml;base64,{encoded}"
 
         return {
@@ -772,13 +792,13 @@ class DiagramService:
     def _compress_drawio(self, xml_str: str) -> str:
         """Compress XML for Draw.io format."""
         # Draw.io uses URL-safe base64 encoding of deflate-compressed XML
-        compressed = zlib.compress(xml_str.encode('utf-8'), 9)
-        encoded = base64.b64encode(compressed).decode('utf-8')
-        return urllib.parse.quote(encoded, safe='')
+        compressed = zlib.compress(xml_str.encode("utf-8"), 9)
+        encoded = base64.b64encode(compressed).decode("utf-8")
+        return urllib.parse.quote(encoded, safe="")
 
     def _create_drawio_edit_url(self, xml: str) -> str:
         """Create URL to edit diagram in Draw.io."""
-        encoded = base64.b64encode(xml.encode('utf-8')).decode('utf-8')
+        encoded = base64.b64encode(xml.encode("utf-8")).decode("utf-8")
         return f"https://app.diagrams.net/?data={urllib.parse.quote(encoded)}"
 
     # =========================================================================
@@ -805,7 +825,9 @@ class DiagramService:
             "edges": connections,
         }
 
-        if format_preference == "drawio" or (format_preference == "auto" and len(components) > 10):
+        if format_preference == "drawio" or (
+            format_preference == "auto" and len(components) > 10
+        ):
             return self.create_drawio_diagram(data, config)
         elif format_preference == "graphviz":
             return self.create_graphviz_diagram("digraph", data, config)
@@ -827,35 +849,45 @@ class DiagramService:
 
         # Add processes (circles)
         for p in processes:
-            nodes.append({
-                "id": p.get("id"),
-                "label": p.get("label"),
-                "shape": "circle",
-                "fillColor": "#3B82F6",
-            })
+            nodes.append(
+                {
+                    "id": p.get("id"),
+                    "label": p.get("label"),
+                    "shape": "circle",
+                    "fillColor": "#3B82F6",
+                }
+            )
 
         # Add data stores (rectangles with open sides)
         for ds in data_stores:
-            nodes.append({
-                "id": ds.get("id"),
-                "label": ds.get("label"),
-                "shape": "cylinder",
-                "fillColor": "#10B981",
-            })
+            nodes.append(
+                {
+                    "id": ds.get("id"),
+                    "label": ds.get("label"),
+                    "shape": "cylinder",
+                    "fillColor": "#10B981",
+                }
+            )
 
         # Add external entities (rectangles)
         for ee in external_entities:
-            nodes.append({
-                "id": ee.get("id"),
-                "label": ee.get("label"),
-                "shape": "rectangle",
-                "fillColor": "#F59E0B",
-            })
+            nodes.append(
+                {
+                    "id": ee.get("id"),
+                    "label": ee.get("label"),
+                    "shape": "rectangle",
+                    "fillColor": "#F59E0B",
+                }
+            )
 
-        return self.create_mermaid_diagram("flowchart", {
-            "nodes": nodes,
-            "edges": flows,
-        }, config)
+        return self.create_mermaid_diagram(
+            "flowchart",
+            {
+                "nodes": nodes,
+                "edges": flows,
+            },
+            config,
+        )
 
 
 # Singleton instance

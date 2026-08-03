@@ -4,27 +4,27 @@ Chat service for handling chat sessions and messages.
 
 import time
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, and_
-from sqlalchemy.orm import selectinload, noload
-from loguru import logger
 
-from app.models.chat import ChatSession, ChatMessage
-from app.models.user import User
+from loguru import logger
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import noload, selectinload
+
+from app.core.config import settings
+from app.models.chat import ChatMessage, ChatSession
+from app.schemas.memory import MemorySearchRequest
+from app.services.context_manager import ContextManager
 from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.vector_store import vector_store_service
 from app.services.memory_service import MemoryService
 from app.services.query_processor import QueryProcessor
-from app.services.context_manager import ContextManager
-from app.schemas.memory import MemorySearchRequest, MemoryCreate
-from app.core.config import settings
+from app.services.vector_store import vector_store_service
 
 
 class ChatService:
     """Service for managing chat sessions and messages."""
-    
+
     def __init__(self):
         self.llm_service = LLMService()
         self.vector_store = vector_store_service
@@ -32,13 +32,13 @@ class ChatService:
         self.query_processor = QueryProcessor()
         self.context_manager = ContextManager()
         self._vector_store_initialized = False
-    
+
     async def _ensure_vector_store_initialized(self):
         """Ensure vector store is initialized."""
         if not self._vector_store_initialized:
             await self.vector_store.initialize(background=True)
             self._vector_store_initialized = True
-    
+
     async def create_session(
         self,
         user_id: UUID,
@@ -48,12 +48,12 @@ class ChatService:
     ) -> ChatSession:
         """
         Create a new chat session for a user.
-        
+
         Args:
             user_id: User ID
             title: Optional session title
             db: Database session
-            
+
         Returns:
             Created ChatSession object
         """
@@ -62,11 +62,11 @@ class ChatService:
             title=title or f"Chat {datetime.now().strftime('%Y-%m-%d %H:%M')}",
             extra_metadata=extra_metadata,
         )
-        
+
         db.add(session)
         await db.commit()
         await db.refresh(session)
-        
+
         # Re-query the session with noload to prevent loading messages
         # This ensures messages relationship is not loaded
         result = await db.execute(
@@ -75,54 +75,47 @@ class ChatService:
             .where(ChatSession.id == session.id)
         )
         session = result.scalar_one()
-        
-        logger.info(f"Created chat session {session.id} for user {user_id} with title '{session.title}'")
+
+        logger.info(
+            f"Created chat session {session.id} for user {user_id} with title '{session.title}'"
+        )
         return session
-    
+
     async def get_session(
-        self,
-        session_id: UUID,
-        user_id: UUID,
-        db: AsyncSession
+        self, session_id: UUID, user_id: UUID, db: AsyncSession
     ) -> Optional[ChatSession]:
         """
         Get a chat session by ID, ensuring it belongs to the user.
-        
+
         Args:
             session_id: Chat session ID
             user_id: User ID to verify ownership
             db: Database session
-            
+
         Returns:
             ChatSession object if found and belongs to user, None otherwise
         """
         result = await db.execute(
             select(ChatSession).where(
-                and_(
-                    ChatSession.id == session_id,
-                    ChatSession.user_id == user_id
-                )
+                and_(ChatSession.id == session_id, ChatSession.user_id == user_id)
             )
         )
         return result.scalar_one_or_none()
-    
+
     async def get_session_with_messages(
-        self,
-        session_id: UUID,
-        user_id: UUID,
-        db: AsyncSession
+        self, session_id: UUID, user_id: UUID, db: AsyncSession
     ) -> Optional[ChatSession]:
         """
         Get a chat session with its messages, ensuring it belongs to the user.
-        
+
         Args:
             session_id: Chat session ID
             user_id: User ID to verify ownership
             db: Database session
-            
+
         Returns:
             ChatSession object with messages loaded, None if not found or doesn't belong to user
-            
+
         Note:
             Messages are sorted by creation time
         """
@@ -133,7 +126,7 @@ class ChatService:
                 and_(
                     ChatSession.id == session_id,
                     ChatSession.user_id == user_id,
-                    ChatSession.is_active == True
+                    ChatSession.is_active.is_(True),
                 )
             )
         )
@@ -142,92 +135,90 @@ class ChatService:
         if session and session.messages:
             # Sort messages by creation time
             session.messages.sort(key=lambda m: m.created_at)
-        
+
         return session
-    
+
     async def get_user_sessions(
-        self,
-        user_id: UUID,
-        db: AsyncSession,
-        skip: int = 0,
-        limit: int = 50
+        self, user_id: UUID, db: AsyncSession, skip: int = 0, limit: int = 50
     ) -> tuple[List[ChatSession], int]:
         """
         Get paginated chat sessions for a user with total count.
-        
+
         Args:
             user_id: User ID
             db: Database session
             skip: Number of records to skip
             limit: Maximum number of records to return
-            
+
         Returns:
             Tuple of (sessions list, total count)
         """
         from sqlalchemy import func
-        
+
         # Base query for user sessions - only active sessions
         base_query = select(ChatSession).where(
-            and_(
-                ChatSession.user_id == user_id,
-                ChatSession.is_active == True
-            )
+            and_(ChatSession.user_id == user_id, ChatSession.is_active.is_(True))
         )
-        
+
         # Get total count
         count_query = select(func.count()).select_from(base_query.subquery())
         total_result = await db.execute(count_query)
         total = total_result.scalar() or 0
-        
+
         # Get paginated results
         # Use noload for messages to prevent lazy loading (messages not needed in list view)
         # Order by last_message_at (most recent activity), then by created_at (newest first) as fallback
         # Use COALESCE to handle NULL last_message_at values
-        from sqlalchemy import desc, func as sql_func
-        query = base_query.options(noload(ChatSession.messages)).order_by(
-            desc(sql_func.coalesce(ChatSession.last_message_at, ChatSession.created_at)),
-            desc(ChatSession.created_at)
-        ).offset(skip).limit(limit)
+        from sqlalchemy import desc
+        from sqlalchemy import func as sql_func
+
+        query = (
+            base_query.options(noload(ChatSession.messages))
+            .order_by(
+                desc(
+                    sql_func.coalesce(
+                        ChatSession.last_message_at, ChatSession.created_at
+                    )
+                ),
+                desc(ChatSession.created_at),
+            )
+            .offset(skip)
+            .limit(limit)
+        )
         result = await db.execute(query)
         sessions = result.scalars().all()
-        
-        logger.debug(f"Retrieved {len(sessions)} sessions for user {user_id} (skip={skip}, limit={limit}, total={total})")
-        
+
+        logger.debug(
+            f"Retrieved {len(sessions)} sessions for user {user_id} (skip={skip}, limit={limit}, total={total})"
+        )
+
         return sessions, total
-    
+
     async def create_message(
-        self,
-        session_id: UUID,
-        content: str,
-        role: str,
-        db: AsyncSession,
-        **kwargs
+        self, session_id: UUID, content: str, role: str, db: AsyncSession, **kwargs
     ) -> ChatMessage:
         """
         Create a new chat message.
-        
+
         Args:
             session_id: Chat session ID
             content: Message content
             role: Message role ('user' or 'assistant')
             db: Database session
             **kwargs: Additional message fields (model_used, response_time, source_documents, etc.)
-            
+
         Returns:
             Created ChatMessage object
-            
+
         Note:
             Automatically updates the session's last_message_at timestamp
         """
         message = ChatMessage(
-            session_id=session_id,
-            content=content,
-            role=role,
-            **kwargs
+            session_id=session_id, content=content, role=role, **kwargs
         )
-        
+
         db.add(message)
-        
+
         # Update session's last_message_at
         session_result = await db.execute(
             select(ChatSession).where(ChatSession.id == session_id)
@@ -235,14 +226,16 @@ class ChatService:
         session = session_result.scalar_one_or_none()
         if session:
             session.last_message_at = datetime.utcnow()
-        
+
         await db.commit()
         await db.refresh(message)
-        
-        logger.debug(f"Created {role} message in session {session_id}, updated last_message_at")
-        
+
+        logger.debug(
+            f"Created {role} message in session {session_id}, updated last_message_at"
+        )
+
         return message
-    
+
     async def generate_response(
         self,
         session_id: UUID,
@@ -271,26 +264,21 @@ class ChatService:
 
         Returns:
             ChatMessage object containing the AI response with metadata
-            
+
         Raises:
             Exception: If response generation fails
         """
         start_time = time.time()
-        
+
         try:
             # Create user message first
             user_message = await self.create_message(
-                session_id=session_id,
-                content=query,
-                role="user",
-                db=db
+                session_id=session_id, content=query, role="user", db=db
             )
-            
+
             # Get conversation history
             session = await self.get_session_with_messages(
-                session_id=session_id,
-                user_id=user_id,
-                db=db
+                session_id=session_id, user_id=user_id, db=db
             )
 
             # Apply per-session LLM overrides (stored in session.extra_metadata)
@@ -310,11 +298,17 @@ class ChatService:
                     # Merge, preferring session overrides when present.
                     merged_task_models = dict(effective_user_settings.task_models or {})
                     if isinstance(llm_task_models, dict):
-                        merged_task_models.update({k: v for k, v in llm_task_models.items() if v})
+                        merged_task_models.update(
+                            {k: v for k, v in llm_task_models.items() if v}
+                        )
 
-                    merged_task_providers = dict(effective_user_settings.task_providers or {})
+                    merged_task_providers = dict(
+                        effective_user_settings.task_providers or {}
+                    )
                     if isinstance(llm_task_providers, dict):
-                        merged_task_providers.update({k: v for k, v in llm_task_providers.items() if v})
+                        merged_task_providers.update(
+                            {k: v for k, v in llm_task_providers.items() if v}
+                        )
 
                     effective_user_settings = UserLLMSettings(
                         provider=(llm_provider or effective_user_settings.provider),
@@ -328,14 +322,27 @@ class ChatService:
                     )
             except Exception as e:
                 logger.warning(f"Failed to apply session LLM overrides: {e}")
-            
+
             # Resolve memory preferences once; they are used for retrieval and auto-extraction policy.
-            preferences = await self.memory_service.get_user_preferences(user_id=user_id, db=db)
+            preferences = await self.memory_service.get_user_preferences(
+                user_id=user_id, db=db
+            )
 
             # Get relevant memories for context
-            memory_limit = max(1, min(int(getattr(preferences, "max_memories_per_session", 10) or 10), 50))
-            memory_min_importance = float(getattr(preferences, "memory_importance_threshold", 0.3) or 0.3)
-            memory_session_filter = None if bool(getattr(preferences, "allow_cross_session_memory", True)) else session_id
+            memory_limit = max(
+                1,
+                min(
+                    int(getattr(preferences, "max_memories_per_session", 10) or 10), 50
+                ),
+            )
+            memory_min_importance = float(
+                getattr(preferences, "memory_importance_threshold", 0.3) or 0.3
+            )
+            memory_session_filter = (
+                None
+                if bool(getattr(preferences, "allow_cross_session_memory", True))
+                else session_id
+            )
             relevant_memories = await self.memory_service.search_memories(
                 user_id=user_id,
                 search_request=MemorySearchRequest(
@@ -344,23 +351,23 @@ class ChatService:
                     min_importance=memory_min_importance,
                     session_id=memory_session_filter,
                 ),
-                db=db
+                db=db,
             )
-            
+
             # Process query
             processed_query = self.query_processor.process_query(
                 query,
                 expand=settings.RAG_QUERY_EXPANSION_ENABLED,
                 rewrite=True,
-                normalize=True
+                normalize=True,
             )
-            
+
             # Use processed query for search
             search_query = processed_query.get("processed", query)
-            
+
             # Ensure vector store is initialized
             await self._ensure_vector_store_initialized()
-            
+
             # Generate multi-queries if enabled for better recall
             all_search_results = []
             retrieval_trace_payload: dict[str, Any] = {
@@ -373,19 +380,20 @@ class ChatService:
             }
             if settings.RAG_QUERY_EXPANSION_ENABLED:
                 try:
-                    query_variations = await self.query_processor.generate_multi_queries(
-                        search_query,
-                        llm_service=self.llm_service,
-                        num_queries=3,
-                        user_settings=effective_user_settings,
+                    query_variations = (
+                        await self.query_processor.generate_multi_queries(
+                            search_query,
+                            llm_service=self.llm_service,
+                            num_queries=3,
+                            user_settings=effective_user_settings,
+                        )
                     )
-                    
+
                     # Search with all variations
                     traces: list[dict[str, Any]] = []
                     for q_var in query_variations:
                         results, one_trace = await self.vector_store.search_with_trace(
-                            query=q_var,
-                            limit=settings.MAX_SEARCH_RESULTS * 2
+                            query=q_var, limit=settings.MAX_SEARCH_RESULTS * 2
                         )
                         traces.append({"query": q_var, "trace": one_trace})
                         all_search_results.extend(results)
@@ -394,7 +402,7 @@ class ChatService:
                         "queries": query_variations,
                         "traces": traces,
                     }
-                    
+
                     # Deduplicate by ID and merge scores
                     seen_ids = {}
                     for result in all_search_results:
@@ -402,38 +410,50 @@ class ChatService:
                         if result_id in seen_ids:
                             # Merge scores (take max)
                             seen_ids[result_id]["score"] = max(
-                                seen_ids[result_id]["score"],
-                                result.get("score", 0.0)
+                                seen_ids[result_id]["score"], result.get("score", 0.0)
                             )
                         else:
                             seen_ids[result_id] = result
-                    
+
                     search_results = list(seen_ids.values())
                     # Sort by score
-                    search_results = sorted(search_results, key=lambda x: x.get("score", 0.0), reverse=True)
-                except Exception as e:
-                    logger.warning(f"Multi-query generation failed: {e}, using single query")
-                    search_results, one_trace = await self.vector_store.search_with_trace(
-                        query=search_query,
-                        limit=settings.MAX_SEARCH_RESULTS * 2
+                    search_results = sorted(
+                        search_results, key=lambda x: x.get("score", 0.0), reverse=True
                     )
-                    retrieval_trace_payload["single_query"] = {"query": search_query, "trace": one_trace}
+                except Exception as e:
+                    logger.warning(
+                        f"Multi-query generation failed: {e}, using single query"
+                    )
+                    (
+                        search_results,
+                        one_trace,
+                    ) = await self.vector_store.search_with_trace(
+                        query=search_query, limit=settings.MAX_SEARCH_RESULTS * 2
+                    )
+                    retrieval_trace_payload["single_query"] = {
+                        "query": search_query,
+                        "trace": one_trace,
+                    }
             else:
                 # Single query search
                 search_results, one_trace = await self.vector_store.search_with_trace(
                     query=search_query,
-                    limit=settings.MAX_SEARCH_RESULTS * 2  # Get more for filtering/reranking
+                    limit=settings.MAX_SEARCH_RESULTS
+                    * 2,  # Get more for filtering/reranking
                 )
-                retrieval_trace_payload["single_query"] = {"query": search_query, "trace": one_trace}
-            
+                retrieval_trace_payload["single_query"] = {
+                    "query": search_query,
+                    "trace": one_trace,
+                }
+
             # Filter by relevance
             search_results = self.context_manager.filter_by_relevance(search_results)
-            
+
             # Select most relevant parts
             search_results = self.context_manager.select_relevant_parts(
                 search_results,
                 query=search_query,
-                max_results=settings.MAX_SEARCH_RESULTS
+                max_results=settings.MAX_SEARCH_RESULTS,
             )
 
             retrieval_trace_payload["selected_results"] = [
@@ -443,17 +463,17 @@ class ChatService:
                     "document_id": (r.get("metadata") or {}).get("document_id"),
                     "chunk_id": (r.get("metadata") or {}).get("chunk_id"),
                     "title": (r.get("metadata") or {}).get("title"),
-                    "source": (r.get("metadata") or {}).get("source") or (r.get("metadata") or {}).get("source_type"),
+                    "source": (r.get("metadata") or {}).get("source")
+                    or (r.get("metadata") or {}).get("source_type"),
                 }
-                for r in (search_results or [])[:settings.MAX_SEARCH_RESULTS]
+                for r in (search_results or [])[: settings.MAX_SEARCH_RESULTS]
             ]
-            
+
             # Build context with token management
             context = await self.context_manager.compress_context(
-                search_results,
-                llm_service=self.llm_service
+                search_results, llm_service=self.llm_service
             )
-            
+
             # Get context metrics for logging
             context_metrics = self.context_manager.get_context_metrics(search_results)
             retrieval_trace_payload["context_metrics"] = context_metrics
@@ -462,7 +482,10 @@ class ChatService:
             kg_context = ""
             if settings.RAG_KG_CONTEXT_ENABLED:
                 try:
-                    from app.services.knowledge_graph_service import KnowledgeGraphService
+                    from app.services.knowledge_graph_service import (
+                        KnowledgeGraphService,
+                    )
+
                     kg_service = KnowledgeGraphService()
 
                     # Prefer a grounded "context pack" from the retrieved chunks/docs.
@@ -477,8 +500,12 @@ class ChatService:
                         # Keep the trace compact: it's JSON, but can grow quickly.
                         retrieval_trace_payload["kg_context_pack"] = {
                             "stats": kg_pack.get("stats"),
-                            "entities": (kg_pack.get("entities") or [])[: settings.RAG_KG_MAX_ENTITIES],
-                            "relationships": (kg_pack.get("relationships") or [])[: settings.RAG_KG_MAX_RELATIONSHIPS],
+                            "entities": (kg_pack.get("entities") or [])[
+                                : settings.RAG_KG_MAX_ENTITIES
+                            ],
+                            "relationships": (kg_pack.get("relationships") or [])[
+                                : settings.RAG_KG_MAX_RELATIONSHIPS
+                            ],
                             # Useful for debugging / UI inspection; keep bounded.
                             "kg_context": str(kg_context)[:8000],
                         }
@@ -486,7 +513,11 @@ class ChatService:
                     # If the pack couldn't be built (e.g., no mentions in retrieved scope), fall back.
                     if not kg_context:
                         # Extract potential entity names from query and search results
-                        entity_names = self.context_manager.extract_entity_names_from_results(search_results)
+                        entity_names = (
+                            self.context_manager.extract_entity_names_from_results(
+                                search_results
+                            )
+                        )
 
                         # Also add key terms from the processed query
                         key_terms = processed_query.get("key_terms", [])
@@ -499,7 +530,7 @@ class ChatService:
                             entities = await kg_service.search_entities_by_names(
                                 names=entity_names[:20],  # Limit search candidates
                                 db=db,
-                                limit=settings.RAG_KG_MAX_ENTITIES
+                                limit=settings.RAG_KG_MAX_ENTITIES,
                             )
 
                             if entities:
@@ -508,26 +539,32 @@ class ChatService:
                                 kg_data = await kg_service.get_entity_context(
                                     entity_ids=entity_ids,
                                     db=db,
-                                    max_relationships=settings.RAG_KG_MAX_RELATIONSHIPS
+                                    max_relationships=settings.RAG_KG_MAX_RELATIONSHIPS,
                                 )
 
                                 # Build KG context string
                                 kg_context = self.context_manager.build_kg_context(
                                     entities=kg_data["entities"],
-                                    relationships=kg_data["relationships"]
+                                    relationships=kg_data["relationships"],
                                 )
-                                logger.debug(f"KG context injected: {len(kg_data['entities'])} entities, {len(kg_data['relationships'])} relationships")
+                                logger.debug(
+                                    f"KG context injected: {len(kg_data['entities'])} entities, {len(kg_data['relationships'])} relationships"
+                                )
                                 retrieval_trace_payload["kg_context_fallback"] = {
                                     "entity_names": entity_names[:20],
                                     "entities": len(kg_data.get("entities") or []),
-                                    "relationships": len(kg_data.get("relationships") or []),
+                                    "relationships": len(
+                                        kg_data.get("relationships") or []
+                                    ),
                                 }
                 except Exception as e:
                     logger.warning(f"KG context injection failed: {e}")
                     # Continue without KG context - don't break the chat flow
 
             memory_context = self._build_memory_context(relevant_memories)
-            conversation_history = self._build_conversation_history(session.messages[:-1])  # Exclude current user message
+            conversation_history = self._build_conversation_history(
+                session.messages[:-1]
+            )  # Exclude current user message
 
             # Generate response using LLM with memory and KG context
             response_content = await self.llm_service.generate_response(
@@ -541,9 +578,9 @@ class ChatService:
                 user_id=user_id,
                 db=db,
             )
-            
+
             response_time = time.time() - start_time
-            
+
             # Log RAG performance metrics
             logger.info(
                 f"RAG metrics for session {session_id}: "
@@ -554,23 +591,34 @@ class ChatService:
                 f"intent={processed_query.get('intent')}, "
                 f"response_time={response_time:.2f}s"
             )
-            
+
             # Create assistant message
             # search_results is a list of dicts with "metadata" key (dict), not objects
-            from app.services.storage_service import storage_service
+            from sqlalchemy import select as sql_select
+
             from app.models.document import Document
             from app.models.retrieval_trace import RetrievalTrace
-            from sqlalchemy import select as sql_select
+            from app.services.storage_service import storage_service
 
             settings_snapshot = {
                 "provider": getattr(self.vector_store, "provider", None),
-                "hybrid_enabled": bool(getattr(settings, "RAG_HYBRID_SEARCH_ENABLED", False)),
-                "hybrid_alpha": float(getattr(settings, "RAG_HYBRID_SEARCH_ALPHA", 0.0)),
-                "rerank_enabled": bool(getattr(settings, "RAG_RERANKING_ENABLED", False)),
+                "hybrid_enabled": bool(
+                    getattr(settings, "RAG_HYBRID_SEARCH_ENABLED", False)
+                ),
+                "hybrid_alpha": float(
+                    getattr(settings, "RAG_HYBRID_SEARCH_ALPHA", 0.0)
+                ),
+                "rerank_enabled": bool(
+                    getattr(settings, "RAG_RERANKING_ENABLED", False)
+                ),
                 "rerank_model": getattr(settings, "RAG_RERANKING_MODEL", None),
                 "mmr_enabled": bool(getattr(settings, "RAG_MMR_ENABLED", False)),
-                "dedup_enabled": bool(getattr(settings, "RAG_DEDUPLICATION_ENABLED", False)),
-                "min_relevance": float(getattr(settings, "RAG_MIN_RELEVANCE_SCORE", 0.0)),
+                "dedup_enabled": bool(
+                    getattr(settings, "RAG_DEDUPLICATION_ENABLED", False)
+                ),
+                "min_relevance": float(
+                    getattr(settings, "RAG_MIN_RELEVANCE_SCORE", 0.0)
+                ),
                 "max_search_results": int(getattr(settings, "MAX_SEARCH_RESULTS", 0)),
             }
             retrieval_trace = RetrievalTrace(
@@ -617,24 +665,32 @@ class ChatService:
                         doc_uuid = UUID(doc_id) if isinstance(doc_id, str) else doc_id
                         document = documents_map.get(doc_uuid)
                         if document and document.file_path:
-                            download_url = await storage_service.get_presigned_download_url(document.file_path)
+                            download_url = (
+                                await storage_service.get_presigned_download_url(
+                                    document.file_path
+                                )
+                            )
                     except Exception as e:
-                        logger.warning(f"Failed to generate download URL for document {doc_id}: {e}")
+                        logger.warning(
+                            f"Failed to generate download URL for document {doc_id}: {e}"
+                        )
 
                 # Get content snippet for preview (first 200 chars)
                 content = doc.get("content") or doc.get("page_content", "")
                 snippet = content[:200].strip() if content else None
 
-                source_docs.append({
-                    "id": doc_id,
-                    "title": doc_metadata.get("title", "Unknown"),
-                    "score": doc_metadata.get("score", doc.get("score", 0.0)),
-                    "source": doc_metadata.get("source", "Unknown"),
-                    "download_url": download_url,
-                    "chunk_id": doc_metadata.get("chunk_id"),
-                    "chunk_index": doc_metadata.get("chunk_index"),
-                    "snippet": snippet,
-                })
+                source_docs.append(
+                    {
+                        "id": doc_id,
+                        "title": doc_metadata.get("title", "Unknown"),
+                        "score": doc_metadata.get("score", doc.get("score", 0.0)),
+                        "source": doc_metadata.get("source", "Unknown"),
+                        "download_url": download_url,
+                        "chunk_id": doc_metadata.get("chunk_id"),
+                        "chunk_index": doc_metadata.get("chunk_index"),
+                        "snippet": snippet,
+                    }
+                )
 
             # Heuristic groundedness score (0..1): combines retrieval confidence with context coverage.
             try:
@@ -652,21 +708,22 @@ class ChatService:
                 groundedness_score = max(0.0, min(1.0, groundedness_score))
             except Exception:
                 groundedness_score = None
-            
+
             assistant_message = await self.create_message(
                 session_id=session_id,
                 content=response_content,
                 role="assistant",
-                model_used=effective_user_settings.get_model_for_task("chat") or self.llm_service.get_active_model(),
+                model_used=effective_user_settings.get_model_for_task("chat")
+                or self.llm_service.get_active_model(),
                 response_time=response_time,
                 source_documents=source_docs,
                 context_used=context,
                 search_query=query,
                 groundedness_score=groundedness_score,
                 retrieval_trace_id=retrieval_trace.id,
-                db=db
+                db=db,
             )
-            
+
             # Apply configurable automatic memory extraction policy.
             await self._apply_auto_memory_extraction_policy(
                 user_id=user_id,
@@ -676,7 +733,7 @@ class ChatService:
                 preferences=preferences,
                 db=db,
             )
-            
+
             # Trigger async title generation if this is the first assistant message
             # Check if session has default title (starts with "Chat ") or is None
             session_result = await db.execute(
@@ -686,18 +743,23 @@ class ChatService:
             if session and (not session.title or session.title.startswith("Chat ")):
                 try:
                     from app.tasks.chat_tasks import generate_chat_title
+
                     # Trigger async title generation
                     generate_chat_title.delay(str(session_id))
                     logger.info(f"Triggered title generation for session {session_id}")
                 except Exception as e:
-                    logger.warning(f"Failed to trigger title generation for session {session_id}: {e}")
-            
-            logger.info(f"Generated response for session {session_id} in {response_time:.2f}s")
+                    logger.warning(
+                        f"Failed to trigger title generation for session {session_id}: {e}"
+                    )
+
+            logger.info(
+                f"Generated response for session {session_id} in {response_time:.2f}s"
+            )
             return assistant_message
-            
+
         except Exception as e:
             logger.error(f"Error generating response: {e}")
-            
+
             # Create error message
             error_message = await self.create_message(
                 session_id=session_id,
@@ -706,74 +768,75 @@ class ChatService:
                 message_type="error",
                 processing_error=str(e),
                 response_time=time.time() - start_time,
-                db=db
+                db=db,
             )
-            
+
             return error_message
-    
+
     def _build_context(self, search_results: List[Any]) -> str:
         """
         Build context string from vector search results.
-        
+
         Args:
             search_results: List of search result dictionaries from vector store
-            
+
         Returns:
             Formatted context string with document excerpts and metadata
         """
         if not search_results:
             return ""
-        
+
         context_parts = []
         for i, doc in enumerate(search_results, 1):
             # search_results are dicts with "content" or "page_content" key and "metadata" key (dict)
-            content = (doc.get("content") or doc.get("page_content", ""))[:settings.CHUNK_SIZE]
+            content = (doc.get("content") or doc.get("page_content", ""))[
+                : settings.CHUNK_SIZE
+            ]
             metadata = doc.get("metadata", {})
             source = metadata.get("source", "Unknown")
             title = metadata.get("title", "Unknown Document")
-            
+
             context_parts.append(f"Source {i} ({source} - {title}):\n{content}")
-        
+
         return "\n\n".join(context_parts)
-    
+
     def _build_conversation_history(self, messages: List[ChatMessage]) -> str:
         """
         Build conversation history string from chat messages.
-        
+
         Args:
             messages: List of ChatMessage objects
-            
+
         Returns:
             Formatted conversation history string
         """
         if not messages:
             return ""
-        
+
         # Get last few messages to fit within context window
         max_messages = 10
-        recent_messages = messages[-max_messages:] if len(messages) > max_messages else messages
-        
+        recent_messages = (
+            messages[-max_messages:] if len(messages) > max_messages else messages
+        )
+
         history_parts = []
         for message in recent_messages:
             role = "Human" if message.role == "user" else "Assistant"
             history_parts.append(f"{role}: {message.content}")
-        
+
         return "\n".join(history_parts)
-    
+
     async def delete_session(
-        self,
-        session_id: UUID,
-        user_id: UUID,
-        db: AsyncSession
+        self, session_id: UUID, user_id: UUID, db: AsyncSession
     ) -> bool:
         """
         Soft delete a chat session (set is_active to False), ensuring it belongs to the user.
-        
+
         Args:
             session_id: Chat session ID
             user_id: User ID to verify ownership
             db: Database session
-            
+
         Returns:
             True if session was deleted, False if not found or doesn't belong to user
         """
@@ -781,53 +844,48 @@ class ChatService:
             # Get session without is_active filter (so we can delete already-deleted sessions if needed)
             result = await db.execute(
                 select(ChatSession).where(
-                    and_(
-                        ChatSession.id == session_id,
-                        ChatSession.user_id == user_id
-                    )
+                    and_(ChatSession.id == session_id, ChatSession.user_id == user_id)
                 )
             )
             session = result.scalar_one_or_none()
-            
+
             if not session:
-                logger.warning(f"Session {session_id} not found or doesn't belong to user {user_id}")
+                logger.warning(
+                    f"Session {session_id} not found or doesn't belong to user {user_id}"
+                )
                 return False
-            
+
             # Check if already deleted
             if not session.is_active:
                 logger.info(f"Session {session_id} is already deleted")
                 return True  # Consider it successful if already deleted
-            
+
             # Soft delete: set is_active to False
             session.is_active = False
             session.updated_at = datetime.utcnow()
             await db.commit()
             await db.refresh(session)
-            
+
             logger.info(f"Soft deleted chat session {session_id} for user {user_id}")
             return True
-            
+
         except Exception as e:
             logger.error(f"Error deleting session {session_id}: {e}")
             await db.rollback()
             raise
-    
+
     async def update_message_feedback(
-        self,
-        message_id: UUID,
-        rating: int,
-        feedback: Optional[str],
-        db: AsyncSession
+        self, message_id: UUID, rating: int, feedback: Optional[str], db: AsyncSession
     ) -> bool:
         """
         Update feedback for a chat message.
-        
+
         Args:
             message_id: Chat message ID
             rating: User rating (typically 1-5)
             feedback: Optional text feedback
             db: Database session
-            
+
         Returns:
             True if feedback was updated, False if message not found
         """
@@ -835,71 +893,71 @@ class ChatService:
             select(ChatMessage).where(ChatMessage.id == message_id)
         )
         message = result.scalar_one_or_none()
-        
+
         if not message:
             return False
-        
+
         message.user_rating = rating
         message.user_feedback = feedback
         message.updated_at = datetime.utcnow()
-        
+
         await db.commit()
-        
+
         logger.info(f"Updated feedback for message {message_id}: rating={rating}")
         return True
-    
+
     def _build_memory_context(self, memories: List[Any]) -> str:
         """
         Build memory context string from relevant memories.
-        
+
         Args:
             memories: List of memory response objects
-            
+
         Returns:
             Formatted memory context string
         """
         if not memories:
             return ""
-        
+
         context_parts = ["Relevant memories from previous conversations:"]
         for i, memory in enumerate(memories, 1):
             memory_type = memory.memory_type.upper()
             context_parts.append(f"{i}. [{memory_type}] {memory.content}")
-        
+
         return "\n".join(context_parts)
-    
+
     async def _extract_memories_from_turn(
         self,
         user_id: UUID,
         session_id: UUID,
         user_message: ChatMessage,
         assistant_message: ChatMessage,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> None:
         """Extract memories from a conversation turn."""
         try:
             # Combine user and assistant messages for memory extraction
-            conversation_text = f"User: {user_message.content}\nAssistant: {assistant_message.content}"
-            
+            conversation_text = (
+                f"User: {user_message.content}\nAssistant: {assistant_message.content}"
+            )
+
             # Use LLM to extract memories
             extracted_memories = await self.memory_service._extract_memories_with_llm(
                 conversation_text=conversation_text,
                 user_id=user_id,
-                session_id=session_id
+                session_id=session_id,
             )
-            
+
             # Create memories
             for memory_data in extracted_memories:
                 memory_data.source_message_id = user_message.id
                 await self.memory_service.create_memory(
-                    user_id=user_id,
-                    memory_data=memory_data,
-                    db=db
+                    user_id=user_id, memory_data=memory_data, db=db
                 )
-            
+
             # Note: Memory interactions are recorded when memories are retrieved in generate_response
             # This function only extracts new memories from the conversation
-            
+
         except Exception as e:
             logger.error(f"Error extracting memories from turn: {e}")
             # Don't raise - memory extraction failure shouldn't break the chat
@@ -908,13 +966,23 @@ class ChatService:
         enabled = bool(getattr(preferences, "auto_memory_build_enabled", True))
         if not enabled:
             return "off"
-        mode = str(getattr(preferences, "auto_memory_build_mode", "per_turn") or "per_turn").strip().lower()
+        mode = (
+            str(
+                getattr(preferences, "auto_memory_build_mode", "per_turn") or "per_turn"
+            )
+            .strip()
+            .lower()
+        )
         if mode not in {"off", "manual", "per_turn", "periodic"}:
             mode = "per_turn"
         return mode
 
-    def _read_memory_build_state(self, session: ChatSession) -> tuple[dict[str, Any], dict[str, Any]]:
-        meta = session.extra_metadata if isinstance(session.extra_metadata, dict) else {}
+    def _read_memory_build_state(
+        self, session: ChatSession
+    ) -> tuple[dict[str, Any], dict[str, Any]]:
+        meta = (
+            session.extra_metadata if isinstance(session.extra_metadata, dict) else {}
+        )
         state = meta.get("memory_build_state")
         if not isinstance(state, dict):
             state = {}
@@ -948,8 +1016,12 @@ class ChatService:
             reason = "per_turn"
         else:
             # periodic mode
-            min_turns = max(1, int(getattr(preferences, "auto_memory_build_min_messages", 3) or 3))
-            min_minutes = max(1, int(getattr(preferences, "auto_memory_build_min_minutes", 10) or 10))
+            min_turns = max(
+                1, int(getattr(preferences, "auto_memory_build_min_messages", 3) or 3)
+            )
+            min_minutes = max(
+                1, int(getattr(preferences, "auto_memory_build_min_minutes", 10) or 10)
+            )
             last_iso = state.get("last_extracted_at")
             elapsed_minutes = None
             if isinstance(last_iso, str) and last_iso.strip():
@@ -959,7 +1031,9 @@ class ChatService:
                 except Exception:
                     elapsed_minutes = None
             enough_turns = turns_since >= min_turns
-            enough_time = elapsed_minutes is None or elapsed_minutes >= float(min_minutes)
+            enough_time = elapsed_minutes is None or elapsed_minutes >= float(
+                min_minutes
+            )
             should_extract = bool(enough_turns or enough_time)
             reason = f"periodic(turns={turns_since}/{min_turns}, elapsed_min={elapsed_minutes})"
 
@@ -975,17 +1049,21 @@ class ChatService:
                         db=db,
                     )
                 else:
-                    created = await self.memory_service.extract_memories_from_conversation(
-                        session_id=session.id,
-                        user_id=user_id,
-                        db=db,
+                    created = (
+                        await self.memory_service.extract_memories_from_conversation(
+                            session_id=session.id,
+                            user_id=user_id,
+                            db=db,
+                        )
                     )
                     created_count = len(created or [])
                 state["turns_since_extract"] = 0
                 state["last_extracted_at"] = now.isoformat()
                 state["last_extract_status"] = "ok"
             except Exception as e:
-                logger.warning(f"Auto memory extraction failed for session {session.id}: {e}")
+                logger.warning(
+                    f"Auto memory extraction failed for session {session.id}: {e}"
+                )
                 state["last_extract_status"] = "failed"
                 state["last_extract_error"] = str(e)
         else:

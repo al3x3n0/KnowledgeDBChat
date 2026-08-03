@@ -10,10 +10,10 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 class ExternalAgentCreateRequest(BaseModel):
     name: str = Field(..., min_length=1, max_length=100)
     description: Optional[str] = Field(None, max_length=2000)
-    provider_type: Literal["generic_agent", "compops"] = "generic_agent"
+    provider_type: Literal["generic_agent", "compops", "mlflow"] = "generic_agent"
     endpoint_url: str = Field(..., min_length=1, max_length=2000)
     capabilities: List[str] = Field(..., min_length=1, max_length=100)
-    auth_type: Literal["none", "bearer", "api_key"] = "none"
+    auth_type: Literal["none", "bearer", "api_key", "basic"] = "none"
     secret_id: Optional[UUID] = None
     auth_header_name: str = Field("X-API-Key", min_length=1, max_length=64)
     timeout_seconds: int = Field(30, ge=2, le=120)

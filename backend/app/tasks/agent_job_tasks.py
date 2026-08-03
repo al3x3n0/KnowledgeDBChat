@@ -11,24 +11,36 @@ import asyncio
 import json
 from datetime import datetime, timedelta
 from typing import Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from celery import current_task
 from loguru import logger
+from sqlalchemy import and_, delete, or_, select
+from sqlalchemy.orm import selectinload
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services.agent_execution_lease_service import (
+    ExecutionLeaseLostError,
+    agent_execution_lease_service,
+)
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
-from sqlalchemy import select, and_, or_, delete
-from sqlalchemy.orm import selectinload
 
 
 def _scheduler_state(job: AgentJob) -> dict:
     results = job.results if isinstance(job.results, dict) else {}
-    execution = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
-    state = execution.get("scheduler_state") if isinstance(execution.get("scheduler_state"), dict) else {}
+    execution = (
+        results.get("execution_strategy")
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
+    state = (
+        execution.get("scheduler_state")
+        if isinstance(execution.get("scheduler_state"), dict)
+        else {}
+    )
     return {
         **state,
         "last_run_status": str(state.get("last_run_status") or "").strip() or None,
@@ -38,7 +50,11 @@ def _scheduler_state(job: AgentJob) -> dict:
 
 def _write_scheduler_state(job: AgentJob, state: dict) -> dict:
     results = dict(job.results) if isinstance(job.results, dict) else {}
-    execution = dict(results.get("execution_strategy")) if isinstance(results.get("execution_strategy"), dict) else {}
+    execution = (
+        dict(results.get("execution_strategy"))
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
     execution["scheduler_state"] = state
     results["execution_strategy"] = execution
     job.results = results
@@ -57,7 +73,13 @@ def _mark_scheduler_dispatched(job: AgentJob, *, dispatched_at: datetime) -> Non
     _write_scheduler_state(job, state)
 
 
-def _record_scheduler_outcome(job: AgentJob, *, outcome: str, happened_at: datetime, queue_reason: str | None = None) -> None:
+def _record_scheduler_outcome(
+    job: AgentJob,
+    *,
+    outcome: str,
+    happened_at: datetime,
+    queue_reason: str | None = None,
+) -> None:
     state = _scheduler_state(job)
     state["last_run_status"] = outcome
     state["current_run_started_at"] = None
@@ -75,13 +97,19 @@ def _record_scheduler_outcome(job: AgentJob, *, outcome: str, happened_at: datet
         if str(job.schedule_type or "").strip().lower() in {"recurring", "continuous"}:
             interval_minutes = 30
             try:
-                interval_minutes = int(((job.config or {}).get("interval_minutes") or 30))
+                interval_minutes = int(
+                    ((job.config or {}).get("interval_minutes") or 30)
+                )
             except Exception:
                 interval_minutes = 30
             interval_minutes = max(1, min(interval_minutes, 24 * 60))
-            backoff_seconds = min(interval_minutes * 60 * (2 ** max(0, streak - 1)), 6 * 60 * 60)
+            backoff_seconds = min(
+                interval_minutes * 60 * (2 ** max(0, streak - 1)), 6 * 60 * 60
+            )
             state["backoff_seconds"] = int(backoff_seconds)
-            state["backoff_until"] = (happened_at + timedelta(seconds=backoff_seconds)).isoformat()
+            state["backoff_until"] = (
+                happened_at + timedelta(seconds=backoff_seconds)
+            ).isoformat()
             job.next_run_at = happened_at + timedelta(seconds=backoff_seconds)
     _write_scheduler_state(job, state)
 
@@ -99,6 +127,7 @@ async def _publish_job_progress(
 ):
     """Publish job progress update to Redis for WebSocket subscribers."""
     import redis.asyncio as redis
+
     from app.core.config import settings
 
     try:
@@ -120,7 +149,10 @@ async def _publish_job_progress(
             message["error"] = error
         if isinstance(execution_graph_runtime, dict) and execution_graph_runtime:
             message["execution_graph_runtime"] = execution_graph_runtime
-        if isinstance(scope_observability_runtime, dict) and scope_observability_runtime:
+        if (
+            isinstance(scope_observability_runtime, dict)
+            and scope_observability_runtime
+        ):
             message["scope_observability_runtime"] = scope_observability_runtime
 
         await redis_client.publish(channel, json.dumps(message))
@@ -129,7 +161,12 @@ async def _publish_job_progress(
         logger.warning(f"Failed to publish progress for agent job {job_id}: {e}")
 
 
-async def _execute_agent_job_async(job_id: str, user_id: str):
+async def _execute_agent_job_async(
+    job_id: str,
+    user_id: str,
+    *,
+    lease_owner_id: Optional[str] = None,
+):
     """Async implementation of agent job execution."""
     job_uuid = UUID(job_id)
     session_factory = create_celery_session()
@@ -152,10 +189,70 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
             logger.info(f"Agent job {job_id} was cancelled")
             return
 
+        owner_id = str(
+            lease_owner_id
+            or getattr(getattr(current_task, "request", None), "id", None)
+            or f"worker:{uuid4()}"
+        )
+        lease_ttl = (
+            (job.config or {}).get("execution_lease_ttl_seconds")
+            if isinstance(job.config, dict)
+            else None
+        )
+        lease = await agent_execution_lease_service.acquire(
+            db=db,
+            job_id=job_uuid,
+            owner_id=owner_id,
+            ttl_seconds=lease_ttl,
+        )
+        if lease is None:
+            logger.info(
+                f"Agent job {job_id} already has an active execution lease; "
+                "duplicate delivery skipped"
+            )
+            return {
+                "status": "lease_conflict",
+                "job_id": job_id,
+            }
+        await db.refresh(job)
+
         # Store celery task ID
-        if current_task:
-            job.celery_task_id = current_task.request.id
-            await db.commit()
+        job.celery_task_id = owner_id
+        await db.commit()
+
+        heartbeat_stop = asyncio.Event()
+        lease_lost = asyncio.Event()
+        heartbeat_interval = max(
+            10,
+            agent_execution_lease_service.normalize_ttl(lease_ttl) // 3,
+        )
+
+        async def _heartbeat_execution_lease() -> None:
+            while not heartbeat_stop.is_set():
+                try:
+                    await asyncio.wait_for(
+                        heartbeat_stop.wait(),
+                        timeout=heartbeat_interval,
+                    )
+                    return
+                except asyncio.TimeoutError:
+                    pass
+                heartbeat_session_factory = create_celery_session()
+                async with heartbeat_session_factory() as heartbeat_db:
+                    renewed = await agent_execution_lease_service.renew(
+                        db=heartbeat_db,
+                        lease=lease,
+                        ttl_seconds=lease_ttl,
+                    )
+                if renewed is None:
+                    lease_lost.set()
+                    logger.error(
+                        f"Execution lease heartbeat lost for job {job_id} "
+                        f"at fence {lease.fence}"
+                    )
+                    return
+
+        heartbeat_task = asyncio.create_task(_heartbeat_execution_lease())
 
         await _publish_job_progress(
             job_id=job_id,
@@ -167,9 +264,18 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
         try:
             # Initialize executor
             executor = AutonomousAgentExecutor()
+            executor.execution_lease = lease
 
             # Progress callback that publishes to Redis
             async def progress_callback(progress_data: dict):
+                if lease_lost.is_set():
+                    raise ExecutionLeaseLostError(
+                        f"Execution lease heartbeat lost for job {job_id}"
+                    )
+                await agent_execution_lease_service.assert_owned(
+                    db=db,
+                    lease=lease,
+                )
                 # Check for cancellation
                 await db.refresh(job)
                 if job.status == AgentJobStatus.CANCELLED.value:
@@ -184,12 +290,16 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
                     phase_details=progress_data.get("phase_details"),
                     execution_graph_runtime=(
                         progress_data.get("execution_graph_runtime")
-                        if isinstance(progress_data.get("execution_graph_runtime"), dict)
+                        if isinstance(
+                            progress_data.get("execution_graph_runtime"), dict
+                        )
                         else None
                     ),
                     scope_observability_runtime=(
                         progress_data.get("scope_observability_runtime")
-                        if isinstance(progress_data.get("scope_observability_runtime"), dict)
+                        if isinstance(
+                            progress_data.get("scope_observability_runtime"), dict
+                        )
                         else None
                     ),
                 )
@@ -202,6 +312,7 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
             )
 
             # Publish completion
+            await agent_execution_lease_service.assert_owned(db=db, lease=lease)
             final_status = result.get("status", "completed")
             _record_scheduler_outcome(
                 job,
@@ -221,6 +332,14 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
 
             logger.info(f"Agent job {job_id} completed with status: {final_status}")
 
+        except ExecutionLeaseLostError as e:
+            await db.rollback()
+            logger.error(f"Abandoning stale execution for job {job_id}: {e}")
+            return {
+                "status": "lease_lost",
+                "job_id": job_id,
+                "fence": lease.fence,
+            }
         except Exception as e:
             # Update job as failed
             job.status = AgentJobStatus.FAILED.value
@@ -244,6 +363,20 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
             )
 
             logger.error(f"Agent job {job_id} failed: {e}")
+        finally:
+            heartbeat_stop.set()
+            heartbeat_task.cancel()
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            try:
+                await agent_execution_lease_service.release(db=db, lease=lease)
+            except Exception as release_error:
+                logger.warning(
+                    f"Failed releasing execution lease for job {job_id}: "
+                    f"{release_error}"
+                )
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=120)
@@ -263,10 +396,21 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
     """
     logger.info(f"Starting autonomous agent job execution for {job_id}")
 
+    task_owner_id = str(
+        getattr(getattr(self, "request", None), "id", None)
+        or getattr(getattr(current_task, "request", None), "id", None)
+        or f"worker:{uuid4()}"
+    )
+    execution_coro = _execute_agent_job_async(
+        job_id,
+        user_id,
+        lease_owner_id=task_owner_id,
+    )
     try:
-        asyncio.run(_execute_agent_job_async(job_id, user_id))
+        asyncio.run(execution_coro)
 
     except Exception as e:
+        execution_coro.close()
         logger.exception(f"Agent job task failed for {job_id}")
         error_text = str(e)
 
@@ -278,10 +422,32 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
                     select(AgentJob).where(AgentJob.id == job_uuid)
                 )
                 job = result.scalar_one_or_none()
-                if job and job.status not in (
-                    AgentJobStatus.COMPLETED.value,
-                    AgentJobStatus.FAILED.value,
-                    AgentJobStatus.CANCELLED.value,
+                lease_expired = False
+                if job and job.execution_lease_expires_at is not None:
+                    lease_deadline = job.execution_lease_expires_at
+                    lease_now = (
+                        datetime.now(lease_deadline.tzinfo)
+                        if lease_deadline.tzinfo is not None
+                        else datetime.utcnow()
+                    )
+                    lease_expired = lease_deadline <= lease_now
+                lease_allows_failure_write = bool(
+                    job
+                    and (
+                        not job.execution_lease_owner
+                        or job.execution_lease_owner == task_owner_id
+                        or lease_expired
+                    )
+                )
+                if (
+                    job
+                    and lease_allows_failure_write
+                    and job.status
+                    not in (
+                        AgentJobStatus.COMPLETED.value,
+                        AgentJobStatus.FAILED.value,
+                        AgentJobStatus.CANCELLED.value,
+                    )
                 ):
                     job.status = AgentJobStatus.FAILED.value
                     job.error = f"Task error: {error_text}"
@@ -322,15 +488,18 @@ def process_scheduled_agent_jobs():
 
             # Find jobs that are due
             result = await db.execute(
-                select(AgentJob).where(
+                select(AgentJob)
+                .where(
                     and_(
                         AgentJob.schedule_type.isnot(None),
                         AgentJob.next_run_at <= now,
-                        AgentJob.status.in_([
-                            AgentJobStatus.PENDING.value,
-                            AgentJobStatus.COMPLETED.value,
-                            AgentJobStatus.FAILED.value,
-                        ]),
+                        AgentJob.status.in_(
+                            [
+                                AgentJobStatus.PENDING.value,
+                                AgentJobStatus.COMPLETED.value,
+                                AgentJobStatus.FAILED.value,
+                            ]
+                        ),
                     )
                 )
                 .with_for_update(skip_locked=True)
@@ -357,15 +526,20 @@ def process_scheduled_agent_jobs():
                     # Parse cron and calculate next run
                     try:
                         from croniter import croniter
+
                         cron = croniter(job.schedule_cron, now)
                         job.next_run_at = cron.get_next(datetime)
                     except Exception as e:
-                        logger.error(f"Failed to calculate next run for job {job.id}: {e}")
+                        logger.error(
+                            f"Failed to calculate next run for job {job.id}: {e}"
+                        )
                         job.next_run_at = None
                 elif job.schedule_type == "continuous":
                     # Simple interval scheduling (minutes) stored in job.config.interval_minutes.
                     try:
-                        interval = int(((job.config or {}).get("interval_minutes") or 30))
+                        interval = int(
+                            ((job.config or {}).get("interval_minutes") or 30)
+                        )
                     except Exception:
                         interval = 30
                     interval = max(1, min(interval, 24 * 60))
@@ -415,7 +589,9 @@ def resume_paused_agent_jobs():
                 # Paused jobs are not eligible for can_continue(); check resource limits directly.
                 is_limited, reason = job.is_resource_limited()
                 if is_limited:
-                    logger.info(f"Skipping paused agent job {job.id} because of {reason}")
+                    logger.info(
+                        f"Skipping paused agent job {job.id} because of {reason}"
+                    )
                     continue
 
                 logger.info(f"Resuming paused agent job {job.id}")
@@ -457,11 +633,13 @@ def cleanup_old_agent_jobs(days: int = 30):
                 select(AgentJob).where(
                     and_(
                         AgentJob.created_at < cutoff_date,
-                        AgentJob.status.in_([
-                            AgentJobStatus.COMPLETED.value,
-                            AgentJobStatus.FAILED.value,
-                            AgentJobStatus.CANCELLED.value,
-                        ])
+                        AgentJob.status.in_(
+                            [
+                                AgentJobStatus.COMPLETED.value,
+                                AgentJobStatus.FAILED.value,
+                                AgentJobStatus.CANCELLED.value,
+                            ]
+                        ),
                     )
                 )
             )
@@ -472,7 +650,9 @@ def cleanup_old_agent_jobs(days: int = 30):
                 try:
                     # Delete checkpoints before removing the job row.
                     await db.execute(
-                        delete(AgentJobCheckpoint).where(AgentJobCheckpoint.job_id == job.id)
+                        delete(AgentJobCheckpoint).where(
+                            AgentJobCheckpoint.job_id == job.id
+                        )
                     )
 
                     # Delete job
@@ -561,16 +741,14 @@ def generate_job_summary(job_id: str):
     logger.info(f"Generating summary for agent job {job_id}")
 
     async def _generate_summary():
-        from app.services.llm_service import LLMService, UserLLMSettings
         from app.models.memory import UserPreferences
+        from app.services.llm_service import LLMService, UserLLMSettings
 
         job_uuid = UUID(job_id)
         session_factory = create_celery_session()
 
         async with session_factory() as db:
-            result = await db.execute(
-                select(AgentJob).where(AgentJob.id == job_uuid)
-            )
+            result = await db.execute(select(AgentJob).where(AgentJob.id == job_uuid))
             job = result.scalar_one_or_none()
 
             if not job or job.status != AgentJobStatus.COMPLETED.value:
@@ -582,9 +760,15 @@ def generate_job_summary(job_id: str):
             # Best-effort: apply per-user LLM settings (provider/model/custom URL, etc.)
             user_settings = None
             try:
-                prefs_res = await db.execute(select(UserPreferences).where(UserPreferences.user_id == job.user_id))
+                prefs_res = await db.execute(
+                    select(UserPreferences).where(
+                        UserPreferences.user_id == job.user_id
+                    )
+                )
                 prefs = prefs_res.scalar_one_or_none()
-                user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
+                user_settings = (
+                    UserLLMSettings.from_preferences(prefs) if prefs else None
+                )
             except Exception:
                 user_settings = None
 

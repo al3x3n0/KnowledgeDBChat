@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import inspect
 from typing import Any, Dict, Optional
 from uuid import UUID
 
@@ -20,6 +21,7 @@ class AgentCheckpointService:
         job: Any,
         state: Dict[str, Any],
         db: Any,
+        reason: str = "runtime_checkpoint",
     ) -> None:
         """Save a checkpoint for job resumption."""
         checkpoint = AgentJobCheckpoint(
@@ -27,9 +29,15 @@ class AgentCheckpointService:
             iteration=job.iteration,
             phase=job.current_phase,
             state=state,
-            context={"progress": job.progress},
+            context={
+                "progress": job.progress,
+                "reason": reason,
+                "journal_cursor": state.get("execution_journal_cursor"),
+            },
         )
-        db.add(checkpoint)
+        add_result = db.add(checkpoint)
+        if inspect.isawaitable(add_result):
+            await add_result
         await db.commit()
         logger.debug(f"Saved checkpoint for job {job.id} at iteration {job.iteration}")
 

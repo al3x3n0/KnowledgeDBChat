@@ -8,6 +8,9 @@ from typing import Any, Dict, Optional
 from loguru import logger
 
 from app.services.agent_tool_dispatch import AgentToolExecutionContext
+from app.services.agent_execution_journal_service import (
+    agent_execution_journal_service,
+)
 
 
 class AgentActionService:
@@ -22,6 +25,44 @@ class AgentActionService:
         db: Any,
     ) -> Dict[str, Any]:
         """Execute the decided action and return normalized results."""
+        intent = await agent_execution_journal_service.begin_tool_call(
+            executor=executor,
+            job=job,
+            state=state,
+            action=action,
+            db=db,
+        )
+        try:
+            result = await self._act_unjournaled(executor, job, action, state, db)
+        except Exception as exc:
+            await agent_execution_journal_service.complete_tool_call(
+                executor=executor,
+                job=job,
+                state=state,
+                intent=intent,
+                result={"success": False, "error": str(exc)},
+                db=db,
+            )
+            raise
+        await agent_execution_journal_service.complete_tool_call(
+            executor=executor,
+            job=job,
+            state=state,
+            intent=intent,
+            result=result,
+            db=db,
+        )
+        return result
+
+    async def _act_unjournaled(
+        self,
+        executor: Any,
+        job: Any,
+        action: Dict[str, Any],
+        state: Dict[str, Any],
+        db: Any,
+    ) -> Dict[str, Any]:
+        """Execute one action after its durable intent has been recorded."""
         action = executor._apply_default_scope_to_action(dict(action), job)
         tool_name = action.get("tool")
         params = action.get("params", {})
@@ -42,7 +83,8 @@ class AgentActionService:
                 "tool": str(tool_name or ""),
                 "error": scope_violation,
                 "default_source_id": executor._resolve_default_source_scope(job),
-                "action_source_id": str((params or {}).get("source_id") or "").strip() or None,
+                "action_source_id": str((params or {}).get("source_id") or "").strip()
+                or None,
                 "enforced": bool(scope_guard_cfg.get("enforce", True)),
             }
             events = state.get("scope_guard_events")
@@ -50,7 +92,9 @@ class AgentActionService:
                 events = []
             events.append(event)
             state["scope_guard_events"] = events[-100:]
-            state["scope_guard_blocks"] = int(state.get("scope_guard_blocks", 0) or 0) + 1
+            state["scope_guard_blocks"] = (
+                int(state.get("scope_guard_blocks", 0) or 0) + 1
+            )
 
             if bool(scope_guard_cfg.get("enforce", True)):
                 result["error"] = scope_violation
@@ -67,30 +111,52 @@ class AgentActionService:
                     service=executor,
                     job=job,
                     state=state,
+                    idempotency_key=str(action.get("_idempotency_key") or "") or None,
                 ),
             )
             if handled:
-                result.update(handled_result if isinstance(handled_result, dict) else {})
+                result.update(
+                    handled_result if isinstance(handled_result, dict) else {}
+                )
                 return result
 
             if job.job_type == "research":
                 prefer_sources = (job.config or {}).get("prefer_sources") or []
                 if isinstance(prefer_sources, str):
-                    prefer_sources = [x.strip() for x in prefer_sources.split(",") if x.strip()]
-                prefer_sources = [str(x).strip().lower() for x in prefer_sources if str(x).strip()]
+                    prefer_sources = [
+                        x.strip() for x in prefer_sources.split(",") if x.strip()
+                    ]
+                prefer_sources = [
+                    str(x).strip().lower() for x in prefer_sources if str(x).strip()
+                ]
 
-                external_tools = {"search_arxiv", "monitor_arxiv_topic", "ingest_paper_by_id", "batch_ingest_papers"}
+                external_tools = {
+                    "search_arxiv",
+                    "monitor_arxiv_topic",
+                    "ingest_paper_by_id",
+                    "batch_ingest_papers",
+                }
                 if tool_name in external_tools and "arxiv" not in prefer_sources:
-                    result["error"] = "External paper research is disabled for this job (prefer_sources excludes arxiv)."
+                    result[
+                        "error"
+                    ] = "External paper research is disabled for this job (prefer_sources excludes arxiv)."
                     return result
 
-                if tool_name in external_tools and prefer_sources and prefer_sources[0] == "documents" and "arxiv" in prefer_sources:
+                if (
+                    tool_name in external_tools
+                    and prefer_sources
+                    and prefer_sources[0] == "documents"
+                    and "arxiv" in prefer_sources
+                ):
                     has_internal_attempt = any(
-                        (a.get("action") or {}).get("tool") in {"search_documents", "search_with_filters"}
+                        (a.get("action") or {}).get("tool")
+                        in {"search_documents", "search_with_filters"}
                         for a in (state.get("actions_taken") or [])
                     )
                     if not has_internal_attempt and int(job.iteration or 0) <= 2:
-                        result["error"] = "Prefer internal documents first (run a document search before arXiv)."
+                        result[
+                            "error"
+                        ] = "Prefer internal documents first (run a document search before arXiv)."
                         return result
             else:
                 result["error"] = f"Unknown or unimplemented tool: {tool_name}"
@@ -119,7 +185,9 @@ class AgentActionService:
             max_depth = max(0, min(max_depth, 2))
 
             if depth < max_depth:
-                fb_action_base = self._fallback_action_for(executor, job, tool_name=str(tool_name or "").strip(), params=params)
+                fb_action_base = self._fallback_action_for(
+                    executor, job, tool_name=str(tool_name or "").strip(), params=params
+                )
                 if fb_action_base and isinstance(fb_action_base, dict):
                     try:
                         fb_action = {
@@ -138,9 +206,15 @@ class AgentActionService:
                             result["success"] = True
                             result["tool"] = fb.get("tool") or fb_action.get("tool")
                             result["data"] = fb.get("data")
-                            result["findings"] = fb.get("findings") or result.get("findings")
-                            result["artifacts"] = fb.get("artifacts") or result.get("artifacts")
-                            result["note"] = f"Primary tool failed; used fallback tool: {result['tool']}"
+                            result["findings"] = fb.get("findings") or result.get(
+                                "findings"
+                            )
+                            result["artifacts"] = fb.get("artifacts") or result.get(
+                                "artifacts"
+                            )
+                            result[
+                                "note"
+                            ] = f"Primary tool failed; used fallback tool: {result['tool']}"
                     except Exception:
                         pass
 
@@ -155,11 +229,21 @@ class AgentActionService:
         params: Any,
     ) -> Optional[Dict[str, Any]]:
         cfg = job.config if isinstance(job.config, dict) else {}
-        fallback_map = cfg.get("tool_fallback_map") if isinstance(cfg.get("tool_fallback_map"), dict) else {}
-        if isinstance(fallback_map, dict) and tool_name in fallback_map and isinstance(fallback_map.get(tool_name), dict):
+        fallback_map = (
+            cfg.get("tool_fallback_map")
+            if isinstance(cfg.get("tool_fallback_map"), dict)
+            else {}
+        )
+        if (
+            isinstance(fallback_map, dict)
+            and tool_name in fallback_map
+            and isinstance(fallback_map.get(tool_name), dict)
+        ):
             entry = fallback_map.get(tool_name) or {}
             fallback_tool = str(entry.get("tool") or "").strip()
-            fallback_params = entry.get("params") if isinstance(entry.get("params"), dict) else {}
+            fallback_params = (
+                entry.get("params") if isinstance(entry.get("params"), dict) else {}
+            )
             if fallback_tool:
                 return {"tool": fallback_tool, "params": dict(fallback_params)}
 
@@ -189,9 +273,15 @@ class AgentActionService:
                 if not query and param != "goal":
                     query = _goal_query()
                 if query:
-                    return {"tool": "search_documents", "params": {"query": query, "limit": 5}}
+                    return {
+                        "tool": "search_documents",
+                        "params": {"query": query, "limit": 5},
+                    }
 
         goal_query = _goal_query()
         if goal_query:
-            return {"tool": "search_documents", "params": {"query": goal_query, "limit": 5}}
+            return {
+                "tool": "search_documents",
+                "params": {"query": goal_query, "limit": 5},
+            }
         return None

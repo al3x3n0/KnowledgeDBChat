@@ -2,23 +2,23 @@
 Pytest configuration and fixtures for backend tests.
 """
 
-import sys
-import types
+import asyncio
 import importlib.machinery
 import importlib.util
-import pytest
-import asyncio
+import sys
+import types
 from typing import AsyncGenerator
+
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.pool import StaticPool
 
 from app.core.database import Base, get_db
 from app.models.user import User
 from app.services.auth_service import AuthService
-
 
 if "pptx" not in sys.modules:
     pptx_stub = types.ModuleType("pptx")
@@ -69,6 +69,7 @@ if "sentence_transformers" not in sys.modules:
 
     sentence_transformers_stub.SentenceTransformer = _DummySentenceTransformer
     sys.modules["sentence_transformers"] = sentence_transformers_stub
+
 
 def _real_module_available(name: str) -> bool:
     """True if the real (non-stubbed) package is importable."""
@@ -154,6 +155,11 @@ def _compile_jsonb_sqlite(_element, _compiler, **_kwargs):
     return "JSON"
 
 
+@compiles(UUID, "sqlite")
+def _compile_uuid_sqlite(_element, _compiler, **_kwargs):
+    return "CHAR(36)"
+
+
 # Test database URL (in-memory SQLite for testing)
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -180,32 +186,57 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def _restore_current_event_loop(event_loop):
+    """Keep Python 3.11 sync tests attached to pytest-asyncio's session loop."""
+    asyncio.set_event_loop(event_loop)
+    yield
+    if not event_loop.is_closed():
+        asyncio.set_event_loop(event_loop)
+
+
 @pytest.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create a test database session."""
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
+
     async with TestSessionLocal() as session:
         yield session
-    
+
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
 
 @pytest.fixture(scope="function")
-def client(db_session: AsyncSession) -> TestClient:
-    """Create a test client."""
+def client(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> TestClient:
+    """Create a test client without contacting production infrastructure."""
+    from app.core import database
+    from app.services.storage_service import storage_service
+    from app.services.vector_store import vector_store_service
+    from app.utils.redis_subscriber import redis_subscriber
     from main import app
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(database, "apply_minimal_migrations", _noop)
+    monkeypatch.setattr(vector_store_service, "initialize", _noop)
+    monkeypatch.setattr(storage_service, "initialize", _noop)
+    monkeypatch.setattr(redis_subscriber, "start", _noop)
+    monkeypatch.setattr(redis_subscriber, "stop", _noop)
 
     def override_get_db():
         return db_session
-    
+
     app.dependency_overrides[get_db] = override_get_db
-    
+
     with TestClient(app) as test_client:
         yield test_client
-    
+
     app.dependency_overrides.clear()
 
 
@@ -213,15 +244,15 @@ def client(db_session: AsyncSession) -> TestClient:
 async def test_user(db_session: AsyncSession) -> User:
     """Create a test user."""
     auth_service = AuthService()
-    
+
     user = await auth_service.create_user(
         username="testuser",
         email="test@example.com",
         password="testpassword123",
         full_name="Test User",
-        db=db_session
+        db=db_session,
     )
-    
+
     return user
 
 
@@ -229,20 +260,20 @@ async def test_user(db_session: AsyncSession) -> User:
 async def admin_user(db_session: AsyncSession) -> User:
     """Create an admin test user."""
     auth_service = AuthService()
-    
+
     user = await auth_service.create_user(
         username="admin",
         email="admin@example.com",
         password="adminpassword123",
         full_name="Admin User",
-        db=db_session
+        db=db_session,
     )
-    
+
     # Set admin role
     user.role = "admin"
     await db_session.commit()
     await db_session.refresh(user)
-    
+
     return user
 
 

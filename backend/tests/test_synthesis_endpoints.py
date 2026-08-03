@@ -3,14 +3,14 @@ import hashlib
 from datetime import datetime
 from uuid import UUID
 
-from app.models.research_note import ResearchNote
-from app.models.document import Document, DocumentSource
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.models.document import Document, DocumentSource
 from app.models.domain_research_profile import DomainResearchProfile
 from app.models.experiment import ExperimentPlan, ExperimentRun
 from app.models.notification import Notification
+from app.models.research_note import ResearchNote
+from app.models.research_paper import PaperClaim, ResearchPaper
 from app.models.synthesis_job import SynthesisJob
-from app.models.research_paper import ResearchPaper, PaperClaim
 
 
 def test_synthesis_types_info_includes_decision_memo(client, auth_headers):
@@ -22,7 +22,9 @@ def test_synthesis_types_info_includes_decision_memo(client, auth_headers):
     assert "decision_memo" in values
 
 
-def test_create_decision_memo_synthesis_job(client, db_session, test_user, auth_headers, monkeypatch):
+def test_create_decision_memo_synthesis_job(
+    client, db_session, test_user, auth_headers, monkeypatch
+):
     from app.tasks.synthesis_tasks import execute_synthesis_task
 
     queued: list[tuple[str, str]] = []
@@ -91,7 +93,9 @@ def test_create_decision_memo_synthesis_job(client, db_session, test_user, auth_
     assert job.job_type == "decision_memo"
 
 
-def test_create_decision_memo_with_search_query_only(client, test_user, auth_headers, monkeypatch):
+def test_create_decision_memo_with_search_query_only(
+    client, test_user, auth_headers, monkeypatch
+):
     from app.tasks.synthesis_tasks import execute_synthesis_task
 
     queued: list[tuple[str, str]] = []
@@ -123,7 +127,9 @@ def test_create_decision_memo_with_search_query_only(client, test_user, auth_hea
     assert len(queued) == 1
 
 
-def test_save_completed_synthesis_job_as_research_note(client, db_session, test_user, auth_headers):
+def test_save_completed_synthesis_job_as_research_note(
+    client, db_session, test_user, auth_headers
+):
     source = DocumentSource(
         name="Completed Job Source",
         source_type="file",
@@ -187,7 +193,9 @@ def test_save_completed_synthesis_job_as_research_note(client, db_session, test_
     assert note.source_document_ids == [str(document.id)]
 
 
-def test_create_gap_analysis_synthesis_job_from_papers(client, db_session, test_user, auth_headers, monkeypatch):
+def test_create_gap_analysis_synthesis_job_from_papers(
+    client, db_session, test_user, auth_headers, monkeypatch
+):
     from app.tasks.synthesis_tasks import execute_synthesis_task
 
     queued: list[tuple[str, str]] = []
@@ -255,7 +263,9 @@ def test_create_gap_analysis_synthesis_job_from_papers(client, db_session, test_
     assert queued
 
 
-def test_save_completed_gap_analysis_as_structured_research_note(client, db_session, test_user, auth_headers):
+def test_save_completed_gap_analysis_as_structured_research_note(
+    client, db_session, test_user, auth_headers
+):
     source = DocumentSource(
         name="Extracted Paper Source",
         source_type="arxiv",
@@ -296,7 +306,9 @@ def test_save_completed_gap_analysis_as_structured_research_note(client, db_sess
                     "evidence_score": 0.67,
                     "testability_score": 0.91,
                     "overall_score": 0.81,
-                    "supporting_sources": [{"id": "paper-1", "title": "Compiler layouts"}],
+                    "supporting_sources": [
+                        {"id": "paper-1", "title": "Compiler layouts"}
+                    ],
                     "recommended_next_step": "Implement on three stencil kernels.",
                 }
             ],
@@ -359,7 +371,9 @@ def test_save_completed_gap_analysis_as_structured_research_note(client, db_sess
     assert str(document.id) in (note.source_document_ids or [])
 
 
-def test_create_hypothesis_reevaluation_job_from_research_note(client, db_session, test_user, auth_headers, monkeypatch):
+def test_create_hypothesis_reevaluation_job_from_research_note(
+    client, db_session, test_user, auth_headers, monkeypatch
+):
     from app.tasks.synthesis_tasks import execute_synthesis_task
 
     queued: list[tuple[str, str]] = []
@@ -429,7 +443,9 @@ def test_create_hypothesis_reevaluation_job_from_research_note(client, db_sessio
     assert queued
 
 
-def test_save_completed_hypothesis_reevaluation_updates_target_note(client, db_session, test_user, auth_headers, monkeypatch):
+def test_save_completed_hypothesis_reevaluation_updates_target_note(
+    client, db_session, test_user, auth_headers, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Compiler hypotheses",
@@ -502,7 +518,9 @@ def test_save_completed_hypothesis_reevaluation_updates_target_note(client, db_s
                     "evidence_score": 0.86,
                     "testability_score": 0.9,
                     "overall_score": 0.84,
-                    "supporting_sources": [{"id": "paper-1", "title": "Compiler layouts"}],
+                    "supporting_sources": [
+                        {"id": "paper-1", "title": "Compiler layouts"}
+                    ],
                     "recommended_next_step": "Expand to multi-architecture validation.",
                 }
             ],
@@ -564,7 +582,9 @@ def test_save_completed_hypothesis_reevaluation_updates_target_note(client, db_s
                     "novelty": 0.7,
                     "source_note_ids": [],
                     "supporting_evidence": ["Initial benchmark evidence"],
-                    "supporting_sources": [{"id": "paper-1", "title": "Compiler layouts"}],
+                    "supporting_sources": [
+                        {"id": "paper-1", "title": "Compiler layouts"}
+                    ],
                     "autonomous_origin": {
                         "source_kind": "profile",
                         "source_id": "99999999-9999-9999-9999-999999999999",
@@ -627,18 +647,48 @@ def test_save_completed_hypothesis_reevaluation_updates_target_note(client, db_s
     payload = response.json()
     assert payload["id"] == str(note.id)
     assert payload["structured_payload"]["artifact_type"] == "hypothesis_reevaluation"
-    assert payload["structured_payload"]["reprioritization_summary"] == "Hypothesis one stays on top after positive run evidence."
-    assert payload["structured_payload"]["hypotheses"][0]["experiment_evidence"][0]["run_id"] == "run-1"
-    assert payload["structured_payload"]["previous_hypotheses"][0]["overall_score"] == 0.78
+    assert (
+        payload["structured_payload"]["reprioritization_summary"]
+        == "Hypothesis one stays on top after positive run evidence."
+    )
+    assert (
+        payload["structured_payload"]["hypotheses"][0]["experiment_evidence"][0][
+            "run_id"
+        ]
+        == "run-1"
+    )
+    assert (
+        payload["structured_payload"]["previous_hypotheses"][0]["overall_score"] == 0.78
+    )
     assert payload["structured_payload"]["previous_summary"] == "Structured memo"
-    assert payload["structured_payload"]["previous_artifact_type"] == "hypothesis_synthesis"
+    assert (
+        payload["structured_payload"]["previous_artifact_type"]
+        == "hypothesis_synthesis"
+    )
     assert len(payload["structured_payload"]["reevaluation_history"]) == 1
-    assert payload["structured_payload"]["reevaluation_history"][0]["job_id"] == str(job.id)
-    assert payload["structured_payload"]["reevaluation_history"][0]["source_run_ids"] == ["run-1"]
-    assert payload["structured_payload"]["reevaluation_history"][0]["outcome_status"] == "applied_to_source_note"
-    assert payload["structured_payload"]["reevaluation_history"][0]["origin_source_kind"] == "profile"
-    assert payload["structured_payload"]["reevaluation_history"][0]["origin_source_id"] == str(profile.id)
-    assert payload["structured_payload"]["reevaluation_history"][0]["origin_opportunity_id"] == "hyp-1"
+    assert payload["structured_payload"]["reevaluation_history"][0]["job_id"] == str(
+        job.id
+    )
+    assert payload["structured_payload"]["reevaluation_history"][0][
+        "source_run_ids"
+    ] == ["run-1"]
+    assert (
+        payload["structured_payload"]["reevaluation_history"][0]["outcome_status"]
+        == "applied_to_source_note"
+    )
+    assert (
+        payload["structured_payload"]["reevaluation_history"][0]["origin_source_kind"]
+        == "profile"
+    )
+    assert payload["structured_payload"]["reevaluation_history"][0][
+        "origin_source_id"
+    ] == str(profile.id)
+    assert (
+        payload["structured_payload"]["reevaluation_history"][0][
+            "origin_opportunity_id"
+        ]
+        == "hyp-1"
+    )
     assert payload["structured_payload"].get("pending_reevaluation_job_id") is None
 
     async def _load_note():
@@ -649,38 +699,77 @@ def test_save_completed_hypothesis_reevaluation_updates_target_note(client, db_s
     assert updated_note.source_synthesis_job_id == job.id
     assert updated_note.structured_payload["hypotheses"][0]["overall_score"] == 0.84
     assert updated_note.structured_payload["previous_hypotheses"][0]["id"] == "hyp-1"
-    assert updated_note.structured_payload["reevaluation_history"][0]["outcome_status"] == "applied_to_source_note"
-    assert updated_note.structured_payload["reevaluation_history"][0]["source_run_ids"] == ["run-1"]
-    assert updated_note.structured_payload["reevaluation_history"][0]["origin_source_kind"] == "profile"
-    assert updated_note.structured_payload["reevaluation_history"][0]["origin_source_id"] == str(profile.id)
-    assert updated_note.structured_payload["reevaluation_history"][0]["origin_opportunity_id"] == "hyp-1"
+    assert (
+        updated_note.structured_payload["reevaluation_history"][0]["outcome_status"]
+        == "applied_to_source_note"
+    )
+    assert updated_note.structured_payload["reevaluation_history"][0][
+        "source_run_ids"
+    ] == ["run-1"]
+    assert (
+        updated_note.structured_payload["reevaluation_history"][0]["origin_source_kind"]
+        == "profile"
+    )
+    assert updated_note.structured_payload["reevaluation_history"][0][
+        "origin_source_id"
+    ] == str(profile.id)
+    assert (
+        updated_note.structured_payload["reevaluation_history"][0][
+            "origin_opportunity_id"
+        ]
+        == "hyp-1"
+    )
+
     async def _load_job():
         return await db_session.get(SynthesisJob, job.id)
+
     updated_job = asyncio.get_event_loop().run_until_complete(_load_job())
     assert updated_job is not None
-    assert updated_job.result_metadata["review_outcome_status"] == "applied_to_source_note"
+    assert (
+        updated_job.result_metadata["review_outcome_status"] == "applied_to_source_note"
+    )
     assert updated_job.result_metadata["review_target_note_id"] == str(note.id)
+
     async def _load_notification():
         return await db_session.get(Notification, notification.id)
-    updated_notification = asyncio.get_event_loop().run_until_complete(_load_notification())
+
+    updated_notification = asyncio.get_event_loop().run_until_complete(
+        _load_notification()
+    )
     assert updated_notification is not None
     assert updated_notification.is_dismissed is True
     assert updated_notification.is_read is True
-    assert updated_notification.data["review_outcome_status"] == "applied_to_source_note"
+    assert (
+        updated_notification.data["review_outcome_status"] == "applied_to_source_note"
+    )
     assert updated_notification.data["resolved_by_review"] is True
     updated_opportunity = profile.latest_summary["opportunities"][0]
     assert updated_opportunity["confidence"] == 0.86
     assert updated_opportunity["readiness"] == 0.84
     assert updated_opportunity["prior_confidence"] == 0.6
-    assert updated_opportunity["reprioritization_reason"] == "Positive evidence reinforced priority."
-    assert updated_opportunity["last_reevaluation_review_outcome"] == "applied_to_source_note"
+    assert (
+        updated_opportunity["reprioritization_reason"]
+        == "Positive evidence reinforced priority."
+    )
+    assert (
+        updated_opportunity["last_reevaluation_review_outcome"]
+        == "applied_to_source_note"
+    )
     assert updated_opportunity["last_reevaluation_review_job_id"] == str(job.id)
-    assert updated_opportunity["last_reevaluation_review_source_note_id"] == str(note.id)
-    assert updated_opportunity["last_reevaluation_review_target_note_id"] == str(note.id)
+    assert updated_opportunity["last_reevaluation_review_source_note_id"] == str(
+        note.id
+    )
+    assert updated_opportunity["last_reevaluation_review_target_note_id"] == str(
+        note.id
+    )
     assert updated_opportunity["follow_up_review_status"] == "approved_launch"
     assert updated_opportunity["child_job_ids"] == ["child-hyp-1"]
     assert queued_jobs == [("child-hyp-1", str(test_user.id))]
-    reevaluation_events = [event for event in recorded_events if event.get("event_type") == "reevaluation_applied_to_source_note"]
+    reevaluation_events = [
+        event
+        for event in recorded_events
+        if event.get("event_type") == "reevaluation_applied_to_source_note"
+    ]
     assert len(reevaluation_events) == 1
     assert reevaluation_events[0]["deep_link"]["params"]["profileId"] == str(profile.id)
     assert reevaluation_events[0]["deep_link"]["params"]["opportunityId"] == "hyp-1"
@@ -689,7 +778,9 @@ def test_save_completed_hypothesis_reevaluation_updates_target_note(client, db_s
     assert reevaluation_events[0]["metadata"]["reevaluation_job_id"] == str(job.id)
 
 
-def test_review_completed_hypothesis_reevaluation_marks_dismissed(client, db_session, test_user, auth_headers, monkeypatch):
+def test_review_completed_hypothesis_reevaluation_marks_dismissed(
+    client, db_session, test_user, auth_headers, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Compiler hypotheses",
@@ -823,7 +914,10 @@ def test_review_completed_hypothesis_reevaluation_marks_dismissed(client, db_ses
     response = client.post(
         f"/api/v1/synthesis/{job.id}/review",
         headers=auth_headers,
-        json={"outcome_status": "dismissed", "outcome_note": "Superseded by fresher evidence."},
+        json={
+            "outcome_status": "dismissed",
+            "outcome_note": "Superseded by fresher evidence.",
+        },
     )
 
     assert response.status_code == 200
@@ -839,10 +933,16 @@ def test_review_completed_hypothesis_reevaluation_marks_dismissed(client, db_ses
     updated_job = asyncio.get_event_loop().run_until_complete(_load_job())
     assert updated_job is not None
     assert updated_job.result_metadata["review_outcome_status"] == "dismissed"
-    assert updated_job.result_metadata["review_note"] == "Superseded by fresher evidence."
+    assert (
+        updated_job.result_metadata["review_note"] == "Superseded by fresher evidence."
+    )
+
     async def _load_notification():
         return await db_session.get(Notification, notification.id)
-    updated_notification = asyncio.get_event_loop().run_until_complete(_load_notification())
+
+    updated_notification = asyncio.get_event_loop().run_until_complete(
+        _load_notification()
+    )
     assert updated_notification is not None
     assert updated_notification.is_dismissed is True
     assert updated_notification.is_read is True
@@ -851,10 +951,16 @@ def test_review_completed_hypothesis_reevaluation_marks_dismissed(client, db_ses
     updated_opportunity = profile.latest_summary["opportunities"][0]
     assert updated_opportunity["last_reevaluation_review_outcome"] == "dismissed"
     assert updated_opportunity["last_reevaluation_review_job_id"] == str(job.id)
-    assert updated_opportunity["last_reevaluation_review_source_note_id"] == str(note.id)
+    assert updated_opportunity["last_reevaluation_review_source_note_id"] == str(
+        note.id
+    )
     assert updated_opportunity["last_reevaluation_review_target_note_id"] is None
     assert updated_opportunity.get("follow_up_review_status") is None
-    reevaluation_events = [event for event in recorded_events if event.get("event_type") == "reevaluation_dismissed"]
+    reevaluation_events = [
+        event
+        for event in recorded_events
+        if event.get("event_type") == "reevaluation_dismissed"
+    ]
     assert len(reevaluation_events) == 1
     assert reevaluation_events[0]["metadata"]["source_note_id"] == str(note.id)
     assert reevaluation_events[0]["metadata"]["target_note_id"] is None
@@ -868,7 +974,9 @@ def test_review_completed_hypothesis_reevaluation_marks_dismissed(client, db_ses
     assert unchanged_note.source_synthesis_job_id is None
 
 
-def test_create_compiler_regression_explanation_job(client, db_session, test_user, auth_headers, monkeypatch):
+def test_create_compiler_regression_explanation_job(
+    client, db_session, test_user, auth_headers, monkeypatch
+):
     from app.tasks.synthesis_tasks import execute_synthesis_task
 
     queued: list[tuple[str, str]] = []
@@ -895,14 +1003,26 @@ def test_create_compiler_regression_explanation_job(client, db_session, test_use
         experiment_plan_id=plan.id,
         name="Run A",
         status="completed",
-        config={"scientific_validation": {"benchmark_family": "compiler_regression", "benchmark_suite_id": "compiler-llvm-regression-core", "benchmark_case_ids": ["case-instcombine-sroa"]}},
+        config={
+            "scientific_validation": {
+                "benchmark_family": "compiler_regression",
+                "benchmark_suite_id": "compiler-llvm-regression-core",
+                "benchmark_case_ids": ["case-instcombine-sroa"],
+            }
+        },
     )
     run_b = ExperimentRun(
         user_id=test_user.id,
         experiment_plan_id=plan.id,
         name="Run B",
         status="completed",
-        config={"scientific_validation": {"benchmark_family": "compiler_regression", "benchmark_suite_id": "compiler-llvm-regression-core", "benchmark_case_ids": ["case-instcombine-sroa"]}},
+        config={
+            "scientific_validation": {
+                "benchmark_family": "compiler_regression",
+                "benchmark_suite_id": "compiler-llvm-regression-core",
+                "benchmark_case_ids": ["case-instcombine-sroa"],
+            }
+        },
     )
 
     async def _seed():
@@ -946,7 +1066,9 @@ def test_create_compiler_regression_explanation_job(client, db_session, test_use
     assert queued
 
 
-def test_save_compiler_regression_explanation_as_note(client, db_session, test_user, auth_headers):
+def test_save_compiler_regression_explanation_as_note(
+    client, db_session, test_user, auth_headers
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Compiler note",
@@ -969,9 +1091,24 @@ def test_save_compiler_regression_explanation_as_note(client, db_session, test_u
             "primary_run_id": "run-a",
             "comparison_run_id": "run-b",
             "source_document_ids": ["doc-1"],
-            "metric_deltas": [{"metric": "compile_time_ms", "primary": 1400, "comparison": 1200, "delta": 200}],
-            "artifact_deltas": [{"kind": "remarks", "summary": "loop-vectorize remarks missing"}],
-            "likely_causes": [{"title": "Vectorizer not firing", "confidence": "medium", "reason": "remarks disappeared"}],
+            "metric_deltas": [
+                {
+                    "metric": "compile_time_ms",
+                    "primary": 1400,
+                    "comparison": 1200,
+                    "delta": 200,
+                }
+            ],
+            "artifact_deltas": [
+                {"kind": "remarks", "summary": "loop-vectorize remarks missing"}
+            ],
+            "likely_causes": [
+                {
+                    "title": "Vectorizer not firing",
+                    "confidence": "medium",
+                    "reason": "remarks disappeared",
+                }
+            ],
             "supporting_signals": ["loop-vectorize remarks missing"],
             "confounders": ["Single-machine sample"],
             "recommended_next_steps": ["Diff pass remarks across both builds"],
@@ -1000,13 +1137,23 @@ def test_save_compiler_regression_explanation_as_note(client, db_session, test_u
 
     assert response.status_code == 201
     payload = response.json()
-    assert payload["tags"] == ["compiler-regression-explanation", "performance-analysis"]
-    assert payload["structured_payload"]["artifact_type"] == "compiler_regression_explanation"
+    assert payload["tags"] == [
+        "compiler-regression-explanation",
+        "performance-analysis",
+    ]
+    assert (
+        payload["structured_payload"]["artifact_type"]
+        == "compiler_regression_explanation"
+    )
     assert payload["structured_payload"]["primary_run_id"] == "run-a"
-    assert payload["structured_payload"]["metric_deltas"][0]["metric"] == "compile_time_ms"
+    assert (
+        payload["structured_payload"]["metric_deltas"][0]["metric"] == "compile_time_ms"
+    )
 
 
-def test_create_compiler_patch_proposal_job_from_explanation_note(client, db_session, test_user, auth_headers, monkeypatch):
+def test_create_compiler_patch_proposal_job_from_explanation_note(
+    client, db_session, test_user, auth_headers, monkeypatch
+):
     from app.tasks.synthesis_tasks import execute_synthesis_task
 
     queued: list[tuple[str, str]] = []
@@ -1055,7 +1202,9 @@ def test_create_compiler_patch_proposal_job_from_explanation_note(client, db_ses
     assert queued
 
 
-def test_save_compiler_patch_proposal_as_note(client, db_session, test_user, auth_headers):
+def test_save_compiler_patch_proposal_as_note(
+    client, db_session, test_user, auth_headers
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Compiler regression explanation",
@@ -1078,7 +1227,10 @@ def test_save_compiler_patch_proposal_as_note(client, db_session, test_user, aut
             "candidate_change": "Add a guard before enabling the transform when remarks indicate profitability is marginal.",
             "expected_effect": "Reduce compile-time regressions while preserving vectorization wins.",
             "mechanism": "Avoid costly transforms on marginal loops.",
-            "supporting_evidence": ["loop-vectorize remarks disappeared", "compile_time_ms regressed"],
+            "supporting_evidence": [
+                "loop-vectorize remarks disappeared",
+                "compile_time_ms regressed",
+            ],
             "validation_plan": "Run the compiler regression suite and compare remarks plus compile time.",
             "risk_assessment": "May suppress beneficial vectorization in edge cases.",
             "rollback_or_guardrail": "Feature-flag the heuristic and keep a fast rollback path.",
@@ -1121,7 +1273,9 @@ def test_save_compiler_patch_proposal_as_note(client, db_session, test_user, aut
     assert payload["structured_payload"]["source_explanation_note_id"] == str(note.id)
 
 
-def test_create_compiler_patch_draft_job_from_proposal_note(client, db_session, test_user, auth_headers, monkeypatch):
+def test_create_compiler_patch_draft_job_from_proposal_note(
+    client, db_session, test_user, auth_headers, monkeypatch
+):
     from app.tasks.synthesis_tasks import execute_synthesis_task
 
     queued: list[tuple[str, str]] = []
@@ -1204,10 +1358,21 @@ def test_save_compiler_patch_draft_as_note(client, db_session, test_user, auth_h
             "target_files": ["llvm/lib/Transforms/Vectorize/LoopVectorize.cpp"],
             "target_symbols": ["LoopVectorizationPlanner"],
             "change_plan": ["Add a profitability guard before enabling the transform."],
-            "proposed_code_regions": [{"file": "llvm/lib/Transforms/Vectorize/LoopVectorize.cpp", "symbol": "LoopVectorizationPlanner", "intent": "Gate marginal transforms"}],
-            "validation_commands": ["ninja check-llvm", "llvm-lit test/Transforms/LoopVectorize"],
+            "proposed_code_regions": [
+                {
+                    "file": "llvm/lib/Transforms/Vectorize/LoopVectorize.cpp",
+                    "symbol": "LoopVectorizationPlanner",
+                    "intent": "Gate marginal transforms",
+                }
+            ],
+            "validation_commands": [
+                "ninja check-llvm",
+                "llvm-lit test/Transforms/LoopVectorize",
+            ],
             "benchmark_validation_scope": ["compiler-llvm-regression-core"],
-            "risk_checks": ["Verify no beneficial vectorization is lost on baseline kernels."],
+            "risk_checks": [
+                "Verify no beneficial vectorization is lost on baseline kernels."
+            ],
             "rollback_steps": ["Revert the guard or disable it behind a flag."],
         },
     )
@@ -1237,4 +1402,6 @@ def test_save_compiler_patch_draft_as_note(client, db_session, test_user, auth_h
     assert payload["tags"] == ["compiler-patch-draft", "compiler-change-plan"]
     assert payload["structured_payload"]["artifact_type"] == "compiler_patch_draft"
     assert payload["structured_payload"]["source_proposal_note_id"] == str(note.id)
-    assert payload["structured_payload"]["target_files"] == ["llvm/lib/Transforms/Vectorize/LoopVectorize.cpp"]
+    assert payload["structured_payload"]["target_files"] == [
+        "llvm/lib/Transforms/Vectorize/LoopVectorize.cpp"
+    ]

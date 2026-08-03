@@ -13,7 +13,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent_job import AgentJob
 from app.models.experiment import ExperimentPlan, ExperimentRun
 
-
 RESEARCH_OPPORTUNITY_STAGE_VALUES = {
     "discovered",
     "accepted",
@@ -163,20 +162,32 @@ def _merge_dict_lists(first: Any, second: Any, *, limit: int) -> List[Dict[str, 
 
 def compute_research_opportunity_evidence_revision(row: Dict[str, Any]) -> str:
     payload = {
-        "canonical_key": _text(row.get("canonical_key") or row.get("title") or row.get("hypothesis")).lower(),
-        "source_note_ids": sorted(_clean_string_list(row.get("source_note_ids"), limit=16)),
-        "supporting_evidence": sorted(_clean_string_list(row.get("supporting_evidence"), limit=16)),
+        "canonical_key": _text(
+            row.get("canonical_key") or row.get("title") or row.get("hypothesis")
+        ).lower(),
+        "source_note_ids": sorted(
+            _clean_string_list(row.get("source_note_ids"), limit=16)
+        ),
+        "supporting_evidence": sorted(
+            _clean_string_list(row.get("supporting_evidence"), limit=16)
+        ),
         "supporting_sources": sorted(
             [
                 json.dumps(entry, sort_keys=True, separators=(",", ":"))
                 for entry in _clean_dict_list(row.get("supporting_sources"), limit=16)
             ]
         ),
-        "confidence": round(max(0.0, min(_safe_float(row.get("confidence"), 0.0), 1.0)), 4),
-        "readiness": round(max(0.0, min(_safe_float(row.get("readiness"), 0.0), 1.0)), 4),
+        "confidence": round(
+            max(0.0, min(_safe_float(row.get("confidence"), 0.0), 1.0)), 4
+        ),
+        "readiness": round(
+            max(0.0, min(_safe_float(row.get("readiness"), 0.0), 1.0)), 4
+        ),
         "novelty": round(max(0.0, min(_safe_float(row.get("novelty"), 0.0), 1.0)), 4),
     }
-    return hashlib.sha1(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha1(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def compute_research_portfolio_config_revision(
@@ -186,10 +197,14 @@ def compute_research_portfolio_config_revision(
 ) -> str:
     payload = {
         "automation_profile": _text(automation_profile, default="balanced").lower(),
-        "effective_policy": effective_policy if isinstance(effective_policy, dict) else {},
+        "effective_policy": effective_policy
+        if isinstance(effective_policy, dict)
+        else {},
         "sandbox_profile_id": _text(sandbox_profile_id) or None,
     }
-    return hashlib.sha1(json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")).hexdigest()[:16]
+    return hashlib.sha1(
+        json.dumps(payload, sort_keys=True, separators=(",", ":")).encode("utf-8")
+    ).hexdigest()[:16]
 
 
 def _infer_autonomy_state(opportunity: Dict[str, Any]) -> str:
@@ -201,7 +216,9 @@ def _infer_autonomy_state(opportunity: Dict[str, Any]) -> str:
         return "completed_waiting_change"
     if stage == "blocked" and _text(opportunity.get("last_blocked_reason_code")):
         return "blocked_structural"
-    if stage in {"planned", "validating"} or _clean_string_list(opportunity.get("linked_validation_run_ids"), limit=8):
+    if stage in {"planned", "validating"} or _clean_string_list(
+        opportunity.get("linked_validation_run_ids"), limit=8
+    ):
         return "active"
     return "eligible"
 
@@ -214,13 +231,19 @@ def derive_research_opportunity_stage(
     validation_status_by_id = validation_status_by_id or {}
     explicit_stage = _text(opportunity.get("stage")).lower()
     decision_state = _text(opportunity.get("decision_state"), default="pending_review")
-    linked_validation_run_ids = _clean_string_list(opportunity.get("linked_validation_run_ids"), limit=16)
-    linked_experiment_plan_ids = _clean_string_list(opportunity.get("linked_experiment_plan_ids"), limit=16)
+    linked_validation_run_ids = _clean_string_list(
+        opportunity.get("linked_validation_run_ids"), limit=16
+    )
+    linked_experiment_plan_ids = _clean_string_list(
+        opportunity.get("linked_experiment_plan_ids"), limit=16
+    )
     child_job_ids = _clean_string_list(opportunity.get("child_job_ids"), limit=16)
 
     if explicit_stage == "suppressed" or decision_state == "suppressed":
         return "suppressed"
-    if explicit_stage == "blocked" and _text(opportunity.get("last_blocked_reason_code")):
+    if explicit_stage == "blocked" and _text(
+        opportunity.get("last_blocked_reason_code")
+    ):
         return "blocked"
     if explicit_stage == "completed":
         return "completed"
@@ -254,12 +277,20 @@ def normalize_research_opportunity(
     validation_status_by_id: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
     title = _text(row.get("title") or row.get("idea_title") or row.get("hypothesis"))
-    canonical_key = _text(row.get("canonical_key")) or normalize_research_opportunity_key(title)
-    opportunity_id = _text(row.get("opportunity_id")) or (f"opp_{canonical_key[:48]}" if canonical_key else "")
-    decision_state = _text(row.get("decision_state"), default=default_decision_state).lower()
+    canonical_key = _text(
+        row.get("canonical_key")
+    ) or normalize_research_opportunity_key(title)
+    opportunity_id = _text(row.get("opportunity_id")) or (
+        f"opp_{canonical_key[:48]}" if canonical_key else ""
+    )
+    decision_state = _text(
+        row.get("decision_state"), default=default_decision_state
+    ).lower()
     if decision_state not in RESEARCH_OPPORTUNITY_DECISION_VALUES:
         decision_state = default_decision_state
-    decision_source = _text(row.get("decision_source"), default=default_decision_source).lower()
+    decision_source = _text(
+        row.get("decision_source"), default=default_decision_source
+    ).lower()
     if decision_source not in RESEARCH_OPPORTUNITY_DECISION_SOURCE_VALUES:
         decision_source = default_decision_source
 
@@ -276,24 +307,56 @@ def normalize_research_opportunity(
         "decision_state": decision_state,
         "decision_source": decision_source,
         "operator_note": _text(row.get("operator_note")) or None,
-        "supporting_evidence": _clean_string_list(row.get("supporting_evidence"), limit=8),
+        "supporting_evidence": _clean_string_list(
+            row.get("supporting_evidence"), limit=8
+        ),
         "supporting_sources": _clean_dict_list(row.get("supporting_sources"), limit=8),
         "next_steps": _clean_string_list(row.get("next_steps"), limit=6),
-        "source_profile_ids": _clean_string_list(row.get("source_profile_ids"), limit=8),
+        "source_profile_ids": _clean_string_list(
+            row.get("source_profile_ids"), limit=8
+        ),
         "source_job_ids": _clean_string_list(row.get("source_job_ids"), limit=8),
         "source_note_ids": _clean_string_list(row.get("source_note_ids"), limit=8),
-        "linked_experiment_plan_ids": _clean_string_list(row.get("linked_experiment_plan_ids"), limit=8),
-        "linked_validation_run_ids": _clean_string_list(row.get("linked_validation_run_ids"), limit=8),
-        "latest_experiment_plan_id": _text(row.get("latest_experiment_plan_id")) or None,
+        "linked_experiment_plan_ids": _clean_string_list(
+            row.get("linked_experiment_plan_ids"), limit=8
+        ),
+        "linked_validation_run_ids": _clean_string_list(
+            row.get("linked_validation_run_ids"), limit=8
+        ),
+        "latest_experiment_plan_id": _text(row.get("latest_experiment_plan_id"))
+        or None,
         "latest_validation_run_id": _text(row.get("latest_validation_run_id")) or None,
         "latest_validation_job_id": _text(row.get("latest_validation_job_id")) or None,
         "latest_validation_status": _text(row.get("latest_validation_status")) or None,
-        "latest_validation_blocked_reason_code": _text(row.get("latest_validation_blocked_reason_code")) or None,
+        "latest_validation_blocked_reason_code": _text(
+            row.get("latest_validation_blocked_reason_code")
+        )
+        or None,
         "child_job_ids": _clean_string_list(row.get("child_job_ids"), limit=8),
         "source_repo_ids": _clean_string_list(row.get("source_repo_ids"), limit=8),
-        "confidence": round(max(0.0, min(_safe_float(row.get("confidence"), 0.0), 1.0)), 4),
-        "novelty": round(max(0.0, min(_safe_float(row.get("novelty") or row.get("novelty_score"), 0.0), 1.0)), 4),
-        "readiness": round(max(0.0, min(_safe_float(row.get("readiness") or row.get("overall_score"), 0.0), 1.0)), 4),
+        "confidence": round(
+            max(0.0, min(_safe_float(row.get("confidence"), 0.0), 1.0)), 4
+        ),
+        "novelty": round(
+            max(
+                0.0,
+                min(
+                    _safe_float(row.get("novelty") or row.get("novelty_score"), 0.0),
+                    1.0,
+                ),
+            ),
+            4,
+        ),
+        "readiness": round(
+            max(
+                0.0,
+                min(
+                    _safe_float(row.get("readiness") or row.get("overall_score"), 0.0),
+                    1.0,
+                ),
+            ),
+            4,
+        ),
         "track_type": _text(row.get("track_type"), default="generic"),
         "autonomy_state": None,
         "last_evaluated_at": _text(row.get("last_evaluated_at")) or None,
@@ -301,40 +364,76 @@ def normalize_research_opportunity(
         "evidence_revision": _text(row.get("evidence_revision")) or None,
         "last_material_change_at": _text(row.get("last_material_change_at")) or None,
         "last_decision_type": _text(row.get("last_decision_type")) or None,
-        "last_decision_reason_code": _text(row.get("last_decision_reason_code")) or None,
-        "portfolio_config_revision": _text(row.get("portfolio_config_revision")) or None,
+        "last_decision_reason_code": _text(row.get("last_decision_reason_code"))
+        or None,
+        "portfolio_config_revision": _text(row.get("portfolio_config_revision"))
+        or None,
         "last_skip_reason_code": _text(row.get("last_skip_reason_code")) or None,
         "last_blocked_reason_code": _text(row.get("last_blocked_reason_code")) or None,
         "follow_up_review_status": _text(row.get("follow_up_review_status")) or None,
         "follow_up_reviewed_at": _text(row.get("follow_up_reviewed_at")) or None,
-        "follow_up_reviewed_by_user_id": _text(row.get("follow_up_reviewed_by_user_id")) or None,
+        "follow_up_reviewed_by_user_id": _text(row.get("follow_up_reviewed_by_user_id"))
+        or None,
         "follow_up_review_note": _text(row.get("follow_up_review_note")) or None,
-        "follow_up_review_evidence_revision": _text(row.get("follow_up_review_evidence_revision")) or None,
-        "last_reevaluation_review_outcome": _text(row.get("last_reevaluation_review_outcome")) or None,
-        "last_reevaluation_reviewed_at": _text(row.get("last_reevaluation_reviewed_at")) or None,
-        "last_reevaluation_review_job_id": _text(row.get("last_reevaluation_review_job_id")) or None,
-        "last_reevaluation_review_note": _text(row.get("last_reevaluation_review_note")) or None,
-        "last_reevaluation_review_source_note_id": _text(row.get("last_reevaluation_review_source_note_id")) or None,
-        "last_reevaluation_review_target_note_id": _text(row.get("last_reevaluation_review_target_note_id")) or None,
+        "follow_up_review_evidence_revision": _text(
+            row.get("follow_up_review_evidence_revision")
+        )
+        or None,
+        "last_reevaluation_review_outcome": _text(
+            row.get("last_reevaluation_review_outcome")
+        )
+        or None,
+        "last_reevaluation_reviewed_at": _text(row.get("last_reevaluation_reviewed_at"))
+        or None,
+        "last_reevaluation_review_job_id": _text(
+            row.get("last_reevaluation_review_job_id")
+        )
+        or None,
+        "last_reevaluation_review_note": _text(row.get("last_reevaluation_review_note"))
+        or None,
+        "last_reevaluation_review_source_note_id": _text(
+            row.get("last_reevaluation_review_source_note_id")
+        )
+        or None,
+        "last_reevaluation_review_target_note_id": _text(
+            row.get("last_reevaluation_review_target_note_id")
+        )
+        or None,
         "follow_up_outcome_status": _text(row.get("follow_up_outcome_status")) or None,
-        "follow_up_outcome_recorded_at": _text(row.get("follow_up_outcome_recorded_at")) or None,
-        "follow_up_outcome_summary": _text(row.get("follow_up_outcome_summary")) or None,
+        "follow_up_outcome_recorded_at": _text(row.get("follow_up_outcome_recorded_at"))
+        or None,
+        "follow_up_outcome_summary": _text(row.get("follow_up_outcome_summary"))
+        or None,
         "follow_up_last_job_id": _text(row.get("follow_up_last_job_id")) or None,
         "follow_up_launched_at": _text(row.get("follow_up_launched_at")) or None,
         "last_activity_at": _text(row.get("last_activity_at")) or None,
         "reprioritized_at": _text(row.get("reprioritized_at")) or None,
         "reprioritization_reason": _text(row.get("reprioritization_reason")) or None,
-        "reprioritization_source_run_ids": _clean_string_list(row.get("reprioritization_source_run_ids"), limit=8),
-        "prior_confidence": round(max(0.0, min(_safe_float(row.get("prior_confidence"), 0.0), 1.0)), 4) if row.get("prior_confidence") is not None else None,
-        "prior_readiness": round(max(0.0, min(_safe_float(row.get("prior_readiness"), 0.0), 1.0)), 4) if row.get("prior_readiness") is not None else None,
-        "autonomous_origin": dict(row.get("autonomous_origin")) if isinstance(row.get("autonomous_origin"), dict) else None,
+        "reprioritization_source_run_ids": _clean_string_list(
+            row.get("reprioritization_source_run_ids"), limit=8
+        ),
+        "prior_confidence": round(
+            max(0.0, min(_safe_float(row.get("prior_confidence"), 0.0), 1.0)), 4
+        )
+        if row.get("prior_confidence") is not None
+        else None,
+        "prior_readiness": round(
+            max(0.0, min(_safe_float(row.get("prior_readiness"), 0.0), 1.0)), 4
+        )
+        if row.get("prior_readiness") is not None
+        else None,
+        "autonomous_origin": dict(row.get("autonomous_origin"))
+        if isinstance(row.get("autonomous_origin"), dict)
+        else None,
         "updated_at": _text(row.get("updated_at")) or datetime.utcnow().isoformat(),
     }
     normalized["stage"] = derive_research_opportunity_stage(
         normalized,
         validation_status_by_id=validation_status_by_id,
     )
-    normalized["evidence_revision"] = normalized["evidence_revision"] or compute_research_opportunity_evidence_revision(normalized)
+    normalized["evidence_revision"] = normalized[
+        "evidence_revision"
+    ] or compute_research_opportunity_evidence_revision(normalized)
     normalized["autonomy_state"] = _infer_autonomy_state({**normalized, **row})
     return normalized
 
@@ -366,7 +465,9 @@ def list_normalized_research_opportunities(
     for row in items:
         if not isinstance(row, dict):
             continue
-        item = normalize_research_opportunity(row, validation_status_by_id=validation_status_by_id)
+        item = normalize_research_opportunity(
+            row, validation_status_by_id=validation_status_by_id
+        )
         if not item["opportunity_id"] or item["opportunity_id"] in seen_ids:
             continue
         seen_ids.add(item["opportunity_id"])
@@ -438,7 +539,9 @@ def merge_operator_fields(
         ("next_steps", 6),
         ("reprioritization_source_run_ids", 8),
     ):
-        merged[key] = _merge_string_lists(previous.get(key), merged.get(key), limit=limit)
+        merged[key] = _merge_string_lists(
+            previous.get(key), merged.get(key), limit=limit
+        )
     merged["supporting_sources"] = _merge_dict_lists(
         previous.get("supporting_sources"),
         merged.get("supporting_sources"),
@@ -450,24 +553,58 @@ def merge_operator_fields(
 def summarize_research_opportunity_stages(rows: Any) -> Dict[str, int]:
     opportunities = list_normalized_research_opportunities(rows)
     return {
-        "discovered": sum(1 for row in opportunities if str(row.get("stage") or "") == "discovered"),
-        "accepted": sum(1 for row in opportunities if str(row.get("stage") or "") == "accepted"),
-        "suppressed": sum(1 for row in opportunities if str(row.get("stage") or "") == "suppressed"),
-        "planned": sum(1 for row in opportunities if str(row.get("stage") or "") == "planned"),
-        "validating": sum(1 for row in opportunities if str(row.get("stage") or "") == "validating"),
-        "completed": sum(1 for row in opportunities if str(row.get("stage") or "") == "completed"),
-        "blocked": sum(1 for row in opportunities if str(row.get("stage") or "") == "blocked"),
+        "discovered": sum(
+            1 for row in opportunities if str(row.get("stage") or "") == "discovered"
+        ),
+        "accepted": sum(
+            1 for row in opportunities if str(row.get("stage") or "") == "accepted"
+        ),
+        "suppressed": sum(
+            1 for row in opportunities if str(row.get("stage") or "") == "suppressed"
+        ),
+        "planned": sum(
+            1 for row in opportunities if str(row.get("stage") or "") == "planned"
+        ),
+        "validating": sum(
+            1 for row in opportunities if str(row.get("stage") or "") == "validating"
+        ),
+        "completed": sum(
+            1 for row in opportunities if str(row.get("stage") or "") == "completed"
+        ),
+        "blocked": sum(
+            1 for row in opportunities if str(row.get("stage") or "") == "blocked"
+        ),
     }
 
 
 def summarize_research_opportunity_autonomy_states(rows: Any) -> Dict[str, int]:
     opportunities = list_normalized_research_opportunities(rows)
     return {
-        "eligible": sum(1 for row in opportunities if str(row.get("autonomy_state") or "") == "eligible"),
-        "cooldown": sum(1 for row in opportunities if str(row.get("autonomy_state") or "") == "cooldown"),
-        "blocked_structural": sum(1 for row in opportunities if str(row.get("autonomy_state") or "") == "blocked_structural"),
-        "completed_waiting_change": sum(1 for row in opportunities if str(row.get("autonomy_state") or "") == "completed_waiting_change"),
-        "active": sum(1 for row in opportunities if str(row.get("autonomy_state") or "") == "active"),
+        "eligible": sum(
+            1
+            for row in opportunities
+            if str(row.get("autonomy_state") or "") == "eligible"
+        ),
+        "cooldown": sum(
+            1
+            for row in opportunities
+            if str(row.get("autonomy_state") or "") == "cooldown"
+        ),
+        "blocked_structural": sum(
+            1
+            for row in opportunities
+            if str(row.get("autonomy_state") or "") == "blocked_structural"
+        ),
+        "completed_waiting_change": sum(
+            1
+            for row in opportunities
+            if str(row.get("autonomy_state") or "") == "completed_waiting_change"
+        ),
+        "active": sum(
+            1
+            for row in opportunities
+            if str(row.get("autonomy_state") or "") == "active"
+        ),
     }
 
 
@@ -512,16 +649,24 @@ def apply_materialized_experiment_metadata(
     now_iso = materialized_at or datetime.utcnow().isoformat()
     normalized_plan_ids = _clean_string_list(plan_ids, limit=8)
     normalized_run_ids = _clean_string_list(
-        [*(updated.get("linked_validation_run_ids") or []), run_id] if run_id else updated.get("linked_validation_run_ids"),
+        [*(updated.get("linked_validation_run_ids") or []), run_id]
+        if run_id
+        else updated.get("linked_validation_run_ids"),
         limit=8,
     )
     updated["linked_experiment_plan_ids"] = normalized_plan_ids
     updated["linked_validation_run_ids"] = normalized_run_ids
-    updated["latest_experiment_plan_id"] = normalized_plan_ids[-1] if normalized_plan_ids else None
-    updated["latest_validation_run_id"] = run_id or (normalized_run_ids[-1] if normalized_run_ids else None)
+    updated["latest_experiment_plan_id"] = (
+        normalized_plan_ids[-1] if normalized_plan_ids else None
+    )
+    updated["latest_validation_run_id"] = run_id or (
+        normalized_run_ids[-1] if normalized_run_ids else None
+    )
     updated["latest_validation_job_id"] = _text(job_id) or None
     updated["latest_validation_status"] = _text(validation_status) or None
-    updated["latest_validation_blocked_reason_code"] = _text(blocked_reason_code) or None
+    updated["latest_validation_blocked_reason_code"] = (
+        _text(blocked_reason_code) or None
+    )
     updated["decision_state"] = "accepted"
     updated["decision_source"] = "operator"
     updated["updated_at"] = now_iso
@@ -530,7 +675,11 @@ def apply_materialized_experiment_metadata(
     updated["last_decision_reason_code"] = (
         "validation_blocked"
         if _text(validation_status).lower() == "blocked"
-        else ("validation_reused" if run_id and not job_id and _text(validation_status) else "validation_queued")
+        else (
+            "validation_reused"
+            if run_id and not job_id and _text(validation_status)
+            else "validation_queued"
+        )
     )
     updated["last_blocked_reason_code"] = _text(blocked_reason_code) or None
     updated["autonomous_origin"] = {
@@ -576,8 +725,12 @@ async def materialize_research_opportunity_experiment(
 ) -> Dict[str, Any]:
     from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 
-    existing_plan_ids = _clean_string_list(opportunity.get("linked_experiment_plan_ids"), limit=8)
-    existing_run_ids = _clean_string_list(opportunity.get("linked_validation_run_ids"), limit=8)
+    existing_plan_ids = _clean_string_list(
+        opportunity.get("linked_experiment_plan_ids"), limit=8
+    )
+    existing_run_ids = _clean_string_list(
+        opportunity.get("linked_validation_run_ids"), limit=8
+    )
 
     # Idempotent requeue: when the opportunity is already linked to a validation
     # run, reuse it instead of creating a duplicate. This must run before we
@@ -592,7 +745,11 @@ async def materialize_research_opportunity_experiment(
             run = None
         if run is not None:
             config = deepcopy(run.config) if isinstance(run.config, dict) else {}
-            post_run_actions = config.get("post_run_actions") if isinstance(config.get("post_run_actions"), dict) else {}
+            post_run_actions = (
+                config.get("post_run_actions")
+                if isinstance(config.get("post_run_actions"), dict)
+                else {}
+            )
             post_run_actions["auto_append_to_note"] = True
             if not target_note_id:
                 target_note_id = str(getattr(run, "research_note_id", "") or "")
@@ -600,16 +757,23 @@ async def materialize_research_opportunity_experiment(
                 post_run_actions["target_note_id"] = target_note_id
             config["post_run_actions"] = post_run_actions
             run.config = config
-            scientific_validation = config.get("scientific_validation") if isinstance(config.get("scientific_validation"), dict) else {}
+            scientific_validation = (
+                config.get("scientific_validation")
+                if isinstance(config.get("scientific_validation"), dict)
+                else {}
+            )
             return {
                 "plan_ids": existing_plan_ids,
                 "run_id": str(run.id),
                 "job_id": str(run.agent_job_id) if run.agent_job_id else None,
-                "validation_status": _text(run.status) or _text(scientific_validation.get("status")) or "planned",
+                "validation_status": _text(run.status)
+                or _text(scientific_validation.get("status"))
+                or "planned",
                 "blocked_reason_code": _text(
                     scientific_validation.get("blocked_reason_code")
                     or scientific_validation.get("blocked_reason")
-                ) or None,
+                )
+                or None,
                 "reused_run": True,
                 "reused_plan": bool(existing_plan_ids),
             }
@@ -619,25 +783,38 @@ async def materialize_research_opportunity_experiment(
             "plan_ids": existing_plan_ids,
             "run_id": run_id,
             "job_id": _text(opportunity.get("latest_validation_job_id")) or None,
-            "validation_status": _text(opportunity.get("latest_validation_status")) or "planned",
-            "blocked_reason_code": _text(opportunity.get("latest_validation_blocked_reason_code")) or None,
+            "validation_status": _text(opportunity.get("latest_validation_status"))
+            or "planned",
+            "blocked_reason_code": _text(
+                opportunity.get("latest_validation_blocked_reason_code")
+            )
+            or None,
             "reused_run": True,
             "reused_plan": bool(existing_plan_ids),
         }
 
     plan_ids = await ensure_plan_ids(existing_plan_ids)
     if not plan_ids:
-        raise HTTPException(status_code=400, detail="Could not resolve an experiment plan for this opportunity")
+        raise HTTPException(
+            status_code=400,
+            detail="Could not resolve an experiment plan for this opportunity",
+        )
     plan_id = _text(plan_ids[0] if plan_ids else "")
     try:
         plan_uuid = UUID(plan_id)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail="Linked experiment plan is unavailable") from exc
+        raise HTTPException(
+            status_code=400, detail="Linked experiment plan is unavailable"
+        ) from exc
     experiment_plan = await db.get(ExperimentPlan, plan_uuid)
     if experiment_plan is None:
-        raise HTTPException(status_code=400, detail="Linked experiment plan is unavailable")
+        raise HTTPException(
+            status_code=400, detail="Linked experiment plan is unavailable"
+        )
 
-    target_note_id = next((item for item in note_ids if _text(item)), "") or str(experiment_plan.research_note_id or "")
+    target_note_id = next((item for item in note_ids if _text(item)), "") or str(
+        experiment_plan.research_note_id or ""
+    )
 
     executor = AutonomousAgentExecutor()
     decision = await executor._create_scientific_validation_run(
@@ -648,12 +825,22 @@ async def materialize_research_opportunity_experiment(
         objective=_text(objective) or title,
         hypothesis_title=_text(title) or "Research opportunity",
         hypothesis_text=_text(hypothesis) or _text(title) or "Research opportunity",
-        validation_policy=validation_policy if isinstance(validation_policy, dict) else {},
+        validation_policy=validation_policy
+        if isinstance(validation_policy, dict)
+        else {},
         sandbox_profile_id=_text(sandbox_profile_id) or None,
-        repo_source_ids=[item for item in _clean_string_list(repo_source_ids, limit=8) if item],
-        benchmark_queries=[item for item in _clean_string_list(benchmark_queries, limit=8) if item],
-        supporting_evidence=_clean_string_list(opportunity.get("supporting_evidence"), limit=8),
-        supporting_sources=_clean_dict_list(opportunity.get("supporting_sources"), limit=8),
+        repo_source_ids=[
+            item for item in _clean_string_list(repo_source_ids, limit=8) if item
+        ],
+        benchmark_queries=[
+            item for item in _clean_string_list(benchmark_queries, limit=8) if item
+        ],
+        supporting_evidence=_clean_string_list(
+            opportunity.get("supporting_evidence"), limit=8
+        ),
+        supporting_sources=_clean_dict_list(
+            opportunity.get("supporting_sources"), limit=8
+        ),
         profile_id=_text(profile_id) or None,
         portfolio_id=_text(portfolio_id) or None,
         hypothesis_id=_text(opportunity.get("opportunity_id")) or None,
@@ -668,13 +855,21 @@ async def materialize_research_opportunity_experiment(
             run = None
         if run is not None:
             config = deepcopy(run.config) if isinstance(run.config, dict) else {}
-            post_run_actions = config.get("post_run_actions") if isinstance(config.get("post_run_actions"), dict) else {}
+            post_run_actions = (
+                config.get("post_run_actions")
+                if isinstance(config.get("post_run_actions"), dict)
+                else {}
+            )
             post_run_actions["auto_append_to_note"] = True
             if target_note_id:
                 post_run_actions["target_note_id"] = target_note_id
             config["post_run_actions"] = post_run_actions
             run.config = config
-    if start_immediately and job_id and _text(decision.get("status")).lower() == "queued":
+    if (
+        start_immediately
+        and job_id
+        and _text(decision.get("status")).lower() == "queued"
+    ):
         # Deferred import: agent_job_tasks imports the executor, which imports
         # this module — a top-level import here is a circular import.
         from app.tasks.agent_job_tasks import execute_agent_job_task
@@ -705,10 +900,18 @@ def classify_portfolio_operator_review(
     effective_policy: Optional[Dict[str, Any]] = None,
 ) -> Optional[Dict[str, Any]]:
     opportunity = normalize_research_opportunity(row)
-    reason_code = _text(opportunity.get("last_blocked_reason_code") or opportunity.get("last_decision_reason_code") or opportunity.get("last_skip_reason_code")).lower()
-    evidence_revision = _text(opportunity.get("evidence_revision")) or compute_research_opportunity_evidence_revision(opportunity)
+    reason_code = _text(
+        opportunity.get("last_blocked_reason_code")
+        or opportunity.get("last_decision_reason_code")
+        or opportunity.get("last_skip_reason_code")
+    ).lower()
+    evidence_revision = _text(
+        opportunity.get("evidence_revision")
+    ) or compute_research_opportunity_evidence_revision(opportunity)
     policy = effective_policy if isinstance(effective_policy, dict) else {}
-    review_mode = _text(policy.get("follow_up_review_mode"), default="auto_launch_safe").lower()
+    review_mode = _text(
+        policy.get("follow_up_review_mode"), default="auto_launch_safe"
+    ).lower()
     if review_mode not in {"auto_launch_safe", "queue_for_approval", "manual_only"}:
         review_mode = "auto_launch_safe"
 
@@ -717,10 +920,12 @@ def classify_portfolio_operator_review(
         and bool(policy.get("auto_launch_follow_up", True))
         and str(opportunity.get("autonomy_state") or "") == "eligible"
         and not _clean_string_list(opportunity.get("child_job_ids"), limit=1)
-        and _text(opportunity.get("follow_up_review_status")).lower() != "approved_launch"
+        and _text(opportunity.get("follow_up_review_status")).lower()
+        != "approved_launch"
         and not (
             _text(opportunity.get("follow_up_review_status")).lower() == "rejected"
-            and _text(opportunity.get("follow_up_review_evidence_revision")) == evidence_revision
+            and _text(opportunity.get("follow_up_review_evidence_revision"))
+            == evidence_revision
         )
     ):
         return {
@@ -730,7 +935,10 @@ def classify_portfolio_operator_review(
             "evidence_revision": evidence_revision,
         }
 
-    if str(opportunity.get("autonomy_state") or "") != "blocked_structural" or not reason_code:
+    if (
+        str(opportunity.get("autonomy_state") or "") != "blocked_structural"
+        or not reason_code
+    ):
         return None
 
     if reason_code in PORTFOLIO_BUDGET_REASON_CODES:
@@ -760,7 +968,9 @@ def summarize_portfolio_operator_reviews(
     review_rows: List[Dict[str, Any]] = []
     counts = {review_type: 0 for review_type in PORTFOLIO_OPERATOR_REVIEW_TYPE_VALUES}
     for row in opportunities:
-        review = classify_portfolio_operator_review(row, effective_policy=effective_policy)
+        review = classify_portfolio_operator_review(
+            row, effective_policy=effective_policy
+        )
         if not review:
             continue
         review_type = str(review.get("review_type") or "").strip()

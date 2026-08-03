@@ -511,10 +511,13 @@ async def invoke_external_agent(
         config = external_agent_gateway_service.validate_config(
             tool.config if isinstance(tool.config, dict) else {}
         )
-        if config["provider_type"] != "compops":
+        if config["provider_type"] not in {"compops", "mlflow"}:
             raise HTTPException(
                 status_code=422,
-                detail="Only CompOps calls can be linked to R&D evidence",
+                detail=(
+                    "Only typed CompOps or MLflow calls can be linked "
+                    "to R&D evidence"
+                ),
             )
         job = (
             await db.execute(

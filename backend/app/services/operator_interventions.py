@@ -27,12 +27,17 @@ def derive_operator_interventions_with_outcomes(
     terminal_statuses = {completed, failed, cancelled}
     active_statuses = {pending, running, paused}
     current_status_norm = str(current_status or "").strip().lower() or None
-    resolved_at_value = completed_at.isoformat() if isinstance(completed_at, datetime) else None
+    resolved_at_value = (
+        completed_at.isoformat() if isinstance(completed_at, datetime) else None
+    )
 
     for index, item in enumerate(items):
         next_item = items[index + 1] if index + 1 < len(items) else None
         if next_item:
-            next_action = str(next_item.get("action") or "").strip().replace("_", " ") or "later action"
+            next_action = (
+                str(next_item.get("action") or "").strip().replace("_", " ")
+                or "later action"
+            )
             item["outcome_status"] = "superseded"
             item["outcome_reason"] = f"Superseded by {next_action}"
             item["resolved_at"] = str(next_item.get("at") or "").strip() or None
@@ -49,14 +54,22 @@ def derive_operator_interventions_with_outcomes(
             else:
                 item["outcome_status"] = "cancelled"
                 item["outcome_reason"] = "Job was cancelled after intervention"
-            item["resolved_at"] = resolved_at_value or str(item.get("at") or "").strip() or None
+            item["resolved_at"] = (
+                resolved_at_value or str(item.get("at") or "").strip() or None
+            )
             continue
 
         if current_status_norm in active_statuses:
             if action in {"pause", "reject"} and current_status_norm == paused:
                 item["outcome_status"] = "applied"
                 item["outcome_reason"] = "Job remains paused after intervention"
-            elif action in {"approve", "edit", "skip", "restart", "relaunch"} and current_status_norm in {
+            elif action in {
+                "approve",
+                "edit",
+                "skip",
+                "restart",
+                "relaunch",
+            } and current_status_norm in {
                 pending,
                 running,
             }:
@@ -64,7 +77,9 @@ def derive_operator_interventions_with_outcomes(
                 item["outcome_reason"] = "Job resumed after intervention"
             elif action == "cancel":
                 item["outcome_status"] = "pending"
-                item["outcome_reason"] = "Cancellation requested; awaiting terminal sync"
+                item[
+                    "outcome_reason"
+                ] = "Cancellation requested; awaiting terminal sync"
             else:
                 item["outcome_status"] = "pending"
                 item["outcome_reason"] = "Awaiting job outcome"

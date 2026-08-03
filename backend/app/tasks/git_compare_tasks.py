@@ -6,6 +6,7 @@ import asyncio
 from datetime import datetime
 from typing import Optional
 from uuid import UUID
+
 from loguru import logger
 from sqlalchemy import select
 
@@ -14,13 +15,7 @@ from app.core.database import create_celery_session
 from app.models.document import DocumentSource, GitBranchDiff
 from app.services.git_service import GitService
 from app.services.llm_service import UserLLMSettings
-from app.utils.ingestion_state import (
-    set_git_compare_task,
-    get_git_compare_task,
-    set_git_compare_cancel_flag,
-    is_git_compare_cancelled,
-    clear_git_compare_task,
-)
+from app.utils.ingestion_state import clear_git_compare_task, is_git_compare_cancelled
 
 git_service = GitService()
 
@@ -31,6 +26,7 @@ async def _load_user_settings(db, user_id: Optional[str]) -> Optional[UserLLMSet
         return None
     try:
         from app.models.memory import UserPreferences
+
         result = await db.execute(
             select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
         )
@@ -47,7 +43,9 @@ def compare_git_branches(self, diff_id: str, user_id: Optional[str] = None) -> d
     return asyncio.run(_async_compare_git_branches(self, diff_id, user_id))
 
 
-async def _async_compare_git_branches(task, diff_id: str, user_id: Optional[str] = None) -> dict:
+async def _async_compare_git_branches(
+    task, diff_id: str, user_id: Optional[str] = None
+) -> dict:
     async with create_celery_session()() as db:
         # Load user settings for LLM provider preference
         user_settings = await _load_user_settings(db, user_id)

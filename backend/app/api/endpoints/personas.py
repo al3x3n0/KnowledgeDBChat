@@ -4,23 +4,24 @@ Persona management API endpoints.
 
 from typing import Optional
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, func
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import IntegrityError
 from loguru import logger
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.persona import Persona, PersonaEditRequest
 from app.models.user import User
+from app.schemas.common import PaginatedResponse
 from app.schemas.persona import (
     PersonaCreate,
-    PersonaResponse,
-    PersonaUpdate,
     PersonaEditRequestCreate,
     PersonaEditRequestResponse,
+    PersonaResponse,
+    PersonaUpdate,
 )
-from app.schemas.common import PaginatedResponse
 from app.services.auth_service import get_current_user, require_admin
 from app.utils.exceptions import ValidationError
 
@@ -74,7 +75,9 @@ async def list_personas(
     personas = result.scalars().all()
 
     items = [PersonaResponse.from_orm(p) for p in personas]
-    return PaginatedResponse.create(items=items, total=total, page=page, page_size=page_size)
+    return PaginatedResponse.create(
+        items=items, total=total, page=page, page_size=page_size
+    )
 
 
 @router.get("/{persona_id}", response_model=PersonaResponse)
@@ -115,7 +118,9 @@ async def create_persona(
     except IntegrityError as exc:
         await db.rollback()
         logger.warning(f"Failed to create persona due to integrity error: {exc}")
-        raise HTTPException(status_code=400, detail="Persona name or platform_id already exists")
+        raise HTTPException(
+            status_code=400, detail="Persona name or platform_id already exists"
+        )
 
     await db.refresh(persona)
     return PersonaResponse.from_orm(persona)
@@ -156,7 +161,9 @@ async def update_persona(
     except IntegrityError as exc:
         await db.rollback()
         logger.warning(f"Failed to update persona due to integrity error: {exc}")
-        raise HTTPException(status_code=400, detail="Persona name or platform_id already exists")
+        raise HTTPException(
+            status_code=400, detail="Persona name or platform_id already exists"
+        )
 
     await db.refresh(persona)
     return PersonaResponse.from_orm(persona)
@@ -179,7 +186,11 @@ async def delete_persona(
     return None
 
 
-@router.post("/{persona_id}/edit-request", response_model=PersonaEditRequestResponse, status_code=201)
+@router.post(
+    "/{persona_id}/edit-request",
+    response_model=PersonaEditRequestResponse,
+    status_code=201,
+)
 async def request_persona_edit(
     persona_id: UUID,
     data: PersonaEditRequestCreate,
@@ -194,7 +205,9 @@ async def request_persona_edit(
 
     message = data.message.strip()
     if len(message) < 5:
-        raise ValidationError("Request message must include some details", field="message")
+        raise ValidationError(
+            "Request message must include some details", field="message"
+        )
 
     request = PersonaEditRequest(
         persona_id=persona_id,

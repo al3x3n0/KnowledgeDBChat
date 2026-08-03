@@ -3,49 +3,49 @@ Data formatting utilities.
 """
 
 from datetime import datetime, timezone
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 from uuid import UUID
 
 
 def format_datetime(dt: datetime, format_str: str = "%Y-%m-%d %H:%M:%S") -> str:
     """
     Format datetime to string.
-    
+
     Args:
         dt: Datetime object
         format_str: Format string
-        
+
     Returns:
         Formatted datetime string
     """
     if dt is None:
         return ""
-    
+
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    
+
     return dt.strftime(format_str)
 
 
 def format_relative_time(dt: datetime) -> str:
     """
     Format datetime as relative time (e.g., "2 hours ago").
-    
+
     Args:
         dt: Datetime object
-        
+
     Returns:
         Relative time string
     """
     if dt is None:
         return "Unknown"
-    
+
     now = datetime.now(timezone.utc)
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=timezone.utc)
-    
+
     diff = now - dt
-    
+
     if diff.days > 365:
         years = diff.days // 365
         return f"{years} year{'s' if years > 1 else ''} ago"
@@ -67,31 +67,31 @@ def format_relative_time(dt: datetime) -> str:
 def format_file_size(size_bytes: int) -> str:
     """
     Format file size in bytes to human-readable format.
-    
+
     Args:
         size_bytes: Size in bytes
-        
+
     Returns:
         Formatted size string (e.g., "1.5 MB")
     """
     if size_bytes is None:
         return "Unknown"
-    
-    for unit in ['B', 'KB', 'MB', 'GB', 'TB']:
+
+    for unit in ["B", "KB", "MB", "GB", "TB"]:
         if size_bytes < 1024.0:
             return f"{size_bytes:.2f} {unit}"
         size_bytes /= 1024.0
-    
+
     return f"{size_bytes:.2f} PB"
 
 
 def format_uuid(uuid_obj: UUID) -> str:
     """
     Format UUID to string.
-    
+
     Args:
         uuid_obj: UUID object
-        
+
     Returns:
         UUID string
     """
@@ -103,11 +103,11 @@ def format_uuid(uuid_obj: UUID) -> str:
 def format_error_response(error: Exception, status_code: int = 500) -> Dict[str, Any]:
     """
     Format error response for API.
-    
+
     Args:
         error: Exception object
         status_code: HTTP status code
-        
+
     Returns:
         Formatted error response dictionary
     """
@@ -116,51 +116,51 @@ def format_error_response(error: Exception, status_code: int = 500) -> Dict[str,
         "detail": str(error),
         "status_code": status_code,
     }
-    
+
     # Add additional details for custom exceptions
-    if hasattr(error, 'detail') and error.detail:
+    if hasattr(error, "detail") and error.detail:
         response["detail"] = error.detail
-    
-    if hasattr(error, 'field'):
+
+    if hasattr(error, "field"):
         response["field"] = error.field
-    
+
     return response
 
 
 def truncate_text(text: str, max_length: int = 100, suffix: str = "...") -> str:
     """
     Truncate text to maximum length.
-    
+
     Args:
         text: Text to truncate
         max_length: Maximum length
         suffix: Suffix to add if truncated
-        
+
     Returns:
         Truncated text
     """
     if not text:
         return ""
-    
+
     if len(text) <= max_length:
         return text
-    
-    return text[:max_length - len(suffix)] + suffix
+
+    return text[: max_length - len(suffix)] + suffix
 
 
 def format_response_time(seconds: float) -> str:
     """
     Format response time in seconds to human-readable format.
-    
+
     Args:
         seconds: Time in seconds
-        
+
     Returns:
         Formatted time string
     """
     if seconds is None:
         return "Unknown"
-    
+
     if seconds < 1:
         return f"{seconds * 1000:.0f}ms"
     elif seconds < 60:
@@ -169,4 +169,3 @@ def format_response_time(seconds: float) -> str:
         minutes = int(seconds // 60)
         secs = seconds % 60
         return f"{minutes}m {secs:.0f}s"
-

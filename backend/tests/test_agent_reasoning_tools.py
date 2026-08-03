@@ -1,6 +1,5 @@
 """Tests for structured reasoning tools (reflect, hypothesize, weigh_evidence, critique_plan)."""
 
-import pytest
 from datetime import datetime
 
 
@@ -61,11 +60,13 @@ class TestHypothesizeTool:
 
     def test_update_existing_hypothesis(self):
         state = _make_state()
-        state["hypotheses"].append({
-            "id": "h-1",
-            "hypothesis": "Test hypothesis",
-            "status": "proposed",
-        })
+        state["hypotheses"].append(
+            {
+                "id": "h-1",
+                "hypothesis": "Test hypothesis",
+                "status": "proposed",
+            }
+        )
         # Update status
         for h in state["hypotheses"]:
             if h["id"] == "h-1":
@@ -87,10 +88,18 @@ class TestWeighEvidenceTool:
             "claim": "Transformer models are best for NLP",
             "hypothesis_id": None,
             "evidence_for": [
-                {"statement": "BERT achieves SOTA", "source_document_id": "doc1", "strength": 0.8}
+                {
+                    "statement": "BERT achieves SOTA",
+                    "source_document_id": "doc1",
+                    "strength": 0.8,
+                }
             ],
             "evidence_against": [
-                {"statement": "RNNs are faster", "source_document_id": "doc2", "strength": 0.3}
+                {
+                    "statement": "RNNs are faster",
+                    "source_document_id": "doc2",
+                    "strength": 0.3,
+                }
             ],
             "verdict": "weakly_supported",
             "timestamp": datetime.utcnow().isoformat(),
@@ -105,11 +114,13 @@ class TestWeighEvidenceTool:
 
     def test_evidence_cross_references_hypothesis(self):
         state = _make_state()
-        state["hypotheses"].append({
-            "id": "h-1",
-            "hypothesis": "Test",
-            "status": "proposed",
-        })
+        state["hypotheses"].append(
+            {
+                "id": "h-1",
+                "hypothesis": "Test",
+                "status": "proposed",
+            }
+        )
         # Strongly supported evidence should update hypothesis
         verdict = "strongly_supported"
         for h in state["hypotheses"]:
@@ -152,12 +163,14 @@ class TestCritiquePlanTool:
         state["plan_critiques"].append(entry)
         # Major severity should also add to critic_notes
         if entry["severity"] == "major":
-            state["critic_notes"].append({
-                "trajectory_assessment": f"Plan critique (major): {entry['plan_summary'][:200]}",
-                "pivot": "; ".join(entry["weaknesses"][:3]),
-                "recommended_tools": [],
-                "source": "critique_plan_tool",
-            })
+            state["critic_notes"].append(
+                {
+                    "trajectory_assessment": f"Plan critique (major): {entry['plan_summary'][:200]}",
+                    "pivot": "; ".join(entry["weaknesses"][:3]),
+                    "recommended_tools": [],
+                    "source": "critique_plan_tool",
+                }
+            )
         assert len(state["critic_notes"]) == 1
         assert state["critic_notes"][0]["source"] == "critique_plan_tool"
 

@@ -62,7 +62,12 @@ class AgentContextCompactionService:
     def estimate_context_chars(state: Dict[str, Any]) -> int:
         """Rough serialized size of the state that feeds prompt assembly."""
         total = 0
-        for key in ("actions_taken", "findings", "compressed_history", "memory_context"):
+        for key in (
+            "actions_taken",
+            "findings",
+            "compressed_history",
+            "memory_context",
+        ):
             value = state.get(key)
             if value is None:
                 continue
@@ -98,7 +103,10 @@ class AgentContextCompactionService:
         if isinstance(last, dict):
             last_iteration = last.get("iteration")
             if isinstance(last_iteration, int):
-                if int(job.iteration or 0) - last_iteration < cfg["min_iterations_between"]:
+                if (
+                    int(job.iteration or 0) - last_iteration
+                    < cfg["min_iterations_between"]
+                ):
                     return False
 
         estimated = self.estimate_context_chars(state)
@@ -146,7 +154,9 @@ class AgentContextCompactionService:
                 continue
             act = action.get("action") if isinstance(action.get("action"), dict) else {}
             tool = str(act.get("tool") or "unknown")
-            result = action.get("result") if isinstance(action.get("result"), dict) else {}
+            result = (
+                action.get("result") if isinstance(action.get("result"), dict) else {}
+            )
             if result.get("success"):
                 data = result.get("data")
                 data_keys = list(data.keys()) if isinstance(data, dict) else []
@@ -155,7 +165,9 @@ class AgentContextCompactionService:
                 outcome = f"failed: {str(result.get('error', ''))[:100]}"
             else:
                 outcome = "no result"
-            lines.append(f"- Iteration {action.get('iteration', '?')}: {tool} → {outcome}")
+            lines.append(
+                f"- Iteration {action.get('iteration', '?')}: {tool} → {outcome}"
+            )
         return "\n".join(lines)
 
     async def _summarize(

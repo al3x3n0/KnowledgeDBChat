@@ -46,6 +46,12 @@ class ExternalSystemEvidenceLinkService:
         "study_id",
         "artifact_id",
         "action_id",
+        "experiment_id",
+        "model_name",
+        "model_version",
+        "artifact_path",
+        "name",
+        "version",
     )
 
     async def link(
@@ -60,9 +66,10 @@ class ExternalSystemEvidenceLinkService:
         evidence_key: str | None = None,
     ) -> bool:
         config = tool.config if isinstance(tool.config, dict) else {}
-        if str(config.get("provider_type") or "") != "compops":
+        provider_type = str(config.get("provider_type") or "").strip().lower()
+        if provider_type not in {"compops", "mlflow"}:
             raise ExternalSystemEvidenceLinkError(
-                "Only typed CompOps results can be linked as external-system evidence"
+                "Only typed external-system results can be linked as R&D evidence"
             )
         job = (
             await db.execute(
@@ -82,9 +89,9 @@ class ExternalSystemEvidenceLinkService:
             )
 
         provenance = self._safe_provenance(gateway_result.get("provenance"))
-        if provenance.get("provider_type") != "compops":
+        if provenance.get("provider_type") != provider_type:
             raise ExternalSystemEvidenceLinkError(
-                "CompOps provenance was missing from the external-system result"
+                "Typed provider provenance was missing from the external-system result"
             )
         request_id = str(provenance.get("request_id") or "").strip()
         capability = str(provenance.get("capability") or "").strip()
@@ -98,9 +105,9 @@ class ExternalSystemEvidenceLinkService:
             provenance["evidence_identity"] = normalized_evidence_key[:200]
             provenance["sync_subscription_id"] = normalized_evidence_key[:200]
         link_id = (
-            f"compops-sync:{normalized_evidence_key}"
+            f"{provider_type}-sync:{normalized_evidence_key}"
             if normalized_evidence_key
-            else f"compops:{tool.id}:{capability}:{request_id}"
+            else f"{provider_type}:{tool.id}:{capability}:{request_id}"
         )
         results = deepcopy(job.results)
         actions = [
@@ -127,7 +134,7 @@ class ExternalSystemEvidenceLinkService:
         provenance["audit_id"] = str(audit_id)
         action = {
             "evidence_link_id": link_id,
-            "tool": "external_system:compops",
+            "tool": f"external_system:{provider_type}",
             "tool_type": "external_agent",
             "status": "completed",
             "success": True,

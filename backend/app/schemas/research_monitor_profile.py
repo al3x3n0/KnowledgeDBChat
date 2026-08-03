@@ -11,6 +11,13 @@ from uuid import UUID
 from pydantic import BaseModel, Field
 
 
+class ResearchMonitorBudgetConfigResponse(BaseModel):
+    auto_launch_limit_24h: int = 0
+    approval_queue_limit_24h: int = 0
+    alert_limit_24h: int = 0
+    queue_backlog_cap: int = 0
+
+
 class ResearchMonitorProfileResponse(BaseModel):
     id: UUID
     user_id: UUID
@@ -20,7 +27,7 @@ class ResearchMonitorProfileResponse(BaseModel):
     recommendation_scores: Optional[Dict[str, int]] = None
     source_type_scores: Optional[Dict[str, int]] = None
     outcome_counters: Optional[Dict[str, int]] = None
-    customer_budget_config: Optional["ResearchMonitorBudgetConfigResponse"] = None
+    customer_budget_config: Optional[ResearchMonitorBudgetConfigResponse] = None
     muted_tokens: Optional[List[str]] = None
     muted_patterns: Optional[List[str]] = None
     notes: Optional[str] = None
@@ -57,13 +64,6 @@ class ResearchMonitorPolicyConfigResponse(BaseModel):
     automation_profile: str = "balanced"
     automation_policy: Dict[str, Any] = Field(default_factory=dict)
     effective_policy: Dict[str, Any] = Field(default_factory=dict)
-
-
-class ResearchMonitorBudgetConfigResponse(BaseModel):
-    auto_launch_limit_24h: int = 0
-    approval_queue_limit_24h: int = 0
-    alert_limit_24h: int = 0
-    queue_backlog_cap: int = 0
 
 
 class ResearchMonitorBudgetUsageResponse(BaseModel):
@@ -107,9 +107,15 @@ class ResearchMonitorCustomerRebalancePreviewResponse(BaseModel):
     guidance_status: str = "none"
     guidance_summary: Optional[str] = None
     guidance_reasons: List[str] = Field(default_factory=list)
-    before_capacity: ResearchMonitorBudgetConfigResponse = Field(default_factory=ResearchMonitorBudgetConfigResponse)
-    after_capacity: ResearchMonitorBudgetConfigResponse = Field(default_factory=ResearchMonitorBudgetConfigResponse)
-    changes: List[ResearchMonitorCustomerRebalanceChangeResponse] = Field(default_factory=list)
+    before_capacity: ResearchMonitorBudgetConfigResponse = Field(
+        default_factory=ResearchMonitorBudgetConfigResponse
+    )
+    after_capacity: ResearchMonitorBudgetConfigResponse = Field(
+        default_factory=ResearchMonitorBudgetConfigResponse
+    )
+    changes: List[ResearchMonitorCustomerRebalanceChangeResponse] = Field(
+        default_factory=list
+    )
 
 
 class ResearchMonitorCustomerRebalanceEvaluationCountsResponse(BaseModel):
@@ -131,17 +137,29 @@ class ResearchMonitorCustomerRebalanceHistoryEntryResponse(BaseModel):
     actor_user_id: Optional[str] = None
     change_source: str = "customer_rebalance_guidance"
     change_reason: Optional[str] = None
-    changes: List[ResearchMonitorCustomerRebalanceChangeResponse] = Field(default_factory=list)
-    before_capacity: ResearchMonitorBudgetConfigResponse = Field(default_factory=ResearchMonitorBudgetConfigResponse)
-    after_capacity: ResearchMonitorBudgetConfigResponse = Field(default_factory=ResearchMonitorBudgetConfigResponse)
+    changes: List[ResearchMonitorCustomerRebalanceChangeResponse] = Field(
+        default_factory=list
+    )
+    before_capacity: ResearchMonitorBudgetConfigResponse = Field(
+        default_factory=ResearchMonitorBudgetConfigResponse
+    )
+    after_capacity: ResearchMonitorBudgetConfigResponse = Field(
+        default_factory=ResearchMonitorBudgetConfigResponse
+    )
     evaluation_target_count: int = 8
     evaluation_state: str = "active"
     evaluation_status: Optional[str] = None
     evaluation_sample_count: int = 0
     evaluation_reasons: List[str] = Field(default_factory=list)
-    before_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse)
-    after_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse)
-    delta_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse)
+    before_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse
+    )
+    after_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse
+    )
+    delta_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse
+    )
 
 
 class ResearchMonitorCustomerRebalanceEvaluationSampleResponse(BaseModel):
@@ -163,10 +181,18 @@ class ResearchMonitorCustomerRebalanceEvaluationDetailResponse(BaseModel):
     evaluation_sample_count: int = 0
     evaluation_target_count: int = 8
     evaluation_reasons: List[str] = Field(default_factory=list)
-    before_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse)
-    after_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse)
-    delta_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse)
-    sample_items: List[ResearchMonitorCustomerRebalanceEvaluationSampleResponse] = Field(default_factory=list)
+    before_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse
+    )
+    after_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse
+    )
+    delta_counts: ResearchMonitorCustomerRebalanceEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorCustomerRebalanceEvaluationCountsResponse
+    )
+    sample_items: List[
+        ResearchMonitorCustomerRebalanceEvaluationSampleResponse
+    ] = Field(default_factory=list)
 
 
 class ResearchMonitorCustomerPortfolioResponse(BaseModel):
@@ -184,9 +210,15 @@ class ResearchMonitorCustomerPortfolioResponse(BaseModel):
     backlog_used: int = 0
     backlog_capacity: int = 0
     throttled_monitor_count: int = 0
-    customer_budget: ResearchMonitorBudgetConfigResponse = Field(default_factory=ResearchMonitorBudgetConfigResponse)
-    customer_budget_usage: ResearchMonitorBudgetUsageResponse = Field(default_factory=ResearchMonitorBudgetUsageResponse)
-    customer_budget_remaining: ResearchMonitorBudgetUsageResponse = Field(default_factory=ResearchMonitorBudgetUsageResponse)
+    customer_budget: ResearchMonitorBudgetConfigResponse = Field(
+        default_factory=ResearchMonitorBudgetConfigResponse
+    )
+    customer_budget_usage: ResearchMonitorBudgetUsageResponse = Field(
+        default_factory=ResearchMonitorBudgetUsageResponse
+    )
+    customer_budget_remaining: ResearchMonitorBudgetUsageResponse = Field(
+        default_factory=ResearchMonitorBudgetUsageResponse
+    )
     customer_budget_throttle_state: str = "normal"
     customer_budget_throttle_reasons: List[str] = Field(default_factory=list)
     accepted_count: int = 0
@@ -196,19 +228,31 @@ class ResearchMonitorCustomerPortfolioResponse(BaseModel):
     follow_up_cancelled_count: int = 0
     portfolio_status: str = "normal"
     portfolio_reasons: List[str] = Field(default_factory=list)
-    top_launch_monitors: List[ResearchMonitorCustomerTopContributorResponse] = Field(default_factory=list)
-    top_backlog_monitors: List[ResearchMonitorCustomerTopContributorResponse] = Field(default_factory=list)
-    top_alert_monitors: List[ResearchMonitorCustomerTopContributorResponse] = Field(default_factory=list)
-    throttled_monitors: List[ResearchMonitorCustomerTopContributorResponse] = Field(default_factory=list)
+    top_launch_monitors: List[ResearchMonitorCustomerTopContributorResponse] = Field(
+        default_factory=list
+    )
+    top_backlog_monitors: List[ResearchMonitorCustomerTopContributorResponse] = Field(
+        default_factory=list
+    )
+    top_alert_monitors: List[ResearchMonitorCustomerTopContributorResponse] = Field(
+        default_factory=list
+    )
+    throttled_monitors: List[ResearchMonitorCustomerTopContributorResponse] = Field(
+        default_factory=list
+    )
     rebalance_guidance_status: str = "none"
     rebalance_guidance_reasons: List[str] = Field(default_factory=list)
     rebalance_guidance_summary: Optional[str] = None
-    rebalance_guidance_changes: List[ResearchMonitorCustomerRebalanceChangeResponse] = Field(default_factory=list)
+    rebalance_guidance_changes: List[
+        ResearchMonitorCustomerRebalanceChangeResponse
+    ] = Field(default_factory=list)
     latest_rebalance_evaluation_status: Optional[str] = None
     latest_rebalance_evaluation_sample_count: int = 0
     latest_rebalance_evaluation_target_count: int = 0
     latest_rebalance_evaluation_reasons: List[str] = Field(default_factory=list)
-    recent_rebalance_history: List[ResearchMonitorCustomerRebalanceHistoryEntryResponse] = Field(default_factory=list)
+    recent_rebalance_history: List[
+        ResearchMonitorCustomerRebalanceHistoryEntryResponse
+    ] = Field(default_factory=list)
 
 
 class ResearchMonitorPolicyEvaluationCountsResponse(BaseModel):
@@ -239,8 +283,12 @@ class ResearchMonitorPolicyHistoryEntryResponse(BaseModel):
     actor_user_id: Optional[str] = None
     change_source: str = "manual_override"
     change_reason: Optional[str] = None
-    previous_follow_up_autonomy: ResearchMonitorPolicyConfigResponse = Field(description="Compatibility-only legacy mirror of the previous canonical policy snapshot")
-    next_follow_up_autonomy: ResearchMonitorPolicyConfigResponse = Field(description="Compatibility-only legacy mirror of the next canonical policy snapshot")
+    previous_follow_up_autonomy: ResearchMonitorPolicyConfigResponse = Field(
+        description="Compatibility-only legacy mirror of the previous canonical policy snapshot"
+    )
+    next_follow_up_autonomy: ResearchMonitorPolicyConfigResponse = Field(
+        description="Compatibility-only legacy mirror of the next canonical policy snapshot"
+    )
     previous_automation_profile: str = "balanced"
     next_automation_profile: str = "balanced"
     previous_automation_policy: Dict[str, Any] = Field(default_factory=dict)
@@ -255,16 +303,28 @@ class ResearchMonitorPolicyHistoryEntryResponse(BaseModel):
     evaluation_status: Optional[str] = None
     evaluation_sample_count: int = 0
     evaluation_reasons: List[str] = Field(default_factory=list)
-    before_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(default_factory=ResearchMonitorPolicyEvaluationCountsResponse)
-    after_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(default_factory=ResearchMonitorPolicyEvaluationCountsResponse)
-    delta_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(default_factory=ResearchMonitorPolicyEvaluationCountsResponse)
+    before_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorPolicyEvaluationCountsResponse
+    )
+    after_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorPolicyEvaluationCountsResponse
+    )
+    delta_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorPolicyEvaluationCountsResponse
+    )
 
 
 class ResearchMonitorPolicyUpdateRequest(BaseModel):
     automation_profile: Optional[str] = None
     automation_policy: Optional[Dict[str, Any]] = None
-    mode: Optional[str] = Field(default=None, description="Compatibility-only legacy alias for automation_policy.follow_up_review_mode")
-    allowed_recommendations: Optional[List[str]] = Field(default=None, description="Compatibility-only legacy alias for automation_policy.allowed_recommendations")
+    mode: Optional[str] = Field(
+        default=None,
+        description="Compatibility-only legacy alias for automation_policy.follow_up_review_mode",
+    )
+    allowed_recommendations: Optional[List[str]] = Field(
+        default=None,
+        description="Compatibility-only legacy alias for automation_policy.allowed_recommendations",
+    )
     reset_to_default: bool = False
     change_source: Optional[str] = None
     change_reason: Optional[str] = Field(default=None, max_length=1000)
@@ -279,14 +339,22 @@ class ResearchMonitorPolicyRollbackRequest(BaseModel):
 class ResearchMonitorPolicySimulationRequest(BaseModel):
     automation_profile: Optional[str] = None
     automation_policy: Optional[Dict[str, Any]] = None
-    mode: Optional[str] = Field(default=None, description="Compatibility-only legacy alias for automation_policy.follow_up_review_mode")
-    allowed_recommendations: Optional[List[str]] = Field(default=None, description="Compatibility-only legacy alias for automation_policy.allowed_recommendations")
+    mode: Optional[str] = Field(
+        default=None,
+        description="Compatibility-only legacy alias for automation_policy.follow_up_review_mode",
+    )
+    allowed_recommendations: Optional[List[str]] = Field(
+        default=None,
+        description="Compatibility-only legacy alias for automation_policy.allowed_recommendations",
+    )
     history_limit: int = Field(default=25, ge=5, le=100)
 
 
 class ResearchMonitorPolicyUpdateResponse(BaseModel):
     monitor_job_id: UUID
-    follow_up_autonomy: ResearchMonitorPolicyConfigResponse = Field(description="Compatibility-only legacy mirror of the resolved canonical policy")
+    follow_up_autonomy: ResearchMonitorPolicyConfigResponse = Field(
+        description="Compatibility-only legacy mirror of the resolved canonical policy"
+    )
     automation_profile: str = "balanced"
     automation_policy: Dict[str, Any] = Field(default_factory=dict)
     effective_policy: Dict[str, Any] = Field(default_factory=dict)
@@ -334,12 +402,16 @@ class ResearchMonitorCustomerRebalanceApplyMonitorRequest(BaseModel):
 
 class ResearchMonitorCustomerRebalancePreviewRequest(BaseModel):
     customer: str = Field(min_length=1, max_length=255)
-    monitor_budget_updates: List[ResearchMonitorCustomerRebalanceApplyMonitorRequest] = Field(default_factory=list)
+    monitor_budget_updates: List[
+        ResearchMonitorCustomerRebalanceApplyMonitorRequest
+    ] = Field(default_factory=list)
 
 
 class ResearchMonitorCustomerRebalanceApplyRequest(BaseModel):
     customer: str = Field(min_length=1, max_length=255)
-    monitor_budget_updates: List[ResearchMonitorCustomerRebalanceApplyMonitorRequest] = Field(min_length=1)
+    monitor_budget_updates: List[
+        ResearchMonitorCustomerRebalanceApplyMonitorRequest
+    ] = Field(min_length=1)
     change_reason: Optional[str] = Field(default=None, max_length=1000)
 
 
@@ -348,7 +420,9 @@ class ResearchMonitorCustomerRebalanceApplyResponse(BaseModel):
     updated_monitor_ids: List[UUID] = Field(default_factory=list)
     guidance_status: str = "none"
     guidance_summary: Optional[str] = None
-    latest_history_entries: List[ResearchMonitorBudgetHistoryEntryResponse] = Field(default_factory=list)
+    latest_history_entries: List[ResearchMonitorBudgetHistoryEntryResponse] = Field(
+        default_factory=list
+    )
 
 
 class ResearchMonitorPolicySimulationCountsResponse(BaseModel):
@@ -389,8 +463,12 @@ class ResearchMonitorPolicySimulationResponse(BaseModel):
     baseline_counts: ResearchMonitorPolicySimulationCountsResponse
     simulated_counts: ResearchMonitorPolicySimulationCountsResponse
     delta_counts: ResearchMonitorPolicySimulationCountsResponse
-    top_recommendation_deltas: List[ResearchMonitorPolicySimulationRecommendationDeltaResponse] = Field(default_factory=list)
-    sample_items: List[ResearchMonitorPolicySimulationSampleResponse] = Field(default_factory=list)
+    top_recommendation_deltas: List[
+        ResearchMonitorPolicySimulationRecommendationDeltaResponse
+    ] = Field(default_factory=list)
+    sample_items: List[ResearchMonitorPolicySimulationSampleResponse] = Field(
+        default_factory=list
+    )
     insufficient_context_count: int = 0
 
 
@@ -401,10 +479,18 @@ class ResearchMonitorPolicyEvaluationDetailResponse(BaseModel):
     evaluation_sample_count: int = 0
     evaluation_target_count: int = 8
     evaluation_reasons: List[str] = Field(default_factory=list)
-    before_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(default_factory=ResearchMonitorPolicyEvaluationCountsResponse)
-    after_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(default_factory=ResearchMonitorPolicyEvaluationCountsResponse)
-    delta_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(default_factory=ResearchMonitorPolicyEvaluationCountsResponse)
-    sample_items: List[ResearchMonitorPolicyEvaluationSampleResponse] = Field(default_factory=list)
+    before_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorPolicyEvaluationCountsResponse
+    )
+    after_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorPolicyEvaluationCountsResponse
+    )
+    delta_counts: ResearchMonitorPolicyEvaluationCountsResponse = Field(
+        default_factory=ResearchMonitorPolicyEvaluationCountsResponse
+    )
+    sample_items: List[ResearchMonitorPolicyEvaluationSampleResponse] = Field(
+        default_factory=list
+    )
 
 
 class ResearchMonitorHealthSummaryResponse(BaseModel):
@@ -428,15 +514,27 @@ class ResearchMonitorHealthSummaryResponse(BaseModel):
     health_score: float = 0.0
     health_bucket: str = "weak"
     health_reasons: List[str] = Field(default_factory=list)
-    current_policy_mode: Optional[str] = Field(default="manual_only", description="Compatibility-only legacy mirror of effective_policy.follow_up_review_mode")
-    current_allowed_recommendations: List[str] = Field(default_factory=list, description="Compatibility-only legacy mirror of the resolved allowed recommendation list")
+    current_policy_mode: Optional[str] = Field(
+        default="manual_only",
+        description="Compatibility-only legacy mirror of effective_policy.follow_up_review_mode",
+    )
+    current_allowed_recommendations: List[str] = Field(
+        default_factory=list,
+        description="Compatibility-only legacy mirror of the resolved allowed recommendation list",
+    )
     automation_profile: str = "balanced"
     automation_policy: Dict[str, Any] = Field(default_factory=dict)
     effective_policy: Dict[str, Any] = Field(default_factory=dict)
     autonomy_mode: str = "balanced"
-    autonomy_budget: ResearchMonitorBudgetConfigResponse = Field(default_factory=ResearchMonitorBudgetConfigResponse)
-    budget_usage: ResearchMonitorBudgetUsageResponse = Field(default_factory=ResearchMonitorBudgetUsageResponse)
-    budget_remaining: ResearchMonitorBudgetUsageResponse = Field(default_factory=ResearchMonitorBudgetUsageResponse)
+    autonomy_budget: ResearchMonitorBudgetConfigResponse = Field(
+        default_factory=ResearchMonitorBudgetConfigResponse
+    )
+    budget_usage: ResearchMonitorBudgetUsageResponse = Field(
+        default_factory=ResearchMonitorBudgetUsageResponse
+    )
+    budget_remaining: ResearchMonitorBudgetUsageResponse = Field(
+        default_factory=ResearchMonitorBudgetUsageResponse
+    )
     budget_throttle_state: str = "normal"
     budget_throttle_reasons: List[str] = Field(default_factory=list)
     budget_clamp_state: Optional[str] = None
@@ -462,15 +560,24 @@ class ResearchMonitorHealthSummaryResponse(BaseModel):
     policy_guardrail_action: Optional[str] = None
     policy_guardrail_reasons: List[str] = Field(default_factory=list)
     policy_guardrail_target_history_entry_id: Optional[str] = None
-    policy_guardrail_follow_up_autonomy: Optional[ResearchMonitorPolicyConfigResponse] = Field(default=None, description="Compatibility-only legacy mirror of policy_guardrail_target_policy")
+    policy_guardrail_follow_up_autonomy: Optional[
+        ResearchMonitorPolicyConfigResponse
+    ] = Field(
+        default=None,
+        description="Compatibility-only legacy mirror of policy_guardrail_target_policy",
+    )
     policy_guardrail_state: Optional[str] = None
     policy_guardrail_target_policy: Optional[Dict[str, Any]] = None
     policy_mode_counts: Dict[str, int] = Field(default_factory=dict)
     follow_up_review_counts: Dict[str, int] = Field(default_factory=dict)
     scheduler_summary: Dict[str, Any] = Field(default_factory=dict)
     suppressed_relaunches_count: int = 0
-    recent_policy_history: List[ResearchMonitorPolicyHistoryEntryResponse] = Field(default_factory=list)
-    top_recommendations: List[ResearchMonitorRecommendationAnalyticsResponse] = Field(default_factory=list)
+    recent_policy_history: List[ResearchMonitorPolicyHistoryEntryResponse] = Field(
+        default_factory=list
+    )
+    top_recommendations: List[ResearchMonitorRecommendationAnalyticsResponse] = Field(
+        default_factory=list
+    )
 
 
 class ResearchMonitorAnalyticsTotalsResponse(BaseModel):
@@ -492,6 +599,10 @@ class ResearchMonitorAnalyticsTotalsResponse(BaseModel):
 class ResearchMonitorAnalyticsResponse(BaseModel):
     generated_at: datetime
     totals: ResearchMonitorAnalyticsTotalsResponse
-    customers: List[ResearchMonitorCustomerPortfolioResponse] = Field(default_factory=list)
+    customers: List[ResearchMonitorCustomerPortfolioResponse] = Field(
+        default_factory=list
+    )
     monitors: List[ResearchMonitorHealthSummaryResponse] = Field(default_factory=list)
-    recommendations: List[ResearchMonitorRecommendationAnalyticsResponse] = Field(default_factory=list)
+    recommendations: List[ResearchMonitorRecommendationAnalyticsResponse] = Field(
+        default_factory=list
+    )

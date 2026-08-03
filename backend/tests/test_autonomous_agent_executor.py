@@ -1,11 +1,11 @@
 import json
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from uuid import uuid4
 
 import pytest
 from sqlalchemy import select
-from unittest.mock import AsyncMock
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.document import Document, DocumentSource
@@ -14,10 +14,13 @@ from app.models.experiment import ExperimentPlan
 from app.models.research_inbox import ResearchInboxItem
 from app.models.research_note import ResearchNote
 from app.models.research_portfolio import ResearchPortfolio
-from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.agent_execution_planner import ExecutionPlan, PlanStep
+from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.project_profile_service import infer_project_profile_from_paths
-from app.services.research_opportunity_service import merge_operator_fields, normalize_research_opportunity
+from app.services.research_opportunity_service import (
+    merge_operator_fields,
+    normalize_research_opportunity,
+)
 
 
 def _make_job(config=None) -> AgentJob:
@@ -156,7 +159,9 @@ def test_parse_decision_response_injects_default_source_scope():
 
 
 @pytest.mark.asyncio
-async def test_domain_research_follow_up_job_inherits_policy_and_sandbox_context(db_session):
+async def test_domain_research_follow_up_job_inherits_policy_and_sandbox_context(
+    db_session,
+):
     executor = AutonomousAgentExecutor()
     parent_job = _make_job(
         {
@@ -176,25 +181,40 @@ async def test_domain_research_follow_up_job_inherits_policy_and_sandbox_context
         customer_context="bounded compiler research",
         track_type="compiler",
         source_scope="kb_plus_arxiv_plus_repo",
-        top_idea={"title": "Vectorization regression", "hypothesis": "A pass ordering issue regressed vectorization"},
+        top_idea={
+            "title": "Vectorization regression",
+            "hypothesis": "A pass ordering issue regressed vectorization",
+        },
         docs=[],
         repo_documents=[],
         papers=[],
         repo_source_ids=["repo-source-1"],
         benchmark_queries=["compile time regression"],
         automation_profile="balanced",
-        automation_policy={"follow_up_review_mode": "queue_for_approval", "auto_execute_validation_runs": False},
+        automation_policy={
+            "follow_up_review_mode": "queue_for_approval",
+            "auto_execute_validation_runs": False,
+        },
         sandbox_profile_id="scientific-compiler-sandbox",
         profile_id="profile-compiler-1",
     )
 
     assert child is not None
     assert child.config["automation_profile"] == "balanced"
-    assert child.config["automation_policy"]["follow_up_review_mode"] == "queue_for_approval"
+    assert (
+        child.config["automation_policy"]["follow_up_review_mode"]
+        == "queue_for_approval"
+    )
     assert child.config["sandbox_profile_id"] == "scientific-compiler-sandbox"
     assert child.config["profile_id"] == "profile-compiler-1"
-    assert child.config["validation_policy"]["follow_up_review_mode"] == "queue_for_approval"
-    assert child.config["domain_research_follow_up"]["sandbox_profile_id"] == "scientific-compiler-sandbox"
+    assert (
+        child.config["validation_policy"]["follow_up_review_mode"]
+        == "queue_for_approval"
+    )
+    assert (
+        child.config["domain_research_follow_up"]["sandbox_profile_id"]
+        == "scientific-compiler-sandbox"
+    )
 
 
 def test_build_action_for_tool_inherits_project_source_scope():
@@ -202,7 +222,9 @@ def test_build_action_for_tool_inherits_project_source_scope():
     scoped_source = str(uuid4())
     job = _make_job(config={"target_source_id": scoped_source})
 
-    action = executor._build_action_for_tool("search_documents", job, purpose="scope-aware recovery")
+    action = executor._build_action_for_tool(
+        "search_documents", job, purpose="scope-aware recovery"
+    )
 
     assert action is not None
     assert action["tool"] == "search_documents"
@@ -216,14 +238,15 @@ def test_build_thinking_prompt_includes_project_scope_guidance():
     state = _make_state()
     observation = {"iteration": 1, "context": []}
 
-    prompt = executor._build_thinking_prompt(job, agent_def=None, state=state, observation=observation)
+    prompt = executor._build_thinking_prompt(
+        job, agent_def=None, state=state, observation=observation
+    )
 
     assert "PROJECT SCOPE" in prompt
     assert scoped_source in prompt
 
 
 def test_infer_project_profile_from_paths_detects_stack_and_commands():
-    executor = AutonomousAgentExecutor()
     paths = [
         "frontend/package.json",
         "frontend/src/App.tsx",
@@ -264,7 +287,9 @@ def test_build_thinking_prompt_includes_project_profile_context():
     }
     observation = {"iteration": 1, "context": []}
 
-    prompt = executor._build_thinking_prompt(job, agent_def=None, state=state, observation=observation)
+    prompt = executor._build_thinking_prompt(
+        job, agent_def=None, state=state, observation=observation
+    )
 
     assert "PROJECT PROFILE" in prompt
     assert "Detected stack" in prompt
@@ -275,7 +300,9 @@ def test_build_thinking_prompt_includes_project_profile_context():
 
 
 @pytest.mark.asyncio
-async def test_execute_job_dispatches_known_deterministic_runner_without_autonomous_loop(db_session):
+async def test_execute_job_dispatches_known_deterministic_runner_without_autonomous_loop(
+    db_session,
+):
     executor = AutonomousAgentExecutor()
     job = _make_job(config={"deterministic_runner": "ai_hub_scientist"})
     job.status = AgentJobStatus.PENDING.value
@@ -288,10 +315,14 @@ async def test_execute_job_dispatches_known_deterministic_runner_without_autonom
         cleanup_all=lambda: None,
     )
     executor._load_user_settings = AsyncMock(return_value=None)
-    executor._run_autonomous_loop = AsyncMock(return_value={"status": "completed", "path": "loop"})
+    executor._run_autonomous_loop = AsyncMock(
+        return_value={"status": "completed", "path": "loop"}
+    )
     executor._trigger_chained_jobs = AsyncMock()
     executor.deterministic_runner_registry = SimpleNamespace(
-        try_execute=AsyncMock(return_value=(True, {"status": "completed", "path": "deterministic"}))
+        try_execute=AsyncMock(
+            return_value=(True, {"status": "completed", "path": "deterministic"})
+        )
     )
 
     result = await executor.execute_job(job.id, db_session)
@@ -302,7 +333,9 @@ async def test_execute_job_dispatches_known_deterministic_runner_without_autonom
 
 
 @pytest.mark.asyncio
-async def test_execute_job_falls_back_to_autonomous_loop_when_no_deterministic_runner_matches(db_session):
+async def test_execute_job_falls_back_to_autonomous_loop_when_no_deterministic_runner_matches(
+    db_session,
+):
     executor = AutonomousAgentExecutor()
     job = _make_job(config={"deterministic_runner": "unknown_runner"})
     job.status = AgentJobStatus.PENDING.value
@@ -315,7 +348,9 @@ async def test_execute_job_falls_back_to_autonomous_loop_when_no_deterministic_r
         cleanup_all=lambda: None,
     )
     executor._load_user_settings = AsyncMock(return_value=None)
-    executor._run_autonomous_loop = AsyncMock(return_value={"status": "completed", "path": "loop"})
+    executor._run_autonomous_loop = AsyncMock(
+        return_value={"status": "completed", "path": "loop"}
+    )
     executor._trigger_chained_jobs = AsyncMock()
     executor.deterministic_runner_registry = SimpleNamespace(
         try_execute=AsyncMock(return_value=(False, None))
@@ -329,7 +364,6 @@ async def test_execute_job_falls_back_to_autonomous_loop_when_no_deterministic_r
 
 
 def test_infer_project_profile_from_paths_scopes_commands_for_nested_repo_dirs():
-    executor = AutonomousAgentExecutor()
     paths = [
         "frontend/package.json",
         "frontend/src/App.tsx",
@@ -349,11 +383,12 @@ def test_infer_project_profile_from_paths_scopes_commands_for_nested_repo_dirs()
     assert "make test" in commands
     assert "npm test" not in commands
     assert "npm --prefix frontend install" in (command_groups.get("install") or [])
-    assert "python3 -m pytest -q backend/tests" in (command_groups.get("test_fallback") or [])
+    assert "python3 -m pytest -q backend/tests" in (
+        command_groups.get("test_fallback") or []
+    )
 
 
 def test_infer_project_profile_from_paths_uses_poetry_and_yarn_fallbacks():
-    executor = AutonomousAgentExecutor()
     paths = [
         "frontend/package.json",
         "frontend/yarn.lock",
@@ -369,14 +404,20 @@ def test_infer_project_profile_from_paths_uses_poetry_and_yarn_fallbacks():
 
     command_groups = profile.get("command_groups") or {}
     assert "cd frontend && yarn install" in (command_groups.get("install") or [])
-    assert "cd frontend && CI=true yarn test --watchAll=false" in (command_groups.get("test") or [])
+    assert "cd frontend && CI=true yarn test --watchAll=false" in (
+        command_groups.get("test") or []
+    )
     assert "cd backend && poetry install" in (command_groups.get("install") or [])
     assert "poetry run pytest -q backend/tests" in (command_groups.get("test") or [])
-    assert "python -m pytest -q backend/tests" in (command_groups.get("test_fallback") or [])
+    assert "python -m pytest -q backend/tests" in (
+        command_groups.get("test_fallback") or []
+    )
 
 
 @pytest.mark.asyncio
-async def test_domain_research_orchestrator_creates_structured_memo_and_experiment_drafts(db_session, test_user, monkeypatch):
+async def test_domain_research_orchestrator_creates_structured_memo_and_experiment_drafts(
+    db_session, test_user, monkeypatch
+):
     queued_jobs: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
@@ -428,7 +469,7 @@ async def test_domain_research_orchestrator_creates_structured_memo_and_experime
     )
     repo_pyproject = Document(
         title="pyproject.toml",
-        content="[tool.pytest.ini_options]\naddopts = \"-q\"\n",
+        content='[tool.pytest.ini_options]\naddopts = "-q"\n',
         content_hash="repo-pyproject",
         source_id=repo_source.id,
         source_identifier="pyproject.toml",
@@ -497,7 +538,9 @@ async def test_domain_research_orchestrator_creates_structured_memo_and_experime
     )
     job.user_id = test_user.id
 
-    db_session.add_all([doc1, doc2, repo_doc, repo_pyproject, repo_test_doc, profile, job])
+    db_session.add_all(
+        [doc1, doc2, repo_doc, repo_pyproject, repo_test_doc, profile, job]
+    )
     await db_session.commit()
     await db_session.refresh(job)
     await db_session.refresh(profile)
@@ -577,23 +620,46 @@ async def test_domain_research_orchestrator_creates_structured_memo_and_experime
     executor.arxiv_search_service.search = _fake_arxiv_search
     executor.llm_service.generate_response = _fake_generate_response
 
-    result = await executor._run_domain_research_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_domain_research_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(job)
     await db_session.refresh(profile)
 
-    notes = list((await db_session.execute(select(ResearchNote).where(ResearchNote.user_id == test_user.id))).scalars().all())
+    notes = list(
+        (
+            await db_session.execute(
+                select(ResearchNote).where(ResearchNote.user_id == test_user.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert notes
-    memo_note = next(note for note in notes if isinstance(note.structured_payload, dict))
+    memo_note = next(
+        note for note in notes if isinstance(note.structured_payload, dict)
+    )
     assert memo_note.structured_payload["research_mode"] == "literature_to_hypothesis"
     assert memo_note.structured_payload["track_type"] == "compiler"
     assert len(memo_note.structured_payload["evidence_snapshot"]["repo_documents"]) == 1
     assert len(memo_note.structured_payload["hypotheses"]) == 1
-    assert memo_note.structured_payload["hypotheses"][0]["title"] == "Speculation-aware pass fusion ordering"
+    assert (
+        memo_note.structured_payload["hypotheses"][0]["title"]
+        == "Speculation-aware pass fusion ordering"
+    )
     assert memo_note.structured_payload["hypotheses"][0]["track_fit_score"] > 0
 
-    plans = list((await db_session.execute(select(ExperimentPlan).where(ExperimentPlan.user_id == test_user.id))).scalars().all())
+    plans = list(
+        (
+            await db_session.execute(
+                select(ExperimentPlan).where(ExperimentPlan.user_id == test_user.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(plans) == 1
     assert plans[0].generator_details["source_hypothesis_id"] == "idea_1"
     assert plans[0].generator_details["generation_reason"] == "autonomous_research_memo"
@@ -601,31 +667,77 @@ async def test_domain_research_orchestrator_creates_structured_memo_and_experime
 
     from app.models.experiment import ExperimentRun
 
-    runs = list((await db_session.execute(select(ExperimentRun).where(ExperimentRun.user_id == test_user.id))).scalars().all())
+    runs = list(
+        (
+            await db_session.execute(
+                select(ExperimentRun).where(ExperimentRun.user_id == test_user.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(runs) == 1
     assert runs[0].status == "queued"
-    assert runs[0].config["scientific_validation"]["recipe_family"] == "compiler_validation"
-    assert runs[0].config["scientific_validation"]["recipe_id"] == "compiler_validation_v1"
+    assert (
+        runs[0].config["scientific_validation"]["recipe_family"]
+        == "compiler_validation"
+    )
+    assert (
+        runs[0].config["scientific_validation"]["recipe_id"] == "compiler_validation_v1"
+    )
     assert runs[0].config["scientific_validation"]["recipe_version"] == 1
-    assert runs[0].config["scientific_validation"]["sandbox_profile_id"] == "scientific-compiler-sandbox"
-    assert runs[0].config["scientific_validation"]["domain_research_profile_id"] == str(profile.id)
+    assert (
+        runs[0].config["scientific_validation"]["sandbox_profile_id"]
+        == "scientific-compiler-sandbox"
+    )
+    assert runs[0].config["scientific_validation"]["domain_research_profile_id"] == str(
+        profile.id
+    )
     assert runs[0].config["scientific_validation"]["blocked_reason_code"] is None
     assert runs[0].config["scientific_validation"]["capability_check"]["ok"] is True
-    assert runs[0].config["scientific_validation"]["profile_snapshot"]["id"] == "scientific-compiler-sandbox"
-    assert runs[0].config["scientific_validation"]["profile_snapshot"]["created_at"] is not None
-    assert runs[0].config["scientific_validation"]["recipe_snapshot"]["recipe_id"] == "compiler_validation_v1"
-    recipe_commands = runs[0].config["scientific_validation"]["recipe_snapshot"]["commands"]
+    assert (
+        runs[0].config["scientific_validation"]["profile_snapshot"]["id"]
+        == "scientific-compiler-sandbox"
+    )
+    assert (
+        runs[0].config["scientific_validation"]["profile_snapshot"]["created_at"]
+        is not None
+    )
+    assert (
+        runs[0].config["scientific_validation"]["recipe_snapshot"]["recipe_id"]
+        == "compiler_validation_v1"
+    )
+    recipe_commands = runs[0].config["scientific_validation"]["recipe_snapshot"][
+        "commands"
+    ]
     assert recipe_commands
-    assert any(str(command).startswith("python -m pytest -q tests") or str(command).startswith("pytest -q tests") for command in recipe_commands)
+    assert any(
+        str(command).startswith("python -m pytest -q tests")
+        or str(command).startswith("pytest -q tests")
+        for command in recipe_commands
+    )
     assert runs[0].agent_job_id is not None
     assert queued_jobs and queued_jobs[0][1] == str(test_user.id)
 
-    inbox_items = list((await db_session.execute(select(ResearchInboxItem).where(ResearchInboxItem.user_id == test_user.id))).scalars().all())
+    inbox_items = list(
+        (
+            await db_session.execute(
+                select(ResearchInboxItem).where(
+                    ResearchInboxItem.user_id == test_user.id
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
     assert len(inbox_items) == 1
     assert inbox_items[0].item_type == "hypothesis_memo"
     assert profile.latest_summary["review_item_id"] == str(inbox_items[0].id)
     assert profile.latest_summary["track_type"] == "compiler"
-    assert profile.latest_summary["effective_policy"]["follow_up_review_mode"] == "queue_for_approval"
+    assert (
+        profile.latest_summary["effective_policy"]["follow_up_review_mode"]
+        == "queue_for_approval"
+    )
     assert profile.latest_summary["profile_config_revision"]
     assert "autonomy_state_counts" in profile.latest_summary
     assert profile.latest_summary["evidence_mix"]["repo_documents"] == 1
@@ -669,13 +781,17 @@ def test_merge_operator_fields_preserves_domain_operator_state_and_appends_evide
     assert merged["linked_validation_run_ids"] == ["run-existing"]
     assert merged["child_job_ids"] == ["job-existing"]
     assert "Earlier evidence" in (merged.get("supporting_evidence") or [])
-    assert "Fresh branch-heavy benchmark signal" in (merged.get("supporting_evidence") or [])
+    assert "Fresh branch-heavy benchmark signal" in (
+        merged.get("supporting_evidence") or []
+    )
     assert "Review later" in (merged.get("next_steps") or [])
     assert "Benchmark branch-heavy kernels" in (merged.get("next_steps") or [])
 
 
 @pytest.mark.asyncio
-async def test_research_fleet_orchestrator_preserves_suppressed_operator_state_and_skips_auto_actions(db_session, test_user, monkeypatch):
+async def test_research_fleet_orchestrator_preserves_suppressed_operator_state_and_skips_auto_actions(
+    db_session, test_user, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Portfolio Source Note",
@@ -763,15 +879,27 @@ async def test_research_fleet_orchestrator_preserves_suppressed_operator_state_a
     await db_session.refresh(portfolio)
 
     async def _unexpected_validation(*args, **kwargs):
-        raise AssertionError("suppressed opportunities should not auto-launch validation")
+        raise AssertionError(
+            "suppressed opportunities should not auto-launch validation"
+        )
 
     async def _unexpected_follow_up(*args, **kwargs):
-        raise AssertionError("suppressed opportunities should not auto-launch follow-up jobs")
+        raise AssertionError(
+            "suppressed opportunities should not auto-launch follow-up jobs"
+        )
 
-    monkeypatch.setattr(executor := AutonomousAgentExecutor(), "_create_scientific_validation_run", _unexpected_validation)
-    monkeypatch.setattr(executor, "_create_domain_research_follow_up_job", _unexpected_follow_up)
+    monkeypatch.setattr(
+        executor := AutonomousAgentExecutor(),
+        "_create_scientific_validation_run",
+        _unexpected_validation,
+    )
+    monkeypatch.setattr(
+        executor, "_create_domain_research_follow_up_job", _unexpected_follow_up
+    )
 
-    result = await executor._run_research_fleet_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_research_fleet_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(portfolio)
@@ -790,12 +918,16 @@ async def test_research_fleet_orchestrator_preserves_suppressed_operator_state_a
     assert str(profile.id) in (opportunity.get("source_profile_ids") or [])
     assert "Fresh profile evidence" in (opportunity.get("supporting_evidence") or [])
     assert portfolio.latest_summary["autonomy_mode"] == "balanced"
-    assert portfolio.latest_summary["autonomy_summary"]["suppressed_duplicates_count"] >= 0
+    assert (
+        portfolio.latest_summary["autonomy_summary"]["suppressed_duplicates_count"] >= 0
+    )
     assert portfolio.latest_summary["stage_counts"]["suppressed"] == 1
 
 
 @pytest.mark.asyncio
-async def test_research_fleet_orchestrator_does_not_duplicate_existing_runs_or_follow_up_jobs(db_session, test_user, monkeypatch):
+async def test_research_fleet_orchestrator_does_not_duplicate_existing_runs_or_follow_up_jobs(
+    db_session, test_user, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Accepted Portfolio Source Note",
@@ -882,16 +1014,26 @@ async def test_research_fleet_orchestrator_does_not_duplicate_existing_runs_or_f
     await db_session.refresh(portfolio)
 
     async def _unexpected_validation(*args, **kwargs):
-        raise AssertionError("accepted opportunities with linked runs should not auto-launch duplicate validation")
+        raise AssertionError(
+            "accepted opportunities with linked runs should not auto-launch duplicate validation"
+        )
 
     async def _unexpected_follow_up(*args, **kwargs):
-        raise AssertionError("accepted opportunities with child jobs should not auto-launch duplicate follow-up jobs")
+        raise AssertionError(
+            "accepted opportunities with child jobs should not auto-launch duplicate follow-up jobs"
+        )
 
     executor = AutonomousAgentExecutor()
-    monkeypatch.setattr(executor, "_create_scientific_validation_run", _unexpected_validation)
-    monkeypatch.setattr(executor, "_create_domain_research_follow_up_job", _unexpected_follow_up)
+    monkeypatch.setattr(
+        executor, "_create_scientific_validation_run", _unexpected_validation
+    )
+    monkeypatch.setattr(
+        executor, "_create_domain_research_follow_up_job", _unexpected_follow_up
+    )
 
-    result = await executor._run_research_fleet_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_research_fleet_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(portfolio)
@@ -910,7 +1052,9 @@ async def test_research_fleet_orchestrator_does_not_duplicate_existing_runs_or_f
 
 
 @pytest.mark.asyncio
-async def test_research_fleet_orchestrator_records_transient_validation_skip_without_blocking_opportunity(db_session, test_user, monkeypatch):
+async def test_research_fleet_orchestrator_records_transient_validation_skip_without_blocking_opportunity(
+    db_session, test_user, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Transient Skip Note",
@@ -992,9 +1136,13 @@ async def test_research_fleet_orchestrator_records_transient_validation_skip_wit
         }
 
     executor = AutonomousAgentExecutor()
-    monkeypatch.setattr(executor, "_create_scientific_validation_run", _blocked_validation)
+    monkeypatch.setattr(
+        executor, "_create_scientific_validation_run", _blocked_validation
+    )
 
-    result = await executor._run_research_fleet_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_research_fleet_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(portfolio)
@@ -1006,12 +1154,19 @@ async def test_research_fleet_orchestrator_records_transient_validation_skip_wit
     assert opportunity["stage"] in {"accepted", "planned"}
     assert opportunity["last_skip_reason_code"] == "backoff_cooldown"
     assert (opportunity.get("linked_validation_run_ids") or []) == []
-    assert portfolio.latest_summary["autonomy_summary"]["skipped_opportunities_count"] == 1
-    assert portfolio.latest_summary["skipped_opportunities"][0]["reason_code"] == "backoff_cooldown"
+    assert (
+        portfolio.latest_summary["autonomy_summary"]["skipped_opportunities_count"] == 1
+    )
+    assert (
+        portfolio.latest_summary["skipped_opportunities"][0]["reason_code"]
+        == "backoff_cooldown"
+    )
 
 
 @pytest.mark.asyncio
-async def test_research_fleet_orchestrator_keeps_completed_opportunity_idle_until_evidence_changes(db_session, test_user, monkeypatch):
+async def test_research_fleet_orchestrator_keeps_completed_opportunity_idle_until_evidence_changes(
+    db_session, test_user, monkeypatch
+):
     profile = DomainResearchProfile(
         user_id=test_user.id,
         title="Compiler Frontier",
@@ -1089,12 +1244,18 @@ async def test_research_fleet_orchestrator_keeps_completed_opportunity_idle_unti
     await db_session.commit()
 
     async def _unexpected_validation(*args, **kwargs):
-        raise AssertionError("completed opportunities with unchanged evidence should not relaunch validation")
+        raise AssertionError(
+            "completed opportunities with unchanged evidence should not relaunch validation"
+        )
 
     executor = AutonomousAgentExecutor()
-    monkeypatch.setattr(executor, "_create_scientific_validation_run", _unexpected_validation)
+    monkeypatch.setattr(
+        executor, "_create_scientific_validation_run", _unexpected_validation
+    )
 
-    result = await executor._run_research_fleet_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_research_fleet_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(portfolio)
@@ -1106,11 +1267,16 @@ async def test_research_fleet_orchestrator_keeps_completed_opportunity_idle_unti
     assert opportunity["stage"] == "completed"
     assert opportunity["autonomy_state"] == "completed_waiting_change"
     assert opportunity["last_decision_reason_code"] == "completed_current_evidence"
-    assert portfolio.latest_summary["autonomy_state_counts"]["completed_waiting_change"] == 1
+    assert (
+        portfolio.latest_summary["autonomy_state_counts"]["completed_waiting_change"]
+        == 1
+    )
 
 
 @pytest.mark.asyncio
-async def test_research_fleet_orchestrator_reopens_completed_opportunity_when_evidence_changes(db_session, test_user, monkeypatch):
+async def test_research_fleet_orchestrator_reopens_completed_opportunity_when_evidence_changes(
+    db_session, test_user, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Changed Evidence Note",
@@ -1207,7 +1373,9 @@ async def test_research_fleet_orchestrator_reopens_completed_opportunity_when_ev
     executor = AutonomousAgentExecutor()
     monkeypatch.setattr(executor, "_create_scientific_validation_run", _validation)
 
-    result = await executor._run_research_fleet_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_research_fleet_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(portfolio)
@@ -1218,12 +1386,19 @@ async def test_research_fleet_orchestrator_reopens_completed_opportunity_when_ev
     )
     assert opportunity["stage"] == "validating"
     assert opportunity["autonomy_state"] == "active"
-    assert opportunity["last_decision_type"] in {"validation_run_queued", "experiment_plan_created"}
-    assert "run-reopened" in (portfolio.latest_summary["launched_validation_run_ids"] or [])
+    assert opportunity["last_decision_type"] in {
+        "validation_run_queued",
+        "experiment_plan_created",
+    }
+    assert "run-reopened" in (
+        portfolio.latest_summary["launched_validation_run_ids"] or []
+    )
 
 
 @pytest.mark.asyncio
-async def test_research_fleet_orchestrator_queues_follow_up_approval_without_auto_launch(db_session, test_user, monkeypatch):
+async def test_research_fleet_orchestrator_queues_follow_up_approval_without_auto_launch(
+    db_session, test_user, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Queued Follow-up Note",
@@ -1301,22 +1476,39 @@ async def test_research_fleet_orchestrator_queues_follow_up_approval_without_aut
         raise AssertionError("queue_for_approval should not auto-launch follow-up jobs")
 
     executor = AutonomousAgentExecutor()
-    monkeypatch.setattr(executor, "_create_domain_research_follow_up_job", _unexpected_follow_up)
+    monkeypatch.setattr(
+        executor, "_create_domain_research_follow_up_job", _unexpected_follow_up
+    )
 
-    result = await executor._run_research_fleet_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_research_fleet_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(portfolio)
     opportunity = portfolio.opportunities[0]
     assert opportunity["follow_up_review_status"] == "pending_approval"
-    assert opportunity["follow_up_review_evidence_revision"] == opportunity["evidence_revision"]
+    assert (
+        opportunity["follow_up_review_evidence_revision"]
+        == opportunity["evidence_revision"]
+    )
     assert (opportunity.get("child_job_ids") or []) == []
-    assert portfolio.latest_summary["scheduler_summary"]["pending_follow_up_approvals_count"] == 1
-    assert portfolio.latest_summary["pending_follow_up_approvals"][0]["reason_code"] == "follow_up_pending_approval"
+    assert (
+        portfolio.latest_summary["scheduler_summary"][
+            "pending_follow_up_approvals_count"
+        ]
+        == 1
+    )
+    assert (
+        portfolio.latest_summary["pending_follow_up_approvals"][0]["reason_code"]
+        == "follow_up_pending_approval"
+    )
 
 
 @pytest.mark.asyncio
-async def test_research_fleet_orchestrator_records_manual_follow_up_recommendation_without_launch(db_session, test_user, monkeypatch):
+async def test_research_fleet_orchestrator_records_manual_follow_up_recommendation_without_launch(
+    db_session, test_user, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Manual Follow-up Note",
@@ -1394,21 +1586,35 @@ async def test_research_fleet_orchestrator_records_manual_follow_up_recommendati
         raise AssertionError("manual_only should not auto-launch follow-up jobs")
 
     executor = AutonomousAgentExecutor()
-    monkeypatch.setattr(executor, "_create_domain_research_follow_up_job", _unexpected_follow_up)
+    monkeypatch.setattr(
+        executor, "_create_domain_research_follow_up_job", _unexpected_follow_up
+    )
 
-    result = await executor._run_research_fleet_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_research_fleet_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(portfolio)
     opportunity = portfolio.opportunities[0]
     assert opportunity["follow_up_review_status"] == "manual_recommendation"
     assert (opportunity.get("child_job_ids") or []) == []
-    assert portfolio.latest_summary["scheduler_summary"]["manual_follow_up_recommendations_count"] == 1
-    assert portfolio.latest_summary["manual_follow_up_recommendations"][0]["reason_code"] == "manual_follow_up_recommendation"
+    assert (
+        portfolio.latest_summary["scheduler_summary"][
+            "manual_follow_up_recommendations_count"
+        ]
+        == 1
+    )
+    assert (
+        portfolio.latest_summary["manual_follow_up_recommendations"][0]["reason_code"]
+        == "manual_follow_up_recommendation"
+    )
 
 
 @pytest.mark.asyncio
-async def test_research_fleet_orchestrator_preserves_rejected_follow_up_for_same_evidence(db_session, test_user, monkeypatch):
+async def test_research_fleet_orchestrator_preserves_rejected_follow_up_for_same_evidence(
+    db_session, test_user, monkeypatch
+):
     profile = DomainResearchProfile(
         user_id=test_user.id,
         title="Generic Frontier",
@@ -1472,9 +1678,13 @@ async def test_research_fleet_orchestrator_preserves_rejected_follow_up_for_same
     portfolio.linked_profile_ids = [str(profile.id)]
     db_session.add_all([profile, portfolio])
     await db_session.flush()
-    portfolio.opportunities = [normalize_research_opportunity(portfolio.opportunities[0])]
+    portfolio.opportunities = [
+        normalize_research_opportunity(portfolio.opportunities[0])
+    ]
     portfolio.opportunities[0]["follow_up_review_status"] = "rejected"
-    portfolio.opportunities[0]["follow_up_review_evidence_revision"] = portfolio.opportunities[0]["evidence_revision"]
+    portfolio.opportunities[0][
+        "follow_up_review_evidence_revision"
+    ] = portfolio.opportunities[0]["evidence_revision"]
     await db_session.commit()
 
     job = _make_job(
@@ -1492,30 +1702,49 @@ async def test_research_fleet_orchestrator_preserves_rejected_follow_up_for_same
     await db_session.commit()
 
     async def _unexpected_follow_up(*args, **kwargs):
-        raise AssertionError("rejected follow-up for unchanged evidence should not relaunch")
+        raise AssertionError(
+            "rejected follow-up for unchanged evidence should not relaunch"
+        )
 
     executor = AutonomousAgentExecutor()
-    monkeypatch.setattr(executor, "_create_domain_research_follow_up_job", _unexpected_follow_up)
+    monkeypatch.setattr(
+        executor, "_create_domain_research_follow_up_job", _unexpected_follow_up
+    )
 
-    result = await executor._run_research_fleet_orchestrator(job=job, db=db_session, progress_callback=None)
+    result = await executor._run_research_fleet_orchestrator(
+        job=job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     await db_session.refresh(portfolio)
     opportunity = portfolio.opportunities[0]
     assert opportunity["follow_up_review_status"] == "rejected"
     assert opportunity["last_decision_reason_code"] == "operator_rejected_follow_up"
-    assert portfolio.latest_summary["scheduler_summary"]["suppressed_relaunches_count"] >= 1
-    assert portfolio.latest_summary["suppressed_relaunches"][0]["reason_code"] == "operator_rejected_follow_up"
+    assert (
+        portfolio.latest_summary["scheduler_summary"]["suppressed_relaunches_count"]
+        >= 1
+    )
+    assert (
+        portfolio.latest_summary["suppressed_relaunches"][0]["reason_code"]
+        == "operator_rejected_follow_up"
+    )
 
 
 def test_select_verification_commands_from_profile_prefers_test_commands():
     executor = AutonomousAgentExecutor()
     profile = {
         "detected_stack": ["python", "node"],
-        "suggested_commands": ["npm install", "npm run build", "npm test", "python -m pytest -q"],
+        "suggested_commands": [
+            "npm install",
+            "npm run build",
+            "npm test",
+            "python -m pytest -q",
+        ],
     }
 
-    commands = executor._select_verification_commands_from_profile(profile, max_commands=3)
+    commands = executor._select_verification_commands_from_profile(
+        profile, max_commands=3
+    )
 
     assert "npm test" in commands
     assert "python -m pytest -q" in commands
@@ -1541,7 +1770,9 @@ def test_select_verification_commands_from_profile_preserves_nested_repo_command
         ],
     }
 
-    commands = executor._select_verification_commands_from_profile(profile, max_commands=3)
+    commands = executor._select_verification_commands_from_profile(
+        profile, max_commands=3
+    )
 
     assert commands == [
         "CI=true npm --prefix frontend test -- --watchAll=false",
@@ -1557,7 +1788,9 @@ def test_select_verification_commands_from_profile_falls_back_to_stack_defaults(
         "suggested_commands": ["go build ./...", "dotnet build"],
     }
 
-    commands = executor._select_verification_commands_from_profile(profile, max_commands=2)
+    commands = executor._select_verification_commands_from_profile(
+        profile, max_commands=2
+    )
 
     assert commands == ["go test ./...", "dotnet test"]
 
@@ -1566,7 +1799,10 @@ def test_get_bootstrap_and_fallback_commands_from_profile_skips_primary_duplicat
     executor = AutonomousAgentExecutor()
     profile = {
         "command_groups": {
-            "install": ["npm --prefix frontend install", "cd backend && poetry install"],
+            "install": [
+                "npm --prefix frontend install",
+                "cd backend && poetry install",
+            ],
             "test_fallback": [
                 "CI=true npm --prefix frontend test -- --watchAll=false",
                 "python3 -m pytest -q backend/tests",
@@ -1600,7 +1836,11 @@ def test_should_bootstrap_after_verification_failure_detects_missing_toolchain_s
         {"ok": False, "exit_code": 127, "stderr": "/bin/sh: pytest: command not found"}
     )
     assert executor._should_bootstrap_after_verification_failure(
-        {"ok": False, "exit_code": 1, "stderr": "ModuleNotFoundError: No module named 'fastapi'"}
+        {
+            "ok": False,
+            "exit_code": 1,
+            "stderr": "ModuleNotFoundError: No module named 'fastapi'",
+        }
     )
     assert not executor._should_bootstrap_after_verification_failure(
         {"ok": False, "exit_code": 1, "stderr": "AssertionError: expected 2 == 3"}
@@ -1648,9 +1888,7 @@ def test_resolve_default_source_scope_from_inherited_parent_results():
     job = _make_job(
         config={
             "inherited_data": {
-                "parent_results": {
-                    "repo_ingest": {"source_id": inherited_source}
-                }
+                "parent_results": {"repo_ingest": {"source_id": inherited_source}}
             }
         }
     )
@@ -1668,7 +1906,9 @@ def test_get_tools_for_job_type_includes_project_bootstrap():
 
 def test_resolve_scope_source_prefers_canonical_source_id():
     executor = AutonomousAgentExecutor()
-    job = _make_job(config={"source_id": str(uuid4()), "target_source_id": str(uuid4())})
+    job = _make_job(
+        config={"source_id": str(uuid4()), "target_source_id": str(uuid4())}
+    )
 
     source = executor._resolve_scope_source(job)
 
@@ -1694,7 +1934,9 @@ def test_append_scope_event_keeps_bounded_history():
     executor = AutonomousAgentExecutor()
     state = _make_state()
     for i in range(12):
-        executor._append_scope_event(state, {"type": "resolved_scope", "iteration": i}, max_events=5)
+        executor._append_scope_event(
+            state, {"type": "resolved_scope", "iteration": i}, max_events=5
+        )
 
     events = state.get("scope_events") or []
     assert len(events) == 5
@@ -1704,10 +1946,15 @@ def test_append_scope_event_keeps_bounded_history():
 def test_build_verification_action_for_created_document_uses_document_details():
     executor = AutonomousAgentExecutor()
     job = _make_job(config={"source_id": str(uuid4())})
-    primary_action = {"tool": "create_document_from_text", "params": {"source_id": str(uuid4())}}
+    primary_action = {
+        "tool": "create_document_from_text",
+        "params": {"source_id": str(uuid4())},
+    }
     primary_result = {"success": True, "data": {"document_id": str(uuid4())}}
 
-    verification = executor._build_verification_action(job, primary_action, primary_result)
+    verification = executor._build_verification_action(
+        job, primary_action, primary_result
+    )
 
     assert verification is not None
     assert verification["tool"] == "get_document_details"
@@ -1717,10 +1964,15 @@ def test_build_verification_action_for_created_document_uses_document_details():
 def test_build_verification_action_for_saved_finding_uses_findings_query():
     executor = AutonomousAgentExecutor()
     job = _make_job(config={"source_id": str(uuid4())})
-    primary_action = {"tool": "save_research_finding", "params": {"category": "key_insight"}}
+    primary_action = {
+        "tool": "save_research_finding",
+        "params": {"category": "key_insight"},
+    }
     primary_result = {"success": True, "data": {"finding_id": str(uuid4())}}
 
-    verification = executor._build_verification_action(job, primary_action, primary_result)
+    verification = executor._build_verification_action(
+        job, primary_action, primary_result
+    )
 
     assert verification is not None
     assert verification["tool"] == "get_research_findings"
@@ -1733,7 +1985,10 @@ def test_build_summarize_action_emits_progress_report():
     state = _make_state()
     primary_action = {"tool": "create_synthesis_document", "params": {}}
     primary_result = {"success": True}
-    verification_action = {"tool": "get_document_details", "params": {"document_id": str(uuid4())}}
+    verification_action = {
+        "tool": "get_document_details",
+        "params": {"document_id": str(uuid4())},
+    }
     verification_result = {"success": True}
 
     summary_action = executor._build_summarize_action(
@@ -1755,7 +2010,12 @@ def test_annotate_execution_plan_graph_adds_step_ids_and_dependencies():
     raw_plan = [
         {"title": "Step A", "objective": "Do A", "status": "pending"},
         {"title": "Step B", "objective": "Do B", "status": "pending"},
-        {"title": "Step C", "objective": "Do C", "status": "pending", "depends_on": ["custom_prev"]},
+        {
+            "title": "Step C",
+            "objective": "Do C",
+            "status": "pending",
+            "depends_on": ["custom_prev"],
+        },
     ]
 
     plan = executor._annotate_execution_plan_graph(raw_plan)
@@ -1921,7 +2181,9 @@ def test_build_thinking_prompt_includes_execution_graph_context():
     }
     observation = {"iteration": 2, "context": []}
 
-    prompt = executor._build_thinking_prompt(job, agent_def=None, state=state, observation=observation)
+    prompt = executor._build_thinking_prompt(
+        job, agent_def=None, state=state, observation=observation
+    )
 
     assert "EXECUTION GRAPH" in prompt
     assert "moderate_blocked_ratio" in prompt
@@ -1948,10 +2210,17 @@ def test_validate_action_scope_allows_override_when_enabled():
     executor = AutonomousAgentExecutor()
     default_source = str(uuid4())
     other_source = str(uuid4())
-    job = _make_job(config={"source_id": default_source, "scope_guard_allow_param_override": True})
+    job = _make_job(
+        config={"source_id": default_source, "scope_guard_allow_param_override": True}
+    )
     action = {
         "tool": "save_research_finding",
-        "params": {"title": "Finding", "content": "X", "source_id": other_source, "allow_cross_scope": True},
+        "params": {
+            "title": "Finding",
+            "content": "X",
+            "source_id": other_source,
+            "allow_cross_scope": True,
+        },
     }
 
     error = executor._validate_action_scope(job, action)
@@ -2131,13 +2400,27 @@ def test_research_evidence_quality_prefers_richer_findings():
     sparse = [{"type": "document", "id": "doc-1"}]
     rich = [
         {"type": "document", "id": "doc-1", "score": 0.92},
-        {"type": "paper", "arxiv_id": "2401.00001", "authors": ["A"], "published": "2024-01-01"},
-        {"type": "paper", "arxiv_id": "2401.00002", "authors": ["B"], "published": "2024-01-02"},
+        {
+            "type": "paper",
+            "arxiv_id": "2401.00001",
+            "authors": ["A"],
+            "published": "2024-01-01",
+        },
+        {
+            "type": "paper",
+            "arxiv_id": "2401.00002",
+            "authors": ["B"],
+            "published": "2024-01-02",
+        },
         {"type": "insight", "category": "key_insight"},
     ]
 
-    sparse_score = executor._score_research_evidence_quality(sparse, target_docs=8, target_papers=8)
-    rich_score = executor._score_research_evidence_quality(rich, target_docs=8, target_papers=8)
+    sparse_score = executor._score_research_evidence_quality(
+        sparse, target_docs=8, target_papers=8
+    )
+    rich_score = executor._score_research_evidence_quality(
+        rich, target_docs=8, target_papers=8
+    )
 
     assert 0.0 <= sparse_score <= 1.0
     assert 0.0 <= rich_score <= 1.0
@@ -2223,7 +2506,9 @@ def test_recovery_action_prefers_critic_recommendation_when_usable():
     state["critic_notes"] = [{"recommended_tools": ["summarize_document"]}]
     state["findings"] = [{"type": "document", "id": "doc-123"}]
 
-    action = executor._build_recovery_action(job, state, exclude_tool="search_documents")
+    action = executor._build_recovery_action(
+        job, state, exclude_tool="search_documents"
+    )
 
     assert action is not None
     assert action["tool"] == "summarize_document"
@@ -2244,7 +2529,9 @@ def test_recovery_action_uses_project_bootstrap_when_graph_health_is_degraded():
     state["verification_attempts"] = 2
     state["verification_successes"] = 0
 
-    action = executor._build_recovery_action(job, state, exclude_tool="search_documents")
+    action = executor._build_recovery_action(
+        job, state, exclude_tool="search_documents"
+    )
 
     assert action is not None
     assert action["tool"] == "project_bootstrap"
@@ -2264,7 +2551,9 @@ def test_recovery_action_replans_on_execution_graph_cycle_when_bootstrapped():
         {"from": "step_2", "to": "step_1", "type": "next_step"},
     ]
 
-    action = executor._build_recovery_action(job, state, exclude_tool="search_documents")
+    action = executor._build_recovery_action(
+        job, state, exclude_tool="search_documents"
+    )
 
     assert action is not None
     assert action["tool"] == "suggest_next_action"
@@ -2544,7 +2833,11 @@ def test_enforce_plan_step_action_adjusts_to_suggested_tool_in_plan_mode():
         }
     ]
     state["plan_step_index"] = 0
-    action = {"tool": "create_document_from_text", "params": {}, "purpose": "skip ahead"}
+    action = {
+        "tool": "create_document_from_text",
+        "params": {},
+        "purpose": "skip ahead",
+    }
 
     adjusted = executor._enforce_plan_step_action(job, state, action)
 
@@ -2585,6 +2878,40 @@ def test_advance_execution_plan_state_marks_plan_completed_for_last_step():
         isinstance(row, dict) and row.get("type") == "plan_completed"
         for row in state.get("step_events", [])
     )
+
+
+def test_advance_execution_plan_state_keeps_deferred_external_step_waiting():
+    executor = AutonomousAgentExecutor()
+    state = _make_state()
+    state["execution_mode"] = "plan_and_execute"
+    state["execution_plan"] = [
+        {
+            "step_id": "step_1",
+            "title": "Run external compiler experiment",
+            "status": "waiting_external",
+            "external_outbox_id": "outbox-1",
+        }
+    ]
+    state["plan_step_index"] = 0
+
+    executor._advance_execution_plan_state(
+        state=state,
+        action={"tool": "enqueue_external_agent_call", "params": {}},
+        action_result={
+            "success": True,
+            "deferred_external": True,
+            "data": {"outbox_id": "outbox-1"},
+            "artifacts": [{"type": "external_call_outbox"}],
+        },
+        previous_progress=20,
+        current_progress=30,
+        iteration=3,
+    )
+
+    assert state["plan_step_index"] == 0
+    assert state["plan_completed"] is False
+    assert state["execution_plan"][0]["status"] == "waiting_external"
+    assert state["execution_plan"][0].get("completions", 0) == 0
 
 
 def test_advance_execution_plan_state_blocks_when_exit_criteria_not_met_in_plan_mode():
@@ -2650,7 +2977,12 @@ def test_advance_execution_plan_state_allows_exit_criteria_when_write_output_too
 
 def test_ensure_subgoal_chain_config_creates_child_jobs():
     executor = AutonomousAgentExecutor()
-    job = _make_job(config={"auto_subgoal_child_jobs_enabled": True, "auto_subgoal_child_jobs_max": 2})
+    job = _make_job(
+        config={
+            "auto_subgoal_child_jobs_enabled": True,
+            "auto_subgoal_child_jobs_max": 2,
+        }
+    )
     state = _make_state()
     state["subgoals"] = [
         {"title": "Scope", "status": "in_progress"},
@@ -2708,7 +3040,10 @@ def test_ensure_swarm_chain_config_creates_specialized_child_jobs():
     fan_in_child = children[0]["chain_config"]["child_jobs"][0]
     assert fan_in_child["config"]["origin"] == "swarm_fan_in_aggregator"
     assert fan_in_child["config"]["deterministic_runner"] == "swarm_fan_in_aggregate"
-    assert fan_in_child["config"]["swarm_fan_in_group_id"] == state["swarm_fan_in_group_id"]
+    assert (
+        fan_in_child["config"]["swarm_fan_in_group_id"]
+        == state["swarm_fan_in_group_id"]
+    )
     assert any(
         isinstance(row, dict) and row.get("type") == "swarm_roles_configured"
         for row in state.get("step_events", [])
@@ -2897,7 +3232,9 @@ def test_build_swarm_fan_in_result_aggregates_consensus_and_conflicts():
                 "status": "completed",
                 "progress": 100,
                 "results": {
-                    "findings": [{"title": "Prioritize internal docs for baseline facts"}],
+                    "findings": [
+                        {"title": "Prioritize internal docs for baseline facts"}
+                    ],
                     "summary": "Internal docs show repeated bottleneck in ingestion.",
                 },
             },
@@ -2907,8 +3244,14 @@ def test_build_swarm_fan_in_result_aggregates_consensus_and_conflicts():
                 "status": "completed",
                 "progress": 100,
                 "results": {
-                    "findings": [{"title": "Prioritize internal docs for baseline facts"}],
-                    "research": {"top_insights": ["Benchmark against arXiv baselines for coverage"]},
+                    "findings": [
+                        {"title": "Prioritize internal docs for baseline facts"}
+                    ],
+                    "research": {
+                        "top_insights": [
+                            "Benchmark against arXiv baselines for coverage"
+                        ]
+                    },
                 },
             },
             {
@@ -2966,8 +3309,13 @@ def test_build_swarm_fan_in_result_for_coding_swarm_emits_winner_and_candidate_p
                 "progress": 100,
                 "results": {
                     "summary": "Likely fix is in the save handler",
-                    "file_paths": ["frontend/src/pages/DocumentsPage.tsx", "frontend/src/services/api.ts"],
-                    "commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+                    "file_paths": [
+                        "frontend/src/pages/DocumentsPage.tsx",
+                        "frontend/src/services/api.ts",
+                    ],
+                    "commands": [
+                        "CI=true npm --prefix frontend test -- --watchAll=false"
+                    ],
                 },
             },
             {
@@ -2991,7 +3339,9 @@ def test_build_swarm_fan_in_result_for_coding_swarm_emits_winner_and_candidate_p
         ],
     }
 
-    merged = executor._build_swarm_fan_in_result(payload, fan_in_group_id="group-coding")
+    merged = executor._build_swarm_fan_in_result(
+        payload, fan_in_group_id="group-coding"
+    )
 
     assert merged["fan_in_group_id"] == "group-coding"
     assert merged["winning_slice_id"] in {"j1", "j2", "j3"}
@@ -2999,14 +3349,18 @@ def test_build_swarm_fan_in_result_for_coding_swarm_emits_winner_and_candidate_p
     assert isinstance(merged["candidate_paths"], list)
     assert merged["candidate_paths"]
     assert isinstance(merged["recommended_commands"], list)
-    assert merged["recommended_commands"] == ["CI=true npm --prefix frontend test -- --watchAll=false"]
+    assert merged["recommended_commands"] == [
+        "CI=true npm --prefix frontend test -- --watchAll=false"
+    ]
     assert merged["review_state"] == "tie_break_needed"
     assert merged["file_converged"] is True
     assert merged["command_converged"] is False
 
 
 @pytest.mark.asyncio
-async def test_run_swarm_fan_in_aggregate_launches_tie_breaker_for_medium_confidence(db_session, test_user, monkeypatch):
+async def test_run_swarm_fan_in_aggregate_launches_tie_breaker_for_medium_confidence(
+    db_session, test_user, monkeypatch
+):
     queued_jobs: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
@@ -3040,8 +3394,13 @@ async def test_run_swarm_fan_in_aggregate_launches_tie_breaker_for_medium_confid
                 "progress": 100,
                 "results": {
                     "summary": "Likely fix is in the save handler",
-                    "file_paths": ["frontend/src/pages/DocumentsPage.tsx", "frontend/src/services/api.ts"],
-                    "commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+                    "file_paths": [
+                        "frontend/src/pages/DocumentsPage.tsx",
+                        "frontend/src/services/api.ts",
+                    ],
+                    "commands": [
+                        "CI=true npm --prefix frontend test -- --watchAll=false"
+                    ],
                 },
             },
             {
@@ -3099,9 +3458,13 @@ async def test_run_swarm_fan_in_aggregate_launches_tie_breaker_for_medium_confid
         await db.flush()
         return child
 
-    monkeypatch.setattr(executor, "_launch_bug_triage_swarm_tie_breaker_job", _fake_launch_tie_breaker)
+    monkeypatch.setattr(
+        executor, "_launch_bug_triage_swarm_tie_breaker_job", _fake_launch_tie_breaker
+    )
 
-    result = await executor._run_swarm_fan_in_aggregate(job=fan_in_job, db=db_session, progress_callback=None)
+    result = await executor._run_swarm_fan_in_aggregate(
+        job=fan_in_job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     assert fan_in_job.status == AgentJobStatus.COMPLETED.value
@@ -3112,7 +3475,9 @@ async def test_run_swarm_fan_in_aggregate_launches_tie_breaker_for_medium_confid
 
 
 @pytest.mark.asyncio
-async def test_run_swarm_fan_in_aggregate_pauses_after_unsuccessful_tie_break(db_session, test_user, monkeypatch):
+async def test_run_swarm_fan_in_aggregate_pauses_after_unsuccessful_tie_break(
+    db_session, test_user, monkeypatch
+):
     queued_jobs: list[tuple[str, str]] = []
 
     monkeypatch.setattr(
@@ -3148,8 +3513,13 @@ async def test_run_swarm_fan_in_aggregate_pauses_after_unsuccessful_tie_break(db
                 "progress": 100,
                 "results": {
                     "summary": "Likely fix is in the save handler",
-                    "file_paths": ["frontend/src/pages/DocumentsPage.tsx", "frontend/src/services/api.ts"],
-                    "commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+                    "file_paths": [
+                        "frontend/src/pages/DocumentsPage.tsx",
+                        "frontend/src/services/api.ts",
+                    ],
+                    "commands": [
+                        "CI=true npm --prefix frontend test -- --watchAll=false"
+                    ],
                 },
             },
             {
@@ -3194,7 +3564,9 @@ async def test_run_swarm_fan_in_aggregate_pauses_after_unsuccessful_tie_break(db
     db_session.add(fan_in_job)
     await db_session.flush()
 
-    result = await executor._run_swarm_fan_in_aggregate(job=fan_in_job, db=db_session, progress_callback=None)
+    result = await executor._run_swarm_fan_in_aggregate(
+        job=fan_in_job, db=db_session, progress_callback=None
+    )
 
     assert result["status"] == "completed"
     assert fan_in_job.status == AgentJobStatus.PAUSED.value
@@ -3205,7 +3577,9 @@ async def test_run_swarm_fan_in_aggregate_pauses_after_unsuccessful_tie_break(db
 
 def test_maybe_apply_critic_pivot_override_forces_recommended_tool():
     executor = AutonomousAgentExecutor()
-    job = _make_job(config={"critic_force_pivot_on_high": True, "critic_force_min_confidence": 0.5})
+    job = _make_job(
+        config={"critic_force_pivot_on_high": True, "critic_force_min_confidence": 0.5}
+    )
     state = _make_state()
     state["critic_notes"] = [
         {
@@ -3233,7 +3607,10 @@ def test_merge_tool_stats_sums_success_and_failure():
     executor = AutonomousAgentExecutor()
     merged = executor._merge_tool_stats(
         {"search_documents": {"success": 2, "failure": 1}},
-        {"search_documents": {"success": 3, "failure": 4}, "search_arxiv": {"success": 1, "failure": 0}},
+        {
+            "search_documents": {"success": 3, "failure": 4},
+            "search_arxiv": {"success": 1, "failure": 0},
+        },
     )
 
     assert merged["search_documents"]["success"] == 5
@@ -3334,7 +3711,9 @@ def test_apply_decay_to_prior_counts_handles_timezone_aware_timestamps():
     executor = AutonomousAgentExecutor()
     now_utc = datetime(2026, 2, 6, 12, 0, 0, tzinfo=timezone.utc)
     # Same instant as 2026-02-06 12:00:00+00:00.
-    updated_same_instant = datetime(2026, 2, 6, 7, 0, 0, tzinfo=timezone(timedelta(hours=-5)))
+    updated_same_instant = datetime(
+        2026, 2, 6, 7, 0, 0, tzinfo=timezone(timedelta(hours=-5))
+    )
 
     s, f = executor._apply_decay_to_prior_counts(
         success_count=8,
@@ -3436,7 +3815,10 @@ def test_recovery_action_forced_exploration_prefers_under_sampled_tool():
             "tool_selection_forced_exploration_every_n": 1,
             "tool_selection_forced_exploration_min_stalled": 1,
             "tool_selection_forced_exploration_max_observations": 2,
-            "tool_selection_forced_exploration_tools": ["search_arxiv", "search_documents"],
+            "tool_selection_forced_exploration_tools": [
+                "search_arxiv",
+                "search_documents",
+            ],
             "tool_selection_cooldown_enabled": True,
             "tool_selection_cooldown_iterations": 2,
             "tool_selection_cooldown_forced_only": True,
@@ -3472,7 +3854,10 @@ def test_recovery_action_without_forced_exploration_uses_default_priority():
     job = _make_job(
         config={
             "tool_selection_forced_exploration_enabled": False,
-            "tool_selection_forced_exploration_tools": ["search_arxiv", "search_documents"],
+            "tool_selection_forced_exploration_tools": [
+                "search_arxiv",
+                "search_documents",
+            ],
         }
     )
     state = _make_state()
@@ -3502,7 +3887,9 @@ def test_apply_recovery_post_action_updates_extends_cooldown_on_forced_failure()
     state = _make_state()
     state["last_recovery_was_forced_exploration"] = True
     state["tool_cooldowns"] = {"search_arxiv": 8}
-    state["forced_exploration_history"] = [{"iteration": 6, "tool": "search_arxiv", "success": None}]
+    state["forced_exploration_history"] = [
+        {"iteration": 6, "tool": "search_arxiv", "success": None}
+    ]
 
     executor._apply_recovery_post_action_updates(
         job=job,
@@ -3530,7 +3917,9 @@ def test_apply_recovery_post_action_updates_shortens_cooldown_on_forced_success(
     state = _make_state()
     state["last_recovery_was_forced_exploration"] = True
     state["tool_cooldowns"] = {"search_arxiv": 10}
-    state["forced_exploration_history"] = [{"iteration": 6, "tool": "search_arxiv", "success": None}]
+    state["forced_exploration_history"] = [
+        {"iteration": 6, "tool": "search_arxiv", "success": None}
+    ]
 
     executor._apply_recovery_post_action_updates(
         job=job,
@@ -3716,7 +4105,11 @@ def test_goal_stage_schedule_changes_mode_by_progress_and_stall():
     assert state["tool_selection_goal_stage"] == "discovery"
 
     state["goal_progress"] = 55
-    state["findings"] = [{"type": "document", "id": "d1"}, {"type": "document", "id": "d2"}, {"type": "paper", "id": "p1"}]
+    state["findings"] = [
+        {"type": "document", "id": "d1"},
+        {"type": "document", "id": "d2"},
+        {"type": "paper", "id": "p1"},
+    ]
     state["stalled_iterations"] = 0
     mode2, _ = executor._resolve_tool_selection_mode(job, state=state)
     assert mode2 == "adaptive"
@@ -3753,7 +4146,11 @@ def test_resolve_tool_selection_mode_enters_rescue_on_execution_graph_pressure()
     state = _make_state()
     state["goal_progress"] = 60
     state["stalled_iterations"] = 0
-    state["findings"] = [{"type": "document", "id": "d1"}, {"type": "document", "id": "d2"}, {"type": "paper", "id": "p1"}]
+    state["findings"] = [
+        {"type": "document", "id": "d1"},
+        {"type": "document", "id": "d2"},
+        {"type": "paper", "id": "p1"},
+    ]
     state["execution_graph_nodes"] = [
         {"id": "step_1", "type": "act", "success": True},
         {"id": "step_1.verify", "type": "verify", "success": False},
@@ -3975,7 +4372,10 @@ def test_evaluate_goal_contract_reports_missing_and_satisfied_states():
     assert "artifact_type:document" in unmet["missing"]
 
     state["goal_progress"] = 85
-    state["findings"] = [{"type": "document", "id": "d1"}, {"type": "paper", "arxiv_id": "2401.00001"}]
+    state["findings"] = [
+        {"type": "document", "id": "d1"},
+        {"type": "paper", "arxiv_id": "2401.00001"},
+    ]
     state["artifacts"] = [{"type": "document", "id": "out-1"}]
     met = executor._evaluate_goal_contract(job, state)
     assert met["satisfied"] is True
@@ -3995,7 +4395,9 @@ def test_goal_contract_can_skip_result_key_checks_in_loop_mode():
     state["goal_progress"] = 100
 
     loop_eval = executor._evaluate_goal_contract(job, state, include_result_keys=False)
-    finalize_eval = executor._evaluate_goal_contract(job, state, include_result_keys=True)
+    finalize_eval = executor._evaluate_goal_contract(
+        job, state, include_result_keys=True
+    )
 
     assert loop_eval["satisfied"] is True
     assert finalize_eval["satisfied"] is False
@@ -4023,7 +4425,10 @@ def test_approval_checkpoint_triggers_for_tool_and_then_suppresses_repeats():
 
     assert first["required"] is True
     assert first["checkpoint"]["action"]["tool"] == "create_document_from_text"
-    assert any(r.startswith("tool:create_document_from_text") for r in first["checkpoint"]["reasons"])
+    assert any(
+        r.startswith("tool:create_document_from_text")
+        for r in first["checkpoint"]["reasons"]
+    )
     assert second["required"] is False
 
 
@@ -4035,16 +4440,24 @@ def test_build_executive_digest_includes_risks_contract_and_next_steps():
             "goal_contract_min_findings": 2,
         }
     )
-    job.results = {"summary": "Partial research outcome", "research_bundle": {"next_steps": ["Validate metrics", "Run follow-up search"]}}
+    job.results = {
+        "summary": "Partial research outcome",
+        "research_bundle": {"next_steps": ["Validate metrics", "Run follow-up search"]},
+    }
     state = _make_state()
     state["goal_progress"] = 60
     state["findings"] = [{"type": "document", "title": "Internal ingestion bottleneck"}]
     state["artifacts"] = [{"type": "note", "id": "a1"}]
     state["actions_taken"] = [
         {"action": {"tool": "search_documents"}, "result": {"success": True}},
-        {"action": {"tool": "search_arxiv"}, "result": {"success": False, "error": "timeout"}},
+        {
+            "action": {"tool": "search_arxiv"},
+            "result": {"success": False, "error": "timeout"},
+        },
     ]
-    state["critic_notes"] = [{"severity": "high", "pivot": "Need stronger external baselines"}]
+    state["critic_notes"] = [
+        {"severity": "high", "pivot": "Need stronger external baselines"}
+    ]
 
     digest = executor._build_executive_digest(job, state)
 

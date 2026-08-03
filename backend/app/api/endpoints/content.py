@@ -2,15 +2,16 @@
 Content generation API endpoints for emails, meeting notes, documentation, etc.
 """
 
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.services.auth_service import get_current_user
 from app.models.user import User
+from app.services.auth_service import get_current_user
 from app.services.content_generation_service import content_generation_service
 
 router = APIRouter()
@@ -20,7 +21,9 @@ class EmailDraftRequest(BaseModel):
     subject: str = Field(..., description="Email subject or topic")
     recipient: Optional[str] = Field(None, description="Intended recipient")
     context: Optional[str] = Field(None, description="Additional context")
-    document_ids: Optional[List[str]] = Field(None, description="Document IDs to reference")
+    document_ids: Optional[List[str]] = Field(
+        None, description="Document IDs to reference"
+    )
     search_query: Optional[str] = Field(None, description="Search query for context")
     tone: str = Field("professional", description="Email tone")
     length: str = Field("medium", description="Email length")
@@ -28,7 +31,9 @@ class EmailDraftRequest(BaseModel):
 
 class MeetingNotesRequest(BaseModel):
     transcript: Optional[str] = Field(None, description="Meeting transcript")
-    document_ids: Optional[List[str]] = Field(None, description="Document IDs with content")
+    document_ids: Optional[List[str]] = Field(
+        None, description="Document IDs with content"
+    )
     meeting_title: Optional[str] = Field(None, description="Meeting title")
     participants: Optional[List[str]] = Field(None, description="Participant names")
     include_action_items: bool = Field(True, description="Include action items")
@@ -37,15 +42,21 @@ class MeetingNotesRequest(BaseModel):
 
 class DocumentationRequest(BaseModel):
     topic: str = Field(..., description="Documentation topic")
-    doc_type: str = Field("technical", description="Type: technical, user_guide, api, how_to")
+    doc_type: str = Field(
+        "technical", description="Type: technical, user_guide, api, how_to"
+    )
     document_ids: Optional[List[str]] = Field(None, description="Source document IDs")
     search_query: Optional[str] = Field(None, description="Search for source content")
-    target_audience: str = Field("developers", description="Target: developers, end_users, admins")
+    target_audience: str = Field(
+        "developers", description="Target: developers, end_users, admins"
+    )
     include_examples: bool = Field(True, description="Include examples")
 
 
 class ExecutiveSummaryRequest(BaseModel):
-    document_ids: Optional[List[str]] = Field(None, description="Document IDs to summarize")
+    document_ids: Optional[List[str]] = Field(
+        None, description="Document IDs to summarize"
+    )
     search_query: Optional[str] = Field(None, description="Search for content")
     topic: Optional[str] = Field(None, description="Focus topic")
     max_length: int = Field(500, description="Maximum word count")
@@ -54,7 +65,9 @@ class ExecutiveSummaryRequest(BaseModel):
 
 
 class ReportRequest(BaseModel):
-    report_type: str = Field(..., description="Type: status, analysis, research, summary")
+    report_type: str = Field(
+        ..., description="Type: status, analysis, research, summary"
+    )
     document_ids: Optional[List[str]] = Field(None, description="Source document IDs")
     search_query: Optional[str] = Field(None, description="Search for content")
     title: Optional[str] = Field(None, description="Report title")
@@ -93,8 +106,7 @@ async def generate_meeting_notes(
     """Generate structured meeting notes."""
     if not request.transcript and not request.document_ids:
         raise HTTPException(
-            status_code=400,
-            detail="Provide either transcript or document_ids"
+            status_code=400, detail="Provide either transcript or document_ids"
         )
 
     document_ids = None
@@ -148,8 +160,7 @@ async def generate_executive_summary(
     """Generate an executive summary for leadership."""
     if not request.document_ids and not request.search_query and not request.topic:
         raise HTTPException(
-            status_code=400,
-            detail="Provide document_ids, search_query, or topic"
+            status_code=400, detail="Provide document_ids, search_query, or topic"
         )
 
     document_ids = None

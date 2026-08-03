@@ -21,7 +21,9 @@ from app.models.synthesis_job import SynthesisJob
 @pytest.fixture
 def scientific_validation_summary_client(db_session, test_user):
     app = FastAPI()
-    app.include_router(domain_research_profiles.router, prefix="/api/v1/domain-research-profiles")
+    app.include_router(
+        domain_research_profiles.router, prefix="/api/v1/domain-research-profiles"
+    )
     app.include_router(research_portfolios.router, prefix="/api/v1/research-portfolios")
 
     def override_get_db():
@@ -31,8 +33,12 @@ def scientific_validation_summary_client(db_session, test_user):
         return test_user
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[domain_research_profiles.get_current_active_user] = override_current_user
-    app.dependency_overrides[research_portfolios.get_current_active_user] = override_current_user
+    app.dependency_overrides[
+        domain_research_profiles.get_current_active_user
+    ] = override_current_user
+    app.dependency_overrides[
+        research_portfolios.get_current_active_user
+    ] = override_current_user
 
     with TestClient(app) as test_client:
         yield test_client
@@ -117,7 +123,9 @@ def test_domain_profile_list_embeds_latest_validation_runs(
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = scientific_validation_summary_client.get("/api/v1/domain-research-profiles")
+    response = scientific_validation_summary_client.get(
+        "/api/v1/domain-research-profiles"
+    )
 
     assert response.status_code == 200
     payload = response.json()["items"][0]
@@ -255,7 +263,10 @@ def test_domain_profile_validation_summary_embeds_compiler_artifact_handoff(
                 "primary_run_id": str(run.id),
             },
         }
-        explanation_job.options["experiment_run_ids"] = [str(run.id), "00000000-0000-0000-0000-000000000123"]
+        explanation_job.options["experiment_run_ids"] = [
+            str(run.id),
+            "00000000-0000-0000-0000-000000000123",
+        ]
         db_session.add(explanation_job)
         await db_session.flush()
         explanation_note.structured_payload = {
@@ -280,7 +291,9 @@ def test_domain_profile_validation_summary_embeds_compiler_artifact_handoff(
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = scientific_validation_summary_client.get("/api/v1/domain-research-profiles")
+    response = scientific_validation_summary_client.get(
+        "/api/v1/domain-research-profiles"
+    )
 
     assert response.status_code == 200
     summary = response.json()["items"][0]["latest_validation_runs"][0]
@@ -288,10 +301,20 @@ def test_domain_profile_validation_summary_embeds_compiler_artifact_handoff(
     assert summary["domain_research_profile_id"] == str(profile.id)
     assert summary["benchmark_family"] == "compiler_regression"
     assert summary["benchmark_suite_id"] == "compiler-llvm-regression-core"
-    assert summary["compiler_artifact_summary"]["explanation_note_id"] == str(explanation_note.id)
-    assert summary["compiler_artifact_summary"]["explanation_synthesis_job_id"] == str(explanation_job.id)
-    assert summary["compiler_artifact_summary"]["source_run_ids"] == [str(run.id), "00000000-0000-0000-0000-000000000123"]
-    assert "create_patch_proposal" in summary["compiler_artifact_summary"]["available_actions"]
+    assert summary["compiler_artifact_summary"]["explanation_note_id"] == str(
+        explanation_note.id
+    )
+    assert summary["compiler_artifact_summary"]["explanation_synthesis_job_id"] == str(
+        explanation_job.id
+    )
+    assert summary["compiler_artifact_summary"]["source_run_ids"] == [
+        str(run.id),
+        "00000000-0000-0000-0000-000000000123",
+    ]
+    assert (
+        "create_patch_proposal"
+        in summary["compiler_artifact_summary"]["available_actions"]
+    )
 
 
 def test_domain_profile_validation_summary_embeds_proposal_lineage_and_patch_draft_readiness(
@@ -468,7 +491,9 @@ def test_domain_profile_validation_summary_embeds_proposal_lineage_and_patch_dra
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = scientific_validation_summary_client.get("/api/v1/domain-research-profiles")
+    response = scientific_validation_summary_client.get(
+        "/api/v1/domain-research-profiles"
+    )
 
     assert response.status_code == 200
     summary = response.json()["items"][0]["latest_validation_runs"][0]
@@ -826,7 +851,11 @@ def test_domain_profile_opportunity_launch_validation_is_idempotent(
 
     async def _fake_create_validation_run(self, **kwargs):
         created_runs.append(str(kwargs.get("hypothesis_id") or ""))
-        return {"run_id": "run-profile-1", "status": "queued", "job_id": "job-profile-1"}
+        return {
+            "run_id": "run-profile-1",
+            "status": "queued",
+            "job_id": "job-profile-1",
+        }
 
     monkeypatch.setattr(
         "app.services.autonomous_agent_executor.AutonomousAgentExecutor._create_scientific_validation_run",
@@ -853,7 +882,10 @@ def test_domain_profile_opportunity_launch_validation_is_idempotent(
     assert second.status_code == 200
     second_opp = second.json()["opportunities"][0]
     assert second_opp["linked_validation_run_ids"] == ["run-profile-1"]
-    assert second_opp["linked_experiment_plan_ids"] == first_opp["linked_experiment_plan_ids"]
+    assert (
+        second_opp["linked_experiment_plan_ids"]
+        == first_opp["linked_experiment_plan_ids"]
+    )
     assert created_runs == ["opp_validate"]
 
     async def _count_plans():
@@ -921,7 +953,11 @@ def test_research_portfolio_opportunity_launch_validation_is_idempotent(
 
     async def _fake_create_validation_run(self, **kwargs):
         created_runs.append(str(kwargs.get("hypothesis_id") or ""))
-        return {"run_id": "run-portfolio-1", "status": "queued", "job_id": "job-portfolio-1"}
+        return {
+            "run_id": "run-portfolio-1",
+            "status": "queued",
+            "job_id": "job-portfolio-1",
+        }
 
     monkeypatch.setattr(
         "app.services.autonomous_agent_executor.AutonomousAgentExecutor._create_scientific_validation_run",
@@ -948,7 +984,10 @@ def test_research_portfolio_opportunity_launch_validation_is_idempotent(
     assert second.status_code == 200
     second_opp = second.json()["opportunities"][0]
     assert second_opp["linked_validation_run_ids"] == ["run-portfolio-1"]
-    assert second_opp["linked_experiment_plan_ids"] == first_opp["linked_experiment_plan_ids"]
+    assert (
+        second_opp["linked_experiment_plan_ids"]
+        == first_opp["linked_experiment_plan_ids"]
+    )
     assert created_runs == ["opp_portfolio_validate"]
 
 
@@ -1206,7 +1245,9 @@ def test_research_portfolio_opportunities_emit_scheduler_state_in_trace_events(
         )
         return SimpleNamespace(id="event-2")
 
-    monkeypatch.setattr(research_portfolios, "record_autonomy_decision_event", _capture_event)
+    monkeypatch.setattr(
+        research_portfolios, "record_autonomy_decision_event", _capture_event
+    )
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
@@ -1317,10 +1358,17 @@ def test_domain_profile_validation_requeue_omits_malformed_scheduler_state(
         await db_session.commit()
 
     async def _capture_event(*args, **kwargs):
-        captured.append({"event_type": kwargs.get("event_type"), "scheduler_state": kwargs.get("scheduler_state")})
+        captured.append(
+            {
+                "event_type": kwargs.get("event_type"),
+                "scheduler_state": kwargs.get("scheduler_state"),
+            }
+        )
         return SimpleNamespace(id="event-3")
 
-    monkeypatch.setattr(domain_research_profiles, "record_autonomy_decision_event", _capture_event)
+    monkeypatch.setattr(
+        domain_research_profiles, "record_autonomy_decision_event", _capture_event
+    )
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
@@ -1572,7 +1620,9 @@ def test_domain_profile_opportunity_relaunch_follow_up_reuses_inbox_flow(
         db_session.add(profile)
         await db_session.flush()
         inbox_item.follow_up_job_id = parent_job.id
-        profile.latest_summary["opportunities"][0]["follow_up_last_job_id"] = str(parent_job.id)
+        profile.latest_summary["opportunities"][0]["follow_up_last_job_id"] = str(
+            parent_job.id
+        )
         db_session.add(inbox_item)
         await db_session.commit()
 
@@ -1591,7 +1641,9 @@ def test_domain_profile_opportunity_relaunch_follow_up_reuses_inbox_flow(
         row["last_decision_reason_code"] = "follow_up_relaunched"
         return SimpleNamespace(follow_up_job_id=item.follow_up_job_id)
 
-    monkeypatch.setattr(domain_research_profiles, "_relaunch_follow_up_inbox_item", _fake_relaunch)
+    monkeypatch.setattr(
+        domain_research_profiles, "_relaunch_follow_up_inbox_item", _fake_relaunch
+    )
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
@@ -1605,7 +1657,9 @@ def test_domain_profile_opportunity_relaunch_follow_up_reuses_inbox_flow(
     assert captured["item_id"] == str(inbox_item.id)
     assert captured["operator_note"] == "Retry now"
     assert payload_opp["follow_up_outcome_status"] is None
-    assert payload_opp["follow_up_last_job_id"] == "00000000-0000-0000-0000-000000000111"
+    assert (
+        payload_opp["follow_up_last_job_id"] == "00000000-0000-0000-0000-000000000111"
+    )
     assert payload_opp["last_decision_reason_code"] == "follow_up_relaunched"
 
 
@@ -1685,7 +1739,9 @@ def test_research_portfolio_opportunity_relaunch_follow_up_reuses_inbox_flow(
         row["last_decision_reason_code"] = "follow_up_relaunched"
         return SimpleNamespace(follow_up_job_id=item.follow_up_job_id)
 
-    monkeypatch.setattr(research_portfolios, "_relaunch_follow_up_inbox_item", _fake_relaunch)
+    monkeypatch.setattr(
+        research_portfolios, "_relaunch_follow_up_inbox_item", _fake_relaunch
+    )
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
@@ -1699,7 +1755,9 @@ def test_research_portfolio_opportunity_relaunch_follow_up_reuses_inbox_flow(
     assert captured["item_id"] == str(inbox_item.id)
     assert captured["operator_note"] == "Retry fleet follow-up"
     assert payload_opp["follow_up_outcome_status"] is None
-    assert payload_opp["follow_up_last_job_id"] == "00000000-0000-0000-0000-000000000222"
+    assert (
+        payload_opp["follow_up_last_job_id"] == "00000000-0000-0000-0000-000000000222"
+    )
     assert payload_opp["last_decision_reason_code"] == "follow_up_relaunched"
 
 
@@ -1856,7 +1914,9 @@ def test_profile_response_exposes_stage_counts_from_normalized_opportunities(
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = scientific_validation_summary_client.get("/api/v1/domain-research-profiles")
+    response = scientific_validation_summary_client.get(
+        "/api/v1/domain-research-profiles"
+    )
     assert response.status_code == 200
     payload = response.json()["items"][0]
     assert payload["latest_summary"]["stage_counts"]["accepted"] == 1

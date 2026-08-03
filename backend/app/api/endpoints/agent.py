@@ -5,23 +5,41 @@ Provides agentic chat functionality with tool calling for document operations.
 Supports both REST and WebSocket interfaces.
 """
 
-import json
 import asyncio
-from typing import List, Optional, Callable, Any
+import json
 from datetime import datetime
+from typing import Any, List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func, or_
-from loguru import logger
 
-from app.core.database import get_db, AsyncSessionLocal
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from loguru import logger
+from sqlalchemy import desc, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import AsyncSessionLocal, get_db
+from app.models.memory import AgentConversation, AgentToolExecution, UserPreferences
 from app.models.user import User
-from app.models.memory import UserPreferences, AgentConversation, AgentToolExecution
-from app.services.auth_service import get_current_user
+from app.schemas.agent import (
+    AgentChatRequest,
+    AgentChatResponse,
+    AgentConversationCreate,
+    AgentConversationListItem,
+    AgentConversationListResponse,
+    AgentConversationResponse,
+    AgentConversationUpdate,
+    AgentMessage,
+    AgentMessageAppend,
+)
 from app.services.agent_service import AgentService
 from app.services.agent_tools import AGENT_TOOLS
-from app.services.llm_service import UserLLMSettings
+from app.services.auth_service import get_current_user
 from app.services.llm_routing import (
     coerce_routing_config,
     compute_attempt_tiers,
@@ -29,19 +47,7 @@ from app.services.llm_routing import (
     resolve_feature_default_model,
     resolve_tier_overrides,
 )
-from app.schemas.agent import (
-    AgentChatRequest,
-    AgentChatResponse,
-    AgentMessage,
-    AgentToolCall,
-    AgentConversationCreate,
-    AgentConversationUpdate,
-    AgentConversationResponse,
-    AgentConversationListItem,
-    AgentConversationListResponse,
-    AgentMessageAppend,
-)
-
+from app.services.llm_service import UserLLMSettings
 
 router = APIRouter()
 agent_service = AgentService()
@@ -51,7 +57,7 @@ agent_service = AgentService()
 async def agent_chat(
     request: AgentChatRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Agentic chat endpoint that processes user messages
@@ -79,7 +85,9 @@ async def agent_chat(
         user_settings = None
         try:
             prefs_result = await db.execute(
-                select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+                select(UserPreferences).where(
+                    UserPreferences.user_id == current_user.id
+                )
             )
             user_prefs = prefs_result.scalar_one_or_none()
             if user_prefs:
@@ -110,13 +118,13 @@ async def agent_chat(
 
     except Exception as e:
         logger.error(f"Error in agent chat endpoint: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to process message: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to process message: {str(e)}"
+        )
 
 
 @router.get("/tools")
-async def list_available_tools(
-    current_user: User = Depends(get_current_user)
-):
+async def list_available_tools(current_user: User = Depends(get_current_user)):
     """
     List all available tools that the agent can use.
 
@@ -128,7 +136,7 @@ async def list_available_tools(
             {
                 "name": tool["name"],
                 "description": tool["description"],
-                "parameters": tool["parameters"]
+                "parameters": tool["parameters"],
             }
             for tool in AGENT_TOOLS
         ]
@@ -139,7 +147,7 @@ async def list_available_tools(
 async def confirm_document_deletion(
     document_id: str,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Confirm and execute document deletion.
@@ -157,8 +165,7 @@ async def confirm_document_deletion(
     """
     try:
         result = await agent_service._tool_delete_document(
-            params={"document_id": document_id, "confirm": True},
-            db=db
+            params={"document_id": document_id, "confirm": True}, db=db
         )
 
         if "error" in result:
@@ -170,20 +177,25 @@ async def confirm_document_deletion(
         raise
     except Exception as e:
         logger.error(f"Error confirming document deletion: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to delete document: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete document: {str(e)}"
+        )
 
 
 # ============================================================================
 # Agent Conversation Memory Endpoints
 # ============================================================================
 
+
 @router.get("/conversations", response_model=AgentConversationListResponse)
 async def list_agent_conversations(
-    status: Optional[str] = Query(None, description="Filter by status: active, completed, archived"),
+    status: Optional[str] = Query(
+        None, description="Filter by status: active, completed, archived"
+    ),
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     List agent conversations for the current user.
@@ -219,12 +231,12 @@ async def list_agent_conversations(
                     tool_calls_count=conv.tool_calls_count,
                     summary=conv.summary,
                     last_message_at=conv.last_message_at,
-                    created_at=conv.created_at
+                    created_at=conv.created_at,
                 )
                 for conv in conversations
             ],
             total=total,
-            has_more=offset + limit < total
+            has_more=offset + limit < total,
         )
 
     except Exception as e:
@@ -236,7 +248,7 @@ async def list_agent_conversations(
 async def create_agent_conversation(
     request: AgentConversationCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Create a new agent conversation.
@@ -248,13 +260,15 @@ async def create_agent_conversation(
             status="active",
             messages=[],
             message_count=0,
-            tool_calls_count=0
+            tool_calls_count=0,
         )
         db.add(conversation)
         await db.commit()
         await db.refresh(conversation)
 
-        logger.info(f"Created agent conversation {conversation.id} for user {current_user.id}")
+        logger.info(
+            f"Created agent conversation {conversation.id} for user {current_user.id}"
+        )
 
         return AgentConversationResponse(
             id=conversation.id,
@@ -266,7 +280,7 @@ async def create_agent_conversation(
             tool_calls_count=conversation.tool_calls_count,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
-            last_message_at=conversation.last_message_at
+            last_message_at=conversation.last_message_at,
         )
 
     except Exception as e:
@@ -276,8 +290,7 @@ async def create_agent_conversation(
 
 @router.get("/conversations/active", response_model=Optional[AgentConversationResponse])
 async def get_active_conversation(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Get the most recent active conversation for the current user.
@@ -285,10 +298,15 @@ async def get_active_conversation(
     """
     try:
         # Find most recent active conversation
-        query = select(AgentConversation).where(
-            AgentConversation.user_id == current_user.id,
-            AgentConversation.status == "active"
-        ).order_by(desc(AgentConversation.last_message_at)).limit(1)
+        query = (
+            select(AgentConversation)
+            .where(
+                AgentConversation.user_id == current_user.id,
+                AgentConversation.status == "active",
+            )
+            .order_by(desc(AgentConversation.last_message_at))
+            .limit(1)
+        )
 
         result = await db.execute(query)
         conversation = result.scalar_one_or_none()
@@ -300,12 +318,14 @@ async def get_active_conversation(
                 status="active",
                 messages=[],
                 message_count=0,
-                tool_calls_count=0
+                tool_calls_count=0,
             )
             db.add(conversation)
             await db.commit()
             await db.refresh(conversation)
-            logger.info(f"Created new active conversation {conversation.id} for user {current_user.id}")
+            logger.info(
+                f"Created new active conversation {conversation.id} for user {current_user.id}"
+            )
 
         return AgentConversationResponse(
             id=conversation.id,
@@ -317,7 +337,7 @@ async def get_active_conversation(
             tool_calls_count=conversation.tool_calls_count,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
-            last_message_at=conversation.last_message_at
+            last_message_at=conversation.last_message_at,
         )
 
     except Exception as e:
@@ -325,11 +345,13 @@ async def get_active_conversation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/conversations/{conversation_id}", response_model=AgentConversationResponse)
+@router.get(
+    "/conversations/{conversation_id}", response_model=AgentConversationResponse
+)
 async def get_agent_conversation(
     conversation_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get a specific agent conversation by ID.
@@ -337,7 +359,7 @@ async def get_agent_conversation(
     try:
         query = select(AgentConversation).where(
             AgentConversation.id == conversation_id,
-            AgentConversation.user_id == current_user.id
+            AgentConversation.user_id == current_user.id,
         )
         result = await db.execute(query)
         conversation = result.scalar_one_or_none()
@@ -355,7 +377,7 @@ async def get_agent_conversation(
             tool_calls_count=conversation.tool_calls_count,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
-            last_message_at=conversation.last_message_at
+            last_message_at=conversation.last_message_at,
         )
 
     except HTTPException:
@@ -365,12 +387,14 @@ async def get_agent_conversation(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.put("/conversations/{conversation_id}", response_model=AgentConversationResponse)
+@router.put(
+    "/conversations/{conversation_id}", response_model=AgentConversationResponse
+)
 async def update_agent_conversation(
     conversation_id: UUID,
     request: AgentConversationUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Update an agent conversation (title, status, or messages).
@@ -378,7 +402,7 @@ async def update_agent_conversation(
     try:
         query = select(AgentConversation).where(
             AgentConversation.id == conversation_id,
-            AgentConversation.user_id == current_user.id
+            AgentConversation.user_id == current_user.id,
         )
         result = await db.execute(query)
         conversation = result.scalar_one_or_none()
@@ -415,7 +439,7 @@ async def update_agent_conversation(
             tool_calls_count=conversation.tool_calls_count,
             created_at=conversation.created_at,
             updated_at=conversation.updated_at,
-            last_message_at=conversation.last_message_at
+            last_message_at=conversation.last_message_at,
         )
 
     except HTTPException:
@@ -430,7 +454,7 @@ async def append_message_to_conversation(
     conversation_id: UUID,
     request: AgentMessageAppend,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Append a message to an existing conversation.
@@ -438,7 +462,7 @@ async def append_message_to_conversation(
     try:
         query = select(AgentConversation).where(
             AgentConversation.id == conversation_id,
-            AgentConversation.user_id == current_user.id
+            AgentConversation.user_id == current_user.id,
         )
         result = await db.execute(query)
         conversation = result.scalar_one_or_none()
@@ -463,7 +487,7 @@ async def append_message_to_conversation(
                     "tool_output": tc.tool_output,
                     "status": tc.status,
                     "error": tc.error,
-                    "execution_time_ms": tc.execution_time_ms
+                    "execution_time_ms": tc.execution_time_ms,
                 }
                 for tc in request.tool_calls
             ]
@@ -486,7 +510,7 @@ async def append_message_to_conversation(
                     status=tc.status,
                     error=tc.error,
                     execution_time_ms=tc.execution_time_ms,
-                    message_id=request.message.id
+                    message_id=request.message.id,
                 )
                 db.add(execution)
 
@@ -508,7 +532,7 @@ async def append_message_to_conversation(
 async def delete_agent_conversation(
     conversation_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Delete an agent conversation.
@@ -516,7 +540,7 @@ async def delete_agent_conversation(
     try:
         query = select(AgentConversation).where(
             AgentConversation.id == conversation_id,
-            AgentConversation.user_id == current_user.id
+            AgentConversation.user_id == current_user.id,
         )
         result = await db.execute(query)
         conversation = result.scalar_one_or_none()
@@ -527,7 +551,9 @@ async def delete_agent_conversation(
         await db.delete(conversation)
         await db.commit()
 
-        logger.info(f"Deleted agent conversation {conversation_id} for user {current_user.id}")
+        logger.info(
+            f"Deleted agent conversation {conversation_id} for user {current_user.id}"
+        )
 
         return {"status": "ok", "deleted": str(conversation_id)}
 
@@ -542,7 +568,7 @@ async def delete_agent_conversation(
 async def archive_agent_conversation(
     conversation_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Archive an agent conversation.
@@ -550,7 +576,7 @@ async def archive_agent_conversation(
     try:
         query = select(AgentConversation).where(
             AgentConversation.id == conversation_id,
-            AgentConversation.user_id == current_user.id
+            AgentConversation.user_id == current_user.id,
         )
         result = await db.execute(query)
         conversation = result.scalar_one_or_none()
@@ -573,8 +599,7 @@ async def archive_agent_conversation(
 
 @router.post("/conversations/new")
 async def start_new_conversation(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """
     Archive the current active conversation and start a new one.
@@ -583,7 +608,7 @@ async def start_new_conversation(
         # Archive current active conversations
         query = select(AgentConversation).where(
             AgentConversation.user_id == current_user.id,
-            AgentConversation.status == "active"
+            AgentConversation.status == "active",
         )
         result = await db.execute(query)
         active_conversations = result.scalars().all()
@@ -598,13 +623,15 @@ async def start_new_conversation(
             status="active",
             messages=[],
             message_count=0,
-            tool_calls_count=0
+            tool_calls_count=0,
         )
         db.add(new_conversation)
         await db.commit()
         await db.refresh(new_conversation)
 
-        logger.info(f"Started new conversation {new_conversation.id} for user {current_user.id}")
+        logger.info(
+            f"Started new conversation {new_conversation.id} for user {current_user.id}"
+        )
 
         return AgentConversationResponse(
             id=new_conversation.id,
@@ -616,7 +643,7 @@ async def start_new_conversation(
             tool_calls_count=0,
             created_at=new_conversation.created_at,
             updated_at=new_conversation.updated_at,
-            last_message_at=new_conversation.last_message_at
+            last_message_at=new_conversation.last_message_at,
         )
 
     except Exception as e:
@@ -628,7 +655,11 @@ async def start_new_conversation(
 # Agent Definition Endpoints
 # ============================================================================
 
-from app.models.agent_definition import AgentDefinition, AgentConversationContext, AgentMemoryInjection
+from app.models.agent_definition import (
+    AgentConversationContext,
+    AgentDefinition,
+    AgentMemoryInjection,
+)
 from app.models.memory import ConversationMemory
 
 
@@ -637,7 +668,7 @@ async def list_agents(
     active_only: bool = Query(True, description="Only return active agents"),
     search: Optional[str] = Query(None, description="Search by name or display name"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     List available specialized agents.
@@ -645,7 +676,7 @@ async def list_agents(
     try:
         query = select(AgentDefinition)
         if active_only:
-            query = query.where(AgentDefinition.is_active == True)
+            query = query.where(AgentDefinition.is_active.is_(True))
         if search:
             search_term = f"%{search.strip()}%"
             query = query.where(
@@ -670,16 +701,22 @@ async def list_agents(
                     "priority": agent.priority,
                     "is_active": agent.is_active,
                     "is_system": agent.is_system,
-                    "owner_user_id": str(agent.owner_user_id) if getattr(agent, "owner_user_id", None) else None,
+                    "owner_user_id": str(agent.owner_user_id)
+                    if getattr(agent, "owner_user_id", None)
+                    else None,
                     "version": getattr(agent, "version", 1),
                     "lifecycle_status": getattr(agent, "lifecycle_status", "published"),
-            "routing_defaults": getattr(agent, "routing_defaults", None),
-                    "created_at": agent.created_at.isoformat() if agent.created_at else None,
-                    "updated_at": agent.updated_at.isoformat() if agent.updated_at else None,
+                    "routing_defaults": getattr(agent, "routing_defaults", None),
+                    "created_at": agent.created_at.isoformat()
+                    if agent.created_at
+                    else None,
+                    "updated_at": agent.updated_at.isoformat()
+                    if agent.updated_at
+                    else None,
                 }
                 for agent in agents
             ],
-            "total": len(agents)
+            "total": len(agents),
         }
 
     except Exception as e:
@@ -691,7 +728,7 @@ async def list_agents(
 async def get_agent(
     agent_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get details of a specific agent.
@@ -710,17 +747,21 @@ async def get_agent(
             "name": agent.name,
             "display_name": agent.display_name,
             "description": agent.description,
-            "system_prompt": agent.system_prompt if not agent.is_system else None,  # Hide system prompts for built-in agents
+            "system_prompt": agent.system_prompt
+            if not agent.is_system
+            else None,  # Hide system prompts for built-in agents
             "capabilities": agent.capabilities,
             "tool_whitelist": agent.tool_whitelist,
             "priority": agent.priority,
             "is_active": agent.is_active,
             "is_system": agent.is_system,
-            "owner_user_id": str(agent.owner_user_id) if getattr(agent, "owner_user_id", None) else None,
+            "owner_user_id": str(agent.owner_user_id)
+            if getattr(agent, "owner_user_id", None)
+            else None,
             "version": getattr(agent, "version", 1),
             "lifecycle_status": getattr(agent, "lifecycle_status", "published"),
             "created_at": agent.created_at.isoformat() if agent.created_at else None,
-            "updated_at": agent.updated_at.isoformat() if agent.updated_at else None
+            "updated_at": agent.updated_at.isoformat() if agent.updated_at else None,
         }
 
     except HTTPException:
@@ -732,13 +773,12 @@ async def get_agent(
 
 from app.schemas.agent import (
     AgentDefinitionCreate,
-    AgentDefinitionUpdate,
     AgentDefinitionResponse,
-    AgentDefinitionListResponse,
-    CapabilitiesListResponse,
-    CapabilityInfo,
+    AgentDefinitionUpdate,
     AgentRoutingPreviewRequest,
     AgentRoutingPreviewResponse,
+    CapabilitiesListResponse,
+    CapabilityInfo,
 )
 from app.services.agent_router import CAPABILITY_KEYWORDS
 
@@ -775,9 +815,9 @@ def _validate_agent_definition_fields(
             )
 
 
-
-
-@router.post("/agents/{agent_id}/routing-preview", response_model=AgentRoutingPreviewResponse)
+@router.post(
+    "/agents/{agent_id}/routing-preview", response_model=AgentRoutingPreviewResponse
+)
 async def preview_agent_routing(
     agent_id: UUID,
     request: AgentRoutingPreviewRequest,
@@ -793,11 +833,13 @@ async def preview_agent_routing(
       - user preferences (custom api_url/task models)
       - feature-flag tier resolution (provider/model per tier)
     """
+    from app.core.config import settings
     from app.core.feature_flags import get_str as get_feature_str
     from app.models.agent_job import AgentJob
-    from app.core.config import settings
 
-    res = await db.execute(select(AgentDefinition).where(AgentDefinition.id == agent_id))
+    res = await db.execute(
+        select(AgentDefinition).where(AgentDefinition.id == agent_id)
+    )
     agent = res.scalar_one_or_none()
     if not agent:
         raise HTTPException(status_code=404, detail="Agent not found")
@@ -805,9 +847,13 @@ async def preview_agent_routing(
     task_type = str(getattr(request, "task_type", None) or "chat").strip() or "chat"
 
     # Load user preferences
-    prefs_result = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+    prefs_result = await db.execute(
+        select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+    )
     prefs = prefs_result.scalar_one_or_none()
-    user_settings = UserLLMSettings.from_preferences(prefs) if prefs else UserLLMSettings()
+    user_settings = (
+        UserLLMSettings.from_preferences(prefs) if prefs else UserLLMSettings()
+    )
 
     def _normalize_routing(obj: Any) -> dict | None:
         if not isinstance(obj, dict):
@@ -828,7 +874,14 @@ async def preview_agent_routing(
         ]:
             if obj.get(k_in) is not None:
                 out[k_out] = obj.get(k_in)
-        if out.get("tier") is None and not out.get("fallback_tiers") and all(out.get(k) is None for k in ("timeout_seconds", "max_tokens_cap", "cooldown_seconds")):
+        if (
+            out.get("tier") is None
+            and not out.get("fallback_tiers")
+            and all(
+                out.get(k) is None
+                for k in ("timeout_seconds", "max_tokens_cap", "cooldown_seconds")
+            )
+        ):
             return None
         return out
 
@@ -894,14 +947,18 @@ async def preview_agent_routing(
 
     notes: list[str] = []
     if user_settings.api_url:
-        notes.append("User has custom api_url configured; runtime will route via custom OpenAI-compatible endpoint.")
+        notes.append(
+            "User has custom api_url configured; runtime will route via custom OpenAI-compatible endpoint."
+        )
     if any(t in {"fast", "balanced", "deep"} for t in attempt_tiers if t):
-        notes.append("Tier provider/model are resolved from feature flags (admin-configured).")
+        notes.append(
+            "Tier provider/model are resolved from feature flags (admin-configured)."
+        )
 
     feature_default_model = await resolve_feature_default_model(get_feature_str)
 
     # Compute effective provider/model per attempt exactly like runtime.
-    system_provider = (getattr(settings, "LLM_PROVIDER", None) or "ollama")
+    system_provider = getattr(settings, "LLM_PROVIDER", None) or "ollama"
     system_default_model = getattr(settings, "DEFAULT_MODEL", None) or ""
 
     attempts: list[dict[str, Any]] = []
@@ -947,11 +1004,13 @@ async def preview_agent_routing(
         attempts=attempts,
         notes=notes,
     )
+
+
 @router.post("/agents", response_model=AgentDefinitionResponse)
 async def create_agent(
     request: AgentDefinitionCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Create a new agent definition (admin only).
@@ -970,7 +1029,10 @@ async def create_agent(
             select(AgentDefinition).where(AgentDefinition.name == request.name)
         )
         if existing.scalar_one_or_none():
-            raise HTTPException(status_code=400, detail=f"Agent with name '{request.name}' already exists")
+            raise HTTPException(
+                status_code=400,
+                detail=f"Agent with name '{request.name}' already exists",
+            )
 
         # Create new agent
         agent = AgentDefinition(
@@ -1009,7 +1071,7 @@ async def create_agent(
             owner_user_id=getattr(agent, "owner_user_id", None),
             version=getattr(agent, "version", 1),
             created_at=agent.created_at,
-            updated_at=agent.updated_at
+            updated_at=agent.updated_at,
         )
 
     except HTTPException:
@@ -1025,7 +1087,7 @@ async def update_agent(
     agent_id: UUID,
     request: AgentDefinitionUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Update an agent definition (admin only).
@@ -1050,16 +1112,18 @@ async def update_agent(
             if request.priority is not None:
                 agent.priority = request.priority
             # Reject other changes for system agents
-            if any([
-                request.display_name is not None,
-                request.description is not None,
-                request.system_prompt is not None,
-                request.capabilities is not None,
-                request.tool_whitelist is not None
-            ]):
+            if any(
+                [
+                    request.display_name is not None,
+                    request.description is not None,
+                    request.system_prompt is not None,
+                    request.capabilities is not None,
+                    request.tool_whitelist is not None,
+                ]
+            ):
                 raise HTTPException(
                     status_code=400,
-                    detail="System agents can only have 'is_active' and 'priority' modified"
+                    detail="System agents can only have 'is_active' and 'priority' modified",
                 )
         else:
             # Non-system agents can be fully edited
@@ -1119,7 +1183,7 @@ async def update_agent(
             owner_user_id=getattr(agent, "owner_user_id", None),
             version=getattr(agent, "version", 1),
             created_at=agent.created_at,
-            updated_at=agent.updated_at
+            updated_at=agent.updated_at,
         )
 
     except HTTPException:
@@ -1134,7 +1198,7 @@ async def update_agent(
 async def delete_agent(
     agent_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Delete an agent definition (admin only).
@@ -1152,7 +1216,9 @@ async def delete_agent(
             raise HTTPException(status_code=404, detail="Agent not found")
 
         if agent.is_system:
-            raise HTTPException(status_code=400, detail="System agents cannot be deleted")
+            raise HTTPException(
+                status_code=400, detail="System agents cannot be deleted"
+            )
 
         agent_name = agent.name
         await db.delete(agent)
@@ -1174,7 +1240,7 @@ async def delete_agent(
 async def duplicate_agent(
     agent_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Duplicate an existing agent with a new name (admin only).
@@ -1209,17 +1275,23 @@ async def duplicate_agent(
             display_name=f"Copy of {source_agent.display_name}",
             description=source_agent.description,
             system_prompt=source_agent.system_prompt,
-            capabilities=source_agent.capabilities.copy() if source_agent.capabilities else [],
-            tool_whitelist=source_agent.tool_whitelist.copy() if source_agent.tool_whitelist else None,
+            capabilities=source_agent.capabilities.copy()
+            if source_agent.capabilities
+            else [],
+            tool_whitelist=source_agent.tool_whitelist.copy()
+            if source_agent.tool_whitelist
+            else None,
             priority=source_agent.priority,
             is_active=False,  # Start inactive
-            is_system=False  # Duplicates are never system agents
+            is_system=False,  # Duplicates are never system agents
         )
         db.add(new_agent)
         await db.commit()
         await db.refresh(new_agent)
 
-        logger.info(f"Duplicated agent '{source_agent.name}' to '{new_agent.name}' by user {current_user.id}")
+        logger.info(
+            f"Duplicated agent '{source_agent.name}' to '{new_agent.name}' by user {current_user.id}"
+        )
 
         return AgentDefinitionResponse(
             id=new_agent.id,
@@ -1233,7 +1305,7 @@ async def duplicate_agent(
             is_active=new_agent.is_active,
             is_system=new_agent.is_system,
             created_at=new_agent.created_at,
-            updated_at=new_agent.updated_at
+            updated_at=new_agent.updated_at,
         )
 
     except HTTPException:
@@ -1245,9 +1317,7 @@ async def duplicate_agent(
 
 
 @router.get("/capabilities", response_model=CapabilitiesListResponse)
-async def list_capabilities(
-    current_user: User = Depends(get_current_user)
-):
+async def list_capabilities(current_user: User = Depends(get_current_user)):
     """
     List all available capabilities that can be assigned to agents.
     """
@@ -1282,17 +1352,21 @@ async def list_capabilities(
         elif cap_name == "code_explanation":
             description = "Explain and document code"
 
-        capabilities.append(CapabilityInfo(
-            name=cap_name,
-            description=description,
-            keywords=keywords[:5]  # Show first 5 keywords as examples
-        ))
+        capabilities.append(
+            CapabilityInfo(
+                name=cap_name,
+                description=description,
+                keywords=keywords[:5],  # Show first 5 keywords as examples
+            )
+        )
 
-    capabilities.append(CapabilityInfo(
-        name="general",
-        description="General assistance (fallback when no specialized capability matches)",
-        keywords=[]
-    ))
+    capabilities.append(
+        CapabilityInfo(
+            name="general",
+            description="General assistance (fallback when no specialized capability matches)",
+            keywords=[],
+        )
+    )
 
     return CapabilitiesListResponse(capabilities=capabilities)
 
@@ -1301,7 +1375,7 @@ async def list_capabilities(
 async def get_conversation_agents(
     conversation_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get which agents participated in a conversation and why.
@@ -1311,7 +1385,7 @@ async def get_conversation_agents(
         conv_result = await db.execute(
             select(AgentConversation).where(
                 AgentConversation.id == conversation_id,
-                AgentConversation.user_id == current_user.id
+                AgentConversation.user_id == current_user.id,
             )
         )
         conversation = conv_result.scalar_one_or_none()
@@ -1321,28 +1395,37 @@ async def get_conversation_agents(
         # Get agent contexts
         result = await db.execute(
             select(AgentConversationContext, AgentDefinition)
-            .join(AgentDefinition, AgentConversationContext.agent_definition_id == AgentDefinition.id)
+            .join(
+                AgentDefinition,
+                AgentConversationContext.agent_definition_id == AgentDefinition.id,
+            )
             .where(AgentConversationContext.conversation_id == conversation_id)
             .order_by(AgentConversationContext.turn_number)
         )
 
         contexts = []
         for ctx, agent in result.all():
-            contexts.append({
-                "turn_number": ctx.turn_number,
-                "agent_id": str(agent.id),
-                "agent_name": agent.name,
-                "agent_display_name": agent.display_name,
-                "routing_reason": ctx.routing_reason,
-                "handoff_context": ctx.handoff_context,
-                "created_at": ctx.created_at.isoformat() if ctx.created_at else None
-            })
+            contexts.append(
+                {
+                    "turn_number": ctx.turn_number,
+                    "agent_id": str(agent.id),
+                    "agent_name": agent.name,
+                    "agent_display_name": agent.display_name,
+                    "routing_reason": ctx.routing_reason,
+                    "handoff_context": ctx.handoff_context,
+                    "created_at": ctx.created_at.isoformat()
+                    if ctx.created_at
+                    else None,
+                }
+            )
 
         return {
             "conversation_id": str(conversation_id),
             "agent_participations": contexts,
             "total_handoffs": conversation.agent_handoffs or 0,
-            "active_agent_id": str(conversation.active_agent_id) if conversation.active_agent_id else None
+            "active_agent_id": str(conversation.active_agent_id)
+            if conversation.active_agent_id
+            else None,
         }
 
     except HTTPException:
@@ -1356,7 +1439,7 @@ async def get_conversation_agents(
 async def get_conversation_memories(
     conversation_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get which memories were injected into a conversation.
@@ -1366,7 +1449,7 @@ async def get_conversation_memories(
         conv_result = await db.execute(
             select(AgentConversation).where(
                 AgentConversation.id == conversation_id,
-                AgentConversation.user_id == current_user.id
+                AgentConversation.user_id == current_user.id,
             )
         )
         conversation = conv_result.scalar_one_or_none()
@@ -1376,32 +1459,42 @@ async def get_conversation_memories(
         # Get memory injections with memory details
         result = await db.execute(
             select(AgentMemoryInjection, ConversationMemory)
-            .join(ConversationMemory, AgentMemoryInjection.memory_id == ConversationMemory.id)
+            .join(
+                ConversationMemory,
+                AgentMemoryInjection.memory_id == ConversationMemory.id,
+            )
             .where(AgentMemoryInjection.conversation_id == conversation_id)
-            .order_by(AgentMemoryInjection.turn_number, desc(AgentMemoryInjection.relevance_score))
+            .order_by(
+                AgentMemoryInjection.turn_number,
+                desc(AgentMemoryInjection.relevance_score),
+            )
         )
 
         injections = []
         for injection, memory in result.all():
-            injections.append({
-                "injection_id": str(injection.id),
-                "turn_number": injection.turn_number,
-                "relevance_score": injection.relevance_score,
-                "injection_type": injection.injection_type,
-                "memory": {
-                    "id": str(memory.id),
-                    "memory_type": memory.memory_type,
-                    "content": memory.content,
-                    "importance_score": memory.importance_score,
-                    "tags": memory.tags
-                },
-                "created_at": injection.created_at.isoformat() if injection.created_at else None
-            })
+            injections.append(
+                {
+                    "injection_id": str(injection.id),
+                    "turn_number": injection.turn_number,
+                    "relevance_score": injection.relevance_score,
+                    "injection_type": injection.injection_type,
+                    "memory": {
+                        "id": str(memory.id),
+                        "memory_type": memory.memory_type,
+                        "content": memory.content,
+                        "importance_score": memory.importance_score,
+                        "tags": memory.tags,
+                    },
+                    "created_at": injection.created_at.isoformat()
+                    if injection.created_at
+                    else None,
+                }
+            )
 
         return {
             "conversation_id": str(conversation_id),
             "memory_injections": injections,
-            "total": len(injections)
+            "total": len(injections),
         }
 
     except HTTPException:
@@ -1417,7 +1510,7 @@ async def manually_inject_memory(
     memory_id: UUID = Query(..., description="ID of the memory to inject"),
     turn_number: int = Query(0, description="Turn number to inject into"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Manually inject a specific memory into a conversation's context.
@@ -1428,7 +1521,7 @@ async def manually_inject_memory(
         conv_result = await db.execute(
             select(AgentConversation).where(
                 AgentConversation.id == conversation_id,
-                AgentConversation.user_id == current_user.id
+                AgentConversation.user_id == current_user.id,
             )
         )
         conversation = conv_result.scalar_one_or_none()
@@ -1439,7 +1532,7 @@ async def manually_inject_memory(
         mem_result = await db.execute(
             select(ConversationMemory).where(
                 ConversationMemory.id == memory_id,
-                ConversationMemory.user_id == current_user.id
+                ConversationMemory.user_id == current_user.id,
             )
         )
         memory = mem_result.scalar_one_or_none()
@@ -1452,7 +1545,7 @@ async def manually_inject_memory(
             memory_id=memory_id,
             turn_number=turn_number,
             relevance_score=1.0,  # Manual injection = max relevance
-            injection_type="manual"
+            injection_type="manual",
         )
         db.add(injection)
         await db.commit()
@@ -1462,7 +1555,7 @@ async def manually_inject_memory(
             "status": "ok",
             "injection_id": str(injection.id),
             "memory_content": memory.content,
-            "memory_type": memory.memory_type
+            "memory_type": memory.memory_type,
         }
 
     except HTTPException:
@@ -1475,6 +1568,7 @@ async def manually_inject_memory(
 # ============================================================================
 # WebSocket Streaming Endpoint
 # ============================================================================
+
 
 @router.websocket("/ws")
 async def agent_chat_websocket(websocket: WebSocket):
@@ -1509,10 +1603,9 @@ async def agent_chat_websocket(websocket: WebSocket):
 
     try:
         # Send connection confirmation
-        await websocket.send_json({
-            "type": "connected",
-            "message": "Connected to document assistant"
-        })
+        await websocket.send_json(
+            {"type": "connected", "message": "Connected to document assistant"}
+        )
 
         while True:
             try:
@@ -1530,10 +1623,9 @@ async def agent_chat_websocket(websocket: WebSocket):
                     conversation_history = data.get("conversation_history", [])
 
                     if not content:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Empty message received"
-                        })
+                        await websocket.send_json(
+                            {"type": "error", "message": "Empty message received"}
+                        )
                         continue
 
                     # Process message with streaming
@@ -1541,42 +1633,36 @@ async def agent_chat_websocket(websocket: WebSocket):
                         websocket=websocket,
                         message=content,
                         conversation_history=conversation_history,
-                        user=user
+                        user=user,
                     )
 
             except json.JSONDecodeError:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Invalid JSON message"
-                })
+                await websocket.send_json(
+                    {"type": "error", "message": "Invalid JSON message"}
+                )
 
     except WebSocketDisconnect:
         logger.info(f"Agent WebSocket disconnected for user {user.id}")
     except Exception as e:
         logger.error(f"Agent WebSocket error: {e}")
         try:
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Connection error: {str(e)}"
-            })
-        except:
+            await websocket.send_json(
+                {"type": "error", "message": f"Connection error: {str(e)}"}
+            )
+        except Exception:
             pass
         await websocket.close()
 
 
 async def _process_message_with_streaming(
-    websocket: WebSocket,
-    message: str,
-    conversation_history: List[dict],
-    user: User
+    websocket: WebSocket, message: str, conversation_history: List[dict], user: User
 ):
     """Process agent message with real-time streaming updates."""
 
     # Send thinking indicator
-    await websocket.send_json({
-        "type": "thinking",
-        "message": "Processing your request..."
-    })
+    await websocket.send_json(
+        {"type": "thinking", "message": "Processing your request..."}
+    )
 
     async with AsyncSessionLocal() as db:
         try:
@@ -1599,27 +1685,34 @@ async def _process_message_with_streaming(
             history = []
             for msg in conversation_history:
                 if isinstance(msg, dict):
-                    history.append(AgentMessage(
-                        role=msg.get("role", "user"),
-                        content=msg.get("content", ""),
-                        created_at=datetime.fromisoformat(msg["created_at"]) if msg.get("created_at") else datetime.utcnow()
-                    ))
+                    history.append(
+                        AgentMessage(
+                            role=msg.get("role", "user"),
+                            content=msg.get("content", ""),
+                            created_at=datetime.fromisoformat(msg["created_at"])
+                            if msg.get("created_at")
+                            else datetime.utcnow(),
+                        )
+                    )
 
             # Send planning indicator
-            await websocket.send_json({
-                "type": "planning",
-                "message": "Determining actions..."
-            })
+            await websocket.send_json(
+                {"type": "planning", "message": "Determining actions..."}
+            )
 
             # Step 1: Plan tool calls
-            tool_calls = await agent_service._plan_tool_calls(message, history, user_settings)
+            tool_calls = await agent_service._plan_tool_calls(
+                message, history, user_settings
+            )
 
             # Send planning result
-            await websocket.send_json({
-                "type": "planning",
-                "message": f"Found {len(tool_calls)} action(s) to perform",
-                "tool_count": len(tool_calls)
-            })
+            await websocket.send_json(
+                {
+                    "type": "planning",
+                    "message": f"Found {len(tool_calls)} action(s) to perform",
+                    "tool_count": len(tool_calls),
+                }
+            )
 
             # Step 2: Execute tools with streaming
             tool_results = []
@@ -1628,25 +1721,29 @@ async def _process_message_with_streaming(
 
             for tool_call in tool_calls:
                 # Notify tool start
-                await websocket.send_json({
-                    "type": "tool_start",
-                    "tool": {
-                        "id": tool_call.id,
-                        "tool_name": tool_call.tool_name,
-                        "tool_input": tool_call.tool_input,
-                        "status": "pending"
+                await websocket.send_json(
+                    {
+                        "type": "tool_start",
+                        "tool": {
+                            "id": tool_call.id,
+                            "tool_name": tool_call.tool_name,
+                            "tool_input": tool_call.tool_input,
+                            "status": "pending",
+                        },
                     }
-                })
+                )
 
                 # Small delay to allow UI to update
                 await asyncio.sleep(0.1)
 
                 # Send running status
-                await websocket.send_json({
-                    "type": "tool_progress",
-                    "tool_id": tool_call.id,
-                    "status": "running"
-                })
+                await websocket.send_json(
+                    {
+                        "type": "tool_progress",
+                        "tool_id": tool_call.id,
+                        "status": "running",
+                    }
+                )
 
                 try:
                     # Execute the tool
@@ -1654,22 +1751,27 @@ async def _process_message_with_streaming(
                     tool_results.append(result)
 
                     # Check for user action requirements
-                    if result.tool_name == "request_file_upload" and result.status == "completed":
+                    if (
+                        result.tool_name == "request_file_upload"
+                        and result.status == "completed"
+                    ):
                         requires_user_action = True
                         action_type = "upload_file"
 
                     # Send tool completion
-                    await websocket.send_json({
-                        "type": "tool_complete",
-                        "tool": {
-                            "id": result.id,
-                            "tool_name": result.tool_name,
-                            "tool_input": result.tool_input,
-                            "tool_output": result.tool_output,
-                            "status": result.status,
-                            "execution_time_ms": result.execution_time_ms
+                    await websocket.send_json(
+                        {
+                            "type": "tool_complete",
+                            "tool": {
+                                "id": result.id,
+                                "tool_name": result.tool_name,
+                                "tool_input": result.tool_input,
+                                "tool_output": result.tool_output,
+                                "status": result.status,
+                                "execution_time_ms": result.execution_time_ms,
+                            },
                         }
-                    })
+                    )
 
                 except Exception as e:
                     logger.error(f"Tool execution error: {e}")
@@ -1677,17 +1779,14 @@ async def _process_message_with_streaming(
                     tool_call.error = str(e)
                     tool_results.append(tool_call)
 
-                    await websocket.send_json({
-                        "type": "tool_error",
-                        "tool_id": tool_call.id,
-                        "error": str(e)
-                    })
+                    await websocket.send_json(
+                        {"type": "tool_error", "tool_id": tool_call.id, "error": str(e)}
+                    )
 
             # Step 3: Generate response
-            await websocket.send_json({
-                "type": "generating",
-                "message": "Generating response..."
-            })
+            await websocket.send_json(
+                {"type": "generating", "message": "Generating response..."}
+            )
 
             response_content = await agent_service._generate_response(
                 message, tool_results, history, user_settings
@@ -1698,43 +1797,49 @@ async def _process_message_with_streaming(
                 role="assistant",
                 content=response_content,
                 tool_calls=tool_results if tool_results else None,
-                created_at=datetime.utcnow()
+                created_at=datetime.utcnow(),
             )
 
             # Send final response
-            await websocket.send_json({
-                "type": "response",
-                "message": {
-                    "id": response_message.id,
-                    "role": response_message.role,
-                    "content": response_message.content,
-                    "created_at": response_message.created_at.isoformat(),
-                    "tool_calls": [
+            await websocket.send_json(
+                {
+                    "type": "response",
+                    "message": {
+                        "id": response_message.id,
+                        "role": response_message.role,
+                        "content": response_message.content,
+                        "created_at": response_message.created_at.isoformat(),
+                        "tool_calls": [
+                            {
+                                "id": tc.id,
+                                "tool_name": tc.tool_name,
+                                "tool_input": tc.tool_input,
+                                "tool_output": tc.tool_output,
+                                "status": tc.status,
+                                "error": tc.error,
+                                "execution_time_ms": tc.execution_time_ms,
+                            }
+                            for tc in (tool_results or [])
+                        ]
+                        if tool_results
+                        else None,
+                    },
+                    "tool_results": [
                         {
                             "id": tc.id,
                             "tool_name": tc.tool_name,
-                            "tool_input": tc.tool_input,
                             "tool_output": tc.tool_output,
                             "status": tc.status,
-                            "error": tc.error,
-                            "execution_time_ms": tc.execution_time_ms
+                            "execution_time_ms": tc.execution_time_ms,
                         }
                         for tc in (tool_results or [])
-                    ] if tool_results else None
-                },
-                "tool_results": [
-                    {
-                        "id": tc.id,
-                        "tool_name": tc.tool_name,
-                        "tool_output": tc.tool_output,
-                        "status": tc.status,
-                        "execution_time_ms": tc.execution_time_ms
-                    }
-                    for tc in (tool_results or [])
-                ] if tool_results else None,
-                "requires_user_action": requires_user_action,
-                "action_type": action_type
-            })
+                    ]
+                    if tool_results
+                    else None,
+                    "requires_user_action": requires_user_action,
+                    "action_type": action_type,
+                }
+            )
 
             logger.info(
                 f"Agent WebSocket processed message for user {user.id}: "
@@ -1743,15 +1848,15 @@ async def _process_message_with_streaming(
 
         except Exception as e:
             logger.error(f"Error processing agent message via WebSocket: {e}")
-            await websocket.send_json({
-                "type": "error",
-                "message": f"Failed to process message: {str(e)}"
-            })
+            await websocket.send_json(
+                {"type": "error", "message": f"Failed to process message: {str(e)}"}
+            )
 
 
 # =============================================================================
 # Agent Builder Endpoints
 # =============================================================================
+
 
 @router.get("/templates", tags=["agent-builder"])
 async def list_agent_templates(
@@ -1771,9 +1876,8 @@ async def list_agent_templates(
     - governance: Compliance checkers
     """
     from app.services.agent_templates import (
-        AGENT_TEMPLATES,
-        get_templates_by_category,
         get_template_summary,
+        get_templates_by_category,
         list_template_categories,
     )
 
@@ -1798,7 +1902,7 @@ async def list_agent_templates(
     return {
         "templates": summary,
         "categories": list_template_categories(),
-        "total": len(summary)
+        "total": len(summary),
     }
 
 
@@ -1831,8 +1935,9 @@ async def create_agent_from_template(
     The agent will be created in 'draft' status so you can customize it
     before publishing.
     """
-    from app.services.agent_templates import get_template_by_id
     import time
+
+    from app.services.agent_templates import get_template_by_id
 
     template = get_template_by_id(template_id)
     if not template:
@@ -1880,7 +1985,7 @@ async def create_agent_from_template(
             "is_active": agent.is_active,
             "lifecycle_status": agent.lifecycle_status,
         },
-        "template_id": template_id
+        "template_id": template_id,
     }
 
 
@@ -1901,8 +2006,8 @@ async def test_agent_routing(
     - What the agent's response approach would be
     """
     from app.services.agent_router import AgentRouter
-    from app.services.llm_service import LLMService
     from app.services.agent_tools import AGENT_TOOLS
+    from app.services.llm_service import LLMService
 
     # Get the agent
     result = await db.execute(
@@ -1950,9 +2055,7 @@ async def test_agent_routing(
         ]
 
     # Get routing decision
-    selected_agent, routing_reason = await router.select_agent(
-        intent_analysis, db
-    )
+    selected_agent, routing_reason = await router.select_agent(intent_analysis, db)
 
     would_be_selected = selected_agent and selected_agent.id == agent.id
 
@@ -1999,6 +2102,7 @@ async def get_agent_analytics(
     - Performance metrics
     """
     from datetime import datetime, timedelta
+
     from sqlalchemy import func
 
     # Get the agent
@@ -2018,11 +2122,13 @@ async def get_agent_analytics(
 
     # Get conversation context stats
     context_query = select(
-        func.count(AgentConversationContext.id).label('total_turns'),
-        func.count(func.distinct(AgentConversationContext.conversation_id)).label('unique_conversations'),
+        func.count(AgentConversationContext.id).label("total_turns"),
+        func.count(func.distinct(AgentConversationContext.conversation_id)).label(
+            "unique_conversations"
+        ),
     ).where(
         AgentConversationContext.agent_definition_id == agent_id,
-        AgentConversationContext.created_at >= cutoff_date
+        AgentConversationContext.created_at >= cutoff_date,
     )
     context_result = await db.execute(context_query)
     context_stats = context_result.one()
@@ -2030,61 +2136,69 @@ async def get_agent_analytics(
     # Get tool execution stats from ToolExecutionAudit
     from app.models.tool_audit import ToolExecutionAudit
 
-    tool_query = select(
-        ToolExecutionAudit.tool_name,
-        func.count(ToolExecutionAudit.id).label('count'),
-        func.avg(ToolExecutionAudit.execution_time_ms).label('avg_time'),
-    ).where(
-        ToolExecutionAudit.agent_definition_id == agent_id,
-        ToolExecutionAudit.created_at >= cutoff_date
-    ).group_by(ToolExecutionAudit.tool_name).order_by(func.count(ToolExecutionAudit.id).desc())
+    tool_query = (
+        select(
+            ToolExecutionAudit.tool_name,
+            func.count(ToolExecutionAudit.id).label("count"),
+            func.avg(ToolExecutionAudit.execution_time_ms).label("avg_time"),
+        )
+        .where(
+            ToolExecutionAudit.agent_definition_id == agent_id,
+            ToolExecutionAudit.created_at >= cutoff_date,
+        )
+        .group_by(ToolExecutionAudit.tool_name)
+        .order_by(func.count(ToolExecutionAudit.id).desc())
+    )
 
     tool_result = await db.execute(tool_query)
     tool_stats = [
         {
             "tool_name": row.tool_name,
             "call_count": row.count,
-            "avg_execution_time_ms": round(row.avg_time, 2) if row.avg_time else None
+            "avg_execution_time_ms": round(row.avg_time, 2) if row.avg_time else None,
         }
         for row in tool_result.fetchall()
     ]
 
     # Get status distribution
-    status_query = select(
-        ToolExecutionAudit.status,
-        func.count(ToolExecutionAudit.id)
-    ).where(
-        ToolExecutionAudit.agent_definition_id == agent_id,
-        ToolExecutionAudit.created_at >= cutoff_date
-    ).group_by(ToolExecutionAudit.status)
+    status_query = (
+        select(ToolExecutionAudit.status, func.count(ToolExecutionAudit.id))
+        .where(
+            ToolExecutionAudit.agent_definition_id == agent_id,
+            ToolExecutionAudit.created_at >= cutoff_date,
+        )
+        .group_by(ToolExecutionAudit.status)
+    )
 
     status_result = await db.execute(status_query)
     status_distribution = dict(status_result.fetchall())
 
     # Get handoff stats (from context routing_reason)
-    handoff_query = select(
-        func.count(AgentConversationContext.id)
-    ).where(
+    handoff_query = select(func.count(AgentConversationContext.id)).where(
         AgentConversationContext.agent_definition_id == agent_id,
         AgentConversationContext.created_at >= cutoff_date,
-        AgentConversationContext.handoff_context != None
+        AgentConversationContext.handoff_context.is_not(None),
     )
     handoff_result = await db.execute(handoff_query)
     handoff_count = handoff_result.scalar() or 0
 
     # Daily usage trend
-    daily_query = select(
-        func.date(AgentConversationContext.created_at).label('date'),
-        func.count(AgentConversationContext.id).label('turns')
-    ).where(
-        AgentConversationContext.agent_definition_id == agent_id,
-        AgentConversationContext.created_at >= cutoff_date
-    ).group_by(func.date(AgentConversationContext.created_at)).order_by('date')
+    daily_query = (
+        select(
+            func.date(AgentConversationContext.created_at).label("date"),
+            func.count(AgentConversationContext.id).label("turns"),
+        )
+        .where(
+            AgentConversationContext.agent_definition_id == agent_id,
+            AgentConversationContext.created_at >= cutoff_date,
+        )
+        .group_by(func.date(AgentConversationContext.created_at))
+        .order_by("date")
+    )
 
     daily_result = await db.execute(daily_query)
     daily_trend = [
-        {"date": str(row.date), "turns": row.turns}
-        for row in daily_result.fetchall()
+        {"date": str(row.date), "turns": row.turns} for row in daily_result.fetchall()
     ]
 
     return {
@@ -2137,7 +2251,7 @@ async def publish_agent(
         "message": f"Agent '{agent.display_name}' published successfully",
         "agent_id": str(agent.id),
         "is_active": agent.is_active,
-        "lifecycle_status": agent.lifecycle_status
+        "lifecycle_status": agent.lifecycle_status,
     }
 
 
@@ -2170,5 +2284,5 @@ async def archive_agent(
     return {
         "message": f"Agent '{agent.display_name}' archived",
         "agent_id": str(agent.id),
-        "lifecycle_status": agent.lifecycle_status
+        "lifecycle_status": agent.lifecycle_status,
     }

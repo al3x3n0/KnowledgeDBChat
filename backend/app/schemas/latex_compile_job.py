@@ -13,7 +13,9 @@ from pydantic import BaseModel, Field
 
 class LatexCompileJobCreateRequest(BaseModel):
     safe_mode: bool = True
-    preferred_engine: Optional[str] = Field(default=None, description="Optional: 'tectonic' or 'pdflatex'")
+    preferred_engine: Optional[str] = Field(
+        default=None, description="Optional: 'tectonic' or 'pdflatex'"
+    )
 
 
 class LatexCompileJobResponse(BaseModel):
@@ -31,4 +33,3 @@ class LatexCompileJobResponse(BaseModel):
     updated_at: Optional[datetime] = None
     started_at: Optional[datetime] = None
     finished_at: Optional[datetime] = None
-

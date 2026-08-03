@@ -4,15 +4,15 @@ API Key management service.
 Handles creation, validation, and revocation of API keys for external tool access.
 """
 
-import secrets
 import hashlib
+import secrets
 from datetime import datetime, timedelta
-from typing import Optional, List, Tuple
+from typing import List, Optional, Tuple
 from uuid import UUID
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, update, and_
 from loguru import logger
+from sqlalchemy import and_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.api_key import APIKey, APIKeyUsageLog
 from app.models.user import User
@@ -311,8 +311,7 @@ class APIKeyService:
 
         # Count requests
         count_result = await db.execute(
-            select(func.count(APIKeyUsageLog.id))
-            .where(
+            select(func.count(APIKeyUsageLog.id)).where(
                 and_(
                     APIKeyUsageLog.api_key_id == key_id,
                     APIKeyUsageLog.timestamp >= since,
@@ -335,8 +334,7 @@ class APIKeyService:
             .limit(10)
         )
         top_endpoints = [
-            {"endpoint": row[0], "count": row[1]}
-            for row in endpoints_result.all()
+            {"endpoint": row[0], "count": row[1]} for row in endpoints_result.all()
         ]
 
         return {
@@ -345,7 +343,9 @@ class APIKeyService:
             "period_days": days,
             "total_requests": total_requests,
             "lifetime_requests": api_key.usage_count or 0,
-            "last_used_at": api_key.last_used_at.isoformat() if api_key.last_used_at else None,
+            "last_used_at": api_key.last_used_at.isoformat()
+            if api_key.last_used_at
+            else None,
             "top_endpoints": top_endpoints,
         }
 

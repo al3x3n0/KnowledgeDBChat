@@ -38,8 +38,12 @@ def test_stable_prompt_is_byte_stable_across_iteration_state_changes():
         "critic_notes": [{"note": "consider arxiv"}],
     }
 
-    stable_a = executor._build_thinking_prompt_stable(job, None, state_iter_1, profile={})
-    stable_b = executor._build_thinking_prompt_stable(job, None, state_iter_5, profile={})
+    stable_a = executor._build_thinking_prompt_stable(
+        job, None, state_iter_1, profile={}
+    )
+    stable_b = executor._build_thinking_prompt_stable(
+        job, None, state_iter_5, profile={}
+    )
 
     assert stable_a == stable_b
     assert "GOAL:" in stable_a

@@ -34,12 +34,24 @@ def test_claude_code_backend_chain_is_registered_with_expected_steps():
     step4 = chain.get_step(4) or {}
     step5 = chain.get_step(5) or {}
 
-    assert (step0.get("config") or {}).get("deterministic_runner") == "code_patch_proposer"
-    assert (step1.get("config") or {}).get("deterministic_runner") == "experiment_runner"
-    assert (step2.get("config") or {}).get("deterministic_runner") == "code_patch_proposer"
-    assert (step3.get("config") or {}).get("deterministic_runner") == "experiment_runner"
-    assert (step4.get("config") or {}).get("deterministic_runner") == "code_patch_apply_to_kb"
-    assert (step5.get("config") or {}).get("deterministic_runner") == "code_patch_apply_to_kb"
+    assert (step0.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "code_patch_proposer"
+    assert (step1.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "experiment_runner"
+    assert (step2.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "code_patch_proposer"
+    assert (step3.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "experiment_runner"
+    assert (step4.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "code_patch_apply_to_kb"
+    assert (step5.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "code_patch_apply_to_kb"
 
     defaults = chain.default_settings or {}
     assert defaults.get("source_id") == ""
@@ -63,12 +75,16 @@ def test_claude_code_backend_template_is_registered_with_chain():
     child_jobs = chain_cfg.get("child_jobs") or []
     assert child_jobs
     verify_round_1 = child_jobs[0]
-    assert (verify_round_1.get("config") or {}).get("deterministic_runner") == "experiment_runner"
+    assert (verify_round_1.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "experiment_runner"
 
     nested = (verify_round_1.get("chain_config") or {}).get("child_jobs") or []
     assert nested
     refine_round_2 = nested[0]
-    assert (refine_round_2.get("config") or {}).get("deterministic_runner") == "code_patch_proposer"
+    assert (refine_round_2.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "code_patch_proposer"
 
 
 def test_claude_code_backend_builtins_do_not_use_legacy_target_source_id_keys():
@@ -95,10 +111,18 @@ def test_repo_bug_triage_chain_is_registered_with_expected_steps():
     step2 = chain.get_step(2) or {}
     step3 = chain.get_step(3) or {}
 
-    assert (step0.get("config") or {}).get("deterministic_runner") == "code_patch_proposer"
-    assert (step1.get("config") or {}).get("deterministic_runner") == "experiment_runner"
-    assert (step2.get("config") or {}).get("deterministic_runner") == "code_patch_proposer"
-    assert (step3.get("config") or {}).get("deterministic_runner") == "experiment_runner"
+    assert (step0.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "code_patch_proposer"
+    assert (step1.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "experiment_runner"
+    assert (step2.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "code_patch_proposer"
+    assert (step3.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "experiment_runner"
 
     defaults = chain.default_settings or {}
     assert defaults.get("source_id") == ""
@@ -129,7 +153,9 @@ def test_repo_bug_triage_template_is_registered_with_chain():
     child_jobs = chain_cfg.get("child_jobs") or []
     assert child_jobs
     verify_round_1 = child_jobs[0]
-    assert (verify_round_1.get("config") or {}).get("deterministic_runner") == "experiment_runner"
+    assert (verify_round_1.get("config") or {}).get(
+        "deterministic_runner"
+    ) == "experiment_runner"
 
 
 def test_repo_bug_triage_builtins_do_not_use_legacy_target_source_id_keys():

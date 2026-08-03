@@ -4,27 +4,25 @@ Training Service for AI Hub.
 Orchestrates training jobs: creation, execution, monitoring, and cancellation.
 """
 
-import asyncio
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import select, func, and_
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.models.model_registry import AdapterStatus, AdapterType, ModelAdapter
+from app.models.training_dataset import TrainingDataset
 from app.models.training_job import (
-    TrainingJob,
     TrainingCheckpoint,
+    TrainingJob,
     TrainingJobStatus,
     TrainingMethod,
-    TrainingBackend,
 )
-from app.models.training_dataset import TrainingDataset, DatasetStatus
-from app.models.model_registry import ModelAdapter, AdapterStatus, AdapterType
-from app.schemas.training import TrainingJobCreate, HyperparametersConfig
+from app.schemas.training import TrainingJobCreate
 from app.services.trainers import LocalTrainer, SimulatedTrainer
 from app.services.trainers.base_trainer import TrainingProgress
 
@@ -80,7 +78,9 @@ class TrainingService:
         if not dataset:
             raise ValueError(f"Dataset {data.dataset_id} not found")
         if not dataset.is_ready_for_training():
-            raise ValueError(f"Dataset is not ready for training (status: {dataset.status})")
+            raise ValueError(
+                f"Dataset is not ready for training (status: {dataset.status})"
+            )
 
         # Validate training backend
         if data.training_backend not in self._trainers:
@@ -91,7 +91,10 @@ class TrainingService:
             )
 
         # Validate training method for currently supported trainers
-        if data.training_method not in [TrainingMethod.LORA.value, TrainingMethod.QLORA.value]:
+        if data.training_method not in [
+            TrainingMethod.LORA.value,
+            TrainingMethod.QLORA.value,
+        ]:
             raise ValueError(
                 f"Training method '{data.training_method}' not supported. "
                 f"Supported: {TrainingMethod.LORA.value}, {TrainingMethod.QLORA.value}"
@@ -239,6 +242,7 @@ class TrainingService:
         # Signal cancellation to any worker using Redis polling
         try:
             import redis.asyncio as redis
+
             redis_client = redis.from_url(settings.REDIS_URL)
             # Keep the flag around briefly so worker threads polling Redis can see it
             await redis_client.set(f"training_job:{job_id}:cancel", "1", ex=3600)
@@ -249,6 +253,7 @@ class TrainingService:
         # Revoke Celery task if exists
         if job.celery_task_id:
             from app.core.celery import celery_app
+
             celery_app.control.revoke(job.celery_task_id, terminate=True)
 
         job.status = TrainingJobStatus.CANCELLED.value
@@ -333,7 +338,11 @@ class TrainingService:
 
         job.status = TrainingJobStatus.TRAINING.value
         # Keep 100% reserved for the adapter registration/completion phase.
-        pct = int((progress.step / progress.total_steps) * 95) if progress.total_steps > 0 else 0
+        pct = (
+            int((progress.step / progress.total_steps) * 95)
+            if progress.total_steps > 0
+            else 0
+        )
         job.progress = max(0, min(95, pct))
         job.current_step = progress.step
         job.total_steps = progress.total_steps
@@ -442,15 +451,15 @@ class TrainingService:
         result = await db.execute(
             select(
                 func.count(TrainingJob.id).label("total"),
-                func.count(TrainingJob.id).filter(
-                    TrainingJob.status.in_(running_statuses)
-                ).label("running"),
-                func.count(TrainingJob.id).filter(
-                    TrainingJob.status == TrainingJobStatus.COMPLETED.value
-                ).label("completed"),
-                func.count(TrainingJob.id).filter(
-                    TrainingJob.status == TrainingJobStatus.FAILED.value
-                ).label("failed"),
+                func.count(TrainingJob.id)
+                .filter(TrainingJob.status.in_(running_statuses))
+                .label("running"),
+                func.count(TrainingJob.id)
+                .filter(TrainingJob.status == TrainingJobStatus.COMPLETED.value)
+                .label("completed"),
+                func.count(TrainingJob.id)
+                .filter(TrainingJob.status == TrainingJobStatus.FAILED.value)
+                .label("failed"),
             ).where(TrainingJob.user_id == user_id)
         )
         row = result.one()
@@ -478,33 +487,53 @@ class TrainingService:
                 if response.status_code == 200:
                     data = response.json()
                     for model in data.get("models", []):
-                        models.append({
-                            "name": model["name"],
-                            "display_name": model["name"],
-                            "provider": "ollama",
-                            "size_gb": model.get("size", 0) / (1024**3),
-                            "is_available": True,
-                        })
+                        models.append(
+                            {
+                                "name": model["name"],
+                                "display_name": model["name"],
+                                "provider": "ollama",
+                                "size_gb": model.get("size", 0) / (1024**3),
+                                "is_available": True,
+                            }
+                        )
 
         except Exception as e:
             logger.warning(f"Failed to fetch Ollama models: {e}")
 
         # Add common HuggingFace models as options
         hf_models = [
-            {"name": "meta-llama/Llama-3.2-1B", "display_name": "Llama 3.2 1B", "size_gb": 2.0},
-            {"name": "meta-llama/Llama-3.2-3B", "display_name": "Llama 3.2 3B", "size_gb": 6.0},
-            {"name": "mistralai/Mistral-7B-v0.1", "display_name": "Mistral 7B", "size_gb": 14.0},
-            {"name": "microsoft/Phi-3-mini-4k-instruct", "display_name": "Phi-3 Mini", "size_gb": 4.0},
+            {
+                "name": "meta-llama/Llama-3.2-1B",
+                "display_name": "Llama 3.2 1B",
+                "size_gb": 2.0,
+            },
+            {
+                "name": "meta-llama/Llama-3.2-3B",
+                "display_name": "Llama 3.2 3B",
+                "size_gb": 6.0,
+            },
+            {
+                "name": "mistralai/Mistral-7B-v0.1",
+                "display_name": "Mistral 7B",
+                "size_gb": 14.0,
+            },
+            {
+                "name": "microsoft/Phi-3-mini-4k-instruct",
+                "display_name": "Phi-3 Mini",
+                "size_gb": 4.0,
+            },
         ]
 
         for model in hf_models:
-            models.append({
-                "name": model["name"],
-                "display_name": model["display_name"],
-                "provider": "huggingface",
-                "size_gb": model["size_gb"],
-                "is_available": True,
-            })
+            models.append(
+                {
+                    "name": model["name"],
+                    "display_name": model["display_name"],
+                    "provider": "huggingface",
+                    "size_gb": model["size_gb"],
+                    "is_available": True,
+                }
+            )
 
         return models
 

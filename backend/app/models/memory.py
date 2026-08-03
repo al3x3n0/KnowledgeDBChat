@@ -3,14 +3,24 @@ Memory models for conversation context retention.
 """
 
 from datetime import datetime
-from typing import Optional, Dict, Any
-from uuid import UUID, uuid4
-from sqlalchemy import Column, String, Text, DateTime, JSON, ForeignKey, Integer, Float, Boolean
+from uuid import uuid4
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID as PostgresUUID
 from sqlalchemy.orm import relationship
-from sqlalchemy.ext.declarative import declarative_base
 
 from app.core.database import Base
+
 
 class ConversationMemory(Base):
     """Stores long-term conversation memories for users.
@@ -27,24 +37,41 @@ class ConversationMemory(Base):
     - pattern: Recurring pattern identified across jobs
     - lesson: Lesson learned from job execution
     """
+
     __tablename__ = "conversation_memories"
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
-    session_id = Column(PostgresUUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=True, index=True)
+    user_id = Column(
+        PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
+    session_id = Column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("chat_sessions.id"),
+        nullable=True,
+        index=True,
+    )
 
     # Agent job source (for job-derived memories)
-    job_id = Column(PostgresUUID(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    job_id = Column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("agent_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Memory content
-    memory_type = Column(String(50), nullable=False, index=True)  # 'fact', 'preference', 'context', 'summary', 'finding', 'insight', 'pattern', 'lesson'
+    memory_type = Column(
+        String(50), nullable=False, index=True
+    )  # 'fact', 'preference', 'context', 'summary', 'finding', 'insight', 'pattern', 'lesson'
     content = Column(Text, nullable=False)
     importance_score = Column(Float, default=0.5)  # 0.0 to 1.0, higher = more important
 
     # Context and metadata
     context = Column(JSON, nullable=True)  # Additional context about the memory
     tags = Column(JSON, nullable=True)  # Tags for categorization
-    source_message_id = Column(PostgresUUID(as_uuid=True), nullable=True)  # Original message that created this memory
+    source_message_id = Column(
+        PostgresUUID(as_uuid=True), nullable=True
+    )  # Original message that created this memory
 
     # Memory lifecycle
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -55,29 +82,45 @@ class ConversationMemory(Base):
     # Relationships
     user = relationship("User", back_populates="memories")
     session = relationship("ChatSession", back_populates="memories")
-    source_job = relationship("AgentJob", back_populates="memories", foreign_keys=[job_id])
-    agent_injections = relationship("AgentMemoryInjection", back_populates="memory", cascade="all, delete-orphan")
+    source_job = relationship(
+        "AgentJob", back_populates="memories", foreign_keys=[job_id]
+    )
+    agent_injections = relationship(
+        "AgentMemoryInjection", back_populates="memory", cascade="all, delete-orphan"
+    )
 
     def __repr__(self):
         return f"<ConversationMemory(id={self.id}, type={self.memory_type}, importance={self.importance_score})>"
 
+
 class MemoryInteraction(Base):
     """Tracks how memories are used in conversations."""
+
     __tablename__ = "memory_interactions"
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
-    memory_id = Column(PostgresUUID(as_uuid=True), ForeignKey("conversation_memories.id"), nullable=False)
-    session_id = Column(PostgresUUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=False)
+    memory_id = Column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("conversation_memories.id"),
+        nullable=False,
+    )
+    session_id = Column(
+        PostgresUUID(as_uuid=True), ForeignKey("chat_sessions.id"), nullable=False
+    )
     message_id = Column(PostgresUUID(as_uuid=True), nullable=True)
-    
+
     # Interaction details
-    interaction_type = Column(String(50), nullable=False)  # 'retrieved', 'updated', 'reinforced', 'contradicted'
-    relevance_score = Column(Float, nullable=True)  # How relevant was this memory to the conversation
+    interaction_type = Column(
+        String(50), nullable=False
+    )  # 'retrieved', 'updated', 'reinforced', 'contradicted'
+    relevance_score = Column(
+        Float, nullable=True
+    )  # How relevant was this memory to the conversation
     usage_context = Column(JSON, nullable=True)  # Context about how the memory was used
-    
+
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    
+
     # Relationships
     memory = relationship("ConversationMemory")
     session = relationship("ChatSession")
@@ -85,32 +128,66 @@ class MemoryInteraction(Base):
     def __repr__(self):
         return f"<MemoryInteraction(id={self.id}, memory_id={self.memory_id}, type={self.interaction_type})>"
 
+
 class UserPreferences(Base):
     """Stores user preferences and settings for memory system."""
+
     __tablename__ = "user_preferences"
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, unique=True, index=True)
-    
+    user_id = Column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("users.id"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
+
     # Memory preferences
-    memory_retention_days = Column(Integer, default=90, nullable=False)  # How long to keep memories
-    max_memories_per_session = Column(Integer, default=10, nullable=False)  # Max memories to load per session
-    memory_importance_threshold = Column(Float, default=0.3, nullable=False)  # Min importance to store
-    auto_summarize_sessions = Column(Boolean, default=True, nullable=False)  # Auto-create session summaries
-    auto_memory_build_enabled = Column(Boolean, default=True, nullable=False)  # Enable automatic memory extraction
-    auto_memory_build_mode = Column(String(32), default="per_turn", nullable=False)  # off|manual|per_turn|periodic
-    auto_memory_build_min_messages = Column(Integer, default=3, nullable=False)  # Used by periodic mode
-    auto_memory_build_min_minutes = Column(Integer, default=10, nullable=False)  # Used by periodic mode
-    
+    memory_retention_days = Column(
+        Integer, default=90, nullable=False
+    )  # How long to keep memories
+    max_memories_per_session = Column(
+        Integer, default=10, nullable=False
+    )  # Max memories to load per session
+    memory_importance_threshold = Column(
+        Float, default=0.3, nullable=False
+    )  # Min importance to store
+    auto_summarize_sessions = Column(
+        Boolean, default=True, nullable=False
+    )  # Auto-create session summaries
+    auto_memory_build_enabled = Column(
+        Boolean, default=True, nullable=False
+    )  # Enable automatic memory extraction
+    auto_memory_build_mode = Column(
+        String(32), default="per_turn", nullable=False
+    )  # off|manual|per_turn|periodic
+    auto_memory_build_min_messages = Column(
+        Integer, default=3, nullable=False
+    )  # Used by periodic mode
+    auto_memory_build_min_minutes = Column(
+        Integer, default=10, nullable=False
+    )  # Used by periodic mode
+
     # Privacy settings
-    allow_cross_session_memory = Column(Boolean, default=True, nullable=False)  # Share memories across sessions
-    allow_personal_data_storage = Column(Boolean, default=True, nullable=False)  # Store personal information
+    allow_cross_session_memory = Column(
+        Boolean, default=True, nullable=False
+    )  # Share memories across sessions
+    allow_personal_data_storage = Column(
+        Boolean, default=True, nullable=False
+    )  # Store personal information
 
     # LLM preferences (per-user overrides)
-    llm_provider = Column(String(50), nullable=True)  # "ollama", "deepseek", "openai", or custom
-    llm_model = Column(String(100), nullable=True)  # Model name override (default for chat)
+    llm_provider = Column(
+        String(50), nullable=True
+    )  # "ollama", "deepseek", "openai", or custom
+    llm_model = Column(
+        String(100), nullable=True
+    )  # Model name override (default for chat)
     llm_api_url = Column(String(500), nullable=True)  # Custom API URL override
-    llm_api_key = Column(String(500), nullable=True)  # User's own API key (for external providers)
+    llm_api_key = Column(
+        String(500), nullable=True
+    )  # User's own API key (for external providers)
     llm_temperature = Column(Float, nullable=True)  # Temperature override (0.0-2.0)
     llm_max_tokens = Column(Integer, nullable=True)  # Max response tokens override
 
@@ -121,23 +198,39 @@ class UserPreferences(Base):
     llm_task_providers = Column(JSON, nullable=True)
 
     # Agent memory integration settings (for chat agent)
-    enable_agent_memory = Column(Boolean, default=True, nullable=False)  # Inject memories into agent prompts
-    memory_injection_types = Column(JSON, default=lambda: ["fact", "preference", "context"], nullable=False)  # Types to inject
-    max_injected_memories = Column(Integer, default=5, nullable=False)  # Max memories per turn
+    enable_agent_memory = Column(
+        Boolean, default=True, nullable=False
+    )  # Inject memories into agent prompts
+    memory_injection_types = Column(
+        JSON, default=lambda: ["fact", "preference", "context"], nullable=False
+    )  # Types to inject
+    max_injected_memories = Column(
+        Integer, default=5, nullable=False
+    )  # Max memories per turn
 
     # Autonomous agent job memory settings
-    agent_job_memory_types = Column(JSON, default=lambda: ["finding", "insight", "pattern", "lesson"], nullable=True)  # Memory types for jobs
-    max_job_memories = Column(Integer, default=10, nullable=True)  # Max memories to inject per job
-    auto_extract_job_memories = Column(Boolean, default=True, nullable=True)  # Auto-extract memories from completed jobs
-    share_memories_with_chat = Column(Boolean, default=True, nullable=True)  # Share job memories with chat sessions
+    agent_job_memory_types = Column(
+        JSON, default=lambda: ["finding", "insight", "pattern", "lesson"], nullable=True
+    )  # Memory types for jobs
+    max_job_memories = Column(
+        Integer, default=10, nullable=True
+    )  # Max memories to inject per job
+    auto_extract_job_memories = Column(
+        Boolean, default=True, nullable=True
+    )  # Auto-extract memories from completed jobs
+    share_memories_with_chat = Column(
+        Boolean, default=True, nullable=True
+    )  # Share job memories with chat sessions
 
     # Paper algorithm agent defaults
     paper_algo_default_run_demo_check = Column(Boolean, default=False, nullable=False)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
-    
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
+
     # Relationships
     user = relationship("User", back_populates="preferences")
 
@@ -147,14 +240,19 @@ class UserPreferences(Base):
 
 class AgentConversation(Base):
     """Stores agent chat conversation sessions for persistence across page reloads."""
+
     __tablename__ = "agent_conversations"
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True)
+    user_id = Column(
+        PostgresUUID(as_uuid=True), ForeignKey("users.id"), nullable=False, index=True
+    )
 
     # Conversation metadata
     title = Column(String(255), nullable=True)  # Auto-generated title
-    status = Column(String(50), default="active", nullable=False)  # 'active', 'completed', 'archived'
+    status = Column(
+        String(50), default="active", nullable=False
+    )  # 'active', 'completed', 'archived'
 
     # Messages stored as JSON array for simplicity
     # Each message: {id, role, content, tool_calls, created_at}
@@ -168,20 +266,38 @@ class AgentConversation(Base):
     tool_calls_count = Column(Integer, default=0, nullable=False)
 
     # Multi-agent tracking
-    active_agent_id = Column(PostgresUUID(as_uuid=True), ForeignKey("agent_definitions.id", ondelete="SET NULL"), nullable=True)
+    active_agent_id = Column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("agent_definitions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
     agent_handoffs = Column(Integer, default=0, nullable=False)
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    updated_at = Column(
+        DateTime, default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False
+    )
     last_message_at = Column(DateTime, default=datetime.utcnow, nullable=False)
 
     # Relationships
     user = relationship("User", back_populates="agent_conversations")
-    tool_executions = relationship("AgentToolExecution", back_populates="conversation", cascade="all, delete-orphan")
+    tool_executions = relationship(
+        "AgentToolExecution",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
     active_agent = relationship("AgentDefinition", foreign_keys=[active_agent_id])
-    agent_contexts = relationship("AgentConversationContext", back_populates="conversation", cascade="all, delete-orphan")
-    memory_injections = relationship("AgentMemoryInjection", back_populates="conversation", cascade="all, delete-orphan")
+    agent_contexts = relationship(
+        "AgentConversationContext",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
+    memory_injections = relationship(
+        "AgentMemoryInjection",
+        back_populates="conversation",
+        cascade="all, delete-orphan",
+    )
 
     def __repr__(self):
         return f"<AgentConversation(id={self.id}, user_id={self.user_id}, messages={self.message_count})>"
@@ -189,10 +305,16 @@ class AgentConversation(Base):
 
 class AgentToolExecution(Base):
     """Tracks individual tool executions within agent conversations."""
+
     __tablename__ = "agent_tool_executions"
 
     id = Column(PostgresUUID(as_uuid=True), primary_key=True, default=uuid4)
-    conversation_id = Column(PostgresUUID(as_uuid=True), ForeignKey("agent_conversations.id"), nullable=False, index=True)
+    conversation_id = Column(
+        PostgresUUID(as_uuid=True),
+        ForeignKey("agent_conversations.id"),
+        nullable=False,
+        index=True,
+    )
 
     # Tool details
     tool_name = Column(String(100), nullable=False, index=True)
@@ -205,7 +327,9 @@ class AgentToolExecution(Base):
     execution_time_ms = Column(Integer, nullable=True)
 
     # Context
-    message_id = Column(String(100), nullable=True)  # ID of the agent message this belonged to
+    message_id = Column(
+        String(100), nullable=True
+    )  # ID of the agent message this belonged to
 
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
@@ -215,9 +339,3 @@ class AgentToolExecution(Base):
 
     def __repr__(self):
         return f"<AgentToolExecution(id={self.id}, tool={self.tool_name}, status={self.status})>"
-
-
-
-
-
-

@@ -16,8 +16,8 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_document_authoring_provider,
     build_autonomous_document_provider,
     build_autonomous_kg_provider,
-    build_autonomous_memory_provider,
     build_autonomous_media_provider,
+    build_autonomous_memory_provider,
     build_autonomous_notification_visualization_provider,
     build_autonomous_observability_provider,
     build_autonomous_output_state_provider,
@@ -28,9 +28,9 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_snapshot_provider,
     build_autonomous_symbol_retrieval_provider,
     build_autonomous_web_research_provider,
+    build_autonomous_workflow_provider,
     build_autonomous_workspace_mutation_provider,
     build_autonomous_workspace_read_provider,
-    build_autonomous_workflow_provider,
 )
 
 
@@ -113,7 +113,9 @@ def test_chat_core_provider_resolves_remaining_chat_tools():
 
 def test_autonomous_research_provider_resolves_autonomous_tools():
     provider = build_autonomous_research_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("search_arxiv", ctx) is True
     assert provider.can_handle("save_research_finding", ctx) is True
     assert provider.can_handle("execute_python", ctx) is False
@@ -121,7 +123,9 @@ def test_autonomous_research_provider_resolves_autonomous_tools():
 
 def test_autonomous_data_analysis_provider_resolves_autonomous_tools():
     provider = build_autonomous_data_analysis_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("load_csv_data", ctx) is True
     assert provider.can_handle("aggregate_data", ctx) is True
     assert provider.can_handle("create_chart", ctx) is True
@@ -131,7 +135,9 @@ def test_autonomous_data_analysis_provider_resolves_autonomous_tools():
 
 def test_autonomous_memory_provider_resolves_autonomous_tools():
     provider = build_autonomous_memory_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("create_memory", ctx) is True
     assert provider.can_handle("get_memory_stats", ctx) is True
     assert provider.can_handle("execute_python", ctx) is False
@@ -140,7 +146,9 @@ def test_autonomous_memory_provider_resolves_autonomous_tools():
 
 def test_autonomous_workflow_provider_resolves_autonomous_tools():
     provider = build_autonomous_workflow_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("list_available_workflows", ctx) is True
     assert provider.can_handle("execute_workflow", ctx) is True
     assert provider.can_handle("read_file", ctx) is False
@@ -148,7 +156,9 @@ def test_autonomous_workflow_provider_resolves_autonomous_tools():
 
 def test_autonomous_reasoning_provider_resolves_autonomous_tools():
     provider = build_autonomous_reasoning_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("reflect", ctx) is True
     assert provider.can_handle("critique_plan", ctx) is True
     assert provider.can_handle("execute_python", ctx) is False
@@ -156,7 +166,9 @@ def test_autonomous_reasoning_provider_resolves_autonomous_tools():
 
 def test_autonomous_collaboration_provider_resolves_autonomous_tools():
     provider = build_autonomous_collaboration_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("delegate_subtask", ctx) is True
     assert provider.can_handle("read_agent_messages", ctx) is True
     assert provider.can_handle("execute_python", ctx) is False
@@ -165,12 +177,16 @@ def test_autonomous_collaboration_provider_resolves_autonomous_tools():
 
 def test_autonomous_workspace_read_provider_resolves_autonomous_tools():
     provider = build_autonomous_workspace_read_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("clone_and_index_repo", ctx) is True
     assert provider.can_handle("browse_repo_files", ctx) is True
     assert provider.can_handle("read_file", ctx) is True
     assert provider.can_handle("search_code", ctx) is True
     assert provider.can_handle("get_workspace_status", ctx) is True
+    assert provider.can_handle("list_workspace_checkpoints", ctx) is True
+    assert provider.can_handle("list_durable_workspace_checkpoints", ctx) is True
     assert provider.can_handle("get_workspace_artifact_url", ctx) is True
     assert provider.can_handle("write_file", ctx) is False
     assert provider.can_handle("apply_patch", ctx) is False
@@ -179,11 +195,18 @@ def test_autonomous_workspace_read_provider_resolves_autonomous_tools():
 
 def test_autonomous_workspace_mutation_provider_resolves_autonomous_tools():
     provider = build_autonomous_workspace_mutation_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("execute_python", ctx) is True
     assert provider.can_handle("write_file", ctx) is True
     assert provider.can_handle("apply_patch", ctx) is True
     assert provider.can_handle("run_command", ctx) is True
+    assert provider.can_handle("create_workspace_checkpoint", ctx) is True
+    assert provider.can_handle("restore_workspace_checkpoint", ctx) is True
+    assert provider.can_handle("hydrate_candidate_snapshot", ctx) is True
+    assert provider.can_handle("persist_durable_workspace_checkpoint", ctx) is True
+    assert provider.can_handle("restore_durable_workspace_checkpoint", ctx) is True
     assert provider.can_handle("project_bootstrap", ctx) is False
     assert provider.can_handle("search_web", ctx) is False
     assert provider.can_handle("create_chart", ctx) is False
@@ -191,7 +214,9 @@ def test_autonomous_workspace_mutation_provider_resolves_autonomous_tools():
 
 def test_autonomous_symbol_retrieval_provider_resolves_autonomous_tools():
     provider = build_autonomous_symbol_retrieval_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("retrieve_repo_symbols", ctx) is True
     assert provider.can_handle("get_symbol_context", ctx) is True
     assert provider.can_handle("find_tests_for_symbol", ctx) is True
@@ -201,7 +226,9 @@ def test_autonomous_symbol_retrieval_provider_resolves_autonomous_tools():
 
 def test_autonomous_document_authoring_provider_resolves_autonomous_tools():
     provider = build_autonomous_document_authoring_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("plan_document", ctx) is True
     assert provider.can_handle("write_section", ctx) is True
     assert provider.can_handle("assemble_document", ctx) is True
@@ -213,7 +240,9 @@ def test_autonomous_document_authoring_provider_resolves_autonomous_tools():
 
 def test_autonomous_document_provider_resolves_autonomous_tools():
     provider = build_autonomous_document_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("search_documents", ctx) is True
     assert provider.can_handle("search_with_filters", ctx) is True
     assert provider.can_handle("web_scrape", ctx) is True
@@ -233,7 +262,9 @@ def test_autonomous_document_provider_resolves_autonomous_tools():
 
 def test_autonomous_web_research_provider_resolves_autonomous_tools():
     provider = build_autonomous_web_research_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("search_web", ctx) is True
     assert provider.can_handle("summarize_url", ctx) is True
     assert provider.can_handle("project_bootstrap", ctx) is False
@@ -242,7 +273,9 @@ def test_autonomous_web_research_provider_resolves_autonomous_tools():
 
 def test_autonomous_notification_visualization_provider_resolves_autonomous_tools():
     provider = build_autonomous_notification_visualization_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("send_notification", ctx) is True
     assert provider.can_handle("create_chart", ctx) is True
     assert provider.can_handle("query_kg_entities", ctx) is False
@@ -251,7 +284,9 @@ def test_autonomous_notification_visualization_provider_resolves_autonomous_tool
 
 def test_autonomous_kg_provider_resolves_autonomous_tools():
     provider = build_autonomous_kg_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("query_kg_entities", ctx) is True
     assert provider.can_handle("create_kg_relationship", ctx) is True
     assert provider.can_handle("send_notification", ctx) is False
@@ -260,7 +295,9 @@ def test_autonomous_kg_provider_resolves_autonomous_tools():
 
 def test_autonomous_scheduling_provider_resolves_autonomous_tools():
     provider = build_autonomous_scheduling_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("schedule_job", ctx) is True
     assert provider.can_handle("cancel_scheduled_job", ctx) is True
     assert provider.can_handle("search_web", ctx) is False
@@ -269,7 +306,9 @@ def test_autonomous_scheduling_provider_resolves_autonomous_tools():
 
 def test_autonomous_media_provider_resolves_autonomous_tools():
     provider = build_autonomous_media_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("transcribe_document", ctx) is True
     assert provider.can_handle("get_media_info", ctx) is True
     assert provider.can_handle("schedule_job", ctx) is False
@@ -278,7 +317,9 @@ def test_autonomous_media_provider_resolves_autonomous_tools():
 
 def test_autonomous_snapshot_provider_resolves_autonomous_tools():
     provider = build_autonomous_snapshot_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("capture_snapshot", ctx) is True
     assert provider.can_handle("detect_drift", ctx) is True
     assert provider.can_handle("transcribe_document", ctx) is False
@@ -287,7 +328,9 @@ def test_autonomous_snapshot_provider_resolves_autonomous_tools():
 
 def test_autonomous_project_bootstrap_provider_resolves_autonomous_tools():
     provider = build_autonomous_project_bootstrap_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("project_bootstrap", ctx) is True
     assert provider.can_handle("search_web", ctx) is False
     assert provider.can_handle("create_chart", ctx) is False
@@ -295,7 +338,9 @@ def test_autonomous_project_bootstrap_provider_resolves_autonomous_tools():
 
 def test_autonomous_observability_provider_resolves_autonomous_tools():
     provider = build_autonomous_observability_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("get_job_metrics", ctx) is True
     assert provider.can_handle("batch_search", ctx) is True
     assert provider.can_handle("evaluate_condition", ctx) is True
@@ -307,7 +352,9 @@ def test_autonomous_observability_provider_resolves_autonomous_tools():
 
 def test_autonomous_output_state_provider_resolves_autonomous_tools():
     provider = build_autonomous_output_state_provider(_DummyService())
-    ctx = AgentToolExecutionContext(mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
     assert provider.can_handle("create_handoff", ctx) is True
     assert provider.can_handle("switch_strategy", ctx) is True
     assert provider.can_handle("format_as_report", ctx) is True

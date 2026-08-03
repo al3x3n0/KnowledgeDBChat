@@ -10,12 +10,17 @@ import shutil
 import subprocess
 import tempfile
 import time
-from typing import Dict, List, Optional, Any
-from uuid import UUID
 from pathlib import Path
+from typing import Dict, List, Optional
+from uuid import UUID
+
 from loguru import logger
 
-from app.schemas.docker_tool import DockerToolConfig, DockerToolExecutionInput, DockerToolExecutionResult
+from app.schemas.docker_tool import (
+    DockerToolConfig,
+    DockerToolExecutionInput,
+    DockerToolExecutionResult,
+)
 from app.services.storage_service import StorageService
 
 
@@ -38,7 +43,7 @@ class DockerToolExecutor:
         self,
         config: DockerToolConfig,
         execution_input: DockerToolExecutionInput,
-        user_id: Optional[UUID] = None
+        user_id: Optional[UUID] = None,
     ) -> DockerToolExecutionResult:
         """
         Execute a Docker container with the given configuration.
@@ -62,9 +67,7 @@ class DockerToolExecutor:
             # Download documents if provided
             if execution_input.document_ids:
                 await self._download_documents(
-                    execution_input.document_ids,
-                    workspace_dir,
-                    user_id
+                    execution_input.document_ids, workspace_dir, user_id
                 )
 
             # Write input file if needed
@@ -78,7 +81,7 @@ class DockerToolExecutor:
             cmd = self._build_docker_command(
                 config=config,
                 workspace_dir=workspace_dir,
-                environment_overrides=execution_input.environment_overrides
+                environment_overrides=execution_input.environment_overrides,
             )
 
             logger.info(f"Executing Docker command: {' '.join(cmd)}")
@@ -94,14 +97,14 @@ class DockerToolExecutor:
                     *cmd,
                     stdin=asyncio.subprocess.PIPE if stdin_data else None,
                     stdout=asyncio.subprocess.PIPE,
-                    stderr=asyncio.subprocess.PIPE
+                    stderr=asyncio.subprocess.PIPE,
                 )
 
                 # Wait for completion with timeout
                 try:
                     stdout, stderr = await asyncio.wait_for(
                         process.communicate(input=stdin_data),
-                        timeout=config.timeout_seconds
+                        timeout=config.timeout_seconds,
                     )
                 except asyncio.TimeoutError:
                     process.kill()
@@ -113,7 +116,7 @@ class DockerToolExecutor:
                         stdout="",
                         stderr="",
                         duration_seconds=duration,
-                        error=f"Container timed out after {config.timeout_seconds} seconds"
+                        error=f"Container timed out after {config.timeout_seconds} seconds",
                     )
 
                 exit_code = process.returncode
@@ -128,7 +131,7 @@ class DockerToolExecutor:
                     stdout="",
                     stderr="",
                     duration_seconds=duration,
-                    error="Docker command not found. Is Docker installed?"
+                    error="Docker command not found. Is Docker installed?",
                 )
             except Exception as e:
                 duration = time.time() - start_time
@@ -138,13 +141,15 @@ class DockerToolExecutor:
                     stdout="",
                     stderr="",
                     duration_seconds=duration,
-                    error=f"Failed to execute Docker command: {str(e)}"
+                    error=f"Failed to execute Docker command: {str(e)}",
                 )
 
             # Read output file if needed
             output_content = None
             if config.output_mode in ("file", "both"):
-                output_filename = os.path.basename(config.output_file_path or "output.txt")
+                output_filename = os.path.basename(
+                    config.output_file_path or "output.txt"
+                )
                 output_path = os.path.join(workspace_dir, output_filename)
                 if os.path.exists(output_path):
                     with open(output_path, "r") as f:
@@ -160,7 +165,9 @@ class DockerToolExecutor:
                 stderr=stderr_str,
                 output_content=output_content,
                 duration_seconds=duration,
-                error=None if exit_code == 0 else f"Container exited with code {exit_code}"
+                error=None
+                if exit_code == 0
+                else f"Container exited with code {exit_code}",
             )
 
         except Exception as e:
@@ -172,7 +179,7 @@ class DockerToolExecutor:
                 stdout="",
                 stderr="",
                 duration_seconds=duration,
-                error=str(e)
+                error=str(e),
             )
 
         finally:
@@ -188,7 +195,7 @@ class DockerToolExecutor:
         self,
         config: DockerToolConfig,
         workspace_dir: str,
-        environment_overrides: Optional[Dict[str, str]] = None
+        environment_overrides: Optional[Dict[str, str]] = None,
     ) -> List[str]:
         """
         Build the docker run command with all options.
@@ -255,7 +262,7 @@ class DockerToolExecutor:
         self,
         document_ids: List[str],
         workspace_dir: str,
-        user_id: Optional[UUID] = None
+        user_id: Optional[UUID] = None,
     ) -> None:
         """
         Download documents from MinIO to the workspace directory.
@@ -265,9 +272,10 @@ class DockerToolExecutor:
             workspace_dir: Directory to download documents to
             user_id: User ID for access control
         """
+        from sqlalchemy import select
+
         from app.core.database import AsyncSessionLocal
         from app.models.document import Document
-        from sqlalchemy import select
 
         await self.storage.initialize()
 
@@ -314,7 +322,9 @@ class DockerToolExecutor:
                         logger.info(f"Downloaded document {doc_id} to {filepath}")
 
                     except FileNotFoundError:
-                        logger.warning(f"File not found in storage for document {doc_id}")
+                        logger.warning(
+                            f"File not found in storage for document {doc_id}"
+                        )
                     except Exception as e:
                         logger.warning(f"Failed to download document {doc_id}: {e}")
 
@@ -334,11 +344,7 @@ class DockerToolExecutor:
         try:
             # Check if image exists locally
             check_cmd = ["docker", "image", "inspect", image]
-            check_result = subprocess.run(
-                check_cmd,
-                capture_output=True,
-                text=True
-            )
+            check_result = subprocess.run(check_cmd, capture_output=True, text=True)
 
             if check_result.returncode == 0:
                 logger.debug(f"Image {image} already present locally")
@@ -351,7 +357,7 @@ class DockerToolExecutor:
                 pull_cmd,
                 capture_output=True,
                 text=True,
-                timeout=600  # 10 minute timeout for pull
+                timeout=600,  # 10 minute timeout for pull
             )
 
             if pull_result.returncode == 0:
@@ -377,10 +383,7 @@ class DockerToolExecutor:
         """
         try:
             result = subprocess.run(
-                ["docker", "info"],
-                capture_output=True,
-                text=True,
-                timeout=10
+                ["docker", "info"], capture_output=True, text=True, timeout=10
             )
             return result.returncode == 0
         except (FileNotFoundError, subprocess.TimeoutExpired):

@@ -47,8 +47,12 @@ class AgentThinkingService:
             system_prompt = build_stable(job, agent_def, state, profile=profile)
             volatile_context = build_volatile(job, state) or ""
         else:
-            system_prompt = executor._build_thinking_prompt(job, agent_def, state, observation, profile=profile)
-        available_tools = executor._get_tools_for_job_type(job.job_type, job.config, profile=profile)
+            system_prompt = executor._build_thinking_prompt(
+                job, agent_def, state, observation, profile=profile
+            )
+        available_tools = executor._get_tools_for_job_type(
+            job.job_type, job.config, profile=profile
+        )
 
         user_message = f"""
 {volatile_context}
@@ -137,8 +141,14 @@ Respond in JSON format:
             if decision is not None:
                 result = decision.model_dump()
                 if isinstance(result.get("action"), dict):
-                    result["action"] = executor._apply_default_scope_to_action(result["action"], job)
-                if result.get("action") is None and not result.get("goal_achieved") and not result.get("should_stop"):
+                    result["action"] = executor._apply_default_scope_to_action(
+                        result["action"], job
+                    )
+                if (
+                    result.get("action") is None
+                    and not result.get("goal_achieved")
+                    and not result.get("should_stop")
+                ):
                     recovery = executor._build_recovery_action(job, state)
                     if recovery:
                         result["action"] = recovery
@@ -148,7 +158,9 @@ Respond in JSON format:
                         ).strip()
                     else:
                         result["should_stop"] = True
-                        result["stop_reason"] = "No valid action available for continuation"
+                        result[
+                            "stop_reason"
+                        ] = "No valid action available for continuation"
                 return result
 
             return self.parse_decision_response(
@@ -164,7 +176,9 @@ Respond in JSON format:
             return {
                 "goal_achieved": False,
                 "should_stop": recovery_action is None,
-                "stop_reason": f"Thinking error: {exc}" if recovery_action is None else "",
+                "stop_reason": f"Thinking error: {exc}"
+                if recovery_action is None
+                else "",
                 "reasoning": str(exc),
                 "action": recovery_action,
             }
@@ -387,7 +401,9 @@ Respond in JSON format:
                 if text:
                     return text
         except Exception as exc:
-            logger.debug(f"Structured decision path unavailable, using prompted text: {exc}")
+            logger.debug(
+                f"Structured decision path unavailable, using prompted text: {exc}"
+            )
 
         response = await executor.llm_service.generate_response(
             system_prompt=system_prompt,
@@ -415,7 +431,9 @@ Respond in JSON format:
             return {
                 "goal_achieved": False,
                 "should_stop": recovery is None,
-                "stop_reason": "Model response did not contain a valid JSON decision" if recovery is None else "",
+                "stop_reason": "Model response did not contain a valid JSON decision"
+                if recovery is None
+                else "",
                 "reasoning": text[:500] if text else "Model returned an empty decision",
                 "assessment": None,
                 "action": recovery,
@@ -436,7 +454,9 @@ Respond in JSON format:
                 reasoning = f"{reasoning[:360]} Auto-selected deterministic recovery action.".strip()
             else:
                 should_stop = True
-                stop_reason = stop_reason or "No valid action available for continuation"
+                stop_reason = (
+                    stop_reason or "No valid action available for continuation"
+                )
 
         if should_stop and not stop_reason:
             stop_reason = "Model requested stop"
@@ -463,7 +483,9 @@ Respond in JSON format:
         except Exception:
             pass
 
-        fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
+        fence_match = re.search(
+            r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL
+        )
         if fence_match:
             fenced = fence_match.group(1).strip()
             try:

@@ -60,6 +60,7 @@ class TestCreateMemory:
     def test_memory_create_schema_fields(self):
         """Verify MemoryCreate accepts the fields we pass."""
         from app.schemas.memory import MemoryCreate
+
         mem = MemoryCreate(
             memory_type="fact",
             content="Test memory content",
@@ -73,6 +74,7 @@ class TestCreateMemory:
 
     def test_memory_create_validates_type(self):
         from app.schemas.memory import MemoryCreate
+
         with pytest.raises(Exception):
             MemoryCreate(
                 memory_type="invalid_type",
@@ -123,6 +125,7 @@ class TestSearchMemories:
 
     def test_search_request_schema(self):
         from app.schemas.memory import MemorySearchRequest
+
         req = MemorySearchRequest(
             query="authentication",
             limit=20,
@@ -150,6 +153,7 @@ class TestRecallMemories:
     def test_recall_creates_broad_search(self):
         """recall_memories should create a search request without filters."""
         from app.schemas.memory import MemorySearchRequest
+
         topic = "project requirements"
         limit = 10
         req = MemorySearchRequest(query=topic, limit=limit)
@@ -173,6 +177,7 @@ class TestGetMemoryStats:
     def test_stats_response_fields(self):
         """Verify MemoryStatsResponse has expected fields."""
         from app.schemas.memory import MemoryStatsResponse
+
         # Check the schema has the fields we access in the handler
         fields = MemoryStatsResponse.model_fields
         assert "total_memories" in fields
@@ -201,8 +206,18 @@ class TestMemoryResultFormat:
             "success": True,
             "data": {
                 "memories": [
-                    {"id": "m-1", "content": "Memory 1", "importance": 0.8, "type": "fact"},
-                    {"id": "m-2", "content": "Memory 2", "importance": 0.5, "type": "context"},
+                    {
+                        "id": "m-1",
+                        "content": "Memory 1",
+                        "importance": 0.8,
+                        "type": "fact",
+                    },
+                    {
+                        "id": "m-2",
+                        "content": "Memory 2",
+                        "importance": 0.5,
+                        "type": "context",
+                    },
                 ],
                 "count": 2,
             },

@@ -2,7 +2,8 @@
 Helpers for git metadata, branch listings, and comparisons.
 """
 
-from typing import Dict, Any, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
+
 from loguru import logger
 
 from app.models.document import DocumentSource
@@ -17,7 +18,9 @@ class GitService:
     def __init__(self):
         self.llm_service = LLMService()
 
-    async def list_branches(self, source: DocumentSource, repository: str) -> List[Dict[str, Any]]:
+    async def list_branches(
+        self, source: DocumentSource, repository: str
+    ) -> List[Dict[str, Any]]:
         connector, repo_payload = await self._init_connector(source, repository)
         if source.source_type == "github":
             owner, name = repo_payload["owner"], repo_payload["repo"]
@@ -36,10 +39,14 @@ class GitService:
         connector, repo_payload = await self._init_connector(source, repository)
         if source.source_type == "github":
             owner, name = repo_payload["owner"], repo_payload["repo"]
-            return await connector.compare_branches(owner, name, base_branch, compare_branch)
+            return await connector.compare_branches(
+                owner, name, base_branch, compare_branch
+            )
         else:
             project_id = repo_payload["project_id"]
-            return await connector.compare_branches(project_id, base_branch, compare_branch)
+            return await connector.compare_branches(
+                project_id, base_branch, compare_branch
+            )
 
     async def generate_llm_summary(
         self,
@@ -58,14 +65,16 @@ class GitService:
             for f in top_files:
                 status = f.get("status", "modified")
                 bullet_lines.append(
-                    f"- {f.get('filename')} ({status}, +{f.get('additions',0)}/-{f.get('deletions',0)})"
+                    f"- {f.get('filename')} ({status}, +{f.get('additions', 0)}/-{f.get('deletions', 0)})"
                 )
             context_parts = [
                 f"Repository: {repository}",
                 f"Comparing {compare_branch} against {base_branch}",
-                f"Commits ahead: {stats.get('ahead_by',0)}, behind: {stats.get('behind_by',0)}, total files changed: {stats.get('total_files', len(files))}",
+                f"Commits ahead: {stats.get('ahead_by', 0)}, behind: {stats.get('behind_by', 0)}, total files changed: {stats.get('total_files', len(files))}",
                 "Top file changes:",
-                "\n".join(bullet_lines) if bullet_lines else "No significant file changes listed.",
+                "\n".join(bullet_lines)
+                if bullet_lines
+                else "No significant file changes listed.",
             ]
             prompt = (
                 "Provide a concise overview of the branch differences.\n"
@@ -96,7 +105,9 @@ class GitService:
         payload = self._resolve_repository_payload(source, repository)
         return connector, payload
 
-    def _resolve_repository_payload(self, source: DocumentSource, repository: str) -> Dict[str, Any]:
+    def _resolve_repository_payload(
+        self, source: DocumentSource, repository: str
+    ) -> Dict[str, Any]:
         """Normalize repository specification for connectors."""
         if source.source_type == "github":
             owner, name = self._parse_repository(repository)
@@ -140,11 +151,25 @@ class GitService:
         for entry in files:
             normalized_files.append(
                 {
-                    "filename": entry.get("filename") or entry.get("new_path") or entry.get("old_path"),
-                    "status": entry.get("status") or entry.get("new_file") and "added" or entry.get("deleted_file") and "removed" or "modified",
-                    "additions": entry.get("additions") or entry.get("add") or entry.get("lines_added") or 0,
-                    "deletions": entry.get("deletions") or entry.get("lines_removed") or entry.get("del") or 0,
-                    "changes": entry.get("changes") or entry.get("additions", 0) + entry.get("deletions", 0),
+                    "filename": entry.get("filename")
+                    or entry.get("new_path")
+                    or entry.get("old_path"),
+                    "status": entry.get("status")
+                    or entry.get("new_file")
+                    and "added"
+                    or entry.get("deleted_file")
+                    and "removed"
+                    or "modified",
+                    "additions": entry.get("additions")
+                    or entry.get("add")
+                    or entry.get("lines_added")
+                    or 0,
+                    "deletions": entry.get("deletions")
+                    or entry.get("lines_removed")
+                    or entry.get("del")
+                    or 0,
+                    "changes": entry.get("changes")
+                    or entry.get("additions", 0) + entry.get("deletions", 0),
                 }
             )
         normalized_files.sort(key=lambda f: f.get("changes") or 0, reverse=True)
@@ -160,9 +185,12 @@ class GitService:
             "raw": {
                 "commit_messages": [
                     {
-                        "message": (c.get("commit") or {}).get("message") or c.get("title"),
-                        "author": (c.get("commit") or {}).get("author", {}).get("name") or c.get("author_name"),
-                        "date": (c.get("commit") or {}).get("author", {}).get("date") or c.get("committed_date"),
+                        "message": (c.get("commit") or {}).get("message")
+                        or c.get("title"),
+                        "author": (c.get("commit") or {}).get("author", {}).get("name")
+                        or c.get("author_name"),
+                        "date": (c.get("commit") or {}).get("author", {}).get("date")
+                        or c.get("committed_date"),
                     }
                     for c in commits[:20]
                 ]

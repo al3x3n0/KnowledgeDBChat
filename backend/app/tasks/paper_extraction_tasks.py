@@ -29,7 +29,9 @@ async def _async_extract_paper_job(job_id: str) -> Dict[str, Any]:
             return {"success": False, "error": "Job not found", "job_id": job_id}
         document = await db.get(Document, job.document_id)
         if document is None:
-            await paper_extraction_service.mark_failed(db, job=job, error="Document not found")
+            await paper_extraction_service.mark_failed(
+                db, job=job, error="Document not found"
+            )
             return {"success": False, "job_id": job_id, "error": "Document not found"}
         await db.refresh(document, ["source"])
         try:

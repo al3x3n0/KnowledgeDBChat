@@ -49,7 +49,13 @@ class _DummyExecutor:
         self.trigger_calls = []
 
     def _evaluate_goal_contract(self, job, state):
-        return {"enabled": True, "satisfied": True, "missing": [], "contract": {}, "metrics": {}}
+        return {
+            "enabled": True,
+            "satisfied": True,
+            "missing": [],
+            "contract": {},
+            "metrics": {},
+        }
 
     def _resolve_default_source_scope(self, job):
         return "source-1"
@@ -114,7 +120,17 @@ async def test_finalize_job_completed_path_updates_results(monkeypatch):
     state = {
         "goal_progress": 100,
         "findings": [{"id": "f1", "type": "document", "title": "Doc"}],
-        "actions_taken": [{"tool": "search_documents"}],
+        "actions_taken": [
+            {
+                "action": {
+                    "tool": "search_documents",
+                    "params": {"query": "private query"},
+                },
+                "result": {"success": True, "findings": [{"id": "f1"}]},
+                "iteration": 1,
+                "node": "act",
+            }
+        ],
         "artifacts": [{"type": "report", "title": "Artifact"}],
         "execution_plan": [{"title": "step"}],
         "step_events": [],
@@ -139,8 +155,19 @@ async def test_finalize_job_completed_path_updates_results(monkeypatch):
     assert job.status == AgentJobStatus.COMPLETED.value
     assert job.progress == 100
     assert job.results["findings_count"] == 1
+    assert job.results["actions"] == [
+        {
+            "tool": "search_documents",
+            "success": True,
+            "iteration": 1,
+            "node": "act",
+        }
+    ]
+    assert "private query" not in repr(job.results["actions"])
     assert job.results["execution_strategy"]["execution_mode"] == "adaptive"
     assert job.results["executive_digest"] == {"summary": "ok"}
+    assert job.results["evaluation_outcome"]["schema_version"] == 3
+    assert job.results["evaluation_outcome"]["status"] == "completed"
     assert executor.persist_tool_priors_calls == 1
     assert executor.trigger_calls == ["complete"]
     assert db.commit.await_count >= 1

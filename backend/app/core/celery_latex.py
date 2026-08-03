@@ -9,7 +9,6 @@ from celery import Celery
 
 from app.core.config import settings
 
-
 celery_app = Celery(
     "knowledge_db_latex",
     broker=settings.CELERY_BROKER_URL,
@@ -28,7 +27,8 @@ celery_app.conf.update(
     task_track_started=True,
     task_routes={
         "app.tasks.latex_tasks.compile_latex_project_job": {
-            "queue": getattr(settings, "LATEX_COMPILER_CELERY_QUEUE", "latex") or "latex"
+            "queue": getattr(settings, "LATEX_COMPILER_CELERY_QUEUE", "latex")
+            or "latex"
         },
     },
     task_time_limit=30 * 60,
@@ -38,4 +38,3 @@ celery_app.conf.update(
 )
 
 celery_app.conf.timezone = "UTC"
-

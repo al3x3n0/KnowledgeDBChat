@@ -11,28 +11,26 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import select, func, and_
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
+from app.models.document import Document
 from app.models.training_dataset import (
-    TrainingDataset,
+    DatasetFormat,
     DatasetSample,
     DatasetStatus,
-    DatasetType,
-    DatasetFormat,
+    TrainingDataset,
 )
-from app.models.document import Document
 from app.schemas.training import (
-    TrainingDatasetCreate,
     DatasetSampleCreate,
-    GenerateDatasetRequest,
     DatasetValidationResult,
+    GenerateDatasetRequest,
+    TrainingDatasetCreate,
 )
-from app.services.storage_service import storage_service
-from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
+from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.storage_service import storage_service
 
 
 class TrainingDatasetService:
@@ -93,7 +91,8 @@ class TrainingDatasetService:
 
         if user_id:
             query = query.where(
-                (TrainingDataset.user_id == user_id) | (TrainingDataset.is_public == True)
+                (TrainingDataset.user_id == user_id)
+                | (TrainingDataset.is_public.is_(True))
             )
 
         result = await db.execute(query)
@@ -117,7 +116,9 @@ class TrainingDatasetService:
         """
         # Build base query
         if include_public:
-            base_filter = (TrainingDataset.user_id == user_id) | (TrainingDataset.is_public == True)
+            base_filter = (TrainingDataset.user_id == user_id) | (
+                TrainingDataset.is_public.is_(True)
+            )
         else:
             base_filter = TrainingDataset.user_id == user_id
 
@@ -185,8 +186,9 @@ class TrainingDatasetService:
 
         # Get current max index
         result = await db.execute(
-            select(func.max(DatasetSample.sample_index))
-            .where(DatasetSample.dataset_id == dataset_id)
+            select(func.max(DatasetSample.sample_index)).where(
+                DatasetSample.dataset_id == dataset_id
+            )
         )
         max_index = result.scalar() or -1
 
@@ -244,7 +246,7 @@ class TrainingDatasetService:
         query = select(DatasetSample).where(DatasetSample.dataset_id == dataset_id)
 
         if flagged_only:
-            query = query.where(DatasetSample.is_flagged == True)
+            query = query.where(DatasetSample.is_flagged.is_(True))
 
         # Count
         count_query = select(func.count()).select_from(query.subquery())
@@ -306,10 +308,12 @@ class TrainingDatasetService:
 
         # Check minimum samples
         if len(samples) < 10:
-            errors.append({
-                "code": "MIN_SAMPLES",
-                "message": f"Dataset has only {len(samples)} samples. Minimum 10 recommended.",
-            })
+            errors.append(
+                {
+                    "code": "MIN_SAMPLES",
+                    "message": f"Dataset has only {len(samples)} samples. Minimum 10 recommended.",
+                }
+            )
 
         # Check for empty fields
         empty_outputs = 0
@@ -326,29 +330,37 @@ class TrainingDatasetService:
             total_tokens += sample.input_tokens + sample.output_tokens
 
         if empty_outputs > 0:
-            errors.append({
-                "code": "EMPTY_OUTPUTS",
-                "message": f"{empty_outputs} samples have empty outputs.",
-            })
+            errors.append(
+                {
+                    "code": "EMPTY_OUTPUTS",
+                    "message": f"{empty_outputs} samples have empty outputs.",
+                }
+            )
 
         if short_outputs > 0:
-            warnings.append({
-                "code": "SHORT_OUTPUTS",
-                "message": f"{short_outputs} samples have very short outputs (<10 chars).",
-            })
+            warnings.append(
+                {
+                    "code": "SHORT_OUTPUTS",
+                    "message": f"{short_outputs} samples have very short outputs (<10 chars).",
+                }
+            )
 
         # Check token limits
         if total_tokens > settings.DATASET_MAX_TOKEN_COUNT:
-            errors.append({
-                "code": "TOKEN_LIMIT",
-                "message": f"Dataset exceeds token limit ({total_tokens} > {settings.DATASET_MAX_TOKEN_COUNT}).",
-            })
+            errors.append(
+                {
+                    "code": "TOKEN_LIMIT",
+                    "message": f"Dataset exceeds token limit ({total_tokens} > {settings.DATASET_MAX_TOKEN_COUNT}).",
+                }
+            )
 
         # Update dataset validation status
         is_valid = len(errors) == 0
         dataset.is_validated = is_valid
         dataset.validation_errors = errors if errors else None
-        dataset.status = DatasetStatus.READY.value if is_valid else DatasetStatus.ERROR.value
+        dataset.status = (
+            DatasetStatus.READY.value if is_valid else DatasetStatus.ERROR.value
+        )
         dataset.updated_at = datetime.utcnow()
 
         await db.commit()
@@ -450,7 +462,10 @@ class TrainingDatasetService:
         try:
             from app.models.memory import UserPreferences
             from app.services.llm_service import UserLLMSettings
-            prefs_res = await db.execute(select(UserPreferences).where(UserPreferences.user_id == user_id))
+
+            prefs_res = await db.execute(
+                select(UserPreferences).where(UserPreferences.user_id == user_id)
+            )
             prefs = prefs_res.scalar_one_or_none()
             user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
         except Exception:
@@ -462,9 +477,13 @@ class TrainingDatasetService:
                 generation_prompt = request.generation_prompt
                 if request.preset_id:
                     enabled = await ai_hub_dataset_preset_service.list_enabled_presets()
-                    preset = next((p for p in enabled if p.id == request.preset_id), None)
+                    preset = next(
+                        (p for p in enabled if p.id == request.preset_id), None
+                    )
                     if not preset:
-                        raise ValueError(f"Preset not enabled or not found: {request.preset_id}")
+                        raise ValueError(
+                            f"Preset not enabled or not found: {request.preset_id}"
+                        )
                     generation_prompt = preset.generation_prompt
                     if request.extra_instructions:
                         generation_prompt = (
@@ -499,7 +518,9 @@ class TrainingDatasetService:
                     total_tokens += input_tokens + output_tokens
 
             except Exception as e:
-                logger.warning(f"Failed to generate samples from document {doc.id}: {e}")
+                logger.warning(
+                    f"Failed to generate samples from document {doc.id}: {e}"
+                )
 
         # Update dataset stats
         dataset.sample_count = sample_index
@@ -553,7 +574,7 @@ Generate exactly {num_samples} training samples. Output only valid JSON array.""
             )
 
             # Parse JSON from response
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
+            json_match = re.search(r"\[.*\]", response, re.DOTALL)
             if json_match:
                 samples = json.loads(json_match.group())
                 return [
@@ -589,7 +610,9 @@ Generate exactly {num_samples} training samples. Output only valid JSON array.""
                 func.sum(DatasetSample.output_tokens).label("output_tokens"),
                 func.avg(DatasetSample.input_tokens).label("avg_input_tokens"),
                 func.avg(DatasetSample.output_tokens).label("avg_output_tokens"),
-                func.count(DatasetSample.id).filter(DatasetSample.is_flagged == True).label("flagged"),
+                func.count(DatasetSample.id)
+                .filter(DatasetSample.is_flagged.is_(True))
+                .label("flagged"),
             ).where(DatasetSample.dataset_id == dataset_id)
         )
         row = result.one()

@@ -5,8 +5,7 @@ Provides starter configurations for common AI agent roles that users
 can customize for their specific needs.
 """
 
-from typing import List, Dict, Any, Optional
-
+from typing import Any, Dict, List, Optional
 
 # Agent template definitions
 AGENT_TEMPLATES: List[Dict[str, Any]] = [
@@ -41,17 +40,16 @@ When helping users:
             "answer_question",
             "get_document_details",
             "find_similar_documents",
-            "summarize_document"
+            "summarize_document",
         ],
         "priority": 60,
         "use_cases": [
             "Answering product questions",
             "Troubleshooting common issues",
             "Finding relevant documentation",
-            "FAQ assistance"
-        ]
+            "FAQ assistance",
+        ],
     },
-
     # =========================================================================
     # Technical Writer Agent
     # =========================================================================
@@ -95,17 +93,16 @@ When creating content:
             "web_scrape",
             "ingest_url",
             "generate_documentation",
-            "find_similar_documents"
+            "find_similar_documents",
         ],
         "priority": 55,
         "use_cases": [
             "Creating user documentation",
             "Writing API references",
             "Generating how-to guides",
-            "Summarizing technical specs"
-        ]
+            "Summarizing technical specs",
+        ],
     },
-
     # =========================================================================
     # Research Analyst Agent
     # =========================================================================
@@ -138,7 +135,12 @@ Output formats:
 - Trend reports
 - Literature reviews
 - Executive briefings""",
-        "capabilities": ["rag_qa", "knowledge_synthesis", "summarization", "document_search"],
+        "capabilities": [
+            "rag_qa",
+            "knowledge_synthesis",
+            "summarization",
+            "document_search",
+        ],
         "tool_whitelist": [
             "search_documents",
             "answer_question",
@@ -155,7 +157,7 @@ Output formats:
             "get_collection_statistics",
             "get_trending_topics",
             "generate_executive_summary",
-            "generate_report"
+            "generate_report",
         ],
         "priority": 65,
         "use_cases": [
@@ -163,10 +165,9 @@ Output formats:
             "Competitive analysis",
             "Literature reviews",
             "Trend identification",
-            "Knowledge synthesis"
-        ]
+            "Knowledge synthesis",
+        ],
     },
-
     # =========================================================================
     # Project Manager Agent
     # =========================================================================
@@ -210,7 +211,7 @@ When helping with projects:
             "generate_report",
             "generate_executive_summary",
             "start_template_fill",
-            "list_recent_documents"
+            "list_recent_documents",
         ],
         "priority": 55,
         "use_cases": [
@@ -218,10 +219,9 @@ When helping with projects:
             "Meeting notes creation",
             "Progress tracking",
             "Stakeholder communications",
-            "Action item tracking"
-        ]
+            "Action item tracking",
+        ],
     },
-
     # =========================================================================
     # Data Insights Agent
     # =========================================================================
@@ -267,7 +267,7 @@ Presentation:
             "answer_question",
             "generate_diagram",
             "export_data",
-            "faceted_search"
+            "faceted_search",
         ],
         "priority": 50,
         "use_cases": [
@@ -275,10 +275,9 @@ Presentation:
             "Content trend analysis",
             "Usage statistics",
             "Data visualization",
-            "Reporting dashboards"
-        ]
+            "Reporting dashboards",
+        ],
     },
-
     # =========================================================================
     # Onboarding Guide Agent
     # =========================================================================
@@ -320,7 +319,7 @@ When helping new members:
             "find_similar_documents",
             "list_document_sources",
             "search_by_tags",
-            "get_related_searches"
+            "get_related_searches",
         ],
         "priority": 55,
         "use_cases": [
@@ -328,10 +327,9 @@ When helping new members:
             "Process documentation",
             "System introductions",
             "FAQ assistance",
-            "Learning path guidance"
-        ]
+            "Learning path guidance",
+        ],
     },
-
     # =========================================================================
     # Code Review Helper Agent
     # =========================================================================
@@ -364,7 +362,12 @@ Communication:
 - Provide concrete examples
 - Reference documentation when available
 - Prioritize important issues""",
-        "capabilities": ["code_analysis", "code_explanation", "rag_qa", "document_search"],
+        "capabilities": [
+            "code_analysis",
+            "code_explanation",
+            "rag_qa",
+            "document_search",
+        ],
         "tool_whitelist": [
             "search_documents",
             "get_document_details",
@@ -372,7 +375,7 @@ Communication:
             "answer_question",
             "find_similar_documents",
             "compare_documents",
-            "search_by_tags"
+            "search_by_tags",
         ],
         "priority": 60,
         "use_cases": [
@@ -380,10 +383,9 @@ Communication:
             "Code explanation",
             "Standards compliance",
             "Documentation lookup",
-            "Best practices guidance"
-        ]
+            "Best practices guidance",
+        ],
     },
-
     # =========================================================================
     # Content Curator Agent
     # =========================================================================
@@ -417,7 +419,12 @@ Quality principles:
 - Discoverable content
 - Up-to-date information
 - Minimal redundancy""",
-        "capabilities": ["document_search", "document_crud", "tag_management", "knowledge_synthesis"],
+        "capabilities": [
+            "document_search",
+            "document_crud",
+            "tag_management",
+            "knowledge_synthesis",
+        ],
         "tool_whitelist": [
             "search_documents",
             "get_document_details",
@@ -429,7 +436,7 @@ Quality principles:
             "get_collection_statistics",
             "list_document_sources",
             "list_documents_by_source",
-            "get_trending_topics"
+            "get_trending_topics",
         ],
         "priority": 45,
         "use_cases": [
@@ -437,10 +444,9 @@ Quality principles:
             "Tag management",
             "Duplicate detection",
             "Content auditing",
-            "Knowledge base maintenance"
-        ]
+            "Knowledge base maintenance",
+        ],
     },
-
     # =========================================================================
     # Meeting Assistant Agent
     # =========================================================================
@@ -485,7 +491,7 @@ Communication:
             "draft_email",
             "create_document_from_text",
             "get_document_details",
-            "find_similar_documents"
+            "find_similar_documents",
         ],
         "priority": 60,
         "use_cases": [
@@ -493,10 +499,9 @@ Communication:
             "Action item extraction",
             "Follow-up emails",
             "Meeting preparation",
-            "Decision documentation"
-        ]
+            "Decision documentation",
+        ],
     },
-
     # =========================================================================
     # Compliance Checker Agent
     # =========================================================================
@@ -535,7 +540,12 @@ Communication:
 - Evidence-based findings
 - Constructive recommendations
 - Clear priority levels""",
-        "capabilities": ["rag_qa", "document_search", "document_compare", "knowledge_synthesis"],
+        "capabilities": [
+            "rag_qa",
+            "document_search",
+            "document_compare",
+            "knowledge_synthesis",
+        ],
         "tool_whitelist": [
             "search_documents",
             "get_document_details",
@@ -544,7 +554,7 @@ Communication:
             "compare_documents",
             "find_similar_documents",
             "search_by_tags",
-            "generate_report"
+            "generate_report",
         ],
         "priority": 55,
         "use_cases": [
@@ -552,9 +562,9 @@ Communication:
             "Standards verification",
             "Risk assessment",
             "Audit preparation",
-            "Gap analysis"
-        ]
-    }
+            "Gap analysis",
+        ],
+    },
 ]
 
 

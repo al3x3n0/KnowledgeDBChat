@@ -15,7 +15,10 @@ from app.services.scientific_validation_service import (
 
 
 class ResearchOpportunityActionRequest(BaseModel):
-    action: str = Field(..., description="accept, suppress, reopen, create_plan, launch_validation, materialize_experiment, launch_follow_up, relaunch_follow_up")
+    action: str = Field(
+        ...,
+        description="accept, suppress, reopen, create_plan, launch_validation, materialize_experiment, launch_follow_up, relaunch_follow_up",
+    )
     operator_note: Optional[str] = Field(default=None, max_length=2000)
     start_immediately: Optional[bool] = None
 
@@ -30,7 +33,9 @@ class ResearchOpportunityActionRequest(BaseModel):
 def _normalize_query_list(value: Any) -> list[str]:
     if value is None:
         return []
-    rows = value if isinstance(value, list) else str(value).replace("\n", ",").split(",")
+    rows = (
+        value if isinstance(value, list) else str(value).replace("\n", ",").split(",")
+    )
     out: list[str] = []
     for row in rows:
         text = str(row or "").strip()
@@ -45,7 +50,9 @@ def _normalize_query_list(value: Any) -> list[str]:
 def _normalize_uuid_list(value: Any, *, max_items: int = 24) -> list[str]:
     if value is None:
         return []
-    rows = value if isinstance(value, list) else str(value).replace("\n", ",").split(",")
+    rows = (
+        value if isinstance(value, list) else str(value).replace("\n", ",").split(",")
+    )
     out: list[str] = []
     for row in rows:
         text = str(row or "").strip()
@@ -67,14 +74,25 @@ def _normalize_track_type(value: Any) -> str:
 
 
 def _normalize_source_scope(value: Any) -> str:
-    text = str(value or "kb_plus_arxiv").strip().lower().replace("-", "_").replace(" ", "_")
+    text = (
+        str(value or "kb_plus_arxiv")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
     if text in {"kb", "documents", "kb_first"}:
         return "kb_only"
     if text in {"arxiv", "papers"}:
         return "arxiv_only"
     if text in {"kb_plus_repo", "kb_repo", "repo"}:
         return "kb_plus_arxiv_plus_repo"
-    if text not in {"kb_only", "arxiv_only", "kb_plus_arxiv", "kb_plus_arxiv_plus_repo"}:
+    if text not in {
+        "kb_only",
+        "arxiv_only",
+        "kb_plus_arxiv",
+        "kb_plus_arxiv_plus_repo",
+    }:
         return "kb_plus_arxiv"
     return text
 
@@ -109,7 +127,9 @@ class DomainResearchProfileCreate(BaseModel):
     report_format: str = Field(default="brief_and_report")
     scoring_policy: Optional[Dict[str, Any]] = None
     selection_policy: Optional[Dict[str, Any]] = None
-    validation_policy: Optional[Dict[str, Any]] = Field(default=None, description="Compatibility-only legacy validation policy mirror")
+    validation_policy: Optional[Dict[str, Any]] = Field(
+        default=None, description="Compatibility-only legacy validation policy mirror"
+    )
     automation_profile: str = Field(default="balanced")
     automation_policy: Optional[Dict[str, Any]] = None
     sandbox_profile_id: Optional[str] = None
@@ -122,7 +142,14 @@ class DomainResearchProfileCreate(BaseModel):
     max_papers: int = Field(default=8, ge=0, le=25)
     start_immediately: bool = True
 
-    @field_validator("title", "domain", "objective", "customer_context", "sandbox_profile_id", mode="before")
+    @field_validator(
+        "title",
+        "domain",
+        "objective",
+        "customer_context",
+        "sandbox_profile_id",
+        mode="before",
+    )
     @classmethod
     def _normalize_text(cls, value: Any) -> Any:
         if value is None:
@@ -142,7 +169,13 @@ class DomainResearchProfileCreate(BaseModel):
     @field_validator("research_mode", mode="before")
     @classmethod
     def _normalize_research_mode(cls, value: Any) -> str:
-        text = str(value or "literature_to_hypothesis").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "literature_to_hypothesis")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
         if text not in {"literature_to_hypothesis"}:
             return "literature_to_hypothesis"
         return text
@@ -150,7 +183,13 @@ class DomainResearchProfileCreate(BaseModel):
     @field_validator("report_format", mode="before")
     @classmethod
     def _normalize_report_format(cls, value: Any) -> str:
-        text = str(value or "brief_and_report").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "brief_and_report")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
         if text not in {"brief_only", "report_only", "brief_and_report"}:
             return "brief_and_report"
         return text
@@ -202,7 +241,9 @@ class DomainResearchProfileUpdate(BaseModel):
     report_format: Optional[str] = None
     scoring_policy: Optional[Dict[str, Any]] = None
     selection_policy: Optional[Dict[str, Any]] = None
-    validation_policy: Optional[Dict[str, Any]] = Field(default=None, description="Compatibility-only legacy validation policy mirror")
+    validation_policy: Optional[Dict[str, Any]] = Field(
+        default=None, description="Compatibility-only legacy validation policy mirror"
+    )
     automation_profile: Optional[str] = None
     automation_policy: Optional[Dict[str, Any]] = None
     sandbox_profile_id: Optional[str] = None
@@ -214,7 +255,17 @@ class DomainResearchProfileUpdate(BaseModel):
     max_documents: Optional[int] = Field(default=None, ge=1, le=25)
     max_papers: Optional[int] = Field(default=None, ge=0, le=25)
 
-    @field_validator("title", "objective", "customer_context", "source_scope", "track_type", "research_mode", "report_format", "sandbox_profile_id", mode="before")
+    @field_validator(
+        "title",
+        "objective",
+        "customer_context",
+        "source_scope",
+        "track_type",
+        "research_mode",
+        "report_format",
+        "sandbox_profile_id",
+        mode="before",
+    )
     @classmethod
     def _normalize_update_text(cls, value: Any) -> Any:
         if value is None:
@@ -303,7 +354,9 @@ class DomainResearchProfileResponse(BaseModel):
     report_format: str
     scoring_policy: Optional[Dict[str, Any]] = None
     selection_policy: Optional[Dict[str, Any]] = None
-    validation_policy: Optional[Dict[str, Any]] = Field(default=None, description="Compatibility-only legacy validation policy mirror")
+    validation_policy: Optional[Dict[str, Any]] = Field(
+        default=None, description="Compatibility-only legacy validation policy mirror"
+    )
     automation_profile: str = "balanced"
     automation_policy: Optional[Dict[str, Any]] = None
     effective_policy: Optional[Dict[str, Any]] = None
@@ -320,7 +373,9 @@ class DomainResearchProfileResponse(BaseModel):
     latest_note_ids: Optional[List[str]] = None
     latest_experiment_plan_ids: Optional[List[str]] = None
     latest_validation_run_ids: Optional[List[str]] = None
-    latest_validation_runs: Optional[List[ScientificValidationRunSummaryResponse]] = None
+    latest_validation_runs: Optional[
+        List[ScientificValidationRunSummaryResponse]
+    ] = None
     latest_run_job_id: Optional[UUID] = None
     active_job_id: Optional[UUID] = None
     created_at: datetime

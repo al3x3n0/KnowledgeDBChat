@@ -1,7 +1,8 @@
-import pytest
 from unittest.mock import AsyncMock, patch
 
-from .factories import create_test_document_source, create_test_document
+import pytest
+
+from .factories import create_test_document, create_test_document_source
 
 
 def test_latex_status(client, auth_headers):
@@ -15,7 +16,9 @@ def test_latex_status(client, auth_headers):
 def test_latex_compile_disabled_returns_503(client, admin_headers):
     resp = client.post(
         "/api/v1/latex/compile",
-        json={"tex_source": "\\documentclass{article}\\begin{document}hi\\end{document}"},
+        json={
+            "tex_source": "\\documentclass{article}\\begin{document}hi\\end{document}"
+        },
         headers=admin_headers,
     )
     assert resp.status_code == 503
@@ -123,7 +126,9 @@ def test_latex_apply_unified_diff_multiple_files_rejected(client, auth_headers):
 
 @pytest.mark.asyncio
 async def test_latex_copilot_section_returns_snippet(client, auth_headers, db_session):
-    source = await create_test_document_source(db_session, name="Copilot Source", source_type="web")
+    source = await create_test_document_source(
+        db_session, name="Copilot Source", source_type="web"
+    )
     doc = await create_test_document(
         db_session,
         source,
@@ -132,13 +137,16 @@ async def test_latex_copilot_section_returns_snippet(client, auth_headers, db_se
     )
 
     mock_json = (
-        '{'
+        "{"
         '"tex_snippet":"\\\\section{Introduction}\\\\nThis is a test snippet.",'
         '"bibtex":"\\\\begin{thebibliography}{9}\\\\n\\\\bibitem{S1} RAG Notes\\\\n\\\\end{thebibliography}"'
-        '}'
+        "}"
     )
 
-    with patch("app.services.llm_service.LLMService.generate_response", new=AsyncMock(return_value=mock_json)):
+    with patch(
+        "app.services.llm_service.LLMService.generate_response",
+        new=AsyncMock(return_value=mock_json),
+    ):
         resp = client.post(
             "/api/v1/latex/copilot/section",
             json={

@@ -1,9 +1,6 @@
 """Tests for workspace snapshot tools (capture_snapshot, compare_snapshots, detect_drift)."""
 
 import re
-import uuid
-
-import pytest
 
 
 class TestCaptureSnapshot:
@@ -17,12 +14,12 @@ class TestCaptureSnapshot:
     def test_name_validation_alphanumeric(self):
         valid_names = ["after_search", "before-synthesis", "snap1", "A_B_C"]
         for name in valid_names:
-            assert re.match(r'^[a-zA-Z0-9_\-]+$', name)
+            assert re.match(r"^[a-zA-Z0-9_\-]+$", name)
 
     def test_name_validation_rejects_special_chars(self):
         invalid_names = ["has space", "has.dot", "has/slash", "has@at"]
         for name in invalid_names:
-            assert not re.match(r'^[a-zA-Z0-9_\-]+$', name)
+            assert not re.match(r"^[a-zA-Z0-9_\-]+$", name)
 
     def test_name_truncated_to_100(self):
         long_name = "a" * 200
@@ -45,11 +42,13 @@ class TestCaptureSnapshot:
         assert snapshot["goal_progress"] == 45
 
     def test_snapshot_captures_documents_found(self):
-        state = {"findings": [
-            {"document_id": "doc-1", "title": "A"},
-            {"document_id": "doc-2", "title": "B"},
-            {"document_id": "doc-1", "title": "C"},  # duplicate
-        ]}
+        state = {
+            "findings": [
+                {"document_id": "doc-1", "title": "A"},
+                {"document_id": "doc-2", "title": "B"},
+                {"document_id": "doc-1", "title": "C"},  # duplicate
+            ]
+        }
         doc_ids = set()
         for f in state.get("findings", []):
             did = f.get("document_id") or f.get("source_id")
@@ -163,21 +162,27 @@ class TestCompareSnapshots:
     def test_numeric_diff_increased(self):
         a_val, b_val = 5, 12
         delta = b_val - a_val
-        direction = "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        direction = (
+            "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        )
         assert delta == 7
         assert direction == "increased"
 
     def test_numeric_diff_decreased(self):
         a_val, b_val = 50, 30
         delta = b_val - a_val
-        direction = "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        direction = (
+            "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        )
         assert delta == -20
         assert direction == "decreased"
 
     def test_numeric_diff_unchanged(self):
         a_val, b_val = 10, 10
         delta = b_val - a_val
-        direction = "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        direction = (
+            "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
+        )
         assert delta == 0
         assert direction == "unchanged"
 
@@ -193,7 +198,10 @@ class TestCompareSnapshots:
 
     def test_tool_stats_diff(self):
         stats_a = {"search_documents": {"success": 3}}
-        stats_b = {"search_documents": {"success": 5}, "summarize_document": {"success": 2}}
+        stats_b = {
+            "search_documents": {"success": 5},
+            "summarize_document": {"success": 2},
+        }
         tools_added = set(stats_b.keys()) - set(stats_a.keys())
         tools_removed = set(stats_a.keys()) - set(stats_b.keys())
         assert "summarize_document" in tools_added
@@ -215,7 +223,14 @@ class TestCompareSnapshots:
 
     def test_result_format(self):
         result = {
-            "diff": {"findings_count": {"before": 5, "after": 12, "delta": 7, "direction": "increased"}},
+            "diff": {
+                "findings_count": {
+                    "before": 5,
+                    "after": 12,
+                    "delta": 7,
+                    "direction": "increased",
+                }
+            },
             "summary": "Between iteration 5 and 15: findings +7",
             "snapshot_a_iteration": 5,
             "snapshot_b_iteration": 15,
@@ -233,8 +248,17 @@ class TestCompareSnapshots:
             a_val = snap_a.get(key, 0)
             b_val = snap_b.get(key, 0)
             delta = b_val - a_val
-            direction = "increased" if delta > 0 else ("decreased" if delta < 0 else "unchanged")
-            diff[key] = {"before": a_val, "after": b_val, "delta": delta, "direction": direction}
+            direction = (
+                "increased"
+                if delta > 0
+                else ("decreased" if delta < 0 else "unchanged")
+            )
+            diff[key] = {
+                "before": a_val,
+                "after": b_val,
+                "delta": delta,
+                "direction": direction,
+            }
         assert diff["findings_count"]["delta"] == 7
         assert diff["goal_progress"]["direction"] == "increased"
         assert diff["stalled_iterations"]["delta"] == 1
@@ -258,13 +282,15 @@ class TestDetectDrift:
         threshold = 2
         alerts = []
         if current["stalled_iterations"] > threshold:
-            alerts.append({
-                "metric": "stalled_iterations",
-                "baseline_value": baseline["stalled_iterations"],
-                "current_value": current["stalled_iterations"],
-                "severity": "warning",
-                "message": f"Agent has stalled for {current['stalled_iterations']} iterations",
-            })
+            alerts.append(
+                {
+                    "metric": "stalled_iterations",
+                    "baseline_value": baseline["stalled_iterations"],
+                    "current_value": current["stalled_iterations"],
+                    "severity": "warning",
+                    "message": f"Agent has stalled for {current['stalled_iterations']} iterations",
+                }
+            )
         assert len(alerts) == 1
         assert alerts[0]["severity"] == "warning"
 
@@ -318,18 +344,18 @@ class TestDetectDrift:
             if total >= 3:
                 fail_rate = stats.get("failure", 0) / total
                 if fail_rate > threshold:
-                    alerts.append({"metric": f"tool_failure:{tool}", "severity": "warning"})
+                    alerts.append(
+                        {"metric": f"tool_failure:{tool}", "severity": "warning"}
+                    )
         assert len(alerts) == 1
         assert "search_documents" in alerts[0]["metric"]
 
     def test_healthy_tool_no_alert(self):
-        tool_stats = {"search_documents": {"success": 9, "failure": 1}}
         total = 10
         fail_rate = 1 / total
         assert fail_rate <= 0.5
 
     def test_tool_too_few_calls_ignored(self):
-        tool_stats = {"rare_tool": {"success": 0, "failure": 2}}
         total = 2
         assert total < 3  # Not enough calls to judge
 
@@ -346,11 +372,13 @@ class TestDetectDrift:
         alerts = []
         # When no issues found, add info alert
         if not alerts:
-            alerts.append({
-                "metric": "overall",
-                "severity": "info",
-                "message": "No drift detected after 10 iterations",
-            })
+            alerts.append(
+                {
+                    "metric": "overall",
+                    "severity": "info",
+                    "message": "No drift detected after 10 iterations",
+                }
+            )
         assert len(alerts) == 1
         assert alerts[0]["severity"] == "info"
 
@@ -369,7 +397,9 @@ class TestDetectDrift:
 
     def test_severity_counts(self):
         alerts = [
-            {"severity": "warning"}, {"severity": "warning"}, {"severity": "critical"},
+            {"severity": "warning"},
+            {"severity": "warning"},
+            {"severity": "critical"},
         ]
         counts = {}
         for a in alerts:
@@ -390,7 +420,7 @@ class TestDetectDrift:
 
     def test_summary_with_critical(self):
         severity_counts = {"critical": 2, "warning": 1}
-        summary = f"3 alert(s) after 10 iterations"
+        summary = "3 alert(s) after 10 iterations"
         if severity_counts.get("critical"):
             summary += f" ({severity_counts['critical']} critical)"
         assert "2 critical" in summary
@@ -401,6 +431,7 @@ class TestSnapshotSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "capture_snapshot" in names
         assert "compare_snapshots" in names
@@ -408,6 +439,7 @@ class TestSnapshotSchemas:
 
     def test_capture_snapshot_requires_name(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("capture_snapshot")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -415,11 +447,13 @@ class TestSnapshotSchemas:
 
     def test_capture_snapshot_has_keys(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("capture_snapshot")
         assert "keys" in tool["parameters"]["properties"]
 
     def test_compare_snapshots_requires_both(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("compare_snapshots")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -428,6 +462,7 @@ class TestSnapshotSchemas:
 
     def test_detect_drift_requires_baseline(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("detect_drift")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -435,6 +470,7 @@ class TestSnapshotSchemas:
 
     def test_detect_drift_has_thresholds(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("detect_drift")
         assert "thresholds" in tool["parameters"]["properties"]
 
@@ -444,6 +480,7 @@ class TestSnapshotRegistry:
 
     def test_all_are_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["capture_snapshot", "compare_snapshots", "detect_drift"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
@@ -451,6 +488,7 @@ class TestSnapshotRegistry:
 
     def test_all_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["capture_snapshot", "compare_snapshots", "detect_drift"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
@@ -458,6 +496,7 @@ class TestSnapshotRegistry:
 
     def test_none_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["capture_snapshot", "compare_snapshots", "detect_drift"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

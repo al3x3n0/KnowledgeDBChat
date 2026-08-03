@@ -38,7 +38,9 @@ def _job_to_response(job: PaperExtractionJob) -> PaperExtractionJobResponse:
     return PaperExtractionJobResponse.model_validate(job)
 
 
-def _paper_to_response(paper: ResearchPaper, latest_job: Optional[PaperExtractionJob] = None) -> ResearchPaperResponse:
+def _paper_to_response(
+    paper: ResearchPaper, latest_job: Optional[PaperExtractionJob] = None
+) -> ResearchPaperResponse:
     return ResearchPaperResponse(
         id=paper.id,
         user_id=paper.user_id,
@@ -61,15 +63,27 @@ def _paper_to_response(paper: ResearchPaper, latest_job: Optional[PaperExtractio
         benchmarks=paper.benchmarks if isinstance(paper.benchmarks, list) else None,
         metrics=paper.metrics if isinstance(paper.metrics, list) else None,
         limitations=paper.limitations if isinstance(paper.limitations, list) else None,
-        raw_extraction_payload=paper.raw_extraction_payload if isinstance(paper.raw_extraction_payload, dict) else None,
-        claims=list(sorted(paper.claims or [], key=lambda item: (item.rank is None, item.rank if item.rank is not None else 999999))),
+        raw_extraction_payload=paper.raw_extraction_payload
+        if isinstance(paper.raw_extraction_payload, dict)
+        else None,
+        claims=list(
+            sorted(
+                paper.claims or [],
+                key=lambda item: (
+                    item.rank is None,
+                    item.rank if item.rank is not None else 999999,
+                ),
+            )
+        ),
         latest_job=_job_to_response(latest_job) if latest_job else None,
         created_at=paper.created_at,
         updated_at=paper.updated_at,
     )
 
 
-async def _get_latest_jobs_for_papers(db: AsyncSession, paper_ids: List[UUID]) -> dict[UUID, PaperExtractionJob]:
+async def _get_latest_jobs_for_papers(
+    db: AsyncSession, paper_ids: List[UUID]
+) -> dict[UUID, PaperExtractionJob]:
     if not paper_ids:
         return {}
     stmt = (
@@ -106,11 +120,17 @@ async def list_research_papers(
             base_stmt = base_stmt.where(ResearchPaper.arxiv_id.in_(values))
     count_stmt = select(func.count()).select_from(base_stmt.subquery())
     total = int((await db.execute(count_stmt)).scalar() or 0)
-    stmt = base_stmt.options(selectinload(ResearchPaper.claims)).order_by(desc(ResearchPaper.updated_at))
-    papers = (await db.execute(stmt.offset(offset).limit(limit))).scalars().unique().all()
+    stmt = base_stmt.options(selectinload(ResearchPaper.claims)).order_by(
+        desc(ResearchPaper.updated_at)
+    )
+    papers = (
+        (await db.execute(stmt.offset(offset).limit(limit))).scalars().unique().all()
+    )
     latest_jobs = await _get_latest_jobs_for_papers(db, [paper.id for paper in papers])
     return ResearchPaperListResponse(
-        items=[_paper_to_response(paper, latest_jobs.get(paper.id)) for paper in papers],
+        items=[
+            _paper_to_response(paper, latest_jobs.get(paper.id)) for paper in papers
+        ],
         total=total,
         limit=limit,
         offset=offset,
@@ -123,14 +143,22 @@ async def list_paper_extraction_jobs(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(PaperExtractionJob).where(PaperExtractionJob.user_id == current_user.id).order_by(desc(PaperExtractionJob.created_at))
+    stmt = (
+        select(PaperExtractionJob)
+        .where(PaperExtractionJob.user_id == current_user.id)
+        .order_by(desc(PaperExtractionJob.created_at))
+    )
     if source_id:
         stmt = stmt.where(PaperExtractionJob.source_id == source_id)
     jobs = (await db.execute(stmt.limit(100))).scalars().all()
     return [_job_to_response(job) for job in jobs]
 
 
-@router.post("/extract", response_model=list[PaperExtractionJobResponse], status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/extract",
+    response_model=list[PaperExtractionJobResponse],
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def extract_research_papers(
     payload: PaperExtractionRequest,
     current_user: User = Depends(get_current_user),
@@ -139,13 +167,17 @@ async def extract_research_papers(
     document_ids = list(payload.document_ids or [])
     if payload.source_id:
         source_docs = (
-            await db.execute(
-                select(Document)
-                .where(Document.source_id == payload.source_id)
-                .order_by(desc(Document.created_at))
-                .limit(payload.limit)
+            (
+                await db.execute(
+                    select(Document)
+                    .where(Document.source_id == payload.source_id)
+                    .order_by(desc(Document.created_at))
+                    .limit(payload.limit)
+                )
             )
-        ).scalars().all()
+            .scalars()
+            .all()
+        )
         document_ids.extend([doc.id for doc in source_docs])
     seen = set()
     ordered_ids = []
@@ -155,13 +187,17 @@ async def extract_research_papers(
         seen.add(document_id)
         ordered_ids.append(document_id)
     if not ordered_ids:
-        raise HTTPException(status_code=400, detail="Provide at least one document_id or a source_id")
+        raise HTTPException(
+            status_code=400, detail="Provide at least one document_id or a source_id"
+        )
 
     queued: list[PaperExtractionJobResponse] = []
     for document_id in ordered_ids:
         document = await db.get(Document, document_id)
         if not document:
-            raise HTTPException(status_code=404, detail=f"Document {document_id} not found")
+            raise HTTPException(
+                status_code=404, detail=f"Document {document_id} not found"
+            )
         try:
             job = await paper_extraction_service.queue_document_extraction_job(
                 db,
@@ -171,7 +207,10 @@ async def extract_research_papers(
                 dispatch_task=lambda job_id: extract_paper_job.delay(job_id),
             )
         except UnsupportedPaperSourceError:
-            raise HTTPException(status_code=422, detail=f"Document {document.id} is not an arXiv document")
+            raise HTTPException(
+                status_code=422,
+                detail=f"Document {document.id} is not an arXiv document",
+            )
         except PaperExtractionConflictError as exc:
             raise HTTPException(status_code=409, detail=str(exc))
         queued.append(_job_to_response(job))
@@ -184,7 +223,11 @@ async def get_research_paper(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(ResearchPaper).where(ResearchPaper.id == paper_id).options(selectinload(ResearchPaper.claims))
+    stmt = (
+        select(ResearchPaper)
+        .where(ResearchPaper.id == paper_id)
+        .options(selectinload(ResearchPaper.claims))
+    )
     paper = (await db.execute(stmt)).scalar_one_or_none()
     if not paper or paper.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Research paper not found")
@@ -192,13 +235,21 @@ async def get_research_paper(
     return _paper_to_response(paper, latest_jobs.get(paper.id))
 
 
-@router.post("/{paper_id}/reextract", response_model=PaperExtractionJobResponse, status_code=status.HTTP_202_ACCEPTED)
+@router.post(
+    "/{paper_id}/reextract",
+    response_model=PaperExtractionJobResponse,
+    status_code=status.HTTP_202_ACCEPTED,
+)
 async def reextract_research_paper(
     paper_id: UUID,
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(ResearchPaper).where(ResearchPaper.id == paper_id).options(selectinload(ResearchPaper.claims))
+    stmt = (
+        select(ResearchPaper)
+        .where(ResearchPaper.id == paper_id)
+        .options(selectinload(ResearchPaper.claims))
+    )
     paper = (await db.execute(stmt)).scalar_one_or_none()
     if not paper or paper.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Research paper not found")
@@ -214,7 +265,9 @@ async def reextract_research_paper(
             dispatch_task=lambda job_id: extract_paper_job.delay(job_id),
         )
     except UnsupportedPaperSourceError:
-        raise HTTPException(status_code=422, detail=f"Document {document.id} is not an arXiv document")
+        raise HTTPException(
+            status_code=422, detail=f"Document {document.id} is not an arXiv document"
+        )
     return _job_to_response(job)
 
 
@@ -225,7 +278,11 @@ async def save_research_paper_as_note(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(ResearchPaper).where(ResearchPaper.id == paper_id).options(selectinload(ResearchPaper.claims))
+    stmt = (
+        select(ResearchPaper)
+        .where(ResearchPaper.id == paper_id)
+        .options(selectinload(ResearchPaper.claims))
+    )
     paper = (await db.execute(stmt)).scalar_one_or_none()
     if not paper or paper.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Research paper not found")

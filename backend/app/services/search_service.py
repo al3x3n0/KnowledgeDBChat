@@ -3,15 +3,15 @@ Search service for multi-mode document search.
 """
 
 import time
-from typing import List, Dict, Any, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, or_, and_, desc, asc, func
-from loguru import logger
 
-from app.models.document import Document, DocumentChunk
+from loguru import logger
+from sqlalchemy import and_, asc, desc, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models.document import Document
 from app.services.vector_store import vector_store_service
-from app.core.config import settings
 
 
 class SearchService:
@@ -87,7 +87,9 @@ class SearchService:
             )
 
         took_ms = int((time.time() - start_time) * 1000)
-        logger.info(f"Search completed: mode={mode}, query='{query[:50]}...', results={len(results)}, total={total}, took={took_ms}ms")
+        logger.info(
+            f"Search completed: mode={mode}, query='{query[:50]}...', results={len(results)}, total={total}, took={took_ms}ms"
+        )
 
         return results, total, took_ms
 
@@ -140,16 +142,18 @@ class SearchService:
 
         # Sort results
         if sort_by == "relevance":
-            deduped_results.sort(key=lambda x: x.get("score", 0), reverse=(sort_order == "desc"))
+            deduped_results.sort(
+                key=lambda x: x.get("score", 0), reverse=(sort_order == "desc")
+            )
         elif sort_by == "date":
             deduped_results.sort(
                 key=lambda x: x.get("metadata", {}).get("updated_at", ""),
-                reverse=(sort_order == "desc")
+                reverse=(sort_order == "desc"),
             )
         elif sort_by == "title":
             deduped_results.sort(
                 key=lambda x: x.get("metadata", {}).get("title", "").lower(),
-                reverse=(sort_order == "desc")
+                reverse=(sort_order == "desc"),
             )
 
         total = len(deduped_results)
@@ -165,22 +169,28 @@ class SearchService:
             metadata = item.get("metadata", {})
             content = item.get("content") or item.get("page_content", "")
 
-            results.append({
-                "id": metadata.get("document_id", item.get("id")),
-                "title": metadata.get("title", "Unknown"),
-                "source": metadata.get("source_name", metadata.get("source", "Unknown")),
-                "source_id": metadata.get("source_id"),
-                "source_type": metadata.get("source_type", metadata.get("source", "unknown")),
-                "file_type": metadata.get("file_type"),
-                "author": metadata.get("author"),
-                "snippet": content[:300] if content else "",
-                "relevance_score": item.get("score", 0.0),
-                "created_at": metadata.get("created_at", ""),
-                "updated_at": metadata.get("updated_at", ""),
-                "url": metadata.get("url"),
-                "download_url": None,
-                "chunk_id": metadata.get("chunk_id"),
-            })
+            results.append(
+                {
+                    "id": metadata.get("document_id", item.get("id")),
+                    "title": metadata.get("title", "Unknown"),
+                    "source": metadata.get(
+                        "source_name", metadata.get("source", "Unknown")
+                    ),
+                    "source_id": metadata.get("source_id"),
+                    "source_type": metadata.get(
+                        "source_type", metadata.get("source", "unknown")
+                    ),
+                    "file_type": metadata.get("file_type"),
+                    "author": metadata.get("author"),
+                    "snippet": content[:300] if content else "",
+                    "relevance_score": item.get("score", 0.0),
+                    "created_at": metadata.get("created_at", ""),
+                    "updated_at": metadata.get("updated_at", ""),
+                    "url": metadata.get("url"),
+                    "download_url": None,
+                    "chunk_id": metadata.get("chunk_id"),
+                }
+            )
 
         return results, total
 
@@ -205,12 +215,12 @@ class SearchService:
 
         # Apply filters
         conditions = [
-            Document.is_processed == True,
+            Document.is_processed.is_(True),
             or_(
                 Document.title.ilike(search_term),
                 Document.content.ilike(search_term),
                 Document.author.ilike(search_term),
-            )
+            ),
         ]
 
         if source_id:
@@ -269,24 +279,25 @@ class SearchService:
                     snippet = doc.content[:300]
 
             # Get download URL
-            results.append({
-                "id": str(doc.id),
-                "title": doc.title,
-                "source": doc.source.name if doc.source else "Unknown",
-                "source_type": doc.source.source_type if doc.source else "unknown",
-                "file_type": doc.file_type,
-                "author": doc.author,
-                "snippet": snippet,
-                "relevance_score": 1.0,  # Exact match doesn't have relevance score
-                "created_at": doc.created_at.isoformat() if doc.created_at else "",
-                "updated_at": doc.updated_at.isoformat() if doc.updated_at else "",
-                "url": doc.url,
-                "download_url": None,
-                "chunk_id": None,  # No specific chunk for exact search
-            })
+            results.append(
+                {
+                    "id": str(doc.id),
+                    "title": doc.title,
+                    "source": doc.source.name if doc.source else "Unknown",
+                    "source_type": doc.source.source_type if doc.source else "unknown",
+                    "file_type": doc.file_type,
+                    "author": doc.author,
+                    "snippet": snippet,
+                    "relevance_score": 1.0,  # Exact match doesn't have relevance score
+                    "created_at": doc.created_at.isoformat() if doc.created_at else "",
+                    "updated_at": doc.updated_at.isoformat() if doc.updated_at else "",
+                    "url": doc.url,
+                    "download_url": None,
+                    "chunk_id": None,  # No specific chunk for exact search
+                }
+            )
 
         return results, total
-
 
     async def faceted_search(
         self,
@@ -309,7 +320,6 @@ class SearchService:
         Returns:
             Search results with facet aggregations
         """
-        from app.models.document import DocumentSource
         from collections import Counter
 
         # Apply filters
@@ -372,8 +382,9 @@ class SearchService:
             if created_at:
                 try:
                     from datetime import datetime
+
                     if isinstance(created_at, str):
-                        dt = datetime.fromisoformat(created_at.replace('Z', '+00:00'))
+                        dt = datetime.fromisoformat(created_at.replace("Z", "+00:00"))
                     else:
                         dt = created_at
                     year_month = dt.strftime("%Y-%m")
@@ -422,29 +433,34 @@ class SearchService:
         partial_lower = partial_query.lower()
 
         # Search in document titles
-        title_query = select(Document.title).where(
-            and_(
-                Document.is_processed == True,
-                Document.title.ilike(f"%{partial_query}%")
+        title_query = (
+            select(Document.title)
+            .where(
+                and_(
+                    Document.is_processed.is_(True),
+                    Document.title.ilike(f"%{partial_query}%"),
+                )
             )
-        ).limit(limit * 2)
+            .limit(limit * 2)
+        )
         title_result = await db.execute(title_query)
         titles = [row[0] for row in title_result.fetchall() if row[0]]
 
         for title in titles[:limit]:
-            suggestions.append({
-                "type": "title",
-                "text": title,
-                "display": f"📄 {title}",
-            })
+            suggestions.append(
+                {
+                    "type": "title",
+                    "text": title,
+                    "display": f"📄 {title}",
+                }
+            )
 
         # Search in tags
-        tag_query = select(Document.tags).where(
-            and_(
-                Document.is_processed == True,
-                Document.tags != None
-            )
-        ).limit(100)
+        tag_query = (
+            select(Document.tags)
+            .where(and_(Document.is_processed.is_(True), Document.tags.is_not(None)))
+            .limit(100)
+        )
         tag_result = await db.execute(tag_query)
 
         all_tags = set()
@@ -454,30 +470,38 @@ class SearchService:
                     if partial_lower in tag.lower():
                         all_tags.add(tag)
 
-        for tag in list(all_tags)[:limit - len(suggestions)]:
-            suggestions.append({
-                "type": "tag",
-                "text": f"tag:{tag}",
-                "display": f"🏷️ {tag}",
-            })
+        for tag in list(all_tags)[: limit - len(suggestions)]:
+            suggestions.append(
+                {
+                    "type": "tag",
+                    "text": f"tag:{tag}",
+                    "display": f"🏷️ {tag}",
+                }
+            )
 
         # Search in authors
-        author_query = select(func.distinct(Document.author)).where(
-            and_(
-                Document.is_processed == True,
-                Document.author != None,
-                Document.author.ilike(f"%{partial_query}%")
+        author_query = (
+            select(func.distinct(Document.author))
+            .where(
+                and_(
+                    Document.is_processed.is_(True),
+                    Document.author.is_not(None),
+                    Document.author.ilike(f"%{partial_query}%"),
+                )
             )
-        ).limit(limit)
+            .limit(limit)
+        )
         author_result = await db.execute(author_query)
         authors = [row[0] for row in author_result.fetchall() if row[0]]
 
-        for author in authors[:limit - len(suggestions)]:
-            suggestions.append({
-                "type": "author",
-                "text": f"author:{author}",
-                "display": f"👤 {author}",
-            })
+        for author in authors[: limit - len(suggestions)]:
+            suggestions.append(
+                {
+                    "type": "author",
+                    "text": f"author:{author}",
+                    "display": f"👤 {author}",
+                }
+            )
 
         return suggestions[:limit]
 
@@ -511,8 +535,8 @@ class SearchService:
             return []
 
         # Extract terms from result titles and content
-        from collections import Counter
         import re
+        from collections import Counter
 
         query_words = set(query.lower().split())
         term_counter = Counter()
@@ -523,13 +547,13 @@ class SearchService:
             content = item.get("content", "") or item.get("page_content", "")
 
             # Extract words from title
-            title_words = re.findall(r'\b[a-zA-Z]{3,}\b', title.lower())
+            title_words = re.findall(r"\b[a-zA-Z]{3,}\b", title.lower())
             for word in title_words:
                 if word not in query_words and len(word) > 3:
                     term_counter[word] += 3  # Weight title words higher
 
             # Extract words from content snippet
-            content_words = re.findall(r'\b[a-zA-Z]{4,}\b', content[:500].lower())
+            content_words = re.findall(r"\b[a-zA-Z]{4,}\b", content[:500].lower())
             for word in content_words:
                 if word not in query_words:
                     term_counter[word] += 1
@@ -543,7 +567,37 @@ class SearchService:
 
         # Generate related queries
         related = []
-        common_words = {'this', 'that', 'with', 'from', 'have', 'been', 'were', 'will', 'would', 'could', 'should', 'about', 'into', 'more', 'some', 'such', 'than', 'then', 'there', 'these', 'they', 'their', 'what', 'when', 'where', 'which', 'while', 'your', 'other'}
+        common_words = {
+            "this",
+            "that",
+            "with",
+            "from",
+            "have",
+            "been",
+            "were",
+            "will",
+            "would",
+            "could",
+            "should",
+            "about",
+            "into",
+            "more",
+            "some",
+            "such",
+            "than",
+            "then",
+            "there",
+            "these",
+            "they",
+            "their",
+            "what",
+            "when",
+            "where",
+            "which",
+            "while",
+            "your",
+            "other",
+        }
 
         for term, count in term_counter.most_common(limit * 3):
             if term not in common_words and count >= 2:
@@ -581,25 +635,27 @@ class SearchService:
         from app.models.document import DocumentSource
 
         # Get popular sources
-        source_query = select(
-            DocumentSource.name,
-            func.count(Document.id).label('doc_count')
-        ).join(Document).where(
-            Document.is_processed == True
-        ).group_by(DocumentSource.name).order_by(
-            desc(func.count(Document.id))
-        ).limit(limit)
+        source_query = (
+            select(DocumentSource.name, func.count(Document.id).label("doc_count"))
+            .join(Document)
+            .where(Document.is_processed.is_(True))
+            .group_by(DocumentSource.name)
+            .order_by(desc(func.count(Document.id)))
+            .limit(limit)
+        )
 
         source_result = await db.execute(source_query)
         sources = source_result.fetchall()
 
         suggestions = []
         for source_name, count in sources:
-            suggestions.append({
-                "type": "popular_source",
-                "text": f"source:{source_name}",
-                "display": f"📁 {source_name} ({count} docs)",
-            })
+            suggestions.append(
+                {
+                    "type": "popular_source",
+                    "text": f"source:{source_name}",
+                    "display": f"📁 {source_name} ({count} docs)",
+                }
+            )
 
         return suggestions
 

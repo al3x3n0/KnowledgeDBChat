@@ -7,28 +7,25 @@ can use to interact with the KnowledgeDB platform.
 
 import time
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.responses import JSONResponse
+from loguru import logger
 from pydantic import BaseModel, Field
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
 from app.core.database import get_db
 from app.mcp.auth import (
     MCPAuthContext,
     extract_api_key,
-    validate_api_key,
     log_api_usage,
+    validate_api_key,
 )
-from app.mcp.tools.search import SearchTool
-from app.mcp.tools.documents import DocumentsTool
 from app.mcp.tools.chat import ChatTool
-from app.mcp.tools.generation import GenerationTool
-from app.mcp.tools.web_scrape import WebScrapeTool
 from app.mcp.tools.docker_execute import DockerExecuteTool
-
+from app.mcp.tools.documents import DocumentsTool
+from app.mcp.tools.generation import GenerationTool
+from app.mcp.tools.search import SearchTool
+from app.mcp.tools.web_scrape import WebScrapeTool
 
 # Initialize tools
 search_tool = SearchTool()
@@ -46,8 +43,10 @@ mcp_router = APIRouter(prefix="/mcp", tags=["MCP"])
 # Pydantic Models for MCP Protocol
 # =============================================================================
 
+
 class MCPToolDefinition(BaseModel):
     """MCP tool definition."""
+
     name: str
     description: str
     inputSchema: Dict[str, Any]
@@ -55,23 +54,27 @@ class MCPToolDefinition(BaseModel):
 
 class MCPListToolsResponse(BaseModel):
     """Response for listing available tools."""
+
     tools: List[MCPToolDefinition]
 
 
 class MCPToolCallRequest(BaseModel):
     """Request to call a tool."""
+
     name: str
     arguments: Dict[str, Any] = Field(default_factory=dict)
 
 
 class MCPToolCallResponse(BaseModel):
     """Response from a tool call."""
+
     content: List[Dict[str, Any]]
     isError: bool = False
 
 
 class MCPServerInfo(BaseModel):
     """MCP server information."""
+
     name: str = "KnowledgeDB MCP Server"
     version: str = "1.0.0"
     description: str = "MCP server for KnowledgeDB platform"
@@ -81,6 +84,7 @@ class MCPServerInfo(BaseModel):
 # =============================================================================
 # Authentication Dependency
 # =============================================================================
+
 
 async def get_mcp_auth(
     request: Request,
@@ -114,6 +118,7 @@ async def get_mcp_auth(
 # MCP Protocol Endpoints
 # =============================================================================
 
+
 @mcp_router.get("/info", response_model=MCPServerInfo)
 async def get_server_info():
     """Get MCP server information."""
@@ -134,21 +139,65 @@ async def list_tools(
     if not auth.api_key.is_mcp_enabled():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="MCP access is disabled for this API key"
+            detail="MCP access is disabled for this API key",
         )
 
     all_tools = [
-        ("search", "Search documents in the knowledge base using semantic search", search_tool.input_schema),
-        ("list_documents", "List available documents", documents_tool.operations["list"]["input_schema"]),
-        ("get_document", "Get a specific document by ID", documents_tool.operations["get"]["input_schema"]),
-        ("list_sources", "List available document sources", documents_tool.operations["list_sources"]["input_schema"]),
-        ("chat", "Ask questions and get AI-powered answers based on the knowledge base", chat_tool.input_schema),
-        ("web_scrape", "Fetch web pages and extract readable text and links", web_scrape_tool.input_schema),
-        ("create_presentation", "Create a PowerPoint presentation from a topic", generation_tool.operations["create_presentation"]["input_schema"]),
-        ("create_repo_report", "Create a report from a GitHub/GitLab repository", generation_tool.operations["create_repo_report"]["input_schema"]),
-        ("get_job_status", "Get status of a generation job", generation_tool.operations["get_job_status"]["input_schema"]),
-        ("list_jobs", "List generation jobs", generation_tool.operations["list_jobs"]["input_schema"]),
-        ("docker_execute", "Run a bounded command inside a Docker container", docker_execute_tool.input_schema),
+        (
+            "search",
+            "Search documents in the knowledge base using semantic search",
+            search_tool.input_schema,
+        ),
+        (
+            "list_documents",
+            "List available documents",
+            documents_tool.operations["list"]["input_schema"],
+        ),
+        (
+            "get_document",
+            "Get a specific document by ID",
+            documents_tool.operations["get"]["input_schema"],
+        ),
+        (
+            "list_sources",
+            "List available document sources",
+            documents_tool.operations["list_sources"]["input_schema"],
+        ),
+        (
+            "chat",
+            "Ask questions and get AI-powered answers based on the knowledge base",
+            chat_tool.input_schema,
+        ),
+        (
+            "web_scrape",
+            "Fetch web pages and extract readable text and links",
+            web_scrape_tool.input_schema,
+        ),
+        (
+            "create_presentation",
+            "Create a PowerPoint presentation from a topic",
+            generation_tool.operations["create_presentation"]["input_schema"],
+        ),
+        (
+            "create_repo_report",
+            "Create a report from a GitHub/GitLab repository",
+            generation_tool.operations["create_repo_report"]["input_schema"],
+        ),
+        (
+            "get_job_status",
+            "Get status of a generation job",
+            generation_tool.operations["get_job_status"]["input_schema"],
+        ),
+        (
+            "list_jobs",
+            "List generation jobs",
+            generation_tool.operations["list_jobs"]["input_schema"],
+        ),
+        (
+            "docker_execute",
+            "Run a bounded command inside a Docker container",
+            docker_execute_tool.input_schema,
+        ),
     ]
 
     # Filter tools based on API key configuration
@@ -204,14 +253,14 @@ async def call_tool(
     if not auth.api_key.is_mcp_enabled():
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail="MCP access is disabled for this API key"
+            detail="MCP access is disabled for this API key",
         )
 
     # Check if tool is allowed for this API key
     if not auth.api_key.is_tool_allowed(tool_name):
         raise HTTPException(
             status_code=status.HTTP_403_FORBIDDEN,
-            detail=f"Tool '{tool_name}' is not allowed for this API key"
+            detail=f"Tool '{tool_name}' is not allowed for this API key",
         )
 
     # Platform tool policies (deny-by-policy, approval gate)
@@ -227,9 +276,14 @@ async def call_tool(
             api_key_id=auth.api_key.id,
         )
         if not decision.allowed:
-            raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail=decision.denied_reason or "Tool denied by policy")
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=decision.denied_reason or "Tool denied by policy",
+            )
 
-        require_approval = bool(decision.require_approval) or tool_name == "docker_execute"
+        require_approval = (
+            bool(decision.require_approval) or tool_name == "docker_execute"
+        )
         if require_approval:
             audit = ToolExecutionAudit(
                 user_id=auth.user_id,
@@ -265,7 +319,10 @@ async def call_tool(
         raise
     except Exception as e:
         logger.warning(f"MCP policy evaluation failed: {e}")
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="Tool policy evaluation failed")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Tool policy evaluation failed",
+        )
 
     try:
         result: Dict[str, Any] = {}
@@ -389,7 +446,7 @@ async def call_tool(
         else:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Unknown tool: {tool_name}"
+                detail=f"Unknown tool: {tool_name}",
             )
 
         # Log usage
@@ -440,6 +497,7 @@ async def call_tool(
 # =============================================================================
 # Convenience Endpoints (Direct tool access)
 # =============================================================================
+
 
 @mcp_router.post("/search")
 async def search_endpoint(

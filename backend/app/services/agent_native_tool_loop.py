@@ -158,7 +158,8 @@ class NativeToolLoopService:
                         "success": success,
                         "error": (
                             str(tool_result.get("error") or "")[:260]
-                            if isinstance(tool_result, dict) and tool_result.get("error")
+                            if isinstance(tool_result, dict)
+                            and tool_result.get("error")
                             else None
                         ),
                     }
@@ -205,7 +206,9 @@ class NativeToolLoopService:
         return result
 
     @staticmethod
-    def _append_tool_message(convo: List[Dict[str, Any]], tc: Any, content: str) -> None:
+    def _append_tool_message(
+        convo: List[Dict[str, Any]], tc: Any, content: str
+    ) -> None:
         convo.append(
             {
                 "role": "tool",

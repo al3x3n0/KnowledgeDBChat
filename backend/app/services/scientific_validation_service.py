@@ -7,12 +7,11 @@ from uuid import UUID
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.experiment import ExperimentRun
 from app.core.config import settings
+from app.models.experiment import ExperimentRun
 from app.models.research_note import ResearchNote
 from app.models.scientific_sandbox_profile import ScientificSandboxProfile
 from app.models.synthesis_job import SynthesisJob
-
 
 DEFAULT_VALIDATION_BACKOFF_POLICY: Dict[str, Any] = {
     "max_consecutive_failures": 2,
@@ -67,8 +66,17 @@ BUILTIN_SCIENTIFIC_SANDBOX_PROFILES: Dict[str, Dict[str, Any]] = {
         "docker_image": "ghcr.io/knowledgedb/compiler-research:latest",
         "timeout_seconds": 1200,
         "resource_caps": {"memory_mb": 4096, "cpus": 2.0, "pids_limit": 256},
-        "allowed_benchmark_families": ["compiler_regression", "codegen_quality", "kernel_compile"],
-        "allowed_perf_collectors": ["benchmark_output", "compile_time", "artifact_diff", "perf_stat"],
+        "allowed_benchmark_families": [
+            "compiler_regression",
+            "codegen_quality",
+            "kernel_compile",
+        ],
+        "allowed_perf_collectors": [
+            "benchmark_output",
+            "compile_time",
+            "artifact_diff",
+            "perf_stat",
+        ],
         "required_capabilities": ["repo_reconstruction"],
         "toolchains": ["clang", "llvm-opt", "cmake", "ninja", "pytest"],
         "budget_limit_default": 35.0,
@@ -85,8 +93,17 @@ BUILTIN_SCIENTIFIC_SANDBOX_PROFILES: Dict[str, Dict[str, Any]] = {
         "docker_image": "ghcr.io/knowledgedb/microarch-research:latest",
         "timeout_seconds": 1200,
         "resource_caps": {"memory_mb": 4096, "cpus": 2.0, "pids_limit": 256},
-        "allowed_benchmark_families": ["perf_counter_regression", "cache_branch_analysis", "throughput_latency"],
-        "allowed_perf_collectors": ["perf_stat", "cache_miss", "branch_miss", "benchmark_output"],
+        "allowed_benchmark_families": [
+            "perf_counter_regression",
+            "cache_branch_analysis",
+            "throughput_latency",
+        ],
+        "allowed_perf_collectors": [
+            "perf_stat",
+            "cache_miss",
+            "branch_miss",
+            "benchmark_output",
+        ],
         "required_capabilities": ["repo_reconstruction", "perf_counters"],
         "toolchains": ["python", "pytest", "perf"],
         "budget_limit_default": 40.0,
@@ -121,9 +138,20 @@ SCIENTIFIC_VALIDATION_RECIPE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "recipe_version": 1,
         "recipe_family": "compiler_validation",
         "benchmark_family": "compiler_regression",
-        "allowed_perf_collectors": ["benchmark_output", "compile_time", "artifact_diff", "perf_stat"],
+        "allowed_perf_collectors": [
+            "benchmark_output",
+            "compile_time",
+            "artifact_diff",
+            "perf_stat",
+        ],
         "required_capabilities": ["repo_reconstruction"],
-        "artifact_collection_rules": ["compiler_logs", "benchmark_output", "ir_or_codegen_artifacts", "compiler_remarks", "perf_counter_summary"],
+        "artifact_collection_rules": [
+            "compiler_logs",
+            "benchmark_output",
+            "ir_or_codegen_artifacts",
+            "compiler_remarks",
+            "perf_counter_summary",
+        ],
         "compiler_observability_defaults": {
             "capture_ir": True,
             "capture_asm": True,
@@ -131,7 +159,11 @@ SCIENTIFIC_VALIDATION_RECIPE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
             "capture_compile_logs": True,
             "capture_perf_stat": False,
             "repeat_count": 1,
-            "artifact_kinds": ["compiler_logs", "ir_or_codegen_artifacts", "compiler_remarks"],
+            "artifact_kinds": [
+                "compiler_logs",
+                "ir_or_codegen_artifacts",
+                "compiler_remarks",
+            ],
         },
         "verification_prefixes": [
             "pytest",
@@ -185,9 +217,18 @@ SCIENTIFIC_VALIDATION_RECIPE_DEFINITIONS: Dict[str, Dict[str, Any]] = {
         "recipe_version": 1,
         "recipe_family": "microarchitecture_validation",
         "benchmark_family": "perf_counter_regression",
-        "allowed_perf_collectors": ["perf_stat", "cache_miss", "branch_miss", "benchmark_output"],
+        "allowed_perf_collectors": [
+            "perf_stat",
+            "cache_miss",
+            "branch_miss",
+            "benchmark_output",
+        ],
         "required_capabilities": ["repo_reconstruction", "perf_counters"],
-        "artifact_collection_rules": ["benchmark_output", "perf_counter_samples", "latency_throughput_summary"],
+        "artifact_collection_rules": [
+            "benchmark_output",
+            "perf_counter_samples",
+            "latency_throughput_summary",
+        ],
         "verification_prefixes": [
             "perf stat",
             "pytest",
@@ -313,63 +354,137 @@ def _parse_csv_setting(value: str) -> List[str]:
 
 def get_scientific_validation_runtime_limits() -> Dict[str, Any]:
     return {
-        "allowed_docker_images": _parse_csv_setting(settings.SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES),
-        "allowed_capabilities": _parse_csv_setting(settings.SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES),
-        "allowed_benchmark_families": _parse_csv_setting(settings.SCIENTIFIC_VALIDATION_ALLOWED_BENCHMARK_FAMILIES),
-        "allowed_perf_collectors": _parse_csv_setting(settings.SCIENTIFIC_VALIDATION_ALLOWED_PERF_COLLECTORS),
-        "max_timeout_seconds": max(30, int(getattr(settings, "SCIENTIFIC_VALIDATION_MAX_TIMEOUT_SECONDS", 1800) or 1800)),
-        "max_memory_mb": max(128, int(getattr(settings, "SCIENTIFIC_VALIDATION_MAX_MEMORY_MB", 8192) or 8192)),
-        "max_cpus": max(0.25, float(getattr(settings, "SCIENTIFIC_VALIDATION_MAX_CPUS", 8.0) or 8.0)),
-        "max_pids_limit": max(32, int(getattr(settings, "SCIENTIFIC_VALIDATION_MAX_PIDS_LIMIT", 1024) or 1024)),
-        "max_budget_per_run": max(1.0, float(getattr(settings, "SCIENTIFIC_VALIDATION_MAX_BUDGET_PER_RUN", 10000.0) or 10000.0)),
+        "allowed_docker_images": _parse_csv_setting(
+            settings.SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES
+        ),
+        "allowed_capabilities": _parse_csv_setting(
+            settings.SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES
+        ),
+        "allowed_benchmark_families": _parse_csv_setting(
+            settings.SCIENTIFIC_VALIDATION_ALLOWED_BENCHMARK_FAMILIES
+        ),
+        "allowed_perf_collectors": _parse_csv_setting(
+            settings.SCIENTIFIC_VALIDATION_ALLOWED_PERF_COLLECTORS
+        ),
+        "max_timeout_seconds": max(
+            30,
+            int(
+                getattr(settings, "SCIENTIFIC_VALIDATION_MAX_TIMEOUT_SECONDS", 1800)
+                or 1800
+            ),
+        ),
+        "max_memory_mb": max(
+            128,
+            int(getattr(settings, "SCIENTIFIC_VALIDATION_MAX_MEMORY_MB", 8192) or 8192),
+        ),
+        "max_cpus": max(
+            0.25, float(getattr(settings, "SCIENTIFIC_VALIDATION_MAX_CPUS", 8.0) or 8.0)
+        ),
+        "max_pids_limit": max(
+            32,
+            int(
+                getattr(settings, "SCIENTIFIC_VALIDATION_MAX_PIDS_LIMIT", 1024) or 1024
+            ),
+        ),
+        "max_budget_per_run": max(
+            1.0,
+            float(
+                getattr(settings, "SCIENTIFIC_VALIDATION_MAX_BUDGET_PER_RUN", 10000.0)
+                or 10000.0
+            ),
+        ),
     }
 
 
 def normalize_validation_backoff_policy(value: Any) -> Dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     return {
-        "max_consecutive_failures": max(1, min(_safe_int(raw.get("max_consecutive_failures"), 2), 10)),
-        "cooldown_minutes": max(5, min(_safe_int(raw.get("cooldown_minutes"), 180), 10080)),
+        "max_consecutive_failures": max(
+            1, min(_safe_int(raw.get("max_consecutive_failures"), 2), 10)
+        ),
+        "cooldown_minutes": max(
+            5, min(_safe_int(raw.get("cooldown_minutes"), 180), 10080)
+        ),
     }
 
 
 def normalize_validation_policy(value: Any) -> Dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     return {
-        "confidence_threshold": max(0.0, min(_safe_float(raw.get("confidence_threshold"), 0.72), 1.0)),
-        "experiment_readiness_threshold": max(0.0, min(_safe_float(raw.get("experiment_readiness_threshold"), 0.8), 1.0)),
-        "max_auto_follow_up_launches": max(0, min(_safe_int(raw.get("max_auto_follow_up_launches"), 2), 10)),
-        "auto_create_experiment_plans": bool(raw.get("auto_create_experiment_plans", True)),
+        "confidence_threshold": max(
+            0.0, min(_safe_float(raw.get("confidence_threshold"), 0.72), 1.0)
+        ),
+        "experiment_readiness_threshold": max(
+            0.0, min(_safe_float(raw.get("experiment_readiness_threshold"), 0.8), 1.0)
+        ),
+        "max_auto_follow_up_launches": max(
+            0, min(_safe_int(raw.get("max_auto_follow_up_launches"), 2), 10)
+        ),
+        "auto_create_experiment_plans": bool(
+            raw.get("auto_create_experiment_plans", True)
+        ),
         "auto_launch_follow_up": bool(raw.get("auto_launch_follow_up", True)),
         "auto_execute_validation_runs": bool(
-            raw.get("auto_execute_validation_runs", raw.get("auto_launch_experiment_runs", False))
+            raw.get(
+                "auto_execute_validation_runs",
+                raw.get("auto_launch_experiment_runs", False),
+            )
         ),
-        "max_concurrent_validation_runs": max(1, min(_safe_int(raw.get("max_concurrent_validation_runs"), 1), 8)),
-        "max_validation_runtime_minutes": max(5, min(_safe_int(raw.get("max_validation_runtime_minutes"), 20), 240)),
+        "max_concurrent_validation_runs": max(
+            1, min(_safe_int(raw.get("max_concurrent_validation_runs"), 1), 8)
+        ),
+        "max_validation_runtime_minutes": max(
+            5, min(_safe_int(raw.get("max_validation_runtime_minutes"), 20), 240)
+        ),
         "max_validation_budget_per_run": round(
-            max(1.0, min(_safe_float(raw.get("max_validation_budget_per_run"), 25.0), 10000.0)),
+            max(
+                1.0,
+                min(
+                    _safe_float(raw.get("max_validation_budget_per_run"), 25.0), 10000.0
+                ),
+            ),
             2,
         ),
-        "validation_backoff_policy": normalize_validation_backoff_policy(raw.get("validation_backoff_policy")),
+        "validation_backoff_policy": normalize_validation_backoff_policy(
+            raw.get("validation_backoff_policy")
+        ),
     }
 
 
 def normalize_portfolio_automation_policy(value: Any) -> Dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
     normalized = normalize_validation_policy(raw)
-    normalized["duplicate_window_items"] = max(1, min(_safe_int(raw.get("duplicate_window_items"), 60), 500))
-    normalized["auto_launch_experiment_runs"] = bool(
-        raw.get("auto_launch_experiment_runs", normalized.get("auto_execute_validation_runs", False))
+    normalized["duplicate_window_items"] = max(
+        1, min(_safe_int(raw.get("duplicate_window_items"), 60), 500)
     )
-    normalized["auto_execute_validation_runs"] = normalized["auto_launch_experiment_runs"]
-    follow_up_review_mode = _clean_string(raw.get("follow_up_review_mode")).lower().replace("-", "_").replace(" ", "_")
-    if follow_up_review_mode not in {"auto_launch_safe", "queue_for_approval", "manual_only"}:
+    normalized["auto_launch_experiment_runs"] = bool(
+        raw.get(
+            "auto_launch_experiment_runs",
+            normalized.get("auto_execute_validation_runs", False),
+        )
+    )
+    normalized["auto_execute_validation_runs"] = normalized[
+        "auto_launch_experiment_runs"
+    ]
+    follow_up_review_mode = (
+        _clean_string(raw.get("follow_up_review_mode"))
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
+    if follow_up_review_mode not in {
+        "auto_launch_safe",
+        "queue_for_approval",
+        "manual_only",
+    }:
         follow_up_review_mode = "queue_for_approval"
     normalized["follow_up_review_mode"] = follow_up_review_mode
     return normalized
 
 
-def normalize_portfolio_automation_profile(value: Any, *, default: str = "balanced") -> str:
+def normalize_portfolio_automation_profile(
+    value: Any, *, default: str = "balanced"
+) -> str:
     text = _clean_string(value).lower()
     if text in {"max_autonomy", "max-autonomy", "max"}:
         return "max_autonomy"
@@ -397,27 +512,47 @@ def resolve_portfolio_automation_policy(
     )
 
 
-def _normalize_scientific_sandbox_profile_payload(value: Dict[str, Any]) -> Dict[str, Any]:
+def _normalize_scientific_sandbox_profile_payload(
+    value: Dict[str, Any]
+) -> Dict[str, Any]:
     raw = value if isinstance(value, dict) else {}
-    resource_caps = raw.get("resource_caps") if isinstance(raw.get("resource_caps"), dict) else {}
+    resource_caps = (
+        raw.get("resource_caps") if isinstance(raw.get("resource_caps"), dict) else {}
+    )
     return {
         "id": _clean_string(raw.get("id")),
         "name": _clean_string(raw.get("name")),
         "description": _clean_string(raw.get("description")) or None,
-        "track_type": _clean_string(raw.get("track_type") or "generic").lower() or "generic",
+        "track_type": _clean_string(raw.get("track_type") or "generic").lower()
+        or "generic",
         "backend": _clean_string(raw.get("backend") or "docker").lower() or "docker",
         "docker_image": _clean_string(raw.get("docker_image")) or None,
-        "timeout_seconds": max(30, min(_safe_int(raw.get("timeout_seconds"), 900), 7200)),
+        "timeout_seconds": max(
+            30, min(_safe_int(raw.get("timeout_seconds"), 900), 7200)
+        ),
         "resource_caps": {
-            "memory_mb": max(128, min(_safe_int(resource_caps.get("memory_mb"), 2048), 65536)),
+            "memory_mb": max(
+                128, min(_safe_int(resource_caps.get("memory_mb"), 2048), 65536)
+            ),
             "cpus": max(0.25, min(_safe_float(resource_caps.get("cpus"), 1.0), 64.0)),
-            "pids_limit": max(32, min(_safe_int(resource_caps.get("pids_limit"), 128), 8192)),
+            "pids_limit": max(
+                32, min(_safe_int(resource_caps.get("pids_limit"), 128), 8192)
+            ),
         },
-        "allowed_benchmark_families": _clean_string_list(raw.get("allowed_benchmark_families"), limit=16),
-        "allowed_perf_collectors": _clean_string_list(raw.get("allowed_perf_collectors"), limit=16),
-        "required_capabilities": _clean_string_list(raw.get("required_capabilities"), limit=16),
+        "allowed_benchmark_families": _clean_string_list(
+            raw.get("allowed_benchmark_families"), limit=16
+        ),
+        "allowed_perf_collectors": _clean_string_list(
+            raw.get("allowed_perf_collectors"), limit=16
+        ),
+        "required_capabilities": _clean_string_list(
+            raw.get("required_capabilities"), limit=16
+        ),
         "toolchains": _clean_string_list(raw.get("toolchains"), limit=24),
-        "budget_limit_default": round(max(1.0, min(_safe_float(raw.get("budget_limit_default"), 25.0), 10000.0)), 2),
+        "budget_limit_default": round(
+            max(1.0, min(_safe_float(raw.get("budget_limit_default"), 25.0), 10000.0)),
+            2,
+        ),
         "enabled": bool(raw.get("enabled", True)),
         "system_managed": bool(raw.get("system_managed", False)),
         "is_default": bool(raw.get("is_default", False)),
@@ -443,12 +578,16 @@ def validate_scientific_sandbox_profile_payload(
     if normalized["backend"] not in {"docker", "subprocess"}:
         raise ValueError("Unsupported backend")
     if normalized["system_managed"] and not allow_system_managed:
-        raise ValueError("System-managed profiles cannot be created or modified via this API")
+        raise ValueError(
+            "System-managed profiles cannot be created or modified via this API"
+        )
     if normalized["backend"] == "docker":
         if not normalized["docker_image"]:
             raise ValueError("Docker image is required for docker-backed profiles")
         if normalized["docker_image"] not in allowed_docker_images:
-            raise ValueError("Docker image is not in the scientific validation allowlist")
+            raise ValueError(
+                "Docker image is not in the scientific validation allowlist"
+            )
     else:
         normalized["docker_image"] = None
 
@@ -463,15 +602,27 @@ def validate_scientific_sandbox_profile_payload(
     if normalized["budget_limit_default"] > limits["max_budget_per_run"]:
         raise ValueError("Budget exceeds the scientific validation runtime ceiling")
 
-    unsupported_capabilities = sorted(set(normalized["required_capabilities"]) - allowed_capabilities)
+    unsupported_capabilities = sorted(
+        set(normalized["required_capabilities"]) - allowed_capabilities
+    )
     if unsupported_capabilities:
-        raise ValueError(f"Unsupported required capabilities: {', '.join(unsupported_capabilities)}")
-    unsupported_benchmarks = sorted(set(normalized["allowed_benchmark_families"]) - allowed_benchmark_families)
+        raise ValueError(
+            f"Unsupported required capabilities: {', '.join(unsupported_capabilities)}"
+        )
+    unsupported_benchmarks = sorted(
+        set(normalized["allowed_benchmark_families"]) - allowed_benchmark_families
+    )
     if unsupported_benchmarks:
-        raise ValueError(f"Unsupported benchmark families: {', '.join(unsupported_benchmarks)}")
-    unsupported_collectors = sorted(set(normalized["allowed_perf_collectors"]) - allowed_perf_collectors)
+        raise ValueError(
+            f"Unsupported benchmark families: {', '.join(unsupported_benchmarks)}"
+        )
+    unsupported_collectors = sorted(
+        set(normalized["allowed_perf_collectors"]) - allowed_perf_collectors
+    )
     if unsupported_collectors:
-        raise ValueError(f"Unsupported perf collectors: {', '.join(unsupported_collectors)}")
+        raise ValueError(
+            f"Unsupported perf collectors: {', '.join(unsupported_collectors)}"
+        )
 
     return normalized
 
@@ -481,7 +632,9 @@ async def ensure_builtin_scientific_sandbox_profiles(db: AsyncSession) -> None:
         existing = await db.get(ScientificSandboxProfile, profile_id)
         if existing is not None:
             continue
-        normalized = validate_scientific_sandbox_profile_payload(definition, allow_system_managed=True)
+        normalized = validate_scientific_sandbox_profile_payload(
+            definition, allow_system_managed=True
+        )
         db.add(ScientificSandboxProfile(**normalized))
     await db.flush()
 
@@ -495,7 +648,10 @@ async def list_scientific_sandbox_profiles(
     stmt = select(ScientificSandboxProfile)
     if not include_disabled:
         stmt = stmt.where(ScientificSandboxProfile.enabled.is_(True))
-    stmt = stmt.order_by(ScientificSandboxProfile.system_managed.desc(), ScientificSandboxProfile.name.asc())
+    stmt = stmt.order_by(
+        ScientificSandboxProfile.system_managed.desc(),
+        ScientificSandboxProfile.name.asc(),
+    )
     rows = list((await db.execute(stmt)).scalars().all())
     return [row.to_dict() for row in rows]
 
@@ -524,7 +680,10 @@ async def get_scientific_sandbox_profile(
             ScientificSandboxProfile.track_type == normalized_track,
             ScientificSandboxProfile.is_default.is_(True),
         )
-        .order_by(ScientificSandboxProfile.system_managed.desc(), ScientificSandboxProfile.name.asc())
+        .order_by(
+            ScientificSandboxProfile.system_managed.desc(),
+            ScientificSandboxProfile.name.asc(),
+        )
     )
     if not include_disabled:
         stmt = stmt.where(ScientificSandboxProfile.enabled.is_(True))
@@ -548,7 +707,9 @@ def _normalize_command_for_match(command: str) -> str:
     return text.lower()
 
 
-def _filter_commands_by_prefixes(commands: List[str], allowed_prefixes: List[str], *, limit: int) -> List[str]:
+def _filter_commands_by_prefixes(
+    commands: List[str], allowed_prefixes: List[str], *, limit: int
+) -> List[str]:
     out: List[str] = []
     seen: set[str] = set()
     for command in commands:
@@ -558,7 +719,10 @@ def _filter_commands_by_prefixes(commands: List[str], allowed_prefixes: List[str
         normalized = _normalize_command_for_match(text)
         if not normalized:
             continue
-        if not any(normalized == prefix or normalized.startswith(f"{prefix} ") for prefix in allowed_prefixes):
+        if not any(
+            normalized == prefix or normalized.startswith(f"{prefix} ")
+            for prefix in allowed_prefixes
+        ):
             continue
         seen.add(text)
         out.append(text)
@@ -576,7 +740,9 @@ def evaluate_scientific_validation_capabilities(
     required = _clean_string_list(recipe.get("required_capabilities"), limit=16)
     satisfied: List[str] = []
     missing: List[str] = []
-    profile_caps = set(_clean_string_list(sandbox_profile.get("required_capabilities"), limit=16))
+    profile_caps = set(
+        _clean_string_list(sandbox_profile.get("required_capabilities"), limit=16)
+    )
     toolchains = set(_clean_string_list(sandbox_profile.get("toolchains"), limit=24))
     backend = _clean_string(sandbox_profile.get("backend")).lower() or "docker"
 
@@ -588,7 +754,19 @@ def evaluate_scientific_validation_capabilities(
                 missing.append(capability)
             continue
         if capability == "perf_counters":
-            if capability in profile_caps and backend == "docker" and ("perf" in toolchains or "perf_stat" in set(_clean_string_list(sandbox_profile.get("allowed_perf_collectors"), limit=16))):
+            if (
+                capability in profile_caps
+                and backend == "docker"
+                and (
+                    "perf" in toolchains
+                    or "perf_stat"
+                    in set(
+                        _clean_string_list(
+                            sandbox_profile.get("allowed_perf_collectors"), limit=16
+                        )
+                    )
+                )
+            ):
                 satisfied.append(capability)
             else:
                 missing.append(capability)
@@ -623,20 +801,34 @@ def build_scientific_validation_recipe(
     )
     benchmarks = _clean_string_list(benchmark_queries, limit=8)
     evidence = _clean_string_list(supporting_evidence, limit=8)
-    sources = [dict(item) for item in (supporting_sources or []) if isinstance(item, dict)][:8]
+    sources = [
+        dict(item) for item in (supporting_sources or []) if isinstance(item, dict)
+    ][:8]
 
     compiled_commands = _filter_commands_by_prefixes(
-        [_clean_string(item) for item in (verification_commands or []) if _clean_string(item)],
+        [
+            _clean_string(item)
+            for item in (verification_commands or [])
+            if _clean_string(item)
+        ],
         definition.get("verification_prefixes", []),
         limit=4,
     )
     compiled_bootstrap_commands = _filter_commands_by_prefixes(
-        [_clean_string(item) for item in (bootstrap_commands or []) if _clean_string(item)],
+        [
+            _clean_string(item)
+            for item in (bootstrap_commands or [])
+            if _clean_string(item)
+        ],
         definition.get("bootstrap_prefixes", []),
         limit=4,
     )
     compiled_fallback_commands = _filter_commands_by_prefixes(
-        [_clean_string(item) for item in (fallback_commands or []) if _clean_string(item)],
+        [
+            _clean_string(item)
+            for item in (fallback_commands or [])
+            if _clean_string(item)
+        ],
         definition.get("fallback_prefixes", []),
         limit=4,
     )
@@ -707,54 +899,98 @@ def build_scientific_validation_run_summary(run: ExperimentRun) -> Dict[str, Any
         "name": run.name,
         "status": run.status,
         "progress": int(run.progress or 0),
-        "validation_kind": _clean_string(scientific_validation.get("validation_kind")) or None,
-        "sandbox_profile_id": _clean_string(scientific_validation.get("sandbox_profile_id")) or None,
+        "validation_kind": _clean_string(scientific_validation.get("validation_kind"))
+        or None,
+        "sandbox_profile_id": _clean_string(
+            scientific_validation.get("sandbox_profile_id")
+        )
+        or None,
         "sandbox_profile_name": _clean_string(profile_snapshot.get("name")) or None,
-        "recipe_family": _clean_string(scientific_validation.get("recipe_family")) or None,
+        "recipe_family": _clean_string(scientific_validation.get("recipe_family"))
+        or None,
         "recipe_id": _clean_string(scientific_validation.get("recipe_id")) or None,
-        "benchmark_family": _clean_string(scientific_validation.get("benchmark_family") or execution_handoff.get("benchmark_family")) or None,
-        "benchmark_suite_id": _clean_string(scientific_validation.get("benchmark_suite_id") or execution_handoff.get("benchmark_suite_id")) or None,
+        "benchmark_family": _clean_string(
+            scientific_validation.get("benchmark_family")
+            or execution_handoff.get("benchmark_family")
+        )
+        or None,
+        "benchmark_suite_id": _clean_string(
+            scientific_validation.get("benchmark_suite_id")
+            or execution_handoff.get("benchmark_suite_id")
+        )
+        or None,
         "benchmark_case_ids": _clean_string_list(
             scientific_validation.get("benchmark_case_ids")
             if isinstance(scientific_validation.get("benchmark_case_ids"), list)
             else execution_handoff.get("benchmark_case_ids")
         ),
         "blocked_reason_code": _clean_string(
-            scientific_validation.get("blocked_reason_code") or scientific_validation.get("blocked_reason")
-        ) or None,
-        "hypothesis_id": _clean_string(scientific_validation.get("hypothesis_id")) or None,
+            scientific_validation.get("blocked_reason_code")
+            or scientific_validation.get("blocked_reason")
+        )
+        or None,
+        "hypothesis_id": _clean_string(scientific_validation.get("hypothesis_id"))
+        or None,
         "track_type": _clean_string(scientific_validation.get("track_type")) or None,
-        "domain_research_profile_id": _clean_string(scientific_validation.get("domain_research_profile_id")) or None,
-        "research_portfolio_id": _clean_string(scientific_validation.get("research_portfolio_id")) or None,
+        "domain_research_profile_id": _clean_string(
+            scientific_validation.get("domain_research_profile_id")
+        )
+        or None,
+        "research_portfolio_id": _clean_string(
+            scientific_validation.get("research_portfolio_id")
+        )
+        or None,
         "parent_run_id": run.parent_run_id,
         "latest_child_run_id": run.latest_child_run_id,
         "retry_count": int(run.retry_count or 0),
-        "latest_operator_action": _clean_string(latest_operator_action.get("action")) or None,
-        "latest_operator_outcome_status": _clean_string(latest_operator_action.get("outcome_status")) or None,
+        "latest_operator_action": _clean_string(latest_operator_action.get("action"))
+        or None,
+        "latest_operator_outcome_status": _clean_string(
+            latest_operator_action.get("outcome_status")
+        )
+        or None,
         "created_at": run.created_at,
         "started_at": run.started_at,
         "completed_at": run.completed_at,
     }
 
 
-def _compiler_source_run_ids_for_run(run: ExperimentRun) -> tuple[list[str], Optional[str], Optional[str]]:
+def _compiler_source_run_ids_for_run(
+    run: ExperimentRun,
+) -> tuple[list[str], Optional[str], Optional[str]]:
     config = run.config if isinstance(run.config, dict) else {}
-    scientific_validation = config.get("scientific_validation") if isinstance(config.get("scientific_validation"), dict) else {}
-    execution_handoff = config.get("execution_handoff") if isinstance(config.get("execution_handoff"), dict) else {}
+    scientific_validation = (
+        config.get("scientific_validation")
+        if isinstance(config.get("scientific_validation"), dict)
+        else {}
+    )
+    execution_handoff = (
+        config.get("execution_handoff")
+        if isinstance(config.get("execution_handoff"), dict)
+        else {}
+    )
     source_run_ids = _clean_string_list(
         scientific_validation.get("source_run_ids")
         if isinstance(scientific_validation.get("source_run_ids"), list)
         else execution_handoff.get("source_run_ids")
     )
-    primary_run_id = _clean_string(
-        scientific_validation.get("primary_run_id") or execution_handoff.get("primary_run_id") or run.id
-    ) or None
-    comparison_run_id = _clean_string(
-        scientific_validation.get("comparison_run_id")
-        or execution_handoff.get("comparison_run_id")
-        or run.parent_run_id
-        or run.latest_child_run_id
-    ) or None
+    primary_run_id = (
+        _clean_string(
+            scientific_validation.get("primary_run_id")
+            or execution_handoff.get("primary_run_id")
+            or run.id
+        )
+        or None
+    )
+    comparison_run_id = (
+        _clean_string(
+            scientific_validation.get("comparison_run_id")
+            or execution_handoff.get("comparison_run_id")
+            or run.parent_run_id
+            or run.latest_child_run_id
+        )
+        or None
+    )
     deduped: list[str] = []
     for value in [*(source_run_ids or []), primary_run_id, comparison_run_id]:
         text = _clean_string(value)
@@ -790,7 +1026,9 @@ async def _attach_compiler_artifact_summaries(
                 .order_by(ResearchNote.updated_at.desc())
                 .limit(400)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     jobs = list(
         (
@@ -809,11 +1047,18 @@ async def _attach_compiler_artifact_summaries(
                 .order_by(SynthesisJob.created_at.desc())
                 .limit(400)
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
 
     note_payloads: list[tuple[ResearchNote, dict[str, Any]]] = [
-        (note, note.structured_payload if isinstance(note.structured_payload, dict) else {})
+        (
+            note,
+            note.structured_payload
+            if isinstance(note.structured_payload, dict)
+            else {},
+        )
         for note in notes
     ]
 
@@ -821,7 +1066,11 @@ async def _attach_compiler_artifact_summaries(
         track_type = _clean_string(summary.get("track_type")).lower()
         if track_type != "compiler":
             continue
-        source_run_ids, primary_run_id, comparison_run_id = _compiler_source_run_ids_for_run(run)
+        (
+            source_run_ids,
+            primary_run_id,
+            comparison_run_id,
+        ) = _compiler_source_run_ids_for_run(run)
         benchmark_family = _clean_string(summary.get("benchmark_family"))
         benchmark_suite_id = _clean_string(summary.get("benchmark_suite_id"))
 
@@ -834,7 +1083,9 @@ async def _attach_compiler_artifact_summaries(
         for note, payload in note_payloads:
             artifact_type = _clean_string(payload.get("artifact_type"))
             if artifact_type == "compiler_regression_explanation":
-                payload_source_run_ids = _clean_string_list(payload.get("source_run_ids"))
+                payload_source_run_ids = _clean_string_list(
+                    payload.get("source_run_ids")
+                )
                 if set(source_run_ids).intersection(set(payload_source_run_ids or [])):
                     if explanation_note is None:
                         explanation_note = note
@@ -842,16 +1093,27 @@ async def _attach_compiler_artifact_summaries(
         for note, payload in note_payloads:
             artifact_type = _clean_string(payload.get("artifact_type"))
             if artifact_type == "compiler_patch_proposal":
-                source_explanation_note_id = _clean_string(payload.get("source_explanation_note_id"))
-                if explanation_note_ids and source_explanation_note_id in explanation_note_ids:
+                source_explanation_note_id = _clean_string(
+                    payload.get("source_explanation_note_id")
+                )
+                if (
+                    explanation_note_ids
+                    and source_explanation_note_id in explanation_note_ids
+                ):
                     if proposal_note is None:
                         proposal_note = note
                     proposal_note_ids.append(str(note.id))
         for note, payload in note_payloads:
             artifact_type = _clean_string(payload.get("artifact_type"))
             if artifact_type == "compiler_patch_draft":
-                source_proposal_note_id = _clean_string(payload.get("source_proposal_note_id"))
-                if proposal_note_ids and source_proposal_note_id in proposal_note_ids and patch_draft_note is None:
+                source_proposal_note_id = _clean_string(
+                    payload.get("source_proposal_note_id")
+                )
+                if (
+                    proposal_note_ids
+                    and source_proposal_note_id in proposal_note_ids
+                    and patch_draft_note is None
+                ):
                     patch_draft_note = note
 
         explanation_job: Optional[SynthesisJob] = None
@@ -859,22 +1121,36 @@ async def _attach_compiler_artifact_summaries(
         patch_draft_job: Optional[SynthesisJob] = None
         for job in jobs:
             options = job.options if isinstance(job.options, dict) else {}
-            metadata = job.result_metadata if isinstance(job.result_metadata, dict) else {}
+            metadata = (
+                job.result_metadata if isinstance(job.result_metadata, dict) else {}
+            )
             if str(job.job_type or "").strip() == "compiler_regression_explanation":
-                job_run_ids = _clean_string_list(options.get("experiment_run_ids")) or _clean_string_list(metadata.get("source_run_ids"))
+                job_run_ids = _clean_string_list(
+                    options.get("experiment_run_ids")
+                ) or _clean_string_list(metadata.get("source_run_ids"))
                 if set(source_run_ids).intersection(set(job_run_ids or [])):
                     explanation_job = explanation_job or job
             elif str(job.job_type or "").strip() == "compiler_patch_proposal":
-                if explanation_note_ids and _clean_string(job.research_note_id) in explanation_note_ids:
+                if (
+                    explanation_note_ids
+                    and _clean_string(job.research_note_id) in explanation_note_ids
+                ):
                     proposal_job = proposal_job or job
             elif str(job.job_type or "").strip() == "compiler_patch_draft":
-                if proposal_note_ids and _clean_string(job.research_note_id) in proposal_note_ids:
+                if (
+                    proposal_note_ids
+                    and _clean_string(job.research_note_id) in proposal_note_ids
+                ):
                     patch_draft_job = patch_draft_job or job
 
         available_actions: list[str] = []
         if (
             not explanation_note
-            and (explanation_job is None or str(explanation_job.status or "").strip().lower() not in {"pending", "analyzing", "synthesizing", "generating"})
+            and (
+                explanation_job is None
+                or str(explanation_job.status or "").strip().lower()
+                not in {"pending", "analyzing", "synthesizing", "generating"}
+            )
             and len(source_run_ids) == 2
             and primary_run_id
             and comparison_run_id
@@ -885,34 +1161,83 @@ async def _attach_compiler_artifact_summaries(
         if (
             explanation_note
             and not proposal_note
-            and (proposal_job is None or str(proposal_job.status or "").strip().lower() not in {"pending", "analyzing", "synthesizing", "generating"})
+            and (
+                proposal_job is None
+                or str(proposal_job.status or "").strip().lower()
+                not in {"pending", "analyzing", "synthesizing", "generating"}
+            )
         ):
             available_actions.append("create_patch_proposal")
         if (
             proposal_note
             and not patch_draft_note
-            and (patch_draft_job is None or str(patch_draft_job.status or "").strip().lower() not in {"pending", "analyzing", "synthesizing", "generating"})
+            and (
+                patch_draft_job is None
+                or str(patch_draft_job.status or "").strip().lower()
+                not in {"pending", "analyzing", "synthesizing", "generating"}
+            )
         ):
             available_actions.append("create_patch_draft")
 
-        patch_payload = patch_draft_note.structured_payload if patch_draft_note and isinstance(patch_draft_note.structured_payload, dict) else {}
-        proposal_payload = proposal_note.structured_payload if proposal_note and isinstance(proposal_note.structured_payload, dict) else {}
+        patch_payload = (
+            patch_draft_note.structured_payload
+            if patch_draft_note
+            and isinstance(patch_draft_note.structured_payload, dict)
+            else {}
+        )
+        proposal_payload = (
+            proposal_note.structured_payload
+            if proposal_note and isinstance(proposal_note.structured_payload, dict)
+            else {}
+        )
         summary["compiler_artifact_summary"] = {
             "source_run_ids": source_run_ids,
             "primary_run_id": primary_run_id,
             "comparison_run_id": comparison_run_id,
-            "explanation_note_id": str(explanation_note.id) if explanation_note else None,
-            "explanation_synthesis_job_id": str(explanation_job.id) if explanation_job else None,
-            "explanation_synthesis_status": (_clean_string(explanation_job.status) or None) if explanation_job else None,
+            "explanation_note_id": str(explanation_note.id)
+            if explanation_note
+            else None,
+            "explanation_synthesis_job_id": str(explanation_job.id)
+            if explanation_job
+            else None,
+            "explanation_synthesis_status": (
+                _clean_string(explanation_job.status) or None
+            )
+            if explanation_job
+            else None,
             "proposal_note_id": str(proposal_note.id) if proposal_note else None,
             "proposal_synthesis_job_id": str(proposal_job.id) if proposal_job else None,
-            "proposal_synthesis_status": (_clean_string(proposal_job.status) or None) if proposal_job else None,
-            "patch_draft_note_id": str(patch_draft_note.id) if patch_draft_note else None,
-            "patch_draft_synthesis_job_id": str(patch_draft_job.id) if patch_draft_job else None,
-            "patch_draft_synthesis_status": (_clean_string(patch_draft_job.status) or None) if patch_draft_job else None,
-            "source_explanation_note_id": _clean_string(proposal_payload.get("source_explanation_note_id")) or None,
-            "source_proposal_note_id": _clean_string(patch_payload.get("source_proposal_note_id")) or None,
-            "source_id": _clean_string(patch_payload.get("source_id") or (patch_draft_job.options if patch_draft_job and isinstance(patch_draft_job.options, dict) else {}).get("source_id")) or None,
+            "proposal_synthesis_status": (_clean_string(proposal_job.status) or None)
+            if proposal_job
+            else None,
+            "patch_draft_note_id": str(patch_draft_note.id)
+            if patch_draft_note
+            else None,
+            "patch_draft_synthesis_job_id": str(patch_draft_job.id)
+            if patch_draft_job
+            else None,
+            "patch_draft_synthesis_status": (
+                _clean_string(patch_draft_job.status) or None
+            )
+            if patch_draft_job
+            else None,
+            "source_explanation_note_id": _clean_string(
+                proposal_payload.get("source_explanation_note_id")
+            )
+            or None,
+            "source_proposal_note_id": _clean_string(
+                patch_payload.get("source_proposal_note_id")
+            )
+            or None,
+            "source_id": _clean_string(
+                patch_payload.get("source_id")
+                or (
+                    patch_draft_job.options
+                    if patch_draft_job and isinstance(patch_draft_job.options, dict)
+                    else {}
+                ).get("source_id")
+            )
+            or None,
             "source_name": _clean_string(patch_payload.get("source_name")) or None,
             "available_actions": available_actions,
         }
@@ -955,7 +1280,9 @@ async def list_scientific_validation_run_summaries(
                     ExperimentRun.id.in_(query_ids),
                 )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     runs_by_id = {str(row.id): row for row in rows}
     summaries: List[Dict[str, Any]] = []
@@ -966,4 +1293,6 @@ async def list_scientific_validation_run_summaries(
             continue
         summaries.append(build_scientific_validation_run_summary(run))
         ordered_runs.append(run)
-    return await _attach_compiler_artifact_summaries(db, user_id=user_id, runs=ordered_runs, summaries=summaries)
+    return await _attach_compiler_artifact_summaries(
+        db, user_id=user_id, runs=ordered_runs, summaries=summaries
+    )

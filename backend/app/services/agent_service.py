@@ -9,25 +9,34 @@ Multi-Agent Architecture:
 - Each agent has capabilities and tool whitelists
 """
 
-import json
-import time
-import re
 import asyncio
 import hashlib
+import json
+import re
+import time
 from datetime import datetime
-from typing import Optional, List, Dict, Any, Tuple
+from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, desc, func, and_, or_
-from sqlalchemy.orm import selectinload
-from sqlalchemy.dialects.postgresql import ARRAY
+from fastapi.encoders import jsonable_encoder
 from loguru import logger
+from sqlalchemy import desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
-from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.document_service import DocumentService
-from app.services.vector_store import vector_store_service, VectorStore
-from app.services.agent_tools import AGENT_TOOLS, get_tools_description, validate_tool_params
+from app.core.config import settings
+from app.models.agent_definition import AgentConversationContext, AgentDefinition
+from app.models.document import Document, DocumentSource
+from app.models.memory import UserPreferences
+from app.models.tool_audit import ToolExecutionAudit
+from app.models.user import User as DbUser
+from app.schemas.agent import (
+    AgentChatResponse,
+    AgentMessage,
+    AgentRoutingInfo,
+    AgentToolCall,
+)
+from app.services.agent_memory_integration import AgentMemoryIntegration
 from app.services.agent_router import AgentRouter
 from app.services.agent_tool_dispatch import (
     AgentToolExecutionContext,
@@ -39,25 +48,16 @@ from app.services.agent_tool_dispatch import (
     build_agent_service_research_provider,
     build_agent_service_workflow_provider,
 )
-from app.services.agent_memory_integration import AgentMemoryIntegration
-from app.services.memory_service import MemoryService
-from app.services.arxiv_search_service import ArxivSearchService
-from app.schemas.agent import (
-    AgentMessage,
-    AgentToolCall,
-    AgentChatRequest,
-    AgentChatResponse,
-    DocumentSearchResult,
-    DocumentDetails,
-    AgentRoutingInfo,
+from app.services.agent_tools import (
+    AGENT_TOOLS,
+    get_tools_description,
+    validate_tool_params,
 )
-from app.models.document import Document, DocumentSource
-from app.models.user import User as DbUser
-from app.models.agent_definition import AgentDefinition, AgentConversationContext
-from app.models.memory import UserPreferences, AgentConversation
-from app.models.tool_audit import ToolExecutionAudit
-from app.core.config import settings
-from fastapi.encoders import jsonable_encoder
+from app.services.arxiv_search_service import ArxivSearchService
+from app.services.document_service import DocumentService
+from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.memory_service import MemoryService
+from app.services.vector_store import VectorStore, vector_store_service
 
 
 class AgentService:
@@ -114,9 +114,7 @@ class AgentService:
             self._agents_loaded = True
 
     async def _get_user_preferences(
-        self,
-        user_id: UUID,
-        db: AsyncSession
+        self, user_id: UUID, db: AsyncSession
     ) -> UserPreferences:
         """Get or create user preferences."""
         result = await db.execute(
@@ -170,7 +168,7 @@ class AgentService:
 
         origin: Dict[str, Any] = {
             "source": "agent_defaults",
-            "agent_id": str(getattr(agent, 'id', '') or ''),
+            "agent_id": str(getattr(agent, "id", "") or ""),
         }
 
         # Optional A/B experiment routing per agent.
@@ -186,7 +184,9 @@ class AgentService:
         exp = rd.get("experiment") if isinstance(rd.get("experiment"), dict) else None
         if exp and bool(exp.get("enabled")):
             exp_id = str(exp.get("id") or "").strip()
-            variants = exp.get("variants") if isinstance(exp.get("variants"), list) else []
+            variants = (
+                exp.get("variants") if isinstance(exp.get("variants"), list) else []
+            )
             salt = str(exp.get("salt") or "").strip()
             cleaned = []
             total_w = 0
@@ -201,7 +201,9 @@ class AgentService:
                 except Exception:
                     w = 0
                 w = max(0, min(w, 1000000))
-                routing_v = v.get("routing") if isinstance(v.get("routing"), dict) else {}
+                routing_v = (
+                    v.get("routing") if isinstance(v.get("routing"), dict) else {}
+                )
                 if w <= 0:
                     continue
                 cleaned.append({"id": vid, "weight": w, "routing": routing_v})
@@ -211,7 +213,9 @@ class AgentService:
                 # Deterministic assignment.
                 uid = str(user_id or "")
                 cid = str(conversation_id or "")
-                key = f"{getattr(agent, 'id', '')}:{exp_id}:{uid}:{cid}:{salt}".encode('utf-8')
+                key = f"{getattr(agent, 'id', '')}:{exp_id}:{uid}:{cid}:{salt}".encode(
+                    "utf-8"
+                )
                 h = hashlib.sha256(key).hexdigest()
                 bucket = int(h[:8], 16) / float(0xFFFFFFFF)
                 target = bucket * float(total_w)
@@ -225,28 +229,46 @@ class AgentService:
                         break
 
                 # Apply variant routing as overrides.
-                rv = chosen.get("routing") if isinstance(chosen.get("routing"), dict) else {}
+                rv = (
+                    chosen.get("routing")
+                    if isinstance(chosen.get("routing"), dict)
+                    else {}
+                )
                 if rv:
                     for kk, vv in rv.items():
                         if kk in {"tier", "llm_tier"}:
                             t = str(vv or "").strip().lower() or None
                             out["tier"] = t
-                        elif kk in {"fallback_tiers", "llm_fallback_tiers"} and isinstance(vv, list):
-                            out["fallback_tiers"] = [str(x).strip().lower() for x in vv if str(x).strip()]
-                        elif kk in {"timeout_seconds", "llm_timeout_seconds", "max_tokens_cap", "llm_max_tokens_cap", "cooldown_seconds", "llm_unhealthy_cooldown_seconds"}:
+                        elif kk in {
+                            "fallback_tiers",
+                            "llm_fallback_tiers",
+                        } and isinstance(vv, list):
+                            out["fallback_tiers"] = [
+                                str(x).strip().lower() for x in vv if str(x).strip()
+                            ]
+                        elif kk in {
+                            "timeout_seconds",
+                            "llm_timeout_seconds",
+                            "max_tokens_cap",
+                            "llm_max_tokens_cap",
+                            "cooldown_seconds",
+                            "llm_unhealthy_cooldown_seconds",
+                        }:
                             try:
                                 out_key = kk
-                                if kk.startswith('llm_'):
-                                    out_key = kk.replace('llm_', '').replace('unhealthy_', '')
-                                    if out_key == 'cooldown_seconds':
-                                        out_key = 'cooldown_seconds'
+                                if kk.startswith("llm_"):
+                                    out_key = kk.replace("llm_", "").replace(
+                                        "unhealthy_", ""
+                                    )
+                                    if out_key == "cooldown_seconds":
+                                        out_key = "cooldown_seconds"
                                 out[out_key] = int(vv)
                             except Exception:
                                 pass
 
                 origin = {
                     "source": "agent_experiment",
-                    "agent_id": str(getattr(agent, 'id', '') or ''),
+                    "agent_id": str(getattr(agent, "id", "") or ""),
                     "experiment_id": exp_id,
                     "experiment_variant_id": str(chosen.get("id") or ""),
                 }
@@ -254,17 +276,19 @@ class AgentService:
         out["_origin"] = origin
 
         # Return None if empty
-        if out.get("tier") is None and not out.get("fallback_tiers") and not any(
-            k in out for k in ("timeout_seconds", "max_tokens_cap", "cooldown_seconds")
+        if (
+            out.get("tier") is None
+            and not out.get("fallback_tiers")
+            and not any(
+                k in out
+                for k in ("timeout_seconds", "max_tokens_cap", "cooldown_seconds")
+            )
         ):
             return None
         return out
 
-
     def _filter_tools_for_agent(
-        self,
-        agent: AgentDefinition,
-        all_tools: List[Dict[str, Any]]
+        self, agent: AgentDefinition, all_tools: List[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """Filter available tools based on agent's whitelist."""
         if agent.tool_whitelist is None:
@@ -274,10 +298,7 @@ class AgentService:
         allowed = set(agent.tool_whitelist or [])
         return [tool for tool in all_tools if tool.get("name") in allowed]
 
-    def _get_tools_description_for_agent(
-        self,
-        agent: AgentDefinition
-    ) -> str:
+    def _get_tools_description_for_agent(self, agent: AgentDefinition) -> str:
         """Get tools description filtered for specific agent."""
         filtered_tools = self._filter_tools_for_agent(agent, AGENT_TOOLS)
         if not filtered_tools:
@@ -293,8 +314,12 @@ class AgentService:
             if params:
                 param_strs = []
                 for pname, pinfo in params.items():
-                    required = "(required)" if pname in required_params else "(optional)"
-                    param_strs.append(f"  - {pname} {required}: {pinfo.get('description', '')}")
+                    required = (
+                        "(required)" if pname in required_params else "(optional)"
+                    )
+                    param_strs.append(
+                        f"  - {pname} {required}: {pinfo.get('description', '')}"
+                    )
                 desc += "\n" + "\n".join(param_strs)
 
             descriptions.append(desc)
@@ -340,12 +365,16 @@ class AgentService:
                     message=message,
                     conversation_id=conversation_id,
                     preferences=preferences,
-                    db=db
+                    db=db,
                 )
                 if memories:
-                    memory_context = self.memory_integration.format_memories_for_prompt(memories)
+                    memory_context = self.memory_integration.format_memories_for_prompt(
+                        memories
+                    )
                     injected_memories = memories
-                    logger.info(f"Injecting {len(memories)} memories into agent context")
+                    logger.info(
+                        f"Injecting {len(memories)} memories into agent context"
+                    )
 
                     # Record memory injections if we have a conversation
                     if conversation_id:
@@ -354,7 +383,7 @@ class AgentService:
                             memories=memories,
                             turn_number=turn_number,
                             injection_type="automatic",
-                            db=db
+                            db=db,
                         )
 
             # Step 3: Route to appropriate agent (or force a specific agent)
@@ -364,10 +393,12 @@ class AgentService:
             if agent_id:
                 selected_agent = next(
                     (a for a in self.router.get_agents().values() if a.id == agent_id),
-                    None
+                    None,
                 )
                 if not selected_agent:
-                    result = await db.execute(select(AgentDefinition).where(AgentDefinition.id == agent_id))
+                    result = await db.execute(
+                        select(AgentDefinition).where(AgentDefinition.id == agent_id)
+                    )
                     selected_agent = result.scalar_one_or_none()
                     if not selected_agent:
                         raise ValueError("Requested agent not found")
@@ -377,13 +408,15 @@ class AgentService:
             else:
                 intent_analysis = await self.router.analyze_intent(
                     message=message,
-                    history=[{"role": m.role, "content": m.content} for m in history[-5:]],
-                    use_llm=True
+                    history=[
+                        {"role": m.role, "content": m.content} for m in history[-5:]
+                    ],
+                    use_llm=True,
                 )
 
                 selected_agent, routing_reason = await self.router.select_agent(
                     intent_analysis=intent_analysis,
-                    available_agents=self.router.get_agents()
+                    available_agents=self.router.get_agents(),
                 )
 
             logger.info(
@@ -396,7 +429,7 @@ class AgentService:
                     conversation_id=conversation_id,
                     agent_definition_id=selected_agent.id,
                     turn_number=turn_number,
-                    routing_reason=routing_reason
+                    routing_reason=routing_reason,
                 )
                 db.add(context)
                 await db.commit()
@@ -407,7 +440,7 @@ class AgentService:
                 history=history,
                 agent=selected_agent,
                 memory_context=memory_context,
-                user_settings=user_settings
+                user_settings=user_settings,
             )
 
             # Step 5: Execute - Run each tool
@@ -436,7 +469,10 @@ class AgentService:
                 tool_results.append(result)
 
                 # Check if any tool requires user action
-                if result.tool_name == "request_file_upload" and result.status == "completed":
+                if (
+                    result.tool_name == "request_file_upload"
+                    and result.status == "completed"
+                ):
                     requires_user_action = True
                     action_type = "upload_file"
 
@@ -458,11 +494,14 @@ class AgentService:
                 handoff = await self.router.should_handoff(
                     current_agent=selected_agent,
                     message=message,
-                    tool_results=[{
-                        "tool_name": r.tool_name,
-                        "status": r.status,
-                        "output": r.tool_output
-                    } for r in tool_results]
+                    tool_results=[
+                        {
+                            "tool_name": r.tool_name,
+                            "status": r.status,
+                            "output": r.tool_output,
+                        }
+                        for r in tool_results
+                    ],
                 )
                 if handoff:
                     new_agent, handoff_reason = handoff
@@ -472,7 +511,7 @@ class AgentService:
                     handoff_info = {
                         "from_agent": selected_agent.name,
                         "to_agent": new_agent.name,
-                        "reason": handoff_reason
+                        "reason": handoff_reason,
                     }
 
             # Build routing info for response
@@ -481,25 +520,26 @@ class AgentService:
                 agent_name=selected_agent.name,
                 agent_display_name=selected_agent.display_name,
                 routing_reason=routing_reason,
-                handoff_from=handoff_info.get("from_agent") if handoff_info else None
+                handoff_from=handoff_info.get("from_agent") if handoff_info else None,
             )
 
             response_message = AgentMessage(
                 role="assistant",
                 content=response_content,
                 tool_calls=tool_results if tool_results else None,
-                created_at=datetime.utcnow()
+                created_at=datetime.utcnow(),
             )
 
             # Step 8: Extract memories asynchronously (non-blocking)
             if preferences.enable_agent_memory and conversation_id:
                 # Build messages for memory extraction
                 messages_for_extraction = [
-                    {"role": m.role, "content": m.content}
-                    for m in history[-5:]
+                    {"role": m.role, "content": m.content} for m in history[-5:]
                 ]
                 messages_for_extraction.append({"role": "user", "content": message})
-                messages_for_extraction.append({"role": "assistant", "content": response_content})
+                messages_for_extraction.append(
+                    {"role": "assistant", "content": response_content}
+                )
 
                 # Fire and forget - don't block response
                 asyncio.create_task(
@@ -508,7 +548,7 @@ class AgentService:
                         conversation_id=conversation_id,
                         messages=messages_for_extraction,
                         preferences=preferences,
-                        db=db
+                        db=db,
                     )
                 )
 
@@ -518,7 +558,9 @@ class AgentService:
                 requires_user_action=requires_user_action,
                 action_type=action_type,
                 routing_info=routing_info,
-                injected_memories=[str(m.id) for m in injected_memories] if injected_memories else None
+                injected_memories=[str(m.id) for m in injected_memories]
+                if injected_memories
+                else None,
             )
 
         except Exception as e:
@@ -526,12 +568,9 @@ class AgentService:
             error_message = AgentMessage(
                 role="assistant",
                 content=f"I encountered an error while processing your request: {str(e)}. Please try again.",
-                created_at=datetime.utcnow()
+                created_at=datetime.utcnow(),
             )
-            return AgentChatResponse(
-                message=error_message,
-                requires_user_action=False
-            )
+            return AgentChatResponse(message=error_message, requires_user_action=False)
 
     async def _extract_memories_background(
         self,
@@ -539,7 +578,7 @@ class AgentService:
         conversation_id: UUID,
         messages: List[Dict[str, Any]],
         preferences: UserPreferences,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> None:
         """Extract memories from conversation in background."""
         try:
@@ -548,7 +587,7 @@ class AgentService:
                 conversation_id=conversation_id,
                 messages=messages,
                 preferences=preferences,
-                db=db
+                db=db,
             )
         except Exception as e:
             logger.error(f"Background memory extraction failed: {e}")
@@ -559,7 +598,7 @@ class AgentService:
         history: List[AgentMessage],
         agent: AgentDefinition,
         memory_context: str,
-        user_settings: Optional[UserLLMSettings] = None
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> List[AgentToolCall]:
         """
         Use LLM to determine which tools to call based on user message.
@@ -572,7 +611,9 @@ class AgentService:
         context_messages = []
         for msg in history[-5:]:
             context_messages.append(f"{msg.role.upper()}: {msg.content[:200]}")
-        context_str = "\n".join(context_messages) if context_messages else "No previous context."
+        context_str = (
+            "\n".join(context_messages) if context_messages else "No previous context."
+        )
 
         # Include memory context if available
         memory_section = ""
@@ -647,7 +688,11 @@ Your response (JSON array only):"""
                     f"Tool '{result.tool_name}' failed: {result.error}"
                 )
 
-        tool_context = "\n\n".join(tool_context_parts) if tool_context_parts else "No tools were executed."
+        tool_context = (
+            "\n\n".join(tool_context_parts)
+            if tool_context_parts
+            else "No tools were executed."
+        )
 
         # Include memory context if available
         memory_section = ""
@@ -685,7 +730,9 @@ Your response:"""
                 task_type="chat",
                 user_id=user_id,
                 db=db,
-                routing=self._routing_from_agent(agent, user_id=user_id, conversation_id=None),
+                routing=self._routing_from_agent(
+                    agent, user_id=user_id, conversation_id=None
+                ),
             )
             return response.strip()
         except Exception as e:
@@ -696,7 +743,7 @@ Your response:"""
         self,
         message: str,
         history: List[AgentMessage],
-        user_settings: Optional[UserLLMSettings] = None
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> List[AgentToolCall]:
         """Use LLM to determine which tools to call based on user message."""
 
@@ -707,7 +754,9 @@ Your response:"""
         context_messages = []
         for msg in history[-5:]:  # Last 5 messages for context
             context_messages.append(f"{msg.role.upper()}: {msg.content[:200]}")
-        context_str = "\n".join(context_messages) if context_messages else "No previous context."
+        context_str = (
+            "\n".join(context_messages) if context_messages else "No previous context."
+        )
 
         planning_prompt = f"""You are an AI assistant that helps users manage documents in a knowledge base.
 Based on the user's message, decide which tools to call to fulfill their request.
@@ -741,7 +790,7 @@ Your response (JSON array only):"""
                 temperature=0.1,  # Low temperature for consistent planning
                 max_tokens=500,
                 user_settings=user_settings,
-                task_type="chat"
+                task_type="chat",
             )
 
             # Parse the JSON response
@@ -759,7 +808,7 @@ Your response (JSON array only):"""
             response = response.strip()
 
             # Try to find JSON array in the response
-            json_match = re.search(r'\[.*\]', response, re.DOTALL)
+            json_match = re.search(r"\[.*\]", response, re.DOTALL)
             if json_match:
                 json_str = json_match.group()
                 parsed = json.loads(json_str)
@@ -776,11 +825,13 @@ Your response (JSON array only):"""
 
                         is_valid, error = validate_tool_params(tool_name, tool_input)
                         if is_valid:
-                            tool_calls.append(AgentToolCall(
-                                tool_name=tool_name,
-                                tool_input=tool_input,
-                                status="pending"
-                            ))
+                            tool_calls.append(
+                                AgentToolCall(
+                                    tool_name=tool_name,
+                                    tool_input=tool_input,
+                                    status="pending",
+                                )
+                            )
                         else:
                             logger.warning(f"Invalid tool call: {error}")
 
@@ -834,7 +885,10 @@ Your response (JSON array only):"""
                 if not decision.allowed:
                     tool_call.status = "failed"
                     tool_call.error = decision.denied_reason or "Tool denied by policy"
-                    tool_call.tool_output = {"error": "tool_denied", "message": tool_call.error}
+                    tool_call.tool_output = {
+                        "error": "tool_denied",
+                        "message": tool_call.error,
+                    }
 
                     if audit is None:
                         audit = ToolExecutionAudit(
@@ -862,7 +916,10 @@ Your response (JSON array only):"""
                 # Fail closed: if policy evaluation fails, block execution.
                 tool_call.status = "failed"
                 tool_call.error = "Tool policy evaluation failed"
-                tool_call.tool_output = {"error": "policy_error", "message": tool_call.error}
+                tool_call.tool_output = {
+                    "error": "policy_error",
+                    "message": tool_call.error,
+                }
                 if audit is None:
                     audit = ToolExecutionAudit(
                         user_id=user_id,
@@ -870,7 +927,9 @@ Your response (JSON array only):"""
                         conversation_id=conversation_id,
                         tool_name=tool_name,
                         tool_input=jsonable_encoder(tool_input),
-                        policy_decision=jsonable_encoder({"allowed": False, "error": "policy_evaluation_failed"}),
+                        policy_decision=jsonable_encoder(
+                            {"allowed": False, "error": "policy_evaluation_failed"}
+                        ),
                         status="failed",
                         error=tool_call.error,
                         approval_required=False,
@@ -881,7 +940,9 @@ Your response (JSON array only):"""
                 else:
                     audit.status = "failed"
                     audit.error = tool_call.error
-                    audit.policy_decision = jsonable_encoder({"allowed": False, "error": "policy_evaluation_failed"})
+                    audit.policy_decision = jsonable_encoder(
+                        {"allowed": False, "error": "policy_evaluation_failed"}
+                    )
                     await db.commit()
                 return tool_call
 
@@ -909,9 +970,9 @@ Your response (JSON array only):"""
                 except Exception:
                     policy_requires_approval = False
 
-                if (
-                    settings.AGENT_REQUIRE_TOOL_APPROVAL
-                    and (tool_name in set(settings.AGENT_DANGEROUS_TOOLS or []) or policy_requires_approval)
+                if settings.AGENT_REQUIRE_TOOL_APPROVAL and (
+                    tool_name in set(settings.AGENT_DANGEROUS_TOOLS or [])
+                    or policy_requires_approval
                 ):
                     audit.approval_required = True
                     audit.approval_mode = "owner_and_admin"
@@ -933,7 +994,9 @@ Your response (JSON array only):"""
                 await db.refresh(audit)
             else:
                 # Re-running an existing audit record (typically after approval)
-                audit.agent_definition_id = audit.agent_definition_id or agent_definition_id
+                audit.agent_definition_id = (
+                    audit.agent_definition_id or agent_definition_id
+                )
                 audit.conversation_id = audit.conversation_id or conversation_id
                 audit.tool_name = tool_name
                 audit.tool_input = jsonable_encoder(tool_input)
@@ -981,7 +1044,10 @@ Your response (JSON array only):"""
                     audit.error = f"Failed to validate tool whitelist for agent_definition_id={agent_definition_id}"
                     await db.commit()
                     tool_call.status = "failed"
-                    tool_call.tool_output = {"error": "tool_whitelist_check_failed", "message": audit.error}
+                    tool_call.tool_output = {
+                        "error": "tool_whitelist_check_failed",
+                        "message": audit.error,
+                    }
                     return tool_call
 
             handled, handled_result = await self.tool_registry.try_execute(
@@ -1062,7 +1128,11 @@ Your response (JSON array only):"""
             raise ValueError("topic is required")
 
         query_override = (params.get("query") or "").strip()
-        categories = [c.strip() for c in (params.get("categories") or []) if isinstance(c, str) and c.strip()]
+        categories = [
+            c.strip()
+            for c in (params.get("categories") or [])
+            if isinstance(c, str) and c.strip()
+        ]
         max_papers = max(1, min(int(params.get("max_papers") or 5), 25))
         ingest = bool(params.get("ingest", True))
         sort_by = params.get("sort_by") or "relevance"
@@ -1126,9 +1196,21 @@ Your response (JSON array only):"""
         db: AsyncSession,
     ) -> Dict[str, Any]:
         name = (params.get("name") or "ArXiv import").strip()
-        search_queries = [q.strip() for q in (params.get("search_queries") or []) if isinstance(q, str) and q.strip()]
-        paper_ids = [p.strip() for p in (params.get("paper_ids") or []) if isinstance(p, str) and p.strip()]
-        categories = [c.strip() for c in (params.get("categories") or []) if isinstance(c, str) and c.strip()]
+        search_queries = [
+            q.strip()
+            for q in (params.get("search_queries") or [])
+            if isinstance(q, str) and q.strip()
+        ]
+        paper_ids = [
+            p.strip()
+            for p in (params.get("paper_ids") or [])
+            if isinstance(p, str) and p.strip()
+        ]
+        categories = [
+            c.strip()
+            for c in (params.get("categories") or [])
+            if isinstance(c, str) and c.strip()
+        ]
         max_results = int(params.get("max_results") or 25)
         start = int(params.get("start") or 0)
         sort_by = params.get("sort_by") or "submittedDate"
@@ -1136,10 +1218,12 @@ Your response (JSON array only):"""
         auto_sync = bool(params.get("auto_sync", True))
         auto_summarize = bool(params.get("auto_summarize", True))
         auto_literature_review = bool(params.get("auto_literature_review", False))
-        topic = (params.get("topic") or None)
+        topic = params.get("topic") or None
 
         if not search_queries and not paper_ids and not categories:
-            raise ValueError("Provide at least one of: search_queries, paper_ids, categories")
+            raise ValueError(
+                "Provide at least one of: search_queries, paper_ids, categories"
+            )
 
         config = {
             "queries": search_queries,
@@ -1159,7 +1243,7 @@ Your response (JSON array only):"""
                 "paper_ids": paper_ids,
                 "categories": categories,
                 "max_results": max_results,
-            }
+            },
         }
         try:
             user_row = await db.execute(select(DbUser).where(DbUser.id == user_id))
@@ -1181,10 +1265,13 @@ Your response (JSON array only):"""
         if auto_sync:
             try:
                 from app.tasks.ingestion_tasks import ingest_from_source
+
                 task = ingest_from_source.delay(str(source.id))
                 task_id = getattr(task, "id", None)
             except Exception as exc:
-                logger.warning(f"Failed to trigger arXiv ingestion for {source.id}: {exc}")
+                logger.warning(
+                    f"Failed to trigger arXiv ingestion for {source.id}: {exc}"
+                )
 
         return {
             "status": "created",
@@ -1197,9 +1284,13 @@ Your response (JSON array only):"""
             "categories_count": len(categories),
         }
 
-    async def _tool_summarize_documents_in_source(self, params: Dict[str, Any], user_id: UUID, db: AsyncSession) -> Dict[str, Any]:
+    async def _tool_summarize_documents_in_source(
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
+    ) -> Dict[str, Any]:
         from uuid import UUID as _UUID
-        from sqlalchemy import select, desc
+
+        from sqlalchemy import desc, select
+
         from app.models.document import Document, DocumentSource
         from app.tasks.summarization_tasks import summarize_document as summarize_task
 
@@ -1241,6 +1332,7 @@ Your response (JSON array only):"""
         self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         from uuid import UUID as _UUID
+
         from app.models.document import DocumentSource
         from app.tasks.paper_enrichment_tasks import enrich_arxiv_source
 
@@ -1253,10 +1345,17 @@ Your response (JSON array only):"""
 
         # Best-effort ownership check: match requested_by / requested_by_user_id if present (admins bypass)
         cfg = src.config if isinstance(src.config, dict) else {}
-        requested_by_user_id = cfg.get("requested_by_user_id") or cfg.get("requestedByUserId")
+        requested_by_user_id = cfg.get("requested_by_user_id") or cfg.get(
+            "requestedByUserId"
+        )
         requested_by = cfg.get("requested_by") or cfg.get("requestedBy")
-        if requested_by_user_id and requested_by_user_id != str(user_id) and requested_by != str(user_id):
+        if (
+            requested_by_user_id
+            and requested_by_user_id != str(user_id)
+            and requested_by != str(user_id)
+        ):
             from app.models.user import User as DbUser
+
             u = await db.get(DbUser, user_id)
             if not (u and u.is_admin()):
                 raise ValueError("Not authorized for this source")
@@ -1264,12 +1363,19 @@ Your response (JSON array only):"""
         force = bool(params.get("force", False))
         limit = min(int(params.get("limit", 500) or 500), 5000)
         task = enrich_arxiv_source.delay(str(src.id), force, limit)
-        return {"source_id": str(src.id), "queued": True, "task_id": task.id, "force": force, "limit": limit}
+        return {
+            "source_id": str(src.id),
+            "queued": True,
+            "task_id": task.id,
+            "force": force,
+            "limit": limit,
+        }
 
     async def _tool_generate_literature_review_for_source(
         self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         from uuid import UUID as _UUID
+
         from app.models.document import DocumentSource
         from app.tasks.research_tasks import generate_literature_review
 
@@ -1294,8 +1400,10 @@ Your response (JSON array only):"""
         self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         from uuid import UUID as _UUID
-        from sqlalchemy import select, desc
-        from app.models.document import DocumentSource, Document
+
+        from sqlalchemy import desc, select
+
+        from app.models.document import Document, DocumentSource
         from app.models.presentation import PresentationJob
         from app.tasks.presentation_tasks import generate_presentation_task
 
@@ -1322,7 +1430,10 @@ Your response (JSON array only):"""
         if prefer_review:
             review_result = await db.execute(
                 select(Document.id)
-                .where(Document.source_id == src.id, Document.source_identifier.like("literature_review:%"))
+                .where(
+                    Document.source_id == src.id,
+                    Document.source_identifier.like("literature_review:%"),
+                )
                 .order_by(desc(Document.created_at))
                 .limit(1)
             )
@@ -1356,14 +1467,18 @@ Your response (JSON array only):"""
         await db.commit()
         await db.refresh(job)
         generate_presentation_task.delay(str(job.id), str(user_id))
-        return {"presentation_job_id": str(job.id), "source_id": str(src.id), "source_document_ids": source_document_ids}
+        return {
+            "presentation_job_id": str(job.id),
+            "source_id": str(src.id),
+            "source_document_ids": source_document_ids,
+        }
 
     async def execute_tool(
         self,
         tool_name: str,
         tool_input: Dict[str, Any],
         user_id: UUID,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> Dict[str, Any]:
         """
         Execute a tool directly by name.
@@ -1384,15 +1499,16 @@ Your response (JSON array only):"""
             ValueError: If tool name is unknown
             Exception: If tool execution fails
         """
-        from app.schemas.agent import AgentToolCall
         import uuid
+
+        from app.schemas.agent import AgentToolCall
 
         # Create a minimal tool call object
         tool_call = AgentToolCall(
             id=str(uuid.uuid4()),
             tool_name=tool_name,
             tool_input=tool_input,
-            status="pending"
+            status="pending",
         )
 
         # Execute the tool
@@ -1404,9 +1520,7 @@ Your response (JSON array only):"""
         return result_call.tool_output or {}
 
     async def _tool_search_documents(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> List[Dict[str, Any]]:
         """Execute document search tool."""
         query = params.get("query", "")
@@ -1416,8 +1530,7 @@ Your response (JSON array only):"""
 
         # Perform semantic search
         search_results = await self.vector_store.search(
-            query=query,
-            limit=limit * 2  # Get more to filter
+            query=query, limit=limit * 2  # Get more to filter
         )
 
         # Format results
@@ -1430,13 +1543,15 @@ Your response (JSON array only):"""
 
             if doc_id and doc_id not in seen_docs:
                 seen_docs.add(doc_id)
-                results.append({
-                    "id": doc_id,
-                    "title": metadata.get("title", "Untitled"),
-                    "content_preview": (result.get("content", "") or "")[:200],
-                    "score": round(result.get("score", 0), 3),
-                    "source_type": metadata.get("source", "unknown")
-                })
+                results.append(
+                    {
+                        "id": doc_id,
+                        "title": metadata.get("title", "Untitled"),
+                        "content_preview": (result.get("content", "") or "")[:200],
+                        "score": round(result.get("score", 0), 3),
+                        "source_type": metadata.get("source", "unknown"),
+                    }
+                )
 
                 if len(results) >= limit:
                     break
@@ -1444,9 +1559,7 @@ Your response (JSON array only):"""
         return results
 
     async def _tool_get_document_details(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Get detailed information about a document."""
         document_id = params.get("document_id")
@@ -1464,15 +1577,21 @@ Your response (JSON array only):"""
         return {
             "id": str(document.id),
             "title": document.title,
-            "content_preview": (document.content or "")[:500] if document.content else None,
+            "content_preview": (document.content or "")[:500]
+            if document.content
+            else None,
             "file_type": document.file_type,
             "file_size": document.file_size,
             "author": document.author,
             "tags": document.tags or [],
             "summary": document.summary,
             "is_processed": document.is_processed,
-            "created_at": document.created_at.isoformat() if document.created_at else None,
-            "updated_at": document.updated_at.isoformat() if document.updated_at else None
+            "created_at": document.created_at.isoformat()
+            if document.created_at
+            else None,
+            "updated_at": document.updated_at.isoformat()
+            if document.updated_at
+            else None,
         }
 
     async def _tool_web_scrape(
@@ -1499,6 +1618,7 @@ Your response (JSON array only):"""
 
         if allow_private_networks:
             from app.models.user import User
+
             user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
             if user and user.role == "admin":
@@ -1506,7 +1626,9 @@ Your response (JSON array only):"""
             elif is_allowlisted:
                 allow_private_effective = True
             else:
-                return {"error": "allow_private_networks requires admin role (or an active web source allowlist)"}
+                return {
+                    "error": "allow_private_networks requires admin role (or an active web source allowlist)"
+                }
         else:
             allow_private_effective = bool(is_allowlisted)
 
@@ -1527,7 +1649,9 @@ Your response (JSON array only):"""
         finally:
             await scraper.aclose()
 
-    async def _is_url_allowlisted_for_internal_scrape(self, url: str, db: AsyncSession) -> bool:
+    async def _is_url_allowlisted_for_internal_scrape(
+        self, url: str, db: AsyncSession
+    ) -> bool:
         """
         Check if a URL's hostname is allowlisted via active web document sources.
 
@@ -1545,7 +1669,7 @@ Your response (JSON array only):"""
         res = await db.execute(
             select(DocumentSource).where(
                 DocumentSource.source_type == "web",
-                DocumentSource.is_active == True,
+                DocumentSource.is_active.is_(True),
             )
         )
         sources = res.scalars().all()
@@ -1560,10 +1684,10 @@ Your response (JSON array only):"""
 
         for source in sources:
             cfg = source.config or {}
-            for d in (cfg.get("allowed_domains") or []):
+            for d in cfg.get("allowed_domains") or []:
                 if host_matches(d):
                     return True
-            for base in (cfg.get("base_urls") or []):
+            for base in cfg.get("base_urls") or []:
                 try:
                     base_host = (urlparse(str(base)).hostname or "").lower()
                 except Exception:
@@ -1574,9 +1698,7 @@ Your response (JSON array only):"""
         return False
 
     async def _tool_summarize_document(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Summarize a document."""
         document_id = params.get("document_id")
@@ -1598,7 +1720,7 @@ Your response (JSON array only):"""
                 "document_id": document_id,
                 "title": document.title,
                 "summary": document.summary,
-                "status": "existing"
+                "status": "existing",
             }
 
         # Generate summary
@@ -1610,18 +1732,16 @@ Your response (JSON array only):"""
                 "document_id": document_id,
                 "title": document.title,
                 "summary": summary,
-                "status": "generated"
+                "status": "generated",
             }
         except Exception as e:
             return {
                 "document_id": document_id,
-                "error": f"Failed to generate summary: {str(e)}"
+                "error": f"Failed to generate summary: {str(e)}",
             }
 
     async def _tool_delete_document(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Delete a document (requires confirmation)."""
         document_id = params.get("document_id")
@@ -1643,7 +1763,7 @@ Your response (JSON array only):"""
                 "action": "confirmation_required",
                 "document_id": document_id,
                 "title": document.title,
-                "message": f"Are you sure you want to delete '{document.title}'? This action cannot be undone. Please confirm deletion."
+                "message": f"Are you sure you want to delete '{document.title}'? This action cannot be undone. Please confirm deletion.",
             }
 
         # Proceed with deletion
@@ -1654,27 +1774,21 @@ Your response (JSON array only):"""
                     "action": "deleted",
                     "document_id": document_id,
                     "title": document.title,
-                    "message": f"Successfully deleted document '{document.title}'"
+                    "message": f"Successfully deleted document '{document.title}'",
                 }
             else:
-                return {
-                    "error": f"Failed to delete document '{document.title}'"
-                }
+                return {"error": f"Failed to delete document '{document.title}'"}
         except Exception as e:
             return {"error": f"Error deleting document: {str(e)}"}
 
     async def _tool_list_recent_documents(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> List[Dict[str, Any]]:
         """List recently added/updated documents."""
         limit = min(params.get("limit", 10), 50)
 
         result = await db.execute(
-            select(Document)
-            .order_by(desc(Document.updated_at))
-            .limit(limit)
+            select(Document).order_by(desc(Document.updated_at)).limit(limit)
         )
         documents = result.scalars().all()
 
@@ -1685,15 +1799,13 @@ Your response (JSON array only):"""
                 "file_type": doc.file_type,
                 "is_processed": doc.is_processed,
                 "has_summary": bool(doc.summary),
-                "updated_at": doc.updated_at.isoformat() if doc.updated_at else None
+                "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
             }
             for doc in documents
         ]
 
     async def _tool_list_document_sources(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """List available document sources."""
         active_only = params.get("active_only", False)
@@ -1701,7 +1813,7 @@ Your response (JSON array only):"""
         try:
             query = select(DocumentSource)
             if active_only:
-                query = query.where(DocumentSource.is_active == True)
+                query = query.where(DocumentSource.is_active.is_(True))
 
             query = query.order_by(DocumentSource.name)
             result = await db.execute(query)
@@ -1717,7 +1829,9 @@ Your response (JSON array only):"""
                         "source_type": source.source_type,
                         "is_active": source.is_active,
                         "is_syncing": source.is_syncing,
-                        "last_sync": source.last_sync.isoformat() if source.last_sync else None,
+                        "last_sync": source.last_sync.isoformat()
+                        if source.last_sync
+                        else None,
                         "last_error": source.last_error,
                     }
                     for source in sources
@@ -1728,9 +1842,7 @@ Your response (JSON array only):"""
             return {"error": f"Failed to list document sources: {str(e)}"}
 
     async def _tool_list_documents_by_source(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """List documents from a specific source."""
         source_id = params.get("source_id")
@@ -1743,7 +1855,11 @@ Your response (JSON array only):"""
             return {"error": "Provide source_id, source_name, or source_type"}
 
         try:
-            query = select(Document).options(selectinload(Document.source)).join(DocumentSource)
+            query = (
+                select(Document)
+                .options(selectinload(Document.source))
+                .join(DocumentSource)
+            )
 
             if source_id:
                 try:
@@ -1756,9 +1872,13 @@ Your response (JSON array only):"""
                 query = query.where(DocumentSource.name.ilike(f"%{source_name}%"))
 
             if source_type:
-                query = query.where(DocumentSource.source_type.ilike(f"%{source_type}%"))
+                query = query.where(
+                    DocumentSource.source_type.ilike(f"%{source_type}%")
+                )
 
-            query = query.order_by(desc(Document.updated_at)).offset(offset).limit(limit)
+            query = (
+                query.order_by(desc(Document.updated_at)).offset(offset).limit(limit)
+            )
             result = await db.execute(query)
             documents = result.scalars().all()
 
@@ -1775,11 +1895,15 @@ Your response (JSON array only):"""
                         "title": doc.title,
                         "tags": doc.tags or [],
                         "file_type": doc.file_type,
-                        "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+                        "updated_at": doc.updated_at.isoformat()
+                        if doc.updated_at
+                        else None,
                         "source": {
                             "id": str(doc.source.id) if doc.source else None,
                             "name": doc.source.name if doc.source else None,
-                            "source_type": doc.source.source_type if doc.source else None,
+                            "source_type": doc.source.source_type
+                            if doc.source
+                            else None,
                         },
                     }
                     for doc in documents
@@ -1790,9 +1914,7 @@ Your response (JSON array only):"""
             return {"error": f"Failed to list documents by source: {str(e)}"}
 
     async def _tool_search_documents_by_author(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Search documents by author name."""
         author = (params.get("author") or "").strip()
@@ -1832,7 +1954,9 @@ Your response (JSON array only):"""
                         "author": doc.author,
                         "tags": doc.tags or [],
                         "file_type": doc.file_type,
-                        "updated_at": doc.updated_at.isoformat() if doc.updated_at else None,
+                        "updated_at": doc.updated_at.isoformat()
+                        if doc.updated_at
+                        else None,
                         "source_id": str(doc.source_id),
                     }
                     for doc in documents
@@ -1847,7 +1971,7 @@ Your response (JSON array only):"""
         user_message: str,
         tool_results: List[AgentToolCall],
         history: List[AgentMessage],
-        user_settings: Optional[UserLLMSettings] = None
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> str:
         """Generate final response based on tool results."""
 
@@ -1864,7 +1988,11 @@ Your response (JSON array only):"""
                     f"Tool '{result.tool_name}' failed: {result.error}"
                 )
 
-        tool_context = "\n\n".join(tool_context_parts) if tool_context_parts else "No tools were executed."
+        tool_context = (
+            "\n\n".join(tool_context_parts)
+            if tool_context_parts
+            else "No tools were executed."
+        )
 
         # Build response prompt
         response_prompt = f"""You are a helpful AI assistant for a document knowledge base.
@@ -1891,7 +2019,7 @@ Your response:"""
                 temperature=0.7,
                 max_tokens=800,
                 user_settings=user_settings,
-                task_type="chat"
+                task_type="chat",
             )
             return response.strip()
 
@@ -1909,10 +2037,7 @@ Your response:"""
     # ========================
 
     async def _tool_create_document_from_text(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Create a new document from text content."""
         title = params.get("title", "").strip()
@@ -1927,7 +2052,9 @@ Your response:"""
         try:
             owner_display_name = None
             try:
-                user_result = await db.execute(select(DbUser).where(DbUser.id == user_id))
+                user_result = await db.execute(
+                    select(DbUser).where(DbUser.id == user_id)
+                )
                 user = user_result.scalar_one_or_none()
                 if user:
                     owner_display_name = user.full_name or user.username or user.email
@@ -1935,7 +2062,9 @@ Your response:"""
                 owner_display_name = None
 
             content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
-            notes_source = await self.document_service._get_or_create_agent_notes_source(db)
+            notes_source = (
+                await self.document_service._get_or_create_agent_notes_source(db)
+            )
 
             # Create document in database
             document = Document(
@@ -1962,17 +2091,23 @@ Your response:"""
 
             # Process document (chunks + vector index)
             try:
-                await self.document_service.reprocess_document(document.id, db, user_id=user_id)
+                await self.document_service.reprocess_document(
+                    document.id, db, user_id=user_id
+                )
             except Exception as e:
-                logger.warning(f"Failed to process agent-created document embeddings: {e}")
+                logger.warning(
+                    f"Failed to process agent-created document embeddings: {e}"
+                )
 
             return {
                 "action": "created",
                 "document_id": str(document.id),
                 "title": title,
-                "content_preview": content[:200] + "..." if len(content) > 200 else content,
+                "content_preview": content[:200] + "..."
+                if len(content) > 200
+                else content,
                 "tags": tags,
-                "message": f"Successfully created document '{title}'"
+                "message": f"Successfully created document '{title}'",
             }
 
         except Exception as e:
@@ -2012,9 +2147,7 @@ Your response:"""
         )
 
     async def _tool_find_similar_documents(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Find documents similar to a given document."""
         document_id = params.get("document_id")
@@ -2037,8 +2170,7 @@ Your response:"""
 
         # Search for similar documents
         search_results = await self.vector_store.search(
-            query=query_text,
-            limit=limit + 5  # Get extras to filter out self
+            query=query_text, limit=limit + 5  # Get extras to filter out self
         )
 
         # Format results, excluding the reference document
@@ -2052,29 +2184,26 @@ Your response:"""
 
             if doc_id and doc_id not in seen_docs:
                 seen_docs.add(doc_id)
-                similar_docs.append({
-                    "id": doc_id,
-                    "title": metadata.get("title", "Untitled"),
-                    "similarity_score": round(result.get("score", 0), 3),
-                    "content_preview": (result.get("content", "") or "")[:150]
-                })
+                similar_docs.append(
+                    {
+                        "id": doc_id,
+                        "title": metadata.get("title", "Untitled"),
+                        "similarity_score": round(result.get("score", 0), 3),
+                        "content_preview": (result.get("content", "") or "")[:150],
+                    }
+                )
 
                 if len(similar_docs) >= limit:
                     break
 
         return {
-            "reference_document": {
-                "id": document_id,
-                "title": document.title
-            },
+            "reference_document": {"id": document_id, "title": document.title},
             "similar_documents": similar_docs,
-            "count": len(similar_docs)
+            "count": len(similar_docs),
         }
 
     async def _tool_update_document_tags(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Update tags on a document."""
         document_id = params.get("document_id")
@@ -2104,7 +2233,9 @@ Your response:"""
             updated_tags = list(new_tags_set)
             action_desc = f"Replaced all tags with: {', '.join(tags)}"
         else:
-            return {"error": f"Invalid action: {action}. Use 'add', 'remove', or 'replace'"}
+            return {
+                "error": f"Invalid action: {action}. Use 'add', 'remove', or 'replace'"
+            }
 
         # Update document
         document.tags = updated_tags
@@ -2115,24 +2246,19 @@ Your response:"""
             "title": document.title,
             "previous_tags": list(current_tags),
             "current_tags": updated_tags,
-            "action": action_desc
+            "action": action_desc,
         }
 
-    async def _tool_get_knowledge_base_stats(
-        self,
-        db: AsyncSession
-    ) -> Dict[str, Any]:
+    async def _tool_get_knowledge_base_stats(self, db: AsyncSession) -> Dict[str, Any]:
         """Get statistics about the knowledge base."""
         try:
             # Total documents
-            total_result = await db.execute(
-                select(func.count(Document.id))
-            )
+            total_result = await db.execute(select(func.count(Document.id)))
             total_docs = total_result.scalar() or 0
 
             # Processed documents
             processed_result = await db.execute(
-                select(func.count(Document.id)).where(Document.is_processed == True)
+                select(func.count(Document.id)).where(Document.is_processed.is_(True))
             )
             processed_docs = processed_result.scalar() or 0
 
@@ -2159,10 +2285,10 @@ Your response:"""
 
             # Recent activity (documents in last 7 days)
             from datetime import timedelta
+
             week_ago = datetime.utcnow() - timedelta(days=7)
             recent_result = await db.execute(
-                select(func.count(Document.id))
-                .where(Document.created_at >= week_ago)
+                select(func.count(Document.id)).where(Document.created_at >= week_ago)
             )
             recent_docs = recent_result.scalar() or 0
 
@@ -2179,7 +2305,7 @@ Your response:"""
                 "total_storage_mb": round(total_size / (1024 * 1024), 2),
                 "documents_by_type": file_types,
                 "documents_last_7_days": recent_docs,
-                "vector_store": vector_stats
+                "vector_store": vector_stats,
             }
 
         except Exception as e:
@@ -2187,9 +2313,7 @@ Your response:"""
             return {"error": f"Failed to get statistics: {str(e)}"}
 
     async def _tool_batch_delete_documents(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Delete multiple documents at once."""
         document_ids = params.get("document_ids", [])
@@ -2210,10 +2334,7 @@ Your response:"""
                 doc_uuid = UUID(doc_id)
                 document = await self.document_service.get_document(doc_uuid, db)
                 if document:
-                    documents_info.append({
-                        "id": doc_id,
-                        "title": document.title
-                    })
+                    documents_info.append({"id": doc_id, "title": document.title})
                     valid_ids.append(doc_uuid)
             except (ValueError, TypeError):
                 continue
@@ -2227,7 +2348,7 @@ Your response:"""
                 "action": "confirmation_required",
                 "documents": documents_info,
                 "count": len(documents_info),
-                "message": f"Are you sure you want to delete {len(documents_info)} documents? This action cannot be undone."
+                "message": f"Are you sure you want to delete {len(documents_info)} documents? This action cannot be undone.",
             }
 
         # Proceed with deletion
@@ -2251,15 +2372,12 @@ Your response:"""
             "deleted_ids": deleted,
             "failed_count": len(failed),
             "failed": failed if failed else None,
-            "message": f"Successfully deleted {len(deleted)} document(s)" + (
-                f", {len(failed)} failed" if failed else ""
-            )
+            "message": f"Successfully deleted {len(deleted)} document(s)"
+            + (f", {len(failed)} failed" if failed else ""),
         }
 
     async def _tool_batch_summarize_documents(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Queue summarization for multiple documents."""
         document_ids = params.get("document_ids", [])
@@ -2286,21 +2404,21 @@ Your response:"""
                     continue
 
                 if document.summary and not force_regenerate:
-                    skipped.append({
-                        "id": doc_id,
-                        "title": document.title,
-                        "reason": "Already has summary"
-                    })
+                    skipped.append(
+                        {
+                            "id": doc_id,
+                            "title": document.title,
+                            "reason": "Already has summary",
+                        }
+                    )
                     continue
 
                 # Queue for summarization (use Celery task)
                 from app.tasks.summarization_tasks import summarize_document_task
+
                 summarize_document_task.delay(str(doc_uuid), force=force_regenerate)
 
-                queued.append({
-                    "id": doc_id,
-                    "title": document.title
-                })
+                queued.append({"id": doc_id, "title": document.title})
 
             except (ValueError, TypeError):
                 invalid.append(doc_id)
@@ -2312,13 +2430,11 @@ Your response:"""
             "skipped": skipped if skipped else None,
             "invalid_count": len(invalid),
             "invalid_ids": invalid if invalid else None,
-            "message": f"Queued {len(queued)} document(s) for summarization"
+            "message": f"Queued {len(queued)} document(s) for summarization",
         }
 
     async def _tool_search_by_tags(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Search documents by tags."""
         tags = params.get("tags", [])
@@ -2332,14 +2448,10 @@ Your response:"""
             # Build query based on match type
             if match_all:
                 # Documents must have ALL tags
-                query = select(Document).where(
-                    Document.tags.contains(tags)
-                )
+                query = select(Document).where(Document.tags.contains(tags))
             else:
                 # Documents can have ANY of the tags
-                query = select(Document).where(
-                    Document.tags.overlap(tags)
-                )
+                query = select(Document).where(Document.tags.overlap(tags))
 
             query = query.order_by(desc(Document.updated_at)).limit(limit)
             result = await db.execute(query)
@@ -2355,20 +2467,19 @@ Your response:"""
                         "title": doc.title,
                         "tags": doc.tags or [],
                         "file_type": doc.file_type,
-                        "updated_at": doc.updated_at.isoformat() if doc.updated_at else None
+                        "updated_at": doc.updated_at.isoformat()
+                        if doc.updated_at
+                        else None,
                     }
                     for doc in documents
-                ]
+                ],
             }
 
         except Exception as e:
             logger.error(f"Error searching by tags: {e}")
             return {"error": f"Search failed: {str(e)}"}
 
-    async def _tool_list_all_tags(
-        self,
-        db: AsyncSession
-    ) -> Dict[str, Any]:
+    async def _tool_list_all_tags(self, db: AsyncSession) -> Dict[str, Any]:
         """List all unique tags used in the knowledge base."""
         try:
             # Get all documents with tags
@@ -2387,18 +2498,11 @@ Your response:"""
                         tag_counts[tag] = tag_counts.get(tag, 0) + 1
 
             # Sort by count
-            sorted_tags = sorted(
-                tag_counts.items(),
-                key=lambda x: x[1],
-                reverse=True
-            )
+            sorted_tags = sorted(tag_counts.items(), key=lambda x: x[1], reverse=True)
 
             return {
                 "total_unique_tags": len(all_tags),
-                "tags": [
-                    {"tag": tag, "count": count}
-                    for tag, count in sorted_tags
-                ]
+                "tags": [{"tag": tag, "count": count} for tag, count in sorted_tags],
             }
 
         except Exception as e:
@@ -2410,10 +2514,7 @@ Your response:"""
     # ========================
 
     async def _tool_compare_documents(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Compare two documents for similarities and differences."""
         doc_id_1 = params.get("document_id_1")
@@ -2441,14 +2542,14 @@ Your response:"""
                 "id": doc_id_1,
                 "title": doc1.title,
                 "file_type": doc1.file_type,
-                "word_count": len((doc1.content or "").split()) if doc1.content else 0
+                "word_count": len((doc1.content or "").split()) if doc1.content else 0,
             },
             "document_2": {
                 "id": doc_id_2,
                 "title": doc2.title,
                 "file_type": doc2.file_type,
-                "word_count": len((doc2.content or "").split()) if doc2.content else 0
-            }
+                "word_count": len((doc2.content or "").split()) if doc2.content else 0,
+            },
         }
 
         content1 = doc1.content or ""
@@ -2474,7 +2575,7 @@ Your response:"""
                 "unique_to_doc2_count": len(unique_to_2),
                 "sample_common_words": list(common_words)[:20],
                 "sample_unique_to_doc1": list(unique_to_1)[:10],
-                "sample_unique_to_doc2": list(unique_to_2)[:10]
+                "sample_unique_to_doc2": list(unique_to_2)[:10],
             }
 
         # Semantic comparison
@@ -2485,13 +2586,9 @@ Your response:"""
                 # Get embeddings for both documents
                 # Use first 1000 chars as representative sample
                 sample1 = content1[:1000]
-                sample2 = content2[:1000]
 
                 # Search using doc1 content to find doc2's similarity
-                search_results = await self.vector_store.search(
-                    query=sample1,
-                    limit=50
-                )
+                search_results = await self.vector_store.search(query=sample1, limit=50)
 
                 # Find doc2 in results
                 semantic_score = 0.0
@@ -2503,14 +2600,14 @@ Your response:"""
 
                 result["semantic_analysis"] = {
                     "similarity_score": round(semantic_score, 3),
-                    "interpretation": self._interpret_similarity(semantic_score)
+                    "interpretation": self._interpret_similarity(semantic_score),
                 }
 
             except Exception as e:
                 logger.warning(f"Semantic comparison failed: {e}")
                 result["semantic_analysis"] = {
                     "error": "Semantic comparison unavailable",
-                    "reason": str(e)
+                    "reason": str(e),
                 }
 
         # Generate summary using LLM
@@ -2558,10 +2655,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
     # ========================
 
     async def _tool_start_template_fill(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Start a template fill job - requires template upload via UI."""
         source_doc_ids = params.get("source_document_ids", [])
@@ -2576,10 +2670,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
                 doc_uuid = UUID(doc_id)
                 doc = await self.document_service.get_document(doc_uuid, db)
                 if doc:
-                    valid_docs.append({
-                        "id": doc_id,
-                        "title": doc.title
-                    })
+                    valid_docs.append({"id": doc_id, "title": doc.title})
             except (ValueError, TypeError):
                 continue
 
@@ -2596,16 +2687,13 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
                 "1. Click the upload button to select a DOCX template",
                 "2. The template will be analyzed for sections",
                 "3. Each section will be filled with relevant content from the source documents",
-                "4. You can download the completed document when ready"
+                "4. You can download the completed document when ready",
             ],
-            "supported_formats": [".docx", ".doc"]
+            "supported_formats": [".docx", ".doc"],
         }
 
     async def _tool_list_template_jobs(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """List user's template fill jobs."""
         status_filter = params.get("status_filter", "all")
@@ -2618,7 +2706,11 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
 
             if status_filter != "all":
                 if status_filter == "processing":
-                    query = query.where(TemplateJob.status.in_(["pending", "analyzing", "extracting", "filling"]))
+                    query = query.where(
+                        TemplateJob.status.in_(
+                            ["pending", "analyzing", "extracting", "filling"]
+                        )
+                    )
                 else:
                     query = query.where(TemplateJob.status == status_filter)
 
@@ -2636,14 +2728,20 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
                         "progress": job.progress,
                         "current_section": job.current_section,
                         "section_count": len(job.sections) if job.sections else 0,
-                        "source_doc_count": len(job.source_document_ids) if job.source_document_ids else 0,
-                        "created_at": job.created_at.isoformat() if job.created_at else None,
-                        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                        "source_doc_count": len(job.source_document_ids)
+                        if job.source_document_ids
+                        else 0,
+                        "created_at": job.created_at.isoformat()
+                        if job.created_at
+                        else None,
+                        "completed_at": job.completed_at.isoformat()
+                        if job.completed_at
+                        else None,
                         "has_download": bool(job.filled_file_path),
-                        "error": job.error_message
+                        "error": job.error_message,
                     }
                     for job in jobs
-                ]
+                ],
             }
 
         except Exception as e:
@@ -2651,10 +2749,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
             return {"error": f"Failed to list template jobs: {str(e)}"}
 
     async def _tool_get_template_job_status(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Get detailed status of a template job."""
         job_id = params.get("job_id")
@@ -2669,8 +2764,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
 
             result = await db.execute(
                 select(TemplateJob).where(
-                    TemplateJob.id == job_uuid,
-                    TemplateJob.user_id == user_id
+                    TemplateJob.id == job_uuid, TemplateJob.user_id == user_id
                 )
             )
             job = result.scalar_one_or_none()
@@ -2691,10 +2785,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
             # Add sections info
             if job.sections:
                 response["sections"] = [
-                    {
-                        "title": s.get("title"),
-                        "level": s.get("level")
-                    }
+                    {"title": s.get("title"), "level": s.get("level")}
                     for s in job.sections
                 ]
                 response["total_sections"] = len(job.sections)
@@ -2705,7 +2796,9 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
 
             # Add completion info
             if job.status == "completed":
-                response["completed_at"] = job.completed_at.isoformat() if job.completed_at else None
+                response["completed_at"] = (
+                    job.completed_at.isoformat() if job.completed_at else None
+                )
                 response["filled_filename"] = job.filled_filename
                 response["download_available"] = bool(job.filled_file_path)
                 response["download_url"] = f"/api/v1/templates/{job_id}/download"
@@ -2725,10 +2818,7 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
     # =========================================================================
 
     async def _tool_answer_question(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Answer a question using RAG (Retrieval-Augmented Generation)."""
         question = params.get("question", "")
@@ -2742,15 +2832,14 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
 
             # Step 1: Search for relevant document chunks
             search_results = await self.vector_store.search(
-                query=question,
-                limit=max_sources * 2  # Get more for better context
+                query=question, limit=max_sources * 2  # Get more for better context
             )
 
             if not search_results:
                 return {
                     "answer": "I couldn't find any relevant documents to answer your question.",
                     "sources": [],
-                    "confidence": "low"
+                    "confidence": "low",
                 }
 
             # Step 2: Build context from search results
@@ -2769,12 +2858,16 @@ Provide a 2-3 sentence comparison highlighting key similarities and differences.
 
                 if doc_id and doc_id not in seen_docs:
                     seen_docs.add(doc_id)
-                    sources.append({
-                        "document_id": doc_id,
-                        "title": title,
-                        "relevance_score": round(score, 3),
-                        "excerpt": content[:200] + "..." if len(content) > 200 else content
-                    })
+                    sources.append(
+                        {
+                            "document_id": doc_id,
+                            "title": title,
+                            "relevance_score": round(score, 3),
+                            "excerpt": content[:200] + "..."
+                            if len(content) > 200
+                            else content,
+                        }
+                    )
 
             context = "\n".join(context_parts)
 
@@ -2798,14 +2891,18 @@ Answer:"""
             )
 
             # Determine confidence based on search scores
-            avg_score = sum(r.get("score", 0) for r in search_results[:max_sources]) / max(len(search_results[:max_sources]), 1)
-            confidence = "high" if avg_score > 0.7 else "medium" if avg_score > 0.4 else "low"
+            avg_score = sum(
+                r.get("score", 0) for r in search_results[:max_sources]
+            ) / max(len(search_results[:max_sources]), 1)
+            confidence = (
+                "high" if avg_score > 0.7 else "medium" if avg_score > 0.4 else "low"
+            )
 
             return {
                 "answer": answer.strip(),
                 "sources": sources[:max_sources],
                 "source_count": len(sources),
-                "confidence": confidence
+                "confidence": confidence,
             }
 
         except Exception as e:
@@ -2817,9 +2914,7 @@ Answer:"""
     # =========================================================================
 
     async def _tool_read_document_content(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Read the full text content of a document."""
         document_id = params.get("document_id")
@@ -2856,11 +2951,15 @@ Answer:"""
                     chunk_content = chunk.content or ""
                     remaining = max_length - total_length
 
-                    chunks_data.append({
-                        "index": chunk.chunk_index,
-                        "content": chunk_content[:remaining] if len(chunk_content) > remaining else chunk_content,
-                        "word_count": len(chunk_content.split()),
-                    })
+                    chunks_data.append(
+                        {
+                            "index": chunk.chunk_index,
+                            "content": chunk_content[:remaining]
+                            if len(chunk_content) > remaining
+                            else chunk_content,
+                            "word_count": len(chunk_content.split()),
+                        }
+                    )
 
                     total_length += len(chunk_content)
 
@@ -2894,9 +2993,7 @@ Answer:"""
     # =========================================================================
 
     async def _tool_search_entities(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Search for entities in the knowledge graph."""
         query = params.get("query", "")
@@ -2907,13 +3004,12 @@ Answer:"""
             return {"error": "Query is required"}
 
         try:
-            from app.models.knowledge_graph import Entity, EntityMention
             from sqlalchemy import func
 
+            from app.models.knowledge_graph import Entity, EntityMention
+
             # Build query
-            stmt = select(Entity).where(
-                Entity.canonical_name.ilike(f"%{query}%")
-            )
+            stmt = select(Entity).where(Entity.canonical_name.ilike(f"%{query}%"))
 
             if entity_type:
                 stmt = stmt.where(Entity.entity_type == entity_type)
@@ -2933,28 +3029,24 @@ Answer:"""
                 )
                 mention_count = count_result.scalar() or 0
 
-                entity_data.append({
-                    "id": str(entity.id),
-                    "name": entity.canonical_name,
-                    "type": entity.entity_type,
-                    "description": entity.description,
-                    "mention_count": mention_count,
-                })
+                entity_data.append(
+                    {
+                        "id": str(entity.id),
+                        "name": entity.canonical_name,
+                        "type": entity.entity_type,
+                        "description": entity.description,
+                        "mention_count": mention_count,
+                    }
+                )
 
-            return {
-                "entities": entity_data,
-                "count": len(entity_data),
-                "query": query
-            }
+            return {"entities": entity_data, "count": len(entity_data), "query": query}
 
         except Exception as e:
             logger.error(f"Error searching entities: {e}")
             return {"error": f"Failed to search entities: {str(e)}"}
 
     async def _tool_get_entity_relationships(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Get relationships for a specific entity."""
         entity_id = params.get("entity_id")
@@ -2979,60 +3071,62 @@ Answer:"""
 
             # Get outgoing relationships
             outgoing_result = await db.execute(
-                select(Relationship, Entity).join(
-                    Entity, Relationship.target_entity_id == Entity.id
-                ).where(
-                    Relationship.source_entity_id == entity_uuid
-                ).limit(limit // 2)
+                select(Relationship, Entity)
+                .join(Entity, Relationship.target_entity_id == Entity.id)
+                .where(Relationship.source_entity_id == entity_uuid)
+                .limit(limit // 2)
             )
             outgoing = outgoing_result.all()
 
             # Get incoming relationships
             incoming_result = await db.execute(
-                select(Relationship, Entity).join(
-                    Entity, Relationship.source_entity_id == Entity.id
-                ).where(
-                    Relationship.target_entity_id == entity_uuid
-                ).limit(limit // 2)
+                select(Relationship, Entity)
+                .join(Entity, Relationship.source_entity_id == Entity.id)
+                .where(Relationship.target_entity_id == entity_uuid)
+                .limit(limit // 2)
             )
             incoming = incoming_result.all()
 
             relationships = []
 
             for rel, target_entity in outgoing:
-                relationships.append({
-                    "direction": "outgoing",
-                    "relation_type": rel.relation_type,
-                    "related_entity": {
-                        "id": str(target_entity.id),
-                        "name": target_entity.canonical_name,
-                        "type": target_entity.entity_type
-                    },
-                    "confidence": rel.confidence,
-                    "evidence": rel.evidence[:200] if rel.evidence else None
-                })
+                relationships.append(
+                    {
+                        "direction": "outgoing",
+                        "relation_type": rel.relation_type,
+                        "related_entity": {
+                            "id": str(target_entity.id),
+                            "name": target_entity.canonical_name,
+                            "type": target_entity.entity_type,
+                        },
+                        "confidence": rel.confidence,
+                        "evidence": rel.evidence[:200] if rel.evidence else None,
+                    }
+                )
 
             for rel, source_entity in incoming:
-                relationships.append({
-                    "direction": "incoming",
-                    "relation_type": rel.relation_type,
-                    "related_entity": {
-                        "id": str(source_entity.id),
-                        "name": source_entity.canonical_name,
-                        "type": source_entity.entity_type
-                    },
-                    "confidence": rel.confidence,
-                    "evidence": rel.evidence[:200] if rel.evidence else None
-                })
+                relationships.append(
+                    {
+                        "direction": "incoming",
+                        "relation_type": rel.relation_type,
+                        "related_entity": {
+                            "id": str(source_entity.id),
+                            "name": source_entity.canonical_name,
+                            "type": source_entity.entity_type,
+                        },
+                        "confidence": rel.confidence,
+                        "evidence": rel.evidence[:200] if rel.evidence else None,
+                    }
+                )
 
             return {
                 "entity": {
                     "id": str(entity.id),
                     "name": entity.canonical_name,
-                    "type": entity.entity_type
+                    "type": entity.entity_type,
                 },
                 "relationships": relationships,
-                "count": len(relationships)
+                "count": len(relationships),
             }
 
         except Exception as e:
@@ -3040,9 +3134,7 @@ Answer:"""
             return {"error": f"Failed to get relationships: {str(e)}"}
 
     async def _tool_find_documents_by_entity(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Find all documents that mention a specific entity."""
         entity_id = params.get("entity_id")
@@ -3067,11 +3159,11 @@ Answer:"""
 
             # Get mentions with document info
             mentions_result = await db.execute(
-                select(EntityMention, Document).join(
-                    Document, EntityMention.document_id == Document.id
-                ).where(
-                    EntityMention.entity_id == entity_uuid
-                ).order_by(desc(Document.created_at)).limit(limit * 2)
+                select(EntityMention, Document)
+                .join(Document, EntityMention.document_id == Document.id)
+                .where(EntityMention.entity_id == entity_uuid)
+                .order_by(desc(Document.created_at))
+                .limit(limit * 2)
             )
             mentions = mentions_result.all()
 
@@ -3084,16 +3176,22 @@ Answer:"""
                         "id": doc_id,
                         "title": doc.title,
                         "file_type": doc.file_type,
-                        "created_at": doc.created_at.isoformat() if doc.created_at else None,
+                        "created_at": doc.created_at.isoformat()
+                        if doc.created_at
+                        else None,
                         "mentions": [],
-                        "mention_count": 0
+                        "mention_count": 0,
                     }
 
                 if len(documents[doc_id]["mentions"]) < 3:
-                    documents[doc_id]["mentions"].append({
-                        "text": mention.text,
-                        "sentence": mention.sentence[:200] if mention.sentence else None
-                    })
+                    documents[doc_id]["mentions"].append(
+                        {
+                            "text": mention.text,
+                            "sentence": mention.sentence[:200]
+                            if mention.sentence
+                            else None,
+                        }
+                    )
                 documents[doc_id]["mention_count"] += 1
 
             doc_list = list(documents.values())[:limit]
@@ -3102,10 +3200,10 @@ Answer:"""
                 "entity": {
                     "id": str(entity.id),
                     "name": entity.canonical_name,
-                    "type": entity.entity_type
+                    "type": entity.entity_type,
                 },
                 "documents": doc_list,
-                "document_count": len(doc_list)
+                "document_count": len(doc_list),
             }
 
         except Exception as e:
@@ -3113,9 +3211,7 @@ Answer:"""
             return {"error": f"Failed to find documents: {str(e)}"}
 
     async def _tool_get_document_knowledge_graph(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Get the knowledge graph for a specific document."""
         document_id = params.get("document_id")
@@ -3139,11 +3235,9 @@ Answer:"""
 
             # Get all entities mentioned in this document
             mentions_result = await db.execute(
-                select(EntityMention, Entity).join(
-                    Entity, EntityMention.entity_id == Entity.id
-                ).where(
-                    EntityMention.document_id == doc_uuid
-                )
+                select(EntityMention, Entity)
+                .join(Entity, EntityMention.entity_id == Entity.id)
+                .where(EntityMention.document_id == doc_uuid)
             )
             mentions = mentions_result.all()
 
@@ -3153,19 +3247,19 @@ Answer:"""
             for mention, entity in mentions:
                 if entity.id not in entity_ids:
                     entity_ids.add(entity.id)
-                    nodes.append({
-                        "id": str(entity.id),
-                        "name": entity.canonical_name,
-                        "type": entity.entity_type,
-                        "description": entity.description
-                    })
+                    nodes.append(
+                        {
+                            "id": str(entity.id),
+                            "name": entity.canonical_name,
+                            "type": entity.entity_type,
+                            "description": entity.description,
+                        }
+                    )
 
             # Get relationships between entities in this document
             if entity_ids:
                 rels_result = await db.execute(
-                    select(Relationship).where(
-                        Relationship.document_id == doc_uuid
-                    )
+                    select(Relationship).where(Relationship.document_id == doc_uuid)
                 )
                 relationships = rels_result.scalars().all()
 
@@ -3175,7 +3269,7 @@ Answer:"""
                         "target": str(rel.target_entity_id),
                         "relation_type": rel.relation_type,
                         "confidence": rel.confidence,
-                        "evidence": rel.evidence[:150] if rel.evidence else None
+                        "evidence": rel.evidence[:150] if rel.evidence else None,
                     }
                     for rel in relationships
                 ]
@@ -3183,14 +3277,11 @@ Answer:"""
                 edges = []
 
             return {
-                "document": {
-                    "id": str(document.id),
-                    "title": document.title
-                },
+                "document": {"id": str(document.id), "title": document.title},
                 "nodes": nodes,
                 "edges": edges,
                 "node_count": len(nodes),
-                "edge_count": len(edges)
+                "edge_count": len(edges),
             }
 
         except Exception as e:
@@ -3198,9 +3289,7 @@ Answer:"""
             return {"error": f"Failed to get document knowledge graph: {str(e)}"}
 
     async def _tool_get_global_knowledge_graph(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Get the global knowledge graph with filters."""
         try:
@@ -3230,9 +3319,7 @@ Answer:"""
             return {"error": f"Failed to get global graph: {str(e)}"}
 
     async def _tool_get_entity_mentions(
-        self,
-        params: Dict[str, Any],
-        db: AsyncSession
+        self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Get mentions for an entity with pagination."""
         entity_id = params.get("entity_id")
@@ -3253,11 +3340,17 @@ Answer:"""
                 return {"error": f"Entity not found: {entity_id}"}
 
             svc = KnowledgeGraphService()
-            items = await svc.mentions_for_entity(db, entity_id, limit=limit, offset=offset)
+            items = await svc.mentions_for_entity(
+                db, entity_id, limit=limit, offset=offset
+            )
             total = await svc.mentions_count_for_entity(db, entity_id)
 
             return {
-                "entity": {"id": str(ent.id), "name": ent.canonical_name, "type": ent.entity_type},
+                "entity": {
+                    "id": str(ent.id),
+                    "name": ent.canonical_name,
+                    "type": ent.entity_type,
+                },
                 "items": items,
                 "total": total,
                 "limit": limit,
@@ -3271,13 +3364,16 @@ Answer:"""
         """Get knowledge graph stats."""
         try:
             from app.services.knowledge_graph_service import KnowledgeGraphService
+
             svc = KnowledgeGraphService()
             return await svc.stats(db)
         except Exception as e:
             logger.error(f"Error getting KG stats: {e}")
             return {"error": f"Failed to get KG stats: {str(e)}"}
 
-    async def _require_admin_for_tool(self, user_id: UUID, db: AsyncSession) -> Optional[Dict[str, Any]]:
+    async def _require_admin_for_tool(
+        self, user_id: UUID, db: AsyncSession
+    ) -> Optional[Dict[str, Any]]:
         from app.models.user import User
 
         user = await db.get(User, user_id)
@@ -3286,10 +3382,7 @@ Answer:"""
         return None
 
     async def _tool_rebuild_document_knowledge_graph(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Admin-only: rebuild KG for a document."""
         gate = await self._require_admin_for_tool(user_id, db)
@@ -3304,6 +3397,7 @@ Answer:"""
 
         try:
             from app.services.knowledge_graph_service import KnowledgeGraphService
+
             svc = KnowledgeGraphService()
             result = await svc.rebuild_for_document(db, doc_uuid)
             return {"document_id": str(doc_uuid), **result}
@@ -3312,10 +3406,7 @@ Answer:"""
             return {"error": f"Failed to rebuild KG: {str(e)}"}
 
     async def _tool_merge_entities(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Admin-only: merge duplicate entities."""
         gate = await self._require_admin_for_tool(user_id, db)
@@ -3333,18 +3424,18 @@ Answer:"""
 
         try:
             from app.services.knowledge_graph_service import KnowledgeGraphService
+
             svc = KnowledgeGraphService()
-            result = await svc.merge_entities(db, source_id=source_id, target_id=target_id)
+            result = await svc.merge_entities(
+                db, source_id=source_id, target_id=target_id
+            )
             return {"source_id": source_id, "target_id": target_id, **result}
         except Exception as e:
             logger.error(f"Error merging entities: {e}")
             return {"error": f"Failed to merge entities: {str(e)}"}
 
     async def _tool_delete_entity(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Admin-only: delete an entity (with confirm_name)."""
         gate = await self._require_admin_for_tool(user_id, db)
@@ -3371,21 +3462,26 @@ Answer:"""
                 return {
                     "error": "Confirmation required",
                     "message": "To delete, set confirm_name to the entity canonical name exactly.",
-                    "entity": {"id": str(ent.id), "canonical_name": ent.canonical_name, "entity_type": ent.entity_type},
+                    "entity": {
+                        "id": str(ent.id),
+                        "canonical_name": ent.canonical_name,
+                        "entity_type": ent.entity_type,
+                    },
                 }
 
             svc = KnowledgeGraphService()
             result = await svc.delete_entity(db, entity_id=str(ent.id))
-            return {"entity_id": str(ent.id), "canonical_name": ent.canonical_name, **result}
+            return {
+                "entity_id": str(ent.id),
+                "canonical_name": ent.canonical_name,
+                **result,
+            }
         except Exception as e:
             logger.error(f"Error deleting entity: {e}")
             return {"error": f"Failed to delete entity: {str(e)}"}
 
     async def _tool_generate_diagram(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """
         Generate a Mermaid diagram from documents or description.
@@ -3445,9 +3541,13 @@ Answer:"""
                                 content = doc.content or doc.summary or ""
                                 if len(content) > 5000:
                                     content = content[:5000] + "..."
-                                content_parts.append(f"## Document: {doc.title}\n{content}")
-                                source_docs.append({"id": str(doc.id), "title": doc.title})
-                        except:
+                                content_parts.append(
+                                    f"## Document: {doc.title}\n{content}"
+                                )
+                                source_docs.append(
+                                    {"id": str(doc.id), "title": doc.title}
+                                )
+                        except Exception:
                             pass
             except Exception as e:
                 logger.error(f"Search failed: {e}")
@@ -3493,13 +3593,13 @@ Answer:"""
             "pie": "Create a pie chart showing proportions/distributions.",
             "mindmap": "Create a mind map showing hierarchical concepts and relationships.",
             "architecture": "Create an architecture diagram (using flowchart) showing system components, services, and their connections.",
-            "auto": "Choose the most appropriate diagram type based on the content."
+            "auto": "Choose the most appropriate diagram type based on the content.",
         }
 
         detail_instructions = {
             "high": "Include all details, sub-components, and relationships. Use descriptive labels.",
             "medium": "Include main components and key relationships. Balance detail with clarity.",
-            "low": "Show only major components and primary relationships. Keep it simple and high-level."
+            "low": "Show only major components and primary relationships. Keep it simple and high-level.",
         }
 
         focus_instruction = f"Focus specifically on: {focus}" if focus else ""
@@ -3537,16 +3637,19 @@ Generate the Mermaid diagram code:"""
                 user_prefs = prefs_result.scalar_one_or_none()
                 if user_prefs:
                     user_settings = UserLLMSettings.from_preferences(user_prefs)
-            except:
+            except Exception:
                 pass
 
             response = await llm_service.generate_response(
                 messages=[
-                    {"role": "system", "content": "You are an expert at creating clear, accurate Mermaid diagrams. Output only valid Mermaid code without markdown code blocks or explanations."},
-                    {"role": "user", "content": prompt}
+                    {
+                        "role": "system",
+                        "content": "You are an expert at creating clear, accurate Mermaid diagrams. Output only valid Mermaid code without markdown code blocks or explanations.",
+                    },
+                    {"role": "user", "content": prompt},
                 ],
                 user_settings=user_settings,
-                task_type="chat"
+                task_type="chat",
             )
 
             mermaid_code = response.get("content", "").strip()
@@ -3561,9 +3664,20 @@ Generate the Mermaid diagram code:"""
             mermaid_code = mermaid_code.strip()
 
             # Validate it starts with a valid diagram type
-            valid_starts = ["flowchart", "sequenceDiagram", "classDiagram", "stateDiagram",
-                          "erDiagram", "gantt", "pie", "mindmap", "graph"]
-            is_valid = any(mermaid_code.lower().startswith(s.lower()) for s in valid_starts)
+            valid_starts = [
+                "flowchart",
+                "sequenceDiagram",
+                "classDiagram",
+                "stateDiagram",
+                "erDiagram",
+                "gantt",
+                "pie",
+                "mindmap",
+                "graph",
+            ]
+            is_valid = any(
+                mermaid_code.lower().startswith(s.lower()) for s in valid_starts
+            )
 
             if not is_valid and mermaid_code:
                 # Try to fix by prepending flowchart
@@ -3575,7 +3689,7 @@ Generate the Mermaid diagram code:"""
                 "source_documents": source_docs,
                 "focus": focus or "general overview",
                 "detail_level": detail_level,
-                "can_render": bool(mermaid_code and is_valid)
+                "can_render": bool(mermaid_code and is_valid),
             }
 
         except Exception as e:
@@ -3587,10 +3701,7 @@ Generate the Mermaid diagram code:"""
     # =========================================================================
 
     async def _tool_run_workflow(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Execute a workflow by name or ID."""
         from app.models.workflow import Workflow
@@ -3610,8 +3721,7 @@ Generate the Mermaid diagram code:"""
                     wf_uuid = UUID(workflow_id)
                     result = await db.execute(
                         select(Workflow).where(
-                            Workflow.id == wf_uuid,
-                            Workflow.user_id == user_id
+                            Workflow.id == wf_uuid, Workflow.user_id == user_id
                         )
                     )
                     workflow = result.scalar_one_or_none()
@@ -3622,7 +3732,7 @@ Generate the Mermaid diagram code:"""
                 result = await db.execute(
                     select(Workflow).where(
                         Workflow.user_id == user_id,
-                        func.lower(Workflow.name) == func.lower(workflow_name)
+                        func.lower(Workflow.name) == func.lower(workflow_name),
                     )
                 )
                 workflow = result.scalar_one_or_none()
@@ -3630,22 +3740,20 @@ Generate the Mermaid diagram code:"""
             if not workflow:
                 return {
                     "error": f"Workflow not found: {workflow_name or workflow_id}",
-                    "suggestion": "Use list_workflows to see available workflows"
+                    "suggestion": "Use list_workflows to see available workflows",
                 }
 
             if not workflow.is_active:
                 return {
                     "error": f"Workflow '{workflow.name}' is not active",
-                    "workflow_id": str(workflow.id)
+                    "workflow_id": str(workflow.id),
                 }
 
             # Execute the workflow
             engine = WorkflowEngine()
             from app.models.user import User
 
-            user_result = await db.execute(
-                select(User).where(User.id == user_id)
-            )
+            user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
 
             if not user:
@@ -3657,7 +3765,7 @@ Generate the Mermaid diagram code:"""
                 trigger_data={"source": "agent_tool"},
                 inputs=inputs,
                 user=user,
-                db=db
+                db=db,
             )
 
             return {
@@ -3665,7 +3773,7 @@ Generate the Mermaid diagram code:"""
                 "workflow_name": workflow.name,
                 "workflow_id": str(workflow.id),
                 "execution_id": str(execution_id),
-                "message": f"Workflow '{workflow.name}' execution started"
+                "message": f"Workflow '{workflow.name}' execution started",
             }
 
         except Exception as e:
@@ -3673,13 +3781,10 @@ Generate the Mermaid diagram code:"""
             return {"error": f"Failed to run workflow: {str(e)}"}
 
     async def _tool_create_workflow_from_description(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Generate and save a workflow from a natural language description."""
-        from app.models.workflow import Workflow, WorkflowNode, WorkflowEdge
+        from app.models.workflow import Workflow, WorkflowEdge, WorkflowNode
         from app.services.workflow_synthesis_service import WorkflowSynthesisService
 
         description = (params.get("description") or "").strip()
@@ -3719,12 +3824,15 @@ Generate the Mermaid diagram code:"""
             created_tools: Dict[str, Any] = {}
             if synthesize_custom_tools:
                 from app.models.workflow import UserTool
+
                 for draft in bundle.custom_tools or []:
                     tool_name = str((draft or {}).get("name") or "").strip()
                     if not tool_name:
                         continue
                     tool_type = str((draft or {}).get("tool_type") or "").strip()
-                    if tool_type == "docker_container" and not bool(getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
+                    if tool_type == "docker_container" and not bool(
+                        getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)
+                    ):
                         warnings.append(
                             f"Skipped synthesized docker tool '{tool_name}' because CUSTOM_TOOL_DOCKER_ENABLED=false."
                         )
@@ -3768,7 +3876,11 @@ Generate the Mermaid diagram code:"""
             for node_data in workflow_data.nodes:
                 node_tool_id = node_data.tool_id
                 if (not node_tool_id) and (not node_data.builtin_tool):
-                    tool_name_hint = str((node_data.config or {}).get("tool_name_hint") or "").strip().lower()
+                    tool_name_hint = (
+                        str((node_data.config or {}).get("tool_name_hint") or "")
+                        .strip()
+                        .lower()
+                    )
                     if tool_name_hint and tool_name_hint in created_tools:
                         node_tool_id = created_tools[tool_name_hint].id
                 node = WorkflowNode(
@@ -3796,6 +3908,7 @@ Generate the Mermaid diagram code:"""
             workflow_tool_id = None
             if expose_workflow_as_tool:
                 from app.models.workflow import UserTool
+
                 workflow_tool_draft = bundle.workflow_tool or {}
                 workflow_tool_final_name = str(
                     workflow_tool_name
@@ -3808,20 +3921,27 @@ Generate the Mermaid diagram code:"""
                 existing_tool_result = await db.execute(
                     select(UserTool).where(
                         UserTool.user_id == user_id,
-                        func.lower(UserTool.name) == func.lower(workflow_tool_final_name),
+                        func.lower(UserTool.name)
+                        == func.lower(workflow_tool_final_name),
                     )
                 )
                 existing_tool = existing_tool_result.scalar_one_or_none()
                 if existing_tool:
                     workflow_tool_id = existing_tool.id
-                    warnings.append(f"Workflow tool '{workflow_tool_final_name}' already exists; reused.")
+                    warnings.append(
+                        f"Workflow tool '{workflow_tool_final_name}' already exists; reused."
+                    )
                 else:
                     workflow_tool = UserTool(
                         user_id=user_id,
                         name=workflow_tool_final_name,
-                        description=str(workflow_tool_draft.get("description") or f"Run workflow '{workflow.name}'"),
+                        description=str(
+                            workflow_tool_draft.get("description")
+                            or f"Run workflow '{workflow.name}'"
+                        ),
                         tool_type="workflow_runner",
-                        parameters_schema=workflow_tool_draft.get("parameters_schema") or {"type": "object", "properties": {}},
+                        parameters_schema=workflow_tool_draft.get("parameters_schema")
+                        or {"type": "object", "properties": {}},
                         config={"workflow_id": str(workflow.id)},
                         is_enabled=bool(workflow_tool_draft.get("is_enabled", True)),
                     )
@@ -3843,10 +3963,12 @@ Generate the Mermaid diagram code:"""
                         "tool_type": t.tool_type,
                     }
                     for t in created_tools.values()
-                ] if created_tools else [],
+                ]
+                if created_tools
+                else [],
                 "workflow_tool_id": str(workflow_tool_id) if workflow_tool_id else None,
                 "warnings": warnings,
-                "message": f"Workflow '{workflow.name}' created"
+                "message": f"Workflow '{workflow.name}' created",
             }
         except Exception as exc:
             await db.rollback()
@@ -3854,10 +3976,7 @@ Generate the Mermaid diagram code:"""
             return {"error": f"Failed to create workflow: {str(exc)}"}
 
     async def _tool_propose_workflow_from_description(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Generate a workflow draft from a natural language description (no save)."""
         from app.services.workflow_synthesis_service import WorkflowSynthesisService
@@ -3896,14 +4015,11 @@ Generate the Mermaid diagram code:"""
             "warnings": bundle.warnings,
             "custom_tools": bundle.custom_tools,
             "workflow_tool": bundle.workflow_tool,
-            "message": f"Draft workflow '{bundle.workflow.name}' generated for review"
+            "message": f"Draft workflow '{bundle.workflow.name}' generated for review",
         }
 
     async def _tool_list_workflows(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """List available workflows for the user."""
         from app.models.workflow import Workflow
@@ -3914,7 +4030,7 @@ Generate the Mermaid diagram code:"""
             query = select(Workflow).where(Workflow.user_id == user_id)
 
             if active_only:
-                query = query.where(Workflow.is_active == True)
+                query = query.where(Workflow.is_active.is_(True))
 
             query = query.order_by(Workflow.name)
             result = await db.execute(query)
@@ -3927,11 +4043,13 @@ Generate the Mermaid diagram code:"""
                         "name": wf.name,
                         "description": wf.description,
                         "is_active": wf.is_active,
-                        "trigger_type": wf.trigger_config.get("type", "manual") if wf.trigger_config else "manual"
+                        "trigger_type": wf.trigger_config.get("type", "manual")
+                        if wf.trigger_config
+                        else "manual",
                     }
                     for wf in workflows
                 ],
-                "count": len(workflows)
+                "count": len(workflows),
             }
 
         except Exception as e:
@@ -3939,15 +4057,15 @@ Generate the Mermaid diagram code:"""
             return {"error": f"Failed to list workflows: {str(e)}"}
 
     async def _tool_run_custom_tool(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Execute a user-defined custom tool."""
-        from app.models.workflow import UserTool
-        from app.services.custom_tool_service import CustomToolService, ToolExecutionError
         from app.models.user import User
+        from app.models.workflow import UserTool
+        from app.services.custom_tool_service import (
+            CustomToolService,
+            ToolExecutionError,
+        )
 
         tool_name = params.get("tool_name")
         inputs = params.get("inputs", {})
@@ -3960,7 +4078,7 @@ Generate the Mermaid diagram code:"""
             result = await db.execute(
                 select(UserTool).where(
                     UserTool.user_id == user_id,
-                    func.lower(UserTool.name) == func.lower(tool_name)
+                    func.lower(UserTool.name) == func.lower(tool_name),
                 )
             )
             tool = result.scalar_one_or_none()
@@ -3968,19 +4086,17 @@ Generate the Mermaid diagram code:"""
             if not tool:
                 return {
                     "error": f"Custom tool not found: {tool_name}",
-                    "suggestion": "Use list_custom_tools to see available tools"
+                    "suggestion": "Use list_custom_tools to see available tools",
                 }
 
             if not tool.is_enabled:
                 return {
                     "error": f"Tool '{tool.name}' is disabled",
-                    "tool_id": str(tool.id)
+                    "tool_id": str(tool.id),
                 }
 
             # Get user
-            user_result = await db.execute(
-                select(User).where(User.id == user_id)
-            )
+            user_result = await db.execute(select(User).where(User.id == user_id))
             user = user_result.scalar_one_or_none()
 
             if not user:
@@ -3989,10 +4105,7 @@ Generate the Mermaid diagram code:"""
             # Execute the tool
             tool_service = CustomToolService()
             execution_result = await tool_service.execute_tool(
-                tool=tool,
-                inputs=inputs,
-                user=user,
-                db=db
+                tool=tool, inputs=inputs, user=user, db=db
             )
 
             return {
@@ -4000,24 +4113,17 @@ Generate the Mermaid diagram code:"""
                 "tool_name": tool.name,
                 "tool_type": tool.tool_type,
                 "output": execution_result.get("output"),
-                "execution_time_ms": execution_result.get("execution_time_ms", 0)
+                "execution_time_ms": execution_result.get("execution_time_ms", 0),
             }
 
         except ToolExecutionError as e:
-            return {
-                "status": "failed",
-                "tool_name": tool_name,
-                "error": str(e)
-            }
+            return {"status": "failed", "tool_name": tool_name, "error": str(e)}
         except Exception as e:
             logger.error(f"Error running custom tool: {e}")
             return {"error": f"Failed to run custom tool: {str(e)}"}
 
     async def _tool_list_custom_tools(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """List available custom tools for the user."""
         from app.models.workflow import UserTool
@@ -4026,8 +4132,7 @@ Generate the Mermaid diagram code:"""
 
         try:
             query = select(UserTool).where(
-                UserTool.user_id == user_id,
-                UserTool.is_enabled == True
+                UserTool.user_id == user_id, UserTool.is_enabled.is_(True)
             )
 
             if tool_type:
@@ -4043,11 +4148,11 @@ Generate the Mermaid diagram code:"""
                         "name": tool.name,
                         "description": tool.description,
                         "tool_type": tool.tool_type,
-                        "parameters": tool.parameters_schema
+                        "parameters": tool.parameters_schema,
                     }
                     for tool in tools
                 ],
-                "count": len(tools)
+                "count": len(tools),
             }
 
         except Exception as e:
@@ -4058,17 +4163,16 @@ Generate the Mermaid diagram code:"""
     # Agent Collaboration Tools
     # ============================================================================
 
-    async def _tool_list_available_agents(
-        self,
-        db: AsyncSession
-    ) -> Dict[str, Any]:
+    async def _tool_list_available_agents(self, db: AsyncSession) -> Dict[str, Any]:
         """List available agents that can be delegated to."""
         from app.models.agent_definition import AgentDefinition
 
         try:
-            query = select(AgentDefinition).where(
-                AgentDefinition.is_active == True
-            ).order_by(AgentDefinition.priority.desc())
+            query = (
+                select(AgentDefinition)
+                .where(AgentDefinition.is_active.is_(True))
+                .order_by(AgentDefinition.priority.desc())
+            )
 
             result = await db.execute(query)
             agents = result.scalars().all()
@@ -4080,11 +4184,11 @@ Generate the Mermaid diagram code:"""
                         "display_name": agent.display_name,
                         "description": agent.description,
                         "capabilities": agent.capabilities,
-                        "priority": agent.priority
+                        "priority": agent.priority,
                     }
                     for agent in agents
                 ],
-                "count": len(agents)
+                "count": len(agents),
             }
 
         except Exception as e:
@@ -4092,10 +4196,7 @@ Generate the Mermaid diagram code:"""
             return {"error": f"Failed to list agents: {str(e)}"}
 
     async def _tool_delegate_to_agent(
-        self,
-        params: Dict[str, Any],
-        user_id: UUID,
-        db: AsyncSession
+        self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """
         Delegate a task to another specialized agent.
@@ -4120,8 +4221,7 @@ Generate the Mermaid diagram code:"""
         try:
             # Get target agent
             query = select(AgentDefinition).where(
-                AgentDefinition.name == target_name,
-                AgentDefinition.is_active == True
+                AgentDefinition.name == target_name, AgentDefinition.is_active.is_(True)
             )
             result = await db.execute(query)
             target_agent = result.scalar_one_or_none()
@@ -4130,19 +4230,21 @@ Generate the Mermaid diagram code:"""
                 # Try to find by display name
                 query = select(AgentDefinition).where(
                     AgentDefinition.display_name.ilike(f"%{target_name}%"),
-                    AgentDefinition.is_active == True
+                    AgentDefinition.is_active.is_(True),
                 )
                 result = await db.execute(query)
                 target_agent = result.scalar_one_or_none()
 
             if not target_agent:
                 # List available agents for the error message
-                agents_query = select(AgentDefinition.name).where(AgentDefinition.is_active == True)
+                agents_query = select(AgentDefinition.name).where(
+                    AgentDefinition.is_active.is_(True)
+                )
                 agents_result = await db.execute(agents_query)
                 available_agents = [a[0] for a in agents_result.fetchall()]
                 return {
                     "error": f"Agent '{target_name}' not found or inactive",
-                    "available_agents": available_agents
+                    "available_agents": available_agents,
                 }
 
             # Build delegation prompt
@@ -4160,26 +4262,28 @@ Include relevant information from the knowledge base when applicable.
             # We run the agent's system prompt + task through the LLM
             messages = [
                 {"role": "system", "content": target_agent.system_prompt},
-                {"role": "user", "content": delegation_prompt}
+                {"role": "user", "content": delegation_prompt},
             ]
 
             # Get tools available to the delegated agent
             from app.services.agent_tools import AGENT_TOOLS
+
             if target_agent.tool_whitelist:
                 allowed_tools = [
-                    t for t in AGENT_TOOLS
+                    t
+                    for t in AGENT_TOOLS
                     if t["name"] in target_agent.tool_whitelist
                     and t["name"] != "delegate_to_agent"  # Prevent recursive delegation
                 ]
             else:
                 # All tools except delegate_to_agent to prevent infinite loops
-                allowed_tools = [t for t in AGENT_TOOLS if t["name"] != "delegate_to_agent"]
+                allowed_tools = [
+                    t for t in AGENT_TOOLS if t["name"] != "delegate_to_agent"
+                ]
 
             # Generate response from the delegated agent
             response = await self.llm_service.generate_chat_response(
-                messages=messages,
-                tools=allowed_tools,
-                max_tokens=4096
+                messages=messages, tools=allowed_tools, max_tokens=4096
             )
 
             # If the agent wants to call tools, execute them
@@ -4188,28 +4292,31 @@ Include relevant information from the knowledge base when applicable.
                 for tc in response["tool_calls"]:
                     tool_call = AgentToolCall(
                         tool_name=tc["function"]["name"],
-                        tool_input=tc["function"].get("arguments", {})
+                        tool_input=tc["function"].get("arguments", {}),
                     )
                     executed = await self._execute_tool(tool_call, user_id, db)
-                    tool_results.append({
-                        "tool": executed.tool_name,
-                        "result": executed.tool_output,
-                        "status": executed.status
-                    })
+                    tool_results.append(
+                        {
+                            "tool": executed.tool_name,
+                            "result": executed.tool_output,
+                            "status": executed.status,
+                        }
+                    )
 
                 # If tools were called, get final response from agent
                 if tool_results:
-                    tool_message = "Tool results:\n" + "\n".join([
-                        f"- {tr['tool']}: {tr['result']}"
-                        for tr in tool_results
-                    ])
-                    messages.append({"role": "assistant", "content": response.get("content", "")})
+                    tool_message = "Tool results:\n" + "\n".join(
+                        [f"- {tr['tool']}: {tr['result']}" for tr in tool_results]
+                    )
+                    messages.append(
+                        {"role": "assistant", "content": response.get("content", "")}
+                    )
                     messages.append({"role": "user", "content": tool_message})
 
                     final_response = await self.llm_service.generate_chat_response(
                         messages=messages,
                         tools=None,  # No more tool calls
-                        max_tokens=4096
+                        max_tokens=4096,
                     )
                     response = final_response
 
@@ -4218,7 +4325,9 @@ Include relevant information from the knowledge base when applicable.
                 "agent_display_name": target_agent.display_name,
                 "task": task_description,
                 "result": response.get("content", "No response generated"),
-                "tools_used": [tr["tool"] for tr in tool_results] if tool_results else []
+                "tools_used": [tr["tool"] for tr in tool_results]
+                if tool_results
+                else [],
             }
 
         except Exception as e:
@@ -4233,8 +4342,9 @@ Include relevant information from the knowledge base when applicable.
         self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Get comprehensive statistics for a document collection."""
-        from app.services.analytics_service import analytics_service
         from datetime import datetime
+
+        from app.services.analytics_service import analytics_service
 
         source_id = params.get("source_id")
         if source_id:
@@ -4273,7 +4383,9 @@ Include relevant information from the knowledge base when applicable.
         if source_id:
             source_id = UUID(str(source_id))
 
-        sources = await analytics_service.get_source_analytics(db=db, source_id=source_id)
+        sources = await analytics_service.get_source_analytics(
+            db=db, source_id=source_id
+        )
         return {"sources": sources}
 
     async def _tool_get_trending_topics(
@@ -4285,15 +4397,18 @@ Include relevant information from the knowledge base when applicable.
         days = int(params.get("days", 7) or 7)
         limit = int(params.get("limit", 10) or 10)
 
-        topics = await analytics_service.get_trending_topics(db=db, days=days, limit=limit)
+        topics = await analytics_service.get_trending_topics(
+            db=db, days=days, limit=limit
+        )
         return {"trending_topics": topics, "period_days": days}
 
     async def _tool_generate_chart_data(
         self, params: Dict[str, Any], db: AsyncSession
     ) -> Dict[str, Any]:
         """Generate data for charts and visualizations."""
-        from app.services.analytics_service import analytics_service
         from datetime import datetime
+
+        from app.services.analytics_service import analytics_service
 
         chart_type = params.get("chart_type", "bar")
         metric = params.get("metric", "document_count")
@@ -4354,9 +4469,11 @@ Include relevant information from the knowledge base when applicable.
             "filename": filename,
             "content_type": content_type,
             "format": format_type,
-            "size_bytes": len(content.encode('utf-8') if isinstance(content, str) else content),
+            "size_bytes": len(
+                content.encode("utf-8") if isinstance(content, str) else content
+            ),
             "preview": content[:1000] if len(content) > 1000 else content,
-            "message": f"Export ready: {filename}"
+            "message": f"Export ready: {filename}",
         }
 
     # =========================================================================
@@ -4553,8 +4670,10 @@ Include relevant information from the knowledge base when applicable.
         self, params: Dict[str, Any], user_id: UUID, db: AsyncSession
     ) -> Dict[str, Any]:
         """Generate architecture diagram from a GitLab repository."""
-        from app.services.gitlab_architecture_service import get_gitlab_architecture_service
         from app.models.data_source import DataSource
+        from app.services.gitlab_architecture_service import (
+            get_gitlab_architecture_service,
+        )
 
         project_id = params.get("project_id")
         if not project_id:
@@ -4568,7 +4687,7 @@ Include relevant information from the knowledge base when applicable.
         # Find GitLab data source to get credentials
         query = select(DataSource).where(
             DataSource.source_type == "gitlab",
-            DataSource.is_active == True,
+            DataSource.is_active.is_(True),
         )
         result = await db.execute(query)
         gitlab_source = result.scalars().first()

@@ -1,9 +1,13 @@
+import threading
+
+
 class _FakePubSub:
     def __init__(self, messages):
         self._messages = list(messages)
         self.subscribed = []
         self.unsubscribed = []
         self.closed = False
+        self.cleanup_completed = threading.Event()
 
     async def subscribe(self, channel: str):
         self.subscribed.append(channel)
@@ -13,6 +17,7 @@ class _FakePubSub:
 
     async def close(self):
         self.closed = True
+        self.cleanup_completed.set()
 
     async def listen(self):
         for message in self._messages:
@@ -36,8 +41,9 @@ def test_notifications_websocket_forwards_experiment_recovery_payload(
     test_user,
     monkeypatch,
 ):
-    from app.api.endpoints import notifications as notification_endpoints
     import redis.asyncio as aioredis
+
+    from app.api.endpoints import notifications as notification_endpoints
 
     async def _fake_require_websocket_auth(websocket):
         await websocket.accept()
@@ -68,8 +74,12 @@ def test_notifications_websocket_forwards_experiment_recovery_payload(
     )
     redis_client = _FakeRedisClient(pubsub)
 
-    monkeypatch.setattr(notification_endpoints, "require_websocket_auth", _fake_require_websocket_auth)
-    monkeypatch.setattr(aioredis, "from_url", lambda _url, decode_responses=True: redis_client)
+    monkeypatch.setattr(
+        notification_endpoints, "require_websocket_auth", _fake_require_websocket_auth
+    )
+    monkeypatch.setattr(
+        aioredis, "from_url", lambda _url, decode_responses=True: redis_client
+    )
 
     with client.websocket_connect("/api/v1/notifications/ws") as websocket:
         connected = websocket.receive_json()
@@ -82,19 +92,44 @@ def test_notifications_websocket_forwards_experiment_recovery_payload(
     assert forwarded["notification"]["notification_type"] == "experiment_run_update"
     assert forwarded["notification"]["data"]["agent_job_id"] == "job-1"
     assert forwarded["notification"]["data"]["note_id"] == "note-1"
-    assert forwarded["notification"]["data"]["launch_mode"] == "quick_start_claude_backend"
+    assert (
+        forwarded["notification"]["data"]["launch_mode"] == "quick_start_claude_backend"
+    )
     assert forwarded["notification"]["data"]["recovery_open"] is True
-    assert forwarded["notification"]["data"]["recovery_reason"] == "fallback verification still failing"
-    assert forwarded["notification"]["data"]["recommended_action"] == "Inspect failing fallback output"
-    assert forwarded["notification"]["data"]["first_failed_command"] == "npm --prefix frontend test"
+    assert (
+        forwarded["notification"]["data"]["recovery_reason"]
+        == "fallback verification still failing"
+    )
+    assert (
+        forwarded["notification"]["data"]["recommended_action"]
+        == "Inspect failing fallback output"
+    )
+    assert (
+        forwarded["notification"]["data"]["first_failed_command"]
+        == "npm --prefix frontend test"
+    )
     assert forwarded["notification"]["data"]["latest_operator_action"] == "restart"
-    assert forwarded["notification"]["data"]["latest_operator_note"] == "Retry after fallback failure"
-    assert forwarded["notification"]["data"]["latest_operator_status_before"] == "failed"
-    assert forwarded["notification"]["data"]["latest_operator_status_after"] == "pending"
-    assert forwarded["notification"]["data"]["latest_operator_at"] == "2026-03-10T01:00:00Z"
+    assert (
+        forwarded["notification"]["data"]["latest_operator_note"]
+        == "Retry after fallback failure"
+    )
+    assert (
+        forwarded["notification"]["data"]["latest_operator_status_before"] == "failed"
+    )
+    assert (
+        forwarded["notification"]["data"]["latest_operator_status_after"] == "pending"
+    )
+    assert (
+        forwarded["notification"]["data"]["latest_operator_at"]
+        == "2026-03-10T01:00:00Z"
+    )
     assert forwarded["notification"]["data"]["latest_operator_outcome"] == "unresolved"
-    assert forwarded["notification"]["data"]["latest_operator_outcome_reason"] == "Job failed after intervention"
+    assert (
+        forwarded["notification"]["data"]["latest_operator_outcome_reason"]
+        == "Job failed after intervention"
+    )
 
+    assert pubsub.cleanup_completed.wait(timeout=1)
     assert pubsub.subscribed == [f"notifications:{test_user.id}"]
     assert pubsub.unsubscribed == [f"notifications:{test_user.id}"]
     assert pubsub.closed is True

@@ -14,9 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.agent_job_memory_service import agent_job_memory_service
+from app.services.autonomous_rnd_trajectory_service import (
+    autonomous_rnd_trajectory_adapter,
+)
 
 
-async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+async def finalize_job(
+    executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession
+) -> Dict[str, Any]:
     """Finalize a runtime job and build the terminal result payload."""
     # Determine final status
     limited, limit_reason = job.is_resource_limited()
@@ -32,10 +37,12 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         job.status = AgentJobStatus.COMPLETED.value
     elif limited:
         job.status = AgentJobStatus.COMPLETED.value  # Completed with limits
-        job.add_log_entry({
-            "phase": "completed_with_limits",
-            "reason": limit_reason,
-        })
+        job.add_log_entry(
+            {
+                "phase": "completed_with_limits",
+                "reason": limit_reason,
+            }
+        )
     elif job.error_count >= 5:
         job.status = AgentJobStatus.FAILED.value
     else:
@@ -55,7 +62,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         except Exception:
             return ""
 
-    def _take_titles(items: list[dict[str, Any]], key: str, limit: int = 6) -> list[str]:
+    def _take_titles(
+        items: list[dict[str, Any]], key: str, limit: int = 6
+    ) -> list[str]:
         out: list[str] = []
         for it in items:
             if not isinstance(it, dict):
@@ -71,16 +80,34 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 break
         return out
 
-    paper_findings = [f for f in findings if isinstance(f, dict) and f.get("type") == "paper"]
-    doc_findings = [f for f in findings if isinstance(f, dict) and f.get("type") == "document"]
+    paper_findings = [
+        f for f in findings if isinstance(f, dict) and f.get("type") == "paper"
+    ]
+    doc_findings = [
+        f for f in findings if isinstance(f, dict) and f.get("type") == "document"
+    ]
     insight_findings = [
-        f for f in findings
-        if isinstance(f, dict) and f.get("category") in {"key_insight", "methodology", "result", "gap", "connection", "contradiction", "trend"}
+        f
+        for f in findings
+        if isinstance(f, dict)
+        and f.get("category")
+        in {
+            "key_insight",
+            "methodology",
+            "result",
+            "gap",
+            "connection",
+            "contradiction",
+            "trend",
+        }
     ]
 
     job.results = {
         "findings_count": len(state.get("findings", [])),
         "actions_count": len(state.get("actions_taken", [])),
+        "actions": autonomous_rnd_trajectory_adapter.compact_action_ledger(
+            state.get("actions_taken", [])
+        ),
         "iterations": job.iteration,
         "findings": state.get("findings", [])[:50],  # Limit stored findings
         "goal_progress": state.get("goal_progress", 0),
@@ -115,8 +142,22 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             if isinstance(contract_eval.get("metrics"), dict)
             else {}
         ),
-        "satisfied_iteration": int(state.get("goal_contract_satisfied_iteration", 0) or 0),
+        "satisfied_iteration": int(
+            state.get("goal_contract_satisfied_iteration", 0) or 0
+        ),
     }
+    job_config = job.config if isinstance(job.config, dict) else {}
+    if bool(job_config.get("coding_harness_enabled")):
+        from app.services.agent_coding_harness_service import (
+            agent_coding_harness_service,
+        )
+
+        job.results[
+            "coding_harness"
+        ] = agent_coding_harness_service.build_execution_evidence(
+            job_config,
+            state,
+        )
     execution_graph_nodes = (
         state.get("execution_graph_nodes")
         if isinstance(state.get("execution_graph_nodes"), list)
@@ -131,17 +172,27 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         execution_graph_nodes,
         execution_graph_edges,
     )
-    execution_graph_health = executor._build_execution_graph_health(execution_graph_dag_stats)
-    execution_graph_recommendations = executor._build_execution_graph_recommendations(execution_graph_health)
+    execution_graph_health = executor._build_execution_graph_health(
+        execution_graph_dag_stats
+    )
+    execution_graph_recommendations = executor._build_execution_graph_recommendations(
+        execution_graph_health
+    )
 
     job.results["execution_strategy"] = {
         "execution_mode": str(state.get("execution_mode") or "adaptive"),
-        "execution_plan": (state.get("execution_plan") or [])[:12] if isinstance(state.get("execution_plan"), list) else [],
+        "execution_plan": (state.get("execution_plan") or [])[:12]
+        if isinstance(state.get("execution_plan"), list)
+        else [],
         "plan_step_index": int(state.get("plan_step_index", 0) or 0),
         "plan_completed": bool(state.get("plan_completed", False)),
-        "step_events": (state.get("step_events") or [])[-300:] if isinstance(state.get("step_events"), list) else [],
+        "step_events": (state.get("step_events") or [])[-300:]
+        if isinstance(state.get("step_events"), list)
+        else [],
         "causal_experiment_planner": {
-            "enabled": bool((job.config or {}).get("causal_experiment_planner_enabled", True)),
+            "enabled": bool(
+                (job.config or {}).get("causal_experiment_planner_enabled", True)
+            ),
             "attempted": bool(state.get("causal_plan_generation_attempted", False)),
             "plan": (
                 state.get("causal_experiment_plan")
@@ -150,16 +201,22 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             ),
             "hypothesis_count": len(
                 (state.get("causal_experiment_plan") or {}).get("hypotheses", [])
-                if isinstance((state.get("causal_experiment_plan") or {}).get("hypotheses"), list)
+                if isinstance(
+                    (state.get("causal_experiment_plan") or {}).get("hypotheses"), list
+                )
                 else []
             ),
             "experiment_count": len(
                 (state.get("causal_experiment_plan") or {}).get("experiments", [])
-                if isinstance((state.get("causal_experiment_plan") or {}).get("experiments"), list)
+                if isinstance(
+                    (state.get("causal_experiment_plan") or {}).get("experiments"), list
+                )
                 else []
             ),
         },
-        "subgoals": (state.get("subgoals") or [])[:12] if isinstance(state.get("subgoals"), list) else [],
+        "subgoals": (state.get("subgoals") or [])[:12]
+        if isinstance(state.get("subgoals"), list)
+        else [],
         "subgoal_index": int(state.get("subgoal_index", 0) or 0),
         "subgoal_chain_configured": bool(state.get("subgoal_chain_configured", False)),
         "swarm": {
@@ -174,7 +231,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 else []
             ),
         },
-        "critic_notes": (state.get("critic_notes") or [])[-5:] if isinstance(state.get("critic_notes"), list) else [],
+        "critic_notes": (state.get("critic_notes") or [])[-5:]
+        if isinstance(state.get("critic_notes"), list)
+        else [],
         "critic_last_trigger": (
             state.get("critic_last_trigger")
             if isinstance(state.get("critic_last_trigger"), dict)
@@ -208,7 +267,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             "verification_attempts": int(state.get("verification_attempts", 0) or 0),
             "verification_successes": int(state.get("verification_successes", 0) or 0),
             "summarization_attempts": int(state.get("summarization_attempts", 0) or 0),
-            "summarization_successes": int(state.get("summarization_successes", 0) or 0),
+            "summarization_successes": int(
+                state.get("summarization_successes", 0) or 0
+            ),
             "nodes": execution_graph_nodes[-200:],
             "edges": execution_graph_edges[-400:],
             "dag_stats": execution_graph_dag_stats,
@@ -225,8 +286,12 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 else []
             )[-50:],
         },
-        "tool_stats": state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {},
-        "tool_priors": state.get("tool_priors") if isinstance(state.get("tool_priors"), dict) else {},
+        "tool_stats": state.get("tool_stats")
+        if isinstance(state.get("tool_stats"), dict)
+        else {},
+        "tool_priors": state.get("tool_priors")
+        if isinstance(state.get("tool_priors"), dict)
+        else {},
         "scope_guard": {
             **executor._get_scope_guard_config(job),
             "blocks": int(state.get("scope_guard_blocks", 0) or 0),
@@ -247,20 +312,26 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             "event_counts": {
                 "resolved_scope": len(
                     [
-                        e for e in (state.get("scope_events") or [])
-                        if isinstance(e, dict) and str(e.get("type") or "") == "resolved_scope"
+                        e
+                        for e in (state.get("scope_events") or [])
+                        if isinstance(e, dict)
+                        and str(e.get("type") or "") == "resolved_scope"
                     ]
                 ),
                 "tool_scope": len(
                     [
-                        e for e in (state.get("scope_events") or [])
-                        if isinstance(e, dict) and str(e.get("type") or "") == "tool_scope"
+                        e
+                        for e in (state.get("scope_events") or [])
+                        if isinstance(e, dict)
+                        and str(e.get("type") or "") == "tool_scope"
                     ]
                 ),
                 "tool_result_scope": len(
                     [
-                        e for e in (state.get("scope_events") or [])
-                        if isinstance(e, dict) and str(e.get("type") or "") == "tool_result_scope"
+                        e
+                        for e in (state.get("scope_events") or [])
+                        if isinstance(e, dict)
+                        and str(e.get("type") or "") == "tool_result_scope"
                     ]
                 ),
             },
@@ -269,7 +340,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             **executor._get_tool_selection_config(job),
             "forced_exploration": executor._get_forced_exploration_config(job),
             "cooldown": executor._get_tool_cooldown_config(job),
-            "policy_mode_effective": str(state.get("tool_selection_effective_mode") or ""),
+            "policy_mode_effective": str(
+                state.get("tool_selection_effective_mode") or ""
+            ),
             "goal_stage": str(state.get("tool_selection_goal_stage") or ""),
             "mode_override": str(state.get("tool_selection_mode_override") or ""),
             "ab_assignment": (
@@ -278,13 +351,23 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 else {}
             ),
             "runtime": {
-                "forced_exploration_attempts": int(state.get("forced_exploration_attempts", 0) or 0),
-                "forced_exploration_used": int(state.get("forced_exploration_used", 0) or 0),
-                "forced_exploration_successes": int(state.get("forced_exploration_successes", 0) or 0),
-                "forced_exploration_failures": int(state.get("forced_exploration_failures", 0) or 0),
+                "forced_exploration_attempts": int(
+                    state.get("forced_exploration_attempts", 0) or 0
+                ),
+                "forced_exploration_used": int(
+                    state.get("forced_exploration_used", 0) or 0
+                ),
+                "forced_exploration_successes": int(
+                    state.get("forced_exploration_successes", 0) or 0
+                ),
+                "forced_exploration_failures": int(
+                    state.get("forced_exploration_failures", 0) or 0
+                ),
                 "forced_exploration_rate": (
                     float(int(state.get("forced_exploration_used", 0) or 0))
-                    / float(max(1, int(state.get("forced_exploration_attempts", 0) or 0)))
+                    / float(
+                        max(1, int(state.get("forced_exploration_attempts", 0) or 0))
+                    )
                 ),
                 "forced_exploration_success_rate": (
                     float(int(state.get("forced_exploration_successes", 0) or 0))
@@ -311,14 +394,20 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                     if isinstance(state.get("tool_selection_fallback_events"), list)
                     else []
                 ),
-                "counterfactual_logged_iterations": int(state.get("counterfactual_logged_iterations", 0) or 0),
-                "counterfactual_last_iteration": int(state.get("counterfactual_last_iteration", 0) or 0),
+                "counterfactual_logged_iterations": int(
+                    state.get("counterfactual_logged_iterations", 0) or 0
+                ),
+                "counterfactual_last_iteration": int(
+                    state.get("counterfactual_last_iteration", 0) or 0
+                ),
                 "counterfactual_last": (
                     state.get("counterfactual_last", [])[:10]
                     if isinstance(state.get("counterfactual_last"), list)
                     else []
                 ),
-                "selection_explainability_logged_iterations": int(state.get("selection_explainability_logged_iterations", 0) or 0),
+                "selection_explainability_logged_iterations": int(
+                    state.get("selection_explainability_logged_iterations", 0) or 0
+                ),
                 "selection_explainability_last": (
                     state.get("selection_explainability_last")
                     if isinstance(state.get("selection_explainability_last"), dict)
@@ -327,21 +416,48 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             },
         },
         "skill_profile": {
-            "role": str(((state.get("skill_profile") or {}).get("role") or "researcher")),
-            "display_name": str(((state.get("skill_profile") or {}).get("display_name") or "")),
+            "role": str(
+                ((state.get("skill_profile") or {}).get("role") or "researcher")
+            ),
+            "display_name": str(
+                ((state.get("skill_profile") or {}).get("display_name") or "")
+            ),
             "prompt_directives": (
-                [str(x) for x in ((state.get("skill_profile") or {}).get("prompt_directives") or [])[:6]]
-                if isinstance((state.get("skill_profile") or {}).get("prompt_directives"), list)
+                [
+                    str(x)
+                    for x in (
+                        (state.get("skill_profile") or {}).get("prompt_directives")
+                        or []
+                    )[:6]
+                ]
+                if isinstance(
+                    (state.get("skill_profile") or {}).get("prompt_directives"), list
+                )
                 else []
             ),
             "preferred_tools": (
-                [str(x) for x in ((state.get("skill_profile") or {}).get("preferred_tools") or [])[:20]]
-                if isinstance((state.get("skill_profile") or {}).get("preferred_tools"), list)
+                [
+                    str(x)
+                    for x in (
+                        (state.get("skill_profile") or {}).get("preferred_tools") or []
+                    )[:20]
+                ]
+                if isinstance(
+                    (state.get("skill_profile") or {}).get("preferred_tools"), list
+                )
                 else []
             ),
             "discouraged_tools": (
-                [str(x) for x in ((state.get("skill_profile") or {}).get("discouraged_tools") or [])[:20]]
-                if isinstance((state.get("skill_profile") or {}).get("discouraged_tools"), list)
+                [
+                    str(x)
+                    for x in (
+                        (state.get("skill_profile") or {}).get("discouraged_tools")
+                        or []
+                    )[:20]
+                ]
+                if isinstance(
+                    (state.get("skill_profile") or {}).get("discouraged_tools"), list
+                )
                 else []
             ),
             "metrics": (
@@ -367,7 +483,11 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 if isinstance(state.get("memory_extraction_policy"), dict)
                 else executor._resolve_memory_extraction_policy(job)
             ),
-            "injected_count": len(state.get("injected_memories", []) if isinstance(state.get("injected_memories"), list) else []),
+            "injected_count": len(
+                state.get("injected_memories", [])
+                if isinstance(state.get("injected_memories"), list)
+                else []
+            ),
             "injected_memory_ids": (
                 [str(x) for x in (state.get("injected_memories") or [])[:20]]
                 if isinstance(state.get("injected_memories"), list)
@@ -383,7 +503,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
     if bool((job.config or {}).get("tool_selection_replay_enabled", False)):
         replay_steps = 200
         try:
-            replay_steps = int((job.config or {}).get("tool_selection_replay_steps", 200) or 200)
+            replay_steps = int(
+                (job.config or {}).get("tool_selection_replay_steps", 200) or 200
+            )
         except Exception:
             replay_steps = 200
         replay_steps = max(25, min(replay_steps, 5000))
@@ -394,13 +516,19 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
 
         replay_seed = 42
         try:
-            replay_seed = int((job.config or {}).get("tool_selection_replay_seed", 42) or 42)
+            replay_seed = int(
+                (job.config or {}).get("tool_selection_replay_seed", 42) or 42
+            )
         except Exception:
             replay_seed = 42
 
         merged_for_replay = executor._merge_tool_stats(
-            state.get("tool_priors") if isinstance(state.get("tool_priors"), dict) else {},
-            state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {},
+            state.get("tool_priors")
+            if isinstance(state.get("tool_priors"), dict)
+            else {},
+            state.get("tool_stats")
+            if isinstance(state.get("tool_stats"), dict)
+            else {},
         )
         replay = executor.simulate_tool_selection_replay(
             merged_for_replay,
@@ -427,7 +555,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         created_doc_ids = [
             _as_str(a.get("id") or a.get("document_id"))
             for a in artifacts
-            if isinstance(a, dict) and a.get("type") == "document" and (a.get("id") or a.get("document_id"))
+            if isinstance(a, dict)
+            and a.get("type") == "document"
+            and (a.get("id") or a.get("document_id"))
         ]
         created_doc_ids = [x for x in created_doc_ids if x]
 
@@ -446,12 +576,22 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         )
 
         # Standardized schema for downstream UX/workflows.
-        customer_profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else None
-        customer_name = (customer_profile or {}).get("name") if customer_profile else None
-        customer_keywords = (customer_profile or {}).get("keywords") if customer_profile else None
+        customer_profile = (
+            state.get("customer_profile")
+            if isinstance(state.get("customer_profile"), dict)
+            else None
+        )
+        customer_name = (
+            (customer_profile or {}).get("name") if customer_profile else None
+        )
+        customer_keywords = (
+            (customer_profile or {}).get("keywords") if customer_profile else None
+        )
         if not isinstance(customer_keywords, list):
             customer_keywords = []
-        customer_keywords = [str(x).strip() for x in customer_keywords if str(x).strip()]
+        customer_keywords = [
+            str(x).strip() for x in customer_keywords if str(x).strip()
+        ]
 
         def _suggest_queries() -> list[str]:
             goal = (job.goal or "").strip()
@@ -466,7 +606,11 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                     out.append(f"{kw} {goal[:120]}".strip()[:140])
             # Add a customer-name anchored query.
             if customer_name:
-                out.append(f"{customer_name} {goal[:120]}".strip()[:140] if goal else str(customer_name)[:140])
+                out.append(
+                    f"{customer_name} {goal[:120]}".strip()[:140]
+                    if goal
+                    else str(customer_name)[:140]
+                )
             # Deduplicate preserve order.
             seen: set[str] = set()
             deduped: list[str] = []
@@ -487,7 +631,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             if not did or did in seen_doc_ids:
                 continue
             seen_doc_ids.add(did)
-            top_docs_struct.append({"id": did, "title": _as_str(f.get("title")).strip()[:300]})
+            top_docs_struct.append(
+                {"id": did, "title": _as_str(f.get("title")).strip()[:300]}
+            )
             if len(top_docs_struct) >= 12:
                 break
 
@@ -532,15 +678,31 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             if len(top_insights_struct) >= 20:
                 break
 
-        causal_plan = state.get("causal_experiment_plan") if isinstance(state.get("causal_experiment_plan"), dict) else {}
-        causal_experiments = causal_plan.get("experiments") if isinstance(causal_plan.get("experiments"), list) else []
-        causal_priority = causal_plan.get("priority_order") if isinstance(causal_plan.get("priority_order"), list) else []
+        causal_plan = (
+            state.get("causal_experiment_plan")
+            if isinstance(state.get("causal_experiment_plan"), dict)
+            else {}
+        )
+        causal_experiments = (
+            causal_plan.get("experiments")
+            if isinstance(causal_plan.get("experiments"), list)
+            else []
+        )
+        causal_priority = (
+            causal_plan.get("priority_order")
+            if isinstance(causal_plan.get("priority_order"), list)
+            else []
+        )
         exp_map = {
             str(e.get("id") or "").strip(): e
             for e in causal_experiments
             if isinstance(e, dict) and str(e.get("id") or "").strip()
         }
-        ordered_experiment_ids = [str(x).strip() for x in causal_priority if str(x).strip() in set(exp_map.keys())]
+        ordered_experiment_ids = [
+            str(x).strip()
+            for x in causal_priority
+            if str(x).strip() in set(exp_map.keys())
+        ]
         if not ordered_experiment_ids:
             ordered_experiment_ids = list(exp_map.keys())
         prioritized_experiments = []
@@ -551,10 +713,16 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             prioritized_experiments.append(
                 {
                     "id": eid,
-                    "hypothesis_id": str(exp.get("hypothesis_id") or "").strip() or None,
+                    "hypothesis_id": str(exp.get("hypothesis_id") or "").strip()
+                    or None,
                     "name": str(exp.get("name") or "").strip()[:220],
-                    "minimal_design": str(exp.get("minimal_design") or "").strip()[:280],
-                    "estimated_effort": str(exp.get("estimated_effort") or "").strip()[:20] or None,
+                    "minimal_design": str(exp.get("minimal_design") or "").strip()[
+                        :280
+                    ],
+                    "estimated_effort": str(exp.get("estimated_effort") or "").strip()[
+                        :20
+                    ]
+                    or None,
                     "expected_evidence": (
                         exp.get("expected_evidence")
                         if isinstance(exp.get("expected_evidence"), dict)
@@ -569,10 +737,16 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             "Design a minimal experiment plan (data, evaluation, timeline).",
         ]
         if prioritized_experiments:
-            next_steps = [f"Run prioritized causal experiment: {str(prioritized_experiments[0].get('name') or '')[:120]}"]
+            next_steps = [
+                f"Run prioritized causal experiment: {str(prioritized_experiments[0].get('name') or '')[:120]}"
+            ]
             if len(prioritized_experiments) > 1:
-                next_steps.append(f"Then run: {str(prioritized_experiments[1].get('name') or '')[:120]}")
-            next_steps.append("Update hypothesis confidence based on support/falsification evidence.")
+                next_steps.append(
+                    f"Then run: {str(prioritized_experiments[1].get('name') or '')[:120]}"
+                )
+            next_steps.append(
+                "Update hypothesis confidence based on support/falsification evidence."
+            )
 
         job.results["research_bundle"] = {
             "customer": {"name": customer_name, "keywords": customer_keywords[:30]},
@@ -600,11 +774,15 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         }
 
         # Optional reading list auto-population (deterministic; no extra LLM calls).
-        reading_list_name = str((job.config or {}).get("reading_list_name") or "").strip()
-        if reading_list_name and not any(isinstance(a, dict) and a.get("type") == "reading_list" for a in artifacts):
+        reading_list_name = str(
+            (job.config or {}).get("reading_list_name") or ""
+        ).strip()
+        if reading_list_name and not any(
+            isinstance(a, dict) and a.get("type") == "reading_list" for a in artifacts
+        ):
             try:
-                from app.models.reading_list import ReadingList, ReadingListItem
                 from app.models.document import Document
+                from app.models.reading_list import ReadingList, ReadingListItem
 
                 rl_res = await db.execute(
                     select(ReadingList).where(
@@ -614,14 +792,24 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 )
                 rl = rl_res.scalar_one_or_none()
                 if not rl:
-                    rl = ReadingList(user_id=job.user_id, name=reading_list_name, description=None, source_id=None)
+                    rl = ReadingList(
+                        user_id=job.user_id,
+                        name=reading_list_name,
+                        description=None,
+                        source_id=None,
+                    )
                     db.add(rl)
                     await db.flush()
 
                 max_pos = int(
-                    (await db.execute(
-                        select(func.max(ReadingListItem.position)).where(ReadingListItem.reading_list_id == rl.id)
-                    )).scalar() or 0
+                    (
+                        await db.execute(
+                            select(func.max(ReadingListItem.position)).where(
+                                ReadingListItem.reading_list_id == rl.id
+                            )
+                        )
+                    ).scalar()
+                    or 0
                 )
 
                 added = 0
@@ -673,17 +861,38 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
 
                 await db.commit()
                 if added > 0 or rl:
-                    artifacts.append({"type": "reading_list", "id": str(rl.id), "name": rl.name, "items_added": added})
-                    job.results["research_bundle"]["reading_list"] = {"id": str(rl.id), "name": rl.name, "items_added": added}
+                    artifacts.append(
+                        {
+                            "type": "reading_list",
+                            "id": str(rl.id),
+                            "name": rl.name,
+                            "items_added": added,
+                        }
+                    )
+                    job.results["research_bundle"]["reading_list"] = {
+                        "id": str(rl.id),
+                        "name": rl.name,
+                        "items_added": added,
+                    }
             except Exception as exc:
                 logger.warning(f"Failed to auto-populate reading list: {exc}")
 
         # Optional auto-brief persistence (deterministic; no extra LLM calls).
         persist = bool((job.config or {}).get("persist_artifacts", False))
         if persist and not created_doc_ids:
-            customer_profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else None
-            profile_name = (customer_profile or {}).get("name") if customer_profile else None
-            title = f"Customer Research Brief — {profile_name}" if profile_name else "Customer Research Brief"
+            customer_profile = (
+                state.get("customer_profile")
+                if isinstance(state.get("customer_profile"), dict)
+                else None
+            )
+            profile_name = (
+                (customer_profile or {}).get("name") if customer_profile else None
+            )
+            title = (
+                f"Customer Research Brief — {profile_name}"
+                if profile_name
+                else "Customer Research Brief"
+            )
 
             customer_context = (state.get("customer_context") or "").strip()
             brief_lines: list[str] = []
@@ -712,14 +921,22 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                     brief_lines.append(f"- {t}")
             brief_lines.append("")
             brief_lines.append("## Next steps")
-            brief_lines.append("- Validate the top insights against the customer constraints.")
-            brief_lines.append("- Turn the most promising direction into an experiment plan (metrics + timeline).")
+            brief_lines.append(
+                "- Validate the top insights against the customer constraints."
+            )
+            brief_lines.append(
+                "- Turn the most promising direction into an experiment plan (metrics + timeline)."
+            )
 
             content = "\n".join(brief_lines).strip() + "\n"
             try:
                 from app.models.document import Document
 
-                notes_source = await executor.document_service._get_or_create_agent_notes_source(db)
+                notes_source = (
+                    await executor.document_service._get_or_create_agent_notes_source(
+                        db
+                    )
+                )
                 content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
                 doc = Document(
                     title=title,
@@ -745,11 +962,17 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 await db.refresh(doc)
 
                 try:
-                    await executor.document_service.reprocess_document(doc.id, db, user_id=job.user_id)
+                    await executor.document_service.reprocess_document(
+                        doc.id, db, user_id=job.user_id
+                    )
                 except Exception as exc:
-                    logger.warning(f"Failed to process research brief embeddings: {exc}")
+                    logger.warning(
+                        f"Failed to process research brief embeddings: {exc}"
+                    )
 
-                artifacts.append({"type": "document", "id": str(doc.id), "title": doc.title})
+                artifacts.append(
+                    {"type": "document", "id": str(doc.id), "title": doc.title}
+                )
                 job.results["research"]["created_documents"] = [str(doc.id)]
                 job.results["research"]["brief_document_id"] = str(doc.id)
             except Exception as exc:
@@ -758,18 +981,60 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
     # Ensure any finalize-time artifact additions are visible to callers.
     state["artifacts"] = artifacts
     job.output_artifacts = artifacts
+    if (
+        bool(job_config.get("coding_harness_enabled"))
+        and job.status == AgentJobStatus.PAUSED.value
+    ):
+        try:
+            from app.services.agent_coding_durable_checkpoint_service import (
+                agent_coding_durable_checkpoint_service,
+            )
+
+            await agent_coding_durable_checkpoint_service.persist(
+                executor,
+                job,
+                state,
+                label=f"Paused at iteration {int(job.iteration or 0)}",
+                reason="paused",
+                db=None,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Failed to persist paused coding checkpoint for job {job.id}: {exc}"
+            )
+    if bool(job_config.get("coding_harness_enabled")):
+        try:
+            from app.services.agent_coding_workspace_session_service import (
+                agent_coding_workspace_session_service,
+            )
+
+            await agent_coding_workspace_session_service.persist_candidate_snapshot(
+                executor,
+                job,
+                state,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Failed to persist coding candidate snapshot for job {job.id}: {exc}"
+            )
 
     # Re-evaluate contract after finalize-time result/artifact mutations.
     final_contract_eval = executor._evaluate_goal_contract(job, state)
     state["goal_contract_last"] = final_contract_eval
-    strict_contract = bool((final_contract_eval.get("contract") or {}).get("strict_completion", False))
+    strict_contract = bool(
+        (final_contract_eval.get("contract") or {}).get("strict_completion", False)
+    )
     if (
         job.status not in {AgentJobStatus.PAUSED.value, AgentJobStatus.CANCELLED.value}
         and strict_contract
         and bool(final_contract_eval.get("enabled"))
         and not bool(final_contract_eval.get("satisfied"))
     ):
-        missing = final_contract_eval.get("missing") if isinstance(final_contract_eval.get("missing"), list) else []
+        missing = (
+            final_contract_eval.get("missing")
+            if isinstance(final_contract_eval.get("missing"), list)
+            else []
+        )
         job.status = AgentJobStatus.FAILED.value
         job.error = f"Goal contract unmet: {', '.join([str(x) for x in missing[:5]])}"
 
@@ -791,12 +1056,17 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             if isinstance(final_contract_eval.get("metrics"), dict)
             else {}
         ),
-        "satisfied_iteration": int(state.get("goal_contract_satisfied_iteration", 0) or 0),
+        "satisfied_iteration": int(
+            state.get("goal_contract_satisfied_iteration", 0) or 0
+        ),
     }
 
     if job.status != AgentJobStatus.PAUSED.value and not job.completed_at:
         job.completed_at = datetime.utcnow()
     job.results["executive_digest"] = executor._build_executive_digest(job, state)
+    job.results["evaluation_outcome"] = autonomous_rnd_trajectory_adapter.build_outcome(
+        job
+    )
 
     # Persist tool-learning signal for future jobs.
     try:
@@ -809,6 +1079,7 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
     if job_id_str in executor._data_analysis_tools:
         try:
             from app.services.data_sandbox_service import sandbox_manager
+
             sandbox_manager.cleanup(job_id_str)
         except Exception as e:
             logger.warning(f"Failed to cleanup data sandbox for job {job.id}: {e}")
@@ -824,7 +1095,11 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
     )
     job_status_token = str(job.status or "").strip().lower()
     extract_statuses = (
-        [str(x).strip().lower() for x in (memory_policy.get("extract_on_statuses") or []) if str(x).strip()]
+        [
+            str(x).strip().lower()
+            for x in (memory_policy.get("extract_on_statuses") or [])
+            if str(x).strip()
+        ]
         if isinstance(memory_policy, dict)
         else []
     )
@@ -837,15 +1112,33 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         try:
             allowlist: Optional[List[str]] = None
             if job_status_token == AgentJobStatus.FAILED.value:
-                failed_types = memory_policy.get("failed_extraction_types") if isinstance(memory_policy, dict) else None
+                failed_types = (
+                    memory_policy.get("failed_extraction_types")
+                    if isinstance(memory_policy, dict)
+                    else None
+                )
                 if isinstance(failed_types, list):
-                    allowlist = [str(x).strip().lower() for x in failed_types if str(x).strip()]
+                    allowlist = [
+                        str(x).strip().lower() for x in failed_types if str(x).strip()
+                    ]
             elif job_status_token == AgentJobStatus.COMPLETED.value:
-                completed_types = memory_policy.get("completed_extraction_types") if isinstance(memory_policy, dict) else None
+                completed_types = (
+                    memory_policy.get("completed_extraction_types")
+                    if isinstance(memory_policy, dict)
+                    else None
+                )
                 if isinstance(completed_types, list) and completed_types:
-                    allowlist = [str(x).strip().lower() for x in completed_types if str(x).strip()]
+                    allowlist = [
+                        str(x).strip().lower()
+                        for x in completed_types
+                        if str(x).strip()
+                    ]
 
-            plan_rows = state.get("execution_plan") if isinstance(state.get("execution_plan"), list) else []
+            plan_rows = (
+                state.get("execution_plan")
+                if isinstance(state.get("execution_plan"), list)
+                else []
+            )
             extraction_context = {
                 "execution_mode": str(state.get("execution_mode") or "adaptive"),
                 "plan_completed": bool(state.get("plan_completed", False)),
@@ -853,43 +1146,60 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 "plan_steps_total": len(plan_rows),
             }
             extraction_stats: Dict[str, Any] = {}
-            extracted_memories = await agent_job_memory_service.extract_memories_from_job(
-                job=job,
-                user_id=str(job.user_id),
-                db=db,
-                memory_types_allowlist=allowlist,
-                context_overrides=extraction_context,
-                extraction_reason=f"auto_{job_status_token}",
-                stats_out=extraction_stats,
+            extracted_memories = (
+                await agent_job_memory_service.extract_memories_from_job(
+                    job=job,
+                    user_id=str(job.user_id),
+                    db=db,
+                    memory_types_allowlist=allowlist,
+                    context_overrides=extraction_context,
+                    extraction_reason=f"auto_{job_status_token}",
+                    stats_out=extraction_stats,
+                )
             )
             extraction_summary = {
                 "status": "completed",
                 "reason": f"auto_{job_status_token}",
                 "created_count": len(extracted_memories),
                 "allowlist": allowlist[:12] if isinstance(allowlist, list) else [],
-                "extracted_types": list(set(str(m.memory_type) for m in extracted_memories))[:12],
+                "extracted_types": list(
+                    set(str(m.memory_type) for m in extracted_memories)
+                )[:12],
                 "parsed_count": int(extraction_stats.get("parsed_count", 0) or 0),
                 "candidate_count": int(extraction_stats.get("candidate_count", 0) or 0),
-                "skipped_duplicates": int(extraction_stats.get("skipped_duplicates", 0) or 0),
+                "skipped_duplicates": int(
+                    extraction_stats.get("skipped_duplicates", 0) or 0
+                ),
                 "dedup_existing_signature_count": int(
                     extraction_stats.get("dedup_existing_signature_count", 0) or 0
                 ),
-                "is_relaunch_chain": bool(extraction_stats.get("is_relaunch_chain", False)),
+                "is_relaunch_chain": bool(
+                    extraction_stats.get("is_relaunch_chain", False)
+                ),
                 "relaunch_root_job_id": (
-                    str(extraction_stats.get("relaunch_root_job_id") or "").strip() or None
+                    str(extraction_stats.get("relaunch_root_job_id") or "").strip()
+                    or None
                 ),
                 "at": datetime.utcnow().isoformat(),
             }
             state["memory_extraction"] = extraction_summary
             if extracted_memories:
-                logger.info(f"Extracted {len(extracted_memories)} memories from job {job.id}")
-                job.add_log_entry({
-                    "phase": "memory_extraction",
-                    "memories_created": len(extracted_memories),
-                    "memory_types": list(set(m.memory_type for m in extracted_memories)),
-                    "reason": extraction_summary.get("reason"),
-                    "skipped_duplicates": int(extraction_summary.get("skipped_duplicates", 0) or 0),
-                })
+                logger.info(
+                    f"Extracted {len(extracted_memories)} memories from job {job.id}"
+                )
+                job.add_log_entry(
+                    {
+                        "phase": "memory_extraction",
+                        "memories_created": len(extracted_memories),
+                        "memory_types": list(
+                            set(m.memory_type for m in extracted_memories)
+                        ),
+                        "reason": extraction_summary.get("reason"),
+                        "skipped_duplicates": int(
+                            extraction_summary.get("skipped_duplicates", 0) or 0
+                        ),
+                    }
+                )
             results_payload = job.results if isinstance(job.results, dict) else {}
             exec_strategy = (
                 results_payload.get("execution_strategy")
@@ -901,7 +1211,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 if isinstance(exec_strategy.get("memory_persistence"), dict)
                 else {}
             )
-            mem_persistence["policy"] = memory_policy if isinstance(memory_policy, dict) else {}
+            mem_persistence["policy"] = (
+                memory_policy if isinstance(memory_policy, dict) else {}
+            )
             mem_persistence["extraction"] = extraction_summary
             mem_persistence["injected_count"] = len(
                 state.get("injected_memories", [])
@@ -933,7 +1245,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                     if isinstance(exec_strategy.get("memory_persistence"), dict)
                     else {}
                 )
-                mem_persistence["policy"] = memory_policy if isinstance(memory_policy, dict) else {}
+                mem_persistence["policy"] = (
+                    memory_policy if isinstance(memory_policy, dict) else {}
+                )
                 mem_persistence["extraction"] = extraction_error
                 exec_strategy["memory_persistence"] = mem_persistence
                 results_payload["execution_strategy"] = exec_strategy

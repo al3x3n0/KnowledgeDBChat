@@ -17,13 +17,19 @@ Two generation paths:
 """
 
 import asyncio
-import httpx
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
-from loguru import logger
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+import httpx
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.core.config import settings
 from app.models.llm_usage import LLMUsageEvent
@@ -33,7 +39,6 @@ from app.services.llm_routing import (
     resolve_tier_overrides,
 )
 from app.utils.exceptions import LLMServiceError
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 _LLM_SEMAPHORE = asyncio.Semaphore(settings.LLM_MAX_CONCURRENCY)
 
@@ -63,6 +68,7 @@ LLM_TASK_TYPES = [
 @dataclass
 class UserLLMSettings:
     """User-specific LLM settings that override system defaults."""
+
     provider: Optional[str] = None  # "ollama", "deepseek", "openai", or custom
     model: Optional[str] = None
     api_url: Optional[str] = None
@@ -90,11 +96,18 @@ class UserLLMSettings:
 
     def has_custom_settings(self) -> bool:
         """Check if any custom settings are configured."""
-        return any([
-            self.provider, self.model, self.api_url,
-            self.api_key, self.temperature is not None, self.max_tokens is not None,
-            self.task_models, self.task_providers
-        ])
+        return any(
+            [
+                self.provider,
+                self.model,
+                self.api_url,
+                self.api_key,
+                self.temperature is not None,
+                self.max_tokens is not None,
+                self.task_models,
+                self.task_providers,
+            ]
+        )
 
     def get_model_for_task(self, task_type: str) -> Optional[str]:
         """
@@ -131,7 +144,6 @@ class LLMService:
         self._unhealthy_until: Dict[str, float] = {}
         self._unhealthy_reason: Dict[str, str] = {}
         self._unhealthy_lock = asyncio.Lock()
-    
 
     async def _is_healthy(self, key: str) -> bool:
         try:
@@ -148,7 +160,9 @@ class LLMService:
                 return True
             return False
 
-    async def _mark_unhealthy(self, key: str, *, cooldown_seconds: int, reason: str) -> None:
+    async def _mark_unhealthy(
+        self, key: str, *, cooldown_seconds: int, reason: str
+    ) -> None:
         cooldown_seconds = max(5, min(int(cooldown_seconds or 60), 3600))
         try:
             now = asyncio.get_event_loop().time()
@@ -156,16 +170,19 @@ class LLMService:
             now = 0.0
         async with self._unhealthy_lock:
             self._unhealthy_until[key] = float(now) + float(cooldown_seconds)
-            self._unhealthy_reason[key] = str(reason or '')[:200]
+            self._unhealthy_reason[key] = str(reason or "")[:200]
 
     def _health_key(self, *, provider: str, api_url: Optional[str]) -> str:
-        p = (provider or '').strip().lower() or 'unknown'
-        u = (api_url or '').strip()
+        p = (provider or "").strip().lower() or "unknown"
+        u = (api_url or "").strip()
         return f"{p}:{u}" if u else p
 
-    async def _tier_overrides_for(self, attempt_tier: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    async def _tier_overrides_for(
+        self, attempt_tier: Optional[str]
+    ) -> tuple[Optional[str], Optional[str]]:
         try:
             from app.core.feature_flags import get_str as _get_str
+
             return await resolve_tier_overrides(_get_str, attempt_tier)
         except Exception:
             return None, None
@@ -279,20 +296,26 @@ class LLMService:
         if query is None:
             query = prompt or user_message
         if query is None:
-            raise TypeError("generate_response requires `query` (or `prompt` / `user_message`).")
+            raise TypeError(
+                "generate_response requires `query` (or `prompt` / `user_message`)."
+            )
 
         # Best-effort: if a DB session and user_id are provided, auto-load per-user LLM preferences.
         # This keeps user settings applied even when call sites don't explicitly pass `user_settings=`.
         if user_settings is None and user_id is not None and db is not None:
             try:
                 from uuid import UUID as _UUID
+
                 from sqlalchemy import select as _select
+
                 from app.models.memory import UserPreferences as _UserPreferences
 
                 uid = user_id
                 if isinstance(uid, str):
                     uid = _UUID(uid)
-                prefs_res = await db.execute(_select(_UserPreferences).where(_UserPreferences.user_id == uid))
+                prefs_res = await db.execute(
+                    _select(_UserPreferences).where(_UserPreferences.user_id == uid)
+                )
                 prefs = prefs_res.scalar_one_or_none()
                 if prefs is not None:
                     user_settings = UserLLMSettings.from_preferences(prefs)
@@ -301,11 +324,19 @@ class LLMService:
 
         routing_origin = None
         if isinstance(routing, dict):
-            routing_origin = routing.get("_origin") if isinstance(routing.get("_origin"), dict) else None
+            routing_origin = (
+                routing.get("_origin")
+                if isinstance(routing.get("_origin"), dict)
+                else None
+            )
 
         routing_cfg = coerce_routing_config(routing)
         tier = routing_cfg.get("tier")
-        fallback_tiers = routing_cfg.get("fallback_tiers") if isinstance(routing_cfg.get("fallback_tiers"), list) else []
+        fallback_tiers = (
+            routing_cfg.get("fallback_tiers")
+            if isinstance(routing_cfg.get("fallback_tiers"), list)
+            else []
+        )
 
         timeout_seconds = routing_cfg.get("timeout_seconds")
         max_tokens_cap = routing_cfg.get("max_tokens_cap")
@@ -315,9 +346,12 @@ class LLMService:
 
         last_err: Optional[Exception] = None
 
-        async def _tier_overrides(t: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        async def _tier_overrides(
+            t: Optional[str],
+        ) -> tuple[Optional[str], Optional[str]]:
             try:
                 from app.core.feature_flags import get_str as _get_str
+
                 return await resolve_tier_overrides(_get_str, t)
             except Exception:
                 return None, None
@@ -328,7 +362,9 @@ class LLMService:
             attempt_provider = provider or tier_provider
             # If this provider/api_url recently failed, skip it and try the next tier.
             try:
-                hk = self._health_key(provider=str(attempt_provider or ""), api_url=api_url)
+                hk = self._health_key(
+                    provider=str(attempt_provider or ""), api_url=api_url
+                )
                 if not await self._is_healthy(hk):
                     continue
             except Exception:
@@ -379,9 +415,21 @@ class LLMService:
                         "attempt_provider_source": attempt_provider_source,
                         "attempt_model_source": attempt_model_source,
                         "origin": routing_origin,
-                        "agent_id": (routing_origin.get("agent_id") if isinstance(routing_origin, dict) else None),
-                        "experiment_id": (routing_origin.get("experiment_id") if isinstance(routing_origin, dict) else None),
-                        "experiment_variant_id": (routing_origin.get("experiment_variant_id") if isinstance(routing_origin, dict) else None),
+                        "agent_id": (
+                            routing_origin.get("agent_id")
+                            if isinstance(routing_origin, dict)
+                            else None
+                        ),
+                        "experiment_id": (
+                            routing_origin.get("experiment_id")
+                            if isinstance(routing_origin, dict)
+                            else None
+                        ),
+                        "experiment_variant_id": (
+                            routing_origin.get("experiment_variant_id")
+                            if isinstance(routing_origin, dict)
+                            else None
+                        ),
                     },
                     timeout_seconds=timeout_seconds,
                     max_tokens_cap=max_tokens_cap,
@@ -392,7 +440,9 @@ class LLMService:
                         "system_prompt": self._clip_snapshot(system_prompt),
                         "query": self._clip_snapshot(query),
                         "context": self._clip_snapshot(context),
-                        "conversation_history": self._clip_snapshot(conversation_history),
+                        "conversation_history": self._clip_snapshot(
+                            conversation_history
+                        ),
                         "tier": attempt_tier,
                     },
                     provider=attempt_provider,
@@ -400,7 +450,9 @@ class LLMService:
                     task_type=task_type,
                     user_id=user_id,
                     response_text=result_text,
-                    latency_ms=int((asyncio.get_event_loop().time() - attempt_started) * 1000),
+                    latency_ms=int(
+                        (asyncio.get_event_loop().time() - attempt_started) * 1000
+                    ),
                     snapshot_context=snapshot_context,
                 )
                 return result_text
@@ -417,12 +469,18 @@ class LLMService:
                     task_type=task_type,
                     user_id=user_id,
                     error=str(e),
-                    latency_ms=int((asyncio.get_event_loop().time() - attempt_started) * 1000),
+                    latency_ms=int(
+                        (asyncio.get_event_loop().time() - attempt_started) * 1000
+                    ),
                     snapshot_context=snapshot_context,
                 )
                 try:
-                    k = self._health_key(provider=str(attempt_provider or ""), api_url=api_url)
-                    await self._mark_unhealthy(k, cooldown_seconds=cooldown_seconds, reason=str(e))
+                    k = self._health_key(
+                        provider=str(attempt_provider or ""), api_url=api_url
+                    )
+                    await self._mark_unhealthy(
+                        k, cooldown_seconds=cooldown_seconds, reason=str(e)
+                    )
                 except Exception:
                     pass
                 last_err = e
@@ -534,6 +592,7 @@ class LLMService:
             if effective_model is None and effective_provider == "ollama":
                 try:
                     from app.core.feature_flags import get_str as _get_str
+
                     effective_model = await _get_str("llm_default_model")
                 except Exception:
                     effective_model = None
@@ -544,7 +603,9 @@ class LLMService:
                     int(effective_max_tokens or max_tokens_cap), int(max_tokens_cap)
                 )
 
-            hk = self._health_key(provider=effective_provider, api_url=effective_api_url)
+            hk = self._health_key(
+                provider=effective_provider, api_url=effective_api_url
+            )
             try:
                 if not await self._is_healthy(hk):
                     continue
@@ -587,7 +648,9 @@ class LLMService:
             except Exception as e:
                 error_text = str(e)
                 logger.error(f"Error in structured LLM generation: {e}")
-                last_err = LLMServiceError(f"Failed to generate structured response: {e}")
+                last_err = LLMServiceError(
+                    f"Failed to generate structured response: {e}"
+                )
             finally:
                 if db is not None:
                     try:
@@ -597,11 +660,11 @@ class LLMService:
                         event = LLMUsageEvent(
                             user_id=user_id,
                             provider=(
-                                completion.provider if completion else effective_provider
+                                completion.provider
+                                if completion
+                                else effective_provider
                             ),
-                            model=(
-                                completion.model if completion else effective_model
-                            ),
+                            model=(completion.model if completion else effective_model),
                             task_type=task_type,
                             prompt_tokens=(
                                 completion.prompt_tokens if completion else None
@@ -628,7 +691,9 @@ class LLMService:
                                     len(completion.tool_calls) if completion else None
                                 ),
                                 "cache_read_input_tokens": (
-                                    (completion.raw or {}).get("cache_read_input_tokens")
+                                    (completion.raw or {}).get(
+                                        "cache_read_input_tokens"
+                                    )
                                     if completion
                                     else None
                                 ),
@@ -662,9 +727,7 @@ class LLMService:
                             }
                             for m in messages
                         ],
-                        "tool_names": [
-                            str(t.get("name") or "") for t in (tools or [])
-                        ],
+                        "tool_names": [str(t.get("name") or "") for t in (tools or [])],
                         "has_schema": bool(response_schema),
                         "tier": attempt_tier,
                     },
@@ -777,7 +840,9 @@ class LLMService:
                     except Exception:
                         model = None
                 model = model or self.default_model
-                temperature = temperature if temperature is not None else settings.TEMPERATURE
+                temperature = (
+                    temperature if temperature is not None else settings.TEMPERATURE
+                )
                 max_tokens = max_tokens or settings.MAX_RESPONSE_LENGTH
 
                 # Routing decision provenance (best-effort)
@@ -799,17 +864,33 @@ class LLMService:
                     # provider source
                     if provider_override:
                         routing_decision["provider_source"] = aps or "provider_override"
-                    elif user_settings and getattr(user_settings, "has_custom_settings")() and user_settings.get_provider_for_task(task_type):
+                    elif (
+                        user_settings
+                        and getattr(user_settings, "has_custom_settings")()
+                        and user_settings.get_provider_for_task(task_type)
+                    ):
                         routing_decision["provider_source"] = "user_task_provider"
-                    elif user_settings and getattr(user_settings, "has_custom_settings")() and getattr(user_settings, "provider", None):
+                    elif (
+                        user_settings
+                        and getattr(user_settings, "has_custom_settings")()
+                        and getattr(user_settings, "provider", None)
+                    ):
                         routing_decision["provider_source"] = "user_provider"
                     else:
                         routing_decision["provider_source"] = "system_default_provider"
 
                     # model source
-                    if user_settings and getattr(user_settings, "has_custom_settings")() and user_settings.get_model_for_task(task_type):
+                    if (
+                        user_settings
+                        and getattr(user_settings, "has_custom_settings")()
+                        and user_settings.get_model_for_task(task_type)
+                    ):
                         routing_decision["model_source"] = "user_task_model"
-                    elif user_settings and getattr(user_settings, "has_custom_settings")() and getattr(user_settings, "model", None):
+                    elif (
+                        user_settings
+                        and getattr(user_settings, "has_custom_settings")()
+                        and getattr(user_settings, "model", None)
+                    ):
                         routing_decision["model_source"] = "user_model"
                     elif model and ams:
                         routing_decision["model_source"] = ams
@@ -832,7 +913,9 @@ class LLMService:
                     "kimi": ("kimi", "moonshot"),
                 }
                 if effective_provider in _sdk_provider_model_prefixes:
-                    from app.services.llm_providers import build_provider as _build_provider
+                    from app.services.llm_providers import (
+                        build_provider as _build_provider,
+                    )
 
                     provider_used = effective_provider
                     chat_messages = self._build_chat_messages(
@@ -843,10 +926,14 @@ class LLMService:
                         kg_context=kg_context,
                         system_prompt=system_prompt,
                     )
-                    input_chars = sum(len(m.get("content") or "") for m in chat_messages)
+                    input_chars = sum(
+                        len(m.get("content") or "") for m in chat_messages
+                    )
                     prefixes = _sdk_provider_model_prefixes[effective_provider]
                     native_model = (
-                        model if model and str(model).lower().startswith(prefixes) else None
+                        model
+                        if model and str(model).lower().startswith(prefixes)
+                        else None
                     )
                     llm_provider = _build_provider(
                         effective_provider,
@@ -905,11 +992,16 @@ class LLMService:
                 use_deepseek = (
                     effective_provider == "deepseek"
                     or effective_provider == "openai"
-                    or (prefer_deepseek and bool(getattr(settings, "DEEPSEEK_API_KEY", None)))
+                    or (
+                        prefer_deepseek
+                        and bool(getattr(settings, "DEEPSEEK_API_KEY", None))
+                    )
                 )
 
                 if use_deepseek:
-                    provider_used = "deepseek" if effective_provider == "deepseek" else "openai"
+                    provider_used = (
+                        "deepseek" if effective_provider == "deepseek" else "openai"
+                    )
                     messages = self._build_chat_messages(
                         query=query,
                         context=context,
@@ -927,7 +1019,9 @@ class LLMService:
                         model=model_used,
                         messages=messages,
                         temperature=temperature,
-                        max_tokens=(max_tokens or settings.DEEPSEEK_MAX_RESPONSE_TOKENS),
+                        max_tokens=(
+                            max_tokens or settings.DEEPSEEK_MAX_RESPONSE_TOKENS
+                        ),
                         api_key_override=api_key,
                         api_base_override=api_base,
                         timeout_seconds=timeout_seconds,
@@ -967,9 +1061,15 @@ class LLMService:
                 output_chars = len(result or "")
                 if isinstance(meta, dict):
                     model_used = meta.get("model") or model_used
-                    prompt_tokens = meta.get("prompt_eval_count") or meta.get("prompt_tokens")
-                    completion_tokens = meta.get("eval_count") or meta.get("completion_tokens")
-                    if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
+                    prompt_tokens = meta.get("prompt_eval_count") or meta.get(
+                        "prompt_tokens"
+                    )
+                    completion_tokens = meta.get("eval_count") or meta.get(
+                        "completion_tokens"
+                    )
+                    if isinstance(prompt_tokens, int) and isinstance(
+                        completion_tokens, int
+                    ):
                         total_tokens = prompt_tokens + completion_tokens
                     extra = meta
                 return result
@@ -983,7 +1083,9 @@ class LLMService:
         finally:
             if db is not None and provider_used is not None:
                 try:
-                    latency_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+                    latency_ms = int(
+                        (asyncio.get_event_loop().time() - start_time) * 1000
+                    )
                     event_extra: Optional[Dict[str, Any]]
                     if isinstance(extra, dict):
                         event_extra = dict(extra)
@@ -1037,7 +1139,9 @@ class LLMService:
         prompt_parts = []
 
         # System instruction
-        system_instruction = system_prompt or """You are a helpful AI assistant for an organizational knowledge base. Your role is to answer questions based on the provided context from internal documents and previous conversation history.
+        system_instruction = (
+            system_prompt
+            or """You are a helpful AI assistant for an organizational knowledge base. Your role is to answer questions based on the provided context from internal documents and previous conversation history.
 
 Guidelines:
 1. Answer questions accurately based on the provided context
@@ -1053,12 +1157,15 @@ Citation format:
 - The context includes entries labeled “Source 1”, “Source 2”, etc.
 - When you use a source, add an inline citation like [1] or [2] matching the source number.
 - If you quote or rely on a specific claim, include a short evidence excerpt and cite it (e.g., “…excerpt…” [3])."""
+        )
 
         prompt_parts.append(system_instruction)
 
         # Add memory context if provided (most relevant for personalization)
         if memory_context:
-            prompt_parts.append(f"\nRelevant memories from past conversations:\n{memory_context}")
+            prompt_parts.append(
+                f"\nRelevant memories from past conversations:\n{memory_context}"
+            )
 
         # Add context if provided
         if context:
@@ -1098,7 +1205,9 @@ Citation format:
 
         user_parts: List[str] = []
         if memory_context:
-            user_parts.append(f"Relevant memories from past conversations:\n{memory_context}")
+            user_parts.append(
+                f"Relevant memories from past conversations:\n{memory_context}"
+            )
         if context:
             user_parts.append(f"Context from knowledge base:\n{context}")
         if kg_context:
@@ -1111,12 +1220,12 @@ Citation format:
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": "\n\n".join(user_parts)},
         ]
-    
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
-        reraise=True
+        reraise=True,
     )
     async def _make_ollama_request(
         self,
@@ -1158,15 +1267,12 @@ Citation format:
                     # Force CPU usage and limit memory for Mac compatibility
                     "num_gpu": 0,  # Use CPU only (important for Mac)
                     "num_thread": 4,  # Limit CPU threads
-                    "numa": False  # Disable NUMA (not needed on Mac)
-                }
+                    "numa": False,  # Disable NUMA (not needed on Mac)
+                },
             }
 
-            response = await self.client.post(
-                f"{base_url}/api/generate",
-                json=payload
-            )
-            
+            response = await self.client.post(f"{base_url}/api/generate", json=payload)
+
             response.raise_for_status()
             result = response.json()
             text = (result.get("response", "") or "").strip()
@@ -1182,11 +1288,13 @@ Citation format:
                 "eval_duration": result.get("eval_duration"),
             }
             return text, meta
-                
+
         except httpx.HTTPStatusError as e:
-            logger.error(f"Ollama API error: {e.response.status_code} - {e.response.text}")
+            logger.error(
+                f"Ollama API error: {e.response.status_code} - {e.response.text}"
+            )
             raise LLMServiceError(f"Ollama API error: {e.response.status_code}")
-        except httpx.TimeoutException as e:
+        except httpx.TimeoutException:
             logger.error("LLM request timed out")
             raise LLMServiceError("Request timed out")
         except httpx.RequestError as e:
@@ -1216,7 +1324,11 @@ Citation format:
 
         api_base = api_base_override or settings.DEEPSEEK_API_BASE
         url = f"{api_base.rstrip('/')}/chat/completions"
-        timeout = int(timeout_seconds) if timeout_seconds is not None else int(settings.DEEPSEEK_TIMEOUT_SECONDS or 120)
+        timeout = (
+            int(timeout_seconds)
+            if timeout_seconds is not None
+            else int(settings.DEEPSEEK_TIMEOUT_SECONDS or 120)
+        )
 
         payload = {
             "model": model or settings.DEEPSEEK_MODEL,
@@ -1233,15 +1345,13 @@ Citation format:
         }
 
         try:
-            response = await self.client.post(url, json=payload, headers=headers, timeout=timeout)
+            response = await self.client.post(
+                url, json=payload, headers=headers, timeout=timeout
+            )
             response.raise_for_status()
             data = response.json()
             # OpenAI-compatible shape: choices[0].message.content
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             meta: Dict[str, Any] = {
                 "id": data.get("id"),
                 "model": data.get("model") or model,
@@ -1317,11 +1427,7 @@ Citation format:
             data = response.json()
 
             # OpenAI-compatible shape: choices[0].message.content
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             meta: Dict[str, Any] = {
                 "id": data.get("id"),
                 "model": data.get("model") or model,
@@ -1343,41 +1449,47 @@ Citation format:
     async def check_model_availability(self, model: Optional[str] = None) -> bool:
         """
         Check if a model is available in Ollama.
-        
+
         Args:
             model: Model name to check (uses default if not provided)
-            
+
         Returns:
             True if model is available, False otherwise
         """
         try:
             model = model or self.default_model
-            
+
             response = await self.client.get(f"{self.base_url}/api/tags")
-            
+
             if response.status_code == 200:
                 models = response.json()
                 available_models = [m["name"] for m in models.get("models", [])]
-                
+
                 # Check for exact match or partial match (e.g., "llama2" in "llama2:latest")
                 is_available = any(
                     model in available_model or available_model.startswith(model)
                     for available_model in available_models
                 )
-                
+
                 if not is_available:
-                    logger.warning(f"Model {model} not found. Available models: {available_models}")
-                
+                    logger.warning(
+                        f"Model {model} not found. Available models: {available_models}"
+                    )
+
                 return is_available
             else:
-                logger.error(f"Failed to check model availability: {response.status_code}")
+                logger.error(
+                    f"Failed to check model availability: {response.status_code}"
+                )
                 return False
-                
+
         except Exception as e:
             logger.error(f"Error checking model availability: {e}")
             return False
-    
-    async def list_available_models(self, base_url_override: Optional[str] = None) -> List[Dict[str, Any]]:
+
+    async def list_available_models(
+        self, base_url_override: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         List all available models in Ollama.
 
@@ -1387,51 +1499,48 @@ Citation format:
         try:
             base_url = (base_url_override or self.base_url).rstrip("/")
             response = await self.client.get(f"{base_url}/api/tags")
-            
+
             if response.status_code == 200:
                 result = response.json()
                 return result.get("models", [])
             else:
                 logger.error(f"Failed to list models: {response.status_code}")
                 return []
-                
+
         except Exception as e:
             logger.error(f"Error listing models: {e}")
             return []
-    
+
     async def pull_model(self, model: str) -> bool:
         """
         Pull/download a model in Ollama.
-        
+
         Args:
             model: Model name to pull
-            
+
         Returns:
             True if model pull was successful, False otherwise
         """
         try:
             payload = {"name": model}
-            
-            response = await self.client.post(
-                f"{self.base_url}/api/pull",
-                json=payload
-            )
-            
+
+            response = await self.client.post(f"{self.base_url}/api/pull", json=payload)
+
             if response.status_code == 200:
                 logger.info(f"Successfully pulled model: {model}")
                 return True
             else:
                 logger.error(f"Failed to pull model {model}: {response.status_code}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"Error pulling model {model}: {e}")
             return False
-    
+
     async def health_check(self) -> bool:
         """
         Check if the configured LLM service is healthy.
-        
+
         Returns:
             True if service is healthy, False otherwise
         """
@@ -1454,9 +1563,9 @@ Citation format:
         if self.provider == "deepseek":
             return settings.DEEPSEEK_MODEL
         return self.default_model
-    
+
     async def __aenter__(self):
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.client.aclose()

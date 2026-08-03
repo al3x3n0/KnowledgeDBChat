@@ -5,7 +5,6 @@ from __future__ import annotations
 from copy import deepcopy
 from typing import Any, Dict, Optional
 
-
 _DEFAULT_RUNTIME_STATE: Dict[str, Any] = {
     "observations": [],
     "actions_taken": [],
@@ -76,6 +75,14 @@ _DEFAULT_RUNTIME_STATE: Dict[str, Any] = {
     "approval_checkpoint_events": [],
     "approval_checkpoint_seen": [],
     "approval_override_action": None,
+    "execution_journal": [],
+    "execution_journal_cursor": {},
+    "execution_journal_pending": None,
+    "execution_journal_last_completion": None,
+    "execution_journal_recovered_invocation_id": None,
+    "execution_reconciliation_pending": None,
+    "external_calls_pending": {},
+    "external_call_results": {},
     "step_events": [],
     "scope_guard_events": [],
     "scope_guard_blocks": 0,
@@ -88,7 +95,12 @@ _DEFAULT_RUNTIME_STATE: Dict[str, Any] = {
     "summarization_successes": 0,
     "execution_graph_edges": [],
     "execution_graph_nodes": [],
-    "decision_parse_metrics": {"parse_success": 0, "parse_retry": 0, "parse_repair": 0, "parse_failure": 0},
+    "decision_parse_metrics": {
+        "parse_success": 0,
+        "parse_retry": 0,
+        "parse_repair": 0,
+        "parse_failure": 0,
+    },
     "execution_plan_version": 1,
     "plan_replan_count": 0,
     "plan_progress": 0,
@@ -108,7 +120,9 @@ _DEFAULT_RUNTIME_STATE: Dict[str, Any] = {
 }
 
 
-def initialize_runtime_state(checkpoint_state: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+def initialize_runtime_state(
+    checkpoint_state: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
     """Create a fully normalized runtime state, optionally overlaying a checkpoint."""
     state = deepcopy(_DEFAULT_RUNTIME_STATE)
     checkpoint_had_last_progress = (

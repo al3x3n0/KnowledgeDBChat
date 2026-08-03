@@ -11,36 +11,29 @@ Orchestrates the full presentation generation pipeline:
 """
 
 import json
-import re
 import os
+import re
 import tempfile
-from datetime import datetime
-from typing import List, Dict, Optional, Callable, Any
+from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.presentation import PresentationJob
-from app.models.document import Document
-from app.schemas.presentation import (
-    PresentationOutline,
-    SlideContent,
-    PresentationJobUpdate,
-)
-from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.vector_store import vector_store_service
-from app.services.mermaid_renderer import get_mermaid_renderer, MermaidRenderError
-from app.services.pptx_builder import PPTXBuilder
-from app.services.storage_service import StorageService
 from app.core.config import settings
 from app.models.memory import UserPreferences
+from app.models.presentation import PresentationJob
+from app.schemas.presentation import PresentationOutline, SlideContent
+from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.mermaid_renderer import get_mermaid_renderer
+from app.services.pptx_builder import PPTXBuilder
+from app.services.storage_service import StorageService
+from app.services.vector_store import vector_store_service
 
 
 class PresentationGenerationError(Exception):
     """Raised when presentation generation fails."""
-    pass
 
 
 class PresentationGeneratorService:
@@ -68,9 +61,7 @@ class PresentationGeneratorService:
         self.mermaid_renderer = get_mermaid_renderer()
 
     async def _load_user_settings(
-        self,
-        user_id: Optional[UUID],
-        db: AsyncSession
+        self, user_id: Optional[UUID], db: AsyncSession
     ) -> Optional[UserLLMSettings]:
         """Load user LLM settings from preferences."""
         if not user_id:
@@ -90,7 +81,7 @@ class PresentationGeneratorService:
         self,
         job: PresentationJob,
         db: AsyncSession,
-        progress_callback: Optional[Callable[[int, str], Any]] = None
+        progress_callback: Optional[Callable[[int, str], Any]] = None,
     ) -> str:
         """
         Generate a complete presentation.
@@ -106,6 +97,7 @@ class PresentationGeneratorService:
         Raises:
             PresentationGenerationError: If generation fails
         """
+
         async def update_progress(progress: int, stage: str):
             if progress_callback:
                 await progress_callback(progress, stage)
@@ -124,9 +116,7 @@ class PresentationGeneratorService:
             # Stage 1: Gather context (10%)
             await update_progress(5, "gathering_context")
             context = await self._gather_context(
-                job.topic,
-                job.source_document_ids or [],
-                db
+                job.topic, job.source_document_ids or [], db
             )
             await update_progress(10, "context_gathered")
 
@@ -152,7 +142,9 @@ class PresentationGeneratorService:
                 outline,
                 context,
                 user_settings=user_settings,
-                progress_callback=lambda p: update_progress(30 + int(p * 0.4), "generating_slides")
+                progress_callback=lambda p: update_progress(
+                    30 + int(p * 0.4), "generating_slides"
+                ),
             )
             await update_progress(70, "content_generated")
 
@@ -176,7 +168,9 @@ class PresentationGeneratorService:
                 if job.template:
                     if job.template.template_type == "pptx" and job.template.file_path:
                         # Download PPTX template from MinIO
-                        logger.info(f"Downloading PPTX template: {job.template.file_path}")
+                        logger.info(
+                            f"Downloading PPTX template: {job.template.file_path}"
+                        )
                         template_local_path = await self._download_template_to_temp(
                             job.template.file_path
                         )
@@ -186,27 +180,21 @@ class PresentationGeneratorService:
                     theme_config = job.custom_theme
 
                 pptx_bytes = self._build_pptx(
-                    outline,
-                    diagrams,
-                    job.style,
-                    theme_config,
-                    template_local_path
+                    outline, diagrams, job.style, theme_config, template_local_path
                 )
             finally:
                 # Clean up temp template file
                 if template_local_path and os.path.exists(template_local_path):
                     os.remove(template_local_path)
-                    logger.debug(f"Cleaned up temp template file: {template_local_path}")
+                    logger.debug(
+                        f"Cleaned up temp template file: {template_local_path}"
+                    )
 
             await update_progress(90, "pptx_built")
 
             # Stage 6: Upload to MinIO (95%)
             await update_progress(92, "uploading")
-            file_path = await self._upload_presentation(
-                pptx_bytes,
-                job.id,
-                job.title
-            )
+            file_path = await self._upload_presentation(pptx_bytes, job.id, job.title)
             job.file_path = file_path
             job.file_size = len(pptx_bytes)
             await update_progress(100, "completed")
@@ -224,10 +212,7 @@ class PresentationGeneratorService:
                 pass
 
     async def _gather_context(
-        self,
-        topic: str,
-        document_ids: List[str],
-        db: AsyncSession
+        self, topic: str, document_ids: List[str], db: AsyncSession
     ) -> str:
         """
         Gather relevant context from documents using vector search.
@@ -245,16 +230,22 @@ class PresentationGeneratorService:
             results, trace = await self.vector_store.search_with_trace(
                 query=topic,
                 limit=self.MAX_CONTEXT_CHUNKS,
-                document_ids=document_ids if document_ids else None
+                document_ids=document_ids if document_ids else None,
             )
             try:
                 from app.models.retrieval_trace import RetrievalTrace
 
                 settings_snapshot = {
                     "provider": getattr(self.vector_store, "provider", None),
-                    "hybrid_enabled": bool(getattr(settings, "RAG_HYBRID_SEARCH_ENABLED", False)),
-                    "hybrid_alpha": float(getattr(settings, "RAG_HYBRID_SEARCH_ALPHA", 0.0)),
-                    "rerank_enabled": bool(getattr(settings, "RAG_RERANKING_ENABLED", False)),
+                    "hybrid_enabled": bool(
+                        getattr(settings, "RAG_HYBRID_SEARCH_ENABLED", False)
+                    ),
+                    "hybrid_alpha": float(
+                        getattr(settings, "RAG_HYBRID_SEARCH_ALPHA", 0.0)
+                    ),
+                    "rerank_enabled": bool(
+                        getattr(settings, "RAG_RERANKING_ENABLED", False)
+                    ),
                     "rerank_model": getattr(settings, "RAG_RERANKING_MODEL", None),
                     "max_context_chunks": int(self.MAX_CONTEXT_CHUNKS),
                 }
@@ -304,7 +295,9 @@ class PresentationGeneratorService:
                 total_length += len(chunk_text)
 
             context = "\n\n---\n\n".join(context_parts)
-            logger.info(f"Gathered {len(context_parts)} context chunks ({total_length} chars)")
+            logger.info(
+                f"Gathered {len(context_parts)} context chunks ({total_length} chars)"
+            )
 
             return context
 
@@ -340,7 +333,7 @@ class PresentationGeneratorService:
         """
         diagram_instruction = ""
         if include_diagrams:
-            diagram_instruction = f"""
+            diagram_instruction = """
 - Include 1-2 slides of type "diagram" for visual explanations
 - For diagram slides, provide a "diagram_description" field describing what the diagram should show
 - Diagram descriptions should be specific enough to generate Mermaid diagrams (e.g., "flowchart showing the user authentication process" or "architecture diagram of the system components")"""
@@ -399,7 +392,9 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
 
             # Ensure we have the right number of slides
             if len(outline.slides) != slide_count:
-                logger.warning(f"Generated {len(outline.slides)} slides, expected {slide_count}")
+                logger.warning(
+                    f"Generated {len(outline.slides)} slides, expected {slide_count}"
+                )
 
             return outline
 
@@ -413,7 +408,7 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
         outline: PresentationOutline,
         context: str,
         user_settings: Optional[UserLLMSettings] = None,
-        progress_callback: Optional[Callable[[float], Any]] = None
+        progress_callback: Optional[Callable[[float], Any]] = None,
     ) -> PresentationOutline:
         """
         Generate detailed content for each slide.
@@ -443,7 +438,9 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
             elif slide.slide_type in ("content", "summary", "two_column"):
                 # Enhance content slides if needed
                 if len(slide.content) < 3:
-                    slide = await self._enhance_slide_content(slide, context, user_settings)
+                    slide = await self._enhance_slide_content(
+                        slide, context, user_settings
+                    )
 
             enhanced_slides.append(slide)
 
@@ -454,7 +451,7 @@ Return ONLY valid JSON, no markdown code blocks or explanation."""
         self,
         slide: SlideContent,
         context: str,
-        user_settings: Optional[UserLLMSettings] = None
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> SlideContent:
         """
         Generate Mermaid diagram code for a slide.
@@ -500,7 +497,9 @@ Do NOT include markdown code blocks or any explanation."""
             # Remove markdown code blocks if present
             if diagram_code.startswith("```"):
                 lines = diagram_code.split("\n")
-                diagram_code = "\n".join(lines[1:-1] if lines[-1] == "```" else lines[1:])
+                diagram_code = "\n".join(
+                    lines[1:-1] if lines[-1] == "```" else lines[1:]
+                )
 
             slide.diagram_code = diagram_code
             return slide
@@ -514,7 +513,7 @@ Do NOT include markdown code blocks or any explanation."""
         self,
         slide: SlideContent,
         context: str,
-        user_settings: Optional[UserLLMSettings] = None
+        user_settings: Optional[UserLLMSettings] = None,
     ) -> SlideContent:
         """
         Enhance a content slide with more detailed bullet points.
@@ -565,10 +564,7 @@ Return ONLY a JSON array of bullet point strings, no explanation:
             logger.warning(f"Failed to enhance slide content: {e}")
             return slide
 
-    async def _render_diagrams(
-        self,
-        outline: PresentationOutline
-    ) -> Dict[int, bytes]:
+    async def _render_diagrams(self, outline: PresentationOutline) -> Dict[int, bytes]:
         """
         Render all Mermaid diagrams to PNG images.
 
@@ -599,7 +595,7 @@ Return ONLY a JSON array of bullet point strings, no explanation:
         diagrams: Dict[int, bytes],
         style: str,
         custom_theme: Optional[Dict] = None,
-        template_path: Optional[str] = None
+        template_path: Optional[str] = None,
     ) -> bytes:
         """
         Build the PowerPoint file.
@@ -615,9 +611,7 @@ Return ONLY a JSON array of bullet point strings, no explanation:
             PPTX file as bytes
         """
         builder = PPTXBuilder(
-            style=style,
-            custom_theme=custom_theme,
-            template_path=template_path
+            style=style, custom_theme=custom_theme, template_path=template_path
         )
         return builder.build(outline, diagrams)
 
@@ -632,7 +626,7 @@ Return ONLY a JSON array of bullet point strings, no explanation:
             Path to the temporary file
         """
         # Create a temp file with .pptx extension
-        temp_fd, temp_path = tempfile.mkstemp(suffix='.pptx')
+        temp_fd, temp_path = tempfile.mkstemp(suffix=".pptx")
         os.close(temp_fd)
 
         try:
@@ -647,10 +641,7 @@ Return ONLY a JSON array of bullet point strings, no explanation:
             raise e
 
     async def _upload_presentation(
-        self,
-        pptx_bytes: bytes,
-        job_id: UUID,
-        title: str
+        self, pptx_bytes: bytes, job_id: UUID, title: str
     ) -> str:
         """
         Upload the presentation to MinIO.
@@ -664,14 +655,14 @@ Return ONLY a JSON array of bullet point strings, no explanation:
             MinIO file path
         """
         # Sanitize filename
-        safe_title = re.sub(r'[^\w\s-]', '', title)[:50].strip()
+        safe_title = re.sub(r"[^\w\s-]", "", title)[:50].strip()
         filename = f"{safe_title}_{job_id}.pptx"
         file_path = f"presentations/{job_id}/{filename}"
 
         await self.storage_service.upload_to_path(
             object_path=file_path,
             content=pptx_bytes,
-            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation"
+            content_type="application/vnd.openxmlformats-officedocument.presentationml.presentation",
         )
 
         return file_path
@@ -696,17 +687,14 @@ Return ONLY a JSON array of bullet point strings, no explanation:
         response = response.strip()
 
         # Try to find JSON object or array
-        json_match = re.search(r'(\{.*\}|\[.*\])', response, re.DOTALL)
+        json_match = re.search(r"(\{.*\}|\[.*\])", response, re.DOTALL)
         if json_match:
             response = json_match.group(1)
 
         return json.loads(response)
 
     def _create_fallback_outline(
-        self,
-        title: str,
-        topic: str,
-        slide_count: int
+        self, title: str, topic: str, slide_count: int
     ) -> PresentationOutline:
         """
         Create a basic fallback outline if generation fails.
@@ -725,37 +713,31 @@ Return ONLY a JSON array of bullet point strings, no explanation:
                 slide_type="title",
                 title=title,
                 content=[],
-                subtitle=topic[:100] if topic else None
+                subtitle=topic[:100] if topic else None,
             )
         ]
 
         # Add content slides
         for i in range(2, slide_count):
-            slides.append(SlideContent(
-                slide_number=i,
-                slide_type="content",
-                title=f"Section {i - 1}",
-                content=[
-                    "Content point 1",
-                    "Content point 2",
-                    "Content point 3"
-                ]
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=i,
+                    slide_type="content",
+                    title=f"Section {i - 1}",
+                    content=["Content point 1", "Content point 2", "Content point 3"],
+                )
+            )
 
         # Add summary slide
-        slides.append(SlideContent(
-            slide_number=slide_count,
-            slide_type="summary",
-            title="Summary",
-            content=[
-                "Key takeaway 1",
-                "Key takeaway 2",
-                "Key takeaway 3"
-            ]
-        ))
+        slides.append(
+            SlideContent(
+                slide_number=slide_count,
+                slide_type="summary",
+                title="Summary",
+                content=["Key takeaway 1", "Key takeaway 2", "Key takeaway 3"],
+            )
+        )
 
         return PresentationOutline(
-            title=title,
-            subtitle=topic[:100] if topic else None,
-            slides=slides
+            title=title, subtitle=topic[:100] if topic else None, slides=slides
         )

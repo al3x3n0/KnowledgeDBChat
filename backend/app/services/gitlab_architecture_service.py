@@ -6,12 +6,12 @@ Analyzes GitLab repositories to generate architecture diagrams using LLM.
 
 import base64
 from typing import Any, Dict, List, Optional
+
 import httpx
 from loguru import logger
 
-from app.core.config import settings
 from app.services.llm_service import llm_service
-from app.services.mermaid_renderer import get_mermaid_renderer, MermaidRenderError
+from app.services.mermaid_renderer import MermaidRenderError, get_mermaid_renderer
 
 
 class GitLabArchitectureService:
@@ -24,28 +24,78 @@ class GitLabArchitectureService:
 
     # File patterns for architecture analysis
     ARCHITECTURE_FILES = [
-        "README.md", "README.rst", "README.txt", "README",
-        "ARCHITECTURE.md", "DESIGN.md", "OVERVIEW.md",
-        "docker-compose.yml", "docker-compose.yaml",
-        "Dockerfile", "Makefile",
-        "package.json", "requirements.txt", "go.mod", "Cargo.toml",
-        "pyproject.toml", "setup.py", "pom.xml", "build.gradle",
-        ".env.example", "env.example",
+        "README.md",
+        "README.rst",
+        "README.txt",
+        "README",
+        "ARCHITECTURE.md",
+        "DESIGN.md",
+        "OVERVIEW.md",
+        "docker-compose.yml",
+        "docker-compose.yaml",
+        "Dockerfile",
+        "Makefile",
+        "package.json",
+        "requirements.txt",
+        "go.mod",
+        "Cargo.toml",
+        "pyproject.toml",
+        "setup.py",
+        "pom.xml",
+        "build.gradle",
+        ".env.example",
+        "env.example",
     ]
 
     # Directories that indicate architectural components
     COMPONENT_DIRS = [
-        "src", "app", "lib", "pkg", "cmd", "internal", "api",
-        "services", "controllers", "handlers", "models", "views",
-        "components", "modules", "core", "common", "utils",
-        "frontend", "backend", "web", "mobile", "cli",
-        "infra", "infrastructure", "deploy", "k8s", "helm",
+        "src",
+        "app",
+        "lib",
+        "pkg",
+        "cmd",
+        "internal",
+        "api",
+        "services",
+        "controllers",
+        "handlers",
+        "models",
+        "views",
+        "components",
+        "modules",
+        "core",
+        "common",
+        "utils",
+        "frontend",
+        "backend",
+        "web",
+        "mobile",
+        "cli",
+        "infra",
+        "infrastructure",
+        "deploy",
+        "k8s",
+        "helm",
     ]
 
     # File extensions for code analysis
     CODE_EXTENSIONS = [
-        ".py", ".js", ".ts", ".tsx", ".jsx", ".go", ".java", ".rs",
-        ".cpp", ".c", ".h", ".hpp", ".cs", ".rb", ".php", ".swift",
+        ".py",
+        ".js",
+        ".ts",
+        ".tsx",
+        ".jsx",
+        ".go",
+        ".java",
+        ".rs",
+        ".cpp",
+        ".c",
+        ".h",
+        ".hpp",
+        ".cs",
+        ".rb",
+        ".php",
+        ".swift",
     ]
 
     def __init__(self):
@@ -57,9 +107,9 @@ class GitLabArchitectureService:
             self._client = httpx.AsyncClient(
                 headers={
                     "Authorization": f"Bearer {token}",
-                    "Content-Type": "application/json"
+                    "Content-Type": "application/json",
                 },
-                timeout=30.0
+                timeout=30.0,
             )
         return self._client
 
@@ -153,14 +203,10 @@ class GitLabArchitectureService:
             Dict with diagram code, rendered images, and analysis summary
         """
         # Analyze repository
-        analysis = await self.analyze_repository(
-            gitlab_url, token, project_id, branch
-        )
+        analysis = await self.analyze_repository(gitlab_url, token, project_id, branch)
 
         # Build prompt for LLM
-        prompt = self._build_diagram_prompt(
-            analysis, diagram_type, focus, detail_level
-        )
+        prompt = self._build_diagram_prompt(analysis, diagram_type, focus, detail_level)
 
         # Generate diagram with LLM
         mermaid_code = await self._generate_mermaid_with_llm(prompt)
@@ -205,6 +251,7 @@ class GitLabArchitectureService:
         """Get GitLab project information."""
         try:
             import urllib.parse
+
             encoded_id = urllib.parse.quote_plus(str(project_id))
             response = await client.get(f"{base_url}/api/v4/projects/{encoded_id}")
             if response.status_code == 200:
@@ -224,6 +271,7 @@ class GitLabArchitectureService:
     ) -> List[Dict[str, Any]]:
         """Get repository tree recursively."""
         import urllib.parse
+
         encoded_id = urllib.parse.quote_plus(str(project_id))
 
         all_items = []
@@ -238,7 +286,7 @@ class GitLabArchitectureService:
                         "per_page": 100,
                         "page": page,
                         "ref": branch,
-                    }
+                    },
                 )
 
                 if response.status_code != 200:
@@ -267,6 +315,7 @@ class GitLabArchitectureService:
     ) -> Dict[str, str]:
         """Get content of architecture-relevant files."""
         import urllib.parse
+
         encoded_id = urllib.parse.quote_plus(str(project_id))
 
         files_content = {}
@@ -291,10 +340,10 @@ class GitLabArchitectureService:
         # Limit to prevent too many API calls
         for path in architecture_paths[:20]:
             try:
-                encoded_path = urllib.parse.quote(path, safe='')
+                encoded_path = urllib.parse.quote(path, safe="")
                 response = await client.get(
                     f"{base_url}/api/v4/projects/{encoded_id}/repository/files/{encoded_path}",
-                    params={"ref": branch}
+                    params={"ref": branch},
                 )
 
                 if response.status_code == 200:
@@ -302,7 +351,9 @@ class GitLabArchitectureService:
                     content = file_data.get("content", "")
 
                     if file_data.get("encoding") == "base64":
-                        content = base64.b64decode(content).decode("utf-8", errors="ignore")
+                        content = base64.b64decode(content).decode(
+                            "utf-8", errors="ignore"
+                        )
 
                     # Limit content size
                     if len(content) < 50000:
@@ -347,9 +398,7 @@ class GitLabArchitectureService:
             "total_directories": len(directories),
             "total_files": sum(len(files) for files in files_by_dir.values()),
             "file_types": dict(sorted(file_types.items(), key=lambda x: -x[1])[:10]),
-            "files_by_directory": {
-                k: v for k, v in sorted(files_by_dir.items())[:30]
-            },
+            "files_by_directory": {k: v for k, v in sorted(files_by_dir.items())[:30]},
         }
 
     def _detect_components(self, tree: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -371,25 +420,31 @@ class GitLabArchitectureService:
 
             if name.lower() in self.COMPONENT_DIRS:
                 component_type = self._infer_component_type(name, path, tree)
-                components.append({
-                    "name": name,
-                    "path": path,
-                    "type": component_type,
-                })
+                components.append(
+                    {
+                        "name": name,
+                        "path": path,
+                        "type": component_type,
+                    }
+                )
 
         # Check for microservices pattern (services/*)
         services_paths = [
-            item["path"] for item in tree
-            if item["type"] == "tree" and item["path"].startswith("services/")
+            item["path"]
+            for item in tree
+            if item["type"] == "tree"
+            and item["path"].startswith("services/")
             and item["path"].count("/") == 1
         ]
         for svc_path in services_paths:
             svc_name = svc_path.split("/")[-1]
-            components.append({
-                "name": svc_name,
-                "path": svc_path,
-                "type": "microservice",
-            })
+            components.append(
+                {
+                    "name": svc_name,
+                    "path": svc_path,
+                    "type": "microservice",
+                }
+            )
 
         return components
 
@@ -445,7 +500,9 @@ class GitLabArchitectureService:
                 deps = [
                     line.split("==")[0].split(">=")[0].split("[")[0].strip()
                     for line in content.split("\n")
-                    if line.strip() and not line.startswith("#") and not line.startswith("-")
+                    if line.strip()
+                    and not line.startswith("#")
+                    and not line.startswith("-")
                 ]
                 dependencies["python"].extend(deps[:30])
 
@@ -453,6 +510,7 @@ class GitLabArchitectureService:
             elif filename == "package.json":
                 try:
                     import json
+
                     pkg = json.loads(content)
                     deps = list(pkg.get("dependencies", {}).keys())[:20]
                     dev_deps = list(pkg.get("devDependencies", {}).keys())[:10]
@@ -472,6 +530,7 @@ class GitLabArchitectureService:
             elif filename in ("docker-compose.yml", "docker-compose.yaml"):
                 try:
                     import yaml
+
                     compose = yaml.safe_load(content)
                     services = compose.get("services", {})
                     dependencies["docker_services"] = list(services.keys())
@@ -502,17 +561,21 @@ class GitLabArchitectureService:
         if project_info.get("description"):
             context_parts.append(f"Description: {project_info['description']}")
 
-        context_parts.append(f"\nTop-level directories: {', '.join(dir_structure['top_level_dirs'])}")
+        context_parts.append(
+            f"\nTop-level directories: {', '.join(dir_structure['top_level_dirs'])}"
+        )
         context_parts.append(f"Total files: {dir_structure['total_files']}")
         context_parts.append(f"File types: {dir_structure['file_types']}")
 
         if components:
-            context_parts.append(f"\nDetected components:")
+            context_parts.append("\nDetected components:")
             for comp in components:
-                context_parts.append(f"  - {comp['name']} ({comp['type']}): {comp['path']}")
+                context_parts.append(
+                    f"  - {comp['name']} ({comp['type']}): {comp['path']}"
+                )
 
         if dependencies:
-            context_parts.append(f"\nDependencies:")
+            context_parts.append("\nDependencies:")
             for dep_type, deps in dependencies.items():
                 if deps:
                     context_parts.append(f"  {dep_type}: {', '.join(deps[:15])}")
@@ -527,7 +590,10 @@ class GitLabArchitectureService:
 
         # Determine diagram type
         if diagram_type == "auto":
-            if "docker_services" in dependencies and len(dependencies["docker_services"]) > 2:
+            if (
+                "docker_services" in dependencies
+                and len(dependencies["docker_services"]) > 2
+            ):
                 diagram_type = "flowchart"
             elif len(components) > 5:
                 diagram_type = "flowchart"
@@ -581,7 +647,9 @@ Generate the Mermaid diagram:"""
 
             # Clean up the response
             if "```mermaid" in mermaid_code:
-                mermaid_code = mermaid_code.split("```mermaid")[1].split("```")[0].strip()
+                mermaid_code = (
+                    mermaid_code.split("```mermaid")[1].split("```")[0].strip()
+                )
             elif "```" in mermaid_code:
                 mermaid_code = mermaid_code.split("```")[1].split("```")[0].strip()
 

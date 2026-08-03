@@ -2,28 +2,36 @@
 Notification API endpoints.
 """
 
-from typing import Optional
-from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 import asyncio
 import json
+from typing import Optional
+from uuid import UUID
 
-from app.core.database import get_db
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
+from app.core.database import get_db
+from app.models.notification import NotificationType
 from app.models.user import User
-from app.services.auth_service import get_current_user, require_admin
-from app.services.notification_service import notification_service
 from app.schemas.notification import (
-    NotificationResponse,
+    BroadcastNotificationRequest,
     NotificationListResponse,
     NotificationPreferencesResponse,
     NotificationPreferencesUpdate,
-    BroadcastNotificationRequest,
+    NotificationResponse,
     UnreadCountResponse,
 )
-from app.models.notification import NotificationType
+from app.services.auth_service import get_current_user, require_admin
+from app.services.notification_service import notification_service
 from app.utils.websocket_auth import require_websocket_auth
 
 router = APIRouter()
@@ -34,7 +42,9 @@ async def get_notifications(
     page: int = Query(1, ge=1),
     page_size: int = Query(20, ge=1, le=100),
     unread_only: bool = Query(False),
-    notification_types: Optional[str] = Query(None, description="Comma-separated notification types"),
+    notification_types: Optional[str] = Query(
+        None, description="Comma-separated notification types"
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -78,7 +88,9 @@ async def mark_notification_read(
     db: AsyncSession = Depends(get_db),
 ):
     """Mark a single notification as read."""
-    success = await notification_service.mark_as_read(db, current_user.id, notification_id)
+    success = await notification_service.mark_as_read(
+        db, current_user.id, notification_id
+    )
     if not success:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"message": "Notification marked as read"}
@@ -101,7 +113,9 @@ async def delete_notification(
     db: AsyncSession = Depends(get_db),
 ):
     """Delete a notification."""
-    success = await notification_service.delete_notification(db, current_user.id, notification_id)
+    success = await notification_service.delete_notification(
+        db, current_user.id, notification_id
+    )
     if not success:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"message": "Notification deleted"}
@@ -114,7 +128,9 @@ async def dismiss_notification(
     db: AsyncSession = Depends(get_db),
 ):
     """Dismiss a notification (soft delete)."""
-    success = await notification_service.dismiss_notification(db, current_user.id, notification_id)
+    success = await notification_service.dismiss_notification(
+        db, current_user.id, notification_id
+    )
     if not success:
         raise HTTPException(status_code=404, detail="Notification not found")
     return {"message": "Notification dismissed"}
@@ -131,7 +147,9 @@ async def get_notification_preferences(
 
     if not prefs:
         # Return defaults by creating preferences
-        prefs = await notification_service.update_user_preferences(db, current_user.id, {})
+        prefs = await notification_service.update_user_preferences(
+            db, current_user.id, {}
+        )
 
     return prefs
 
@@ -144,7 +162,9 @@ async def update_notification_preferences(
 ):
     """Update notification preferences for the current user."""
     update_data = updates.model_dump(exclude_unset=True)
-    prefs = await notification_service.update_user_preferences(db, current_user.id, update_data)
+    prefs = await notification_service.update_user_preferences(
+        db, current_user.id, update_data
+    )
 
     if not prefs:
         raise HTTPException(status_code=500, detail="Failed to update preferences")
@@ -200,11 +220,13 @@ async def notifications_websocket(websocket: WebSocket):
         await pubsub.subscribe(channel)
 
         # Send initial connection confirmation
-        await websocket.send_json({
-            "type": "connected",
-            "message": "Connected to notification stream",
-            "channel": channel,
-        })
+        await websocket.send_json(
+            {
+                "type": "connected",
+                "message": "Connected to notification stream",
+                "channel": channel,
+            }
+        )
 
         # Listen for messages
         async def reader():

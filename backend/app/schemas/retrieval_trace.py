@@ -24,4 +24,3 @@ class RetrievalTraceResponse(BaseModel):
 
     class Config:
         from_attributes = True
-

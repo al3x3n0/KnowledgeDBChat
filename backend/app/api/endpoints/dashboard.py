@@ -9,12 +9,11 @@ Provides optimized data for:
 - Quick actions
 """
 
-from typing import Optional
-from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
-import json
 import asyncio
+
+from fastapi import APIRouter, Depends, Query, WebSocket, WebSocketDisconnect
+from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.user import User
@@ -157,15 +156,23 @@ async def get_full_dashboard(
     Useful for initial page load to minimize API calls.
     """
     overview = await dashboard_service.get_overview_stats(db, user_id=current_user.id)
-    activity = await dashboard_service.get_activity_feed(db, user_id=current_user.id, limit=10)
+    activity = await dashboard_service.get_activity_feed(
+        db, user_id=current_user.id, limit=10
+    )
     docs_by_type = await dashboard_service.get_documents_by_type_chart(db)
     docs_by_source = await dashboard_service.get_documents_by_source_chart(db)
     timeline = await dashboard_service.get_documents_timeline_chart(db, days=30)
     sources_health = await dashboard_service.get_source_health(db)
     trending = await dashboard_service.get_trending_tags(db, days=7, limit=10)
-    quick_actions = await dashboard_service.get_quick_actions(db, user_id=current_user.id)
-    agent_summary = await dashboard_service.get_agent_usage_summary(db, user_id=current_user.id, days=7)
-    workflow_summary = await dashboard_service.get_workflow_summary(db, user_id=current_user.id, days=7)
+    quick_actions = await dashboard_service.get_quick_actions(
+        db, user_id=current_user.id
+    )
+    agent_summary = await dashboard_service.get_agent_usage_summary(
+        db, user_id=current_user.id, days=7
+    )
+    workflow_summary = await dashboard_service.get_workflow_summary(
+        db, user_id=current_user.id, days=7
+    )
 
     return {
         "overview": overview,
@@ -204,8 +211,7 @@ async def dashboard_websocket(
         # Wait for auth message
         try:
             auth_message = await asyncio.wait_for(
-                websocket.receive_json(),
-                timeout=10.0
+                websocket.receive_json(), timeout=10.0
             )
             if auth_message.get("type") == "auth":
                 # In production, validate the token
@@ -217,10 +223,7 @@ async def dashboard_websocket(
 
         # Send initial data
         overview = await dashboard_service.get_overview_stats(db, user_id=user_id)
-        await websocket.send_json({
-            "type": "overview",
-            "data": overview
-        })
+        await websocket.send_json({"type": "overview", "data": overview})
 
         # Periodic updates
         update_interval = 30  # seconds
@@ -229,31 +232,40 @@ async def dashboard_websocket(
                 # Check for incoming messages (non-blocking)
                 try:
                     message = await asyncio.wait_for(
-                        websocket.receive_json(),
-                        timeout=update_interval
+                        websocket.receive_json(), timeout=update_interval
                     )
 
                     # Handle refresh request
                     if message.get("type") == "refresh":
                         widget = message.get("widget", "all")
                         if widget == "overview" or widget == "all":
-                            data = await dashboard_service.get_overview_stats(db, user_id=user_id)
-                            await websocket.send_json({"type": "overview", "data": data})
+                            data = await dashboard_service.get_overview_stats(
+                                db, user_id=user_id
+                            )
+                            await websocket.send_json(
+                                {"type": "overview", "data": data}
+                            )
                         if widget == "activity" or widget == "all":
-                            data = await dashboard_service.get_activity_feed(db, user_id=user_id, limit=10)
-                            await websocket.send_json({"type": "activity", "data": data})
+                            data = await dashboard_service.get_activity_feed(
+                                db, user_id=user_id, limit=10
+                            )
+                            await websocket.send_json(
+                                {"type": "activity", "data": data}
+                            )
                         if widget == "sources" or widget == "all":
                             data = await dashboard_service.get_source_health(db)
-                            await websocket.send_json({"type": "sources_health", "data": data})
+                            await websocket.send_json(
+                                {"type": "sources_health", "data": data}
+                            )
 
                 except asyncio.TimeoutError:
                     # No message received, send periodic update
-                    overview = await dashboard_service.get_overview_stats(db, user_id=user_id)
-                    await websocket.send_json({
-                        "type": "overview",
-                        "data": overview,
-                        "is_periodic": True
-                    })
+                    overview = await dashboard_service.get_overview_stats(
+                        db, user_id=user_id
+                    )
+                    await websocket.send_json(
+                        {"type": "overview", "data": overview, "is_periodic": True}
+                    )
 
             except WebSocketDisconnect:
                 logger.info("Dashboard WebSocket disconnected")

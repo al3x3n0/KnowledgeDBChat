@@ -2,28 +2,28 @@
 API endpoints for user-defined custom tools.
 """
 
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 from loguru import logger
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.core.database import get_db
 from app.models.user import User
 from app.models.workflow import UserTool
-from app.services.auth_service import get_current_user
-from app.services.custom_tool_service import CustomToolService, ToolExecutionError
 from app.schemas.workflow import (
     UserToolCreate,
-    UserToolUpdate,
-    UserToolResponse,
     UserToolListResponse,
+    UserToolResponse,
     UserToolTestRequest,
     UserToolTestResponse,
+    UserToolUpdate,
 )
-
+from app.services.auth_service import get_current_user
+from app.services.custom_tool_service import CustomToolService, ToolExecutionError
 
 router = APIRouter()
 
@@ -35,7 +35,7 @@ async def list_user_tools(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """List all custom tools for the current user."""
     try:
@@ -44,7 +44,7 @@ async def list_user_tools(
         if tool_type:
             query = query.where(UserTool.tool_type == tool_type)
         if enabled_only:
-            query = query.where(UserTool.is_enabled == True)
+            query = query.where(UserTool.is_enabled.is_(True))
 
         # Get total count
         count_query = select(func.count()).select_from(query.subquery())
@@ -57,8 +57,7 @@ async def list_user_tools(
         tools = result.scalars().all()
 
         return UserToolListResponse(
-            tools=[UserToolResponse.model_validate(t) for t in tools],
-            total=total
+            tools=[UserToolResponse.model_validate(t) for t in tools], total=total
         )
 
     except Exception as e:
@@ -70,31 +69,36 @@ async def list_user_tools(
 async def create_user_tool(
     tool_data: UserToolCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new custom tool."""
     try:
         # Check for duplicate name
         existing = await db.execute(
             select(UserTool).where(
-                UserTool.user_id == current_user.id,
-                UserTool.name == tool_data.name
+                UserTool.user_id == current_user.id, UserTool.name == tool_data.name
             )
         )
         if existing.scalar_one_or_none():
             raise HTTPException(
                 status_code=400,
-                detail=f"Tool with name '{tool_data.name}' already exists"
+                detail=f"Tool with name '{tool_data.name}' already exists",
             )
 
         # Validate tool type
-        valid_types = ["webhook", "transform", "python", "llm_prompt", "workflow_runner"]
+        valid_types = [
+            "webhook",
+            "transform",
+            "python",
+            "llm_prompt",
+            "workflow_runner",
+        ]
         if bool(getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
             valid_types.append("docker_container")
         if tool_data.tool_type not in valid_types:
             raise HTTPException(
                 status_code=400,
-                detail=f"Invalid tool type. Must be one of: {valid_types}"
+                detail=f"Invalid tool type. Must be one of: {valid_types}",
             )
 
         # Create tool
@@ -127,13 +131,12 @@ async def create_user_tool(
 async def get_user_tool(
     tool_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Get a specific custom tool by ID."""
     result = await db.execute(
         select(UserTool).where(
-            UserTool.id == tool_id,
-            UserTool.user_id == current_user.id
+            UserTool.id == tool_id, UserTool.user_id == current_user.id
         )
     )
     tool = result.scalar_one_or_none()
@@ -149,14 +152,13 @@ async def update_user_tool(
     tool_id: UUID,
     tool_data: UserToolUpdate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Update a custom tool."""
     try:
         result = await db.execute(
             select(UserTool).where(
-                UserTool.id == tool_id,
-                UserTool.user_id == current_user.id
+                UserTool.id == tool_id, UserTool.user_id == current_user.id
             )
         )
         tool = result.scalar_one_or_none()
@@ -168,14 +170,13 @@ async def update_user_tool(
         if tool_data.name and tool_data.name != tool.name:
             existing = await db.execute(
                 select(UserTool).where(
-                    UserTool.user_id == current_user.id,
-                    UserTool.name == tool_data.name
+                    UserTool.user_id == current_user.id, UserTool.name == tool_data.name
                 )
             )
             if existing.scalar_one_or_none():
                 raise HTTPException(
                     status_code=400,
-                    detail=f"Tool with name '{tool_data.name}' already exists"
+                    detail=f"Tool with name '{tool_data.name}' already exists",
                 )
 
         # Update fields
@@ -204,14 +205,13 @@ async def update_user_tool(
 async def delete_user_tool(
     tool_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a custom tool."""
     try:
         result = await db.execute(
             select(UserTool).where(
-                UserTool.id == tool_id,
-                UserTool.user_id == current_user.id
+                UserTool.id == tool_id, UserTool.user_id == current_user.id
             )
         )
         tool = result.scalar_one_or_none()
@@ -237,13 +237,12 @@ async def test_user_tool(
     tool_id: UUID,
     test_request: UserToolTestRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Test a custom tool with sample inputs."""
     result = await db.execute(
         select(UserTool).where(
-            UserTool.id == tool_id,
-            UserTool.user_id == current_user.id
+            UserTool.id == tool_id, UserTool.user_id == current_user.id
         )
     )
     tool = result.scalar_one_or_none()
@@ -255,25 +254,19 @@ async def test_user_tool(
 
     try:
         result = await tool_service.execute_tool(
-            tool=tool,
-            inputs=test_request.inputs,
-            user=current_user,
-            db=db
+            tool=tool, inputs=test_request.inputs, user=current_user, db=db
         )
 
         return UserToolTestResponse(
             success=True,
             output=result.get("output"),
             error=None,
-            execution_time_ms=result.get("execution_time_ms", 0)
+            execution_time_ms=result.get("execution_time_ms", 0),
         )
 
     except ToolExecutionError as e:
         return UserToolTestResponse(
-            success=False,
-            output=None,
-            error=str(e),
-            execution_time_ms=0
+            success=False, output=None, error=str(e), execution_time_ms=0
         )
     except Exception as e:
         logger.error(f"Tool test failed: {e}")
@@ -281,7 +274,7 @@ async def test_user_tool(
             success=False,
             output=None,
             error=f"Unexpected error: {str(e)}",
-            execution_time_ms=0
+            execution_time_ms=0,
         )
 
 
@@ -290,15 +283,14 @@ async def duplicate_user_tool(
     tool_id: UUID,
     new_name: str = Query(..., min_length=1, max_length=100),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Duplicate an existing tool with a new name."""
     try:
         # Get original tool
         result = await db.execute(
             select(UserTool).where(
-                UserTool.id == tool_id,
-                UserTool.user_id == current_user.id
+                UserTool.id == tool_id, UserTool.user_id == current_user.id
             )
         )
         original = result.scalar_one_or_none()
@@ -309,14 +301,12 @@ async def duplicate_user_tool(
         # Check for name conflict
         existing = await db.execute(
             select(UserTool).where(
-                UserTool.user_id == current_user.id,
-                UserTool.name == new_name
+                UserTool.user_id == current_user.id, UserTool.name == new_name
             )
         )
         if existing.scalar_one_or_none():
             raise HTTPException(
-                status_code=400,
-                detail=f"Tool with name '{new_name}' already exists"
+                status_code=400, detail=f"Tool with name '{new_name}' already exists"
             )
 
         # Create duplicate

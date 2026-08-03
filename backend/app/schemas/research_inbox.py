@@ -27,7 +27,9 @@ class ResearchInboxItemResponse(BaseModel):
 
     status: str
     feedback: Optional[str] = None
-    metadata: Optional[Dict[str, Any]] = Field(default=None, validation_alias="item_metadata")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, validation_alias="item_metadata"
+    )
     follow_up_decision: Optional[str] = None
     follow_up_policy_mode: Optional[str] = None
     follow_up_launch_status: Optional[str] = None

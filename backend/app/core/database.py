@@ -3,17 +3,20 @@ Database configuration and connection management.
 """
 
 import asyncio
-from sqlalchemy import create_engine, MetaData, text
+
+from loguru import logger
+from sqlalchemy import MetaData, text
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker
-from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession
 from sqlalchemy.pool import NullPool
-from loguru import logger
 
 from .config import settings
 
 # Convert sync database URL to async for async operations
-async_database_url = settings.DATABASE_URL.replace("postgresql://", "postgresql+asyncpg://")
+async_database_url = settings.DATABASE_URL.replace(
+    "postgresql://", "postgresql+asyncpg://"
+)
 
 # Create async engine
 engine = create_async_engine(
@@ -63,13 +66,16 @@ def _get_db_session_semaphore() -> asyncio.Semaphore:
 async def get_db() -> AsyncSession:
     """
     Get database session.
-    
+
     Yields:
         AsyncSession: Database session
     """
     semaphore = _get_db_session_semaphore()
     try:
-        await asyncio.wait_for(semaphore.acquire(), timeout=float(settings.DB_SESSION_ACQUIRE_TIMEOUT_SECONDS))
+        await asyncio.wait_for(
+            semaphore.acquire(),
+            timeout=float(settings.DB_SESSION_ACQUIRE_TIMEOUT_SECONDS),
+        )
     except asyncio.TimeoutError:
         # Avoid dogpiling the pool; fail fast under load.
         from fastapi import HTTPException, status
@@ -87,6 +93,7 @@ async def get_db() -> AsyncSession:
             # Don't log HTTPException as database errors - they're expected API responses
             from fastapi import HTTPException
             from fastapi.exceptions import RequestValidationError
+
             if not isinstance(e, (HTTPException, RequestValidationError)):
                 logger.opt(exception=True).error("Database session error: {}", str(e))
             await session.rollback()
@@ -105,7 +112,7 @@ async def create_tables():
         async with engine.begin() as conn:
             # Import all models to ensure they're registered
             import app.models  # noqa: F401
-            
+
             # Create all tables
             await conn.run_sync(Base.metadata.create_all)
             logger.info("Database tables created successfully")
@@ -194,10 +201,8 @@ async def _apply_minimal_migrations(conn) -> None:
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS llm_task_providers JSON",
         # Paper algorithm defaults
         "ALTER TABLE user_preferences ADD COLUMN IF NOT EXISTS paper_algo_default_run_demo_check BOOLEAN NOT NULL DEFAULT FALSE",
-
         # Agent routing defaults
         "ALTER TABLE agent_definitions ADD COLUMN IF NOT EXISTS routing_defaults JSON",
-
         # Notifications
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_research_note_citation_issues BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS notify_experiment_run_updates BOOLEAN NOT NULL DEFAULT TRUE",
@@ -213,7 +218,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS research_note_citation_notify_on_unknown_keys BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS research_note_citation_notify_on_low_coverage BOOLEAN NOT NULL DEFAULT TRUE",
         "ALTER TABLE notification_preferences ADD COLUMN IF NOT EXISTS research_note_citation_notify_on_missing_bibliography BOOLEAN NOT NULL DEFAULT TRUE",
-
         # Research inbox follow-up autonomy state
         "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_decision VARCHAR(32)",
         "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_policy_mode VARCHAR(32)",
@@ -236,7 +240,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_outcome_status VARCHAR(32)",
         "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_outcome_recorded_at TIMESTAMPTZ",
         "ALTER TABLE research_inbox_items ADD COLUMN IF NOT EXISTS follow_up_outcome_summary TEXT",
-
         # Tool audits: policy provenance
         "ALTER TABLE tool_execution_audits ADD COLUMN IF NOT EXISTS policy_decision JSONB",
         "ALTER TABLE tool_execution_audits ADD COLUMN IF NOT EXISTS approval_mode VARCHAR(32) DEFAULT 'owner_and_admin'",
@@ -246,7 +249,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "ALTER TABLE tool_execution_audits ADD COLUMN IF NOT EXISTS admin_approved_at TIMESTAMPTZ",
         "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS customer_budget_config JSON",
         "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS customer_rebalance_history JSON",
-
         # Persistent agent tool priors
         """
         CREATE TABLE IF NOT EXISTS agent_tool_priors (
@@ -265,14 +267,12 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_agent_tool_priors_job_type ON agent_tool_priors(job_type)",
         "CREATE INDEX IF NOT EXISTS ix_agent_tool_priors_tool_name ON agent_tool_priors(tool_name)",
         "CREATE INDEX IF NOT EXISTS ix_agent_tool_priors_user_job ON agent_tool_priors(user_id, job_type)",
-
         # External auth fields (LDAP)
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_provider VARCHAR(20) NOT NULL DEFAULT 'local'",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_subject VARCHAR(512)",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS auth_metadata JSON",
         "CREATE INDEX IF NOT EXISTS ix_users_auth_provider ON users(auth_provider)",
         "CREATE INDEX IF NOT EXISTS ix_users_auth_subject ON users(auth_subject)",
-
         # Reading lists (collections) - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS reading_lists (
@@ -326,7 +326,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_research_notes_created_at ON research_notes(created_at)",
         "ALTER TABLE synthesis_jobs ADD COLUMN IF NOT EXISTS paper_ids JSON NOT NULL DEFAULT '[]'",
         "ALTER TABLE synthesis_jobs ADD COLUMN IF NOT EXISTS research_note_id UUID NULL REFERENCES research_notes(id) ON DELETE SET NULL",
-
         # Structured research papers - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS research_papers (
@@ -404,7 +403,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_paper_extraction_jobs_source_id ON paper_extraction_jobs(source_id)",
         "CREATE INDEX IF NOT EXISTS ix_paper_extraction_jobs_paper_id ON paper_extraction_jobs(paper_id)",
         "CREATE INDEX IF NOT EXISTS ix_paper_extraction_jobs_status ON paper_extraction_jobs(status)",
-
         # Experiments - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS experiment_plans (
@@ -447,7 +445,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_experiment_runs_plan_id ON experiment_runs(experiment_plan_id)",
         "CREATE INDEX IF NOT EXISTS ix_experiment_runs_agent_job_id ON experiment_runs(agent_job_id)",
         "CREATE INDEX IF NOT EXISTS ix_experiment_runs_created_at ON experiment_runs(created_at)",
-
         # Benchmark harness - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS benchmark_suites (
@@ -512,7 +509,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_benchmark_baselines_case_id ON benchmark_baselines(case_id)",
         "CREATE INDEX IF NOT EXISTS ix_benchmark_baselines_enabled ON benchmark_baselines(enabled)",
         "CREATE INDEX IF NOT EXISTS ix_benchmark_baselines_system_managed ON benchmark_baselines(system_managed)",
-
         # Research inbox items - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS research_inbox_items (
@@ -558,7 +554,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_research_inbox_items_customer ON research_inbox_items(customer)",
         "CREATE INDEX IF NOT EXISTS ix_research_inbox_items_discovered_at ON research_inbox_items(discovered_at)",
         "CREATE INDEX IF NOT EXISTS ix_research_inbox_user_status ON research_inbox_items(user_id, status)",
-
         # Research monitor profiles - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS research_monitor_profiles (
@@ -585,7 +580,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS recommendation_scores JSON",
         "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS source_type_scores JSON",
         "ALTER TABLE research_monitor_profiles ADD COLUMN IF NOT EXISTS outcome_counters JSON",
-
         # Code patch proposals - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS code_patch_proposals (
@@ -607,7 +601,6 @@ async def _apply_minimal_migrations(conn) -> None:
         "CREATE INDEX IF NOT EXISTS ix_code_patch_proposals_job_id ON code_patch_proposals(job_id)",
         "CREATE INDEX IF NOT EXISTS ix_code_patch_proposals_source_id ON code_patch_proposals(source_id)",
         "CREATE INDEX IF NOT EXISTS ix_code_patch_proposals_user_status ON code_patch_proposals(user_id, status)",
-
         # Patch PRs - for environments without Alembic
         """
         CREATE TABLE IF NOT EXISTS patch_prs (

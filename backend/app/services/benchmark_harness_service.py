@@ -59,8 +59,8 @@ BUILTIN_BENCHMARK_SUITES: List[Dict[str, Any]] = [
                 "rank": 2,
                 "source_ref": "fixtures/llvm/loop_vectorize_reduction.c",
                 "benchmark_query": "loop vectorize reduction codegen quality",
-                "compile_command_template": "clang -O3 -Rpass=loop-vectorize fixtures/llvm/loop_vectorize_reduction.c -S -o /tmp/loop_vectorize_reduction.s",
-                "run_command_template": "./bench/loop_vectorize_reduction --iters=50",
+                "compile_command_template": "clang -O3 -Rpass=loop-vectorize fixtures/llvm/loop_vectorize_reduction.c -S -o /tmp/loop_vectorize_reduction.s && clang -O3 fixtures/llvm/loop_vectorize_reduction.c -o /tmp/loop_vectorize_reduction",
+                "run_command_template": "/tmp/loop_vectorize_reduction --iters=50",
                 "expected_artifacts": ["compiler_logs", "ir_or_codegen_artifacts", "benchmark_output"],
                 "metrics": [
                     {"name": "compile_time_ms", "direction": "lower_better"},
@@ -149,8 +149,8 @@ BUILTIN_BENCHMARK_SUITES: List[Dict[str, Any]] = [
                 "rank": 2,
                 "source_ref": "fixtures/compiler/simd_hotloop.c",
                 "benchmark_query": "simd hot loop instruction selection quality",
-                "compile_command_template": "clang -O3 fixtures/compiler/simd_hotloop.c -S -o /tmp/simd_hotloop.s",
-                "run_command_template": "./bench/simd_hotloop --repeat=100",
+                "compile_command_template": "clang -O3 fixtures/compiler/simd_hotloop.c -S -o /tmp/simd_hotloop.s && clang -O3 fixtures/compiler/simd_hotloop.c -o /tmp/simd_hotloop",
+                "run_command_template": "/tmp/simd_hotloop --repeat=100",
                 "expected_artifacts": ["compiler_logs", "ir_or_codegen_artifacts", "benchmark_output"],
                 "metrics": [
                     {"name": "runtime_ms", "direction": "lower_better"},

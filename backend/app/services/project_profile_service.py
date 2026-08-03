@@ -56,7 +56,11 @@ def infer_project_profile_from_paths(paths: List[str]) -> Dict[str, Any]:
         lower_path = path.lower()
         lower_name = parts[-1].lower()
 
-        if lower_name in marker_files or lower_name.endswith(".csproj") or lower_name.endswith(".sln"):
+        if (
+            lower_name in marker_files
+            or lower_name.endswith(".csproj")
+            or lower_name.endswith(".sln")
+        ):
             marker_paths.add(path)
             marker_dir = "/".join(parts[:-1]).strip("/") or "."
             dirs = marker_dir_map.get(lower_name)
@@ -129,7 +133,10 @@ def infer_project_profile_from_paths(paths: List[str]) -> Dict[str, Any]:
     if "cargo.toml" in marker_names and "rust" not in seen_stack:
         detected_stack.append("rust")
         seen_stack.add("rust")
-    if any(name.endswith(".csproj") or name.endswith(".sln") for name in marker_names) and "dotnet" not in seen_stack:
+    if (
+        any(name.endswith(".csproj") or name.endswith(".sln") for name in marker_names)
+        and "dotnet" not in seen_stack
+    ):
         detected_stack.append("dotnet")
         seen_stack.add("dotnet")
 
@@ -180,20 +187,52 @@ def infer_project_profile_from_paths(paths: List[str]) -> Dict[str, Any]:
     for base_dir in _iter_marker_dirs("package.json"):
         pkg_manager = _node_pkg_manager_for_dir(base_dir)
         if pkg_manager == "pnpm":
-            install_cmd = "pnpm install" if base_dir == "." else f"cd {base_dir} && pnpm install"
-            build_cmd = "pnpm build" if base_dir == "." else f"cd {base_dir} && pnpm build"
-            test_cmd = "CI=true pnpm test -- --watchAll=false" if base_dir == "." else f"cd {base_dir} && CI=true pnpm test -- --watchAll=false"
-            fallback_cmd = "pnpm test" if base_dir == "." else f"cd {base_dir} && pnpm test"
+            install_cmd = (
+                "pnpm install" if base_dir == "." else f"cd {base_dir} && pnpm install"
+            )
+            build_cmd = (
+                "pnpm build" if base_dir == "." else f"cd {base_dir} && pnpm build"
+            )
+            test_cmd = (
+                "CI=true pnpm test -- --watchAll=false"
+                if base_dir == "."
+                else f"cd {base_dir} && CI=true pnpm test -- --watchAll=false"
+            )
+            fallback_cmd = (
+                "pnpm test" if base_dir == "." else f"cd {base_dir} && pnpm test"
+            )
         elif pkg_manager == "yarn":
-            install_cmd = "yarn install" if base_dir == "." else f"cd {base_dir} && yarn install"
-            build_cmd = "yarn build" if base_dir == "." else f"cd {base_dir} && yarn build"
-            test_cmd = "CI=true yarn test --watchAll=false" if base_dir == "." else f"cd {base_dir} && CI=true yarn test --watchAll=false"
-            fallback_cmd = "yarn test" if base_dir == "." else f"cd {base_dir} && yarn test"
+            install_cmd = (
+                "yarn install" if base_dir == "." else f"cd {base_dir} && yarn install"
+            )
+            build_cmd = (
+                "yarn build" if base_dir == "." else f"cd {base_dir} && yarn build"
+            )
+            test_cmd = (
+                "CI=true yarn test --watchAll=false"
+                if base_dir == "."
+                else f"cd {base_dir} && CI=true yarn test --watchAll=false"
+            )
+            fallback_cmd = (
+                "yarn test" if base_dir == "." else f"cd {base_dir} && yarn test"
+            )
         else:
-            install_cmd = "npm install" if base_dir == "." else f"npm --prefix {base_dir} install"
-            build_cmd = "npm run build" if base_dir == "." else f"npm --prefix {base_dir} run build"
-            test_cmd = "CI=true npm test -- --watchAll=false" if base_dir == "." else f"CI=true npm --prefix {base_dir} test -- --watchAll=false"
-            fallback_cmd = "npm test" if base_dir == "." else f"npm --prefix {base_dir} test"
+            install_cmd = (
+                "npm install" if base_dir == "." else f"npm --prefix {base_dir} install"
+            )
+            build_cmd = (
+                "npm run build"
+                if base_dir == "."
+                else f"npm --prefix {base_dir} run build"
+            )
+            test_cmd = (
+                "CI=true npm test -- --watchAll=false"
+                if base_dir == "."
+                else f"CI=true npm --prefix {base_dir} test -- --watchAll=false"
+            )
+            fallback_cmd = (
+                "npm test" if base_dir == "." else f"npm --prefix {base_dir} test"
+            )
 
         _append_group("install", [install_cmd])
         _append_group("build", [build_cmd])
@@ -205,24 +244,51 @@ def infer_project_profile_from_paths(paths: List[str]) -> Dict[str, Any]:
         poetry_managed = base_dir in marker_dir_map.get("poetry.lock", set())
         if poetry_managed:
             primary = (
-                f"poetry run pytest -q {test_target}" if test_target else
-                ("poetry run pytest -q" if base_dir == "." else f"cd {base_dir} && poetry run pytest -q")
+                f"poetry run pytest -q {test_target}"
+                if test_target
+                else (
+                    "poetry run pytest -q"
+                    if base_dir == "."
+                    else f"cd {base_dir} && poetry run pytest -q"
+                )
             )
             fallback = (
-                f"python -m pytest -q {test_target}" if test_target else
-                ("python -m pytest -q" if base_dir == "." else f"python -m pytest -q {base_dir}")
+                f"python -m pytest -q {test_target}"
+                if test_target
+                else (
+                    "python -m pytest -q"
+                    if base_dir == "."
+                    else f"python -m pytest -q {base_dir}"
+                )
             )
-            install_cmd = "poetry install" if base_dir == "." else f"cd {base_dir} && poetry install"
+            install_cmd = (
+                "poetry install"
+                if base_dir == "."
+                else f"cd {base_dir} && poetry install"
+            )
             _append_group("install", [install_cmd])
             _append_group("test", [primary])
-            _append_group("test_fallback", [fallback, fallback.replace("python -m", "python3 -m")])
+            _append_group(
+                "test_fallback", [fallback, fallback.replace("python -m", "python3 -m")]
+            )
         else:
             primary = (
-                f"python -m pytest -q {test_target}" if test_target else
-                ("python -m pytest -q" if base_dir == "." else f"python -m pytest -q {base_dir}")
+                f"python -m pytest -q {test_target}"
+                if test_target
+                else (
+                    "python -m pytest -q"
+                    if base_dir == "."
+                    else f"python -m pytest -q {base_dir}"
+                )
             )
             _append_group("test", [primary])
-            _append_group("test_fallback", [primary.replace("python -m", "python3 -m"), primary.replace("python -m pytest", "pytest")])
+            _append_group(
+                "test_fallback",
+                [
+                    primary.replace("python -m", "python3 -m"),
+                    primary.replace("python -m pytest", "pytest"),
+                ],
+            )
 
     for base_dir in _iter_marker_dirs("go.mod"):
         if base_dir == ".":
@@ -233,7 +299,8 @@ def infer_project_profile_from_paths(paths: List[str]) -> Dict[str, Any]:
             _append_group("build", [f"cd {base_dir} && go build ./..."])
 
     dotnet_markers = [
-        path for path in sorted(marker_paths)
+        path
+        for path in sorted(marker_paths)
         if path.lower().endswith(".csproj") or path.lower().endswith(".sln")
     ]
     if dotnet_markers:
@@ -243,7 +310,9 @@ def infer_project_profile_from_paths(paths: List[str]) -> Dict[str, Any]:
             _append_group("test_fallback", ["dotnet test"])
 
     for base_dir in _iter_marker_dirs("makefile"):
-        _append_group("test", ["make test" if base_dir == "." else f"make -C {base_dir} test"])
+        _append_group(
+            "test", ["make test" if base_dir == "." else f"make -C {base_dir} test"]
+        )
 
     suggested_commands: List[str] = []
     for group in ("install", "build", "test", "test_fallback"):
@@ -255,15 +324,24 @@ def infer_project_profile_from_paths(paths: List[str]) -> Dict[str, Any]:
 
     bootstrap_notes: List[str] = []
     if command_groups.get("install"):
-        bootstrap_notes.append("Install dependencies before running build/test commands in a fresh environment.")
+        bootstrap_notes.append(
+            "Install dependencies before running build/test commands in a fresh environment."
+        )
     if command_groups.get("test_fallback"):
-        bootstrap_notes.append("If the primary test command fails due to missing toolchain binaries, try a fallback test command.")
+        bootstrap_notes.append(
+            "If the primary test command fails due to missing toolchain binaries, try a fallback test command."
+        )
 
     return {
         "sampled_files": len(cleaned),
         "detected_stack": detected_stack[:8],
-        "top_extensions": [{"ext": ext, "count": count} for ext, count in ext_counter.most_common(12)],
-        "top_directories": [{"dir": name, "count": count} for name, count in top_level_counter.most_common(12)],
+        "top_extensions": [
+            {"ext": ext, "count": count} for ext, count in ext_counter.most_common(12)
+        ],
+        "top_directories": [
+            {"dir": name, "count": count}
+            for name, count in top_level_counter.most_common(12)
+        ],
         "marker_files": sorted(list(marker_paths))[:24],
         "test_paths": test_paths[:24],
         "command_groups": {k: v[:8] for k, v in command_groups.items() if v},
@@ -295,7 +373,9 @@ async def build_project_profile(
         source_obj = await db.get(DocumentSource, source_uuid)
 
     rows = []
-    query = select(Document.source_identifier, Document.file_path, Document.title).order_by(desc(Document.updated_at))
+    query = select(
+        Document.source_identifier, Document.file_path, Document.title
+    ).order_by(desc(Document.updated_at))
     if source_uuid:
         query = query.where(Document.source_id == source_uuid)
     query = query.limit(max_files)
@@ -315,7 +395,9 @@ async def build_project_profile(
 
     inferred = infer_project_profile_from_paths(paths)
     profile = {
-        "source_id": str(source_obj.id) if source_obj else (str(source_uuid) if source_uuid else None),
+        "source_id": str(source_obj.id)
+        if source_obj
+        else (str(source_uuid) if source_uuid else None),
         "source_name": str(source_obj.name) if source_obj else None,
         "source_type": str(source_obj.source_type) if source_obj else None,
         "generated_at": datetime.utcnow().isoformat(),
@@ -324,8 +406,12 @@ async def build_project_profile(
     }
     if source_obj and isinstance(source_obj.config, dict):
         source_cfg = source_obj.config
-        repo_url = str(source_cfg.get("repo_url") or source_cfg.get("url") or "").strip()
-        default_branch = str(source_cfg.get("branch") or source_cfg.get("default_branch") or "").strip()
+        repo_url = str(
+            source_cfg.get("repo_url") or source_cfg.get("url") or ""
+        ).strip()
+        default_branch = str(
+            source_cfg.get("branch") or source_cfg.get("default_branch") or ""
+        ).strip()
         if repo_url:
             profile["repository_url"] = repo_url
         if default_branch:
@@ -335,7 +421,11 @@ async def build_project_profile(
 
 def format_project_profile_for_prompt(state: Dict[str, Any]) -> str:
     """Render project profile context for planner prompt."""
-    profile = state.get("project_profile") if isinstance(state.get("project_profile"), dict) else {}
+    profile = (
+        state.get("project_profile")
+        if isinstance(state.get("project_profile"), dict)
+        else {}
+    )
     if not profile:
         return ""
 
@@ -343,7 +433,9 @@ def format_project_profile_for_prompt(state: Dict[str, Any]) -> str:
     source_name = str(profile.get("source_name") or "").strip()
     source_type = str(profile.get("source_type") or "").strip()
     if source_name or source_type:
-        lines.append(f"- Source: {source_name or 'unknown'} ({source_type or 'unknown'})")
+        lines.append(
+            f"- Source: {source_name or 'unknown'} ({source_type or 'unknown'})"
+        )
 
     stack = profile.get("detected_stack")
     if isinstance(stack, list) and stack:
@@ -351,19 +443,39 @@ def format_project_profile_for_prompt(state: Dict[str, Any]) -> str:
 
     commands = profile.get("suggested_commands")
     if isinstance(commands, list) and commands:
-        lines.append(f"- Suggested commands: {', '.join([str(x) for x in commands[:6]])}")
+        lines.append(
+            f"- Suggested commands: {', '.join([str(x) for x in commands[:6]])}"
+        )
 
     command_groups = profile.get("command_groups")
     if isinstance(command_groups, dict):
-        bootstrap_cmds = command_groups.get("install") if isinstance(command_groups.get("install"), list) else []
-        test_cmds = command_groups.get("test") if isinstance(command_groups.get("test"), list) else []
-        fallback_cmds = command_groups.get("test_fallback") if isinstance(command_groups.get("test_fallback"), list) else []
+        bootstrap_cmds = (
+            command_groups.get("install")
+            if isinstance(command_groups.get("install"), list)
+            else []
+        )
+        test_cmds = (
+            command_groups.get("test")
+            if isinstance(command_groups.get("test"), list)
+            else []
+        )
+        fallback_cmds = (
+            command_groups.get("test_fallback")
+            if isinstance(command_groups.get("test_fallback"), list)
+            else []
+        )
         if bootstrap_cmds:
-            lines.append(f"- Bootstrap: {', '.join([str(x) for x in bootstrap_cmds[:4]])}")
+            lines.append(
+                f"- Bootstrap: {', '.join([str(x) for x in bootstrap_cmds[:4]])}"
+            )
         if test_cmds:
-            lines.append(f"- Preferred verification: {', '.join([str(x) for x in test_cmds[:4]])}")
+            lines.append(
+                f"- Preferred verification: {', '.join([str(x) for x in test_cmds[:4]])}"
+            )
         if fallback_cmds:
-            lines.append(f"- Verification fallback: {', '.join([str(x) for x in fallback_cmds[:4]])}")
+            lines.append(
+                f"- Verification fallback: {', '.join([str(x) for x in fallback_cmds[:4]])}"
+            )
 
     markers = profile.get("marker_files")
     if isinstance(markers, list) and markers:

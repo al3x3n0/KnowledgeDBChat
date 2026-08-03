@@ -3,11 +3,13 @@ Search schemas for request/response models.
 """
 
 from typing import List, Optional
+
 from pydantic import BaseModel, Field
 
 
 class SearchResult(BaseModel):
     """Individual search result."""
+
     id: str
     title: str
     source: str
@@ -25,6 +27,7 @@ class SearchResult(BaseModel):
 
 class SearchResponse(BaseModel):
     """Search response with results and metadata."""
+
     results: List[SearchResult]
     total: int
     page: int

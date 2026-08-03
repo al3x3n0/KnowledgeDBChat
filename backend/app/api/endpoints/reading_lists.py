@@ -6,25 +6,24 @@ from typing import Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, desc
-from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+from sqlalchemy import desc, func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.user import User
 from app.models.document import Document, DocumentSource
 from app.models.reading_list import ReadingList, ReadingListItem
+from app.models.user import User
 from app.schemas.reading_list import (
     ReadingListCreate,
-    ReadingListUpdate,
-    ReadingListResponse,
-    ReadingListListResponse,
     ReadingListItemCreate,
-    ReadingListItemUpdate,
     ReadingListItemResponse,
+    ReadingListItemUpdate,
+    ReadingListListResponse,
+    ReadingListResponse,
+    ReadingListUpdate,
 )
 from app.services.auth_service import get_current_user
-
 
 router = APIRouter()
 
@@ -50,12 +49,19 @@ async def list_reading_lists(
 ):
     try:
         base = select(ReadingList).where(ReadingList.user_id == current_user.id)
-        total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
+        total = int(
+            (
+                await db.execute(select(func.count()).select_from(base.subquery()))
+            ).scalar()
+            or 0
+        )
         result = await db.execute(
             base.order_by(desc(ReadingList.updated_at)).offset(offset).limit(limit)
         )
         items = [_to_list_response(x) for x in result.scalars().all()]
-        return ReadingListListResponse(items=items, total=total, limit=limit, offset=offset)
+        return ReadingListListResponse(
+            items=items, total=total, limit=limit, offset=offset
+        )
     except Exception as exc:
         logger.error(f"Failed to list reading lists: {exc}")
         raise HTTPException(status_code=500, detail="Failed to list reading lists")
@@ -85,7 +91,9 @@ async def create_reading_list(
 
         if payload.auto_populate_from_source and source:
             result = await db.execute(
-                select(Document.id).where(Document.source_id == source.id).order_by(Document.created_at.asc())
+                select(Document.id)
+                .where(Document.source_id == source.id)
+                .order_by(Document.created_at.asc())
             )
             doc_ids = [row[0] for row in result.all()]
             for idx, doc_id in enumerate(doc_ids):
@@ -173,7 +181,9 @@ async def update_reading_list(
     return _to_list_response(rl)
 
 
-@router.post("/{reading_list_id}/items", response_model=ReadingListItemResponse, status_code=201)
+@router.post(
+    "/{reading_list_id}/items", response_model=ReadingListItemResponse, status_code=201
+)
 async def add_reading_list_item(
     reading_list_id: UUID,
     payload: ReadingListItemCreate,
@@ -190,7 +200,14 @@ async def add_reading_list_item(
 
     if payload.position is None:
         max_pos = int(
-            (await db.execute(select(func.max(ReadingListItem.position)).where(ReadingListItem.reading_list_id == rl.id))).scalar() or 0
+            (
+                await db.execute(
+                    select(func.max(ReadingListItem.position)).where(
+                        ReadingListItem.reading_list_id == rl.id
+                    )
+                )
+            ).scalar()
+            or 0
         )
         position = max_pos + 1
     else:
@@ -221,7 +238,9 @@ async def add_reading_list_item(
     )
 
 
-@router.put("/{reading_list_id}/items/{item_id}", response_model=ReadingListItemResponse)
+@router.put(
+    "/{reading_list_id}/items/{item_id}", response_model=ReadingListItemResponse
+)
 async def update_reading_list_item(
     reading_list_id: UUID,
     item_id: UUID,
@@ -279,4 +298,3 @@ async def delete_reading_list_item(
     await db.delete(item)
     await db.commit()
     return {"message": "deleted"}
-

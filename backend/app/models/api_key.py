@@ -2,12 +2,22 @@
 API Key model for external tool authentication.
 """
 
-from datetime import datetime
-from typing import Optional, List
-from sqlalchemy import Column, String, Text, DateTime, Boolean, JSON, ForeignKey, Integer
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
 import uuid
+from datetime import datetime
+from typing import List
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
@@ -22,11 +32,15 @@ class APIKey(Base):
     # Key identification
     name = Column(String(100), nullable=False)  # Human-readable name
     description = Column(Text, nullable=True)  # Optional description
-    key_prefix = Column(String(8), nullable=False, index=True)  # First 8 chars for identification
+    key_prefix = Column(
+        String(8), nullable=False, index=True
+    )  # First 8 chars for identification
     key_hash = Column(String(128), nullable=False)  # SHA256 hash of the full key
 
     # Ownership
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
     user = relationship("User", backref="api_keys")
 
     # Permissions and scopes
@@ -54,7 +68,9 @@ class APIKey(Base):
 
     # MCP Configuration
     mcp_enabled = Column(Boolean, default=True)  # Whether MCP access is enabled
-    allowed_tools = Column(JSON, nullable=True)  # List of allowed tool names, null = all tools
+    allowed_tools = Column(
+        JSON, nullable=True
+    )  # List of allowed tool names, null = all tools
     source_access_mode = Column(String(20), default="all")  # "all" or "restricted"
 
     def __repr__(self):
@@ -105,7 +121,11 @@ class APIKeyUsageLog(Base):
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
     # Key reference
-    api_key_id = Column(UUID(as_uuid=True), ForeignKey("api_keys.id", ondelete="CASCADE"), nullable=False)
+    api_key_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("api_keys.id", ondelete="CASCADE"),
+        nullable=False,
+    )
     api_key = relationship("APIKey", backref="usage_logs")
 
     # Request details

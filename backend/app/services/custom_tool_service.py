@@ -8,29 +8,28 @@ Supports:
 - LLM Prompt: LLM calls with templated prompts
 """
 
+import asyncio
 import json
 import time
-import asyncio
-import httpx
-from typing import Dict, Any, Optional
+from typing import Any, Dict
 from uuid import UUID
-from datetime import datetime
-from jinja2 import Environment, BaseLoader, sandbox, TemplateSyntaxError
+
+import httpx
+from jinja2 import BaseLoader, TemplateSyntaxError, sandbox
 from jsonpath_ng import parse as jsonpath_parse
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.workflow import UserTool, Workflow
-from app.models.user import User
 from app.core.config import settings
-from app.services.llm_service import LLMService, UserLLMSettings
 from app.models.memory import UserPreferences
+from app.models.user import User
+from app.models.workflow import UserTool, Workflow
+from app.services.llm_service import LLMService, UserLLMSettings
 
 
 class ToolExecutionError(Exception):
     """Raised when tool execution fails."""
-    pass
 
 
 class CustomToolService:
@@ -39,7 +38,7 @@ class CustomToolService:
     def __init__(self):
         self.jinja_env = sandbox.SandboxedEnvironment(loader=BaseLoader())
         # Add safe filters
-        self.jinja_env.filters['tojson'] = json.dumps
+        self.jinja_env.filters["tojson"] = json.dumps
 
     async def execute_tool(
         self,
@@ -70,13 +69,17 @@ class CustomToolService:
             # Tool policies for user-defined tools (namespaced).
             # allow-by-default; explicit denies; optional "require approval".
             if not bypass_approval_gate:
-                from app.services.tool_policy_engine import evaluate_tool_policy
                 from app.models.tool_audit import ToolExecutionAudit
+                from app.services.tool_policy_engine import evaluate_tool_policy
 
                 tool_policy_name = f"user_tool:{tool.id}"
-                decision = await evaluate_tool_policy(db=db, tool_name=tool_policy_name, tool_args=inputs, user=user)
+                decision = await evaluate_tool_policy(
+                    db=db, tool_name=tool_policy_name, tool_args=inputs, user=user
+                )
                 if not decision.allowed:
-                    raise ToolExecutionError(decision.denied_reason or "Tool denied by policy")
+                    raise ToolExecutionError(
+                        decision.denied_reason or "Tool denied by policy"
+                    )
 
                 if decision.require_approval:
                     audit = ToolExecutionAudit(
@@ -110,6 +113,23 @@ class CustomToolService:
             # Route to appropriate handler
             if tool.tool_type == "webhook":
                 result = await self._execute_webhook(tool.config, inputs)
+            elif tool.tool_type == "external_agent":
+                from app.services.external_agent_gateway_service import (
+                    external_agent_gateway_service,
+                )
+
+                result = await external_agent_gateway_service.invoke(
+                    tool=tool,
+                    user=user,
+                    db=db,
+                    capability=str(inputs.get("capability") or ""),
+                    payload=(
+                        inputs.get("payload")
+                        if isinstance(inputs.get("payload"), dict)
+                        else {}
+                    ),
+                    request_id=str(inputs.get("request_id") or "") or None,
+                )
             elif tool.tool_type == "transform":
                 result = await self._execute_transform(tool.config, inputs)
             elif tool.tool_type == "python":
@@ -124,17 +144,21 @@ class CustomToolService:
                     )
                 result = await self._execute_docker(tool.config, inputs, user)
             elif tool.tool_type == "workflow_runner":
-                result = await self._execute_workflow_runner(tool.config, inputs, user, db)
+                result = await self._execute_workflow_runner(
+                    tool.config, inputs, user, db
+                )
             else:
                 raise ToolExecutionError(f"Unknown tool type: {tool.tool_type}")
 
             execution_time_ms = int((time.time() - start_time) * 1000)
-            logger.info(f"Tool '{tool.name}' executed successfully in {execution_time_ms}ms")
+            logger.info(
+                f"Tool '{tool.name}' executed successfully in {execution_time_ms}ms"
+            )
 
             return {
                 "success": True,
                 "output": result,
-                "execution_time_ms": execution_time_ms
+                "execution_time_ms": execution_time_ms,
             }
 
         except ToolExecutionError:
@@ -180,9 +204,7 @@ class CustomToolService:
             raise ToolExecutionError(f"Template rendering failed: {e}")
 
     async def _execute_webhook(
-        self,
-        config: Dict[str, Any],
-        inputs: Dict[str, Any]
+        self, config: Dict[str, Any], inputs: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Execute a webhook tool - make HTTP request to external API.
@@ -219,7 +241,9 @@ class CustomToolService:
         async with httpx.AsyncClient(timeout=timeout) as client:
             try:
                 if method in ["GET", "DELETE"]:
-                    response = await client.request(method, url, headers=rendered_headers)
+                    response = await client.request(
+                        method, url, headers=rendered_headers
+                    )
                 else:
                     # Try to parse body as JSON, fall back to raw string
                     try:
@@ -237,7 +261,9 @@ class CustomToolService:
             except httpx.TimeoutException:
                 raise ToolExecutionError(f"Request timed out after {timeout}s")
             except httpx.HTTPStatusError as e:
-                raise ToolExecutionError(f"HTTP {e.response.status_code}: {e.response.text[:500]}")
+                raise ToolExecutionError(
+                    f"HTTP {e.response.status_code}: {e.response.text[:500]}"
+                )
             except Exception as e:
                 raise ToolExecutionError(f"Request failed: {str(e)}")
 
@@ -262,9 +288,7 @@ class CustomToolService:
         return result
 
     async def _execute_transform(
-        self,
-        config: Dict[str, Any],
-        inputs: Dict[str, Any]
+        self, config: Dict[str, Any], inputs: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Execute a transform tool - transform data using templates.
@@ -303,10 +327,7 @@ class CustomToolService:
             raise ToolExecutionError(f"Unknown transform type: {transform_type}")
 
     async def _execute_python(
-        self,
-        config: Dict[str, Any],
-        inputs: Dict[str, Any],
-        user: User
+        self, config: Dict[str, Any], inputs: Dict[str, Any], user: User
     ) -> Dict[str, Any]:
         """
         Execute a Python tool - run sandboxed Python code.
@@ -332,19 +353,22 @@ class CustomToolService:
             # Import RestrictedPython for sandboxed execution
             from RestrictedPython import compile_restricted, safe_globals
             from RestrictedPython.Eval import default_guarded_getiter
-            from RestrictedPython.Guards import guarded_iter_unpack_sequence, safer_getattr
+            from RestrictedPython.Guards import (
+                guarded_iter_unpack_sequence,
+                safer_getattr,
+            )
 
             # Compile the code in restricted mode
-            byte_code = compile_restricted(code, '<user_tool>', 'exec')
+            byte_code = compile_restricted(code, "<user_tool>", "exec")
 
             if byte_code.errors:
                 raise ToolExecutionError(f"Code compilation errors: {byte_code.errors}")
 
             # Prepare safe globals
             _globals = safe_globals.copy()
-            _globals['_getiter_'] = default_guarded_getiter
-            _globals['_iter_unpack_sequence_'] = guarded_iter_unpack_sequence
-            _globals['_getattr_'] = safer_getattr
+            _globals["_getiter_"] = default_guarded_getiter
+            _globals["_iter_unpack_sequence_"] = guarded_iter_unpack_sequence
+            _globals["_getattr_"] = safer_getattr
 
             # Add allowed imports
             for module_name in allowed:
@@ -354,22 +378,17 @@ class CustomToolService:
                     pass
 
             # Prepare locals
-            _locals = {
-                'input': inputs,
-                'output': {},
-                'result': None
-            }
+            _locals = {"input": inputs, "output": {}, "result": None}
 
             # Execute with timeout
             def run_code():
                 exec(byte_code, _globals, _locals)
-                return _locals.get('output') or _locals.get('result')
+                return _locals.get("output") or _locals.get("result")
 
             # Run in thread with timeout
             loop = asyncio.get_event_loop()
             result = await asyncio.wait_for(
-                loop.run_in_executor(None, run_code),
-                timeout=timeout
+                loop.run_in_executor(None, run_code), timeout=timeout
             )
 
             return result if isinstance(result, dict) else {"result": result}
@@ -389,7 +408,7 @@ class CustomToolService:
         config: Dict[str, Any],
         inputs: Dict[str, Any],
         user: User,
-        db: AsyncSession
+        db: AsyncSession,
     ) -> Dict[str, Any]:
         """
         Execute an LLM prompt tool - call LLM with templated prompt.
@@ -406,8 +425,6 @@ class CustomToolService:
         user_prompt = config.get("user_prompt", "")
         output_format = config.get("output_format", "text")
         model_override = config.get("model_override")
-        temperature = config.get("temperature")
-        max_tokens = config.get("max_tokens")
 
         # Render the user prompt
         rendered_prompt = self._render_template(user_prompt, inputs)
@@ -441,7 +458,7 @@ class CustomToolService:
             response = await llm_service.generate_response(
                 messages=messages,
                 user_settings=user_settings,
-                task_type="chat"  # Use chat model by default
+                task_type="chat",  # Use chat model by default
             )
 
             content = response.get("content", "")
@@ -451,7 +468,8 @@ class CustomToolService:
                 try:
                     # Try to extract JSON from the response
                     import re
-                    json_match = re.search(r'```json\s*([\s\S]*?)\s*```', content)
+
+                    json_match = re.search(r"```json\s*([\s\S]*?)\s*```", content)
                     if json_match:
                         content = json_match.group(1)
                     return json.loads(content)
@@ -464,10 +482,7 @@ class CustomToolService:
             raise ToolExecutionError(f"LLM call failed: {str(e)}")
 
     async def _execute_docker(
-        self,
-        config: Dict[str, Any],
-        inputs: Dict[str, Any],
-        user: User
+        self, config: Dict[str, Any], inputs: Dict[str, Any], user: User
     ) -> Dict[str, Any]:
         """
         Execute a Docker container tool.
@@ -488,8 +503,8 @@ class CustomToolService:
             network_enabled: Enable network access
             user: User to run as
         """
-        from app.services.docker_tool_executor import docker_executor
         from app.schemas.docker_tool import DockerToolConfig, DockerToolExecutionInput
+        from app.services.docker_tool_executor import docker_executor
 
         # Build config object
         docker_config = DockerToolConfig(
@@ -523,13 +538,13 @@ class CustomToolService:
 
         # Execute the container
         result = await docker_executor.execute(
-            config=docker_config,
-            execution_input=execution_input,
-            user_id=user.id
+            config=docker_config, execution_input=execution_input, user_id=user.id
         )
 
         if not result.success:
-            raise ToolExecutionError(result.error or f"Container exited with code {result.exit_code}")
+            raise ToolExecutionError(
+                result.error or f"Container exited with code {result.exit_code}"
+            )
 
         # Build output based on output_mode
         output = {

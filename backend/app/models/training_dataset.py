@@ -4,39 +4,53 @@ Training Dataset models for AI Hub.
 Manages training datasets and individual samples for model fine-tuning.
 """
 
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from sqlalchemy import Column, String, Text, DateTime, Boolean, Integer, BigInteger, ForeignKey, JSON
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
-import uuid
 import enum
+import uuid
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
 
 class DatasetType(str, enum.Enum):
     """Type of training dataset."""
+
     INSTRUCTION = "instruction"  # Alpaca-style instruction following
-    CHAT = "chat"               # Multi-turn conversation format
-    COMPLETION = "completion"   # Text completion format
-    PREFERENCE = "preference"   # DPO/RLHF preference pairs
+    CHAT = "chat"  # Multi-turn conversation format
+    COMPLETION = "completion"  # Text completion format
+    PREFERENCE = "preference"  # DPO/RLHF preference pairs
 
 
 class DatasetFormat(str, enum.Enum):
     """Format of training data."""
-    ALPACA = "alpaca"           # {"instruction": ..., "input": ..., "output": ...}
-    SHAREGPT = "sharegpt"       # {"conversations": [{"from": "human/gpt", "value": ...}]}
-    CUSTOM = "custom"           # Custom JSON schema
+
+    ALPACA = "alpaca"  # {"instruction": ..., "input": ..., "output": ...}
+    SHAREGPT = "sharegpt"  # {"conversations": [{"from": "human/gpt", "value": ...}]}
+    CUSTOM = "custom"  # Custom JSON schema
 
 
 class DatasetStatus(str, enum.Enum):
     """Status of a training dataset."""
-    DRAFT = "draft"             # Being created/edited
-    VALIDATING = "validating"   # Being validated
-    READY = "ready"             # Validated and ready for training
-    ERROR = "error"             # Validation failed
-    ARCHIVED = "archived"       # No longer active
+
+    DRAFT = "draft"  # Being created/edited
+    VALIDATING = "validating"  # Being validated
+    READY = "ready"  # Validated and ready for training
+    ERROR = "error"  # Validation failed
+    ARCHIVED = "archived"  # No longer active
 
 
 class TrainingDataset(Base):
@@ -56,15 +70,19 @@ class TrainingDataset(Base):
     description = Column(Text, nullable=True)
 
     # Dataset type and format
-    dataset_type = Column(String(50), nullable=False, default=DatasetType.INSTRUCTION.value)
+    dataset_type = Column(
+        String(50), nullable=False, default=DatasetType.INSTRUCTION.value
+    )
     format = Column(String(50), nullable=False, default=DatasetFormat.ALPACA.value)
 
     # Source tracking
-    source_document_ids = Column(JSON, nullable=True)  # Array of document UUIDs used to generate
+    source_document_ids = Column(
+        JSON, nullable=True
+    )  # Array of document UUIDs used to generate
 
     # Storage
     file_path = Column(String(500), nullable=True)  # MinIO path for exported JSONL
-    file_size = Column(BigInteger, nullable=True)   # Size in bytes
+    file_size = Column(BigInteger, nullable=True)  # Size in bytes
 
     # Statistics
     sample_count = Column(Integer, nullable=False, default=0)
@@ -79,14 +97,12 @@ class TrainingDataset(Base):
     parent_dataset_id = Column(
         UUID(as_uuid=True),
         ForeignKey("training_datasets.id", ondelete="SET NULL"),
-        nullable=True
+        nullable=True,
     )
 
     # Ownership
     user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
 
     # Visibility
@@ -97,22 +113,30 @@ class TrainingDataset(Base):
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     # Relationships
     user = relationship("User", backref="training_datasets")
-    samples = relationship("DatasetSample", back_populates="dataset", cascade="all, delete-orphan")
-    parent_dataset = relationship("TrainingDataset", remote_side=[id], backref="child_datasets")
+    samples = relationship(
+        "DatasetSample", back_populates="dataset", cascade="all, delete-orphan"
+    )
+    parent_dataset = relationship(
+        "TrainingDataset", remote_side=[id], backref="child_datasets"
+    )
 
     def __repr__(self):
-        return f"<TrainingDataset(id={self.id}, name='{self.name}', status={self.status})>"
+        return (
+            f"<TrainingDataset(id={self.id}, name='{self.name}', status={self.status})>"
+        )
 
     def is_ready_for_training(self) -> bool:
         """Check if dataset is ready for training."""
         return (
-            self.status == DatasetStatus.READY.value and
-            self.is_validated and
-            self.sample_count > 0
+            self.status == DatasetStatus.READY.value
+            and self.is_validated
+            and self.sample_count > 0
         )
 
     def get_token_statistics(self) -> Dict[str, Any]:
@@ -141,7 +165,7 @@ class DatasetSample(Base):
     dataset_id = Column(
         UUID(as_uuid=True),
         ForeignKey("training_datasets.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
 
     # Sample ordering
@@ -156,7 +180,7 @@ class DatasetSample(Base):
     source_document_id = Column(
         UUID(as_uuid=True),
         ForeignKey("documents.id", ondelete="SET NULL"),
-        nullable=True
+        nullable=True,
     )
 
     # Token counts

@@ -2,31 +2,28 @@
 Authentication-related API endpoints.
 """
 
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Request, status
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
-from sqlalchemy.exc import SQLAlchemyError
-from jose import JWTError, jwt
-from passlib.context import CryptContext
-from loguru import logger
 
-from app.core.database import get_db
+from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from jose import JWTError, jwt
+from loguru import logger
+from sqlalchemy.exc import SQLAlchemyError
+from sqlalchemy.exc import TimeoutError as SQLAlchemyTimeoutError
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.config import settings
-from app.core.rate_limit import limiter, AUTH_LIMIT
+from app.core.database import get_db
+from app.core.rate_limit import AUTH_LIMIT, limiter
 from app.models.user import User
+from app.schemas.auth import TokenResponse, UserRegister, UserResponse
 from app.services.auth_service import AuthService
-from app.schemas.auth import (
-    UserRegister,
-    UserResponse,
-    TokenResponse
-)
 
 router = APIRouter()
 auth_service = AuthService()
 security = HTTPBearer()
+
 
 async def get_user_from_token(token: str) -> Optional[User]:
     """Resolve a raw JWT access token to an active user.
@@ -67,16 +64,16 @@ async def get_current_active_user(
     to avoid import churn across endpoints.
     """
     if not current_user.is_active:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="User account is disabled")
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN, detail="User account is disabled"
+        )
     return current_user
 
 
 @router.post("/register", response_model=TokenResponse)
 @limiter.limit(AUTH_LIMIT)
 async def register(
-    request: Request,
-    user_data: UserRegister,
-    db: AsyncSession = Depends(get_db)
+    request: Request, user_data: UserRegister, db: AsyncSession = Depends(get_db)
 ):
     """Register a new user and return an access token."""
     try:
@@ -85,13 +82,13 @@ async def register(
             email=user_data.email,
             password=user_data.password,
             full_name=user_data.full_name,
-            db=db
+            db=db,
         )
         access_token = auth_service.create_access_token(user.id)
         return TokenResponse(
             access_token=access_token,
             token_type="bearer",
-            user=UserResponse.from_orm(user)
+            user=UserResponse.from_orm(user),
         )
 
     except ValueError as e:
@@ -101,7 +98,9 @@ async def register(
         raise
     except SQLAlchemyError as e:
         logger.error(f"Registration DB error: {e}")
-        raise HTTPException(status_code=503, detail="Database is temporarily unavailable")
+        raise HTTPException(
+            status_code=503, detail="Database is temporarily unavailable"
+        )
     except Exception as e:
         logger.error(f"Registration error: {e}")
         raise HTTPException(status_code=500, detail="Registration failed")
@@ -109,10 +108,7 @@ async def register(
 
 @router.post("/login", response_model=TokenResponse)
 @limiter.limit(AUTH_LIMIT)
-async def login(
-    request: Request,
-    db: AsyncSession = Depends(get_db)
-):
+async def login(request: Request, db: AsyncSession = Depends(get_db)):
     """Login user and return access token.
 
     Accepts either a form-encoded body (OAuth2 password flow) or a JSON body
@@ -144,30 +140,28 @@ async def login(
             )
 
         user = await auth_service.authenticate_user(
-            username=username,
-            password=password,
-            db=db
+            username=username, password=password, db=db
         )
-        
+
         if not user:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Incorrect username or password"
+                detail="Incorrect username or password",
             )
-        
+
         access_token = auth_service.create_access_token(user.id)
-        
+
         # Update last login
         user.last_login = datetime.utcnow()
         user.login_count += 1
         await db.commit()
-        
+
         return TokenResponse(
             access_token=access_token,
             token_type="bearer",
-            user=UserResponse.from_orm(user)
+            user=UserResponse.from_orm(user),
         )
-    
+
     except HTTPException:
         raise
     except SQLAlchemyTimeoutError:
@@ -175,10 +169,14 @@ async def login(
         raise
     except SQLAlchemyError as e:
         logger.error(f"Login DB error: {e}")
-        raise HTTPException(status_code=503, detail="Database is temporarily unavailable")
+        raise HTTPException(
+            status_code=503, detail="Database is temporarily unavailable"
+        )
     except OSError as e:
         logger.error(f"Login backend network error: {e}")
-        raise HTTPException(status_code=503, detail="Authentication backend is temporarily unavailable")
+        raise HTTPException(
+            status_code=503, detail="Authentication backend is temporarily unavailable"
+        )
     except Exception as e:
         logger.error(f"Login error: {e}")
         raise HTTPException(status_code=500, detail="Login failed")
@@ -186,7 +184,7 @@ async def login(
 
 @router.get("/me", response_model=UserResponse)
 async def get_current_user_info(
-    current_user: User = Depends(auth_service.get_current_user)
+    current_user: User = Depends(auth_service.get_current_user),
 ):
     """Get current user information."""
     return UserResponse.from_orm(current_user)
@@ -201,7 +199,7 @@ async def logout():
 @router.post("/refresh", response_model=TokenResponse)
 async def refresh_token(
     credentials: HTTPAuthorizationCredentials = Depends(security),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Refresh access token."""
     try:
@@ -209,34 +207,36 @@ async def refresh_token(
         payload = jwt.decode(
             credentials.credentials,
             settings.SECRET_KEY,
-            algorithms=[settings.ALGORITHM]
+            algorithms=[settings.ALGORITHM],
         )
         user_id = payload.get("sub")
-        
+
         if not user_id:
             raise HTTPException(status_code=401, detail="Invalid token")
-        
+
         # Get user
         user = await auth_service.get_user_by_id(user_id, db)
         if not user:
             raise HTTPException(status_code=401, detail="User not found")
-        
+
         # Create new token
         new_token = auth_service.create_access_token(user.id)
-        
+
         return TokenResponse(
             access_token=new_token,
             token_type="bearer",
-            user=UserResponse.from_orm(user)
+            user=UserResponse.from_orm(user),
         )
-    
+
     except JWTError:
         raise HTTPException(status_code=401, detail="Invalid token")
     except SQLAlchemyTimeoutError:
         raise
     except SQLAlchemyError as e:
         logger.error(f"Token refresh DB error: {e}")
-        raise HTTPException(status_code=503, detail="Database is temporarily unavailable")
+        raise HTTPException(
+            status_code=503, detail="Database is temporarily unavailable"
+        )
     except Exception as e:
         logger.error(f"Token refresh error: {e}")
         raise HTTPException(status_code=500, detail="Token refresh failed")

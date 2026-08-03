@@ -4,12 +4,20 @@ MCP Configuration models.
 Stores configuration for MCP tools and access control per API key.
 """
 
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from sqlalchemy import Column, String, Boolean, DateTime, ForeignKey, JSON, UniqueConstraint
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
 import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    String,
+    UniqueConstraint,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
@@ -25,7 +33,7 @@ class MCPToolConfig(Base):
     api_key_id = Column(
         UUID(as_uuid=True),
         ForeignKey("api_keys.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
 
     # Tool identification
@@ -39,7 +47,9 @@ class MCPToolConfig(Base):
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     # Relationships
     api_key = relationship("APIKey", backref="tool_configs")
@@ -63,14 +73,14 @@ class MCPSourceAccess(Base):
     api_key_id = Column(
         UUID(as_uuid=True),
         ForeignKey("api_keys.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
 
     # Link to document source
     source_id = Column(
         UUID(as_uuid=True),
         ForeignKey("document_sources.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
 
     # Permissions
@@ -103,7 +113,7 @@ MCP_TOOLS = {
         "required_scope": "read",
         "config_schema": {
             "max_results": {"type": "integer", "default": 50, "min": 1, "max": 100},
-        }
+        },
     },
     "list_documents": {
         "name": "list_documents",
@@ -113,7 +123,7 @@ MCP_TOOLS = {
         "required_scope": "read",
         "config_schema": {
             "max_results": {"type": "integer", "default": 100, "min": 1, "max": 500},
-        }
+        },
     },
     "get_document": {
         "name": "get_document",
@@ -124,7 +134,7 @@ MCP_TOOLS = {
         "config_schema": {
             "include_content": {"type": "boolean", "default": True},
             "max_content_length": {"type": "integer", "default": 100000},
-        }
+        },
     },
     "list_sources": {
         "name": "list_sources",
@@ -132,7 +142,7 @@ MCP_TOOLS = {
         "description": "List available document sources",
         "category": "read",
         "required_scope": "read",
-        "config_schema": {}
+        "config_schema": {},
     },
     "chat": {
         "name": "chat",
@@ -141,9 +151,14 @@ MCP_TOOLS = {
         "category": "chat",
         "required_scope": "chat",
         "config_schema": {
-            "max_context_chunks": {"type": "integer", "default": 10, "min": 1, "max": 20},
+            "max_context_chunks": {
+                "type": "integer",
+                "default": 10,
+                "min": 1,
+                "max": 20,
+            },
             "include_sources": {"type": "boolean", "default": True},
-        }
+        },
     },
     "web_scrape": {
         "name": "web_scrape",
@@ -157,7 +172,12 @@ MCP_TOOLS = {
             "same_domain_only": {"type": "boolean", "default": True},
             "include_links": {"type": "boolean", "default": True},
             "allow_private_networks": {"type": "boolean", "default": False},
-            "max_content_chars": {"type": "integer", "default": 50000, "min": 1000, "max": 500000},
+            "max_content_chars": {
+                "type": "integer",
+                "default": 50000,
+                "min": 1000,
+                "max": 500000,
+            },
         },
     },
     "create_presentation": {
@@ -168,8 +188,11 @@ MCP_TOOLS = {
         "required_scope": "write",
         "config_schema": {
             "max_slides": {"type": "integer", "default": 30, "min": 5, "max": 50},
-            "allowed_styles": {"type": "array", "default": ["professional", "technical", "modern", "minimal"]},
-        }
+            "allowed_styles": {
+                "type": "array",
+                "default": ["professional", "technical", "modern", "minimal"],
+            },
+        },
     },
     "create_repo_report": {
         "name": "create_repo_report",
@@ -179,7 +202,7 @@ MCP_TOOLS = {
         "required_scope": "write",
         "config_schema": {
             "allowed_formats": {"type": "array", "default": ["docx", "pdf", "pptx"]},
-        }
+        },
     },
     "get_job_status": {
         "name": "get_job_status",
@@ -187,7 +210,7 @@ MCP_TOOLS = {
         "description": "Check status of generation jobs",
         "category": "read",
         "required_scope": "read",
-        "config_schema": {}
+        "config_schema": {},
     },
     "list_jobs": {
         "name": "list_jobs",
@@ -195,7 +218,7 @@ MCP_TOOLS = {
         "description": "List generation jobs",
         "category": "read",
         "required_scope": "read",
-        "config_schema": {}
+        "config_schema": {},
     },
     "docker_execute": {
         "name": "docker_execute",
@@ -204,9 +227,19 @@ MCP_TOOLS = {
         "category": "write",
         "required_scope": "write",
         "config_schema": {
-            "timeout_seconds_max": {"type": "integer", "default": 120, "min": 1, "max": 3600},
+            "timeout_seconds_max": {
+                "type": "integer",
+                "default": 120,
+                "min": 1,
+                "max": 3600,
+            },
             "memory_limit_default": {"type": "string", "default": "512m"},
-            "cpu_limit_default": {"type": "number", "default": 1.0, "min": 0.1, "max": 8.0},
+            "cpu_limit_default": {
+                "type": "number",
+                "default": 1.0,
+                "min": 0.1,
+                "max": 8.0,
+            },
             "network_enabled_default": {"type": "boolean", "default": False},
         },
     },

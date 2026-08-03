@@ -86,7 +86,9 @@ def ensure_local_whisper_weights(
         )
         if url:
             hint = f"Download from {url} into {target} (or run the downloader script)."
-        raise RuntimeError(f"Whisper weights missing for '{model_size}' at {target}. {hint}")
+        raise RuntimeError(
+            f"Whisper weights missing for '{model_size}' at {target}. {hint}"
+        )
 
     url = get_model_url(model_size)
     if allow_download and url:
@@ -132,7 +134,11 @@ def _download_to_file(*, url: str, dest: Path) -> None:
             raise
 
         cmd = [curl, "-fL", "--retry", "3", "--retry-delay", "2", "-o", str(tmp), url]
-        if os.environ.get("WHISPER_CURL_INSECURE", "").strip().lower() in {"1", "true", "yes"}:
+        if os.environ.get("WHISPER_CURL_INSECURE", "").strip().lower() in {
+            "1",
+            "true",
+            "yes",
+        }:
             cmd.insert(1, "-k")
         subprocess.run(cmd, check=True)
         tmp.replace(dest)

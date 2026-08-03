@@ -8,11 +8,11 @@ Includes methods for:
 - Admin operations (merge, delete, audit)
 """
 
-from typing import List, Dict, Any, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 from uuid import UUID
+
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func, or_, and_
-from loguru import logger
 
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
 
@@ -20,20 +20,33 @@ from app.models.knowledge_graph import Entity, EntityMention, Relationship
 class KnowledgeGraphService:
     async def stats(self, db: AsyncSession) -> Dict[str, Any]:
         ent_count = (await db.execute(select(func.count(Entity.id)))).scalar() or 0
-        rel_count = (await db.execute(select(func.count(Relationship.id)))).scalar() or 0
-        mention_count = (await db.execute(select(func.count(EntityMention.id)))).scalar() or 0
+        rel_count = (
+            await db.execute(select(func.count(Relationship.id)))
+        ).scalar() or 0
+        mention_count = (
+            await db.execute(select(func.count(EntityMention.id)))
+        ).scalar() or 0
         return {
             "entities": ent_count,
             "relationships": rel_count,
             "mentions": mention_count,
         }
 
-    async def entities(self, db: AsyncSession, q: Optional[str] = None, limit: int = 50, offset: int = 0) -> List[Entity]:
+    async def entities(
+        self,
+        db: AsyncSession,
+        q: Optional[str] = None,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Entity]:
         stmt = select(Entity).order_by(Entity.updated_at.desc())
         if q:
             like = f"%{q}%"
             from sqlalchemy import or_
-            stmt = stmt.where(or_(Entity.canonical_name.ilike(like), Entity.entity_type.ilike(like)))
+
+            stmt = stmt.where(
+                or_(Entity.canonical_name.ilike(like), Entity.entity_type.ilike(like))
+            )
         stmt = stmt.offset(offset).limit(limit)
         res = await db.execute(stmt)
         return res.scalars().all()
@@ -43,7 +56,10 @@ class KnowledgeGraphService:
         if q:
             like = f"%{q}%"
             from sqlalchemy import or_
-            stmt = stmt.where(or_(Entity.canonical_name.ilike(like), Entity.entity_type.ilike(like)))
+
+            stmt = stmt.where(
+                or_(Entity.canonical_name.ilike(like), Entity.entity_type.ilike(like))
+            )
         res = await db.execute(stmt)
         return int(res.scalar() or 0)
 
@@ -59,6 +75,7 @@ class KnowledgeGraphService:
     ):
         from app.models.knowledge_graph import KGAuditLog
         from app.models.user import User
+
         stmt = (
             select(
                 KGAuditLog.id,
@@ -73,11 +90,13 @@ class KnowledgeGraphService:
             .order_by(KGAuditLog.created_at.desc())
         )
         from sqlalchemy import and_
+
         conditions = []
         if action:
             conditions.append(KGAuditLog.action == action)
         if user_id:
             from uuid import UUID as _UUID
+
             try:
                 user_uuid = _UUID(user_id)
                 conditions.append(KGAuditLog.user_id == user_uuid)
@@ -85,6 +104,7 @@ class KnowledgeGraphService:
                 pass  # Invalid UUID format, skip filter
         if date_from:
             from datetime import datetime
+
             try:
                 df = datetime.fromisoformat(date_from)
                 conditions.append(KGAuditLog.created_at >= df)
@@ -92,6 +112,7 @@ class KnowledgeGraphService:
                 pass
         if date_to:
             from datetime import datetime
+
             try:
                 dt = datetime.fromisoformat(date_to)
                 conditions.append(KGAuditLog.created_at <= dt)
@@ -105,26 +126,43 @@ class KnowledgeGraphService:
         rows = (await db.execute(stmt)).all()
         items = []
         for r in rows:
-            items.append({
-                "id": str(r.id),
-                "user_id": str(r.user_id),
-                "user_name": (r.full_name or r.username) if (r.full_name or r.username) else None,
-                "action": r.action,
-                "details": r.details,
-                "created_at": r.created_at.isoformat() if r.created_at else "",
-            })
+            items.append(
+                {
+                    "id": str(r.id),
+                    "user_id": str(r.user_id),
+                    "user_name": (r.full_name or r.username)
+                    if (r.full_name or r.username)
+                    else None,
+                    "action": r.action,
+                    "details": r.details,
+                    "created_at": r.created_at.isoformat() if r.created_at else "",
+                }
+            )
         return {"items": items, "total": total, "limit": limit, "offset": offset}
 
-    async def relationships_for_entity(self, db: AsyncSession, entity_id, limit: int = 100) -> List[Relationship]:
-        stmt = select(Relationship).where(
-            (Relationship.source_entity_id == entity_id) | (Relationship.target_entity_id == entity_id)
-        ).order_by(Relationship.created_at.desc()).limit(limit)
+    async def relationships_for_entity(
+        self, db: AsyncSession, entity_id, limit: int = 100
+    ) -> List[Relationship]:
+        stmt = (
+            select(Relationship)
+            .where(
+                (Relationship.source_entity_id == entity_id)
+                | (Relationship.target_entity_id == entity_id)
+            )
+            .order_by(Relationship.created_at.desc())
+            .limit(limit)
+        )
         res = await db.execute(stmt)
         return res.scalars().all()
 
     async def graph_for_document(self, db: AsyncSession, document_id) -> Dict[str, Any]:
         # Nodes: entities mentioned in this doc; edges: relations in this doc
-        ent_stmt = select(Entity).join(EntityMention, EntityMention.entity_id == Entity.id).where(EntityMention.document_id == document_id).distinct()
+        ent_stmt = (
+            select(Entity)
+            .join(EntityMention, EntityMention.entity_id == Entity.id)
+            .where(EntityMention.document_id == document_id)
+            .distinct()
+        )
         rel_stmt = select(Relationship).where(Relationship.document_id == document_id)
         ents = (await db.execute(ent_stmt)).scalars().all()
         rels = (await db.execute(rel_stmt)).scalars().all()
@@ -151,9 +189,12 @@ class KnowledgeGraphService:
             ],
         }
 
-    async def mentions_for_entity(self, db: AsyncSession, entity_id, limit: int = 25, offset: int = 0):
-        from app.models.knowledge_graph import EntityMention
+    async def mentions_for_entity(
+        self, db: AsyncSession, entity_id, limit: int = 25, offset: int = 0
+    ):
         from app.models.document import Document
+        from app.models.knowledge_graph import EntityMention
+
         stmt = (
             select(
                 EntityMention.id,
@@ -195,10 +236,17 @@ class KnowledgeGraphService:
 
     async def mentions_count_for_entity(self, db: AsyncSession, entity_id) -> int:
         from app.models.knowledge_graph import EntityMention
-        q = await db.execute(select(func.count(EntityMention.id)).where(EntityMention.entity_id == entity_id))
+
+        q = await db.execute(
+            select(func.count(EntityMention.id)).where(
+                EntityMention.entity_id == entity_id
+            )
+        )
         return int(q.scalar() or 0)
 
-    async def merge_entities(self, db: AsyncSession, source_id: str, target_id: str) -> dict:
+    async def merge_entities(
+        self, db: AsyncSession, source_id: str, target_id: str
+    ) -> dict:
         """Merge source entity into target entity.
 
         - Repoint mentions to target
@@ -207,10 +255,16 @@ class KnowledgeGraphService:
         Returns counts of updated/deleted items.
         """
         from uuid import UUID as _UUID
+
         from app.models.knowledge_graph import Entity, EntityMention, Relationship
 
         if source_id == target_id:
-            return {"mentions_updated": 0, "rels_updated": 0, "rels_deleted": 0, "entity_deleted": False}
+            return {
+                "mentions_updated": 0,
+                "rels_updated": 0,
+                "rels_deleted": 0,
+                "entity_deleted": False,
+            }
 
         src = await db.get(Entity, _UUID(source_id))
         tgt = await db.get(Entity, _UUID(target_id))
@@ -219,13 +273,19 @@ class KnowledgeGraphService:
 
         # Update mentions
         from sqlalchemy import update
-        res = await db.execute(update(EntityMention).where(EntityMention.entity_id == src.id).values(entity_id=tgt.id))
+
+        res = await db.execute(
+            update(EntityMention)
+            .where(EntityMention.entity_id == src.id)
+            .values(entity_id=tgt.id)
+        )
         mentions_updated = res.rowcount or 0
 
         # Handle relationships referencing source
         rels_q = await db.execute(
             select(Relationship).where(
-                (Relationship.source_entity_id == src.id) | (Relationship.target_entity_id == src.id)
+                (Relationship.source_entity_id == src.id)
+                | (Relationship.target_entity_id == src.id)
             )
         )
         rels = rels_q.scalars().all()
@@ -269,6 +329,7 @@ class KnowledgeGraphService:
         Returns counts of affected rows.
         """
         from uuid import UUID as _UUID
+
         from app.models.knowledge_graph import Entity, EntityMention, Relationship
 
         ent = await db.get(Entity, _UUID(entity_id))
@@ -276,34 +337,52 @@ class KnowledgeGraphService:
             raise ValueError("Entity not found")
 
         # Count mentions
-        m_count_q = await db.execute(select(func.count(EntityMention.id)).where(EntityMention.entity_id == ent.id))
+        m_count_q = await db.execute(
+            select(func.count(EntityMention.id)).where(
+                EntityMention.entity_id == ent.id
+            )
+        )
         mentions = int(m_count_q.scalar() or 0)
 
         # Count relationships where entity participates
         r_count_q = await db.execute(
             select(func.count(Relationship.id)).where(
-                (Relationship.source_entity_id == ent.id) | (Relationship.target_entity_id == ent.id)
+                (Relationship.source_entity_id == ent.id)
+                | (Relationship.target_entity_id == ent.id)
             )
         )
         relationships = int(r_count_q.scalar() or 0)
 
         await db.delete(ent)
         await db.commit()
-        return {"mentions_deleted": mentions, "relationships_deleted": relationships, "entity_deleted": True}
+        return {
+            "mentions_deleted": mentions,
+            "relationships_deleted": relationships,
+            "entity_deleted": True,
+        }
 
-    async def rebuild_for_document(self, db: AsyncSession, document_id) -> Dict[str, Any]:
+    async def rebuild_for_document(
+        self, db: AsyncSession, document_id
+    ) -> Dict[str, Any]:
         """Delete KG items for a document and re-extract from its chunks."""
         # Delete existing mentions and relationships for the doc
         from sqlalchemy import delete
-        await db.execute(delete(EntityMention).where(EntityMention.document_id == document_id))
-        await db.execute(delete(Relationship).where(Relationship.document_id == document_id))
+
+        await db.execute(
+            delete(EntityMention).where(EntityMention.document_id == document_id)
+        )
+        await db.execute(
+            delete(Relationship).where(Relationship.document_id == document_id)
+        )
         await db.flush()
 
         # Re-extract for each chunk in batches to avoid memory issues
-        from app.models.document import DocumentChunk, Document
+        from app.models.document import Document, DocumentChunk
         from app.services.knowledge_extraction import extractor
 
-        doc = (await db.execute(select(Document).where(Document.id == document_id))).scalar_one_or_none()
+        doc = (
+            await db.execute(select(Document).where(Document.id == document_id))
+        ).scalar_one_or_none()
         if not doc:
             return {"mentions": 0, "relationships": 0}
 
@@ -361,10 +440,12 @@ class KnowledgeGraphService:
         chunk_weight: Dict[_UUID, float] = {}
         doc_weight: Dict[_UUID, float] = {}
 
-        for r in (search_results or []):
+        for r in search_results or []:
             md = (r.get("metadata") or {}) if isinstance(r, dict) else {}
             raw_chunk_id = md.get("chunk_id")
-            raw_doc_id = md.get("document_id") or (r.get("id") if isinstance(r, dict) else None)
+            raw_doc_id = md.get("document_id") or (
+                r.get("id") if isinstance(r, dict) else None
+            )
 
             score = md.get("score", r.get("score", 0.0) if isinstance(r, dict) else 0.0)
             try:
@@ -374,7 +455,11 @@ class KnowledgeGraphService:
 
             if raw_chunk_id:
                 try:
-                    cid = raw_chunk_id if isinstance(raw_chunk_id, _UUID) else _UUID(str(raw_chunk_id))
+                    cid = (
+                        raw_chunk_id
+                        if isinstance(raw_chunk_id, _UUID)
+                        else _UUID(str(raw_chunk_id))
+                    )
                     chunk_ids.append(cid)
                     chunk_weight[cid] = max(chunk_weight.get(cid, 0.0), score_f)
                 except Exception:
@@ -382,7 +467,11 @@ class KnowledgeGraphService:
 
             if raw_doc_id:
                 try:
-                    did = raw_doc_id if isinstance(raw_doc_id, _UUID) else _UUID(str(raw_doc_id))
+                    did = (
+                        raw_doc_id
+                        if isinstance(raw_doc_id, _UUID)
+                        else _UUID(str(raw_doc_id))
+                    )
                     doc_ids.append(did)
                     doc_weight[did] = max(doc_weight.get(did, 0.0), score_f)
                 except Exception:
@@ -402,9 +491,16 @@ class KnowledgeGraphService:
         doc_ids = _uniq(doc_ids)
 
         if not chunk_ids and not doc_ids:
-            return {"entities": [], "relationships": [], "kg_context": "", "stats": {"reason": "no_chunk_or_doc_ids"}}
+            return {
+                "entities": [],
+                "relationships": [],
+                "kg_context": "",
+                "stats": {"reason": "no_chunk_or_doc_ids"},
+            }
 
-        mention_stmt = select(EntityMention, Entity).join(Entity, Entity.id == EntityMention.entity_id)
+        mention_stmt = select(EntityMention, Entity).join(
+            Entity, Entity.id == EntityMention.entity_id
+        )
         if chunk_ids:
             mention_stmt = mention_stmt.where(EntityMention.chunk_id.in_(chunk_ids))
         else:
@@ -433,7 +529,7 @@ class KnowledgeGraphService:
                 w = chunk_weight.get(m.chunk_id, 0.0)
             elif getattr(m, "document_id", None):
                 w = doc_weight.get(m.document_id, 0.0)
-            ent_score[eid] += (w if w > 0 else 0.05)
+            ent_score[eid] += w if w > 0 else 0.05
 
             if len(ent_evidence[eid]) < max_entity_evidence:
                 sent = (m.sentence or "").strip() if hasattr(m, "sentence") else ""
@@ -442,8 +538,12 @@ class KnowledgeGraphService:
                 if sent:
                     ent_evidence[eid].append(
                         {
-                            "document_id": str(m.document_id) if getattr(m, "document_id", None) else None,
-                            "chunk_id": str(m.chunk_id) if getattr(m, "chunk_id", None) else None,
+                            "document_id": str(m.document_id)
+                            if getattr(m, "document_id", None)
+                            else None,
+                            "chunk_id": str(m.chunk_id)
+                            if getattr(m, "chunk_id", None)
+                            else None,
                             "text": sent[:max_evidence_chars],
                         }
                     )
@@ -453,10 +553,16 @@ class KnowledgeGraphService:
                 "entities": [],
                 "relationships": [],
                 "kg_context": "",
-                "stats": {"chunks": len(chunk_ids), "docs": len(doc_ids), "reason": "no_mentions"},
+                "stats": {
+                    "chunks": len(chunk_ids),
+                    "docs": len(doc_ids),
+                    "reason": "no_mentions",
+                },
             }
 
-        ranked_entity_ids = sorted(ent_score.keys(), key=lambda k: ent_score[k], reverse=True)[:max_entities]
+        ranked_entity_ids = sorted(
+            ent_score.keys(), key=lambda k: ent_score[k], reverse=True
+        )[:max_entities]
 
         entities_pack: List[Dict[str, Any]] = []
         for eid in ranked_entity_ids:
@@ -497,7 +603,9 @@ class KnowledgeGraphService:
         else:
             rel_stmt = rel_stmt.where(Relationship.document_id.in_(doc_ids))
 
-        rel_stmt = rel_stmt.order_by(Relationship.confidence.desc()).limit(max_relationships * 3)
+        rel_stmt = rel_stmt.order_by(Relationship.confidence.desc()).limit(
+            max_relationships * 3
+        )
         rels = list((await db.execute(rel_stmt)).scalars().all())
 
         top_set = set(ranked_entity_ids)
@@ -527,7 +635,9 @@ class KnowledgeGraphService:
                     "source": str(r.source_entity_id),
                     "target": str(r.target_entity_id),
                     "confidence": float(r.confidence or 0.0),
-                    "evidence": (r.evidence or "")[:max_evidence_chars] if r.evidence else None,
+                    "evidence": (r.evidence or "")[:max_evidence_chars]
+                    if r.evidence
+                    else None,
                     "document_id": str(r.document_id) if r.document_id else None,
                     "chunk_id": str(r.chunk_id) if r.chunk_id else None,
                 }
@@ -535,7 +645,9 @@ class KnowledgeGraphService:
 
         ent_name = {e["id"]: e["name"] for e in entities_pack}
         lines: List[str] = []
-        lines.append("\n--- Knowledge Graph Context (Grounded in Retrieved Sources) ---")
+        lines.append(
+            "\n--- Knowledge Graph Context (Grounded in Retrieved Sources) ---"
+        )
         lines.append("Entities:")
         for e in entities_pack:
             base = f"• {e['name']} ({e['type']})"
@@ -563,7 +675,12 @@ class KnowledgeGraphService:
             "entities": entities_pack,
             "relationships": rel_pack,
             "kg_context": "\n".join(lines),
-            "stats": {"chunks": len(chunk_ids), "docs": len(doc_ids), "mentions": len(mention_rows), "rels": len(rel_pack)},
+            "stats": {
+                "chunks": len(chunk_ids),
+                "docs": len(doc_ids),
+                "mentions": len(mention_rows),
+                "rels": len(rel_pack),
+            },
         }
 
     async def search_entities_by_names(
@@ -571,7 +688,7 @@ class KnowledgeGraphService:
         names: List[str],
         db: AsyncSession,
         entity_types: Optional[List[str]] = None,
-        limit: int = 20
+        limit: int = 20,
     ) -> List[Entity]:
         """Find entities matching given names (case-insensitive, partial match).
 
@@ -611,10 +728,7 @@ class KnowledgeGraphService:
         return list(result.scalars().all())
 
     async def get_entity_context(
-        self,
-        entity_ids: List[UUID],
-        db: AsyncSession,
-        max_relationships: int = 30
+        self, entity_ids: List[UUID], db: AsyncSession, max_relationships: int = 30
     ) -> Dict[str, Any]:
         """Get entities with their relationships for RAG context building.
 
@@ -641,7 +755,7 @@ class KnowledgeGraphService:
             .where(
                 or_(
                     Relationship.source_entity_id.in_(entity_ids),
-                    Relationship.target_entity_id.in_(entity_ids)
+                    Relationship.target_entity_id.in_(entity_ids),
                 )
             )
             .order_by(Relationship.confidence.desc())
@@ -654,7 +768,10 @@ class KnowledgeGraphService:
         internal_rels = []
         external_rels = []
         for r in all_rels:
-            if r.source_entity_id in entity_id_set and r.target_entity_id in entity_id_set:
+            if (
+                r.source_entity_id in entity_id_set
+                and r.target_entity_id in entity_id_set
+            ):
                 internal_rels.append(r)
             else:
                 external_rels.append(r)
@@ -678,16 +795,10 @@ class KnowledgeGraphService:
             ext_result = await db.execute(ext_stmt)
             entities.extend(ext_result.scalars().all())
 
-        return {
-            "entities": entities,
-            "relationships": relationships
-        }
+        return {"entities": entities, "relationships": relationships}
 
     async def extract_entity_names_from_text(
-        self,
-        text: str,
-        db: AsyncSession,
-        limit: int = 10
+        self, text: str, db: AsyncSession, limit: int = 10
     ) -> List[str]:
         """Extract potential entity names from text by matching against known entities.
 
@@ -707,7 +818,8 @@ class KnowledgeGraphService:
 
         # Get candidate phrases (2-4 word sequences that might be entity names)
         import re
-        words = re.findall(r'\b[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)*\b', text)
+
+        words = re.findall(r"\b[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)*\b", text)
 
         # Also get any quoted strings
         quoted = re.findall(r'"([^"]+)"', text)
@@ -721,9 +833,11 @@ class KnowledgeGraphService:
         for candidate in candidates[:20]:  # Limit candidates to check
             if len(candidate) < 2:
                 continue
-            stmt = select(Entity.canonical_name).where(
-                Entity.canonical_name.ilike(f"%{candidate}%")
-            ).limit(3)
+            stmt = (
+                select(Entity.canonical_name)
+                .where(Entity.canonical_name.ilike(f"%{candidate}%"))
+                .limit(3)
+            )
             result = await db.execute(stmt)
             for name in result.scalars().all():
                 if name not in found_names:
@@ -768,7 +882,7 @@ class KnowledgeGraphService:
                 Entity.canonical_name,
                 Entity.entity_type,
                 Entity.description,
-                func.count(EntityMention.id).label("mention_count")
+                func.count(EntityMention.id).label("mention_count"),
             )
             .outerjoin(EntityMention, EntityMention.entity_id == Entity.id)
             .group_by(Entity.id)
@@ -788,7 +902,9 @@ class KnowledgeGraphService:
         entity_subq = entity_subq.having(func.count(EntityMention.id) >= min_mentions)
 
         # Order by mention count descending, limit
-        entity_subq = entity_subq.order_by(func.count(EntityMention.id).desc()).limit(limit_nodes)
+        entity_subq = entity_subq.order_by(func.count(EntityMention.id).desc()).limit(
+            limit_nodes
+        )
 
         # Execute entity query
         entity_result = await db.execute(entity_subq)
@@ -799,53 +915,62 @@ class KnowledgeGraphService:
         entity_ids: Set[UUID] = set()
         for row in entity_rows:
             entity_ids.add(row.id)
-            nodes.append({
-                "id": str(row.id),
-                "name": row.canonical_name,
-                "type": row.entity_type,
-                "description": row.description,
-                "mention_count": row.mention_count,
-            })
+            nodes.append(
+                {
+                    "id": str(row.id),
+                    "name": row.canonical_name,
+                    "type": row.entity_type,
+                    "description": row.description,
+                    "mention_count": row.mention_count,
+                }
+            )
 
         # Get relationships between found entities
         edges = []
         if entity_ids:
-            rel_stmt = (
-                select(Relationship)
-                .where(
-                    and_(
-                        Relationship.source_entity_id.in_(entity_ids),
-                        Relationship.target_entity_id.in_(entity_ids),
-                        Relationship.confidence >= min_confidence
-                    )
+            rel_stmt = select(Relationship).where(
+                and_(
+                    Relationship.source_entity_id.in_(entity_ids),
+                    Relationship.target_entity_id.in_(entity_ids),
+                    Relationship.confidence >= min_confidence,
                 )
             )
             if relation_types:
-                rel_stmt = rel_stmt.where(Relationship.relation_type.in_(relation_types))
+                rel_stmt = rel_stmt.where(
+                    Relationship.relation_type.in_(relation_types)
+                )
 
-            rel_stmt = rel_stmt.order_by(Relationship.confidence.desc()).limit(limit_edges)
+            rel_stmt = rel_stmt.order_by(Relationship.confidence.desc()).limit(
+                limit_edges
+            )
 
             rel_result = await db.execute(rel_stmt)
             relationships = rel_result.scalars().all()
 
             for r in relationships:
-                edges.append({
-                    "id": str(r.id),
-                    "type": r.relation_type,
-                    "source": str(r.source_entity_id),
-                    "target": str(r.target_entity_id),
-                    "confidence": r.confidence,
-                    "evidence": r.evidence,
-                    "chunk_id": str(r.chunk_id) if r.chunk_id else None,
-                })
+                edges.append(
+                    {
+                        "id": str(r.id),
+                        "type": r.relation_type,
+                        "source": str(r.source_entity_id),
+                        "target": str(r.target_entity_id),
+                        "confidence": r.confidence,
+                        "evidence": r.evidence,
+                        "chunk_id": str(r.chunk_id) if r.chunk_id else None,
+                    }
+                )
 
         # Get total counts for metadata
         total_entities = (await db.execute(select(func.count(Entity.id)))).scalar() or 0
-        total_relationships = (await db.execute(select(func.count(Relationship.id)))).scalar() or 0
+        total_relationships = (
+            await db.execute(select(func.count(Relationship.id)))
+        ).scalar() or 0
 
         # Types (for UI filter dropdowns). Keep it cheap by deriving from returned graph.
         returned_entity_types = sorted({n.get("type") for n in nodes if n.get("type")})
-        returned_relation_types = sorted({e.get("type") for e in edges if e.get("type")})
+        returned_relation_types = sorted(
+            {e.get("type") for e in edges if e.get("type")}
+        )
 
         return {
             "nodes": nodes,
@@ -858,7 +983,6 @@ class KnowledgeGraphService:
                 "filtered_edges": len(edges),
                 "entity_types": returned_entity_types,
                 "relation_types": returned_relation_types,
-
                 # Backward/forward compatibility (ignored by response_model if not declared)
                 "returned_entities": len(nodes),
                 "returned_relationships": len(edges),
@@ -869,19 +993,24 @@ class KnowledgeGraphService:
                     "min_mentions": min_mentions,
                     "search": search,
                 },
-            }
+            },
         }
 
     # =========================================================================
     # Relationship CRUD Operations
     # =========================================================================
 
-    async def get_relationship(self, db: AsyncSession, rel_id: str) -> Optional[Relationship]:
+    async def get_relationship(
+        self, db: AsyncSession, rel_id: str
+    ) -> Optional[Relationship]:
         """Get a single relationship by ID."""
         from uuid import UUID as _UUID
+
         return await db.get(Relationship, _UUID(rel_id))
 
-    async def get_relationship_detail(self, db: AsyncSession, rel_id: str) -> Optional[Dict[str, Any]]:
+    async def get_relationship_detail(
+        self, db: AsyncSession, rel_id: str
+    ) -> Optional[Dict[str, Any]]:
         """Get a relationship with source and target entity names."""
         from uuid import UUID as _UUID
 
@@ -897,8 +1026,12 @@ class KnowledgeGraphService:
             "relation_type": rel.relation_type,
             "source_entity_id": str(rel.source_entity_id),
             "target_entity_id": str(rel.target_entity_id),
-            "source_entity_name": source_entity.canonical_name if source_entity else "Unknown",
-            "target_entity_name": target_entity.canonical_name if target_entity else "Unknown",
+            "source_entity_name": source_entity.canonical_name
+            if source_entity
+            else "Unknown",
+            "target_entity_name": target_entity.canonical_name
+            if target_entity
+            else "Unknown",
             "confidence": rel.confidence,
             "evidence": rel.evidence,
             "document_id": str(rel.document_id) if rel.document_id else None,
@@ -920,7 +1053,8 @@ class KnowledgeGraphService:
 
         Manual relationships have no document_id (they're not extracted from text).
         """
-        from uuid import UUID as _UUID, uuid4
+        from uuid import UUID as _UUID
+        from uuid import uuid4
 
         # Validate entities exist
         source = await db.get(Entity, _UUID(source_entity_id))
@@ -982,7 +1116,9 @@ class KnowledgeGraphService:
         changed = False
 
         if relation_type is not None:
-            rel.relation_type = relation_type.lower().replace(" ", "_").replace("-", "_")
+            rel.relation_type = (
+                relation_type.lower().replace(" ", "_").replace("-", "_")
+            )
             changed = True
 
         if confidence is not None:
@@ -1023,8 +1159,6 @@ class KnowledgeGraphService:
     async def list_entity_types(self, db: AsyncSession) -> List[str]:
         """Get all unique entity types in the system."""
         result = await db.execute(
-            select(Entity.entity_type)
-            .distinct()
-            .order_by(Entity.entity_type)
+            select(Entity.entity_type).distinct().order_by(Entity.entity_type)
         )
         return [row[0] for row in result.fetchall() if row[0]]

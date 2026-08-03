@@ -28,7 +28,9 @@ def control_plane_client(db_session, test_user):
         return test_user
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[agent_control_plane.get_current_active_user] = override_current_user
+    app.dependency_overrides[
+        agent_control_plane.get_current_active_user
+    ] = override_current_user
 
     with TestClient(app) as test_client:
         yield test_client
@@ -78,7 +80,10 @@ def test_list_agent_control_runs_groups_job_and_workflow_roots_for_current_user(
         results={
             "approval_checkpoint": {
                 "message": "Approve the next tool step",
-                "action": {"tool": "web.search", "params": {"q": "compiler regression"}},
+                "action": {
+                    "tool": "web.search",
+                    "params": {"q": "compiler regression"},
+                },
             }
         },
     )
@@ -96,7 +101,14 @@ def test_list_agent_control_runs_groups_job_and_workflow_roots_for_current_user(
         max_runtime_minutes=10,
         schedule_type="recurring",
         last_activity_at=datetime.utcnow() - timedelta(hours=2),
-        results={"execution_strategy": {"scheduler_state": {"queue_reason": "execution_failure", "retry_count": 2}}},
+        results={
+            "execution_strategy": {
+                "scheduler_state": {
+                    "queue_reason": "execution_failure",
+                    "retry_count": 2,
+                }
+            }
+        },
     )
     workflow = Workflow(
         user_id=test_user.id,
@@ -285,7 +297,12 @@ def test_list_agent_control_runs_groups_job_and_workflow_roots_for_current_user(
     assert job_summary["queued_operator_review_count"] == 6
     assert job_summary["queued_operator_reviews_by_type"]["approval_checkpoint"] == 1
     assert job_summary["queued_operator_reviews_by_type"]["job_recovery"] == 1
-    assert job_summary["queued_operator_reviews_by_type"]["manual_follow_up_recommendation"] == 2
+    assert (
+        job_summary["queued_operator_reviews_by_type"][
+            "manual_follow_up_recommendation"
+        ]
+        == 2
+    )
     assert workflow_summary["title"] == "Validation workflow"
     assert workflow_summary["child_execution_count"] == 1
     assert workflow_summary["child_job_count"] == 1
@@ -353,7 +370,14 @@ def test_agent_control_run_detail_for_job_includes_related_links_and_memory_grap
         max_runtime_minutes=10,
         schedule_type="recurring",
         last_activity_at=datetime.utcnow() - timedelta(hours=3),
-        results={"execution_strategy": {"scheduler_state": {"queue_reason": "execution_failure", "retry_count": 3}}},
+        results={
+            "execution_strategy": {
+                "scheduler_state": {
+                    "queue_reason": "execution_failure",
+                    "retry_count": 3,
+                }
+            }
+        },
     )
 
     async def _seed():
@@ -445,8 +469,13 @@ def test_agent_control_run_detail_for_job_includes_related_links_and_memory_grap
                             "recommended_action": "apply_guardrail",
                             "policy_guardrail_action": "rollback",
                             "policy_guardrail_target_history_entry_id": "history-123",
-                            "policy_guardrail_reasons": ["sandbox restriction", "manual review required"],
-                            "policy_rollback_payload": {"history_entry_id": "history-123"},
+                            "policy_guardrail_reasons": [
+                                "sandbox restriction",
+                                "manual review required",
+                            ],
+                            "policy_rollback_payload": {
+                                "history_entry_id": "history-123"
+                            },
                         }
                     ],
                     "manual_follow_up_recommendations": [
@@ -478,26 +507,52 @@ def test_agent_control_run_detail_for_job_includes_related_links_and_memory_grap
 
     async def _fake_slice_memory_graph_for_job_ids(*, db, current_user, job_ids):
         return {
-            "nodes": [{"id": "mem-1", "type": "lesson", "content": "bootstrap", "importance_score": 0.9, "tags": [], "job_id": str(root_job.id)}],
+            "nodes": [
+                {
+                    "id": "mem-1",
+                    "type": "lesson",
+                    "content": "bootstrap",
+                    "importance_score": 0.9,
+                    "tags": [],
+                    "job_id": str(root_job.id),
+                }
+            ],
             "edges": [],
             "stats": {"memory_count": 1, "edge_count": 0, "job_count": len(job_ids)},
             "job_id": str(root_job.id),
         }
 
-    monkeypatch.setattr(agent_control_plane, "_slice_memory_graph_for_job_ids", _fake_slice_memory_graph_for_job_ids)
+    monkeypatch.setattr(
+        agent_control_plane,
+        "_slice_memory_graph_for_job_ids",
+        _fake_slice_memory_graph_for_job_ids,
+    )
 
-    response = control_plane_client.get(f"/api/v1/agent-control-plane/runs/job:{root_job.id}")
+    response = control_plane_client.get(
+        f"/api/v1/agent-control-plane/runs/job:{root_job.id}"
+    )
 
     assert response.status_code == 200
     payload = response.json()
     assert payload["run"]["title"] == "Compiler monitor"
     assert payload["run"]["decision_count"] == 1
-    assert payload["run"]["replayability_status"] == payload["replay"]["replayability_status"] == "full_lineage"
+    assert (
+        payload["run"]["replayability_status"]
+        == payload["replay"]["replayability_status"]
+        == "full_lineage"
+    )
     assert payload["routing"]["routing_tier"] == "balanced"
     assert payload["memory_graph"]["stats"]["memory_count"] == 1
     assert payload["queued_operator_review_count"] == 4
-    policy_review = next(item for item in payload["queued_operator_reviews"] if item["review_type"] == "policy_review")
-    assert policy_review["action_path"] == f"/autonomous-agents?tab=domain&profileId={policy_review['source_id']}&opportunityId=opp-policy-1"
+    policy_review = next(
+        item
+        for item in payload["queued_operator_reviews"]
+        if item["review_type"] == "policy_review"
+    )
+    assert (
+        policy_review["action_path"]
+        == f"/autonomous-agents?tab=domain&profileId={policy_review['source_id']}&opportunityId=opp-policy-1"
+    )
     assert policy_review["queue_path"] == (
         f"/autonomous-agents?tab=queue&queue_item_type=policy_review&profileId={policy_review['source_id']}"
         f"&opportunityId=opp-policy-1&queue_customer=compiler&queue_job={root_job.id}"
@@ -509,21 +564,46 @@ def test_agent_control_run_detail_for_job_includes_related_links_and_memory_grap
     assert policy_review["recommended_action"] == "apply_guardrail"
     assert policy_review["policy_guardrail_action"] == "rollback"
     assert policy_review["policy_guardrail_target_history_entry_id"] == "history-123"
-    assert policy_review["policy_rollback_payload"] == {"history_entry_id": "history-123"}
-    assert policy_review["policy_guardrail_reasons"] == ["sandbox restriction", "manual review required"]
-    manual_review = next(item for item in payload["queued_operator_reviews"] if item["review_type"] == "manual_follow_up_recommendation")
+    assert policy_review["policy_rollback_payload"] == {
+        "history_entry_id": "history-123"
+    }
+    assert policy_review["policy_guardrail_reasons"] == [
+        "sandbox restriction",
+        "manual review required",
+    ]
+    manual_review = next(
+        item
+        for item in payload["queued_operator_reviews"]
+        if item["review_type"] == "manual_follow_up_recommendation"
+    )
     assert manual_review["can_launch_follow_up"] is True
     assert manual_review["can_relaunch_follow_up"] is False
-    assert "queue_health_drilldown=manual_follow_up_recommendations" in manual_review["queue_path"]
-    assert manual_review["follow_up_block_reason"] == "Operator requested manual approval."
-    approval_review = next(item for item in payload["queued_operator_reviews"] if item["review_type"] == "approval_checkpoint")
+    assert (
+        "queue_health_drilldown=manual_follow_up_recommendations"
+        in manual_review["queue_path"]
+    )
+    assert (
+        manual_review["follow_up_block_reason"] == "Operator requested manual approval."
+    )
+    approval_review = next(
+        item
+        for item in payload["queued_operator_reviews"]
+        if item["review_type"] == "approval_checkpoint"
+    )
     assert approval_review["source_kind"] == "job"
     assert approval_review["source_id"] == str(approval_job.id)
     assert approval_review["can_approve"] is True
     assert approval_review["can_skip"] is True
     assert approval_review["checkpoint"]["action"]["tool"] == "bash.exec"
-    assert approval_review["queue_path"] == f"/autonomous-agents?tab=queue&queue_item_type=approval_checkpoint&queue_job={approval_job.id}"
-    recovery_review = next(item for item in payload["queued_operator_reviews"] if item["review_type"] == "job_recovery")
+    assert (
+        approval_review["queue_path"]
+        == f"/autonomous-agents?tab=queue&queue_item_type=approval_checkpoint&queue_job={approval_job.id}"
+    )
+    recovery_review = next(
+        item
+        for item in payload["queued_operator_reviews"]
+        if item["review_type"] == "job_recovery"
+    )
     assert recovery_review["source_kind"] == "job"
     assert recovery_review["can_restart"] is True
     assert recovery_review["can_resume"] is True
@@ -535,13 +615,23 @@ def test_agent_control_run_detail_for_job_includes_related_links_and_memory_grap
         "/research-notes?note=note-control-1",
         "/synthesis",
     }
-    routing_link = next(link for link in payload["related_links"] if link["label"] == "Routing Observability")
+    routing_link = next(
+        link
+        for link in payload["related_links"]
+        if link["label"] == "Routing Observability"
+    )
     assert "provider=openai" in routing_link["path"]
     assert "model=gpt-5.4" in routing_link["path"]
     assert "routing_tier=balanced" in routing_link["path"]
-    workflow_node = next(node for node in payload["nodes"] if node["kind"] == "workflow_execution")
-    assert workflow_node["metadata"]["workflow_execution_id"] == str(workflow_execution_id)
-    experiment_node = next(node for node in payload["nodes"] if node["kind"] == "experiment_run")
+    workflow_node = next(
+        node for node in payload["nodes"] if node["kind"] == "workflow_execution"
+    )
+    assert workflow_node["metadata"]["workflow_execution_id"] == str(
+        workflow_execution_id
+    )
+    experiment_node = next(
+        node for node in payload["nodes"] if node["kind"] == "experiment_run"
+    )
     assert experiment_node["metadata"]["experiment_run_id"] == "run-1"
 
 
@@ -573,7 +663,9 @@ def test_agent_control_run_detail_for_sparse_workflow_returns_partial_lineage(
 
     execution_id = asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = control_plane_client.get(f"/api/v1/agent-control-plane/runs/workflow:{execution_id}")
+    response = control_plane_client.get(
+        f"/api/v1/agent-control-plane/runs/workflow:{execution_id}"
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -583,7 +675,9 @@ def test_agent_control_run_detail_for_sparse_workflow_returns_partial_lineage(
     assert payload["replay"]["replayability_status"] == "partial_lineage"
     assert payload["memory_graph"] is None
     assert payload["routing"] is None
-    assert payload["related_links"] == [{"label": "Workflows", "path": f"/workflows?executionId={execution_id}"}]
+    assert payload["related_links"] == [
+        {"label": "Workflows", "path": f"/workflows?executionId={execution_id}"}
+    ]
 
 
 def test_list_agent_control_reviews_returns_flattened_cross_run_queue_items(
@@ -624,7 +718,12 @@ def test_list_agent_control_reviews_returns_flattened_cross_run_queue_items(
             max_runtime_minutes=10,
             parent_job_id=root_job.id,
             root_job_id=root_job.id,
-            results={"approval_checkpoint": {"message": "Approve next step", "action": {"tool": "web.search"}}},
+            results={
+                "approval_checkpoint": {
+                    "message": "Approve next step",
+                    "action": {"tool": "web.search"},
+                }
+            },
         )
         execution = WorkflowExecution(
             workflow_id=workflow.id,
@@ -662,9 +761,15 @@ def test_list_agent_control_reviews_returns_flattened_cross_run_queue_items(
         await db_session.commit()
         return str(root_job.id), str(execution.id), str(approval_job.id)
 
-    root_job_id, execution_id, approval_job_id = asyncio.get_event_loop().run_until_complete(_seed())
+    (
+        root_job_id,
+        execution_id,
+        approval_job_id,
+    ) = asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = control_plane_client.get("/api/v1/agent-control-plane/reviews?queue_preset=approval_required")
+    response = control_plane_client.get(
+        "/api/v1/agent-control-plane/reviews?queue_preset=approval_required"
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -678,7 +783,9 @@ def test_list_agent_control_reviews_returns_flattened_cross_run_queue_items(
     assert payload["items"][0]["run_title"] == "Compiler root job"
     assert payload["items"][0]["job_id"] == approval_job_id
 
-    response = control_plane_client.get("/api/v1/agent-control-plane/reviews?review_type=policy_review")
+    response = control_plane_client.get(
+        "/api/v1/agent-control-plane/reviews?review_type=policy_review"
+    )
     assert response.status_code == 200
     payload = response.json()
     assert payload["total"] == 2
@@ -725,7 +832,12 @@ def test_list_agent_control_reviews_supports_priority_sort_and_pagination(
             parent_job_id=root_job.id,
             root_job_id=root_job.id,
             created_at=datetime.utcnow() - timedelta(minutes=20),
-            results={"approval_checkpoint": {"message": "Approve next step", "action": {"tool": "web.search"}}},
+            results={
+                "approval_checkpoint": {
+                    "message": "Approve next step",
+                    "action": {"tool": "web.search"},
+                }
+            },
         )
         recovery_job = AgentJob(
             name="Recovery job",
@@ -744,7 +856,14 @@ def test_list_agent_control_reviews_supports_priority_sort_and_pagination(
             root_job_id=root_job.id,
             created_at=datetime.utcnow() - timedelta(hours=5),
             last_activity_at=datetime.utcnow() - timedelta(hours=5),
-            results={"execution_strategy": {"scheduler_state": {"queue_reason": "execution_failure", "retry_count": 3}}},
+            results={
+                "execution_strategy": {
+                    "scheduler_state": {
+                        "queue_reason": "execution_failure",
+                        "retry_count": 3,
+                    }
+                }
+            },
         )
         db_session.add(approval_job)
         db_session.add(recovery_job)
@@ -752,7 +871,9 @@ def test_list_agent_control_reviews_supports_priority_sort_and_pagination(
 
     asyncio.get_event_loop().run_until_complete(_seed())
 
-    response = control_plane_client.get("/api/v1/agent-control-plane/reviews?sort=priority&limit=1")
+    response = control_plane_client.get(
+        "/api/v1/agent-control-plane/reviews?sort=priority&limit=1"
+    )
 
     assert response.status_code == 200
     payload = response.json()
@@ -765,7 +886,9 @@ def test_list_agent_control_reviews_supports_priority_sort_and_pagination(
     assert payload["has_more"] is True
     assert payload["items"][0]["review_type"] == "job_recovery"
 
-    second_page = control_plane_client.get("/api/v1/agent-control-plane/reviews?sort=priority&limit=1&offset=1")
+    second_page = control_plane_client.get(
+        "/api/v1/agent-control-plane/reviews?sort=priority&limit=1&offset=1"
+    )
     assert second_page.status_code == 200
     second_payload = second_page.json()
     assert second_payload["items"][0]["review_type"] == "approval_checkpoint"
@@ -802,7 +925,10 @@ def test_agent_control_review_action_approves_follow_up_for_profile(
             objective="Track regressions",
             status="running",
             latest_summary={
-                "effective_policy": {"follow_up_review_mode": "queue_for_approval", "auto_launch_follow_up": True},
+                "effective_policy": {
+                    "follow_up_review_mode": "queue_for_approval",
+                    "auto_launch_follow_up": True,
+                },
                 "queued_operator_reviews": [
                     {
                         "review_type": "follow_up_recommendation",
@@ -847,7 +973,9 @@ def test_agent_control_review_action_approves_follow_up_for_profile(
         assert kwargs["operator_note"] == "Looks good."
         return _HelperResponse()
 
-    monkeypatch.setattr(agent_control_plane, "_perform_follow_up_queue_action", _fake_helper)
+    monkeypatch.setattr(
+        agent_control_plane, "_perform_follow_up_queue_action", _fake_helper
+    )
 
     response = control_plane_client.post(
         "/api/v1/agent-control-plane/reviews/action",
@@ -906,14 +1034,18 @@ def test_agent_control_review_action_applies_policy_guardrail_with_rollback(
 
     profile_id = asyncio.get_event_loop().run_until_complete(_seed())
 
-    async def _fake_rollback_monitor_policy(*, monitor_job_id, payload, current_user, db):
+    async def _fake_rollback_monitor_policy(
+        *, monitor_job_id, payload, current_user, db
+    ):
         assert monitor_job_id == "3d7b1d8c-c01a-4ffd-9011-7a4cf962de18"
         assert payload.history_entry_id == "history-abc"
         assert payload.change_reason == "Apply the safeguard."
         assert current_user.id == test_user.id
         return None
 
-    monkeypatch.setattr(agent_control_plane, "rollback_monitor_policy", _fake_rollback_monitor_policy)
+    monkeypatch.setattr(
+        agent_control_plane, "rollback_monitor_policy", _fake_rollback_monitor_policy
+    )
 
     response = control_plane_client.post(
         "/api/v1/agent-control-plane/reviews/action",
@@ -967,7 +1099,10 @@ def test_agent_control_review_action_rejects_read_only_budget_review(
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "This review type is currently read-only in the control plane"
+    assert (
+        response.json()["detail"]
+        == "This review type is currently read-only in the control plane"
+    )
 
 
 def test_agent_control_review_action_launches_manual_follow_up_for_profile(
@@ -1009,7 +1144,9 @@ def test_agent_control_review_action_launches_manual_follow_up_for_profile(
 
         return _Response()
 
-    monkeypatch.setattr(agent_control_plane, "act_on_domain_research_opportunity", _fake_action)
+    monkeypatch.setattr(
+        agent_control_plane, "act_on_domain_research_opportunity", _fake_action
+    )
 
     response = control_plane_client.post(
         "/api/v1/agent-control-plane/reviews/action",
@@ -1049,7 +1186,12 @@ def test_agent_control_review_action_approves_job_checkpoint(
             max_tool_calls=10,
             max_llm_calls=10,
             max_runtime_minutes=10,
-            results={"approval_checkpoint": {"message": "Approve next step", "action": {"tool": "web.search"}}},
+            results={
+                "approval_checkpoint": {
+                    "message": "Approve next step",
+                    "action": {"tool": "web.search"},
+                }
+            },
         )
         db_session.add(job)
         await db_session.commit()
@@ -1063,7 +1205,9 @@ def test_agent_control_review_action_approves_job_checkpoint(
         assert request.checkpoint_note == "Ship it."
         return job
 
-    monkeypatch.setattr(agent_control_plane, "_perform_job_action", _fake_perform_job_action)
+    monkeypatch.setattr(
+        agent_control_plane, "_perform_job_action", _fake_perform_job_action
+    )
 
     response = control_plane_client.post(
         "/api/v1/agent-control-plane/reviews/action",
@@ -1104,7 +1248,16 @@ def test_agent_control_review_action_edits_job_checkpoint(
             max_tool_calls=10,
             max_llm_calls=10,
             max_runtime_minutes=10,
-            results={"approval_checkpoint": {"message": "Approve next step", "action": {"tool": "web.search", "purpose": "Find regressions", "params": {"q": "compiler regression"}}}},
+            results={
+                "approval_checkpoint": {
+                    "message": "Approve next step",
+                    "action": {
+                        "tool": "web.search",
+                        "purpose": "Find regressions",
+                        "params": {"q": "compiler regression"},
+                    },
+                }
+            },
         )
         db_session.add(job)
         await db_session.commit()
@@ -1123,7 +1276,9 @@ def test_agent_control_review_action_edits_job_checkpoint(
         }
         return job
 
-    monkeypatch.setattr(agent_control_plane, "_perform_job_action", _fake_perform_job_action)
+    monkeypatch.setattr(
+        agent_control_plane, "_perform_job_action", _fake_perform_job_action
+    )
 
     response = control_plane_client.post(
         "/api/v1/agent-control-plane/reviews/action",
@@ -1171,7 +1326,11 @@ def test_agent_control_review_action_restarts_job_recovery(
             max_runtime_minutes=10,
             schedule_type="recurring",
             last_activity_at=datetime.utcnow() - timedelta(hours=2),
-            results={"execution_strategy": {"scheduler_state": {"queue_reason": "execution_failure"}}},
+            results={
+                "execution_strategy": {
+                    "scheduler_state": {"queue_reason": "execution_failure"}
+                }
+            },
         )
         db_session.add(job)
         await db_session.commit()
@@ -1185,7 +1344,9 @@ def test_agent_control_review_action_restarts_job_recovery(
         assert request.checkpoint_note == "Retry now."
         return job
 
-    monkeypatch.setattr(agent_control_plane, "_perform_job_action", _fake_perform_job_action)
+    monkeypatch.setattr(
+        agent_control_plane, "_perform_job_action", _fake_perform_job_action
+    )
 
     response = control_plane_client.post(
         "/api/v1/agent-control-plane/reviews/action",
@@ -1216,8 +1377,28 @@ def test_agent_control_bulk_review_action_delegates_job_queue_bulk_action(
         applied = 2
         failed = 0
         results = [
-            type("Row", (), {"queue_key": "approval:job-1", "job_id": uuid4(), "ok": True, "error": None, "status": "pending"})(),
-            type("Row", (), {"queue_key": "approval:job-2", "job_id": uuid4(), "ok": True, "error": None, "status": "pending"})(),
+            type(
+                "Row",
+                (),
+                {
+                    "queue_key": "approval:job-1",
+                    "job_id": uuid4(),
+                    "ok": True,
+                    "error": None,
+                    "status": "pending",
+                },
+            )(),
+            type(
+                "Row",
+                (),
+                {
+                    "queue_key": "approval:job-2",
+                    "job_id": uuid4(),
+                    "ok": True,
+                    "error": None,
+                    "status": "pending",
+                },
+            )(),
         ]
 
     async def _fake_bulk(*, request, db, current_user):
@@ -1298,7 +1479,11 @@ def test_agent_control_bulk_review_action_delegates_follow_up_bulk_action(
         assert current_user.id == test_user.id
         return _BulkResponse()
 
-    monkeypatch.setattr(agent_control_plane, "checkpoint_queue_bulk_follow_up_action", _fake_follow_up_bulk)
+    monkeypatch.setattr(
+        agent_control_plane,
+        "checkpoint_queue_bulk_follow_up_action",
+        _fake_follow_up_bulk,
+    )
 
     response = control_plane_client.post(
         "/api/v1/agent-control-plane/reviews/bulk-action",
@@ -1331,7 +1516,10 @@ def test_agent_control_bulk_review_action_rejects_unsupported_item_type(
     )
 
     assert response.status_code == 400
-    assert response.json()["detail"] == "Bulk actions are not supported for this control-plane item type"
+    assert (
+        response.json()["detail"]
+        == "Bulk actions are not supported for this control-plane item type"
+    )
 
 
 def test_agent_control_run_detail_rejects_malformed_or_foreign_ids(
@@ -1368,7 +1556,9 @@ def test_agent_control_run_detail_rejects_malformed_or_foreign_ids(
     asyncio.get_event_loop().run_until_complete(_seed())
 
     malformed = control_plane_client.get("/api/v1/agent-control-plane/runs/not-a-run")
-    foreign = control_plane_client.get(f"/api/v1/agent-control-plane/runs/job:{foreign_job.id}")
+    foreign = control_plane_client.get(
+        f"/api/v1/agent-control-plane/runs/job:{foreign_job.id}"
+    )
 
     assert malformed.status_code == 404
     assert foreign.status_code == 404
@@ -1426,31 +1616,47 @@ def test_agent_control_run_views_crud_and_default_uniqueness(
     assert listed_body["total"] == 2
     assert listed_body["items"][0]["id"] == second_body["id"]
     assert listed_body["items"][0]["is_default"] is True
-    first_view = next(item for item in listed_body["items"] if item["id"] == created_body["id"])
+    first_view = next(
+        item for item in listed_body["items"] if item["id"] == created_body["id"]
+    )
     assert first_view["is_default"] is False
 
     updated = control_plane_client.patch(
         f"/api/v1/agent-control-plane/views/{created_body['id']}",
         json={
             "name": "Compiler Runs Updated",
-            "filters": {"source_type": "job", "routing_tier": "premium", "queue_preset": "compiler", "queue_sort": "created_at_desc"},
+            "filters": {
+                "source_type": "job",
+                "routing_tier": "premium",
+                "queue_preset": "compiler",
+                "queue_sort": "created_at_desc",
+            },
             "is_default": True,
         },
     )
     assert updated.status_code == 200
     updated_body = updated.json()
     assert updated_body["name"] == "Compiler Runs Updated"
-    assert updated_body["filters"] == {"source_type": "job", "routing_tier": "premium", "queue_preset": "compiler", "queue_sort": "created_at_desc"}
+    assert updated_body["filters"] == {
+        "source_type": "job",
+        "routing_tier": "premium",
+        "queue_preset": "compiler",
+        "queue_sort": "created_at_desc",
+    }
     assert updated_body["is_default"] is True
 
     relisted = control_plane_client.get("/api/v1/agent-control-plane/views")
     relisted_items = relisted.json()["items"]
-    updated_row = next(item for item in relisted_items if item["id"] == created_body["id"])
+    updated_row = next(
+        item for item in relisted_items if item["id"] == created_body["id"]
+    )
     other_row = next(item for item in relisted_items if item["id"] == second_body["id"])
     assert updated_row["is_default"] is True
     assert other_row["is_default"] is False
 
-    deleted = control_plane_client.delete(f"/api/v1/agent-control-plane/views/{second_body['id']}")
+    deleted = control_plane_client.delete(
+        f"/api/v1/agent-control-plane/views/{second_body['id']}"
+    )
     assert deleted.status_code == 204
 
     final_list = control_plane_client.get("/api/v1/agent-control-plane/views")

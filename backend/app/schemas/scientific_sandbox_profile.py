@@ -69,7 +69,15 @@ class ScientificSandboxProfileCreate(BaseModel):
     enabled: bool = True
     is_default: bool = False
 
-    @field_validator("id", "name", "description", "track_type", "backend", "docker_image", mode="before")
+    @field_validator(
+        "id",
+        "name",
+        "description",
+        "track_type",
+        "backend",
+        "docker_image",
+        mode="before",
+    )
     @classmethod
     def _normalize_text(cls, value: Any) -> Optional[str]:
         return _normalize_string(value)
@@ -102,7 +110,9 @@ class ScientificSandboxProfileUpdate(BaseModel):
     enabled: Optional[bool] = None
     is_default: Optional[bool] = None
 
-    @field_validator("name", "description", "track_type", "backend", "docker_image", mode="before")
+    @field_validator(
+        "name", "description", "track_type", "backend", "docker_image", mode="before"
+    )
     @classmethod
     def _normalize_optional_text(cls, value: Any) -> Optional[str]:
         return _normalize_string(value)

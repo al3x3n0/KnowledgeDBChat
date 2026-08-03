@@ -2,8 +2,6 @@
 
 import re
 
-import pytest
-
 
 class TestSearchWeb:
     """Tests for search_web tool logic."""
@@ -34,11 +32,19 @@ class TestSearchWeb:
             "data": {
                 "query": "python async",
                 "results": [
-                    {"title": "AsyncIO docs", "url": "https://docs.python.org/3/library/asyncio.html", "snippet": "..."},
-                    {"title": "Real Python AsyncIO", "url": "https://realpython.com/async-io-python/", "snippet": "..."},
+                    {
+                        "title": "AsyncIO docs",
+                        "url": "https://docs.python.org/3/library/asyncio.html",
+                        "snippet": "...",
+                    },
+                    {
+                        "title": "Real Python AsyncIO",
+                        "url": "https://realpython.com/async-io-python/",
+                        "snippet": "...",
+                    },
                 ],
                 "count": 2,
-            }
+            },
         }
         assert result["data"]["count"] == 2
         assert result["data"]["results"][0]["title"] == "AsyncIO docs"
@@ -46,19 +52,23 @@ class TestSearchWeb:
     def test_ddg_url_extraction(self):
         """Test DuckDuckGo redirect URL parsing."""
         url_raw = "//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage&rut=abc"
-        url_match = re.search(r'uddg=([^&]+)', url_raw)
+        url_match = re.search(r"uddg=([^&]+)", url_raw)
         assert url_match is not None
         from urllib.parse import unquote
+
         url_clean = unquote(url_match.group(1))
         assert url_clean == "https://example.com/page"
 
     def test_html_tag_stripping(self):
-        html = '<b>Bold</b> and <i>italic</i> text'
-        clean = re.sub(r'<[^>]+>', '', html).strip()
+        html = "<b>Bold</b> and <i>italic</i> text"
+        clean = re.sub(r"<[^>]+>", "", html).strip()
         assert clean == "Bold and italic text"
 
     def test_empty_results(self):
-        result = {"success": True, "data": {"query": "xyzzynotfound", "results": [], "count": 0}}
+        result = {
+            "success": True,
+            "data": {"query": "xyzzynotfound", "results": [], "count": 0},
+        }
         assert result["data"]["count"] == 0
 
 
@@ -93,7 +103,7 @@ class TestFetchUrlContent:
                 "title": "Example Domain",
                 "content": "This domain is for use in examples...",
                 "content_length": 37,
-            }
+            },
         }
         assert result["data"]["content_length"] == 37
         assert result["data"]["title"] == "Example Domain"
@@ -137,7 +147,7 @@ class TestSummarizeUrl:
                 "summary": "This article discusses...",
                 "content_length": 15000,
                 "focus": "machine learning",
-            }
+            },
         }
         assert result["data"]["summary"].startswith("This article")
         assert result["data"]["focus"] == "machine learning"
@@ -148,6 +158,7 @@ class TestResearchToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "search_web" in names
         assert "summarize_url" in names
@@ -155,18 +166,21 @@ class TestResearchToolSchemas:
 
     def test_search_web_requires_query(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("search_web")
         assert tool is not None
         assert "query" in tool["parameters"].get("required", [])
 
     def test_fetch_url_requires_url(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("fetch_url_content")
         assert tool is not None
         assert "url" in tool["parameters"].get("required", [])
 
     def test_summarize_url_requires_url(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("summarize_url")
         assert tool is not None
         assert "url" in tool["parameters"].get("required", [])
@@ -177,24 +191,28 @@ class TestResearchToolRegistry:
 
     def test_search_web_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("search_web")
         assert meta is not None
         assert meta.network == "egress"
 
     def test_search_web_is_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("search_web")
         assert meta is not None
         assert meta.cost_tier == "medium"
 
     def test_fetch_url_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("fetch_url_content")
         assert meta is not None
         assert meta.network == "egress"
 
     def test_summarize_url_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("summarize_url")
         assert meta is not None
         assert meta.network == "egress"

@@ -88,7 +88,6 @@ class BaseTrainer(ABC):
         Returns:
             TrainingResult with success status and output path
         """
-        pass
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -98,7 +97,6 @@ class BaseTrainer(ABC):
         Returns:
             True if the backend can be used for training
         """
-        pass
 
     @abstractmethod
     def get_device_info(self) -> DeviceInfo:
@@ -108,7 +106,6 @@ class BaseTrainer(ABC):
         Returns:
             DeviceInfo with device details
         """
-        pass
 
     @abstractmethod
     async def cancel(self, job_id: UUID) -> bool:
@@ -121,7 +118,6 @@ class BaseTrainer(ABC):
         Returns:
             True if cancellation was requested successfully
         """
-        pass
 
     @abstractmethod
     def get_supported_models(self) -> List[str]:
@@ -131,7 +127,6 @@ class BaseTrainer(ABC):
         Returns:
             List of model identifiers that can be fine-tuned
         """
-        pass
 
     def get_default_hyperparameters(self, model_name: str) -> Dict[str, Any]:
         """
@@ -213,7 +208,7 @@ class BaseTrainer(ABC):
         if training_method == "qlora":
             base_memory *= 0.25  # 4-bit quantization
         elif training_method == "lora":
-            base_memory *= 0.5   # Only training adapters
+            base_memory *= 0.5  # Only training adapters
         # full_finetune uses full memory
 
         # Adjust for batch size and sequence length

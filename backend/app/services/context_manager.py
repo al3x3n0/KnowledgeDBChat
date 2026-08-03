@@ -3,7 +3,8 @@ Context management service for RAG system.
 Handles context compression, summarization, and token-aware window management.
 """
 
-from typing import List, Dict, Any, Optional, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Optional
+
 from loguru import logger
 
 from app.core.config import settings
@@ -14,50 +15,50 @@ if TYPE_CHECKING:
 
 class ContextManager:
     """Service for managing and optimizing context for LLM prompts."""
-    
+
     def __init__(self):
         # Rough estimation: 1 token ≈ 4 characters for English text
         self.chars_per_token = 4
-    
+
     def estimate_tokens(self, text: str) -> int:
         """
         Estimate number of tokens in text.
-        
+
         Args:
             text: Text to estimate
-            
+
         Returns:
             Estimated token count
         """
         return len(text) // self.chars_per_token
-    
+
     def truncate_context(
-        self,
-        results: List[Dict[str, Any]],
-        max_tokens: Optional[int] = None
+        self, results: List[Dict[str, Any]], max_tokens: Optional[int] = None
     ) -> List[Dict[str, Any]]:
         """
         Truncate context to fit within token limit, prioritizing higher-scoring results.
-        
+
         Args:
             results: List of search results with scores
             max_tokens: Maximum tokens allowed (uses config if None)
-            
+
         Returns:
             Truncated list of results
         """
         max_tokens = max_tokens or settings.RAG_MAX_CONTEXT_TOKENS
-        
+
         # Sort by score (highest first)
-        sorted_results = sorted(results, key=lambda x: x.get("score", 0.0), reverse=True)
-        
+        sorted_results = sorted(
+            results, key=lambda x: x.get("score", 0.0), reverse=True
+        )
+
         truncated = []
         total_tokens = 0
-        
+
         for result in sorted_results:
             content = result.get("content", result.get("page_content", ""))
             content_tokens = self.estimate_tokens(content)
-            
+
             if total_tokens + content_tokens <= max_tokens:
                 truncated.append(result)
                 total_tokens += content_tokens
@@ -71,32 +72,34 @@ class ContextManager:
                     partial_result["page_content"] = partial_result["content"]
                     truncated.append(partial_result)
                 break
-        
-        logger.debug(f"Truncated context from {len(results)} to {len(truncated)} results ({total_tokens} tokens)")
+
+        logger.debug(
+            f"Truncated context from {len(results)} to {len(truncated)} results ({total_tokens} tokens)"
+        )
         return truncated
-    
+
     def filter_by_relevance(
-        self,
-        results: List[Dict[str, Any]],
-        min_score: Optional[float] = None
+        self, results: List[Dict[str, Any]], min_score: Optional[float] = None
     ) -> List[Dict[str, Any]]:
         """
         Filter results by relevance score.
-        
+
         Args:
             results: List of search results
             min_score: Minimum relevance score (uses config if None)
-            
+
         Returns:
             Filtered list of results
         """
         min_score = min_score or settings.RAG_MIN_RELEVANCE_SCORE
-        
+
         filtered = [r for r in results if r.get("score", 0.0) >= min_score]
-        
-        logger.debug(f"Filtered {len(results)} results to {len(filtered)} by relevance (min_score={min_score})")
+
+        logger.debug(
+            f"Filtered {len(results)} results to {len(filtered)} by relevance (min_score={min_score})"
+        )
         return filtered
-    
+
     async def compress_context(
         self,
         results: List[Dict[str, Any]],
@@ -117,18 +120,18 @@ class ContextManager:
             Compressed context string
         """
         max_tokens = max_tokens or settings.RAG_MAX_CONTEXT_TOKENS
-        
+
         if not results:
             return ""
-        
+
         # Build full context first
         full_context = self.build_context_string(results)
         full_tokens = self.estimate_tokens(full_context)
-        
+
         # If within limit, return as-is
         if full_tokens <= max_tokens:
             return full_context
-        
+
         # Try LLM compression if available
         if llm_service:
             try:
@@ -137,7 +140,7 @@ class ContextManager:
 {full_context}
 
 Provide a concise summary that captures the essential information:"""
-                
+
                 compressed = await llm_service.generate_response(
                     query=summary_prompt,
                     context=None,
@@ -145,33 +148,37 @@ Provide a concise summary that captures the essential information:"""
                     prefer_deepseek=True,  # Route heavy compression to external provider if available
                     user_settings=user_settings,
                 )
-                
+
                 compressed_tokens = self.estimate_tokens(compressed)
                 if compressed_tokens <= max_tokens:
-                    logger.info(f"Compressed context from {full_tokens} to {compressed_tokens} tokens using LLM")
+                    logger.info(
+                        f"Compressed context from {full_tokens} to {compressed_tokens} tokens using LLM"
+                    )
                     return compressed
                 else:
-                    logger.warning(f"LLM compression still exceeds limit ({compressed_tokens} > {max_tokens}), truncating")
+                    logger.warning(
+                        f"LLM compression still exceeds limit ({compressed_tokens} > {max_tokens}), truncating"
+                    )
             except Exception as e:
                 logger.warning(f"LLM compression failed: {e}, using truncation instead")
-        
+
         # Fall back to truncation
         truncated_results = self.truncate_context(results, max_tokens)
         return self.build_context_string(truncated_results)
-    
+
     def build_context_string(self, results: List[Dict[str, Any]]) -> str:
         """
         Build context string from search results.
-        
+
         Args:
             results: List of search results
-            
+
         Returns:
             Formatted context string
         """
         if not results:
             return ""
-        
+
         context_parts = []
         for i, result in enumerate(results, 1):
             content = result.get("content", result.get("page_content", ""))
@@ -179,43 +186,42 @@ Provide a concise summary that captures the essential information:"""
             source = metadata.get("source", "Unknown")
             title = metadata.get("title", "Unknown Document")
             score = result.get("score", 0.0)
-            
+
             context_parts.append(
                 f"Source {i} ({source} - {title}, relevance: {score:.2f}):\n{content}"
             )
-        
+
         return "\n\n".join(context_parts)
-    
+
     def select_relevant_parts(
-        self,
-        results: List[Dict[str, Any]],
-        query: str,
-        max_results: int = 5
+        self, results: List[Dict[str, Any]], query: str, max_results: int = 5
     ) -> List[Dict[str, Any]]:
         """
         Select most relevant parts from results based on query.
-        
+
         Args:
             results: List of search results
             query: Search query
             max_results: Maximum number of results to return
-            
+
         Returns:
             Selected results
         """
         # Results are already sorted by score, so just take top N
         selected = results[:max_results]
-        
-        logger.debug(f"Selected {len(selected)} most relevant results from {len(results)} total")
+
+        logger.debug(
+            f"Selected {len(selected)} most relevant results from {len(results)} total"
+        )
         return selected
-    
+
     def get_context_metrics(self, results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """
         Get metrics about context quality.
-        
+
         Args:
             results: List of search results
-            
+
         Returns:
             Dictionary with context metrics
         """
@@ -226,22 +232,22 @@ Provide a concise summary that captures the essential information:"""
                 "total_tokens": 0,
                 "avg_score": 0.0,
                 "avg_relevance": 0.0,
-                "coverage": 0.0
+                "coverage": 0.0,
             }
-        
+
         total_tokens = sum(
             self.estimate_tokens(r.get("content", r.get("page_content", "")))
             for r in results
         )
-        
+
         scores = [r.get("score", 0.0) for r in results]
         avg_score = sum(scores) / len(scores) if scores else 0.0
-        
+
         # Coverage: percentage of results above minimum relevance
         min_score = settings.RAG_MIN_RELEVANCE_SCORE
         above_threshold = sum(1 for s in scores if s >= min_score)
         coverage = (above_threshold / len(scores)) * 100 if scores else 0.0
-        
+
         return {
             "total_results": len(results),
             "total_chunks": len(results),
@@ -250,7 +256,7 @@ Provide a concise summary that captures the essential information:"""
             "avg_relevance": avg_score,
             "coverage": coverage,
             "min_score": min(scores) if scores else 0.0,
-            "max_score": max(scores) if scores else 0.0
+            "max_score": max(scores) if scores else 0.0,
         }
 
     def build_kg_context(
@@ -258,7 +264,7 @@ Provide a concise summary that captures the essential information:"""
         entities: List[Any],
         relationships: List[Any],
         max_entities: Optional[int] = None,
-        max_relationships: Optional[int] = None
+        max_relationships: Optional[int] = None,
     ) -> str:
         """
         Build knowledge graph context string for LLM prompt.
@@ -288,7 +294,7 @@ Provide a concise summary that captures the essential information:"""
         for e in entities[:max_entities]:
             entity_map[str(e.id)] = e
             entity_info = f"• {e.canonical_name} ({e.entity_type})"
-            if hasattr(e, 'description') and e.description:
+            if hasattr(e, "description") and e.description:
                 entity_info += f": {e.description[:100]}"
             parts.append(entity_info)
 
@@ -318,18 +324,19 @@ Provide a concise summary that captures the essential information:"""
                     target_name = f"[Entity:{target_id[:8]}]"
 
                 rel_line = f"  {source_name} --[{r.relation_type}]--> {target_name}"
-                if hasattr(r, 'confidence') and r.confidence:
+                if hasattr(r, "confidence") and r.confidence:
                     rel_line += f" (confidence: {r.confidence:.2f})"
                 parts.append(rel_line)
                 rel_count += 1
 
         kg_context = "\n".join(parts)
-        logger.debug(f"Built KG context with {len(entities)} entities, {len(relationships)} relationships")
+        logger.debug(
+            f"Built KG context with {len(entities)} entities, {len(relationships)} relationships"
+        )
         return kg_context
 
     def extract_entity_names_from_results(
-        self,
-        results: List[Dict[str, Any]]
+        self, results: List[Dict[str, Any]]
     ) -> List[str]:
         """
         Extract potential entity names from search results.
@@ -353,7 +360,7 @@ Provide a concise summary that captures the essential information:"""
 
             # Find capitalized phrases (potential names)
             # Pattern: Two or more capitalized words together
-            pattern = r'\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b'
+            pattern = r"\b([A-Z][a-z]+(?:\s+[A-Z][a-z]+)+)\b"
             matches = re.findall(pattern, content)
             for match in matches:
                 if len(match) > 3:  # Filter out very short matches

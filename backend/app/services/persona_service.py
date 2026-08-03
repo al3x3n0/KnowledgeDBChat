@@ -6,15 +6,14 @@ from __future__ import annotations
 
 import re
 import uuid
-from typing import Optional, Dict, Any, Iterable
+from typing import Any, Dict, Iterable, Optional
 from uuid import UUID
 
-from loguru import logger
-from sqlalchemy import select, func, delete, and_
+from sqlalchemy import and_, delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.persona import Persona, DocumentPersonaDetection
 from app.models.document import Document
+from app.models.persona import DocumentPersonaDetection, Persona
 from app.models.user import User
 
 
@@ -31,18 +30,26 @@ class PersonaService:
         slug = slug.strip("-")
         return slug or None
 
-    def _scoped_platform_id(self, scope: Optional[str], identifier: Optional[str]) -> Optional[str]:
+    def _scoped_platform_id(
+        self, scope: Optional[str], identifier: Optional[str]
+    ) -> Optional[str]:
         if not identifier:
             return None
         ident = identifier.strip()
         return f"{scope}:{ident}" if scope else ident
 
-    async def _get_by_platform_id(self, db: AsyncSession, platform_id: str) -> Optional[Persona]:
-        result = await db.execute(select(Persona).where(Persona.platform_id == platform_id))
+    async def _get_by_platform_id(
+        self, db: AsyncSession, platform_id: str
+    ) -> Optional[Persona]:
+        result = await db.execute(
+            select(Persona).where(Persona.platform_id == platform_id)
+        )
         return result.scalar_one_or_none()
 
     async def _get_by_name(self, db: AsyncSession, name: str) -> Optional[Persona]:
-        result = await db.execute(select(Persona).where(func.lower(Persona.name) == name.lower()))
+        result = await db.execute(
+            select(Persona).where(func.lower(Persona.name) == name.lower())
+        )
         return result.scalar_one_or_none()
 
     async def ensure_persona(
@@ -98,7 +105,9 @@ class PersonaService:
 
     async def ensure_user_persona(self, db: AsyncSession, user: User) -> Persona:
         """Return persona linked to a platform user."""
-        display_name = user.full_name or user.username or user.email or f"User {user.id}"
+        display_name = (
+            user.full_name or user.username or user.email or f"User {user.id}"
+        )
         platform_id = f"user:{user.id}"
         defaults = {
             "avatar_url": user.avatar_url,
@@ -177,7 +186,9 @@ class PersonaService:
         detection_type: Optional[str] = None,
     ) -> None:
         """Remove persona detections for a document."""
-        stmt = delete(DocumentPersonaDetection).where(DocumentPersonaDetection.document_id == document_id)
+        stmt = delete(DocumentPersonaDetection).where(
+            DocumentPersonaDetection.document_id == document_id
+        )
         if role:
             stmt = stmt.where(DocumentPersonaDetection.role == role)
         if detection_type:
@@ -213,7 +224,9 @@ class PersonaService:
         else:
             filters.append(DocumentPersonaDetection.end_time == float(end_time))
 
-        result = await db.execute(select(DocumentPersonaDetection).where(and_(*filters)))
+        result = await db.execute(
+            select(DocumentPersonaDetection).where(and_(*filters))
+        )
         detection = result.scalar_one_or_none()
         if detection:
             updated = False
@@ -255,7 +268,9 @@ class PersonaService:
         base_document_id: Optional[UUID] = None,
     ) -> None:
         """Persist diarized speakers from transcription metadata."""
-        await self.clear_detections(db, document.id, role="speaker", detection_type="diarization")
+        await self.clear_detections(
+            db, document.id, role="speaker", detection_type="diarization"
+        )
         if not sentence_segments:
             return
 

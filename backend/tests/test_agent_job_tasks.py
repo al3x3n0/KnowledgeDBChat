@@ -6,11 +6,11 @@ import types
 from datetime import datetime, timedelta
 from uuid import uuid4
 
-from tests.conftest import TestSessionLocal
 from sqlalchemy import select
 
 from app.models.agent_job import AgentJob, AgentJobCheckpoint, AgentJobStatus
 from app.tasks import agent_job_tasks
+from tests.conftest import TestSessionLocal
 
 
 def _run(coro):
@@ -23,7 +23,9 @@ def _run(coro):
 
 
 def _patch_celery_session_factory(monkeypatch):
-    monkeypatch.setattr(agent_job_tasks, "create_celery_session", lambda: TestSessionLocal)
+    monkeypatch.setattr(
+        agent_job_tasks, "create_celery_session", lambda: TestSessionLocal
+    )
 
 
 def _make_job(*, status: str, schedule_type: str | None = None) -> AgentJob:
@@ -47,7 +49,9 @@ def _make_job(*, status: str, schedule_type: str | None = None) -> AgentJob:
     )
 
 
-def test_process_scheduled_agent_jobs_resets_and_requeues_due_once_job(db_session, monkeypatch):
+def test_process_scheduled_agent_jobs_resets_and_requeues_due_once_job(
+    db_session, monkeypatch
+):
     _patch_celery_session_factory(monkeypatch)
 
     job = _make_job(status=AgentJobStatus.COMPLETED.value, schedule_type="once")
@@ -80,7 +84,9 @@ def test_process_scheduled_agent_jobs_resets_and_requeues_due_once_job(db_sessio
     assert job.next_run_at is None
 
 
-def test_process_scheduled_agent_jobs_resets_and_requeues_due_recurring_job(db_session, monkeypatch):
+def test_process_scheduled_agent_jobs_resets_and_requeues_due_recurring_job(
+    db_session, monkeypatch
+):
     _patch_celery_session_factory(monkeypatch)
 
     job = _make_job(status=AgentJobStatus.COMPLETED.value, schedule_type="recurring")
@@ -178,7 +184,9 @@ def test_resume_paused_agent_jobs_skips_resource_limited_jobs(db_session, monkey
     assert job.celery_task_id == "paused-celery"
 
 
-def test_cleanup_old_agent_jobs_deletes_checkpoints_and_terminal_jobs(db_session, monkeypatch):
+def test_cleanup_old_agent_jobs_deletes_checkpoints_and_terminal_jobs(
+    db_session, monkeypatch
+):
     _patch_celery_session_factory(monkeypatch)
 
     old_job = _make_job(status=AgentJobStatus.COMPLETED.value)
@@ -197,7 +205,9 @@ def test_cleanup_old_agent_jobs_deletes_checkpoints_and_terminal_jobs(db_session
     agent_job_tasks.cleanup_old_agent_jobs(days=30)
 
     async def _verify():
-        job_row = await db_session.execute(select(AgentJob).where(AgentJob.id == old_job.id))
+        job_row = await db_session.execute(
+            select(AgentJob).where(AgentJob.id == old_job.id)
+        )
         checkpoint_row = await db_session.execute(
             select(AgentJobCheckpoint).where(AgentJobCheckpoint.job_id == old_job.id)
         )
@@ -209,7 +219,9 @@ def test_cleanup_old_agent_jobs_deletes_checkpoints_and_terminal_jobs(db_session
     assert checkpoint_rows == []
 
 
-def test_check_stalled_agent_jobs_marks_job_failed_and_reports_progress(db_session, monkeypatch):
+def test_check_stalled_agent_jobs_marks_job_failed_and_reports_progress(
+    db_session, monkeypatch
+):
     _patch_celery_session_factory(monkeypatch)
 
     job = _make_job(status=AgentJobStatus.RUNNING.value, schedule_type="continuous")
@@ -229,8 +241,14 @@ def test_check_stalled_agent_jobs_marks_job_failed_and_reports_progress(db_sessi
     async def _fake_publish_job_progress(**kwargs):
         progress_calls.append(kwargs)
 
-    monkeypatch.setattr(agent_job_tasks, "sync_follow_up_outcome_for_job", _fake_sync_follow_up_outcome_for_job)
-    monkeypatch.setattr(agent_job_tasks, "_publish_job_progress", _fake_publish_job_progress)
+    monkeypatch.setattr(
+        agent_job_tasks,
+        "sync_follow_up_outcome_for_job",
+        _fake_sync_follow_up_outcome_for_job,
+    )
+    monkeypatch.setattr(
+        agent_job_tasks, "_publish_job_progress", _fake_publish_job_progress
+    )
 
     agent_job_tasks.check_stalled_agent_jobs(timeout_minutes=30)
     _run(db_session.refresh(job))
@@ -245,12 +263,16 @@ def test_check_stalled_agent_jobs_marks_job_failed_and_reports_progress(db_sessi
     assert job.error == "Job stalled - no activity for 30 minutes"
     assert job.completed_at is not None
     assert job.celery_task_id is None
-    state = (((job.results or {}).get("execution_strategy") or {}).get("scheduler_state") or {})
+    state = ((job.results or {}).get("execution_strategy") or {}).get(
+        "scheduler_state"
+    ) or {}
     assert state["queue_reason"] == "stalled_run"
     assert state["last_run_status"] == AgentJobStatus.FAILED.value
 
 
-def test_execute_agent_job_async_records_success_and_scheduler_state(db_session, monkeypatch):
+def test_execute_agent_job_async_records_success_and_scheduler_state(
+    db_session, monkeypatch
+):
     _patch_celery_session_factory(monkeypatch)
 
     job = _make_job(status=AgentJobStatus.PENDING.value, schedule_type="continuous")
@@ -303,11 +325,23 @@ def test_execute_agent_job_async_records_success_and_scheduler_state(db_session,
                         "phase_details": "Finished successfully",
                     }
                 )
-            return {"status": AgentJobStatus.COMPLETED.value, "progress": 100, "iterations": 4}
+            return {
+                "status": AgentJobStatus.COMPLETED.value,
+                "progress": 100,
+                "iterations": 4,
+            }
 
-    monkeypatch.setattr(agent_job_tasks, "_publish_job_progress", _fake_publish_job_progress)
-    monkeypatch.setattr(agent_job_tasks, "sync_follow_up_outcome_for_job", _fake_sync_follow_up_outcome_for_job)
-    monkeypatch.setattr(agent_job_tasks, "AutonomousAgentExecutor", lambda: _FakeExecutor())
+    monkeypatch.setattr(
+        agent_job_tasks, "_publish_job_progress", _fake_publish_job_progress
+    )
+    monkeypatch.setattr(
+        agent_job_tasks,
+        "sync_follow_up_outcome_for_job",
+        _fake_sync_follow_up_outcome_for_job,
+    )
+    monkeypatch.setattr(
+        agent_job_tasks, "AutonomousAgentExecutor", lambda: _FakeExecutor()
+    )
 
     _run(agent_job_tasks._execute_agent_job_async(str(job.id), str(job.user_id)))
     _run(db_session.refresh(job))
@@ -316,7 +350,9 @@ def test_execute_agent_job_async_records_success_and_scheduler_state(db_session,
     assert job.progress == 100
     assert job.celery_task_id == task_id
     assert job.completed_at is not None
-    state = (((job.results or {}).get("execution_strategy") or {}).get("scheduler_state") or {})
+    state = ((job.results or {}).get("execution_strategy") or {}).get(
+        "scheduler_state"
+    ) or {}
     assert state["last_run_status"] == AgentJobStatus.COMPLETED.value
     assert state["failure_streak"] == 0
     assert state["queue_reason"] is None
@@ -361,9 +397,17 @@ def test_execute_agent_job_async_records_failure_outcome(db_session, monkeypatch
         async def execute_job(self, *, job_id, db, progress_callback=None):
             raise RuntimeError("boom")
 
-    monkeypatch.setattr(agent_job_tasks, "_publish_job_progress", _fake_publish_job_progress)
-    monkeypatch.setattr(agent_job_tasks, "sync_follow_up_outcome_for_job", _fake_sync_follow_up_outcome_for_job)
-    monkeypatch.setattr(agent_job_tasks, "AutonomousAgentExecutor", lambda: _FailingExecutor())
+    monkeypatch.setattr(
+        agent_job_tasks, "_publish_job_progress", _fake_publish_job_progress
+    )
+    monkeypatch.setattr(
+        agent_job_tasks,
+        "sync_follow_up_outcome_for_job",
+        _fake_sync_follow_up_outcome_for_job,
+    )
+    monkeypatch.setattr(
+        agent_job_tasks, "AutonomousAgentExecutor", lambda: _FailingExecutor()
+    )
 
     _run(agent_job_tasks._execute_agent_job_async(str(job.id), str(job.user_id)))
     _run(db_session.refresh(job))
@@ -373,7 +417,9 @@ def test_execute_agent_job_async_records_failure_outcome(db_session, monkeypatch
     assert job.completed_at is not None
     assert job.celery_task_id == task_id
     assert job.next_run_at is not None
-    state = (((job.results or {}).get("execution_strategy") or {}).get("scheduler_state") or {})
+    state = ((job.results or {}).get("execution_strategy") or {}).get(
+        "scheduler_state"
+    ) or {}
     assert state["last_run_status"] == AgentJobStatus.FAILED.value
     assert state["failure_streak"] == 1
     assert state["queue_reason"] == "execution_failure"
@@ -391,7 +437,9 @@ def test_execute_agent_job_async_records_failure_outcome(db_session, monkeypatch
     assert follow_up_calls[0][1] == job.id
 
 
-def test_execute_agent_job_task_persists_failure_when_loop_bootstrap_breaks(db_session, monkeypatch):
+def test_execute_agent_job_task_persists_failure_when_loop_bootstrap_breaks(
+    db_session, monkeypatch
+):
     _patch_celery_session_factory(monkeypatch)
 
     job = _make_job(status=AgentJobStatus.PENDING.value, schedule_type="continuous")
@@ -402,7 +450,11 @@ def test_execute_agent_job_task_persists_failure_when_loop_bootstrap_breaks(db_s
     async def _fake_sync_follow_up_outcome_for_job(db, job_obj):
         follow_up_calls.append((db, job_obj.id))
 
-    monkeypatch.setattr(agent_job_tasks, "sync_follow_up_outcome_for_job", _fake_sync_follow_up_outcome_for_job)
+    monkeypatch.setattr(
+        agent_job_tasks,
+        "sync_follow_up_outcome_for_job",
+        _fake_sync_follow_up_outcome_for_job,
+    )
 
     real_asyncio_run = asyncio.run
     call_count = {"value": 0}
@@ -418,19 +470,25 @@ def test_execute_agent_job_task_persists_failure_when_loop_bootstrap_breaks(db_s
     task = types.SimpleNamespace(
         request=types.SimpleNamespace(retries=2),
         max_retries=2,
-        retry=lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("retry should not be called")),
+        retry=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("retry should not be called")
+        ),
     )
 
     # Invoke the underlying bound-task function directly with an explicit fake
     # ``self`` (Celery would otherwise inject the real task instance).
-    agent_job_tasks.execute_agent_job_task.run.__func__(task, str(job.id), str(job.user_id))
+    agent_job_tasks.execute_agent_job_task.run.__func__(
+        task, str(job.id), str(job.user_id)
+    )
     _run(db_session.refresh(job))
 
     assert call_count["value"] == 2
     assert job.status == AgentJobStatus.FAILED.value
     assert job.error == "Task error: loop broke"
     assert job.completed_at is not None
-    state = (((job.results or {}).get("execution_strategy") or {}).get("scheduler_state") or {})
+    state = ((job.results or {}).get("execution_strategy") or {}).get(
+        "scheduler_state"
+    ) or {}
     assert state["last_run_status"] == AgentJobStatus.FAILED.value
     assert state["queue_reason"] == "task_failure"
     assert state["failure_streak"] == 1
@@ -438,6 +496,46 @@ def test_execute_agent_job_task_persists_failure_when_loop_bootstrap_breaks(db_s
     assert len(follow_up_calls) == 1
     assert follow_up_calls[0][0] is not None
     assert follow_up_calls[0][1] == job.id
+
+
+def test_bootstrap_failure_does_not_poison_another_workers_active_lease(
+    db_session, monkeypatch
+):
+    _patch_celery_session_factory(monkeypatch)
+    job = _make_job(status=AgentJobStatus.PENDING.value)
+    job.execution_lease_owner = "worker-a"
+    job.execution_lease_token = "lease-token-a"
+    job.execution_lease_expires_at = datetime.utcnow() + timedelta(minutes=5)
+    job.execution_fence = 4
+    _run(_seed_job(db_session, job))
+
+    real_asyncio_run = asyncio.run
+    call_count = {"value": 0}
+
+    def _fake_asyncio_run(coro):
+        call_count["value"] += 1
+        if call_count["value"] == 1:
+            raise RuntimeError("duplicate worker loop broke")
+        return real_asyncio_run(coro)
+
+    monkeypatch.setattr(agent_job_tasks.asyncio, "run", _fake_asyncio_run)
+    task = types.SimpleNamespace(
+        request=types.SimpleNamespace(id="worker-b", retries=2),
+        max_retries=2,
+        retry=lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("retry should not be called")
+        ),
+    )
+
+    agent_job_tasks.execute_agent_job_task.run.__func__(
+        task, str(job.id), str(job.user_id)
+    )
+    _run(db_session.refresh(job))
+
+    assert job.status == AgentJobStatus.PENDING.value
+    assert job.error is None
+    assert job.execution_lease_owner == "worker-a"
+    assert job.execution_fence == 4
 
 
 async def _seed_job(db_session, job, checkpoint=None):

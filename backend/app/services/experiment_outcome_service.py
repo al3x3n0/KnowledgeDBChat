@@ -86,16 +86,23 @@ def _resolve_origin(run: ExperimentRun) -> tuple[str | None, str | None, str | N
             else ""
         )
     if not source_id:
-        source_id = (
-            _text(scientific_validation.get("domain_research_profile_id"))
-            or _text(scientific_validation.get("research_portfolio_id"))
-        )
+        source_id = _text(
+            scientific_validation.get("domain_research_profile_id")
+        ) or _text(scientific_validation.get("research_portfolio_id"))
     if not opportunity_id:
-        opportunity_id = (
-            _text(scientific_validation.get("hypothesis_id"))
-            or next((str(item).strip() for item in selected_hypothesis_ids if str(item).strip()), "")
+        opportunity_id = _text(scientific_validation.get("hypothesis_id")) or next(
+            (
+                str(item).strip()
+                for item in selected_hypothesis_ids
+                if str(item).strip()
+            ),
+            "",
         )
-    if source_kind not in {"profile", "portfolio"} or not source_id or not opportunity_id:
+    if (
+        source_kind not in {"profile", "portfolio"}
+        or not source_id
+        or not opportunity_id
+    ):
         return None, None, None
     return source_kind, source_id, opportunity_id
 
@@ -142,19 +149,28 @@ def _apply_experiment_outcome_to_row(
     scientific_validation = _scientific_validation_payload(run)
     status = _text(run.status).lower()
     recorded_at_iso = recorded_at.isoformat()
-    blocked_reason_code = _text(
-        scientific_validation.get("blocked_reason_code")
-        or scientific_validation.get("blocked_reason")
-        or getattr(run, "blocked_reason_code", None)
-    ) or None
+    blocked_reason_code = (
+        _text(
+            scientific_validation.get("blocked_reason_code")
+            or scientific_validation.get("blocked_reason")
+            or getattr(run, "blocked_reason_code", None)
+        )
+        or None
+    )
     run_id = _get_model_id(run.id)
     plan_id = _get_model_id(plan.id)
     note_id = _get_model_id(plan.research_note_id)
     agent_job_id = _get_model_id(run.agent_job_id)
 
-    linked_plan_ids = _clean_list([*(updated.get("linked_experiment_plan_ids") or []), plan_id], limit=8)
-    linked_run_ids = _clean_list([*(updated.get("linked_validation_run_ids") or []), run_id], limit=8)
-    source_note_ids = _clean_list([*(updated.get("source_note_ids") or []), note_id], limit=8)
+    linked_plan_ids = _clean_list(
+        [*(updated.get("linked_experiment_plan_ids") or []), plan_id], limit=8
+    )
+    linked_run_ids = _clean_list(
+        [*(updated.get("linked_validation_run_ids") or []), run_id], limit=8
+    )
+    source_note_ids = _clean_list(
+        [*(updated.get("source_note_ids") or []), note_id], limit=8
+    )
 
     updated["linked_experiment_plan_ids"] = linked_plan_ids
     updated["linked_validation_run_ids"] = linked_run_ids
@@ -193,7 +209,9 @@ def _apply_experiment_outcome_to_row(
         updated["follow_up_outcome_recorded_at"] = recorded_at_iso
         updated["follow_up_outcome_summary"] = summary
         updated["last_decision_type"] = "validation_blocked"
-        updated["last_decision_reason_code"] = blocked_reason_code or "validation_blocked"
+        updated["last_decision_reason_code"] = (
+            blocked_reason_code or "validation_blocked"
+        )
         updated["last_blocked_reason_code"] = blocked_reason_code
         updated["autonomy_state"] = "blocked_structural"
         updated["stage"] = "blocked"
@@ -248,12 +266,27 @@ async def reconcile_experiment_run_outcome_to_originating_opportunity(
         profile = await _get_model_by_id(db, DomainResearchProfile, source_id)
         if profile is None:
             return False
-        summary = dict(profile.latest_summary) if isinstance(profile.latest_summary, dict) else {}
-        rows = list_normalized_research_opportunities(summary.get("opportunities") or summary.get("idea_candidates") or [])
-        idx = next((i for i, row in enumerate(rows) if _text(row.get("opportunity_id")) == opportunity_id), -1)
+        summary = (
+            dict(profile.latest_summary)
+            if isinstance(profile.latest_summary, dict)
+            else {}
+        )
+        rows = list_normalized_research_opportunities(
+            summary.get("opportunities") or summary.get("idea_candidates") or []
+        )
+        idx = next(
+            (
+                i
+                for i, row in enumerate(rows)
+                if _text(row.get("opportunity_id")) == opportunity_id
+            ),
+            -1,
+        )
         if idx < 0:
             return False
-        next_row = _apply_experiment_outcome_to_row(rows[idx], run=run, plan=plan, recorded_at=at)
+        next_row = _apply_experiment_outcome_to_row(
+            rows[idx], run=run, plan=plan, recorded_at=at
+        )
         if next_row == rows[idx]:
             return False
         rows[idx] = next_row
@@ -261,9 +294,15 @@ async def reconcile_experiment_run_outcome_to_originating_opportunity(
         if isinstance(summary.get("idea_candidates"), list):
             summary["idea_candidates"] = rows
         profile.latest_summary = summary
-        profile.latest_experiment_plan_ids = _clean_list([*(profile.latest_experiment_plan_ids or []), plan_id], limit=20)
-        profile.latest_validation_run_ids = _clean_list([*(profile.latest_validation_run_ids or []), run_id], limit=20)
-        profile.latest_note_ids = _clean_list([*(profile.latest_note_ids or []), note_id], limit=20)
+        profile.latest_experiment_plan_ids = _clean_list(
+            [*(profile.latest_experiment_plan_ids or []), plan_id], limit=20
+        )
+        profile.latest_validation_run_ids = _clean_list(
+            [*(profile.latest_validation_run_ids or []), run_id], limit=20
+        )
+        profile.latest_note_ids = _clean_list(
+            [*(profile.latest_note_ids or []), note_id], limit=20
+        )
         profile.updated_at = at
         return True
 
@@ -271,16 +310,31 @@ async def reconcile_experiment_run_outcome_to_originating_opportunity(
     if portfolio is None:
         return False
     rows = list_normalized_research_opportunities(portfolio.opportunities or [])
-    idx = next((i for i, row in enumerate(rows) if _text(row.get("opportunity_id")) == opportunity_id), -1)
+    idx = next(
+        (
+            i
+            for i, row in enumerate(rows)
+            if _text(row.get("opportunity_id")) == opportunity_id
+        ),
+        -1,
+    )
     if idx < 0:
         return False
-    next_row = _apply_experiment_outcome_to_row(rows[idx], run=run, plan=plan, recorded_at=at)
+    next_row = _apply_experiment_outcome_to_row(
+        rows[idx], run=run, plan=plan, recorded_at=at
+    )
     if next_row == rows[idx]:
         return False
     rows[idx] = next_row
     portfolio.opportunities = rows
-    portfolio.latest_experiment_plan_ids = _clean_list([*(portfolio.latest_experiment_plan_ids or []), plan_id], limit=30)
-    portfolio.latest_validation_run_ids = _clean_list([*(portfolio.latest_validation_run_ids or []), run_id], limit=30)
-    portfolio.latest_note_ids = _clean_list([*(portfolio.latest_note_ids or []), note_id], limit=30)
+    portfolio.latest_experiment_plan_ids = _clean_list(
+        [*(portfolio.latest_experiment_plan_ids or []), plan_id], limit=30
+    )
+    portfolio.latest_validation_run_ids = _clean_list(
+        [*(portfolio.latest_validation_run_ids or []), run_id], limit=30
+    )
+    portfolio.latest_note_ids = _clean_list(
+        [*(portfolio.latest_note_ids or []), note_id], limit=30
+    )
     portfolio.updated_at = at
     return True

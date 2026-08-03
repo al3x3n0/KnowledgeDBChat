@@ -8,10 +8,10 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-
 # ============================================================================
 # Dataset Schemas
 # ============================================================================
+
 
 class DatasetSampleCreate(BaseModel):
     """Request schema for creating a dataset sample."""
@@ -19,7 +19,9 @@ class DatasetSampleCreate(BaseModel):
     instruction: str = Field(..., min_length=1, description="The instruction/prompt")
     input: Optional[str] = Field(None, description="Optional input context")
     output: str = Field(..., min_length=1, description="The expected output/response")
-    source_document_id: Optional[UUID] = Field(None, description="Source document if generated")
+    source_document_id: Optional[UUID] = Field(
+        None, description="Source document if generated"
+    )
 
 
 class DatasetSampleResponse(BaseModel):
@@ -45,9 +47,13 @@ class TrainingDatasetCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=200, description="Dataset name")
     description: Optional[str] = Field(None, description="Dataset description")
-    dataset_type: str = Field("instruction", description="Type: instruction, chat, completion, preference")
+    dataset_type: str = Field(
+        "instruction", description="Type: instruction, chat, completion, preference"
+    )
     format: str = Field("alpaca", description="Format: alpaca, sharegpt, custom")
-    samples: Optional[List[DatasetSampleCreate]] = Field(None, description="Initial samples to add")
+    samples: Optional[List[DatasetSampleCreate]] = Field(
+        None, description="Initial samples to add"
+    )
     is_public: bool = Field(False, description="Make dataset public")
 
 
@@ -111,13 +117,23 @@ class GenerateDatasetRequest(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=200, description="Dataset name")
     description: Optional[str] = Field(None, description="Dataset description")
-    document_ids: List[UUID] = Field(..., min_length=1, description="Documents to generate from")
+    document_ids: List[UUID] = Field(
+        ..., min_length=1, description="Documents to generate from"
+    )
     dataset_type: str = Field("instruction", description="Type of dataset to generate")
-    samples_per_document: int = Field(5, ge=1, le=50, description="Samples to generate per document")
+    samples_per_document: int = Field(
+        5, ge=1, le=50, description="Samples to generate per document"
+    )
     # If preset_id is provided, generation_prompt is ignored and the preset's prompt is used.
-    preset_id: Optional[str] = Field(None, description="AI Hub preset id (plugin) for generation")
-    extra_instructions: Optional[str] = Field(None, description="Additional instructions appended to the preset prompt")
-    generation_prompt: Optional[str] = Field(None, description="Custom prompt for generation (advanced)")
+    preset_id: Optional[str] = Field(
+        None, description="AI Hub preset id (plugin) for generation"
+    )
+    extra_instructions: Optional[str] = Field(
+        None, description="Additional instructions appended to the preset prompt"
+    )
+    generation_prompt: Optional[str] = Field(
+        None, description="Custom prompt for generation (advanced)"
+    )
 
 
 class AddSamplesResponse(BaseModel):
@@ -132,6 +148,7 @@ class AddSamplesResponse(BaseModel):
 # Hyperparameter Schemas
 # ============================================================================
 
+
 class HyperparametersConfig(BaseModel):
     """Training hyperparameters configuration."""
 
@@ -139,15 +156,21 @@ class HyperparametersConfig(BaseModel):
     lora_r: int = Field(16, ge=4, le=256, description="LoRA rank")
     lora_alpha: int = Field(32, ge=8, le=512, description="LoRA alpha")
     lora_dropout: float = Field(0.05, ge=0.0, le=0.5, description="LoRA dropout")
-    target_modules: Optional[List[str]] = Field(None, description="Target modules for LoRA")
+    target_modules: Optional[List[str]] = Field(
+        None, description="Target modules for LoRA"
+    )
 
     # Training parameters
     learning_rate: float = Field(2e-4, ge=1e-6, le=1e-2, description="Learning rate")
     num_epochs: int = Field(3, ge=1, le=50, description="Number of epochs")
     batch_size: int = Field(4, ge=1, le=64, description="Batch size")
-    gradient_accumulation_steps: int = Field(4, ge=1, le=128, description="Gradient accumulation steps")
+    gradient_accumulation_steps: int = Field(
+        4, ge=1, le=128, description="Gradient accumulation steps"
+    )
     warmup_steps: int = Field(100, ge=0, le=10000, description="Warmup steps")
-    max_seq_length: int = Field(2048, ge=128, le=8192, description="Maximum sequence length")
+    max_seq_length: int = Field(
+        2048, ge=128, le=8192, description="Maximum sequence length"
+    )
 
     # Optimization
     weight_decay: float = Field(0.01, ge=0.0, le=1.0, description="Weight decay")
@@ -158,14 +181,21 @@ class ResourceConfig(BaseModel):
     """Resource configuration for training."""
 
     device: str = Field("auto", description="Device: cuda, cpu, mps, auto")
-    max_memory_gb: Optional[float] = Field(None, description="Maximum GPU memory to use")
-    mixed_precision: str = Field("bf16", description="Mixed precision: bf16, fp16, fp32")
-    gradient_checkpointing: bool = Field(True, description="Enable gradient checkpointing")
+    max_memory_gb: Optional[float] = Field(
+        None, description="Maximum GPU memory to use"
+    )
+    mixed_precision: str = Field(
+        "bf16", description="Mixed precision: bf16, fp16, fp32"
+    )
+    gradient_checkpointing: bool = Field(
+        True, description="Enable gradient checkpointing"
+    )
 
 
 # ============================================================================
 # Training Job Schemas
 # ============================================================================
+
 
 class TrainingJobCreate(BaseModel):
     """Request schema for creating a training job."""
@@ -174,20 +204,32 @@ class TrainingJobCreate(BaseModel):
     description: Optional[str] = Field(None, description="Job description")
 
     # Training configuration
-    training_method: str = Field("lora", description="Method: lora, qlora, full_finetune")
+    training_method: str = Field(
+        "lora", description="Method: lora, qlora, full_finetune"
+    )
     training_backend: str = Field("local", description="Backend: local, modal, runpod")
 
     # Model and dataset
-    base_model: str = Field(..., min_length=1, description="Base model name (e.g., llama3.2:3b)")
-    base_model_provider: str = Field("ollama", description="Model provider: ollama, huggingface")
+    base_model: str = Field(
+        ..., min_length=1, description="Base model name (e.g., llama3.2:3b)"
+    )
+    base_model_provider: str = Field(
+        "ollama", description="Model provider: ollama, huggingface"
+    )
     dataset_id: UUID = Field(..., description="Training dataset ID")
 
     # Hyperparameters (optional - uses defaults if not provided)
-    hyperparameters: Optional[HyperparametersConfig] = Field(None, description="Training hyperparameters")
-    resource_config: Optional[ResourceConfig] = Field(None, description="Resource configuration")
+    hyperparameters: Optional[HyperparametersConfig] = Field(
+        None, description="Training hyperparameters"
+    )
+    resource_config: Optional[ResourceConfig] = Field(
+        None, description="Resource configuration"
+    )
 
     # Execution
-    start_immediately: bool = Field(True, description="Start job immediately after creation")
+    start_immediately: bool = Field(
+        True, description="Start job immediately after creation"
+    )
 
 
 class TrainingJobUpdate(BaseModel):
@@ -329,15 +371,22 @@ class BaseModelInfo(BaseModel):
 # Model Adapter Schemas
 # ============================================================================
 
+
 class ModelAdapterCreate(BaseModel):
     """Request schema for manually creating an adapter."""
 
-    name: str = Field(..., min_length=1, max_length=100, description="Unique adapter name")
-    display_name: str = Field(..., min_length=1, max_length=200, description="Display name")
+    name: str = Field(
+        ..., min_length=1, max_length=100, description="Unique adapter name"
+    )
+    display_name: str = Field(
+        ..., min_length=1, max_length=200, description="Display name"
+    )
     description: Optional[str] = Field(None, description="Description")
     base_model: str = Field(..., description="Base model name")
     adapter_type: str = Field("lora", description="Adapter type: lora, qlora")
-    adapter_config: Optional[Dict[str, Any]] = Field(None, description="Adapter configuration")
+    adapter_config: Optional[Dict[str, Any]] = Field(
+        None, description="Adapter configuration"
+    )
     is_public: bool = Field(False, description="Make adapter public")
     tags: Optional[List[str]] = Field(None, description="Tags for organization")
 
@@ -397,7 +446,7 @@ class DeployAdapterRequest(BaseModel):
         None,
         min_length=1,
         max_length=100,
-        description="Custom Ollama model name (default: adapter name)"
+        description="Custom Ollama model name (default: adapter name)",
     )
 
 
@@ -415,7 +464,9 @@ class TestAdapterRequest(BaseModel):
     """Request to test an adapter with a prompt."""
 
     prompt: str = Field(..., min_length=1, max_length=4000, description="Test prompt")
-    max_tokens: int = Field(256, ge=1, le=2000, description="Maximum tokens to generate")
+    max_tokens: int = Field(
+        256, ge=1, le=2000, description="Maximum tokens to generate"
+    )
     temperature: float = Field(0.7, ge=0.0, le=2.0, description="Temperature")
 
 

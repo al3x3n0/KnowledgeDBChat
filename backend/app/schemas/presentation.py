@@ -3,40 +3,55 @@ Pydantic schemas for presentation generation.
 """
 
 from datetime import datetime
-from typing import Optional, List, Literal, Any, Dict
+from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field
 
+from pydantic import BaseModel, Field
 
 # =============================================================================
 # Theme Configuration Schemas
 # =============================================================================
 
+
 class ThemeColors(BaseModel):
     """Color configuration for a presentation theme."""
+
     title_color: str = Field(default="#1a365d", description="Title text color (hex)")
-    accent_color: str = Field(default="#2e86ab", description="Accent/highlight color (hex)")
+    accent_color: str = Field(
+        default="#2e86ab", description="Accent/highlight color (hex)"
+    )
     text_color: str = Field(default="#333333", description="Body text color (hex)")
     bg_color: str = Field(default="#ffffff", description="Background color (hex)")
 
 
 class ThemeFonts(BaseModel):
     """Font configuration for a presentation theme."""
+
     title_font: str = Field(default="Calibri", description="Font for titles")
     body_font: str = Field(default="Calibri", description="Font for body text")
 
 
 class ThemeSizes(BaseModel):
     """Font size configuration for a presentation theme."""
-    title_size: int = Field(default=44, ge=20, le=72, description="Title font size (pt)")
-    subtitle_size: int = Field(default=24, ge=12, le=48, description="Subtitle font size (pt)")
-    heading_size: int = Field(default=36, ge=16, le=60, description="Heading font size (pt)")
+
+    title_size: int = Field(
+        default=44, ge=20, le=72, description="Title font size (pt)"
+    )
+    subtitle_size: int = Field(
+        default=24, ge=12, le=48, description="Subtitle font size (pt)"
+    )
+    heading_size: int = Field(
+        default=36, ge=16, le=60, description="Heading font size (pt)"
+    )
     body_size: int = Field(default=20, ge=10, le=36, description="Body font size (pt)")
-    bullet_size: int = Field(default=18, ge=10, le=32, description="Bullet point font size (pt)")
+    bullet_size: int = Field(
+        default=18, ge=10, le=32, description="Bullet point font size (pt)"
+    )
 
 
 class ThemeConfig(BaseModel):
     """Complete theme configuration."""
+
     colors: ThemeColors = Field(default_factory=ThemeColors)
     fonts: ThemeFonts = Field(default_factory=ThemeFonts)
     sizes: ThemeSizes = Field(default_factory=ThemeSizes)
@@ -46,8 +61,10 @@ class ThemeConfig(BaseModel):
 # Template Schemas
 # =============================================================================
 
+
 class PresentationTemplateCreate(BaseModel):
     """Request schema for creating a presentation template."""
+
     name: str = Field(..., min_length=1, max_length=255)
     description: Optional[str] = None
     template_type: Literal["theme", "pptx"] = Field(default="theme")
@@ -57,6 +74,7 @@ class PresentationTemplateCreate(BaseModel):
 
 class PresentationTemplateUpdate(BaseModel):
     """Request schema for updating a presentation template."""
+
     name: Optional[str] = Field(None, min_length=1, max_length=255)
     description: Optional[str] = None
     theme_config: Optional[ThemeConfig] = None
@@ -66,6 +84,7 @@ class PresentationTemplateUpdate(BaseModel):
 
 class PresentationTemplateResponse(BaseModel):
     """Response schema for presentation templates."""
+
     id: UUID
     user_id: Optional[UUID] = None
     name: str
@@ -87,8 +106,10 @@ class PresentationTemplateResponse(BaseModel):
 # Slide Content Schemas
 # =============================================================================
 
+
 class SlideContent(BaseModel):
     """Content for a single slide."""
+
     slide_number: int
     slide_type: Literal["title", "content", "diagram", "summary", "two_column"]
     title: str
@@ -101,6 +122,7 @@ class SlideContent(BaseModel):
 
 class PresentationOutline(BaseModel):
     """Complete presentation outline with all slides."""
+
     title: str
     subtitle: Optional[str] = None
     slides: List[SlideContent]
@@ -110,35 +132,47 @@ class PresentationOutline(BaseModel):
 # Request/Response Schemas
 # =============================================================================
 
+
 class PresentationJobCreate(BaseModel):
     """Request schema for creating a presentation job."""
+
     title: str = Field(..., min_length=1, max_length=255)
-    topic: str = Field(..., min_length=1, description="Topic or description for the presentation")
+    topic: str = Field(
+        ..., min_length=1, description="Topic or description for the presentation"
+    )
     source_document_ids: List[UUID] = Field(
         default_factory=list,
-        description="Document IDs to use as context. Empty means search all documents."
+        description="Document IDs to use as context. Empty means search all documents.",
     )
-    slide_count: int = Field(default=10, ge=3, le=30, description="Number of slides to generate")
-    style: Literal["professional", "casual", "technical", "modern", "minimal", "corporate", "creative"] = Field(
+    slide_count: int = Field(
+        default=10, ge=3, le=30, description="Number of slides to generate"
+    )
+    style: Literal[
+        "professional",
+        "casual",
+        "technical",
+        "modern",
+        "minimal",
+        "corporate",
+        "creative",
+    ] = Field(
         default="professional",
-        description="Built-in visual style (ignored if template_id or custom_theme is provided)"
+        description="Built-in visual style (ignored if template_id or custom_theme is provided)",
     )
     include_diagrams: bool = Field(
-        default=True,
-        description="Whether to include Mermaid diagrams"
+        default=True, description="Whether to include Mermaid diagrams"
     )
     template_id: Optional[UUID] = Field(
-        default=None,
-        description="ID of a saved template to use"
+        default=None, description="ID of a saved template to use"
     )
     custom_theme: Optional[ThemeConfig] = Field(
-        default=None,
-        description="Custom inline theme configuration"
+        default=None, description="Custom inline theme configuration"
     )
 
 
 class PresentationJobUpdate(BaseModel):
     """Schema for updating a presentation job (internal use)."""
+
     status: Optional[str] = None
     progress: Optional[int] = None
     current_stage: Optional[str] = None
@@ -152,6 +186,7 @@ class PresentationJobUpdate(BaseModel):
 
 class PresentationJobResponse(BaseModel):
     """Response schema for presentation jobs."""
+
     id: UUID
     user_id: UUID
     title: str
@@ -182,6 +217,7 @@ class PresentationJobResponse(BaseModel):
 
 class PresentationJobListResponse(BaseModel):
     """Response schema for listing presentation jobs."""
+
     jobs: List[PresentationJobResponse]
     total: int
 
@@ -190,8 +226,10 @@ class PresentationJobListResponse(BaseModel):
 # Progress WebSocket Messages
 # =============================================================================
 
+
 class PresentationProgressMessage(BaseModel):
     """WebSocket message for presentation generation progress."""
+
     type: Literal["progress", "stage", "complete", "error"]
     job_id: UUID
     status: Optional[str] = None

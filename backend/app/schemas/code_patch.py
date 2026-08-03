@@ -19,7 +19,9 @@ class CodePatchProposalResponse(BaseModel):
     title: str
     summary: Optional[str] = None
     diff_unified: str
-    metadata: Optional[Dict[str, Any]] = Field(default=None, validation_alias="proposal_metadata")
+    metadata: Optional[Dict[str, Any]] = Field(
+        default=None, validation_alias="proposal_metadata"
+    )
     status: str
     created_at: datetime
     updated_at: datetime

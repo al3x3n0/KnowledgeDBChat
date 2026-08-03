@@ -1,12 +1,12 @@
 from app.schemas.agent_job import (
+    AgentJobChainDefinitionCreate,
     AgentJobCreate,
+    AgentJobFromChainCreate,
     AgentJobFromTemplate,
     AgentJobQuickStartClaudeBackendRequest,
+    AgentJobQuickStartRepoBugTriageRequest,
     AgentJobUpdate,
     ChainStepConfig,
-    AgentJobChainDefinitionCreate,
-    AgentJobFromChainCreate,
-    AgentJobQuickStartRepoBugTriageRequest,
 )
 
 
@@ -93,8 +93,19 @@ def test_quick_start_request_normalizes_commands_and_file_paths():
     payload = AgentJobQuickStartClaudeBackendRequest(
         goal="Fix backend API tests",
         source_id="00000000-0000-0000-0000-000000000123",
-        commands=["  python -m pytest -q  ", "python -m pytest -q", "npm test", "", "   "],
-        file_paths=[" backend/app/main.py ", "backend/app/main.py", "", "backend/tests/test_api.py"],
+        commands=[
+            "  python -m pytest -q  ",
+            "python -m pytest -q",
+            "npm test",
+            "",
+            "   ",
+        ],
+        file_paths=[
+            " backend/app/main.py ",
+            "backend/app/main.py",
+            "",
+            "backend/tests/test_api.py",
+        ],
         search_query="   backend regression tests   ",
     )
 
@@ -128,13 +139,20 @@ def test_repo_bug_triage_request_normalizes_scope_config_and_lists():
         source_id="00000000-0000-0000-0000-000000000123",
         scope=" Front-End ",
         commands=["  npm test  ", "npm test", "CI=true npm test -- --watchAll=false"],
-        file_paths=[" frontend/src/App.tsx ", "./frontend/src/pages/LoginPage.tsx", "../oops"],
+        file_paths=[
+            " frontend/src/App.tsx ",
+            "./frontend/src/pages/LoginPage.tsx",
+            "../oops",
+        ],
         config_overrides={"target_source_id": "ovr-repo"},
     )
 
     assert payload.scope == "frontend"
     assert payload.commands == ["npm test", "CI=true npm test -- --watchAll=false"]
-    assert payload.file_paths == ["frontend/src/App.tsx", "frontend/src/pages/LoginPage.tsx"]
+    assert payload.file_paths == [
+        "frontend/src/App.tsx",
+        "frontend/src/pages/LoginPage.tsx",
+    ]
     assert payload.config_overrides is not None
     assert payload.config_overrides.get("source_id") == "ovr-repo"
     assert "target_source_id" not in payload.config_overrides
@@ -148,4 +166,6 @@ def test_repo_bug_triage_request_requires_goal_or_symptom():
     except Exception as exc:
         assert "goal or failure_symptom" in str(exc).lower()
     else:
-        raise AssertionError("Expected validation failure when goal and failure_symptom are both missing")
+        raise AssertionError(
+            "Expected validation failure when goal and failure_symptom are both missing"
+        )

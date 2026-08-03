@@ -2,60 +2,70 @@
 Document-related API endpoints.
 """
 
-import os
-import json
 import hashlib
+import json
+import os
+import re
 import tempfile
+import uuid
+from datetime import datetime
 from pathlib import Path
-from typing import List, Optional, Dict, Any
-from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, UploadFile, File, Form, Query, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse, JSONResponse
-from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
+from typing import Any, Dict, List, Optional
+from uuid import UUID, uuid4
 
-from app.core.database import get_db, AsyncSessionLocal
-from app.core.rate_limit import limiter, UPLOAD_LIMIT
-from app.models.user import User
-from app.services.auth_service import get_current_user
-from app.services.document_service import DocumentService
-from app.services.text_processor import TextProcessor
-from app.services.transcription_service import TranscriptionService
-from app.services.storage_service import storage_service
-from app.utils.exceptions import DocumentNotFoundError, ValidationError
-from app.utils.validators import validate_file_type
+from celery.result import AsyncResult
+from fastapi import (
+    APIRouter,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from fastapi.responses import JSONResponse, StreamingResponse
+from loguru import logger
+from sqlalchemy import select as sql_select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.celery import celery_app
+from app.core.database import AsyncSessionLocal, get_db
 from app.core.logging import log_error
+from app.core.rate_limit import UPLOAD_LIMIT, limiter
+from app.models.document import Document as _Document
+from app.models.document import DocumentSource as _DocumentSource
+from app.models.user import User
+from app.schemas.common import PaginatedResponse
 from app.schemas.document import (
-    DocumentResponse,
-    DocumentSourceResponse,
-    DocumentSourceCreate,
-    DocumentUpload,
-    GitRepoSourceRequest,
-    ArxivSourceRequest,
     ActiveSourceStatus,
+    ArxivSourceRequest,
+    DocumentResponse,
+    DocumentSourceCreate,
+    DocumentSourceResponse,
+    GitRepoSourceRequest,
+    IngestUrlJobResponse,
     IngestUrlRequest,
     IngestUrlResponse,
-    IngestUrlJobResponse,
     InstantArxivIngestRequest,
     InstantArxivIngestResponse,
-    ResearchPresentationRequest,
 )
-from app.schemas.common import PaginatedResponse
-from app.tasks.summarization_tasks import summarize_document as summarize_task
-from sqlalchemy import select as sql_select
-from app.models.document import Document as _Document, DocumentSource as _DocumentSource
+from app.services.auth_service import get_current_user
+from app.services.document_service import DocumentService
+from app.services.storage_service import storage_service
+from app.services.text_processor import TextProcessor
+from app.services.transcription_service import TranscriptionService
 from app.tasks.ingestion_tasks import ingest_from_source
-from app.core.celery import celery_app
-from celery.result import AsyncResult
+from app.tasks.summarization_tasks import summarize_document as summarize_task
+from app.utils.exceptions import DocumentNotFoundError, ValidationError
 from app.utils.ingestion_state import (
-    set_ingestion_task_mapping,
     get_ingestion_task_mapping,
     set_ingestion_cancel_flag,
+    set_ingestion_task_mapping,
 )
-from datetime import datetime
-from uuid import uuid4
-import re
-import uuid
+from app.utils.validators import validate_file_type
 
 router = APIRouter()
 document_service = DocumentService()
@@ -83,26 +93,48 @@ async def download_document_source_zip(
             raise HTTPException(status_code=404, detail="Source not found")
 
         cfg = source.config or {}
-        requested_user_id = str(cfg.get("requested_by_user_id") or cfg.get("requestedByUserId") or "").strip()
-        requested_by = str(cfg.get("requested_by") or cfg.get("requestedBy") or "").strip()
+        requested_user_id = str(
+            cfg.get("requested_by_user_id") or cfg.get("requestedByUserId") or ""
+        ).strip()
+        requested_by = str(
+            cfg.get("requested_by") or cfg.get("requestedBy") or ""
+        ).strip()
 
         if not current_user.is_admin():
             if requested_user_id and requested_user_id != str(current_user.id):
-                raise HTTPException(status_code=403, detail="Not authorized for this source")
-            if not requested_user_id and requested_by and requested_by != current_user.username:
-                raise HTTPException(status_code=403, detail="Not authorized for this source")
+                raise HTTPException(
+                    status_code=403, detail="Not authorized for this source"
+                )
+            if (
+                not requested_user_id
+                and requested_by
+                and requested_by != current_user.username
+            ):
+                raise HTTPException(
+                    status_code=403, detail="Not authorized for this source"
+                )
             if not requested_user_id and not requested_by:
-                raise HTTPException(status_code=403, detail="Not authorized for this source")
+                raise HTTPException(
+                    status_code=403, detail="Not authorized for this source"
+                )
 
-        res = await db.execute(sql_select(_Document).where(_Document.source_id == source_id))
+        res = await db.execute(
+            sql_select(_Document).where(_Document.source_id == source_id)
+        )
         docs = res.scalars().all()
         if not docs:
-            raise HTTPException(status_code=404, detail="No documents found for this source")
+            raise HTTPException(
+                status_code=404, detail="No documents found for this source"
+            )
 
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, mode="w", compression=zipfile.ZIP_DEFLATED) as zf:
             for d in docs:
-                p = (d.file_path or d.source_identifier or d.title or str(d.id) or "").replace("\\", "/").strip()
+                p = (
+                    (d.file_path or d.source_identifier or d.title or str(d.id) or "")
+                    .replace("\\", "/")
+                    .strip()
+                )
                 p = re.sub(r"^/+", "", p)
                 while p.startswith("./"):
                     p = p[2:]
@@ -123,7 +155,9 @@ async def download_document_source_zip(
             zf.writestr("_manifest.json", json.dumps(manifest, indent=2))
 
         buf.seek(0)
-        filename = re.sub(r"[^A-Za-z0-9_.-]+", "_", source.name or "source")[:80] + ".zip"
+        filename = (
+            re.sub(r"[^A-Za-z0-9_.-]+", "_", source.name or "source")[:80] + ".zip"
+        )
         headers = {"Content-Disposition": f'attachment; filename="{filename}"'}
         return StreamingResponse(buf, media_type="application/zip", headers=headers)
     except HTTPException:
@@ -131,14 +165,20 @@ async def download_document_source_zip(
     except Exception as e:
         logger.error(f"Error creating zip for source {source_id}: {e}")
         raise HTTPException(status_code=500, detail="Failed to create ZIP")
+
+
 text_processor_service = TextProcessor()
 
 
 @router.get("/search")
 async def search_documents(
     q: str = Query(..., min_length=1, description="Search query"),
-    mode: str = Query("smart", regex="^(smart|keyword|exact)$", description="Search mode"),
-    sort_by: str = Query("relevance", regex="^(relevance|date|title)$", description="Sort field"),
+    mode: str = Query(
+        "smart", regex="^(smart|keyword|exact)$", description="Search mode"
+    ),
+    sort_by: str = Query(
+        "relevance", regex="^(relevance|date|title)$", description="Sort field"
+    ),
     sort_order: str = Query("desc", regex="^(asc|desc)$", description="Sort order"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(10, ge=1, le=100, description="Results per page"),
@@ -155,8 +195,8 @@ async def search_documents(
     - keyword: BM25 keyword search only
     - exact: SQL LIKE matching for exact phrases
     """
-    from app.services.search_service import search_service
     from app.schemas.search import SearchResponse, SearchResult
+    from app.services.search_service import search_service
 
     try:
         results, total, took_ms = await search_service.search(
@@ -189,8 +229,12 @@ async def search_documents(
 async def get_documents(
     page: int = 1,
     page_size: int = 20,
-    skip: Optional[int] = Query(None, ge=0, description="Optional offset (alternative to page/page_size)"),
-    limit: Optional[int] = Query(None, ge=1, le=2000, description="Optional limit (alternative to page_size)"),
+    skip: Optional[int] = Query(
+        None, ge=0, description="Optional offset (alternative to page/page_size)"
+    ),
+    limit: Optional[int] = Query(
+        None, ge=1, le=2000, description="Optional limit (alternative to page_size)"
+    ),
     source_id: Optional[UUID] = None,
     search: Optional[str] = None,
     order_by: Optional[str] = "updated_at",
@@ -199,11 +243,11 @@ async def get_documents(
     persona_id: Optional[UUID] = Query(None),
     persona_role: Optional[str] = Query(None),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get paginated list of documents.
-    
+
     Args:
         page: Page number (1-indexed)
         page_size: Number of items per page (1-2000)
@@ -213,26 +257,28 @@ async def get_documents(
         order: Sort order (asc or desc, default: desc)
         current_user: Current authenticated user
         db: Database session
-        
+
     Returns:
         Paginated response with documents
     """
-    
+
     try:
         # Validate pagination parameters
         if page < 1:
             raise ValidationError("Page must be >= 1", field="page")
         if page_size < 1 or page_size > 2000:
-            raise ValidationError("Page size must be between 1 and 2000", field="page_size")
+            raise ValidationError(
+                "Page size must be between 1 and 2000", field="page_size"
+            )
         if limit is not None and (limit < 1 or limit > 2000):
             raise ValidationError("Limit must be between 1 and 2000", field="limit")
         if order not in ["asc", "desc"]:
             raise ValidationError("Order must be 'asc' or 'desc'", field="order")
-        
+
         # Support legacy skip/limit query params used by parts of the frontend.
         effective_page_size = limit or page_size
         effective_skip = skip if skip is not None else (page - 1) * effective_page_size
-        
+
         # Get documents with total count
         documents, total = await document_service.get_documents(
             skip=effective_skip,
@@ -244,7 +290,7 @@ async def get_documents(
             owner_persona_id=owner_persona_id,
             persona_id=persona_id,
             persona_role=persona_role,
-            db=db
+            db=db,
         )
         logger.debug(
             "Fetched documents for listing",
@@ -257,9 +303,9 @@ async def get_documents(
                 "search": search,
                 "order_by": order_by,
                 "order": order,
-            }
+            },
         )
-        
+
         # Convert to response models
         # For list view, we don't need chunks, so set to empty list to avoid lazy loading issues
         items = []
@@ -281,13 +327,10 @@ async def get_documents(
                     exc_info=exc,
                 )
                 raise
-        
+
         # Return paginated response
         return PaginatedResponse.create(
-            items=items,
-            total=total,
-            page=page,
-            page_size=effective_page_size
+            items=items, total=total, page=page, page_size=effective_page_size
         )
     except ValidationError:
         raise
@@ -301,7 +344,7 @@ async def get_documents(
                 "search": search,
                 "order_by": order_by,
                 "order": order,
-            }
+            },
         )
         log_error(e, context={"page": page, "page_size": page_size})
         raise HTTPException(status_code=500, detail="Failed to retrieve documents")
@@ -336,7 +379,7 @@ async def get_related_documents(
 async def get_current_user_optional(
     request: Request,
     token: Optional[str] = Query(None),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ) -> Optional[User]:
     """
     Get current user with optional authentication.
@@ -346,10 +389,13 @@ async def get_current_user_optional(
     if token:
         try:
             from jose import jwt
-            from app.core.config import settings
             from sqlalchemy import select
-            
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+
+            from app.core.config import settings
+
+            payload = jwt.decode(
+                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+            )
             user_id: str = payload.get("sub")
             if user_id:
                 result = await db.execute(select(User).where(User.id == user_id))
@@ -358,17 +404,20 @@ async def get_current_user_optional(
                     return user
         except Exception as e:
             logger.debug(f"Token query param authentication failed: {e}")
-    
+
     # Try Authorization header
     auth_header = request.headers.get("Authorization")
     if auth_header and auth_header.startswith("Bearer "):
         try:
             token = auth_header.replace("Bearer ", "")
             from jose import jwt
-            from app.core.config import settings
             from sqlalchemy import select
-            
-            payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM])
+
+            from app.core.config import settings
+
+            payload = jwt.decode(
+                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
+            )
             user_id: str = payload.get("sub")
             if user_id:
                 result = await db.execute(select(User).where(User.id == user_id))
@@ -377,7 +426,7 @@ async def get_current_user_optional(
                     return user
         except Exception as e:
             logger.debug(f"Authorization header authentication failed: {e}")
-    
+
     return None
 
 
@@ -397,35 +446,40 @@ async def download_document_head(
     # Require authentication
     if not current_user:
         raise HTTPException(status_code=401, detail="Authentication required")
-    
+
     try:
         from app.services.storage_service import storage_service
-        
+
         document = await document_service.get_document(document_id, db)
         if not document or not document.file_path:
             raise HTTPException(status_code=404, detail="Document not found")
-        
+
         # Normalize file path
         file_path = document.file_path
-        if file_path.startswith('./'):
+        if file_path.startswith("./"):
             file_path = file_path[2:]
-        if file_path.startswith('documents/'):
+        if file_path.startswith("documents/"):
             file_path = file_path[10:]
-        
+
         # Check if file exists
         file_exists = await storage_service.file_exists(file_path)
         if not file_exists:
             raise HTTPException(status_code=404, detail="File not found in storage")
-        
+
         if use_proxy:
             # Get file metadata
             await storage_service.initialize()
             metadata = await storage_service.get_file_metadata(file_path)
             file_size = metadata.get("size", 0)
             content_type = metadata.get("content_type") or "application/octet-stream"
-            filename = os.path.basename(file_path) or document.title or f"document_{document_id}"
-            
+            filename = (
+                os.path.basename(file_path)
+                or document.title
+                or f"document_{document_id}"
+            )
+
             from fastapi.responses import Response
+
             response = Response(
                 status_code=200,
                 headers={
@@ -437,16 +491,21 @@ async def download_document_head(
                     "Access-Control-Allow-Methods": "GET, HEAD, OPTIONS",
                     "Access-Control-Allow-Headers": "Range, Authorization, Content-Type",
                     "Access-Control-Expose-Headers": "Content-Range, Content-Length, Accept-Ranges",
-                }
+                },
             )
             return response
         else:
-            raise HTTPException(status_code=400, detail="HEAD requests only supported with use_proxy=true")
-    
+            raise HTTPException(
+                status_code=400,
+                detail="HEAD requests only supported with use_proxy=true",
+            )
+
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error in HEAD request for document {document_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error in HEAD request for document {document_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to get file metadata")
 
 
@@ -454,17 +513,23 @@ async def download_document_head(
 async def download_document(
     document_id: UUID,
     request: Request,  # Added to access headers for Range requests
-    token: Optional[str] = Query(None, description="JWT token for authentication (alternative to Authorization header)"),
+    token: Optional[str] = Query(
+        None,
+        description="JWT token for authentication (alternative to Authorization header)",
+    ),
     current_user: Optional[User] = Depends(get_current_user_optional),
     db: AsyncSession = Depends(get_db),
-    use_proxy: bool = Query(True, description="If True, stream file through backend; if False, return presigned URL")
+    use_proxy: bool = Query(
+        True,
+        description="If True, stream file through backend; if False, return presigned URL",
+    ),
 ):
     """
     Download a document file.
-    
+
     If use_proxy=True (default): Streams file through backend (avoids signature issues)
     If use_proxy=False: Returns presigned URL for direct download
-    
+
     Authentication can be provided via:
     - Authorization header (Bearer token) - standard method
     - token query parameter - for video players that don't support custom headers
@@ -474,120 +539,155 @@ async def download_document(
         raise HTTPException(status_code=401, detail="Authentication required")
     """
     Download a document file.
-    
+
     If use_proxy=True (default): Streams file through backend (avoids signature issues)
     If use_proxy=False: Returns presigned URL for direct download
     """
     try:
         from app.services.storage_service import storage_service
-        
-        logger.info(f"Download request for document {document_id} by user {current_user.id}")
+
+        logger.info(
+            f"Download request for document {document_id} by user {current_user.id}"
+        )
         document = await document_service.get_document(document_id, db)
         if not document:
             logger.warning(f"Document {document_id} not found")
             raise HTTPException(status_code=404, detail="Document not found")
-        
+
         logger.info(f"Document {document_id} found, file_path: {document.file_path}")
         if not document.file_path:
             logger.warning(f"Document {document_id} has no file_path")
             raise HTTPException(status_code=404, detail="Document file not found")
-        
+
         # Normalize file_path - handle old format (data/documents/...) and new format (documents/{id}/...)
         file_path = document.file_path
         original_path = file_path
-        
+
         # Remove leading './' if present (common in old file paths)
-        if file_path.startswith('./'):
+        if file_path.startswith("./"):
             file_path = file_path[2:]  # Remove './' prefix
-            logger.info(f"Removed './' prefix from file_path: {original_path} -> {file_path}")
-        
+            logger.info(
+                f"Removed './' prefix from file_path: {original_path} -> {file_path}"
+            )
+
         # Remove 'documents/' prefix if present (bucket name is already 'documents')
         # This handles cases where file_path is stored as "documents/{id}/{filename}"
-        if file_path.startswith('documents/'):
+        if file_path.startswith("documents/"):
             file_path = file_path[10:]  # Remove 'documents/' prefix (10 chars)
-            logger.info(f"Removed 'documents/' prefix from file_path, new path: {file_path}")
-        
+            logger.info(
+                f"Removed 'documents/' prefix from file_path, new path: {file_path}"
+            )
+
         # Try to find the file in MinIO
-        from app.services.storage_service import storage_service
-        
+
         # First, try the path as-is (after removing ./ and documents/)
         file_exists = await storage_service.file_exists(file_path)
-        
+
         # If not found and path starts with 'data/documents/', try new format
-        if not file_exists and file_path.startswith('data/documents/'):
+        if not file_exists and file_path.startswith("data/documents/"):
             # Old format: try to find in new format location
-            filename = file_path.split('/')[-1]
+            filename = file_path.split("/")[-1]
             # New format: {document_id}/{filename} (no 'documents/' prefix since bucket name is 'documents')
             new_path = f"{document_id}/{filename}"
-            logger.info(f"File not found at old path {file_path}, trying new format: {new_path}")
-            
+            logger.info(
+                f"File not found at old path {file_path}, trying new format: {new_path}"
+            )
+
             if await storage_service.file_exists(new_path):
                 file_path = new_path
                 file_exists = True
                 logger.info(f"Found file at new location: {file_path}")
-        
+
         # If still not found, try with 'documents/' prefix (some files were uploaded with prefix)
         if not file_exists:
-            path_with_prefix = f"documents/{file_path}" if not file_path.startswith('documents/') else file_path
-            logger.info(f"File not found at {file_path}, trying with 'documents/' prefix: {path_with_prefix}")
+            path_with_prefix = (
+                f"documents/{file_path}"
+                if not file_path.startswith("documents/")
+                else file_path
+            )
+            logger.info(
+                f"File not found at {file_path}, trying with 'documents/' prefix: {path_with_prefix}"
+            )
             if await storage_service.file_exists(path_with_prefix):
                 file_path = path_with_prefix
                 file_exists = True
                 logger.info(f"Found file with 'documents/' prefix: {file_path}")
-        
+
         # If file still doesn't exist, return 404
         if not file_exists:
-            logger.error(f"File not found in MinIO at any path: original={original_path}, tried={file_path}")
-            raise HTTPException(
-                status_code=404, 
-                detail=f"Document file not found in MinIO storage. The file may have been deleted."
+            logger.error(
+                f"File not found in MinIO at any path: original={original_path}, tried={file_path}"
             )
-        
+            raise HTTPException(
+                status_code=404,
+                detail="Document file not found in MinIO storage. The file may have been deleted.",
+            )
+
         # If use_proxy is True, stream the file through the backend
         # This avoids presigned URL signature issues
         if use_proxy:
             try:
                 # Ensure MinIO is initialized
                 await storage_service.initialize()
-                
+
                 # Get file metadata for headers
                 metadata = await storage_service.get_file_metadata(file_path)
                 file_size = metadata.get("size", 0)
-                
+
                 # Get filename from document title or file path
-                filename = os.path.basename(file_path) or document.title or f"document_{document_id}"
+                filename = (
+                    os.path.basename(file_path)
+                    or document.title
+                    or f"document_{document_id}"
+                )
                 # Ensure filename has extension if file_path has one
-                if '.' not in filename and '.' in file_path:
+                if "." not in filename and "." in file_path:
                     ext = os.path.splitext(file_path)[1]
                     filename = f"{filename}{ext}"
-                
+
                 # Determine content type
-                content_type = metadata.get("content_type") or "application/octet-stream"
-                
+                content_type = (
+                    metadata.get("content_type") or "application/octet-stream"
+                )
+
                 # Handle HTTP Range requests for video streaming
                 # Check both "Range" and "range" headers (browsers may send either)
-                range_header = request.headers.get("Range") or request.headers.get("range")
-                
+                range_header = request.headers.get("Range") or request.headers.get(
+                    "range"
+                )
+
                 if range_header:
                     # Parse Range header (e.g., "bytes=0-1023" or "bytes=1024-")
                     try:
                         range_match = range_header.replace("bytes=", "").split("-")
                         start = int(range_match[0]) if range_match[0] else 0
-                        end = int(range_match[1]) if range_match[1] and range_match[1] else file_size - 1
-                        
+                        end = (
+                            int(range_match[1])
+                            if range_match[1] and range_match[1]
+                            else file_size - 1
+                        )
+
                         # Validate range
                         if start < 0 or end >= file_size or start > end:
                             from fastapi.responses import Response
-                            return Response(status_code=416, headers={"Content-Range": f"bytes */{file_size}"})
-                        
+
+                            return Response(
+                                status_code=416,
+                                headers={"Content-Range": f"bytes */{file_size}"},
+                            )
+
                         # Calculate content length for partial content
                         content_length = end - start + 1
-                        
-                        logger.info(f"Range request for document {document_id}: bytes {start}-{end} of {file_size}")
-                        
+
+                        logger.info(
+                            f"Range request for document {document_id}: bytes {start}-{end} of {file_size}"
+                        )
+
                         # Get partial file stream
-                        file_stream = storage_service.get_file_stream_range(file_path, start, end)
-                        
+                        file_stream = storage_service.get_file_stream_range(
+                            file_path, start, end
+                        )
+
                         response = StreamingResponse(
                             file_stream,
                             status_code=206,  # Partial Content
@@ -598,22 +698,30 @@ async def download_document(
                                 "Accept-Ranges": "bytes",
                                 "Content-Disposition": f'inline; filename="{filename}"',
                                 "Cache-Control": "public, max-age=3600",
-                            }
+                            },
                         )
                         # Add CORS headers for video streaming
                         response.headers["Access-Control-Allow-Origin"] = "*"
-                        response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
-                        response.headers["Access-Control-Allow-Headers"] = "Range, Authorization, Content-Type"
-                        response.headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+                        response.headers[
+                            "Access-Control-Allow-Methods"
+                        ] = "GET, HEAD, OPTIONS"
+                        response.headers[
+                            "Access-Control-Allow-Headers"
+                        ] = "Range, Authorization, Content-Type"
+                        response.headers[
+                            "Access-Control-Expose-Headers"
+                        ] = "Content-Range, Content-Length, Accept-Ranges"
                         return response
                     except (ValueError, IndexError):
                         # Invalid range header, fall through to full file
                         logger.warning(f"Invalid Range header: {range_header}")
-                
+
                 # No range request or invalid range - return full file
-                logger.info(f"Streaming full file download for document {document_id}: {filename} ({file_size} bytes)")
+                logger.info(
+                    f"Streaming full file download for document {document_id}: {filename} ({file_size} bytes)"
+                )
                 file_stream = storage_service.get_file_stream(file_path)
-                
+
                 response = StreamingResponse(
                     file_stream,
                     media_type=content_type,
@@ -622,34 +730,45 @@ async def download_document(
                         "Content-Length": str(file_size),
                         "Accept-Ranges": "bytes",  # Enable range requests
                         "Cache-Control": "public, max-age=3600",  # Cache for 1 hour
-                    }
+                    },
                 )
                 # Add CORS headers for video streaming
                 response.headers["Access-Control-Allow-Origin"] = "*"
                 response.headers["Access-Control-Allow-Methods"] = "GET, HEAD, OPTIONS"
-                response.headers["Access-Control-Allow-Headers"] = "Range, Authorization, Content-Type"
-                response.headers["Access-Control-Expose-Headers"] = "Content-Range, Content-Length, Accept-Ranges"
+                response.headers[
+                    "Access-Control-Allow-Headers"
+                ] = "Range, Authorization, Content-Type"
+                response.headers[
+                    "Access-Control-Expose-Headers"
+                ] = "Content-Range, Content-Length, Accept-Ranges"
                 return response
             except FileNotFoundError:
                 raise HTTPException(status_code=404, detail="File not found in storage")
             except Exception as e:
                 logger.error(f"Error streaming file for document {document_id}: {e}")
-                raise HTTPException(status_code=500, detail=f"Failed to stream file: {str(e)}")
+                raise HTTPException(
+                    status_code=500, detail=f"Failed to stream file: {str(e)}"
+                )
         else:
             # Legacy mode: return presigned URL
             # Generate fresh presigned URL (always generate new one to avoid expiry)
             download_url = await storage_service.get_presigned_download_url(file_path)
-            
+
             logger.debug(f"Generated download URL for document {document_id}")
             return JSONResponse(content={"download_url": download_url})
-    
+
     except HTTPException:
         raise
     except ValueError as e:
-        logger.error(f"Invalid file path for document {document_id}: {e}", exc_info=True)
+        logger.error(
+            f"Invalid file path for document {document_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=400, detail=f"Invalid file path: {str(e)}")
     except Exception as e:
-        logger.error(f"Error generating download URL for document {document_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error generating download URL for document {document_id}: {e}",
+            exc_info=True,
+        )
         raise HTTPException(status_code=500, detail="Failed to generate download URL")
 
 
@@ -657,7 +776,7 @@ async def download_document(
 async def get_document(
     document_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Get a specific document by ID."""
     try:
@@ -680,72 +799,92 @@ async def upload_document(
     title: Optional[str] = Form(None),
     tags: Optional[str] = Form(None),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Upload a document file."""
     try:
         # Validate file type
         if not validate_file_type(file.filename, file.content_type):
             raise ValidationError(
-                f"File type not allowed: {file.content_type}",
-                field="file"
+                f"File type not allowed: {file.content_type}", field="file"
             )
-        
+
         # Validate file size (configurable, larger limit for videos)
         from app.core.config import settings
-        from app.utils.validators import ALLOWED_EXTENSIONS
-        
+
         # Check if it's a video/audio file
         file_ext = os.path.splitext(file.filename or "")[1].lower()
-        is_video_audio = file_ext in ['.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv', '.wmv', 
-                                      '.mp3', '.wav', '.m4a', '.flac', '.ogg', '.aac']
-        
+        is_video_audio = file_ext in [
+            ".mp4",
+            ".avi",
+            ".mkv",
+            ".mov",
+            ".webm",
+            ".flv",
+            ".wmv",
+            ".mp3",
+            ".wav",
+            ".m4a",
+            ".flac",
+            ".ogg",
+            ".aac",
+        ]
+
         # Use larger limit for video/audio files
         max_size = settings.MAX_VIDEO_SIZE if is_video_audio else settings.MAX_FILE_SIZE
-        
+
         file_content = await file.read()
         file_size = len(file_content)
         if file_size > max_size:
-            size_mb = file_size / (1024*1024)
-            max_mb = max_size / (1024*1024)
+            size_mb = file_size / (1024 * 1024)
+            max_mb = max_size / (1024 * 1024)
             raise ValidationError(
                 f"File size ({size_mb:.2f}MB) exceeds maximum allowed size of {max_mb:.0f}MB",
-                field="file"
+                field="file",
             )
-        
+
         # Reset file pointer and create a new file-like object with the content for the service
         from io import BytesIO
+
         # Reset the file pointer to the beginning
         await file.seek(0)
         # Create a new BytesIO object with the content
         file.file = BytesIO(file_content)
         # Do not assign to file.content_type: it's a read-only property on Starlette's UploadFile.
-        
+
         # Parse tags if provided
         tag_list = []
         if tags:
             from app.utils.validators import validate_tags
+
             tag_list = [tag.strip() for tag in tags.split(",") if tag.strip()]
             if not validate_tags(tag_list):
                 raise ValidationError("Invalid tag format", field="tags")
-        
+
         document = await document_service.upload_file(
-            file=file,
-            title=title,
-            tags=tag_list,
-            db=db,
-            owner_user=current_user
+            file=file, title=title, tags=tag_list, db=db, owner_user=current_user
         )
-        
+
         return {"message": "Document uploaded successfully", "document_id": document.id}
-    
+
     except (ValidationError, DocumentNotFoundError):
         raise
     except Exception as e:
         error_detail = str(e)
-        logger.error(f"Error uploading document {file.filename if file else 'unknown'}: {error_detail}", exc_info=True)
-        log_error(e, context={"filename": file.filename if file else None, "file_type": file.content_type if file else None})
-        raise HTTPException(status_code=500, detail=f"Failed to upload document: {error_detail}")
+        logger.error(
+            f"Error uploading document {file.filename if file else 'unknown'}: {error_detail}",
+            exc_info=True,
+        )
+        log_error(
+            e,
+            context={
+                "filename": file.filename if file else None,
+                "file_type": file.content_type if file else None,
+            },
+        )
+        raise HTTPException(
+            status_code=500, detail=f"Failed to upload document: {error_detail}"
+        )
 
 
 @router.post("/ingest-url", response_model=IngestUrlResponse)
@@ -786,17 +925,21 @@ async def ingest_url_async(
 ):
     """Schedule URL ingestion as a background job with progress over WebSocket."""
     try:
-        from app.tasks.url_ingestion_tasks import ingest_url as ingest_url_task
         from app.core.cache import get_redis_client
+        from app.tasks.url_ingestion_tasks import ingest_url as ingest_url_task
 
-        task_res = ingest_url_task.delay(request.model_dump(exclude_none=True), str(current_user.id))
+        task_res = ingest_url_task.delay(
+            request.model_dump(exclude_none=True), str(current_user.id)
+        )
         job_id = task_res.id
         progress_key = f"url_ingest:{job_id}"
 
         # Store owner mapping for progress authorization (best-effort).
         try:
             client = await get_redis_client()
-            await client.setex(f"url_ingest:owner:{job_id}", 7200, str(current_user.id).encode("utf-8"))
+            await client.setex(
+                f"url_ingest:owner:{job_id}", 7200, str(current_user.id).encode("utf-8")
+            )
         except Exception:
             pass
 
@@ -810,27 +953,38 @@ async def ingest_url_async(
 async def delete_document(
     document_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a document."""
     try:
-        logger.info(f"Delete request for document {document_id} by user {current_user.id}")
+        logger.info(
+            f"Delete request for document {document_id} by user {current_user.id}"
+        )
         # Prevent deletion while transcoding
         from sqlalchemy import select as sql_select
+
         from app.models.document import Document
+
         res = await db.execute(sql_select(Document).where(Document.id == document_id))
         doc = res.scalar_one_or_none()
-        if doc and isinstance(doc.extra_metadata, dict) and doc.extra_metadata.get("is_transcoding"):
+        if (
+            doc
+            and isinstance(doc.extra_metadata, dict)
+            and doc.extra_metadata.get("is_transcoding")
+        ):
             logger.info(f"Delete denied for {document_id}: currently transcoding")
-            raise HTTPException(status_code=409, detail="Document is being converted. Please wait until it finishes.")
+            raise HTTPException(
+                status_code=409,
+                detail="Document is being converted. Please wait until it finishes.",
+            )
         success = await document_service.delete_document(document_id, db)
         if not success:
             logger.warning(f"Document {document_id} not found or deletion failed")
             raise HTTPException(status_code=404, detail="Document not found")
-        
+
         logger.info(f"Successfully deleted document {document_id}")
         return {"message": "Document deleted successfully"}
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -843,7 +997,7 @@ async def delete_document(
 async def delete_documents_for_source(
     source_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete all documents for a specific Git source (GitHub/GitLab)."""
     try:
@@ -851,12 +1005,16 @@ async def delete_documents_for_source(
         if not source:
             raise HTTPException(status_code=404, detail="Document source not found")
         if source.source_type not in ("github", "gitlab"):
-            raise HTTPException(status_code=400, detail="Bulk deletion only supported for Git sources")
+            raise HTTPException(
+                status_code=400, detail="Bulk deletion only supported for Git sources"
+            )
 
         config = source.config or {}
         requested_by = config.get("requested_by") or config.get("requestedBy")
         if not current_user.is_admin() and requested_by != current_user.username:
-            raise HTTPException(status_code=403, detail="Not authorized to modify this source")
+            raise HTTPException(
+                status_code=403, detail="Not authorized to modify this source"
+            )
 
         deleted = await document_service.delete_documents_by_source(source_id, db)
         logger.info(f"Deleted {deleted} documents for source {source_id}")
@@ -866,7 +1024,9 @@ async def delete_documents_for_source(
         raise
     except Exception as e:
         logger.error(f"Error deleting documents for source {source_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to delete documents for source")
+        raise HTTPException(
+            status_code=500, detail="Failed to delete documents for source"
+        )
 
 
 @router.post("/{document_id}/presentation/audio")
@@ -875,17 +1035,22 @@ async def attach_presentation_audio(
     audio: UploadFile = File(...),
     language: str = Form("ru"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Attach an audio narration to a presentation document and align it with slides."""
     try:
-        result = await db.execute(sql_select(_Document).where(_Document.id == document_id))
+        result = await db.execute(
+            sql_select(_Document).where(_Document.id == document_id)
+        )
         document = result.scalar_one_or_none()
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
         presentation_meta = await _ensure_presentation_metadata(document, db)
         if not presentation_meta or not presentation_meta.get("slides"):
-            raise HTTPException(status_code=400, detail="Presentation metadata unavailable for this document")
+            raise HTTPException(
+                status_code=400,
+                detail="Presentation metadata unavailable for this document",
+            )
         if not audio or not audio.filename:
             raise HTTPException(status_code=400, detail="Audio file required")
         audio_ext = os.path.splitext(audio.filename)[1].lower()
@@ -895,7 +1060,9 @@ async def attach_presentation_audio(
         audio_bytes = await audio.read()
         if not audio_bytes:
             raise HTTPException(status_code=400, detail="Empty audio file")
-        temp_audio = tempfile.NamedTemporaryFile(delete=False, suffix=audio_ext or ".tmp")
+        temp_audio = tempfile.NamedTemporaryFile(
+            delete=False, suffix=audio_ext or ".tmp"
+        )
         temp_audio.write(audio_bytes)
         temp_audio_path = Path(temp_audio.name)
         temp_audio.close()
@@ -904,24 +1071,30 @@ async def attach_presentation_audio(
                 document.id,
                 f"presentation_audio_{uuid.uuid4().hex}{audio_ext}",
                 audio_bytes,
-                audio.content_type or "audio/mpeg"
+                audio.content_type or "audio/mpeg",
             )
             transcription_service = TranscriptionService()
             transcript_text, metadata = transcription_service.transcribe_file(
-                temp_audio_path,
-                language=language or "ru"
+                temp_audio_path, language=language or "ru"
             )
             segments = metadata.get("sentence_segments") or metadata.get("segments")
             if not segments:
-                raise HTTPException(status_code=500, detail="Unable to extract speech segments from audio")
-            alignment = _align_segments_to_slides(presentation_meta.get("slides", []), segments)
+                raise HTTPException(
+                    status_code=500,
+                    detail="Unable to extract speech segments from audio",
+                )
+            alignment = _align_segments_to_slides(
+                presentation_meta.get("slides", []), segments
+            )
             audio_duration = metadata.get("duration")
             if not audio_duration and segments:
                 audio_duration = segments[-1].get("end")
             transcript_doc = _Document(
                 title=f"{document.title or 'Presentation'} - Narration Transcript",
                 content=transcript_text,
-                content_hash=hashlib.sha256(transcript_text.encode("utf-8")).hexdigest(),
+                content_hash=hashlib.sha256(
+                    transcript_text.encode("utf-8")
+                ).hexdigest(),
                 url=None,
                 file_path=None,
                 file_type="text/plain",
@@ -971,7 +1144,9 @@ async def attach_presentation_audio(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error attaching audio to presentation {document_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error attaching audio to presentation {document_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to attach audio narration")
 
 
@@ -979,11 +1154,13 @@ async def attach_presentation_audio(
 async def get_presentation_audio(
     document_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Return signed URL and alignment metadata for presentation audio."""
     try:
-        result = await db.execute(sql_select(_Document).where(_Document.id == document_id))
+        result = await db.execute(
+            sql_select(_Document).where(_Document.id == document_id)
+        )
         document = result.scalar_one_or_none()
         if not document:
             raise HTTPException(status_code=404, detail="Document not found")
@@ -1006,15 +1183,19 @@ async def get_presentation_audio(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error retrieving presentation audio for {document_id}: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail="Failed to retrieve audio narration")
+        logger.error(
+            f"Error retrieving presentation audio for {document_id}: {e}", exc_info=True
+        )
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve audio narration"
+        )
 
 
 @router.post("/sources/{source_id}/cancel")
 async def cancel_user_source_ingestion(
     source_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Allow source owners to request cancellation of an active/pending ingestion."""
     try:
@@ -1024,7 +1205,9 @@ async def cancel_user_source_ingestion(
         config = source.config or {}
         requested_by = config.get("requested_by") or config.get("requestedBy")
         if not current_user.is_admin() and requested_by != current_user.username:
-            raise HTTPException(status_code=403, detail="Not authorized to cancel this source")
+            raise HTTPException(
+                status_code=403, detail="Not authorized to cancel this source"
+            )
 
         source_id_str = str(source_id)
         task_id = await get_ingestion_task_mapping(source_id_str)
@@ -1035,30 +1218,36 @@ async def cancel_user_source_ingestion(
             try:
                 AsyncResult(task_id, app=celery_app).revoke(terminate=True)
             except Exception as revoke_err:
-                logger.warning(f"Failed to revoke task {task_id} for source {source_id}: {revoke_err}")
+                logger.warning(
+                    f"Failed to revoke task {task_id} for source {source_id}: {revoke_err}"
+                )
 
         return {"message": "Cancellation requested", "task_id": task_id}
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error cancelling ingestion for source {source_id}: {e}")
-        raise HTTPException(status_code=500, detail="Failed to cancel ingestion for source")
+        raise HTTPException(
+            status_code=500, detail="Failed to cancel ingestion for source"
+        )
 
 
 @router.post("/reprocess/{document_id}")
 async def reprocess_document(
     document_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Reprocess a document for indexing."""
     try:
-        success = await document_service.reprocess_document(document_id, db, user_id=current_user.id)
+        success = await document_service.reprocess_document(
+            document_id, db, user_id=current_user.id
+        )
         if not success:
             raise HTTPException(status_code=404, detail="Document not found")
-        
+
         return {"message": "Document reprocessing started"}
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1070,7 +1259,7 @@ async def reprocess_document(
 async def retrigger_transcription(
     document_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Manually retrigger transcription for a document.
     If the document is a non-MP4 video and not transcoded, schedule transcode first.
@@ -1078,7 +1267,9 @@ async def retrigger_transcription(
     try:
         # Load document
         from sqlalchemy import select
+
         from app.models.document import Document as _Document
+
         result = await db.execute(select(_Document).where(_Document.id == document_id))
         document = result.scalar_one_or_none()
         if not document:
@@ -1092,43 +1283,61 @@ async def retrigger_transcription(
 
         # Detect type
         ext = (document.file_path or "").split("/")[-1].lower()
-        ext = ('.' + ext.split('.')[-1]) if '.' in ext else ''
+        ext = ("." + ext.split(".")[-1]) if "." in ext else ""
         video_exts = {".mp4", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
         is_video = (document.file_type or "").startswith("video/") or ext in video_exts
         is_mp4 = (document.file_type == "video/mp4") or ext == ".mp4"
 
         # Publish status helper
         try:
-            from app.tasks.transcription_tasks import _publish_status as publish_status_trans
-            from app.tasks.transcode_tasks import _publish_status as publish_status_transcode
+            from app.tasks.transcode_tasks import (
+                _publish_status as publish_status_transcode,
+            )
+            from app.tasks.transcription_tasks import (
+                _publish_status as publish_status_trans,
+            )
         except Exception:
             publish_status_trans = publish_status_transcode = None
 
-        if is_video and not is_mp4 and not (document.extra_metadata or {}).get("is_transcoded"):
+        if (
+            is_video
+            and not is_mp4
+            and not (document.extra_metadata or {}).get("is_transcoded")
+        ):
             # Transcode first
             document.extra_metadata["is_transcoding"] = True
             document.extra_metadata["is_transcribing"] = False
             await db.commit()
             if publish_status_transcode:
-                publish_status_transcode(str(document.id), {
-                    "is_transcoding": True,
-                    "is_transcribing": False,
-                    "is_transcribed": False,
-                })
+                publish_status_transcode(
+                    str(document.id),
+                    {
+                        "is_transcoding": True,
+                        "is_transcribing": False,
+                        "is_transcribed": False,
+                    },
+                )
             from app.tasks.transcode_tasks import transcode_to_mp4
+
             transcode_to_mp4.delay(str(document.id))
-            return {"message": "Transcode scheduled, transcription will start after conversion"}
+            return {
+                "message": "Transcode scheduled, transcription will start after conversion"
+            }
         else:
             # Transcribe now
             document.extra_metadata["is_transcribing"] = True
             await db.commit()
             if publish_status_trans:
-                publish_status_trans(str(document.id), {
-                    "is_transcoding": False,
-                    "is_transcribing": True,
-                    "is_transcribed": False,
-                })
+                publish_status_trans(
+                    str(document.id),
+                    {
+                        "is_transcoding": False,
+                        "is_transcribing": True,
+                        "is_transcribed": False,
+                    },
+                )
             from app.tasks.transcription_tasks import transcribe_document
+
             # Use explicit high limits for manual reruns to avoid soft timeout on long media
             # and first-time model initialization/download.
             transcribe_document.apply_async(
@@ -1140,40 +1349,43 @@ async def retrigger_transcription(
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error re-triggering transcription for {document_id}: {e}", exc_info=True)
+        logger.error(
+            f"Error re-triggering transcription for {document_id}: {e}", exc_info=True
+        )
         raise HTTPException(status_code=500, detail="Failed to schedule transcription")
 
 
 @router.websocket("/{document_id}/transcription-progress")
-async def transcription_progress_websocket(
-    websocket: WebSocket,
-    document_id: UUID
-):
+async def transcription_progress_websocket(websocket: WebSocket, document_id: UUID):
     """WebSocket endpoint for real-time transcription progress updates."""
     from app.utils.websocket_auth import require_websocket_auth
     from app.utils.websocket_manager import websocket_manager
-    from app.services.document_service import DocumentService
-    
+
     # Authenticate WebSocket connection
     try:
         user = await require_websocket_auth(websocket)
-        logger.info(f"Transcription progress WebSocket authenticated for user {user.id}, document {document_id}")
+        logger.info(
+            f"Transcription progress WebSocket authenticated for user {user.id}, document {document_id}"
+        )
     except WebSocketDisconnect:
-        logger.warning(f"Transcription progress WebSocket authentication failed for document {document_id}")
+        logger.warning(
+            f"Transcription progress WebSocket authentication failed for document {document_id}"
+        )
         return
-    
+
     # Verify user has access to this document
     from app.core.database import AsyncSessionLocal
+
     async with AsyncSessionLocal() as db:
         document = await document_service.get_document(document_id, db)
-        
+
         if not document:
             await websocket.close(code=1008, reason="Document not found")
             return
-    
+
     # Connect to WebSocket manager
     await websocket_manager.connect(websocket, str(document_id))
-    
+
     try:
         # Keep connection alive and wait for messages (client can send ping)
         while True:
@@ -1191,30 +1403,32 @@ async def transcription_progress_websocket(
 
 
 @router.websocket("/{document_id}/summarization-progress")
-async def summarization_progress_websocket(
-    websocket: WebSocket,
-    document_id: UUID
-):
+async def summarization_progress_websocket(websocket: WebSocket, document_id: UUID):
     """WebSocket endpoint for real-time summarization progress updates."""
     from app.utils.websocket_auth import require_websocket_auth
     from app.utils.websocket_manager import websocket_manager
-    
+
     # Authenticate WebSocket connection
     try:
         user = await require_websocket_auth(websocket)
-        logger.info(f"Summarization progress WebSocket authenticated for user {user.id}, document {document_id}")
+        logger.info(
+            f"Summarization progress WebSocket authenticated for user {user.id}, document {document_id}"
+        )
     except WebSocketDisconnect:
-        logger.warning(f"Summarization progress WebSocket authentication failed for document {document_id}")
+        logger.warning(
+            f"Summarization progress WebSocket authentication failed for document {document_id}"
+        )
         return
-    
+
     # Verify user has access to this document
     from app.core.database import AsyncSessionLocal
+
     async with AsyncSessionLocal() as db:
         document = await document_service.get_document(document_id, db)
         if not document:
             await websocket.close(code=1008, reason="Document not found")
             return
-    
+
     await websocket_manager.connect(websocket, str(document_id))
     try:
         while True:
@@ -1234,17 +1448,23 @@ async def summarization_progress_websocket(
 async def summarize_missing_documents(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-    limit: int = Query(500, ge=1, le=5000)
+    limit: int = Query(500, ge=1, le=5000),
 ):
     """Admin: queue summaries for processed documents lacking a summary."""
     try:
         if not current_user.is_admin():
             raise HTTPException(status_code=403, detail="Admin privileges required")
         from app.core.config import settings as _settings
+
         if not _settings.SUMMARIZATION_ENABLED:
             raise HTTPException(status_code=400, detail="Summarization disabled")
         res = await db.execute(
-            sql_select(_Document.id).where((_Document.is_processed == True) & ((_Document.summary == None) | (_Document.summary == ''))).limit(limit)
+            sql_select(_Document.id)
+            .where(
+                (_Document.is_processed.is_(True))
+                & ((_Document.summary.is_(None)) | (_Document.summary == ""))
+            )
+            .limit(limit)
         )
         ids = [str(r[0]) for r in res.all()]
         for doc_id in ids:
@@ -1263,8 +1483,7 @@ async def summarize_missing_documents(
 # Document Sources endpoints
 @router.get("/sources/", response_model=List[DocumentSourceResponse])
 async def get_document_sources(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Get all document sources."""
     try:
@@ -1272,19 +1491,22 @@ async def get_document_sources(
         return [DocumentSourceResponse.from_orm(source) for source in sources]
     except Exception as e:
         logger.error(f"Error retrieving document sources: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve document sources")
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve document sources"
+        )
 
 
 @router.get("/sources/git-active", response_model=List[ActiveSourceStatus])
 async def get_active_git_sources(
-    current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(get_current_user), db: AsyncSession = Depends(get_db)
 ):
     """Return git sources currently syncing or queued for ingestion for the requesting user."""
     try:
         from app.core.cache import get_redis_client
-        
-        stmt = sql_select(_DocumentSource).where(_DocumentSource.source_type.in_(["github", "gitlab"]))
+
+        stmt = sql_select(_DocumentSource).where(
+            _DocumentSource.source_type.in_(["github", "gitlab"])
+        )
         result = await db.execute(stmt)
         sources = result.scalars().all()
         active_items: List[ActiveSourceStatus] = []
@@ -1293,7 +1515,7 @@ async def get_active_git_sources(
             requested_by = config.get("requested_by") or config.get("requestedBy")
             if not current_user.is_admin() and requested_by != current_user.username:
                 continue
-            
+
             # Check if source is canceled
             source_id_str = str(source.id)
             is_canceled = False
@@ -1305,11 +1527,11 @@ async def get_active_git_sources(
                         is_canceled = True
             except Exception:
                 pass
-            
+
             # Skip canceled sources
             if is_canceled:
                 continue
-            
+
             pending = False
             task_id = None
             try:
@@ -1331,12 +1553,16 @@ async def get_active_git_sources(
         return active_items
     except Exception as e:
         logger.error(f"Error retrieving active git sources: {e}")
-        raise HTTPException(status_code=500, detail="Failed to retrieve active git sources")
+        raise HTTPException(
+            status_code=500, detail="Failed to retrieve active git sources"
+        )
 
 
 @router.get("/sources/git-search", response_model=List[DocumentSourceResponse])
 async def search_git_sources(
-    q: Optional[str] = Query(None, description="Case-insensitive search over source name"),
+    q: Optional[str] = Query(
+        None, description="Case-insensitive search over source name"
+    ),
     limit: int = Query(25, ge=1, le=100),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
@@ -1347,7 +1573,9 @@ async def search_git_sources(
     For non-admin users, restrict to sources whose config indicates they were requested by the user.
     """
     try:
-        stmt = sql_select(_DocumentSource).where(_DocumentSource.source_type.in_(["github", "gitlab"]))
+        stmt = sql_select(_DocumentSource).where(
+            _DocumentSource.source_type.in_(["github", "gitlab"])
+        )
 
         q_norm = (q or "").strip()
 
@@ -1363,11 +1591,21 @@ async def search_git_sources(
             filtered: list[_DocumentSource] = []
             for src in sources_all:
                 cfg = src.config or {}
-                requested_user_id = str(cfg.get("requested_by_user_id") or cfg.get("requestedByUserId") or "").strip()
-                requested_by = str(cfg.get("requested_by") or cfg.get("requestedBy") or "").strip()
+                requested_user_id = str(
+                    cfg.get("requested_by_user_id")
+                    or cfg.get("requestedByUserId")
+                    or ""
+                ).strip()
+                requested_by = str(
+                    cfg.get("requested_by") or cfg.get("requestedBy") or ""
+                ).strip()
                 if requested_user_id and requested_user_id == str(current_user.id):
                     filtered.append(src)
-                elif not requested_user_id and requested_by and requested_by == current_user.username:
+                elif (
+                    not requested_user_id
+                    and requested_by
+                    and requested_by == current_user.username
+                ):
                     filtered.append(src)
             sources = filtered
         else:
@@ -1434,7 +1672,9 @@ def _combine_slide_text(slide: Dict[str, Any]) -> str:
     return "\n".join(parts)
 
 
-def _align_segments_to_slides(slides: List[Dict[str, Any]], segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _align_segments_to_slides(
+    slides: List[Dict[str, Any]], segments: List[Dict[str, Any]]
+) -> List[Dict[str, Any]]:
     if not slides or not segments:
         return []
     alignments: List[Dict[str, Any]] = []
@@ -1443,11 +1683,13 @@ def _align_segments_to_slides(slides: List[Dict[str, Any]], segments: List[Dict[
     for idx, slide in enumerate(slides):
         if seg_index >= total_segments:
             last_end = alignments[-1]["end"] if alignments else 0.0
-            alignments.append({
-                "slide_index": slide.get("index", idx + 1),
-                "start": last_end,
-                "end": last_end,
-            })
+            alignments.append(
+                {
+                    "slide_index": slide.get("index", idx + 1),
+                    "start": last_end,
+                    "end": last_end,
+                }
+            )
             continue
         slide_tokens = max(_token_count(_combine_slide_text(slide)), 5)
         start_time = float(segments[seg_index].get("start", 0.0))
@@ -1461,17 +1703,21 @@ def _align_segments_to_slides(slides: List[Dict[str, Any]], segments: List[Dict[
             seg_index += 1
             if consumed_tokens >= slide_tokens or seg_index >= total_segments:
                 break
-        alignments.append({
-            "slide_index": slide.get("index", idx + 1),
-            "start": start_time,
-            "end": end_time if end_time >= start_time else start_time,
-        })
+        alignments.append(
+            {
+                "slide_index": slide.get("index", idx + 1),
+                "start": start_time,
+                "end": end_time if end_time >= start_time else start_time,
+            }
+        )
     if alignments and alignments[-1]["end"] < alignments[-1]["start"]:
         alignments[-1]["end"] = alignments[-1]["start"]
     return alignments
 
 
-async def _ensure_presentation_metadata(document: _Document, db: AsyncSession) -> Optional[Dict[str, Any]]:
+async def _ensure_presentation_metadata(
+    document: _Document, db: AsyncSession
+) -> Optional[Dict[str, Any]]:
     metadata = (document.extra_metadata or {}).get("presentation")
     if metadata and metadata.get("slides"):
         return metadata
@@ -1482,11 +1728,17 @@ async def _ensure_presentation_metadata(document: _Document, db: AsyncSession) -
     temp_file_path = temp_file.name
     temp_file.close()
     try:
-        downloaded = await storage_service.download_file(document.file_path, temp_file_path)
+        downloaded = await storage_service.download_file(
+            document.file_path, temp_file_path
+        )
         if not downloaded:
             return None
-        _, extraction_meta = await text_processor_service.extract_text(temp_file_path, document.file_type)
-        presentation_meta = extraction_meta.get("presentation") if extraction_meta else None
+        _, extraction_meta = await text_processor_service.extract_text(
+            temp_file_path, document.file_type
+        )
+        presentation_meta = (
+            extraction_meta.get("presentation") if extraction_meta else None
+        )
         if presentation_meta:
             document.extra_metadata = document.extra_metadata or {}
             document.extra_metadata["presentation"] = presentation_meta
@@ -1504,23 +1756,23 @@ async def _ensure_presentation_metadata(document: _Document, db: AsyncSession) -
 async def create_document_source(
     source_data: DocumentSourceCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Create a new document source."""
     try:
         # Check admin privileges for creating sources
         if not current_user.is_admin():
             raise HTTPException(status_code=403, detail="Admin privileges required")
-        
+
         source = await document_service.create_document_source(
             name=source_data.name,
             source_type=source_data.source_type,
             config=source_data.config,
-            db=db
+            db=db,
         )
-        
+
         return DocumentSourceResponse.from_orm(source)
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -1532,7 +1784,7 @@ async def create_document_source(
 async def submit_git_repository(
     request: GitRepoSourceRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Allow authenticated users to request processing of Git-compatible repositories.
@@ -1544,7 +1796,9 @@ async def submit_git_repository(
         provider = request.provider.lower()
         repos = request.repositories
         if not repos:
-            raise HTTPException(status_code=400, detail="At least one repository must be provided")
+            raise HTTPException(
+                status_code=400, detail="At least one repository must be provided"
+            )
 
         config: Dict[str, Any] = {
             "include_files": request.include_files,
@@ -1564,10 +1818,16 @@ async def submit_git_repository(
             config["repos"] = repos
         elif provider == "gitlab":
             if not request.token:
-                raise HTTPException(status_code=400, detail="GitLab access token is required for repository ingestion")
+                raise HTTPException(
+                    status_code=400,
+                    detail="GitLab access token is required for repository ingestion",
+                )
             gitlab_url = request.gitlab_url or getattr(settings, "GITLAB_URL", None)
             if not gitlab_url:
-                raise HTTPException(status_code=400, detail="GitLab URL must be provided for GitLab repositories")
+                raise HTTPException(
+                    status_code=400,
+                    detail="GitLab URL must be provided for GitLab repositories",
+                )
             config["gitlab_url"] = gitlab_url.rstrip("/")
             # GitLab connector expects project dictionaries
             config["projects"] = [
@@ -1588,10 +1848,7 @@ async def submit_git_repository(
         source_name = f"{auto_name.strip()} #{unique_suffix}"
 
         source = await document_service.create_document_source(
-            name=source_name,
-            source_type=source_type,
-            config=config,
-            db=db
+            name=source_name, source_type=source_type, config=config, db=db
         )
 
         if request.auto_sync:
@@ -1599,7 +1856,9 @@ async def submit_git_repository(
                 task = ingest_from_source.delay(str(source.id))
                 await set_ingestion_task_mapping(str(source.id), task.id, ttl=3600)
             except Exception as sync_err:
-                logger.warning(f"Failed to trigger ingestion for {source.id}: {sync_err}")
+                logger.warning(
+                    f"Failed to trigger ingestion for {source.id}: {sync_err}"
+                )
 
         return DocumentSourceResponse.from_orm(source)
 
@@ -1607,14 +1866,16 @@ async def submit_git_repository(
         raise
     except Exception as e:
         logger.error(f"Error creating git repository source: {e}")
-        raise HTTPException(status_code=500, detail="Failed to submit repository for processing")
+        raise HTTPException(
+            status_code=500, detail="Failed to submit repository for processing"
+        )
 
 
 @router.post("/sources/arxiv", response_model=DocumentSourceResponse)
 async def submit_arxiv_request(
     request: ArxivSourceRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Allow authenticated users to ingest papers from ArXiv searches or explicit IDs.
@@ -1631,33 +1892,38 @@ async def submit_arxiv_request(
             "requested_by": current_user.username,
             "requested_by_user_id": str(current_user.id),
             "auto_summarize": bool(getattr(request, "auto_summarize", True)),
-            "auto_literature_review": bool(getattr(request, "auto_literature_review", False)),
-            "auto_enrich_metadata": bool(getattr(request, "auto_enrich_metadata", True)),
-            "auto_extract_structure": bool(getattr(request, "auto_extract_structure", False)),
+            "auto_literature_review": bool(
+                getattr(request, "auto_literature_review", False)
+            ),
+            "auto_enrich_metadata": bool(
+                getattr(request, "auto_enrich_metadata", True)
+            ),
+            "auto_extract_structure": bool(
+                getattr(request, "auto_extract_structure", False)
+            ),
             "topic": getattr(request, "topic", None),
             "display": {
                 "queries": request.search_queries or [],
                 "paper_ids": request.paper_ids or [],
                 "categories": request.categories or [],
                 "max_results": request.max_results,
-            }
+            },
         }
 
         base_name = request.name or "ArXiv search"
         source_name = f"{base_name.strip()} #{uuid4().hex[:6]}"
 
         source = await document_service.create_document_source(
-            name=source_name,
-            source_type="arxiv",
-            config=config,
-            db=db
+            name=source_name, source_type="arxiv", config=config, db=db
         )
 
         if request.auto_sync:
             try:
                 ingest_from_source.delay(str(source.id))
             except Exception as sync_err:
-                logger.warning(f"Failed to trigger ArXiv ingestion for {source.id}: {sync_err}")
+                logger.warning(
+                    f"Failed to trigger ArXiv ingestion for {source.id}: {sync_err}"
+                )
 
         return DocumentSourceResponse.from_orm(source)
 
@@ -1665,14 +1931,16 @@ async def submit_arxiv_request(
         raise
     except Exception as e:
         logger.error(f"Error creating ArXiv source: {e}")
-        raise HTTPException(status_code=500, detail="Failed to submit ArXiv ingestion request")
+        raise HTTPException(
+            status_code=500, detail="Failed to submit ArXiv ingestion request"
+        )
 
 
 @router.post("/ingest-arxiv-instant", response_model=InstantArxivIngestResponse)
 async def ingest_arxiv_instant(
     request: InstantArxivIngestRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Instantly ingest a single arXiv paper for immediate chat.
@@ -1687,9 +1955,9 @@ async def ingest_arxiv_instant(
     - arxiv:2401.12345
     - 2401.12345
     """
+    from app.models.document import DocumentChunk
     from app.services.connectors.arxiv_connector import ArxivConnector
     from app.services.vector_store import vector_store_service
-    from app.models.document import Document, DocumentChunk
     from app.tasks.summarization_tasks import summarize_document as summarize_task
 
     arxiv_id = request.arxiv_input  # Already validated/extracted by schema
@@ -1708,14 +1976,16 @@ async def ingest_arxiv_instant(
                 document_id=existing_doc.id,
                 arxiv_id=arxiv_id,
                 title=existing_doc.title,
-                authors=metadata.get("authors", [existing_doc.author] if existing_doc.author else []),
+                authors=metadata.get(
+                    "authors", [existing_doc.author] if existing_doc.author else []
+                ),
                 abstract=existing_doc.content[:1000] if existing_doc.content else "",
                 categories=metadata.get("categories", []),
                 url=existing_doc.url or f"https://arxiv.org/abs/{arxiv_id}",
                 pdf_url=f"https://arxiv.org/pdf/{arxiv_id}.pdf",
                 chunks_created=0,
                 ready_for_chat=True,
-                background_tasks=["already_indexed"]
+                background_tasks=["already_indexed"],
             )
 
         # Fetch paper from arXiv
@@ -1724,7 +1994,9 @@ async def ingest_arxiv_instant(
 
         docs = await connector.list_documents()
         if not docs:
-            raise HTTPException(status_code=404, detail=f"Paper not found on arXiv: {arxiv_id}")
+            raise HTTPException(
+                status_code=404, detail=f"Paper not found on arXiv: {arxiv_id}"
+            )
 
         doc_info = docs[0]
         content = await connector.get_document_content(arxiv_id)
@@ -1764,7 +2036,7 @@ async def ingest_arxiv_instant(
                     "primary_category": metadata.get("primary_category"),
                     "doi": metadata.get("doi"),
                     "instant_ingest": True,
-                }
+                },
             )
             db.add(document)
 
@@ -1773,15 +2045,16 @@ async def ingest_arxiv_instant(
 
         # Process chunks synchronously
         chunks_data = text_processor_service.split_text(
-            content,
-            chunk_size=1000,
-            chunk_overlap=200
+            content, chunk_size=1000, chunk_overlap=200
         )
 
         # Delete existing chunks if updating
         if existing_doc:
             from sqlalchemy import delete
-            await db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document.id))
+
+            await db.execute(
+                delete(DocumentChunk).where(DocumentChunk.document_id == document.id)
+            )
             await db.commit()
 
         # Create new chunks
@@ -1810,7 +2083,9 @@ async def ingest_arxiv_instant(
         background_tasks = []
         if request.auto_summarize:
             try:
-                summarize_task.delay(str(document.id), force=True, user_id=str(current_user.id))
+                summarize_task.delay(
+                    str(document.id), force=True, user_id=str(current_user.id)
+                )
                 background_tasks.append("summarization_queued")
             except Exception as e:
                 logger.warning(f"Failed to queue summarization: {e}")
@@ -1818,6 +2093,7 @@ async def ingest_arxiv_instant(
         if request.auto_enrich:
             try:
                 from app.tasks.paper_enrichment_tasks import enrich_arxiv_document
+
                 enrich_arxiv_document.delay(str(document.id))
                 background_tasks.append("enrichment_queued")
             except Exception as e:
@@ -1825,8 +2101,10 @@ async def ingest_arxiv_instant(
 
         if request.auto_extract:
             try:
+                from app.services.paper_extraction_service import (
+                    paper_extraction_service,
+                )
                 from app.tasks.paper_extraction_tasks import extract_paper_job
-                from app.services.paper_extraction_service import paper_extraction_service
 
                 await paper_extraction_service.queue_document_extraction_job(
                     db,
@@ -1852,14 +2130,16 @@ async def ingest_arxiv_instant(
             pdf_url=f"https://arxiv.org/pdf/{arxiv_id}.pdf",
             chunks_created=len(chunks),
             ready_for_chat=True,
-            background_tasks=background_tasks
+            background_tasks=background_tasks,
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Error in instant arXiv ingest: {e}", exc_info=True)
-        raise HTTPException(status_code=500, detail=f"Failed to ingest arXiv paper: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to ingest arXiv paper: {str(e)}"
+        )
 
 
 @router.websocket("/sources/{source_id}/ingestion-progress")
@@ -1899,7 +2179,9 @@ async def document_source_ingestion_progress(
         await websocket.close(code=1008, reason="Not authorized to view this source")
         return
     if not user.is_admin() and not requested_by:
-        await websocket.close(code=1008, reason="Progress available only to source owner")
+        await websocket.close(
+            code=1008, reason="Progress available only to source owner"
+        )
         return
 
     await websocket_manager.connect(websocket, str(source_id))
@@ -1921,9 +2203,9 @@ async def url_ingest_progress(
     job_id: str,
 ):
     """WebSocket endpoint for ad-hoc URL ingestion progress updates."""
+    from app.core.cache import get_redis_client
     from app.utils.websocket_auth import require_websocket_auth
     from app.utils.websocket_manager import websocket_manager
-    from app.core.cache import get_redis_client
 
     try:
         user = await require_websocket_auth(websocket)
@@ -1938,7 +2220,9 @@ async def url_ingest_progress(
         try:
             client = await get_redis_client()
             raw = await client.get(f"url_ingest:owner:{job_id}")
-            owner_id = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else None
+            owner_id = (
+                raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else None
+            )
         except Exception:
             owner_id = None
 
@@ -1966,8 +2250,9 @@ async def cancel_url_ingest(
     current_user: User = Depends(get_current_user),
 ):
     """Cancel a running URL ingestion job (best-effort)."""
-    from app.core.cache import get_redis_client
     from celery.result import AsyncResult
+
+    from app.core.cache import get_redis_client
 
     if not job_id:
         raise HTTPException(status_code=400, detail="job_id required")
@@ -1977,12 +2262,16 @@ async def cancel_url_ingest(
         try:
             client = await get_redis_client()
             raw = await client.get(f"url_ingest:owner:{job_id}")
-            owner_id = raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else None
+            owner_id = (
+                raw.decode("utf-8") if isinstance(raw, (bytes, bytearray)) else None
+            )
         except Exception:
             owner_id = None
 
         if not owner_id or owner_id != str(current_user.id):
-            raise HTTPException(status_code=403, detail="Not authorized to cancel this job")
+            raise HTTPException(
+                status_code=403, detail="Not authorized to cancel this job"
+            )
 
     # Set cancel flag so cooperative workers can stop between steps
     try:
@@ -2018,26 +2307,26 @@ async def update_document_source(
     source_id: UUID,
     source_data: DocumentSourceCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Update a document source."""
     try:
         if not current_user.is_admin():
             raise HTTPException(status_code=403, detail="Admin privileges required")
-        
+
         source = await document_service.update_document_source(
             source_id=source_id,
             name=source_data.name,
             source_type=source_data.source_type,
             config=source_data.config,
-            db=db
+            db=db,
         )
-        
+
         if not source:
             raise HTTPException(status_code=404, detail="Document source not found")
-        
+
         return DocumentSourceResponse.from_orm(source)
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2049,19 +2338,19 @@ async def update_document_source(
 async def sync_document_source(
     source_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Trigger synchronization for a document source."""
     try:
         if not current_user.is_admin():
             raise HTTPException(status_code=403, detail="Admin privileges required")
-        
+
         success = await document_service.sync_document_source(source_id, db)
         if not success:
             raise HTTPException(status_code=404, detail="Document source not found")
-        
+
         return {"message": "Document source synchronization started"}
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2073,19 +2362,19 @@ async def sync_document_source(
 async def delete_document_source(
     source_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a document source."""
     try:
         if not current_user.is_admin():
             raise HTTPException(status_code=403, detail="Admin privileges required")
-        
+
         success = await document_service.delete_document_source(source_id, db)
         if not success:
             raise HTTPException(status_code=404, detail="Document source not found")
-        
+
         return {"message": "Document source deleted successfully"}
-    
+
     except HTTPException:
         raise
     except Exception as e:
@@ -2098,14 +2387,16 @@ async def summarize_document_endpoint(
     document_id: UUID,
     force: bool = Query(False),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Trigger summarization for a document (background task)."""
     try:
         doc = await document_service.get_document(document_id, db)
         if not doc:
             raise HTTPException(status_code=404, detail="Document not found")
-        task = summarize_task.delay(str(document_id), force, user_id=str(current_user.id))
+        task = summarize_task.delay(
+            str(document_id), force, user_id=str(current_user.id)
+        )
         return {"message": "summarization_started", "task_id": task.id}
     except HTTPException:
         raise

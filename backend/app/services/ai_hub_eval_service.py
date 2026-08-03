@@ -35,7 +35,10 @@ class AIHubEvalService:
         self._templates_dir = (
             Path(settings.AI_HUB_EVAL_TEMPLATES_DIR)
             if getattr(settings, "AI_HUB_EVAL_TEMPLATES_DIR", None)
-            else Path(__file__).resolve().parents[1] / "plugins" / "ai_hub" / "eval_templates"
+            else Path(__file__).resolve().parents[1]
+            / "plugins"
+            / "ai_hub"
+            / "eval_templates"
         )
 
     def list_templates(self) -> List[EvalTemplate]:
@@ -67,7 +70,9 @@ class AIHubEvalService:
                 return t
         return None
 
-    async def _ollama_generate(self, model: str, prompt: str, max_tokens: int = 512) -> str:
+    async def _ollama_generate(
+        self, model: str, prompt: str, max_tokens: int = 512
+    ) -> str:
         async with httpx.AsyncClient() as client:
             resp = await client.post(
                 f"{settings.OLLAMA_BASE_URL}/api/generate",
@@ -101,7 +106,10 @@ class AIHubEvalService:
 
         rubric = template.rubric or {}
         criteria = rubric.get("criteria") or []
-        judge_preamble = template.judge_preamble.strip() or "You are an evaluator for a research assistant."
+        judge_preamble = (
+            template.judge_preamble.strip()
+            or "You are an evaluator for a research assistant."
+        )
 
         for case in template.cases:
             case_id = case.get("id") or "case"
@@ -110,19 +118,25 @@ class AIHubEvalService:
                 continue
 
             base_resp = await self._ollama_generate(base_model, prompt, max_tokens=512)
-            cand_resp = await self._ollama_generate(candidate_model, prompt, max_tokens=512)
+            cand_resp = await self._ollama_generate(
+                candidate_model, prompt, max_tokens=512
+            )
 
             judge_prompt = (
                 f"{judge_preamble}\n"
                 "Rate the CANDIDATE answer on a 1-5 scale using the rubric.\n"
-                "Return ONLY a JSON object: {\"score\": <int 1-5>, \"notes\": \"...\"}.\n\n"
-                f"Rubric criteria:\n- " + "\n- ".join([str(x) for x in criteria]) + "\n\n"
+                'Return ONLY a JSON object: {"score": <int 1-5>, "notes": "..."}.\n\n'
+                f"Rubric criteria:\n- "
+                + "\n- ".join([str(x) for x in criteria])
+                + "\n\n"
                 f"Question:\n{prompt}\n\n"
                 f"BASE ANSWER:\n{base_resp}\n\n"
                 f"CANDIDATE ANSWER:\n{cand_resp}\n"
             )
 
-            judge_raw = await self._ollama_generate(judge_model, judge_prompt, max_tokens=256)
+            judge_raw = await self._ollama_generate(
+                judge_model, judge_prompt, max_tokens=256
+            )
             score = None
             notes = None
             try:

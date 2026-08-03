@@ -6,13 +6,14 @@ designed to be called from Celery task implementations.
 """
 
 import asyncio
-from typing import Optional, Dict, Any
+from typing import Optional
 from uuid import UUID
+
 from loguru import logger
 
 from app.core.database import create_celery_session
-from app.services.notification_service import notification_service
 from app.models.notification import NotificationType
+from app.services.notification_service import notification_service
 
 
 def emit_document_processing_notification(
@@ -35,9 +36,11 @@ def emit_document_processing_notification(
         chunks_count: Number of chunks created
     """
     try:
-        asyncio.run(_async_emit_document_processing_notification(
-            user_id, document_id, document_title, success, error, chunks_count
-        ))
+        asyncio.run(
+            _async_emit_document_processing_notification(
+                user_id, document_id, document_title, success, error, chunks_count
+            )
+        )
     except Exception as e:
         logger.warning(f"Failed to emit document processing notification: {e}")
 
@@ -63,8 +66,11 @@ async def _async_emit_document_processing_notification(
                     priority="normal",
                     related_entity_type="document",
                     related_entity_id=UUID(document_id),
-                    data={"document_title": document_title, "chunks_count": chunks_count},
-                    action_url=f"/documents",
+                    data={
+                        "document_title": document_title,
+                        "chunks_count": chunks_count,
+                    },
+                    action_url="/documents",
                 )
             else:
                 await notification_service.create_notification(
@@ -77,7 +83,7 @@ async def _async_emit_document_processing_notification(
                     related_entity_type="document",
                     related_entity_id=UUID(document_id),
                     data={"document_title": document_title, "error": error},
-                    action_url=f"/documents",
+                    action_url="/documents",
                 )
         except Exception as e:
             logger.error(f"Failed to emit document processing notification: {e}")
@@ -109,9 +115,19 @@ def emit_ingestion_notification(
         error_message: Error message if failed
     """
     try:
-        asyncio.run(_async_emit_ingestion_notification(
-            user_id, source_id, source_name, success, total, created, updated, errors, error_message
-        ))
+        asyncio.run(
+            _async_emit_ingestion_notification(
+                user_id,
+                source_id,
+                source_name,
+                success,
+                total,
+                created,
+                updated,
+                errors,
+                error_message,
+            )
+        )
     except Exception as e:
         logger.warning(f"Failed to emit ingestion notification: {e}")
 
@@ -186,9 +202,11 @@ def emit_transcription_notification(
         error: Error message if failed
     """
     try:
-        asyncio.run(_async_emit_transcription_notification(
-            user_id, document_id, document_title, success, duration_seconds, error
-        ))
+        asyncio.run(
+            _async_emit_transcription_notification(
+                user_id, document_id, document_title, success, duration_seconds, error
+            )
+        )
     except Exception as e:
         logger.warning(f"Failed to emit transcription notification: {e}")
 
@@ -220,8 +238,11 @@ async def _async_emit_transcription_notification(
                     priority="normal",
                     related_entity_type="document",
                     related_entity_id=UUID(document_id),
-                    data={"document_title": document_title, "duration_seconds": duration_seconds},
-                    action_url=f"/documents",
+                    data={
+                        "document_title": document_title,
+                        "duration_seconds": duration_seconds,
+                    },
+                    action_url="/documents",
                 )
             else:
                 await notification_service.create_notification(
@@ -234,7 +255,7 @@ async def _async_emit_transcription_notification(
                     related_entity_type="document",
                     related_entity_id=UUID(document_id),
                     data={"document_title": document_title, "error": error},
-                    action_url=f"/documents",
+                    action_url="/documents",
                 )
         except Exception as e:
             logger.error(f"Failed to emit transcription notification: {e}")
@@ -258,9 +279,11 @@ def emit_summarization_notification(
         error: Error message if failed
     """
     try:
-        asyncio.run(_async_emit_summarization_notification(
-            user_id, document_id, document_title, success, error
-        ))
+        asyncio.run(
+            _async_emit_summarization_notification(
+                user_id, document_id, document_title, success, error
+            )
+        )
     except Exception as e:
         logger.warning(f"Failed to emit summarization notification: {e}")
 
@@ -286,7 +309,7 @@ async def _async_emit_summarization_notification(
                     related_entity_type="document",
                     related_entity_id=UUID(document_id),
                     data={"document_title": document_title},
-                    action_url=f"/documents",
+                    action_url="/documents",
                 )
             else:
                 # Use processing error type for summarization errors
@@ -300,7 +323,7 @@ async def _async_emit_summarization_notification(
                     related_entity_type="document",
                     related_entity_id=UUID(document_id),
                     data={"document_title": document_title, "error": error},
-                    action_url=f"/documents",
+                    action_url="/documents",
                 )
         except Exception as e:
             logger.error(f"Failed to emit summarization notification: {e}")
@@ -326,9 +349,11 @@ def emit_sync_notification(
         error: Error message if failed
     """
     try:
-        asyncio.run(_async_emit_sync_notification(
-            user_id, source_id, source_name, success, documents_synced, error
-        ))
+        asyncio.run(
+            _async_emit_sync_notification(
+                user_id, source_id, source_name, success, documents_synced, error
+            )
+        )
     except Exception as e:
         logger.warning(f"Failed to emit sync notification: {e}")
 
@@ -354,7 +379,10 @@ async def _async_emit_sync_notification(
                     priority="normal",
                     related_entity_type="source",
                     related_entity_id=UUID(source_id),
-                    data={"source_name": source_name, "documents_synced": documents_synced},
+                    data={
+                        "source_name": source_name,
+                        "documents_synced": documents_synced,
+                    },
                     action_url="/admin",
                 )
             else:
@@ -392,9 +420,11 @@ def emit_admin_broadcast(
         target_roles: Optional list of roles to target (None = all users)
     """
     try:
-        asyncio.run(_async_emit_admin_broadcast(
-            title, message, priority, action_url, target_roles
-        ))
+        asyncio.run(
+            _async_emit_admin_broadcast(
+                title, message, priority, action_url, target_roles
+            )
+        )
     except Exception as e:
         logger.warning(f"Failed to emit admin broadcast: {e}")
 

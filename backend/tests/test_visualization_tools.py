@@ -1,9 +1,5 @@
 """Tests for data visualization tools (create_chart, render_diagram)."""
 
-import base64
-
-import pytest
-
 
 class TestCreateChart:
     """Tests for create_chart tool logic."""
@@ -88,7 +84,7 @@ class TestCreateChart:
                 "url": "https://minio.local/agent_artifacts/j-1/charts/abc.png",
                 "format": "png",
                 "size_bytes": 45000,
-            }
+            },
         }
         assert result["data"]["chart_type"] == "bar"
         assert result["data"]["url"].endswith(".png")
@@ -96,6 +92,7 @@ class TestCreateChart:
 
     def test_object_path_format(self):
         import uuid
+
         job_id = uuid.uuid4()
         chart_id = uuid.uuid4()
         fmt = "png"
@@ -164,7 +161,7 @@ class TestRenderDiagram:
                 "diagram_type": "mermaid",
                 "format": "svg",
                 "size_bytes": 12000,
-            }
+            },
         }
         assert result["data"]["diagram_type"] == "mermaid"
         assert result["data"]["format"] == "svg"
@@ -172,6 +169,7 @@ class TestRenderDiagram:
 
     def test_object_path_format(self):
         import uuid
+
         job_id = uuid.uuid4()
         diag_id = uuid.uuid4()
         fmt = "svg"
@@ -191,12 +189,14 @@ class TestVisualizationToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "create_chart" in names
         assert "render_diagram" in names
 
     def test_create_chart_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("create_chart")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -205,6 +205,7 @@ class TestVisualizationToolSchemas:
 
     def test_render_diagram_requires_code(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("render_diagram")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -212,11 +213,13 @@ class TestVisualizationToolSchemas:
 
     def test_create_chart_has_format_param(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("create_chart")
         assert "format" in tool["parameters"]["properties"]
 
     def test_render_diagram_has_diagram_type_param(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("render_diagram")
         assert "diagram_type" in tool["parameters"]["properties"]
 
@@ -226,24 +229,28 @@ class TestVisualizationToolRegistry:
 
     def test_create_chart_is_write_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("create_chart")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_render_diagram_is_write_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("render_diagram")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_create_chart_is_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("create_chart")
         assert meta is not None
         assert meta.cost_tier == "medium"
 
     def test_render_diagram_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("render_diagram")
         assert meta is not None
         assert meta.network == "egress"

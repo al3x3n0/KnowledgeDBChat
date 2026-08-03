@@ -4,31 +4,44 @@ Model Registry models for AI Hub.
 Manages trained LoRA adapters and their deployment to Ollama.
 """
 
-from datetime import datetime
-from typing import Optional, Dict, Any
-from sqlalchemy import Column, String, Text, DateTime, Boolean, Integer, BigInteger, ForeignKey, JSON
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
-import uuid
 import enum
+import uuid
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from sqlalchemy import (
+    JSON,
+    BigInteger,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
 
 class AdapterType(str, enum.Enum):
     """Type of adapter."""
-    LORA = "lora"       # Standard LoRA
-    QLORA = "qlora"     # Quantized LoRA
+
+    LORA = "lora"  # Standard LoRA
+    QLORA = "qlora"  # Quantized LoRA
 
 
 class AdapterStatus(str, enum.Enum):
     """Status of a model adapter."""
-    TRAINING = "training"     # Being trained
-    READY = "ready"           # Trained and ready for use
-    DEPLOYING = "deploying"   # Being deployed to Ollama
-    DEPLOYED = "deployed"     # Deployed and available
-    FAILED = "failed"         # Deployment or training failed
-    ARCHIVED = "archived"     # No longer active
+
+    TRAINING = "training"  # Being trained
+    READY = "ready"  # Trained and ready for use
+    DEPLOYING = "deploying"  # Being deployed to Ollama
+    DEPLOYED = "deployed"  # Deployed and available
+    FAILED = "failed"  # Deployment or training failed
+    ARCHIVED = "archived"  # No longer active
 
 
 class ModelAdapter(Base):
@@ -45,7 +58,7 @@ class ModelAdapter(Base):
 
     # Adapter identification
     name = Column(String(100), nullable=False, unique=True)  # Unique internal name
-    display_name = Column(String(200), nullable=False)       # Human-readable name
+    display_name = Column(String(200), nullable=False)  # Human-readable name
     description = Column(Text, nullable=True)
 
     # Base model info
@@ -64,13 +77,13 @@ class ModelAdapter(Base):
 
     # Storage
     adapter_path = Column(String(500), nullable=True)  # MinIO path to adapter weights
-    adapter_size = Column(BigInteger, nullable=True)   # Size in bytes
+    adapter_size = Column(BigInteger, nullable=True)  # Size in bytes
 
     # Training info
     training_job_id = Column(
         UUID(as_uuid=True),
         ForeignKey("training_jobs.id", ondelete="SET NULL"),
-        nullable=True
+        nullable=True,
     )
     training_metrics = Column(JSON, nullable=True)
     # Structure:
@@ -83,9 +96,7 @@ class ModelAdapter(Base):
 
     # Ownership
     user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
 
     # Visibility
@@ -115,7 +126,9 @@ class ModelAdapter(Base):
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     # Relationships
     user = relationship("User", backref="model_adapters")
@@ -127,9 +140,9 @@ class ModelAdapter(Base):
     def can_deploy(self) -> bool:
         """Check if adapter can be deployed."""
         return (
-            self.status == AdapterStatus.READY.value and
-            not self.is_deployed and
-            self.adapter_path is not None
+            self.status == AdapterStatus.READY.value
+            and not self.is_deployed
+            and self.adapter_path is not None
         )
 
     def can_undeploy(self) -> bool:

@@ -8,16 +8,12 @@ safe execution of data manipulation operations.
 
 import io
 import json
-import hashlib
-import tempfile
-import os
 from datetime import datetime, timedelta
-from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
-from uuid import UUID, uuid4
+from uuid import uuid4
 
-import pandas as pd
 import numpy as np
+import pandas as pd
 from loguru import logger
 
 
@@ -28,7 +24,13 @@ class DataSandbox:
     Each job gets its own sandbox with isolated datasets.
     """
 
-    def __init__(self, job_id: str, user_id: str, max_datasets: int = 20, max_rows: int = 1_000_000):
+    def __init__(
+        self,
+        job_id: str,
+        user_id: str,
+        max_datasets: int = 20,
+        max_rows: int = 1_000_000,
+    ):
         self.job_id = job_id
         self.user_id = user_id
         self.max_datasets = max_datasets
@@ -45,16 +47,17 @@ class DataSandbox:
     def _validate_dataframe(self, df: pd.DataFrame, name: str) -> None:
         """Validate dataframe before adding to sandbox."""
         if len(self.datasets) >= self.max_datasets:
-            raise ValueError(f"Maximum datasets ({self.max_datasets}) reached. Remove some datasets first.")
+            raise ValueError(
+                f"Maximum datasets ({self.max_datasets}) reached. Remove some datasets first."
+            )
 
         if len(df) > self.max_rows:
-            raise ValueError(f"Dataset exceeds maximum rows ({self.max_rows}). Consider sampling or filtering.")
+            raise ValueError(
+                f"Dataset exceeds maximum rows ({self.max_rows}). Consider sampling or filtering."
+            )
 
     def load_csv(
-        self,
-        content: Union[str, bytes],
-        name: str,
-        **kwargs
+        self, content: Union[str, bytes], name: str, **kwargs
     ) -> Dict[str, Any]:
         """Load CSV data into sandbox."""
         try:
@@ -90,10 +93,7 @@ class DataSandbox:
             raise ValueError(f"Failed to load CSV: {str(e)}")
 
     def load_json(
-        self,
-        content: Union[str, Dict, List],
-        name: str,
-        **kwargs
+        self, content: Union[str, Dict, List], name: str, **kwargs
     ) -> Dict[str, Any]:
         """Load JSON data into sandbox."""
         try:
@@ -137,11 +137,7 @@ class DataSandbox:
             raise ValueError(f"Failed to load JSON: {str(e)}")
 
     def load_excel(
-        self,
-        content: bytes,
-        name: str,
-        sheet_name: Union[str, int] = 0,
-        **kwargs
+        self, content: bytes, name: str, sheet_name: Union[str, int] = 0, **kwargs
     ) -> Dict[str, Any]:
         """Load Excel data into sandbox."""
         try:
@@ -174,11 +170,7 @@ class DataSandbox:
             logger.error(f"Failed to load Excel: {e}")
             raise ValueError(f"Failed to load Excel: {str(e)}")
 
-    def create_from_dict(
-        self,
-        data: Dict[str, List],
-        name: str
-    ) -> Dict[str, Any]:
+    def create_from_dict(self, data: Dict[str, List], name: str) -> Dict[str, Any]:
         """Create dataset from dictionary."""
         try:
             df = pd.DataFrame(data)
@@ -217,13 +209,7 @@ class DataSandbox:
 
     def list_datasets(self) -> List[Dict[str, Any]]:
         """List all datasets in sandbox."""
-        return [
-            {
-                "dataset_id": did,
-                **meta
-            }
-            for did, meta in self.metadata.items()
-        ]
+        return [{"dataset_id": did, **meta} for did, meta in self.metadata.items()]
 
     def remove_dataset(self, dataset_id: str) -> bool:
         """Remove a dataset from sandbox."""
@@ -256,13 +242,25 @@ class DataSandbox:
 
             # Add statistics for numeric columns
             if pd.api.types.is_numeric_dtype(df[col]):
-                col_info.update({
-                    "min": float(df[col].min()) if not pd.isna(df[col].min()) else None,
-                    "max": float(df[col].max()) if not pd.isna(df[col].max()) else None,
-                    "mean": float(df[col].mean()) if not pd.isna(df[col].mean()) else None,
-                    "std": float(df[col].std()) if not pd.isna(df[col].std()) else None,
-                    "median": float(df[col].median()) if not pd.isna(df[col].median()) else None,
-                })
+                col_info.update(
+                    {
+                        "min": float(df[col].min())
+                        if not pd.isna(df[col].min())
+                        else None,
+                        "max": float(df[col].max())
+                        if not pd.isna(df[col].max())
+                        else None,
+                        "mean": float(df[col].mean())
+                        if not pd.isna(df[col].mean())
+                        else None,
+                        "std": float(df[col].std())
+                        if not pd.isna(df[col].std())
+                        else None,
+                        "median": float(df[col].median())
+                        if not pd.isna(df[col].median())
+                        else None,
+                    }
+                )
 
             # Add sample values
             col_info["sample_values"] = df[col].dropna().head(5).tolist()
@@ -287,7 +285,7 @@ class DataSandbox:
             result_df = df.query(query_str)
 
             # Store result as new dataset
-            result_id = self._generate_dataset_id(f"query_result")
+            result_id = self._generate_dataset_id("query_result")
             self.datasets[result_id] = result_df
             self.metadata[result_id] = {
                 "name": f"Query result from {dataset_id}",
@@ -352,7 +350,9 @@ class DataSandbox:
             elif op == "not_in":
                 mask &= ~df[col].isin(value)
             elif op == "contains":
-                mask &= df[col].astype(str).str.contains(str(value), case=False, na=False)
+                mask &= (
+                    df[col].astype(str).str.contains(str(value), case=False, na=False)
+                )
             elif op == "startswith":
                 mask &= df[col].astype(str).str.startswith(str(value), na=False)
             elif op == "endswith":
@@ -367,7 +367,7 @@ class DataSandbox:
         result_df = df[mask]
 
         # Store result
-        result_id = self._generate_dataset_id(f"filtered")
+        result_id = self._generate_dataset_id("filtered")
         self.datasets[result_id] = result_df
         self.metadata[result_id] = {
             "name": f"Filtered from {dataset_id}",
@@ -409,11 +409,14 @@ class DataSandbox:
         if aggregations is None:
             # Default: describe all numeric columns
             numeric_cols = df.select_dtypes(include=[np.number]).columns.tolist()
-            aggregations = {col: ["mean", "sum", "min", "max", "count"] for col in numeric_cols}
+            aggregations = {
+                col: ["mean", "sum", "min", "max", "count"] for col in numeric_cols
+            }
 
         try:
             if group_by:
                 result_df = df.groupby(group_by).agg(aggregations).reset_index()
+
                 # Flatten column names
                 def _flatten_col(col):
                     if isinstance(col, tuple):
@@ -430,7 +433,7 @@ class DataSandbox:
                 result_df = pd.DataFrame([result_dict])
 
             # Store result
-            result_id = self._generate_dataset_id(f"aggregated")
+            result_id = self._generate_dataset_id("aggregated")
             self.datasets[result_id] = result_df
             self.metadata[result_id] = {
                 "name": f"Aggregated from {dataset_id}",
@@ -467,11 +470,14 @@ class DataSandbox:
         right_df = self.get_dataset(right_id)
 
         if how not in ["inner", "left", "right", "outer"]:
-            raise ValueError(f"Invalid join type: {how}. Use: inner, left, right, outer")
+            raise ValueError(
+                f"Invalid join type: {how}. Use: inner, left, right, outer"
+            )
 
         try:
             result_df = pd.merge(
-                left_df, right_df,
+                left_df,
+                right_df,
                 on=on,
                 left_on=left_on,
                 right_on=right_on,
@@ -481,7 +487,7 @@ class DataSandbox:
             self._validate_dataframe(result_df, "joined")
 
             # Store result
-            result_id = self._generate_dataset_id(f"joined")
+            result_id = self._generate_dataset_id("joined")
             self.datasets[result_id] = result_df
             self.metadata[result_id] = {
                 "name": f"Join of {left_id} and {right_id}",
@@ -550,7 +556,7 @@ class DataSandbox:
             elif op == "sort":
                 df = df.sort_values(
                     by=operation.get("by", []),
-                    ascending=operation.get("ascending", True)
+                    ascending=operation.get("ascending", True),
                 )
 
             elif op == "drop_duplicates":
@@ -569,7 +575,7 @@ class DataSandbox:
                 raise ValueError(f"Unknown operation: {op}")
 
         # Store result
-        result_id = self._generate_dataset_id(f"transformed")
+        result_id = self._generate_dataset_id("transformed")
         self.datasets[result_id] = df
         self.metadata[result_id] = {
             "name": f"Transformed from {dataset_id}",
@@ -644,7 +650,7 @@ class DataSandbox:
                         "std": float(col_data.std()),
                         "min": float(col_data.min()),
                         "max": float(col_data.max()),
-                    }
+                    },
                 }
 
         return {
@@ -684,9 +690,7 @@ class DataSandbox:
         }
 
     def _find_strong_correlations(
-        self,
-        corr_matrix: pd.DataFrame,
-        threshold: float = 0.7
+        self, corr_matrix: pd.DataFrame, threshold: float = 0.7
     ) -> List[Dict[str, Any]]:
         """Find strongly correlated pairs."""
         strong = []
@@ -695,11 +699,13 @@ class DataSandbox:
                 if i < j:  # Avoid duplicates
                     corr = corr_matrix.loc[col1, col2]
                     if abs(corr) >= threshold:
-                        strong.append({
-                            "column1": col1,
-                            "column2": col2,
-                            "correlation": float(corr),
-                        })
+                        strong.append(
+                            {
+                                "column1": col1,
+                                "column2": col2,
+                                "correlation": float(corr),
+                            }
+                        )
         return sorted(strong, key=lambda x: abs(x["correlation"]), reverse=True)
 
     def export_to_csv(self, dataset_id: str) -> bytes:
@@ -745,7 +751,9 @@ class DataSandboxManager:
 
         if len(self.sandboxes) >= self.max_sandboxes:
             # Remove oldest sandbox
-            oldest_id = min(self.sandboxes.keys(), key=lambda k: self.sandboxes[k].last_accessed)
+            oldest_id = min(
+                self.sandboxes.keys(), key=lambda k: self.sandboxes[k].last_accessed
+            )
             del self.sandboxes[oldest_id]
 
         sandbox = DataSandbox(job_id, user_id)
@@ -767,7 +775,8 @@ class DataSandboxManager:
         """Remove expired sandboxes."""
         now = datetime.utcnow()
         expired = [
-            jid for jid, sandbox in self.sandboxes.items()
+            jid
+            for jid, sandbox in self.sandboxes.items()
             if now - sandbox.last_accessed > self.sandbox_ttl
         ]
         for jid in expired:

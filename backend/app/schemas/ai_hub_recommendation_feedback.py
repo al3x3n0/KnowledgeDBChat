@@ -5,11 +5,10 @@ Schemas for AI Hub recommendation feedback (learning loop).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Literal
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-
 
 WorkflowId = Literal["triage", "extraction", "literature"]
 ItemType = Literal["dataset_preset", "eval_template"]
@@ -43,4 +42,3 @@ class AIHubRecommendationFeedbackResponse(BaseModel):
 class AIHubRecommendationFeedbackListResponse(BaseModel):
     items: List[AIHubRecommendationFeedbackResponse]
     total: int
-

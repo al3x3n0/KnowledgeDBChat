@@ -2,13 +2,12 @@
 Utility for parsing and manipulating docx templates.
 """
 
-from pathlib import Path
-from typing import List, Dict, Any, Optional
-from docx import Document
-from docx.shared import Pt
-from docx.enum.text import WD_PARAGRAPH_ALIGNMENT
-from loguru import logger
 import re
+from pathlib import Path
+from typing import Any, Dict, List, Optional
+
+from docx import Document
+from loguru import logger
 
 
 class TemplateParser:
@@ -16,8 +15,12 @@ class TemplateParser:
 
     # Heading style patterns
     HEADING_STYLES = [
-        'Heading 1', 'Heading 2', 'Heading 3', 'Heading 4',
-        'Title', 'Subtitle'
+        "Heading 1",
+        "Heading 2",
+        "Heading 3",
+        "Heading 4",
+        "Title",
+        "Subtitle",
     ]
 
     @staticmethod
@@ -55,13 +58,13 @@ class TemplateParser:
                 style_name = para.style.name
                 if style_name in TemplateParser.HEADING_STYLES:
                     is_heading = True
-                    if style_name == 'Title':
+                    if style_name == "Title":
                         heading_level = 0
-                    elif style_name == 'Subtitle':
+                    elif style_name == "Subtitle":
                         heading_level = 1
-                    elif style_name.startswith('Heading '):
+                    elif style_name.startswith("Heading "):
                         try:
-                            heading_level = int(style_name.replace('Heading ', ''))
+                            heading_level = int(style_name.replace("Heading ", ""))
                         except ValueError:
                             heading_level = 1
 
@@ -69,7 +72,7 @@ class TemplateParser:
             # But only if text is short (likely a section header)
             if not is_heading and len(text) < 100:
                 # Pattern: starts with text followed by colon
-                if re.match(r'^[A-Za-zА-Яа-яЁё0-9\s\-]+:\s*$', text):
+                if re.match(r"^[A-Za-zА-Яа-яЁё0-9\s\-]+:\s*$", text):
                     is_heading = True
                     heading_level = 2
 
@@ -88,15 +91,15 @@ class TemplateParser:
 
                 # Start new section
                 current_section = {
-                    'title': text.rstrip(':').strip(),
-                    'level': heading_level,
-                    'placeholder_text': '',
-                    'paragraph_indices': []
+                    "title": text.rstrip(":").strip(),
+                    "level": heading_level,
+                    "placeholder_text": "",
+                    "paragraph_indices": [],
                 }
             elif current_section:
                 # Add content to current section
-                current_section['placeholder_text'] += text + '\n'
-                current_section['paragraph_indices'].append(i)
+                current_section["placeholder_text"] += text + "\n"
+                current_section["paragraph_indices"].append(i)
 
         # Don't forget the last section
         if current_section:
@@ -104,16 +107,14 @@ class TemplateParser:
 
         # Clean up placeholder text
         for section in sections:
-            section['placeholder_text'] = section['placeholder_text'].strip()
+            section["placeholder_text"] = section["placeholder_text"].strip()
 
         logger.info(f"Extracted {len(sections)} sections from template")
         return sections
 
     @staticmethod
     def fill_sections(
-        template_path: str,
-        sections_content: Dict[str, str],
-        output_path: str
+        template_path: str, sections_content: Dict[str, str], output_path: str
     ) -> str:
         """
         Fill template sections with generated content.
@@ -129,7 +130,9 @@ class TemplateParser:
         doc = Document(template_path)
         current_section_title: Optional[str] = None
         paragraphs_to_clear: List[int] = []
-        first_content_para: Dict[str, int] = {}  # section_title -> first content paragraph index
+        first_content_para: Dict[
+            str, int
+        ] = {}  # section_title -> first content paragraph index
 
         # First pass: identify sections and content paragraphs
         for i, para in enumerate(doc.paragraphs):
@@ -140,7 +143,7 @@ class TemplateParser:
             is_heading = TemplateParser._is_heading(para)
 
             if is_heading:
-                section_title = text.rstrip(':').strip()
+                section_title = text.rstrip(":").strip()
                 if section_title in sections_content:
                     current_section_title = section_title
                     first_content_para[section_title] = None
@@ -155,19 +158,22 @@ class TemplateParser:
 
         # Second pass: fill content
         for section_title, content in sections_content.items():
-            if section_title in first_content_para and first_content_para[section_title] is not None:
+            if (
+                section_title in first_content_para
+                and first_content_para[section_title] is not None
+            ):
                 idx = first_content_para[section_title]
                 # Replace content of the first paragraph
                 para = doc.paragraphs[idx]
                 para.clear()
                 # Add content, preserving paragraph breaks
-                lines = content.split('\n')
+                lines = content.split("\n")
                 for j, line in enumerate(lines):
                     if j == 0:
-                        run = para.add_run(line)
+                        para.add_run(line)
                     else:
                         # Add line break for subsequent lines within the same paragraph
-                        para.add_run('\n' + line)
+                        para.add_run("\n" + line)
 
         # Clear extra paragraphs (mark as empty)
         for idx in paragraphs_to_clear:
@@ -192,7 +198,7 @@ class TemplateParser:
                 return True
 
         # Check by pattern
-        if len(text) < 100 and re.match(r'^[A-Za-zА-Яа-яЁё0-9\s\-]+:\s*$', text):
+        if len(text) < 100 and re.match(r"^[A-Za-zА-Яа-яЁё0-9\s\-]+:\s*$", text):
             return True
 
         # Check by bold formatting
@@ -218,10 +224,10 @@ class TemplateParser:
         core_props = doc.core_properties
 
         return {
-            'title': core_props.title or Path(file_path).stem,
-            'author': core_props.author,
-            'created': core_props.created,
-            'modified': core_props.modified,
-            'paragraph_count': len(doc.paragraphs),
-            'word_count': sum(len(p.text.split()) for p in doc.paragraphs),
+            "title": core_props.title or Path(file_path).stem,
+            "author": core_props.author,
+            "created": core_props.created,
+            "modified": core_props.modified,
+            "paragraph_count": len(doc.paragraphs),
+            "word_count": sum(len(p.text.split()) for p in doc.paragraphs),
         }

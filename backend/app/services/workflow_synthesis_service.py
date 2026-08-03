@@ -22,7 +22,6 @@ from app.schemas.workflow import WorkflowCreate
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.llm_service import LLMService, UserLLMSettings
 
-
 ALLOWED_NODE_TYPES = {"start", "end", "tool", "condition", "parallel", "loop", "wait"}
 
 
@@ -135,7 +134,9 @@ class WorkflowSynthesisService:
             workflow_tool=workflow_tool,
         )
 
-    async def _load_user_settings(self, db: AsyncSession, user_id) -> Optional[UserLLMSettings]:
+    async def _load_user_settings(
+        self, db: AsyncSession, user_id
+    ) -> Optional[UserLLMSettings]:
         try:
             prefs_result = await db.execute(
                 select(UserPreferences).where(UserPreferences.user_id == user_id)
@@ -148,9 +149,7 @@ class WorkflowSynthesisService:
         return None
 
     async def _load_tool_catalog(self, db: AsyncSession, user_id) -> ToolCatalog:
-        result = await db.execute(
-            select(UserTool).where(UserTool.user_id == user_id)
-        )
+        result = await db.execute(select(UserTool).where(UserTool.user_id == user_id))
         custom_tools = result.scalars().all()
         builtin_tools = [
             {
@@ -191,12 +190,10 @@ class WorkflowSynthesisService:
         )
 
         preferred_name = name or ""
-        trigger_hint = json.dumps(trigger_config or {"type": "manual"}, ensure_ascii=True)
-        tool_synth_hint = (
-            "true"
-            if synthesize_custom_tools
-            else "false"
+        trigger_hint = json.dumps(
+            trigger_config or {"type": "manual"}, ensure_ascii=True
         )
+        tool_synth_hint = "true" if synthesize_custom_tools else "false"
         preferred_tool_hint = preferred_tool_type or "none"
         expose_workflow_tool_hint = "true" if expose_workflow_as_tool else "false"
         workflow_tool_name_hint = workflow_tool_name or ""
@@ -293,7 +290,7 @@ class WorkflowSynthesisService:
         if start == -1 or end == -1 or end <= start:
             raise ValueError("No JSON object found in response")
 
-        payload = cleaned[start:end + 1]
+        payload = cleaned[start : end + 1]
         return json.loads(payload)
 
     def _normalize_workflow(
@@ -320,7 +317,11 @@ class WorkflowSynthesisService:
             preferred_tool_type=preferred_tool_type,
             warnings=warnings,
         )
-        generated_custom_names = {str(t.get("name") or "").strip().lower() for t in generated_custom_tools if t.get("name")}
+        generated_custom_names = {
+            str(t.get("name") or "").strip().lower()
+            for t in generated_custom_tools
+            if t.get("name")
+        }
 
         is_active = data.get("is_active")
         if is_active is None:
@@ -328,9 +329,13 @@ class WorkflowSynthesisService:
 
         normalized: Dict[str, Any] = {
             "name": (data.get("name") or fallback_name or "Generated Workflow").strip(),
-            "description": (data.get("description") or fallback_description or "").strip(),
+            "description": (
+                data.get("description") or fallback_description or ""
+            ).strip(),
             "is_active": is_active,
-            "trigger_config": data.get("trigger_config") or fallback_trigger or {"type": "manual"},
+            "trigger_config": data.get("trigger_config")
+            or fallback_trigger
+            or {"type": "manual"},
             "nodes": [],
             "edges": [],
             "custom_tools": generated_custom_tools,
@@ -338,7 +343,9 @@ class WorkflowSynthesisService:
                 data.get("workflow_tool"),
                 expose_workflow_as_tool=expose_workflow_as_tool,
                 workflow_tool_name=workflow_tool_name,
-                workflow_name=(data.get("name") or fallback_name or "Generated Workflow"),
+                workflow_name=(
+                    data.get("name") or fallback_name or "Generated Workflow"
+                ),
                 warnings=warnings,
             ),
         }
@@ -357,7 +364,9 @@ class WorkflowSynthesisService:
                     suffix += 1
                     new_id = f"{node_id}_{suffix}"
                 node_id = new_id
-                warnings.append(f"Duplicate node_id '{node_id_raw}' renamed to '{node_id}'.")
+                warnings.append(
+                    f"Duplicate node_id '{node_id_raw}' renamed to '{node_id}'."
+                )
             seen_ids.add(node_id)
 
             node_type = node.get("node_type") or node.get("type") or "tool"
@@ -382,20 +391,31 @@ class WorkflowSynthesisService:
                             tool_id = str(custom_match.id)
 
                 if builtin_tool and builtin_tool not in builtin_names:
-                    warnings.append(f"Unknown builtin tool '{builtin_tool}' on node '{node_id}'.")
+                    warnings.append(
+                        f"Unknown builtin tool '{builtin_tool}' on node '{node_id}'."
+                    )
                     builtin_tool = None
 
                 if tool_id and str(tool_id) not in custom_by_id:
-                    warnings.append(f"Unknown custom tool id '{tool_id}' on node '{node_id}'.")
+                    warnings.append(
+                        f"Unknown custom tool id '{tool_id}' on node '{node_id}'."
+                    )
                     tool_id = None
 
                 if not builtin_tool and not tool_id:
-                    if tool_name and str(tool_name).strip().lower() in generated_custom_names:
+                    if (
+                        tool_name
+                        and str(tool_name).strip().lower() in generated_custom_names
+                    ):
                         config["tool_name_hint"] = str(tool_name).strip()
                     elif config.get("tool_name_hint"):
-                        config["tool_name_hint"] = str(config.get("tool_name_hint")).strip()
+                        config["tool_name_hint"] = str(
+                            config.get("tool_name_hint")
+                        ).strip()
                     else:
-                        warnings.append(f"Tool node '{node_id}' has no valid tool reference.")
+                        warnings.append(
+                            f"Tool node '{node_id}' has no valid tool reference."
+                        )
 
             normalized["nodes"].append(
                 {
@@ -448,7 +468,13 @@ class WorkflowSynthesisService:
         if not isinstance(tool_data, list):
             return []
 
-        allowed_types = {"webhook", "transform", "python", "llm_prompt", "docker_container"}
+        allowed_types = {
+            "webhook",
+            "transform",
+            "python",
+            "llm_prompt",
+            "docker_container",
+        }
         normalized: List[Dict[str, Any]] = []
         seen = set()
 
@@ -460,14 +486,22 @@ class WorkflowSynthesisService:
                 continue
             key = name.lower()
             if key in seen:
-                warnings.append(f"Duplicate synthesized custom tool '{name}' was skipped.")
+                warnings.append(
+                    f"Duplicate synthesized custom tool '{name}' was skipped."
+                )
                 continue
             seen.add(key)
 
-            tool_type = str(item.get("tool_type") or preferred_tool_type or "docker_container").strip().lower()
+            tool_type = (
+                str(item.get("tool_type") or preferred_tool_type or "docker_container")
+                .strip()
+                .lower()
+            )
             if tool_type not in allowed_types:
-                warnings.append(f"Synthesized tool '{name}' had unsupported type '{tool_type}', using '{preferred_tool_type or 'docker_container'}'.")
-                tool_type = (preferred_tool_type or "docker_container")
+                warnings.append(
+                    f"Synthesized tool '{name}' had unsupported type '{tool_type}', using '{preferred_tool_type or 'docker_container'}'."
+                )
+                tool_type = preferred_tool_type or "docker_container"
                 if tool_type not in allowed_types:
                     tool_type = "docker_container"
 
@@ -481,7 +515,8 @@ class WorkflowSynthesisService:
             normalized.append(
                 {
                     "name": name[:100],
-                    "description": str(item.get("description") or "").strip() or f"Synthesized {tool_type} tool",
+                    "description": str(item.get("description") or "").strip()
+                    or f"Synthesized {tool_type} tool",
                     "tool_type": tool_type,
                     "parameters_schema": parameters_schema,
                     "config": config,
@@ -504,7 +539,9 @@ class WorkflowSynthesisService:
             return None
 
         draft = item if isinstance(item, dict) else {}
-        name = str(draft.get("name") or workflow_tool_name or f"Run {workflow_name}").strip()
+        name = str(
+            draft.get("name") or workflow_tool_name or f"Run {workflow_name}"
+        ).strip()
         if not name:
             name = "Run Workflow"
         config = draft.get("config")
@@ -525,7 +562,9 @@ class WorkflowSynthesisService:
 
         return {
             "name": name[:100],
-            "description": str(draft.get("description") or f"Run workflow '{workflow_name}'").strip(),
+            "description": str(
+                draft.get("description") or f"Run workflow '{workflow_name}'"
+            ).strip(),
             "tool_type": tool_type,
             "parameters_schema": parameters_schema,
             "config": config,
@@ -537,7 +576,9 @@ class WorkflowSynthesisService:
         cleaned = cleaned.strip("_") or "node"
         return cleaned[:50]
 
-    def _normalize_config(self, node: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_config(
+        self, node: Dict[str, Any], config: Dict[str, Any]
+    ) -> Dict[str, Any]:
         normalized = dict(config)
 
         if "inputMapping" in normalized and "input_mapping" not in normalized:
@@ -558,7 +599,9 @@ class WorkflowSynthesisService:
 
         return normalized
 
-    def _ensure_start_end_nodes(self, normalized: Dict[str, Any], warnings: List[str]) -> None:
+    def _ensure_start_end_nodes(
+        self, normalized: Dict[str, Any], warnings: List[str]
+    ) -> None:
         nodes = normalized["nodes"]
         node_ids = {n["node_id"] for n in nodes}
         has_start = any(n["node_type"] == "start" for n in nodes)
@@ -599,11 +642,16 @@ class WorkflowSynthesisService:
             )
             warnings.append("Added missing end node.")
 
-    def _prune_invalid_edges(self, normalized: Dict[str, Any], warnings: List[str]) -> None:
+    def _prune_invalid_edges(
+        self, normalized: Dict[str, Any], warnings: List[str]
+    ) -> None:
         node_ids = {n["node_id"] for n in normalized["nodes"]}
         valid_edges = []
         for edge in normalized["edges"]:
-            if edge["source_node_id"] not in node_ids or edge["target_node_id"] not in node_ids:
+            if (
+                edge["source_node_id"] not in node_ids
+                or edge["target_node_id"] not in node_ids
+            ):
                 warnings.append(
                     f"Removed edge from '{edge['source_node_id']}' to '{edge['target_node_id']}' (unknown node)."
                 )
@@ -611,10 +659,15 @@ class WorkflowSynthesisService:
             valid_edges.append(edge)
         normalized["edges"] = valid_edges
 
-    def _auto_connect_orphans(self, normalized: Dict[str, Any], warnings: List[str]) -> None:
+    def _auto_connect_orphans(
+        self, normalized: Dict[str, Any], warnings: List[str]
+    ) -> None:
         nodes = normalized["nodes"]
         edges = normalized["edges"]
-        edge_keys = {(e["source_node_id"], e["target_node_id"], e.get("source_handle")) for e in edges}
+        edge_keys = {
+            (e["source_node_id"], e["target_node_id"], e.get("source_handle"))
+            for e in edges
+        }
 
         if not edges and len(nodes) >= 2:
             ordered = self._ordered_nodes(nodes)

@@ -29,11 +29,18 @@ class AutonomousRnDEvalGradeJobsRequest(BaseModel):
     trials: List[AutonomousRnDEvalTrialBinding] = Field(
         ..., min_length=1, max_length=100
     )
+    persist: bool = False
+    label: Optional[str] = Field(None, min_length=1, max_length=200)
 
     @field_validator("suite_id")
     @classmethod
     def normalize_suite_id(cls, value: str) -> str:
         return value.strip()
+
+    @field_validator("label")
+    @classmethod
+    def normalize_label(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() or None if value else None
 
     @model_validator(mode="after")
     def unique_task_bindings(self):
@@ -47,10 +54,43 @@ class AutonomousRnDEvalGradeJobsResponse(BaseModel):
     report: Dict[str, Any]
     evaluated_job_count: int
     task_bindings: Dict[str, List[str]]
+    run_id: Optional[UUID] = None
 
 
 class AutonomousRnDEvalSuiteListResponse(BaseModel):
     suites: List[Dict[str, Any]]
+
+
+class AutonomousRnDEvalRunSummary(BaseModel):
+    id: UUID
+    suite_id: str
+    suite_name: str
+    suite_version: int
+    label: Optional[str] = None
+    source: str
+    is_baseline: bool
+    task_count: int
+    trial_count: int
+    mean_score: float
+    pass_at_k: float
+    pass_pow_k: float
+    created_at: datetime
+
+    class Config:
+        from_attributes = True
+
+
+class AutonomousRnDEvalRunListResponse(BaseModel):
+    runs: List[AutonomousRnDEvalRunSummary]
+
+
+class AutonomousRnDEvalRunDetailResponse(AutonomousRnDEvalRunSummary):
+    report: Dict[str, Any]
+    task_bindings: Optional[Dict[str, List[str]]] = None
+
+
+class AutonomousRnDEvalRunComparisonResponse(BaseModel):
+    comparison: Dict[str, Any]
 
 
 class AutonomousRnDVerificationLaunchRequest(BaseModel):

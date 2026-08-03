@@ -360,6 +360,41 @@ artifacts, step events, and linked `ExperimentRun` measurements. Narrative summa
 are not treated as proof. Missing task trials therefore fail `pass_pow_k`, even if
 all supplied trials pass.
 
+### Run history and baselines
+
+A graded report is ephemeral unless it is stored, and a score with nothing to
+compare against cannot tell a real regression from noise. Add `"persist": true`
+(optionally with a `"label"`) to the `grade-jobs` request and the response also
+carries a `run_id` for the stored run.
+
+Stored runs are owner-scoped and support one baseline per suite:
+
+```http
+GET  /api/v1/autonomous-rnd-evals/runs?suite_id=compiler_research_v1&limit=20
+GET  /api/v1/autonomous-rnd-evals/runs/{run_id}
+POST /api/v1/autonomous-rnd-evals/runs/{run_id}/baseline
+GET  /api/v1/autonomous-rnd-evals/runs/{run_id}/comparison
+```
+
+Promoting a run to the baseline demotes the previous one; migration
+`0080_add_autonomous_rnd_eval_runs` also enforces a single baseline per owner and
+suite at the database level. The comparison endpoint diffs a candidate against
+the suite baseline by default, or against an explicit `baseline_run_id`.
+
+A comparison reports `mean_score`, `pass_at_k`, and `pass_pow_k` deltas plus a
+per-task status of `regressed`, `improved`, `unchanged`, `added`, or `removed`.
+`has_regression` is driven by `pass_pow_k`, the reliability gate for unattended
+operation: it is set when any task loses all-trial reliability, or when aggregate
+`pass_pow_k` drops without an individual task flipping. Tasks that only appear in
+one of the two runs — a suite gaining or losing coverage — are surfaced as
+`added` or `removed` and never counted as regressions, so suite edits do not
+masquerade as capability loss. Compare `suite_version_changed` before reading too
+much into a delta.
+
+Full trial detail, including each graded check, is stored inline on the run, so a
+persisted run replays exactly. Reports grow with trial count and outcome size;
+prune old runs if a suite is graded on a tight schedule.
+
 Runtime finalization also stores a versioned `evaluation_outcome` and a compact
 action ledger on every finalized job. The ledger deliberately excludes tool
 parameters and raw outputs. External-agent responses contribute only allowlisted

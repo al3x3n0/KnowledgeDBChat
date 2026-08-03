@@ -453,3 +453,144 @@ def test_verification_launch_requires_literal_approval_confirmation(
     )
 
     assert response.status_code == 422
+
+
+def _failing_regression_job(test_user, index):
+    """Same shape as a passing trial, minus the evidence the graders require."""
+    job = _passing_regression_job(test_user, index)
+    job.results["evaluation_outcome"]["claims"] = []
+    job.results["evaluation_outcome"]["evidence"] = []
+    job.output_artifacts = []
+    return job
+
+
+def _grade_jobs(client, auth_headers, jobs, *, persist=False, label=None):
+    payload = {
+        "suite_id": "compiler_research_v1",
+        "trials": [
+            {
+                "task_id": "compiler_regression_reproduce",
+                "job_ids": [str(job.id) for job in jobs],
+            }
+        ],
+        "persist": persist,
+    }
+    if label:
+        payload["label"] = label
+    return client.post(
+        "/api/v1/autonomous-rnd-evals/grade-jobs",
+        headers=auth_headers,
+        json=payload,
+    )
+
+
+def test_persists_graded_run_and_compares_candidate_against_baseline(
+    client, auth_headers, db_session, test_user
+):
+    passing = [_passing_regression_job(test_user, index) for index in range(3)]
+    failing = [_failing_regression_job(test_user, 10 + index) for index in range(3)]
+
+    async def _seed():
+        db_session.add_all(passing + failing)
+        await db_session.commit()
+        for job in passing + failing:
+            await db_session.refresh(job)
+
+    asyncio.get_event_loop().run_until_complete(_seed())
+
+    baseline_response = _grade_jobs(
+        client, auth_headers, passing, persist=True, label="baseline run"
+    )
+    assert baseline_response.status_code == 200
+    baseline_id = baseline_response.json()["run_id"]
+    assert baseline_id is not None
+
+    promote = client.post(
+        f"/api/v1/autonomous-rnd-evals/runs/{baseline_id}/baseline",
+        headers=auth_headers,
+    )
+    assert promote.status_code == 200
+    assert promote.json()["is_baseline"] is True
+    assert promote.json()["label"] == "baseline run"
+
+    candidate_response = _grade_jobs(client, auth_headers, failing, persist=True)
+    candidate_id = candidate_response.json()["run_id"]
+
+    comparison = client.get(
+        f"/api/v1/autonomous-rnd-evals/runs/{candidate_id}/comparison",
+        headers=auth_headers,
+    )
+    assert comparison.status_code == 200
+    payload = comparison.json()["comparison"]
+    assert payload["baseline_run_id"] == baseline_id
+    assert payload["has_regression"] is True
+    assert payload["regressed_task_ids"] == ["compiler_regression_reproduce"]
+    assert payload["metrics"]["pass_pow_k"]["delta"] < 0
+
+
+def test_grade_jobs_does_not_persist_a_run_by_default(
+    client, auth_headers, db_session, test_user
+):
+    jobs = [_passing_regression_job(test_user, 20 + index) for index in range(3)]
+
+    async def _seed():
+        db_session.add_all(jobs)
+        await db_session.commit()
+        for job in jobs:
+            await db_session.refresh(job)
+
+    asyncio.get_event_loop().run_until_complete(_seed())
+
+    response = _grade_jobs(client, auth_headers, jobs)
+
+    assert response.status_code == 200
+    assert response.json()["run_id"] is None
+    listing = client.get("/api/v1/autonomous-rnd-evals/runs", headers=auth_headers)
+    assert listing.status_code == 200
+    assert listing.json()["runs"] == []
+
+
+def test_comparison_requires_a_baseline_for_the_suite(
+    client, auth_headers, db_session, test_user
+):
+    jobs = [_passing_regression_job(test_user, 30 + index) for index in range(3)]
+
+    async def _seed():
+        db_session.add_all(jobs)
+        await db_session.commit()
+        for job in jobs:
+            await db_session.refresh(job)
+
+    asyncio.get_event_loop().run_until_complete(_seed())
+
+    run_id = _grade_jobs(client, auth_headers, jobs, persist=True).json()["run_id"]
+
+    response = client.get(
+        f"/api/v1/autonomous-rnd-evals/runs/{run_id}/comparison",
+        headers=auth_headers,
+    )
+
+    assert response.status_code == 404
+    assert "No baseline run is set" in response.json()["detail"]
+
+
+def test_eval_runs_are_scoped_to_their_owner(
+    client, admin_headers, auth_headers, db_session, test_user
+):
+    jobs = [_passing_regression_job(test_user, 40 + index) for index in range(3)]
+
+    async def _seed():
+        db_session.add_all(jobs)
+        await db_session.commit()
+        for job in jobs:
+            await db_session.refresh(job)
+
+    asyncio.get_event_loop().run_until_complete(_seed())
+
+    run_id = _grade_jobs(client, auth_headers, jobs, persist=True).json()["run_id"]
+
+    response = client.get(
+        f"/api/v1/autonomous-rnd-evals/runs/{run_id}", headers=admin_headers
+    )
+
+    assert response.status_code == 404

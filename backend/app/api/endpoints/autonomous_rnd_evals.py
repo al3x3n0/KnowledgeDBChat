@@ -1,7 +1,7 @@
 """Authenticated evaluation of persisted autonomous R&D job trajectories."""
 
 from collections import defaultdict
-from typing import Dict, List
+from typing import Dict, List, Optional
 from uuid import UUID, uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -11,6 +11,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
 from app.models.agent_job import AgentJob
+from app.models.autonomous_rnd_eval_run import EVAL_RUN_SOURCE_GRADE_JOBS
 from app.models.autonomous_rnd_verification_audit_snapshot import (
     AutonomousRndVerificationAuditSnapshot,
 )
@@ -19,6 +20,10 @@ from app.models.user import User
 from app.schemas.autonomous_rnd_eval import (
     AutonomousRnDEvalGradeJobsRequest,
     AutonomousRnDEvalGradeJobsResponse,
+    AutonomousRnDEvalRunComparisonResponse,
+    AutonomousRnDEvalRunDetailResponse,
+    AutonomousRnDEvalRunListResponse,
+    AutonomousRnDEvalRunSummary,
     AutonomousRnDEvalSuiteListResponse,
     AutonomousRnDJobOutcomeResponse,
     AutonomousRnDVerificationAuditEnvelope,
@@ -28,6 +33,10 @@ from app.schemas.autonomous_rnd_eval import (
     AutonomousRnDVerificationAuditVerifyResponse,
     AutonomousRnDVerificationLaunchRequest,
     AutonomousRnDVerificationLaunchResponse,
+)
+from app.services.autonomous_rnd_eval_run_service import (
+    EvalRunError,
+    autonomous_rnd_eval_run_service,
 )
 from app.services.autonomous_rnd_eval_service import (
     EvalDefinitionError,
@@ -415,11 +424,111 @@ async def grade_autonomous_rnd_jobs(
         ]
 
     report = autonomous_rnd_eval_harness.grade_suite_outcomes(suite, outcomes)
+    run_id = None
+    if request.persist:
+        run = await autonomous_rnd_eval_run_service.record_run(
+            db,
+            user_id=current_user.id,
+            report=report,
+            task_bindings=task_bindings,
+            source=EVAL_RUN_SOURCE_GRADE_JOBS,
+            label=request.label,
+        )
+        await db.commit()
+        run_id = run.id
     return {
         "report": report,
         "evaluated_job_count": len(requested_job_ids),
         "task_bindings": task_bindings,
+        "run_id": run_id,
     }
+
+
+@router.get("/runs", response_model=AutonomousRnDEvalRunListResponse)
+async def list_autonomous_rnd_eval_runs(
+    suite_id: Optional[str] = None,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    runs = await autonomous_rnd_eval_run_service.list_runs(
+        db,
+        user_id=current_user.id,
+        suite_id=suite_id,
+        limit=limit,
+    )
+    return {"runs": runs}
+
+
+@router.get("/runs/{run_id}", response_model=AutonomousRnDEvalRunDetailResponse)
+async def get_autonomous_rnd_eval_run(
+    run_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    run = await autonomous_rnd_eval_run_service.get_run(
+        db, user_id=current_user.id, run_id=run_id
+    )
+    if run is None:
+        raise HTTPException(status_code=404, detail="Evaluation run was not found")
+    return run
+
+
+@router.post("/runs/{run_id}/baseline", response_model=AutonomousRnDEvalRunSummary)
+async def set_autonomous_rnd_eval_baseline(
+    run_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    try:
+        run = await autonomous_rnd_eval_run_service.set_baseline(
+            db, user_id=current_user.id, run_id=run_id
+        )
+    except EvalRunError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    await db.commit()
+    return run
+
+
+@router.get(
+    "/runs/{run_id}/comparison",
+    response_model=AutonomousRnDEvalRunComparisonResponse,
+)
+async def compare_autonomous_rnd_eval_run(
+    run_id: UUID,
+    baseline_run_id: Optional[UUID] = None,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    candidate = await autonomous_rnd_eval_run_service.get_run(
+        db, user_id=current_user.id, run_id=run_id
+    )
+    if candidate is None:
+        raise HTTPException(status_code=404, detail="Evaluation run was not found")
+
+    if baseline_run_id is None:
+        baseline = await autonomous_rnd_eval_run_service.get_baseline(
+            db, user_id=current_user.id, suite_id=candidate.suite_id
+        )
+        if baseline is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"No baseline run is set for suite '{candidate.suite_id}'",
+            )
+    else:
+        baseline = await autonomous_rnd_eval_run_service.get_run(
+            db, user_id=current_user.id, run_id=baseline_run_id
+        )
+        if baseline is None:
+            raise HTTPException(status_code=404, detail="Baseline run was not found")
+
+    try:
+        comparison = autonomous_rnd_eval_run_service.compare(
+            baseline=baseline, candidate=candidate
+        )
+    except EvalRunError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    return {"comparison": comparison}
 
 
 @router.post(

@@ -20,6 +20,11 @@ from app.models.user import User
 from app.schemas.autonomous_rnd_eval import (
     AutonomousRnDEvalGradeJobsRequest,
     AutonomousRnDEvalGradeJobsResponse,
+    AutonomousRnDEvalLaunchDetailResponse,
+    AutonomousRnDEvalLaunchListResponse,
+    AutonomousRnDEvalLaunchRequest,
+    AutonomousRnDEvalLaunchResponse,
+    AutonomousRnDEvalLaunchSummary,
     AutonomousRnDEvalRunComparisonResponse,
     AutonomousRnDEvalRunDetailResponse,
     AutonomousRnDEvalRunListResponse,
@@ -33,6 +38,10 @@ from app.schemas.autonomous_rnd_eval import (
     AutonomousRnDVerificationAuditVerifyResponse,
     AutonomousRnDVerificationLaunchRequest,
     AutonomousRnDVerificationLaunchResponse,
+)
+from app.services.autonomous_rnd_eval_launch_service import (
+    EvalLaunchError,
+    autonomous_rnd_eval_launch_service,
 )
 from app.services.autonomous_rnd_eval_run_service import (
     EvalRunError,
@@ -442,6 +451,91 @@ async def grade_autonomous_rnd_jobs(
         "task_bindings": task_bindings,
         "run_id": run_id,
     }
+
+
+@router.post("/launches", response_model=AutonomousRnDEvalLaunchResponse)
+async def launch_autonomous_rnd_eval_suite(
+    request: AutonomousRnDEvalLaunchRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    try:
+        suite = autonomous_rnd_eval_harness.load_builtin_suite(request.suite_id)
+    except EvalDefinitionError as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+
+    try:
+        launch, jobs = await autonomous_rnd_eval_launch_service.launch(
+            db,
+            user_id=current_user.id,
+            suite=suite,
+            trials_override=request.trials_per_task,
+            label=request.label,
+            config_overrides=request.config,
+        )
+    except EvalLaunchError as exc:
+        raise HTTPException(status_code=exc.status_code, detail=str(exc)) from exc
+
+    await db.commit()
+    await db.refresh(launch)
+
+    queued_job_count = 0
+    if request.start_immediately:
+        from app.tasks.agent_job_tasks import execute_agent_job_task
+        from app.tasks.autonomous_rnd_eval_tasks import (
+            finalize_autonomous_rnd_eval_launch,
+        )
+
+        for job in jobs:
+            task_result = execute_agent_job_task.delay(
+                str(job.id), str(current_user.id)
+            )
+            job.celery_task_id = str(
+                getattr(task_result, "id", "") or f"queued:{job.id}"
+            )
+            queued_job_count += 1
+        await db.commit()
+        finalize_autonomous_rnd_eval_launch.delay(str(launch.id))
+
+    payload = AutonomousRnDEvalLaunchSummary.model_validate(launch).model_dump()
+    payload["queued_job_count"] = queued_job_count
+    return payload
+
+
+@router.get("/launches", response_model=AutonomousRnDEvalLaunchListResponse)
+async def list_autonomous_rnd_eval_launches(
+    suite_id: Optional[str] = None,
+    limit: int = 20,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    launches = await autonomous_rnd_eval_launch_service.list_launches(
+        db,
+        user_id=current_user.id,
+        suite_id=suite_id,
+        limit=limit,
+    )
+    return {"launches": launches}
+
+
+@router.get(
+    "/launches/{launch_id}",
+    response_model=AutonomousRnDEvalLaunchDetailResponse,
+)
+async def get_autonomous_rnd_eval_launch(
+    launch_id: UUID,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    launch = await autonomous_rnd_eval_launch_service.get_launch(
+        db, user_id=current_user.id, launch_id=launch_id
+    )
+    if launch is None:
+        raise HTTPException(status_code=404, detail="Evaluation launch was not found")
+    progress = await autonomous_rnd_eval_launch_service.progress(db, launch=launch)
+    payload = AutonomousRnDEvalLaunchSummary.model_validate(launch).model_dump()
+    payload["progress"] = progress
+    return payload
 
 
 @router.get("/runs", response_model=AutonomousRnDEvalRunListResponse)

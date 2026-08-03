@@ -37,6 +37,7 @@ celery_app = Celery(
         "app.tasks.latex_maintenance_tasks",
         "app.tasks.compops_sync_tasks",
         "app.tasks.agent_external_call_outbox_tasks",
+        "app.tasks.autonomous_rnd_eval_tasks",
     ],
 )
 

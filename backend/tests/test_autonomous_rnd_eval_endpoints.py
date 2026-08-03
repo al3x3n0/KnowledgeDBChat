@@ -594,3 +594,79 @@ def test_eval_runs_are_scoped_to_their_owner(
     )
 
     assert response.status_code == 404
+
+
+def test_launch_endpoint_is_disabled_by_default(client, auth_headers):
+    response = client.post(
+        "/api/v1/autonomous-rnd-evals/launches",
+        headers=auth_headers,
+        json={"suite_id": "compiler_research_v1", "start_immediately": False},
+    )
+
+    assert response.status_code == 403
+    assert "AUTONOMOUS_RND_EVAL_LAUNCH_ENABLED" in response.json()["detail"]
+
+
+def test_launch_endpoint_creates_trials_and_reports_progress(
+    client, auth_headers, monkeypatch
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "AUTONOMOUS_RND_EVAL_LAUNCH_ENABLED", True)
+
+    response = client.post(
+        "/api/v1/autonomous-rnd-evals/launches",
+        headers=auth_headers,
+        json={
+            "suite_id": "compiler_research_v1",
+            "trials_per_task": 1,
+            "label": "smoke",
+            "start_immediately": False,
+        },
+    )
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["status"] == "running"
+    assert payload["job_count"] == 3
+    assert payload["queued_job_count"] == 0
+    assert payload["label"] == "smoke"
+    assert payload["run_id"] is None
+
+    detail = client.get(
+        f"/api/v1/autonomous-rnd-evals/launches/{payload['id']}",
+        headers=auth_headers,
+    )
+    assert detail.status_code == 200
+    progress = detail.json()["progress"]
+    assert progress["job_count"] == 3
+    assert progress["settled_count"] == 0
+    assert progress["is_ready"] is False
+
+    listing = client.get("/api/v1/autonomous-rnd-evals/launches", headers=auth_headers)
+    assert listing.status_code == 200
+    assert [item["id"] for item in listing.json()["launches"]] == [payload["id"]]
+
+
+def test_launches_are_scoped_to_their_owner(
+    client, auth_headers, admin_headers, monkeypatch
+):
+    from app.core.config import settings
+
+    monkeypatch.setattr(settings, "AUTONOMOUS_RND_EVAL_LAUNCH_ENABLED", True)
+
+    launch_id = client.post(
+        "/api/v1/autonomous-rnd-evals/launches",
+        headers=auth_headers,
+        json={
+            "suite_id": "compiler_research_v1",
+            "trials_per_task": 1,
+            "start_immediately": False,
+        },
+    ).json()["id"]
+
+    response = client.get(
+        f"/api/v1/autonomous-rnd-evals/launches/{launch_id}", headers=admin_headers
+    )
+
+    assert response.status_code == 404

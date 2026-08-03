@@ -93,6 +93,55 @@ class AutonomousRnDEvalRunComparisonResponse(BaseModel):
     comparison: Dict[str, Any]
 
 
+class AutonomousRnDEvalLaunchRequest(BaseModel):
+    suite_id: str = Field("compiler_research_v1", min_length=1, max_length=200)
+    trials_per_task: Optional[int] = Field(None, ge=1, le=20)
+    label: Optional[str] = Field(None, min_length=1, max_length=200)
+    config: Optional[Dict[str, Any]] = None
+    start_immediately: bool = True
+
+    @field_validator("suite_id")
+    @classmethod
+    def normalize_suite_id(cls, value: str) -> str:
+        return value.strip()
+
+    @field_validator("label")
+    @classmethod
+    def normalize_label(cls, value: Optional[str]) -> Optional[str]:
+        return value.strip() or None if value else None
+
+
+class AutonomousRnDEvalLaunchSummary(BaseModel):
+    id: UUID
+    suite_id: str
+    suite_name: str
+    suite_version: int
+    label: Optional[str] = None
+    status: str
+    trials_per_task: int
+    job_count: int
+    task_bindings: Dict[str, List[str]]
+    run_id: Optional[UUID] = None
+    error: Optional[str] = None
+    created_at: datetime
+    completed_at: Optional[datetime] = None
+
+    class Config:
+        from_attributes = True
+
+
+class AutonomousRnDEvalLaunchResponse(AutonomousRnDEvalLaunchSummary):
+    queued_job_count: int = 0
+
+
+class AutonomousRnDEvalLaunchDetailResponse(AutonomousRnDEvalLaunchSummary):
+    progress: Dict[str, Any]
+
+
+class AutonomousRnDEvalLaunchListResponse(BaseModel):
+    launches: List[AutonomousRnDEvalLaunchSummary]
+
+
 class AutonomousRnDVerificationLaunchRequest(BaseModel):
     approval_confirmed: Literal[True]
     approval_note: str = Field(..., min_length=3, max_length=2000)

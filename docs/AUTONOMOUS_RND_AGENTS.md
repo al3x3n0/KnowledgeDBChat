@@ -360,6 +360,45 @@ artifacts, step events, and linked `ExperimentRun` measurements. Narrative summa
 are not treated as proof. Missing task trials therefore fail `pass_pow_k`, even if
 all supplied trials pass.
 
+### Launching a suite as real trials
+
+Binding job ids to tasks by hand only works if an operator already launched
+every trial. A launch does the fan-out instead: it creates `trials` agent jobs
+per suite task, tracks them as one unit, and grades the whole set once every
+trial reaches a terminal state.
+
+```http
+POST /api/v1/autonomous-rnd-evals/launches
+{
+  "suite_id": "compiler_research_v1",
+  "trials_per_task": 3,
+  "label": "nightly",
+  "start_immediately": true
+}
+
+GET /api/v1/autonomous-rnd-evals/launches
+GET /api/v1/autonomous-rnd-evals/launches/{launch_id}
+```
+
+Fan-out is unattended agent execution that costs real tokens and sandbox time,
+so it follows the same default-off policy as the other dangerous capabilities:
+
+- `AUTONOMOUS_RND_EVAL_LAUNCH_ENABLED` (default `false`) gates the endpoint
+- `AUTONOMOUS_RND_EVAL_MAX_TRIAL_JOBS` (default `30`) caps one launch; a request
+  above the cap is rejected before any job is created
+- `AUTONOMOUS_RND_EVAL_TRIAL_MAX_ITERATIONS` and
+  `AUTONOMOUS_RND_EVAL_TRIAL_MAX_RUNTIME_MINUTES` bound each trial
+
+Each trial job carries an `autonomous_rnd_eval` block in its config recording
+the launch, suite, task, trial index, and seed, so a trial is identifiable from
+the job alone. `finalize_autonomous_rnd_eval_launch` polls every 60 seconds and
+grades the launch once the last trial settles, writing a run with
+`source: "launch"` that compares against a baseline like any other run. It gives
+up after roughly four hours and leaves the launch marked failed.
+
+A trial job that was deleted before grading counts as a failed trial rather than
+a skipped one — dropping it would inflate `pass_pow_k` for its task.
+
 ### Run history and baselines
 
 A graded report is ephemeral unless it is stored, and a score with nothing to

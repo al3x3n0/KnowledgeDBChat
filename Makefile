@@ -71,7 +71,7 @@ test-backend: ## Run backend tests
 	$(DC) exec backend pytest
 
 test-rnd-evals: ## Run autonomous R&D evaluation and trajectory regression tests
-	$(DC) exec -T backend pytest -q --no-cov tests/test_autonomous_rnd_eval_service.py tests/test_autonomous_rnd_eval_run_service.py tests/test_autonomous_rnd_evidence_verification_service.py tests/test_autonomous_rnd_verification_planner_service.py tests/test_autonomous_rnd_trajectory_service.py tests/test_autonomous_rnd_verification_audit_service.py tests/test_autonomous_rnd_eval_endpoints.py tests/test_agent_experiment_runner_service.py tests/test_benchmark_assets.py
+	$(DC) exec -T backend pytest -q --no-cov tests/test_autonomous_rnd_eval_service.py tests/test_autonomous_rnd_eval_run_service.py tests/test_autonomous_rnd_eval_launch_service.py tests/test_autonomous_rnd_eval_tasks.py tests/test_autonomous_rnd_evidence_verification_service.py tests/test_autonomous_rnd_verification_planner_service.py tests/test_autonomous_rnd_trajectory_service.py tests/test_autonomous_rnd_verification_audit_service.py tests/test_autonomous_rnd_eval_endpoints.py tests/test_agent_experiment_runner_service.py tests/test_benchmark_assets.py
 
 test-external-agents: ## Run external-agent gateway and registry regression tests
 	$(DC) exec -T backend pytest -q --no-cov tests/test_external_agent_gateway_service.py tests/test_external_agents_endpoints.py

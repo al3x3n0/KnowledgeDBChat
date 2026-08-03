@@ -108,6 +108,12 @@ class Settings(BaseSettings):
     # When omitted, a stable development seed is domain-derived from SECRET_KEY.
     AUTONOMOUS_RND_AUDIT_SIGNING_KEY_ID: str = "knowledgeops-ed25519-v1"
     AUTONOMOUS_RND_AUDIT_SIGNING_PRIVATE_KEY: Optional[str] = None
+    # Launching an evaluation suite fans out into many unattended agent jobs,
+    # so it stays opt-in and hard-capped on total trial jobs per launch.
+    AUTONOMOUS_RND_EVAL_LAUNCH_ENABLED: bool = False
+    AUTONOMOUS_RND_EVAL_MAX_TRIAL_JOBS: int = 30
+    AUTONOMOUS_RND_EVAL_TRIAL_MAX_ITERATIONS: int = 25
+    AUTONOMOUS_RND_EVAL_TRIAL_MAX_RUNTIME_MINUTES: int = 30
     # Exact hostnames permitted to resolve to private/loopback addresses through
     # the external-system gateway (for example a Docker-internal CompOps API).
     EXTERNAL_GATEWAY_PRIVATE_HOST_ALLOWLIST: str = ""

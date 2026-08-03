@@ -21,6 +21,7 @@ from .agent_job import (
 from .agent_tool_prior import AgentToolPrior
 from .ai_hub_recommendation_feedback import AIHubRecommendationFeedback
 from .artifact_draft import ArtifactDraft
+from .autonomous_rnd_eval_launch import AutonomousRndEvalLaunch
 from .autonomous_rnd_eval_run import AutonomousRndEvalRun
 from .autonomous_rnd_verification_audit_snapshot import (
     AutonomousRndVerificationAuditSnapshot,
@@ -149,6 +150,7 @@ __all__ = [
     # Repository report models
     "RepoReportJob",
     "ArtifactDraft",
+    "AutonomousRndEvalLaunch",
     "AutonomousRndEvalRun",
     "AutonomousRndVerificationAuditSnapshot",
     "RetrievalTrace",

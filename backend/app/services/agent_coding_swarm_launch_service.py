@@ -18,9 +18,7 @@ from app.schemas.agent_job import (
     AgentJobQuickStartBuildBreakSwarmRequest,
     AgentJobQuickStartFrontendRegressionSwarmRequest,
 )
-from app.services.agent_coding_harness_service import (
-    agent_coding_harness_service,
-)
+from app.services.agent_coding_harness_service import agent_coding_harness_service
 from app.services.agent_coding_workspace_session_service import (
     agent_coding_workspace_session_service,
 )

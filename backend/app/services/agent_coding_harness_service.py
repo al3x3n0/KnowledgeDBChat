@@ -8,7 +8,6 @@ from typing import Any, Dict
 
 from app.services.agent_scope_service import normalize_scope_config
 
-
 READ_TOOLS = [
     "clone_and_index_repo",
     "browse_repo_files",

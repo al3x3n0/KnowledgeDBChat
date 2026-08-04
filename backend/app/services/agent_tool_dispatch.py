@@ -2055,9 +2055,7 @@ def build_autonomous_workflow_provider(executor: Any) -> FunctionToolProvider:
     ) -> Any:
         from uuid import UUID as _UUID
 
-        from app.models.agent_external_call_outbox import (
-            AgentExternalCallOutbox,
-        )
+        from app.models.agent_external_call_outbox import AgentExternalCallOutbox
 
         try:
             outbox_id = _UUID(str(params.get("outbox_id") or "").strip())
@@ -3565,9 +3563,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         command = str(params.get("command", "")).strip()
         if not command:
             return {"error": "command is required"}
-        from app.services.agent_job_creation_service import (
-            agent_job_creation_service,
-        )
+        from app.services.agent_job_creation_service import agent_job_creation_service
 
         unsafe_commands = agent_job_creation_service.find_unsafe_commands([command])
         if unsafe_commands:

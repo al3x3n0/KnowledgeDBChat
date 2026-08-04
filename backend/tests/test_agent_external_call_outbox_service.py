@@ -15,9 +15,9 @@ from app.services.agent_external_call_outbox_service import (
 from app.services.agent_external_response_correlation_service import (
     AgentExternalResponseCorrelationService,
 )
+from app.services.agent_runtime_state_service import initialize_runtime_state
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.external_agent_gateway_service import ExternalAgentGatewayError
-from app.services.agent_runtime_state_service import initialize_runtime_state
 from app.tasks import agent_external_call_outbox_tasks
 from app.tasks.agent_job_tasks import execute_agent_job_task
 from tests.conftest import TestSessionLocal

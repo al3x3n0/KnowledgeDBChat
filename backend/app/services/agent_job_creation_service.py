@@ -13,11 +13,7 @@ from sqlalchemy import and_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_definition import AgentDefinition
-from app.models.agent_job import (
-    AgentJob,
-    AgentJobStatus,
-    AgentJobTemplate,
-)
+from app.models.agent_job import AgentJob, AgentJobStatus, AgentJobTemplate
 from app.schemas.agent_job import AgentJobCreate, AgentJobFromTemplate
 from app.services.agent_job_queue_helpers import extract_launch_mode
 from app.services.agent_job_templates import get_builtin_agent_job_template

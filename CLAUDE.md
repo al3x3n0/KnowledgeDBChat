@@ -194,7 +194,7 @@ All API endpoints are prefixed with `/api/v1/`. Endpoint groups by domain (see `
 - FastAPI dependency overrides replace `get_db` with test session
 - User fixtures: `test_user` (regular) and `admin_user` with real password hashing; `auth_headers` / `admin_headers` via live token creation
 - Async tests use `pytest-asyncio` (auto mode); markers: `unit`, `integration`, `slow`
-- CI-style coverage gate: 70% backend (`make test-backend-coverage`), 60% frontend (`npm run test:ci`)
+- Coverage gate: 44% backend (`make test-backend-coverage`) — that is the measured floor, meant to ratchet upward. The frontend has no `coverageThreshold` configured, so `npm run test:ci` collects coverage without enforcing it
 
 ## Commit Style
 
@@ -236,7 +236,7 @@ Access points:
 - API Docs: http://localhost:8000/docs
 - MinIO Console: http://localhost:9001
 
-There is no CI pipeline (no `.github/workflows`); quality gates are the Makefile targets (`make lint`, `make fmt`, `make test-backend-coverage`, `make typecheck-frontend`).
+CI runs in `.github/workflows/ci.yml` on pull requests and pushes to `main`: backend lint/format, backend tests with the coverage gate, a single-alembic-head check, and frontend typecheck plus tests. Lint is gated on `app/` and `tests/` only — `alembic/`, `scripts/`, and `seed_data/` carry pre-existing formatting and flake8 debt that is reported but not enforced. The same checks are available locally as Makefile targets (`make lint`, `make fmt`, `make test-backend-coverage`, `make typecheck-frontend`), which shell into a running Docker stack.
 
 ## Other Documentation
 

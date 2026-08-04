@@ -9,7 +9,6 @@ from sqlalchemy.orm import selectinload
 
 from app.models.benchmark import BenchmarkBaseline, BenchmarkCase, BenchmarkSuite
 
-
 BUILTIN_BENCHMARK_SUITES: List[Dict[str, Any]] = [
     {
         "suite": {
@@ -61,7 +60,11 @@ BUILTIN_BENCHMARK_SUITES: List[Dict[str, Any]] = [
                 "benchmark_query": "loop vectorize reduction codegen quality",
                 "compile_command_template": "clang -O3 -Rpass=loop-vectorize fixtures/llvm/loop_vectorize_reduction.c -S -o /tmp/loop_vectorize_reduction.s && clang -O3 fixtures/llvm/loop_vectorize_reduction.c -o /tmp/loop_vectorize_reduction",
                 "run_command_template": "/tmp/loop_vectorize_reduction --iters=50",
-                "expected_artifacts": ["compiler_logs", "ir_or_codegen_artifacts", "benchmark_output"],
+                "expected_artifacts": [
+                    "compiler_logs",
+                    "ir_or_codegen_artifacts",
+                    "benchmark_output",
+                ],
                 "metrics": [
                     {"name": "compile_time_ms", "direction": "lower_better"},
                     {"name": "runtime_ms", "direction": "lower_better"},
@@ -94,7 +97,11 @@ BUILTIN_BENCHMARK_SUITES: List[Dict[str, Any]] = [
                     "runtime_ms": 24.8,
                     "binary_size_bytes": 16384,
                 },
-                "environment_snapshot": {"os": "ubuntu-22.04", "cpu": "x86_64", "profile": "scientific-compiler-sandbox"},
+                "environment_snapshot": {
+                    "os": "ubuntu-22.04",
+                    "cpu": "x86_64",
+                    "profile": "scientific-compiler-sandbox",
+                },
                 "enabled": True,
                 "system_managed": True,
             }
@@ -151,7 +158,11 @@ BUILTIN_BENCHMARK_SUITES: List[Dict[str, Any]] = [
                 "benchmark_query": "simd hot loop instruction selection quality",
                 "compile_command_template": "clang -O3 fixtures/compiler/simd_hotloop.c -S -o /tmp/simd_hotloop.s && clang -O3 fixtures/compiler/simd_hotloop.c -o /tmp/simd_hotloop",
                 "run_command_template": "/tmp/simd_hotloop --repeat=100",
-                "expected_artifacts": ["compiler_logs", "ir_or_codegen_artifacts", "benchmark_output"],
+                "expected_artifacts": [
+                    "compiler_logs",
+                    "ir_or_codegen_artifacts",
+                    "benchmark_output",
+                ],
                 "metrics": [
                     {"name": "runtime_ms", "direction": "lower_better"},
                     {"name": "binary_size_bytes", "direction": "lower_better"},
@@ -269,14 +280,18 @@ BUILTIN_BENCHMARK_SUITES: List[Dict[str, Any]] = [
 
 def _suite_payload(raw: Dict[str, Any]) -> Dict[str, Any]:
     payload = deepcopy(raw)
-    payload["metadata_json"] = payload.pop("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
+    payload["metadata_json"] = (
+        payload.pop("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
+    )
     return payload
 
 
 def _case_payload(raw: Dict[str, Any], *, suite_id: str) -> Dict[str, Any]:
     payload = deepcopy(raw)
     payload["suite_id"] = suite_id
-    payload["metadata_json"] = payload.pop("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
+    payload["metadata_json"] = (
+        payload.pop("metadata", {}) if isinstance(payload.get("metadata"), dict) else {}
+    )
     return payload
 
 
@@ -336,7 +351,9 @@ async def list_benchmark_suites(
         stmt = stmt.where(BenchmarkSuite.track_type == str(track_type).strip().lower())
     if not include_disabled:
         stmt = stmt.where(BenchmarkSuite.enabled.is_(True))
-    stmt = stmt.order_by(BenchmarkSuite.system_managed.desc(), BenchmarkSuite.name.asc())
+    stmt = stmt.order_by(
+        BenchmarkSuite.system_managed.desc(), BenchmarkSuite.name.asc()
+    )
     rows = list((await db.execute(stmt)).scalars().all())
     return [row.to_dict() for row in rows]
 
@@ -353,7 +370,9 @@ async def get_benchmark_suite(
         return None
     stmt = (
         select(BenchmarkSuite)
-        .options(selectinload(BenchmarkSuite.cases), selectinload(BenchmarkSuite.baselines))
+        .options(
+            selectinload(BenchmarkSuite.cases), selectinload(BenchmarkSuite.baselines)
+        )
         .where(BenchmarkSuite.id == requested)
     )
     row = (await db.execute(stmt)).scalars().first()

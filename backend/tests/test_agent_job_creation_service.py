@@ -11,9 +11,7 @@ from app.services.agent_job_creation_service import (
     AgentJobCreationError,
     agent_job_creation_service,
 )
-from app.services.agent_job_templates import (
-    CLAUDE_CODE_BACKEND_TEMPLATE_ID,
-)
+from app.services.agent_job_templates import CLAUDE_CODE_BACKEND_TEMPLATE_ID
 
 
 @pytest.mark.asyncio

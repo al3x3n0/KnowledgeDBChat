@@ -8,12 +8,10 @@ from datetime import datetime
 from typing import Any, Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, HTTPException, status
 from sqlalchemy import and_, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.endpoints.auth import get_current_active_user
-from app.core.database import get_db
 from app.models.agent_job import AgentJob, AgentJobCheckpoint, AgentJobStatus
 from app.models.autonomy_decision_event import AutonomyDecisionEvent
 from app.models.coding_backlog import CodingBacklogItem

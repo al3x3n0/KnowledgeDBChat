@@ -8,11 +8,11 @@ from app.services.agent_coding_harness_service import (
     MUTATING_TOOL_NAMES,
     agent_coding_harness_service,
 )
-from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.agent_tool_dispatch import (
     AgentToolExecutionContext,
     build_autonomous_workspace_mutation_provider,
 )
+from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.coding_workspace_manager import (
     CodingWorkspace,
     CodingWorkspaceManager,

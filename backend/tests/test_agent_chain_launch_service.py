@@ -10,9 +10,7 @@ from app.schemas.agent_job import (
     AgentJobFromChainCreate,
     ChainStepConfig,
 )
-from app.services.agent_chain_definition_service import (
-    agent_chain_definition_service,
-)
+from app.services.agent_chain_definition_service import agent_chain_definition_service
 from app.services.agent_chain_launch_service import agent_chain_launch_service
 
 

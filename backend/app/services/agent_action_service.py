@@ -7,10 +7,8 @@ from typing import Any, Dict, Optional
 
 from loguru import logger
 
+from app.services.agent_execution_journal_service import agent_execution_journal_service
 from app.services.agent_tool_dispatch import AgentToolExecutionContext
-from app.services.agent_execution_journal_service import (
-    agent_execution_journal_service,
-)
 
 
 class AgentActionService:

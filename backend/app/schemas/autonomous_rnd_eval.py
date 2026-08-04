@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class AutonomousRnDEvalTrialBinding(BaseModel):
@@ -76,8 +76,7 @@ class AutonomousRnDEvalRunSummary(BaseModel):
     pass_pow_k: float
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AutonomousRnDEvalRunListResponse(BaseModel):
@@ -126,8 +125,7 @@ class AutonomousRnDEvalLaunchSummary(BaseModel):
     created_at: datetime
     completed_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AutonomousRnDEvalLaunchResponse(AutonomousRnDEvalLaunchSummary):

@@ -11,12 +11,12 @@ nothing here may be moved into it.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any
 
 from app.services import agent_tool_scoring
 
 
-def format_execution_plan(state: Dict[str, Any]) -> str:
+def format_execution_plan(state: dict[str, Any]) -> str:
     """Render current plan context for decision prompts."""
     plan = state.get("execution_plan")
     if not isinstance(plan, list) or not plan:
@@ -43,7 +43,7 @@ def format_execution_plan(state: Dict[str, Any]) -> str:
     if isinstance(tools, list) and tools:
         lines.append(f"- Suggested tools: {', '.join([str(t) for t in tools[:8]])}")
 
-    completed_titles: List[str] = []
+    completed_titles: list[str] = []
     for step in plan:
         if not isinstance(step, dict):
             continue
@@ -56,7 +56,7 @@ def format_execution_plan(state: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_causal_experiment_plan(state: Dict[str, Any]) -> str:
+def format_causal_experiment_plan(state: dict[str, Any]) -> str:
     """Render causal experiment context for research decisions."""
     plan = state.get("causal_experiment_plan")
     if not isinstance(plan, dict):
@@ -129,7 +129,7 @@ def format_causal_experiment_plan(state: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_subgoals(state: Dict[str, Any]) -> str:
+def format_subgoals(state: dict[str, Any]) -> str:
     """Render subgoal context for prompts."""
     subgoals = state.get("subgoals")
     if not isinstance(subgoals, list) or not subgoals:
@@ -155,7 +155,7 @@ def format_subgoals(state: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_critic(state: Dict[str, Any]) -> str:
+def format_critic(state: dict[str, Any]) -> str:
     """Render the latest critic guidance for prompts."""
     notes = state.get("critic_notes")
     if not isinstance(notes, list) or not notes:
@@ -189,7 +189,7 @@ def format_critic(state: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_tool_stats(state: Dict[str, Any]) -> str:
+def format_tool_stats(state: dict[str, Any]) -> str:
     """Render per-tool outcomes as prompt hints."""
     current_stats = (
         state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {}
@@ -201,7 +201,7 @@ def format_tool_stats(state: Dict[str, Any]) -> str:
     if not merged_stats:
         return ""
 
-    scored: List[Tuple[str, int, int, float]] = []
+    scored: list[tuple[str, int, int, float]] = []
     for tool, raw in merged_stats.items():
         if not isinstance(raw, dict):
             continue
@@ -234,7 +234,7 @@ def format_tool_stats(state: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_skill_profile(state: Dict[str, Any]) -> str:
+def format_skill_profile(state: dict[str, Any]) -> str:
     """Render active role profile for the planner prompt."""
     profile = (
         state.get("skill_profile")
@@ -264,7 +264,7 @@ def format_skill_profile(state: Dict[str, Any]) -> str:
     return "\n".join(lines)
 
 
-def format_feedback_learning(state: Dict[str, Any]) -> str:
+def format_feedback_learning(state: dict[str, Any]) -> str:
     """Render compact human-feedback guidance for prompt conditioning."""
     feedback = (
         state.get("feedback_learning")
@@ -312,7 +312,7 @@ def format_execution_graph(runtime: Any) -> str:
     if total_nodes <= 0 and total_edges <= 0:
         return ""
 
-    lines: List[str] = ["EXECUTION GRAPH:"]
+    lines: list[str] = ["EXECUTION GRAPH:"]
     lines.append(
         f"- Health: {str(health.get('status') or 'unknown')} "
         f"(severity={int(health.get('severity_score', 0) or 0)})"

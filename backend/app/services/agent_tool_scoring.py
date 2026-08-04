@@ -16,7 +16,7 @@ import hashlib
 import math
 import random
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any
 
 VISUALIZATION_TOKENS = ("chart", "diagram", "heatmap", "flowchart", "gantt", "drawio")
 RETRIEVAL_PREFIXES = ("search_", "find_", "get_", "list_")
@@ -56,11 +56,11 @@ def stable_fraction(key: str) -> float:
     return float(bucket % 1_000_000) / 1_000_000.0
 
 
-def normalize_tool_stats_map(raw: Any) -> Dict[str, Dict[str, Any]]:
+def normalize_tool_stats_map(raw: Any) -> dict[str, dict[str, Any]]:
     """Normalize a ``{tool: {success, failure, last_error}}`` map."""
     if not isinstance(raw, dict):
         return {}
-    out: Dict[str, Dict[str, Any]] = {}
+    out: dict[str, dict[str, Any]] = {}
     for tool, val in raw.items():
         tool_name = str(tool or "").strip()
         if not tool_name or not isinstance(val, dict):
@@ -74,10 +74,10 @@ def normalize_tool_stats_map(raw: Any) -> Dict[str, Dict[str, Any]]:
 
 
 def merge_tool_stats(
-    *stats_maps: Dict[str, Dict[str, Any]]
-) -> Dict[str, Dict[str, Any]]:
+    *stats_maps: dict[str, dict[str, Any]]
+) -> dict[str, dict[str, Any]]:
     """Merge tool stat maps by summing success and failure counts."""
-    merged: Dict[str, Dict[str, Any]] = {}
+    merged: dict[str, dict[str, Any]] = {}
     for smap in stats_maps:
         for tool, val in normalize_tool_stats_map(smap).items():
             cur = merged.get(tool) or {"success": 0, "failure": 0, "last_error": ""}
@@ -93,7 +93,7 @@ def merge_tool_stats(
     return merged
 
 
-def tool_success_ratio(stat: Dict[str, Any]) -> float:
+def tool_success_ratio(stat: dict[str, Any]) -> float:
     """Laplace-smoothed success ratio, so early samples do not dominate."""
     if not isinstance(stat, dict):
         return 0.0
@@ -102,7 +102,7 @@ def tool_success_ratio(stat: Dict[str, Any]) -> float:
     return (successes + 1.0) / float(successes + failures + 2.0)
 
 
-def tool_observation_count(stat: Dict[str, Any]) -> int:
+def tool_observation_count(stat: dict[str, Any]) -> int:
     """Total observed outcomes for a tool."""
     if not isinstance(stat, dict):
         return 0
@@ -131,7 +131,7 @@ def tool_family(tool: str) -> str:
 
 def feedback_tool_bias(
     tool_name: str,
-    state: Optional[Dict[str, Any]],
+    state: dict[str, Any] | None,
     *,
     weight: float = 0.08,
     max_abs: float = 0.30,
@@ -161,8 +161,8 @@ def feedback_tool_bias(
 def family_diversification_bonus(
     tool: str,
     *,
-    state: Optional[Dict[str, Any]],
-    selection_cfg: Optional[Dict[str, Any]],
+    state: dict[str, Any] | None,
+    selection_cfg: dict[str, Any] | None,
 ) -> float:
     """Boost underrepresented tool families based on recent action history."""
     cfg = selection_cfg if isinstance(selection_cfg, dict) else {}
@@ -175,7 +175,7 @@ def family_diversification_bonus(
         return 0.0
 
     window = max(1, int(cfg.get("family_diversification_window", 6) or 6))
-    family_counts: Dict[str, int] = {}
+    family_counts: dict[str, int] = {}
     for row in actions[-window:]:
         if not isinstance(row, dict):
             continue
@@ -204,15 +204,15 @@ def family_diversification_bonus(
 
 
 def tool_priority_score(
-    stat: Dict[str, Any],
+    stat: dict[str, Any],
     *,
     total_trials: int = 0,
-    selection_cfg: Optional[Dict[str, Any]] = None,
+    selection_cfg: dict[str, Any] | None = None,
     mode: str = "adaptive",
     tool_name: str = "",
     job_id: str = "",
     iteration: int = 0,
-    state: Optional[Dict[str, Any]] = None,
+    state: dict[str, Any] | None = None,
     context_tag: str = "",
 ) -> float:
     """Score a tool for adaptive selection.
@@ -298,23 +298,23 @@ def tool_priority_score(
 
 
 def rank_tools_for_selection(
-    tools: List[str],
-    combined_stats: Dict[str, Dict[str, Any]],
+    tools: list[str],
+    combined_stats: dict[str, dict[str, Any]],
     *,
-    selection_cfg: Optional[Dict[str, Any]] = None,
+    selection_cfg: dict[str, Any] | None = None,
     mode: str = "adaptive",
     job_id: str = "",
     iteration: int = 0,
-    state: Optional[Dict[str, Any]] = None,
+    state: dict[str, Any] | None = None,
     context_tag: str = "",
-) -> List[str]:
+) -> list[str]:
     """Rank candidate tools by score, then by quality, then deterministically."""
     if not isinstance(tools, list) or not tools:
         return []
     stats = combined_stats if isinstance(combined_stats, dict) else {}
     total_trials = sum(tool_observation_count(stats.get(t, {})) for t in tools)
 
-    scored: List[Tuple[str, float, float]] = []
+    scored: list[tuple[str, float, float]] = []
     for tool in [str(t).strip() for t in tools if str(t).strip()]:
         base_score = tool_priority_score(
             stats.get(tool, {}),
@@ -346,7 +346,7 @@ def rank_tools_for_selection(
 
 
 def is_tool_in_cooldown(
-    tool: str, cooldowns: Dict[str, Any], current_iteration: int
+    tool: str, cooldowns: dict[str, Any], current_iteration: int
 ) -> bool:
     """Return true while a tool is still cooling down at the given iteration."""
     if not isinstance(cooldowns, dict):
@@ -366,20 +366,22 @@ def is_tool_in_cooldown(
 def apply_decay_to_prior_counts(
     success_count: int,
     failure_count: int,
-    updated_at: Optional[datetime],
+    updated_at: datetime | None,
     *,
-    now: Optional[datetime] = None,
+    now: datetime | None = None,
     enabled: bool = True,
     half_life_days: float = 45.0,
     min_factor: float = 0.01,
-) -> Tuple[int, int]:
+) -> tuple[int, int]:
     """Exponentially decay prior counts by age, so stale evidence loses weight."""
     successes = max(0, int(success_count or 0))
     failures = max(0, int(failure_count or 0))
     if not enabled or updated_at is None:
         return successes, failures
 
-    now_dt = now or datetime.utcnow()
+    # datetime.utcnow() is deprecated from Python 3.12 and returns a naive value
+    # that silently misreads as local time; take an aware value and normalize.
+    now_dt = now or datetime.now(timezone.utc)
 
     def _to_utc_naive(value: datetime) -> datetime:
         if value.tzinfo is None:

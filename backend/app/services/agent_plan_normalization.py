@@ -13,13 +13,13 @@ inline versions it replaced. Nothing here touches a service, a database, or an
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any
 
 
 def normalize_execution_plan(
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     max_steps: int = 6,
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     """Normalize planner output into stable step objects."""
     if not isinstance(payload, dict):
         return []
@@ -29,7 +29,7 @@ def normalize_execution_plan(
     if not isinstance(raw_steps, list):
         return []
 
-    normalized: List[Dict[str, Any]] = []
+    normalized: list[dict[str, Any]] = []
     for item in raw_steps:
         if isinstance(item, str):
             title = item.strip()
@@ -76,9 +76,9 @@ def normalize_execution_plan(
     return normalized
 
 
-def fallback_execution_plan(job_type: str, max_steps: int = 6) -> List[Dict[str, Any]]:
+def fallback_execution_plan(job_type: str, max_steps: int = 6) -> list[dict[str, Any]]:
     """Create a deterministic fallback plan when LLM planning is unavailable."""
-    steps: List[Dict[str, Any]] = [
+    steps: list[dict[str, Any]] = [
         {
             "title": "Scope the goal and constraints",
             "objective": "Clarify objective, success criteria, and important constraints.",
@@ -134,11 +134,11 @@ def fallback_execution_plan(job_type: str, max_steps: int = 6) -> List[Dict[str,
 
 
 def normalize_causal_experiment_plan(
-    payload: Dict[str, Any],
+    payload: dict[str, Any],
     *,
     max_hypotheses: int = 4,
     max_experiments: int = 6,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Normalize causal experiment planner output into stable schema."""
     if not isinstance(payload, dict):
         return {}
@@ -146,7 +146,7 @@ def normalize_causal_experiment_plan(
     hypotheses_raw = payload.get("hypotheses")
     if not isinstance(hypotheses_raw, list):
         hypotheses_raw = []
-    hypotheses: List[Dict[str, Any]] = []
+    hypotheses: list[dict[str, Any]] = []
     for i, item in enumerate(hypotheses_raw, start=1):
         if isinstance(item, str):
             statement = item.strip()
@@ -195,7 +195,7 @@ def normalize_causal_experiment_plan(
     experiments_raw = payload.get("experiments")
     if not isinstance(experiments_raw, list):
         experiments_raw = []
-    experiments: List[Dict[str, Any]] = []
+    experiments: list[dict[str, Any]] = []
     for i, item in enumerate(experiments_raw, start=1):
         if not isinstance(item, dict):
             continue
@@ -330,7 +330,7 @@ def fallback_causal_experiment_plan(
     *,
     max_hypotheses: int = 3,
     max_experiments: int = 4,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Deterministic fallback when LLM causal planning is unavailable."""
     goal = str(goal or "").strip()[:220]
     hypotheses = [

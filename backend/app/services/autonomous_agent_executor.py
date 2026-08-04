@@ -37,6 +37,7 @@ from app.models.agent_job import (
 from app.models.agent_tool_prior import AgentToolPrior
 from app.models.memory import UserPreferences
 from app.services import (
+    agent_execution_graph,
     agent_plan_normalization,
     agent_prompt_sections,
     agent_tool_scoring,
@@ -4395,246 +4396,25 @@ class AutonomousAgentExecutor:
         edges: List[Dict[str, Any]],
     ) -> Dict[str, Any]:
         """Build compact DAG-style statistics for execution graph telemetry."""
-        valid_nodes = [n for n in nodes if isinstance(n, dict)]
-        valid_edges = [e for e in edges if isinstance(e, dict)]
-
-        node_ids: set[str] = set()
-        node_type_counts: Dict[str, int] = {}
-        blocked_nodes = 0
-        successful_nodes = 0
-        for row in valid_nodes:
-            nid = str(row.get("id") or "").strip()
-            if not nid:
-                continue
-            node_ids.add(nid)
-            ntype = str(row.get("type") or "unknown").strip() or "unknown"
-            node_type_counts[ntype] = int(node_type_counts.get(ntype, 0) or 0) + 1
-            success = row.get("success")
-            if success is True:
-                successful_nodes += 1
-            elif success is False:
-                blocked_nodes += 1
-
-        edge_type_counts: Dict[str, int] = {}
-        adj: Dict[str, set[str]] = {}
-        indeg: Dict[str, int] = {}
-        for nid in node_ids:
-            adj[nid] = set()
-            indeg[nid] = 0
-
-        for edge in valid_edges:
-            src = str(edge.get("from") or "").strip()
-            dst = str(edge.get("to") or "").strip()
-            if not src or not dst or src == dst:
-                continue
-            etype = str(edge.get("type") or "edge").strip() or "edge"
-            edge_type_counts[etype] = int(edge_type_counts.get(etype, 0) or 0) + 1
-            if src not in adj:
-                adj[src] = set()
-                indeg[src] = indeg.get(src, 0)
-            if dst not in adj:
-                adj[dst] = set()
-                indeg[dst] = indeg.get(dst, 0)
-            node_ids.add(src)
-            node_ids.add(dst)
-            if dst not in adj[src]:
-                adj[src].add(dst)
-                indeg[dst] = int(indeg.get(dst, 0) or 0) + 1
-
-        roots = [nid for nid in node_ids if int(indeg.get(nid, 0) or 0) == 0]
-        leaves = [nid for nid in node_ids if len(adj.get(nid, set())) == 0]
-        orphans = [
-            nid
-            for nid in node_ids
-            if int(indeg.get(nid, 0) or 0) == 0 and len(adj.get(nid, set())) == 0
-        ]
-
-        # Kahn topological traversal for cycle detection and longest path estimate.
-        indeg_work = {k: int(v or 0) for k, v in indeg.items()}
-        queue = sorted([nid for nid in node_ids if indeg_work.get(nid, 0) == 0])
-        topo: List[str] = []
-        while queue:
-            cur = queue.pop(0)
-            topo.append(cur)
-            for nxt in sorted(list(adj.get(cur, set()))):
-                indeg_work[nxt] = int(indeg_work.get(nxt, 0) or 0) - 1
-                if indeg_work[nxt] == 0:
-                    queue.append(nxt)
-            queue.sort()
-
-        has_cycle = len(topo) != len(node_ids)
-        critical_path_length = 0
-        if not has_cycle and node_ids:
-            dist: Dict[str, int] = {}
-            for nid in topo:
-                base = dist.get(nid, 1)
-                dist[nid] = max(1, base)
-                for nxt in adj.get(nid, set()):
-                    dist[nxt] = max(int(dist.get(nxt, 1) or 1), int(dist[nid] or 1) + 1)
-            critical_path_length = max(dist.values()) if dist else 1
-
-        return {
-            "total_nodes": len(node_ids),
-            "total_edges": sum(len(v) for v in adj.values()),
-            "node_type_counts": node_type_counts,
-            "edge_type_counts": edge_type_counts,
-            "root_nodes": len(roots),
-            "leaf_nodes": len(leaves),
-            "orphan_nodes": len(orphans),
-            "blocked_nodes": int(blocked_nodes),
-            "successful_nodes": int(successful_nodes),
-            "has_cycle": bool(has_cycle),
-            "critical_path_length": int(critical_path_length),
-        }
+        return agent_execution_graph.build_stats(nodes, edges)
 
     def _build_execution_graph_health(
         self, dag_stats: Dict[str, Any]
     ) -> Dict[str, Any]:
         """Classify graph runtime quality into compact UI-friendly health status."""
-        if not isinstance(dag_stats, dict):
-            return {
-                "status": "unknown",
-                "reasons": ["missing_dag_stats"],
-                "severity_score": 0,
-            }
-
-        total_nodes = max(0, int(dag_stats.get("total_nodes", 0) or 0))
-        blocked_nodes = max(0, int(dag_stats.get("blocked_nodes", 0) or 0))
-        has_cycle = bool(dag_stats.get("has_cycle", False))
-        critical_path = max(0, int(dag_stats.get("critical_path_length", 0) or 0))
-        orphan_nodes = max(0, int(dag_stats.get("orphan_nodes", 0) or 0))
-
-        blocked_ratio = (
-            (float(blocked_nodes) / float(total_nodes)) if total_nodes > 0 else 0.0
-        )
-        reasons: List[str] = []
-        severity = 0
-
-        if has_cycle:
-            reasons.append("cycle_detected")
-            severity += 80
-        if blocked_ratio >= 0.5 and blocked_nodes >= 2:
-            reasons.append("high_blocked_ratio")
-            severity += 35
-        elif blocked_ratio >= 0.25 and blocked_nodes >= 1:
-            reasons.append("moderate_blocked_ratio")
-            severity += 20
-
-        if critical_path >= 20:
-            reasons.append("long_critical_path")
-            severity += 20
-        elif critical_path >= 12:
-            reasons.append("moderate_critical_path")
-            severity += 10
-
-        if orphan_nodes >= 3:
-            reasons.append("orphan_nodes_detected")
-            severity += 10
-
-        if total_nodes <= 0:
-            reasons.append("empty_graph")
-            status = "unknown"
-            severity = max(severity, 5)
-        elif has_cycle or severity >= 70:
-            status = "critical"
-        elif severity >= 20:
-            status = "warning"
-        else:
-            status = "ok"
-
-        return {
-            "status": status,
-            "reasons": reasons,
-            "severity_score": min(100, max(0, int(severity))),
-            "blocked_ratio": round(blocked_ratio, 4),
-        }
+        return agent_execution_graph.build_health(dag_stats)
 
     def _build_execution_graph_recommendations(
         self, health: Dict[str, Any]
     ) -> List[str]:
         """Create short remediation hints based on graph health signals."""
-        if not isinstance(health, dict):
-            return []
-        status = str(health.get("status") or "").strip().lower()
-        reasons = [
-            str(x).strip() for x in (health.get("reasons") or []) if str(x).strip()
-        ]
-        recs: List[str] = []
-
-        if status == "unknown":
-            recs.append(
-                "Collect at least one act->verify->summarize cycle to initialize graph diagnostics."
-            )
-
-        if "cycle_detected" in reasons:
-            recs.append(
-                "Reset or re-plan execution steps to remove cyclic dependencies between nodes."
-            )
-            recs.append(
-                "Pin deterministic step_id ordering and avoid referencing future steps in depends_on."
-            )
-
-        if "high_blocked_ratio" in reasons or "moderate_blocked_ratio" in reasons:
-            recs.append(
-                "Review failed/blocked nodes and tighten tool params before retrying affected steps."
-            )
-            recs.append(
-                "Enable scoped recovery actions to gather missing evidence before write operations."
-            )
-
-        if "long_critical_path" in reasons or "moderate_critical_path" in reasons:
-            recs.append(
-                "Split large plan steps into smaller nodes to shorten the critical path."
-            )
-
-        if "orphan_nodes_detected" in reasons:
-            recs.append(
-                "Attach orphan nodes to explicit predecessors using depends_on."
-            )
-
-        if not recs and status == "ok":
-            recs.append(
-                "Graph health is stable; continue with current execution strategy."
-            )
-        if not recs:
-            recs.append(
-                "Inspect execution_graph.nodes and execution_graph.edges for anomalies."
-            )
-
-        deduped: List[str] = []
-        for r in recs:
-            if r not in deduped:
-                deduped.append(r)
-        return deduped[:6]
+        return agent_execution_graph.build_recommendations(health)
 
     def _get_execution_graph_runtime_snapshot(
         self, state: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """Build live execution-graph diagnostics for in-loop observation and planning."""
-        nodes = (
-            state.get("execution_graph_nodes")
-            if isinstance(state.get("execution_graph_nodes"), list)
-            else []
-        )
-        edges = (
-            state.get("execution_graph_edges")
-            if isinstance(state.get("execution_graph_edges"), list)
-            else []
-        )
-        dag_stats = self._build_execution_graph_stats(nodes, edges)
-        health = self._build_execution_graph_health(dag_stats)
-        recommendations = self._build_execution_graph_recommendations(health)
-        return {
-            "verification_attempts": int(state.get("verification_attempts", 0) or 0),
-            "verification_successes": int(state.get("verification_successes", 0) or 0),
-            "summarization_attempts": int(state.get("summarization_attempts", 0) or 0),
-            "summarization_successes": int(
-                state.get("summarization_successes", 0) or 0
-            ),
-            "dag_stats": dag_stats,
-            "graph_health": health,
-            "recommended_actions": recommendations,
-        }
+        """Build live execution-graph diagnostics for in-loop planning."""
+        return agent_execution_graph.build_runtime_snapshot(state)
 
     def _has_graph_recovery_pressure(
         self,
@@ -4643,20 +4423,12 @@ class AutonomousAgentExecutor:
         verification_debt_threshold: int = 2,
         severity_threshold: int = 20,
     ) -> bool:
-        """Return whether live execution-graph health indicates rescue/recovery pressure."""
-        runtime = self._get_execution_graph_runtime_snapshot(state)
-        graph_health = (
-            runtime.get("graph_health")
-            if isinstance(runtime.get("graph_health"), dict)
-            else {}
+        """Return whether graph health indicates rescue/recovery pressure."""
+        return agent_execution_graph.has_recovery_pressure(
+            state,
+            verification_debt_threshold=verification_debt_threshold,
+            severity_threshold=severity_threshold,
         )
-        verification_attempts = int(runtime.get("verification_attempts", 0) or 0)
-        verification_successes = int(runtime.get("verification_successes", 0) or 0)
-        verification_debt = max(0, verification_attempts - verification_successes)
-        graph_severity = int(graph_health.get("severity_score", 0) or 0)
-        return verification_debt >= max(
-            1, int(verification_debt_threshold or 2)
-        ) or graph_severity >= max(1, int(severity_threshold or 20))
 
     def _format_execution_graph_for_prompt(self, state: Dict[str, Any]) -> str:
         """Render compact live execution-graph diagnostics for the planner prompt."""

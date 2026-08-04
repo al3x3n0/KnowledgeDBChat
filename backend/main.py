@@ -64,16 +64,8 @@ async def lifespan(app: FastAPI):
         except Exception as e:
             logger.warning(f"{name} init failed: {e} (continuing startup)")
 
-    # Apply idempotent minimal migrations for environments without Alembic.
-    # Don't block the server indefinitely; allow UI to load even if DB is still coming up.
-    try:
-        from app.core.database import apply_minimal_migrations
-
-        await asyncio.wait_for(apply_minimal_migrations(), timeout=30.0)
-    except asyncio.TimeoutError:
-        logger.warning("Minimal migrations timed out after 30s (continuing startup)")
-    except Exception as e:
-        logger.warning(f"Minimal migrations failed: {e} (continuing startup)")
+    # Schema changes belong to Alembic and run in entrypoint.sh before the
+    # app starts; startup no longer mutates the schema.
 
     # Kick off heavy/optional initializations in background so the server can start serving immediately.
     app.state.background_tasks = []

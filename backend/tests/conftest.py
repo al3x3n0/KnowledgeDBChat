@@ -214,7 +214,6 @@ def client(
     monkeypatch: pytest.MonkeyPatch,
 ) -> TestClient:
     """Create a test client without contacting production infrastructure."""
-    from app.core import database
     from app.services.storage_service import storage_service
     from app.services.vector_store import vector_store_service
     from app.utils.redis_subscriber import redis_subscriber
@@ -223,7 +222,6 @@ def client(
     async def _noop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr(database, "apply_minimal_migrations", _noop)
     monkeypatch.setattr(vector_store_service, "initialize", _noop)
     monkeypatch.setattr(storage_service, "initialize", _noop)
     monkeypatch.setattr(redis_subscriber, "start", _noop)

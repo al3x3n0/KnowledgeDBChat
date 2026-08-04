@@ -1,7 +1,7 @@
 #!/bin/sh
 set -e
 
-MODE_ALEMBIC="${RUN_ALEMBIC_MIGRATIONS:-true}"
+MODE_ALEMBIC="${RUN_ALEMBIC_MIGRATIONS:-blocking}"
 MODE_WHISPER="${PRELOAD_WHISPER_MODEL:-false}"
 
 run_alembic() {
@@ -28,12 +28,16 @@ run_whisper_preload() {
     || echo "Model preload failed/timed out (will download on first use)"
 }
 
-# Run Alembic migrations.
-# - "blocking": run before starting server
-# - "true": run in background (server starts immediately)
-# - "false": skip
+# Run Alembic migrations. Alembic is the only source of schema truth, so a
+# failed migration means the app would run against a schema it does not expect.
+# - "blocking" (default): run first; abort startup if they fail
+# - "true": run in background, failures logged only (legacy, unsafe)
+# - "false": skip, for environments that migrate out of band
 if [ "${MODE_ALEMBIC}" = "blocking" ]; then
-  run_alembic || true
+  if ! run_alembic; then
+    echo "FATAL: Alembic migrations failed; refusing to start against an unknown schema." >&2
+    exit 1
+  fi
 elif [ "${MODE_ALEMBIC}" = "true" ]; then
   run_alembic || true &
 fi

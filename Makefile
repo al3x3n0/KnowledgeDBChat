@@ -58,8 +58,14 @@ shell-backend: ## Open shell in backend container
 shell-frontend: ## Open shell in frontend container
 	$(DC) exec frontend /bin/sh
 
-db-migrate: ## Run database migrations
-	$(DC) exec backend python -c "import asyncio; from app.core.database import create_tables; asyncio.run(create_tables())"
+db-migrate: ## Run database migrations (Alembic is the source of schema truth)
+	$(DC) exec backend alembic upgrade head
+
+db-revision: ## Autogenerate a migration from model changes (make db-revision M="add x")
+	$(DC) exec backend alembic revision --autogenerate -m "$(M)"
+
+db-current: ## Show the applied migration revision
+	$(DC) exec backend alembic current
 
 db-shell: ## Open PostgreSQL shell
 	$(DC) exec postgres psql -U user -d knowledge_db

@@ -66,7 +66,15 @@ cd backend
 alembic revision --autogenerate -m "description"   # Create migration
 alembic upgrade head                                # Apply migrations
 ```
-Migrations use sequential numeric prefixes (`0001_...` ... `0072_...`); follow that naming.
+Migrations use sequential numeric prefixes (`0001_...` ... `0082_...`); follow that naming.
+
+**Alembic is the only source of schema truth.** Never create tables from model
+metadata and never add hand-written DDL at startup — that is what produced the
+drift `0082_reconcile_schema_with_models` had to repair (12 tables, 46 columns,
+42 indexes existed nowhere in the migration history). `create_tables()` remains
+for tests and throwaway databases only. The `schema-truth` CI job applies every
+migration to an empty Postgres and fails if the result differs from the models;
+run it locally with `DATABASE_URL=... python scripts/check_schema_drift.py`.
 
 ## Architecture
 

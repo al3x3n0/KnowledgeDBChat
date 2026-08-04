@@ -86,9 +86,9 @@ docker compose -f docker-compose.yml -f docker-compose.docker-tools.yml up -d
 #### Initialize Database
 
 ```bash
-# Run database migrations
+# Run database migrations (Alembic owns the schema)
 make db-migrate
-# or: docker compose exec backend python -c "import asyncio; from app.core.database import create_tables; asyncio.run(create_tables())"
+# equivalently: docker compose exec backend alembic upgrade head
 ```
 
 #### Download Ollama Model (for chat functionality)

@@ -68,13 +68,11 @@ This guide provides step-by-step instructions for building and running the Knowl
 
 7. **Run database migrations**:
    ```bash
-   # Connect to backend container
-   docker exec -it knowledge_db_backend python -c "
-   import asyncio
-   from app.core.database import create_tables
-   asyncio.run(create_tables())
-   "
+   make db-migrate
+   # equivalently: docker exec -it knowledge_db_backend alembic upgrade head
    ```
+   The container entrypoint already runs migrations on start; this is for
+   applying new ones without a restart.
 
 8. **Access the application**:
    - Frontend: http://localhost:3000
@@ -223,14 +221,9 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 cd backend
 source venv/bin/activate  # if not already activated
 
-# Create database tables
-python -c "
-import asyncio
-from app.core.database import create_tables
-asyncio.run(create_tables())
-"
-
-# Or using Alembic (if migrations exist)
+# Build the schema. Alembic is the only supported way to do this: creating
+# tables from model metadata skips migrations and leaves the database
+# unstamped, which is how the schema silently drifted in the past.
 alembic upgrade head
 ```
 

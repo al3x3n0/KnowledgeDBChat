@@ -109,6 +109,7 @@ jobs:
           alembic heads
           test "$heads" -eq 1
       - name: Assert unique migration revision prefixes
+        id: prefixes
         working-directory: backend/alembic/versions
         # Sequential numeric prefixes are the convention in CLAUDE.md; 0018 and
         # 0060 are already duplicated, so this starts as a warning, not a gate.
@@ -140,3 +141,55 @@ jobs:
         # test:ci collects coverage but enforces no threshold: package.json has
         # no coverageThreshold. Adding one is a separate decision.
         run: npm run test:ci
+
+  schema-truth:
+    name: Migrations build the schema the models expect
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # This is the guard that keeps Alembic authoritative. Before it existed, the
+    # real schema came from create_all plus hand-written startup DDL, and the
+    # migration history had silently drifted 12 tables and 46 columns behind.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: schema_check
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Apply every migration to an empty database
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/schema_check
+        run: alembic upgrade head
+      - name: Assert the result matches the models
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/schema_check
+        # An empty autogenerate diff means `alembic upgrade head` produces
+        # exactly what the models describe. A non-empty one means a model
+        # changed without a migration — the drift this whole change removes.
+        run: python scripts/check_schema_drift.py
+      - name: Assert migrations are re-runnable
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/schema_check
+        # 0082 is idempotent by construction; running head twice must be a no-op.
+        run: alembic upgrade head

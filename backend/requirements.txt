@@ -19,7 +19,18 @@ huggingface_hub>=0.20.0
 # LLM and AI
 langchain==0.0.340
 langchain-community==0.0.1
-langgraph>=0.2.0
+# langgraph>=0.2.0 is unsatisfiable alongside the pins above and makes the
+# image impossible to build: langchain-community 0.0.1 requires
+# langchain-core<0.1 while langgraph 0.2 requires langchain-core>=0.2.27. No
+# resolver can satisfy both, so `pip install -r requirements.txt` fails
+# outright. The local development environment where the test suite passes has
+# no langgraph installed either, and langgraph_issue_pr_service already guards
+# its import and reports the feature as unavailable.
+#
+# Re-enabling LangGraph means modernizing the langchain stack (langchain and
+# langchain-community to 0.2+ lines), which is a dependency migration with its
+# own testing — not something to bundle into an image change.
+# langgraph>=0.2.0
 ollama==0.1.7
 anthropic>=0.69.0
 openai>=1.60.0

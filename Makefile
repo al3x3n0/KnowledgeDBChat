@@ -67,6 +67,12 @@ db-revision: ## Autogenerate a migration from model changes (make db-revision M=
 db-current: ## Show the applied migration revision
 	$(DC) exec backend alembic current
 
+db-check-drift: ## Verify migrations still build the schema the models describe
+	$(DC) exec backend python scripts/check_schema_drift.py
+
+db-stamp-legacy: ## Bring a pre-Alembic database (built by create_all) under Alembic
+	$(DC) exec backend python scripts/stamp_legacy_database.py
+
 db-shell: ## Open PostgreSQL shell
 	$(DC) exec postgres psql -U user -d knowledge_db
 

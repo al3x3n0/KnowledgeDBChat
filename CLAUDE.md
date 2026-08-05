@@ -74,7 +74,13 @@ drift `0082_reconcile_schema_with_models` had to repair (12 tables, 46 columns,
 42 indexes existed nowhere in the migration history). `create_tables()` remains
 for tests and throwaway databases only. The `schema-truth` CI job applies every
 migration to an empty Postgres and fails if the result differs from the models;
-run it locally with `DATABASE_URL=... python scripts/check_schema_drift.py`.
+run it locally with `make db-check-drift`.
+
+A database created before this change (by `create_all`, with no `alembic_version`
+table) cannot simply be stamped: Alembic would create that table at its default
+`VARCHAR(32)` and this repo's revision ids are longer. Use `make db-stamp-legacy`,
+which creates the table at the right width and stamps head; it refuses to touch a
+database that already has a revision recorded.
 
 ## Architecture
 

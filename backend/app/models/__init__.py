@@ -20,6 +20,7 @@ from .agent_job import (
 )
 from .agent_tool_prior import AgentToolPrior
 from .ai_hub_recommendation_feedback import AIHubRecommendationFeedback
+from .api_key import APIKey, APIKeyUsageLog
 from .artifact_draft import ArtifactDraft
 from .autonomous_rnd_eval_launch import AutonomousRndEvalLaunch
 from .autonomous_rnd_eval_run import AutonomousRndEvalRun
@@ -42,10 +43,12 @@ from .domain_research_profile import DomainResearchProfile
 from .experiment import ExperimentPlan, ExperimentRun
 from .export_job import ExportJob
 from .knowledge_graph import Entity, EntityMention, Relationship
+from .latex_compile_job import LatexCompileJob
 from .latex_project import LatexProject
 from .latex_project_file import LatexProjectFile
 from .llm_call_snapshot import LLMCallSnapshot
 from .llm_usage import LLMUsageEvent
+from .mcp_config import MCPSourceAccess, MCPToolConfig
 from .memory import (
     AgentConversation,
     AgentToolExecution,
@@ -142,6 +145,11 @@ __all__ = [
     "UserSecret",
     "ToolExecutionAudit",
     "AgentToolPrior",
+    "MCPToolConfig",
+    "MCPSourceAccess",
+    "LatexCompileJob",
+    "APIKeyUsageLog",
+    "APIKey",
     "SavedSearch",
     "SearchShare",
     "LLMUsageEvent",

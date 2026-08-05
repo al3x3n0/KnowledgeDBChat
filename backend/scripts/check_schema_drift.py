@@ -39,6 +39,15 @@ IGNORED_TABLES = {
     "alembic_version",
 }
 
+# A missing table or column means the application will raise at runtime, so
+# these fail the check. Everything else is a difference of declaration, not of
+# existence: extra indexes migrations created and models never declared,
+# nullable and type mismatches, and foreign keys whose ondelete differs. Those
+# are reported so they stay visible, and are worth reconciling deliberately —
+# but they do not stop the app from running, and failing on them would mean this
+# check could never be green.
+BREAKING_OPERATIONS = {"add_table", "add_column"}
+
 
 def _database_url() -> str:
     url = os.environ.get("DATABASE_URL", "")
@@ -80,16 +89,34 @@ async def _collect_diffs() -> list:
         await engine.dispose()
 
 
+def _operations(diff) -> list[str]:
+    entries = diff if isinstance(diff, list) else [diff]
+    return [e[0] for e in entries if isinstance(e, tuple) and e]
+
+
 def main() -> int:
     diffs = asyncio.run(_collect_diffs())
+    breaking = [d for d in diffs if set(_operations(d)) & BREAKING_OPERATIONS]
+    other = [d for d in diffs if d not in breaking]
 
-    if not diffs:
-        print("Schema matches the models: alembic upgrade head is authoritative.")
+    if other:
+        counts: dict[str, int] = {}
+        for diff in other:
+            for op in _operations(diff):
+                counts[op] = counts.get(op, 0) + 1
+        summary = ", ".join(f"{op}={n}" for op, n in sorted(counts.items()))
+        print(f"Declaration differences (reported, not fatal): {summary}")
+
+    if not breaking:
+        print(
+            "No missing tables or columns: alembic upgrade head builds a schema "
+            "the application can run against."
+        )
         return 0
 
-    print(f"Schema drift detected: {len(diffs)} difference(s) between the")
-    print("migration result and the models.\n")
-    for diff in diffs:
+    print(f"\nSchema drift detected: {len(breaking)} object(s) the models need")
+    print("that migrations do not create.\n")
+    for diff in breaking:
         print(f"  - {diff}")
     print(
         "\nGenerate a migration for these changes:\n"

@@ -32,6 +32,27 @@ make doctor             # Validate env + health checks
 make download-models    # Download Ollama + embedding + reranking models
 ```
 
+### Kubernetes / Helm
+```bash
+make minikube-up        # Start minikube, build images into it, install the chart
+make minikube-reinstall # Reinstall on the running cluster without rebuilding
+make helm-lint          # Lint the chart against every values profile
+make helm-validate      # Render + kubeconform against the Kubernetes API schemas
+make helm-smoke         # Install on the current cluster and assert its wiring
+make k8s-status         # Pods and services of the release
+make k8s-logs-migrate   # Alembic migration Job output
+make k8s-test           # In-cluster smoke test (helm test)
+```
+The chart is `deploy/helm/knowledgedbchat`; see `deploy/README.md`. It mirrors
+`docker-compose.prod.yml`, with one structural difference: Alembic runs in a
+hook Job (`pre-upgrade` always; `post-install` with the in-chart Postgres, which
+does not exist yet during pre-install) and every long-running pod sets
+`RUN_ALEMBIC_MIGRATIONS=false`, so replicas never race the schema. App containers
+override the image `ENTRYPOINT` for the same reason. A failed migration aborts
+the upgrade before any pod rolls. New backend settings need no
+chart change — anything in `config.py` can go under `config.extra` (ConfigMap) or
+`secrets.extra` (Secret).
+
 ### Manual Development
 ```bash
 # Backend
@@ -250,8 +271,8 @@ Access points:
 - API Docs: http://localhost:8000/docs
 - MinIO Console: http://localhost:9001
 
-CI runs in `.github/workflows/ci.yml` on pull requests and pushes to `main`: backend lint/format, backend tests with the coverage gate, a single-alembic-head check, and frontend typecheck plus tests. Lint is gated on `app/` and `tests/` only — `alembic/`, `scripts/`, and `seed_data/` carry pre-existing formatting and flake8 debt that is reported but not enforced. The same checks are available locally as Makefile targets (`make lint`, `make fmt`, `make test-backend-coverage`, `make typecheck-frontend`), which shell into a running Docker stack.
+CI runs in `.github/workflows/ci.yml` on pull requests and pushes to `main`: backend lint/format, backend tests with the coverage gate, a single-alembic-head check, frontend typecheck plus tests, a `helm-chart` job that lints every values profile, validates the rendered manifests with kubeconform, and parses the generated nginx configs, and a `helm-smoke` job that installs the chart on an ephemeral kind cluster and asserts the wiring rendering cannot check (hook ordering, Secret-to-URL assembly, gateway routing, migration-gated upgrades). Lint is gated on `app/` and `tests/` only — `alembic/`, `scripts/`, and `seed_data/` carry pre-existing formatting and flake8 debt that is reported but not enforced. The same checks are available locally as Makefile targets (`make lint`, `make fmt`, `make test-backend-coverage`, `make typecheck-frontend`), which shell into a running Docker stack.
 
 ## Other Documentation
 
-Root-level docs worth checking before larger changes: `BUILD_AND_RUN.md`, `QUICK_START.md`, `DOCKER_SETUP.md`, `AGENTS.md`, `AUTONOMOUS_RND_AGENTS.md`, plus `docs/` for architecture guides. Current visual architecture map (deployment, subsystems, agent runtime, LLM stack): `docs/ARCHITECTURE_DIAGRAMS.md`.
+Root-level docs worth checking before larger changes: `BUILD_AND_RUN.md`, `QUICK_START.md`, `DOCKER_SETUP.md`, `deploy/README.md` (Kubernetes/Helm), `AGENTS.md`, `AUTONOMOUS_RND_AGENTS.md`, plus `docs/` for architecture guides. Current visual architecture map (deployment, subsystems, agent runtime, LLM stack): `docs/ARCHITECTURE_DIAGRAMS.md`.

@@ -1,0 +1,136 @@
+# Production-shaped example. Copy, edit, and keep secrets OUT of it - use
+# secrets.existingSecret with sealed-secrets / external-secrets / SOPS instead.
+#
+#   helm upgrade --install kdbc deploy/helm/knowledgedbchat \
+#     -n knowledgedbchat --create-namespace -f my-values.yaml
+
+global:
+  storageClass: ""            # set to your RWO class, e.g. gp3 / premium-rwo
+  imagePullSecrets:
+    - name: registry-credentials
+
+image:
+  backend:
+    repository: registry.example.com/knowledgedbchat/backend
+    tag: "1.0.0"
+    pullPolicy: IfNotPresent
+  latexWorker:
+    repository: registry.example.com/knowledgedbchat/latex-worker
+    tag: "1.0.0"
+  frontend:
+    repository: registry.example.com/knowledgedbchat/frontend
+    tag: "1.0.0"
+  videoStreamer:
+    repository: registry.example.com/knowledgedbchat/video-streamer
+    tag: "1.0.0"
+
+secrets:
+  create: false
+  # Must contain: SECRET_KEY, POSTGRES_PASSWORD, REDIS_PASSWORD,
+  # MINIO_ACCESS_KEY, MINIO_SECRET_KEY, plus any provider API keys
+  # (OPENAI_API_KEY, ANTHROPIC_API_KEY, ...) and SECRETS_ENCRYPTION_KEY.
+  existingSecret: knowledgedbchat-secrets
+  # Set this to a non-empty placeholder when the managed Secret enables Redis
+  # auth: the chart uses it only to decide whether to build a redis:// URL with
+  # credentials, never as the password itself.
+  redisPassword: "managed-externally"
+
+config:
+  logLevel: INFO
+  llmProvider: anthropic
+  minioProxyBaseUrl: "https://kdbc.example.com/minio"
+  extra:
+    RAG_HYBRID_SEARCH_ENABLED: "true"
+    RAG_RERANKING_ENABLED: "true"
+    AGENT_REQUIRE_TOOL_APPROVAL: "true"
+    LATEX_COMPILER_ENABLED: "true"
+
+backend:
+  replicaCount: 3
+  workers: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 12
+    targetCPUUtilizationPercentage: 70
+  podDisruptionBudget:
+    enabled: true
+    minAvailable: 2
+  persistence:
+    # Must be a real RWX class (EFS, Filestore, CephFS, Azure Files): backend,
+    # celery and beat all mount /app/data at the same time.
+    accessMode: ReadWriteMany
+    storageClass: efs-sc
+    size: 200Gi
+  resources:
+    requests:
+      cpu: "1"
+      memory: 2Gi
+    limits:
+      memory: 8Gi
+
+celery:
+  replicaCount: 3
+  concurrency: 4
+  autoscaling:
+    enabled: true
+    minReplicas: 3
+    maxReplicas: 10
+
+celeryLatex:
+  enabled: true
+  replicaCount: 2
+
+gateway:
+  replicaCount: 3
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "2048m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: kdbc.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: kdbc-tls
+      hosts:
+        - kdbc.example.com
+
+networkPolicy:
+  enabled: true
+
+# Prefer managed data services in production; the in-chart StatefulSets are
+# single-replica and have no backup story.
+postgres:
+  enabled: false
+  external:
+    host: kdbc-db.abc123.eu-west-1.rds.amazonaws.com
+    port: 5432
+    database: knowledge_db
+    username: kdbc
+
+redis:
+  enabled: false
+  external:
+    host: kdbc-cache.abc123.ng.0001.euw1.cache.amazonaws.com
+    port: 6379
+
+qdrant:
+  enabled: false
+  external:
+    url: "https://xyz.eu-west-1-0.aws.cloud.qdrant.io:6333"
+
+minio:
+  enabled: false
+  external:
+    endpoint: "s3.eu-west-1.amazonaws.com"
+    useSSL: true
+
+ollama:
+  enabled: false

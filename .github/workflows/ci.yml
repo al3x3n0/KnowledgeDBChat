@@ -193,3 +193,85 @@ jobs:
           DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/schema_check
         # 0082 is idempotent by construction; running head twice must be a no-op.
         run: alembic upgrade head
+
+  helm-chart:
+    name: Helm chart lint and schema validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - name: Install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+      - name: Lint every values profile
+        run: |
+          helm lint deploy/helm/knowledgedbchat
+          helm lint deploy/helm/knowledgedbchat -f deploy/helm/knowledgedbchat/values-minikube.yaml
+          helm lint deploy/helm/knowledgedbchat -f deploy/helm/knowledgedbchat/values-prod.example.yaml
+      # Rendering alone catches template errors; kubeconform catches manifests
+      # that render cleanly but the API server would reject.
+      - name: Validate rendered manifests (minikube profile)
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat \
+            -f deploy/helm/knowledgedbchat/values-minikube.yaml \
+            | kubeconform -strict -summary -kubernetes-version 1.31.0
+      - name: Validate rendered manifests (all optional components on)
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat \
+            --set ollama.enabled=true --set celeryLatex.enabled=true \
+            --set networkPolicy.enabled=true --set ingress.enabled=true \
+            --set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
+            --set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \
+            | kubeconform -strict -summary -kubernetes-version 1.31.0
+      - name: Validate rendered manifests (external data services)
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat \
+            -f deploy/helm/knowledgedbchat/values-prod.example.yaml \
+            | kubeconform -strict -summary -kubernetes-version 1.31.0
+      - name: Check the gateway nginx config parses
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat --set gateway.resolver=10.96.0.10 \
+            | python3 -c "
+          import sys, yaml
+          for d in yaml.safe_load_all(sys.stdin):
+              if d and d['kind'] == 'ConfigMap' and d['metadata']['name'].endswith(('-gateway', '-frontend-nginx')):
+                  open(d['metadata']['name'] + '.conf', 'w').write(d['data']['default.conf'])
+          "
+          for f in *.conf; do
+            docker run --rm -v "$PWD/$f:/etc/nginx/conf.d/default.conf:ro" nginx:1.27-alpine nginx -t
+          done
+
+  helm-smoke:
+    name: Helm chart live smoke test
+    runs-on: ubuntu-latest
+    # Rendering and schema validation cannot catch hook ordering, Secret ->
+    # connection-URL assembly, or proxy path handling. This installs the chart
+    # on a real ephemeral cluster and asserts those, using lightweight
+    # stand-ins for the multi-GB application images.
+    needs: helm-chart
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: kdbc-smoke
+          node_image: kindest/node:v1.31.0
+      - name: Smoke test the chart
+        env:
+          # kind's default StorageClass; the chart's own default is empty
+          # (cluster default), which values-smoke.yaml overrides for minikube.
+          SMOKE_STORAGE_CLASS: standard
+        run: ./deploy/smoke-test.sh
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n kdbc-smoke get pods,jobs,pvc,events --sort-by=.metadata.creationTimestamp || true
+          kubectl -n kdbc-smoke describe pods || true
+          for d in $(kubectl -n kdbc-smoke get deploy -o name 2>/dev/null); do
+            echo "=== $d ==="; kubectl -n kdbc-smoke logs "$d" --tail=50 || true
+          done

@@ -189,6 +189,24 @@ make doctor
 make health
 ```
 
+### Run on Kubernetes
+
+A Helm chart covers the same stack on Kubernetes, with minikube tooling for
+local clusters:
+
+```bash
+make minikube-up          # start minikube, build images into it, install the chart
+make k8s-status
+make k8s-test             # in-cluster smoke test
+```
+
+The chart is `deploy/helm/knowledgedbchat`. It ships every dependency
+(PostgreSQL, Redis, Qdrant, MinIO, Kroki, optional Ollama) so a release is
+self-contained, and each one can be switched off in favour of a managed service.
+Alembic runs in a hook Job rather than in the app containers, so replicas never
+race the schema and a failed migration aborts the upgrade before any pod rolls.
+See [deploy/README.md](deploy/README.md) for the production checklist.
+
 ### Configuration
 
 `make setup` creates local environment files from:
@@ -294,6 +312,7 @@ to that configured system.
 ## Documentation
 
 - [Architecture](docs/ARCHITECTURE_ASCII.md)
+- [Kubernetes / Helm deployment](deploy/README.md)
 - [Architecture diagrams](docs/ARCHITECTURE_DIAGRAMS.md)
 - [Autonomous R&D agents](docs/AUTONOMOUS_RND_AGENTS.md)
 - [CompOps integration](docs/COMPOPS_INTEGRATION.md)

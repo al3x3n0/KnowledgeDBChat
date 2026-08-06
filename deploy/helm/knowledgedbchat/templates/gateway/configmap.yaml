@@ -1,0 +1,134 @@
+{{- if .Values.gateway.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-gateway" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "gateway") | nindent 4 }}
+data:
+  # Port of frontend/nginx.conf onto Kubernetes Service names. Keeping this
+  # layer means routing behaviour (the /video/{id} -> /stream/{id} rewrite,
+  # WebSocket upgrade, 2GB bodies, MinIO presigned-URL proxying) is identical
+  # to docker-compose and does not depend on ingress-controller annotations.
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+
+        # Re-resolve Service names so a restarted pod's new ClusterIP is picked
+        # up instead of being cached for the life of the worker process.
+        resolver {{ .Values.gateway.resolver }} valid=10s ipv6=off;
+        resolver_timeout 5s;
+
+        client_max_body_size {{ .Values.gateway.clientMaxBodySize }};
+
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_proxied any;
+        gzip_types text/plain text/css text/xml text/javascript application/javascript application/xml+rss application/json;
+
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-XSS-Protection "1; mode=block" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer-when-downgrade" always;
+        add_header Content-Security-Policy "default-src 'self' http: https: data: blob: 'unsafe-inline'" always;
+
+        location = /health {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+
+        {{- if .Values.videoStreamer.enabled }}
+        # Video streaming: /video/{document_id} -> video-streamer /stream/{id}.
+        # Must precede /api/.
+        location ~ ^/video/(.+)$ {
+            set $video_streamer "http://{{ include "kdbc.videoStreamer.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.videoStreamer.service.port }}";
+            proxy_pass $video_streamer/stream/$1$is_args$args;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header Range $http_range;
+            proxy_set_header Authorization $http_authorization;
+            proxy_connect_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_send_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_read_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            send_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_buffering off;
+            proxy_request_buffering off;
+            client_max_body_size 0;
+            # CORS is handled by video-streamer; duplicating it here breaks browsers.
+        }
+        {{- end }}
+
+        # API + chat WebSocket.
+        location /api/ {
+            set $backend_upstream "http://{{ include "kdbc.backend.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.backend.service.port }}";
+            proxy_pass $backend_upstream;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            client_max_body_size {{ .Values.gateway.clientMaxBodySize }};
+            proxy_connect_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_send_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_read_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            send_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_buffering off;
+            proxy_request_buffering off;
+            proxy_http_version 1.1;
+            proxy_set_header Upgrade $http_upgrade;
+            proxy_set_header Connection "upgrade";
+
+            if ($request_method = OPTIONS) {
+                add_header Access-Control-Allow-Origin * always;
+                add_header Access-Control-Allow-Methods "GET, POST, PUT, DELETE, OPTIONS" always;
+                add_header Access-Control-Allow-Headers "Authorization, Content-Type" always;
+                add_header Access-Control-Max-Age 86400;
+                return 204;
+            }
+        }
+
+        {{- if .Values.minio.enabled }}
+        # MinIO proxy for presigned download URLs (MINIO_PROXY_BASE_URL).
+        location /minio/ {
+            set $minio_upstream "http://{{ include "kdbc.minio.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.minio.service.apiPort }}";
+            # `proxy_pass $var/` does NOT strip the /minio/ prefix: when
+            # proxy_pass contains variables, a URI in the directive replaces the
+            # whole request URI rather than substituting the matched prefix, so
+            # every object request arrives upstream as "/". Strip it explicitly
+            # and pass a proxy_pass with no URI part.
+            rewrite ^/minio/(.*)$ /$1 break;
+            proxy_pass $minio_upstream;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_set_header X-Forwarded-Host $host;
+            proxy_connect_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_send_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_read_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            send_timeout {{ .Values.gateway.proxyTimeoutSeconds }};
+            proxy_buffering off;
+            proxy_request_buffering off;
+            client_max_body_size 0;
+        }
+        {{- end }}
+
+        # Static React build - catch-all.
+        location / {
+            set $frontend_upstream "http://{{ include "kdbc.frontend.serviceName" . }}.{{ .Release.Namespace }}.svc.cluster.local:{{ .Values.frontend.service.port }}";
+            proxy_pass $frontend_upstream;
+            proxy_set_header Host $host;
+            proxy_set_header X-Real-IP $remote_addr;
+            proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+            proxy_set_header X-Forwarded-Proto $scheme;
+            proxy_http_version 1.1;
+            proxy_connect_timeout 60s;
+            proxy_send_timeout 60s;
+            proxy_read_timeout 60s;
+        }
+    }
+{{- end }}

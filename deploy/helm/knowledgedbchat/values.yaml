@@ -1,0 +1,479 @@
+# Default values for knowledgedbchat.
+# Every stateful dependency ships in-chart so the release is self-contained and
+# runs on minikube out of the box. Set `<component>.enabled: false` and point the
+# matching URL at an external endpoint to use a managed service instead.
+
+nameOverride: ""
+fullnameOverride: ""
+
+# -----------------------------------------------------------------------------
+# Global
+# -----------------------------------------------------------------------------
+global:
+  # Applied to every PVC in the chart unless the component overrides it.
+  # "" uses the cluster default StorageClass (minikube: "standard").
+  storageClass: ""
+  imagePullSecrets: []
+  # Extra env injected into backend, celery, celery-latex and celery-beat.
+  extraEnv: []
+  # Extra envFrom sources (existing ConfigMaps/Secrets) for the same pods.
+  extraEnvFrom: []
+
+serviceAccount:
+  create: true
+  name: ""
+  annotations: {}
+
+podSecurityContext:
+  runAsNonRoot: false
+  fsGroup: 1000
+
+# -----------------------------------------------------------------------------
+# Images
+# -----------------------------------------------------------------------------
+# Backend, celeryLatex, frontend and videoStreamer are built from this repo and
+# have no public registry - build them into the cluster's daemon first
+# (see deploy/minikube/bootstrap.sh) or push them to your own registry.
+image:
+  backend:
+    repository: knowledge_db_backend
+    tag: latest
+    pullPolicy: IfNotPresent
+  latexWorker:
+    repository: knowledge_db_latex_worker
+    tag: latest
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: knowledge_db_frontend
+    tag: latest
+    pullPolicy: IfNotPresent
+  videoStreamer:
+    repository: knowledge_db_video_streamer
+    tag: latest
+    pullPolicy: IfNotPresent
+  gateway:
+    repository: nginx
+    tag: 1.27-alpine
+    pullPolicy: IfNotPresent
+
+# -----------------------------------------------------------------------------
+# Application configuration
+# -----------------------------------------------------------------------------
+config:
+  # Non-secret settings rendered into the app ConfigMap. Keys map 1:1 to
+  # backend/app/core/config.py settings, so anything in env.example works here.
+  logLevel: INFO
+  debug: "False"
+  llmProvider: ollama
+  defaultModel: llama3.2:1b
+  embeddingModel: all-MiniLM-L6-v2
+  vectorStoreProvider: qdrant
+  qdrantCollectionName: knowledge_base
+  minioBucketName: documents
+  # Public base URL the browser uses to reach MinIO through the gateway.
+  # Must match how users actually reach the ingress.
+  minioProxyBaseUrl: "http://localhost:8080/minio"
+  minioPresignedUrlExpiry: "3600"
+  whisperModelSize: small
+  transcriptionLanguage: auto
+  transcriptionSpeakerDiarization: "false"
+  preloadWhisperModel: "false"
+  # Free-form overrides; merged last, so these win over everything above.
+  extra: {}
+    # RAG_HYBRID_SEARCH_ENABLED: "true"
+    # KG_LLM_EXTRACTION_ENABLED: "true"
+
+secrets:
+  # Set create=false and provide existingSecret to manage secrets out of band
+  # (sealed-secrets, external-secrets, SOPS, ...).
+  create: true
+  existingSecret: ""
+  # CHANGE THESE before any non-local deployment.
+  secretKey: "change-me-please-generate-a-long-random-string"
+  postgresPassword: "change-me-postgres"
+  redisPassword: ""
+  minioRootUser: "minioadmin"
+  minioRootPassword: "change-me-minio"
+  # Provider API keys - only the one matching config.llmProvider is needed.
+  openaiApiKey: ""
+  anthropicApiKey: ""
+  deepseekApiKey: ""
+  qwenApiKey: ""
+  kimiApiKey: ""
+  qdrantApiKey: ""
+  # Fernet key for the encrypted secrets store (python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+  secretsEncryptionKey: ""
+  # Additional key/value pairs merged into the app Secret.
+  extra: {}
+
+# -----------------------------------------------------------------------------
+# Database migrations
+# -----------------------------------------------------------------------------
+# Alembic is the only source of schema truth (see CLAUDE.md). Migrations run in a
+# pre-install/pre-upgrade Helm hook Job, and every long-running pod starts with
+# RUN_ALEMBIC_MIGRATIONS=false so nothing races the schema.
+migrations:
+  enabled: true
+  backoffLimit: 3
+  activeDeadlineSeconds: 900
+  # Defaults to the backend image running `alembic upgrade head`. Override both
+  # to run migrations from a dedicated image, or to substitute a connectivity
+  # check when validating a deployment without the application image.
+  image:
+    repository: ""
+    tag: ""
+  command: []
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+
+# -----------------------------------------------------------------------------
+# Backend API
+# -----------------------------------------------------------------------------
+backend:
+  enabled: true
+  replicaCount: 2
+  workers: 4
+  # Overrides the gunicorn command entirely when set.
+  command: []
+  service:
+    type: ClusterIP
+    port: 8000
+  resources:
+    requests:
+      cpu: 250m
+      memory: 1Gi
+    limits:
+      memory: 4Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 2
+    maxReplicas: 6
+    targetCPUUtilizationPercentage: 75
+  podDisruptionBudget:
+    enabled: false
+    minAvailable: 1
+  # Shared RWX volume for /app/data (documents, chroma_db, logs, model caches).
+  # ReadWriteMany is required when backend/celery replicas land on different
+  # nodes. On minikube "standard" is RWX-capable via hostPath.
+  persistence:
+    enabled: true
+    accessMode: ReadWriteMany
+    size: 20Gi
+    storageClass: ""
+    existingClaim: ""
+  livenessProbe:
+    initialDelaySeconds: 60
+    periodSeconds: 30
+    timeoutSeconds: 10
+    failureThreshold: 6
+  readinessProbe:
+    initialDelaySeconds: 20
+    periodSeconds: 10
+    timeoutSeconds: 5
+    failureThreshold: 6
+  startupProbe:
+    periodSeconds: 10
+    failureThreshold: 60
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  podAnnotations: {}
+
+# -----------------------------------------------------------------------------
+# Celery workers
+# -----------------------------------------------------------------------------
+celery:
+  enabled: true
+  replicaCount: 1
+  concurrency: 4
+  queues: ""   # empty = default queue
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      memory: 6Gi
+  autoscaling:
+    enabled: false
+    minReplicas: 1
+    maxReplicas: 5
+    targetCPUUtilizationPercentage: 80
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+celeryLatex:
+  # Dedicated worker for LaTeX compilation. Off by default, like
+  # LATEX_COMPILER_ENABLED in the app.
+  enabled: false
+  replicaCount: 1
+  concurrency: 1
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+celeryBeat:
+  enabled: true
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
+# Frontend (static React build served by nginx)
+# -----------------------------------------------------------------------------
+frontend:
+  enabled: true
+  replicaCount: 2
+  service:
+    type: ClusterIP
+    port: 80
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
+# Gateway (nginx reverse proxy: /api, /minio, /video, /)
+# -----------------------------------------------------------------------------
+# Mirrors frontend/nginx.conf so routing semantics (WebSocket upgrade, 2GB
+# uploads, the /video/{id} -> /stream/{id} rewrite, MinIO proxying) are identical
+# to docker-compose and independent of which ingress controller is installed.
+gateway:
+  enabled: true
+  replicaCount: 2
+  clientMaxBodySize: 2048M
+  proxyTimeoutSeconds: 300
+  # DNS server nginx re-resolves Service names against. CoreDNS keeps the
+  # "kube-dns" Service name for compatibility, so this works on stock clusters;
+  # override with the ClusterIP (kubectl -n kube-system get svc kube-dns) if
+  # your cluster runs DNS under a different name.
+  resolver: kube-dns.kube-system.svc.cluster.local
+  service:
+    type: ClusterIP
+    port: 80
+    nodePort: ""   # used when type=NodePort
+  resources:
+    requests:
+      cpu: 25m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+ingress:
+  enabled: false
+  className: nginx
+  annotations:
+    nginx.ingress.kubernetes.io/proxy-body-size: "2048m"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "300"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "300"
+  hosts:
+    - host: knowledgedbchat.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+# -----------------------------------------------------------------------------
+# Video streaming microservice (Go)
+# -----------------------------------------------------------------------------
+videoStreamer:
+  enabled: true
+  replicaCount: 1
+  service:
+    type: ClusterIP
+    port: 8080
+  corsOrigin: "*"
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+# -----------------------------------------------------------------------------
+# Dependencies
+# -----------------------------------------------------------------------------
+postgres:
+  enabled: true
+  image:
+    repository: postgres
+    tag: 15-alpine
+    pullPolicy: IfNotPresent
+  auth:
+    database: knowledge_db
+    username: user
+  service:
+    port: 5432
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  # Used when postgres.enabled=false. Password still comes from the Secret.
+  external:
+    host: ""
+    port: 5432
+    database: knowledge_db
+    username: user
+
+redis:
+  enabled: true
+  image:
+    repository: redis
+    tag: 7-alpine
+    pullPolicy: IfNotPresent
+  persistence:
+    enabled: true
+    size: 8Gi
+    storageClass: ""
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  external:
+    host: ""
+    port: 6379
+
+qdrant:
+  enabled: true
+  image:
+    repository: qdrant/qdrant
+    tag: v1.12.4
+    pullPolicy: IfNotPresent
+  service:
+    httpPort: 6333
+    grpcPort: 6334
+  persistence:
+    enabled: true
+    size: 20Gi
+    storageClass: ""
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 250m
+      memory: 512Mi
+    limits:
+      memory: 4Gi
+  external:
+    url: ""
+
+minio:
+  enabled: true
+  image:
+    repository: minio/minio
+    tag: RELEASE.2024-10-13T13-34-11Z
+    pullPolicy: IfNotPresent
+  mcImage:
+    repository: minio/mc
+    tag: RELEASE.2024-10-08T09-37-26Z
+    pullPolicy: IfNotPresent
+  service:
+    apiPort: 9000
+    consolePort: 9001
+  # Post-install hook that creates the documents bucket.
+  createBucket: true
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 2Gi
+  external:
+    endpoint: ""
+    useSSL: false
+
+ollama:
+  # Off by default: the model cache and RAM footprint exceed most dev clusters.
+  # Enable it, or point config.extra.OLLAMA_BASE_URL at an external Ollama.
+  enabled: false
+  image:
+    repository: ollama/ollama
+    tag: latest
+    pullPolicy: IfNotPresent
+  service:
+    port: 11434
+  # Models pulled by an init container on first start.
+  pullModels:
+    - llama3.2:1b
+  persistence:
+    enabled: true
+    size: 50Gi
+    storageClass: ""
+    existingClaim: ""
+  resources:
+    requests:
+      cpu: 1
+      memory: 2Gi
+    limits:
+      memory: 8Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+  external:
+    url: ""
+
+kroki:
+  enabled: true
+  image:
+    repository: yuzutech/kroki
+    tag: 0.26.0
+    pullPolicy: IfNotPresent
+  service:
+    port: 8000
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+  external:
+    url: ""
+
+# -----------------------------------------------------------------------------
+# Network policy
+# -----------------------------------------------------------------------------
+networkPolicy:
+  # Restricts dependency pods to in-release traffic. Requires a CNI that
+  # enforces NetworkPolicy (minikube: --cni=calico).
+  enabled: false

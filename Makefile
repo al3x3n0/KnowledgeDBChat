@@ -1,4 +1,6 @@
-.PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint typecheck-frontend test-backend-coverage
+.PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint typecheck-frontend test-backend-coverage \
+	helm-lint helm-template helm-validate helm-smoke minikube-up minikube-reinstall minikube-down \
+	k8s-status k8s-logs-backend k8s-logs-celery k8s-logs-migrate k8s-test k8s-shell-backend k8s-uninstall
 
 # Prefer legacy `docker-compose` if installed, otherwise use `docker compose`.
 DC ?= $(shell command -v docker-compose >/dev/null 2>&1 && echo docker-compose || echo "docker compose")
@@ -176,3 +178,62 @@ dev-frontend: ## Start frontend in development mode (manual setup)
 
 dev-celery: ## Start Celery worker in development mode (manual setup)
 	cd backend && . venv/bin/activate && celery -A app.core.celery worker --loglevel=info
+
+# --- Kubernetes / Helm -------------------------------------------------------
+# The chart lives in deploy/helm/knowledgedbchat; deploy/README.md has the guide.
+CHART ?= deploy/helm/knowledgedbchat
+K8S_NAMESPACE ?= knowledgedbchat
+K8S_RELEASE ?= kdbc
+
+helm-lint: ## Lint the Helm chart against every values profile
+	helm lint $(CHART)
+	helm lint $(CHART) -f $(CHART)/values-minikube.yaml
+	helm lint $(CHART) -f $(CHART)/values-prod.example.yaml
+
+helm-template: ## Render the chart for every values profile
+	@helm template $(K8S_RELEASE) $(CHART) > /dev/null && echo "✅ defaults render"
+	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-minikube.yaml > /dev/null && echo "✅ minikube profile renders"
+	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-prod.example.yaml > /dev/null && echo "✅ prod profile renders"
+
+helm-validate: helm-lint ## Render the chart and validate it against the Kubernetes API schemas
+	@command -v kubeconform >/dev/null 2>&1 || { echo "kubeconform not installed (brew install kubeconform)"; exit 1; }
+	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-minikube.yaml | kubeconform -strict -summary -kubernetes-version 1.31.0
+	@helm template $(K8S_RELEASE) $(CHART) \
+		--set ollama.enabled=true --set celeryLatex.enabled=true \
+		--set networkPolicy.enabled=true --set ingress.enabled=true \
+		--set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
+		--set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \
+		| kubeconform -strict -summary -kubernetes-version 1.31.0
+
+minikube-up: ## Start minikube, build images into it, and install the chart
+	./deploy/minikube/bootstrap.sh
+
+minikube-reinstall: ## Reinstall the chart on the running minikube without rebuilding images
+	SKIP_START=1 SKIP_BUILD=1 ./deploy/minikube/bootstrap.sh
+
+minikube-down: ## Delete the minikube profile (and everything in it)
+	minikube delete --profile=$${MINIKUBE_PROFILE:-knowledgedbchat}
+
+k8s-status: ## Show pods of the Helm release
+	kubectl -n $(K8S_NAMESPACE) get pods,svc -l app.kubernetes.io/instance=$(K8S_RELEASE)
+
+k8s-logs-backend: ## Tail backend logs in Kubernetes
+	kubectl -n $(K8S_NAMESPACE) logs -f deploy/$(K8S_RELEASE)-knowledgedbchat-backend
+
+k8s-logs-celery: ## Tail Celery worker logs in Kubernetes
+	kubectl -n $(K8S_NAMESPACE) logs -f deploy/$(K8S_RELEASE)-knowledgedbchat-celery
+
+k8s-logs-migrate: ## Show the Alembic migration Job output
+	kubectl -n $(K8S_NAMESPACE) logs job/$(K8S_RELEASE)-knowledgedbchat-migrate
+
+k8s-test: ## Run the chart's in-cluster smoke test
+	helm test $(K8S_RELEASE) -n $(K8S_NAMESPACE)
+
+k8s-shell-backend: ## Open a shell in a backend pod
+	kubectl -n $(K8S_NAMESPACE) exec -it deploy/$(K8S_RELEASE)-knowledgedbchat-backend -- /bin/bash
+
+k8s-uninstall: ## Uninstall the Helm release (PVCs are kept)
+	helm uninstall $(K8S_RELEASE) -n $(K8S_NAMESPACE)
+
+helm-smoke: ## Install the chart on the current cluster and assert its wiring (needs a reachable cluster)
+	./deploy/smoke-test.sh

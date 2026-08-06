@@ -1,0 +1,15 @@
+apiVersion: v2
+name: knowledgedbchat
+description: KnowledgeDBChat - autonomous R&D and knowledge-management platform (FastAPI + Celery + React + Postgres/Redis/Qdrant/MinIO)
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+keywords:
+  - rag
+  - knowledge-base
+  - agents
+  - fastapi
+  - celery
+home: https://github.com/al3x3n0/KnowledgeDBChat
+maintainers:
+  - name: KnowledgeDBChat maintainers

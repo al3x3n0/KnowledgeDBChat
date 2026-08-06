@@ -1,0 +1,42 @@
+{{- if .Values.networkPolicy.enabled }}
+# Datastores accept traffic only from pods of this release. Requires a CNI that
+# enforces NetworkPolicy (minikube: `minikube start --cni=calico`); with the
+# default bridge CNI these objects are accepted and silently ignored.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-datastores" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app.kubernetes.io/component
+        operator: In
+        values: [postgres, redis, qdrant, minio, ollama, kroki]
+      - key: app.kubernetes.io/instance
+        operator: In
+        values: [{{ .Release.Name }}]
+  policyTypes: [Ingress]
+  ingress:
+    - from:
+        - podSelector:
+            matchLabels:
+              {{- include "kdbc.selectorLabels" . | nindent 14 }}
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: {{ printf "%s-gateway" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+spec:
+  # The gateway is the only public entry point, so it accepts traffic from
+  # anywhere (ingress controller, LoadBalancer, port-forward).
+  podSelector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "gateway") | nindent 6 }}
+  policyTypes: [Ingress]
+  ingress:
+    - {}
+{{- end }}

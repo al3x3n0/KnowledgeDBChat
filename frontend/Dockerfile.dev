@@ -6,8 +6,11 @@ WORKDIR /app
 # Copy package files
 COPY package*.json ./
 
-# Install all dependencies (including dev dependencies for development)
-RUN npm ci
+# Install all dependencies (including dev dependencies for development).
+# --legacy-peer-deps for the same reason as frontend/Dockerfile: react-scripts@5
+# pins a typescript peer this project has outgrown, so a plain `npm ci` fails
+# ERESOLVE.
+RUN npm ci --legacy-peer-deps
 
 # Copy source code
 COPY . .

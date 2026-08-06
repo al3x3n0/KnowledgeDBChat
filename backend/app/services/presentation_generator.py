@@ -10,7 +10,6 @@ Orchestrates the full presentation generation pipeline:
 6. Build the final PPTX file
 """
 
-import json
 import os
 import re
 import tempfile
@@ -25,6 +24,7 @@ from app.core.config import settings
 from app.models.memory import UserPreferences
 from app.models.presentation import PresentationJob
 from app.schemas.presentation import PresentationOutline, SlideContent
+from app.services import llm_json
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.mermaid_renderer import get_mermaid_renderer
 from app.services.pptx_builder import PPTXBuilder
@@ -668,30 +668,18 @@ Return ONLY a JSON array of bullet point strings, no explanation:
         return file_path
 
     def _parse_json_response(self, response: str) -> Any:
+        """Parse a JSON object or array from the model reply.
+
+        Kept permissive about which of the two arrives, since the outline
+        prompts have returned both.
         """
-        Parse JSON from LLM response.
-
-        Handles various response formats including markdown code blocks.
-        """
-        response = response.strip()
-
-        # Remove markdown code blocks
-        if response.startswith("```json"):
-            response = response[7:]
-        elif response.startswith("```"):
-            response = response[3:]
-
-        if response.endswith("```"):
-            response = response[:-3]
-
-        response = response.strip()
-
-        # Try to find JSON object or array
-        json_match = re.search(r"(\{.*\}|\[.*\])", response, re.DOTALL)
-        if json_match:
-            response = json_match.group(1)
-
-        return json.loads(response)
+        parsed = llm_json.extract_json_object(response)
+        if parsed is not None:
+            return parsed
+        array = llm_json.extract_json_array(response)
+        if array is not None:
+            return array
+        raise ValueError("No JSON object or array found in response")
 
     def _create_fallback_outline(
         self, title: str, topic: str, slide_count: int

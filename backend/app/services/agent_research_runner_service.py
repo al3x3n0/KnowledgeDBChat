@@ -18,6 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
+from app.services import llm_json
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 from app.services.ai_hub_eval_service import ai_hub_eval_service
 from app.services.autonomy_service import (
@@ -40,31 +41,12 @@ from app.services.research_opportunity_service import (
 def _extract_json(text: Any) -> Optional[Dict[str, Any]]:
     """Best-effort extraction of a JSON object from an LLM response.
 
-    Returns the parsed dict, or ``None`` if no valid JSON object is found
-    (callers guard with ``_extract_json(...) or {}``).
+    Delegates to ``llm_json`` so this runner tolerates exactly what the rest of
+    the agent stack tolerates. The shared implementation scans balanced brace
+    spans, so replies that put a second object after the first — which this
+    runner used to drop — now parse.
     """
-    if isinstance(text, dict):
-        return text
-    if not isinstance(text, str):
-        return None
-
-    cleaned = text.strip()
-    if cleaned.startswith("```"):
-        cleaned = re.sub(r"^```[a-zA-Z0-9_-]*", "", cleaned).strip()
-        if cleaned.endswith("```"):
-            cleaned = cleaned[:-3].strip()
-
-    start = cleaned.find("{")
-    end = cleaned.rfind("}")
-    if start == -1 or end == -1 or end <= start:
-        return None
-
-    try:
-        parsed = json.loads(cleaned[start : end + 1])
-    except (json.JSONDecodeError, ValueError):
-        return None
-
-    return parsed if isinstance(parsed, dict) else None
+    return llm_json.extract_json_object(text)
 
 
 class AgentResearchRunnerService:

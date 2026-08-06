@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
+
+from app.services import agent_decision_parser
 
 
 class AgentThinkingService:
@@ -471,60 +472,8 @@ Respond in JSON format:
         }
 
     def _extract_first_json_object(self, text: str) -> Optional[Dict[str, Any]]:
-        """Extract the first valid JSON object from plain text or fenced markdown."""
-        if not text:
-            return None
-
-        stripped = text.strip()
-        try:
-            parsed = json.loads(stripped)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-
-        fence_match = re.search(
-            r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL
-        )
-        if fence_match:
-            fenced = fence_match.group(1).strip()
-            try:
-                parsed = json.loads(fenced)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                pass
-
-        for start in [i for i, ch in enumerate(text) if ch == "{"]:
-            depth = 0
-            in_string = False
-            escaped = False
-            for idx in range(start, len(text)):
-                ch = text[idx]
-                if in_string:
-                    if escaped:
-                        escaped = False
-                    elif ch == "\\":
-                        escaped = True
-                    elif ch == '"':
-                        in_string = False
-                    continue
-
-                if ch == '"':
-                    in_string = True
-                elif ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidate = text[start : idx + 1]
-                        try:
-                            parsed = json.loads(candidate)
-                            if isinstance(parsed, dict):
-                                return parsed
-                        except Exception:
-                            break
-        return None
+        """Extract the first JSON object from model output."""
+        return agent_decision_parser.extract_first_json_object(text)
 
     def _normalize_decision_action(
         self,
@@ -532,34 +481,8 @@ Respond in JSON format:
         available_tools: List[str],
     ) -> Optional[Dict[str, Any]]:
         """Normalize action payload and reject unavailable tools."""
-        if action is None:
-            return None
-        if isinstance(action, str):
-            action = {"tool": action, "params": {}}
-        if not isinstance(action, dict):
-            return None
-
-        tool = str(action.get("tool") or "").strip()
-        if not tool or tool not in set(available_tools):
-            return None
-
-        params = action.get("params")
-        if not isinstance(params, dict):
-            params = {}
-
-        purpose = str(action.get("purpose") or "").strip()
-        return {"tool": tool, "params": params, "purpose": purpose[:300]}
+        return agent_decision_parser.normalize_decision_action(action, available_tools)
 
     def _coerce_bool(self, value: Any, default: bool = False) -> bool:
         """Coerce flexible model outputs to booleans."""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"true", "yes", "1", "y"}:
-                return True
-            if lowered in {"false", "no", "0", "n"}:
-                return False
-        return default
+        return agent_decision_parser.coerce_bool(value, default)

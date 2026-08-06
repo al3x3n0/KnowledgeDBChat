@@ -21,6 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.document import Document, DocumentChunk
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
+from app.services import llm_json
 
 if TYPE_CHECKING:
     from app.services.llm_service import LLMService, UserLLMSettings
@@ -367,32 +368,12 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
             return [], []
 
     def _parse_json_response(self, response: str) -> Dict[str, Any]:
-        """Parse JSON from LLM response, handling markdown blocks."""
-        response = response.strip()
-
-        # Remove markdown code blocks
-        if response.startswith("```json"):
-            response = response[7:]
-        elif response.startswith("```"):
-            response = response[3:]
-        if response.endswith("```"):
-            response = response[:-3]
-        response = response.strip()
-
-        # Try to find JSON object in the response
-        json_match = re.search(r"\{.*\}", response, re.DOTALL)
-        if json_match:
-            try:
-                return json.loads(json_match.group())
-            except json.JSONDecodeError:
-                pass
-
-        # Last resort: try to parse the whole thing
-        try:
-            return json.loads(response)
-        except json.JSONDecodeError as e:
-            logger.warning(f"Failed to parse LLM extraction response: {e}")
+        """Parse JSON from an LLM response, tolerating fences and surrounding prose."""
+        parsed = llm_json.extract_json_object(response)
+        if parsed is None:
+            logger.warning("Failed to parse LLM extraction response")
             return {"entities": [], "relationships": []}
+        return parsed
 
     async def extract_from_text(
         self,

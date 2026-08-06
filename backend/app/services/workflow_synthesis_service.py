@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.memory import UserPreferences
 from app.models.workflow import UserTool
 from app.schemas.workflow import WorkflowCreate
+from app.services import llm_json
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.llm_service import LLMService, UserLLMSettings
 
@@ -279,19 +280,11 @@ class WorkflowSynthesisService:
         )
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z0-9_-]*", "", cleaned).strip()
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3].strip()
-
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
+        """Parse the model's workflow JSON, raising if the reply has none."""
+        parsed = llm_json.extract_json_object(text)
+        if parsed is None:
             raise ValueError("No JSON object found in response")
-
-        payload = cleaned[start : end + 1]
-        return json.loads(payload)
+        return parsed
 
     def _normalize_workflow(
         self,

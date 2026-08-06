@@ -6,12 +6,12 @@ for the autonomous agent executor. Extracts structured decisions from
 free-form LLM output using Pydantic validation with graceful fallbacks.
 """
 
-import json
-import re
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
+
+from app.services import llm_json
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -93,65 +93,12 @@ class AgentDecision(BaseModel):
 
 
 def extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
-    """Extract the first valid JSON object from plain text or fenced markdown."""
-    if not text:
-        return None
+    """Extract the first JSON object from model output.
 
-    stripped = text.strip()
-    try:
-        parsed = json.loads(stripped)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    fence_match = re.search(
-        r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL
-    )
-    if fence_match:
-        fenced = fence_match.group(1).strip()
-        try:
-            parsed = json.loads(fenced)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-
-    # Balanced-brace extraction for responses with commentary before/after JSON.
-    for start in [i for i, ch in enumerate(text) if ch == "{"]:
-        depth = 0
-        in_string = False
-        escaped = False
-        for idx in range(start, len(text)):
-            ch = text[idx]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    in_string = False
-                continue
-
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start : idx + 1]
-                    try:
-                        parsed = json.loads(candidate)
-                        if isinstance(parsed, dict):
-                            return parsed
-                    except Exception:
-                        break
-        # Only try the first opening brace that doesn't parse; skip the rest
-        # to avoid wasting time on large texts.
-        if depth != 0:
-            continue
-    return None
+    Kept as the decision-parsing entry point; the implementation lives in
+    ``llm_json`` so every subsystem parses model output the same way.
+    """
+    return llm_json.extract_json_object(text)
 
 
 # ---------------------------------------------------------------------------
@@ -178,6 +125,45 @@ Set "action" to null if goal_achieved or should_stop is true."""
 # ---------------------------------------------------------------------------
 # Parser
 # ---------------------------------------------------------------------------
+
+
+def normalize_decision_action(
+    action: Any,
+    available_tools: List[str],
+) -> Optional[Dict[str, Any]]:
+    """Normalize an action payload and reject tools the job cannot use."""
+    if action is None:
+        return None
+    if isinstance(action, str):
+        action = {"tool": action, "params": {}}
+    if not isinstance(action, dict):
+        return None
+
+    tool = str(action.get("tool") or "").strip()
+    if not tool or tool not in set(available_tools):
+        return None
+
+    params = action.get("params")
+    if not isinstance(params, dict):
+        params = {}
+
+    purpose = str(action.get("purpose") or "").strip()
+    return {"tool": tool, "params": params, "purpose": purpose[:300]}
+
+
+def coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce flexible model output to a boolean."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1", "y"}:
+            return True
+        if lowered in {"false", "no", "0", "n"}:
+            return False
+    return default
 
 
 class AgentDecisionParser:

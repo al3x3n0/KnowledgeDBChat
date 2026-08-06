@@ -12,7 +12,6 @@ Multi-Agent Architecture:
 import asyncio
 import hashlib
 import json
-import re
 import time
 from datetime import datetime
 from typing import Any, Dict, List, Optional
@@ -36,6 +35,7 @@ from app.schemas.agent import (
     AgentRoutingInfo,
     AgentToolCall,
 )
+from app.services import llm_json
 from app.services.agent_memory_integration import AgentMemoryIntegration
 from app.services.agent_router import AgentRouter
 from app.services.agent_tool_dispatch import (
@@ -807,15 +807,8 @@ Your response (JSON array only):"""
             # Clean up the response - extract JSON array
             response = response.strip()
 
-            # Try to find JSON array in the response
-            json_match = re.search(r"\[.*\]", response, re.DOTALL)
-            if json_match:
-                json_str = json_match.group()
-                parsed = json.loads(json_str)
-
-                if not isinstance(parsed, list):
-                    return []
-
+            parsed = llm_json.extract_json_array(response)
+            if parsed is not None:
                 tool_calls = []
                 for item in parsed:
                     if isinstance(item, dict) and "tool_name" in item:

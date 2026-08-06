@@ -11,6 +11,7 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services import llm_json
 
 
 class AgentLatexRunnerService:
@@ -1294,7 +1295,6 @@ class AgentLatexRunnerService:
         Produces:
           - job.results.latex_review (issues + diff_unified)
         """
-        import json as _json
         from uuid import UUID as _UUID
 
         from app.models.latex_project import LatexProject
@@ -1393,10 +1393,8 @@ class AgentLatexRunnerService:
             routing=executor._llm_routing_from_job_config(job.config),
         )
 
-        try:
-            payload = _json.loads(response)
-        except Exception:
-            payload = None
+        # Previously a bare json.loads: a fenced reply failed the whole job.
+        payload = llm_json.extract_json_object(response)
 
         if not isinstance(payload, dict):
             job.status = AgentJobStatus.FAILED.value

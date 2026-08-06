@@ -14,6 +14,7 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services import llm_json
 from app.services.project_profile_service import infer_project_profile_from_paths
 
 
@@ -458,9 +459,10 @@ class AgentCodingRunnerService:
             routing=executor._llm_routing_from_job_config(job.config),
         )
 
-        try:
-            payload = json.loads(response)
-        except Exception:
+        # A fenced reply used to fall straight through to the stub below, so a
+        # perfectly good proposal was discarded as unparseable.
+        payload = llm_json.extract_json_object(response)
+        if payload is None:
             payload = {
                 "title": "Code Patch Proposal",
                 "summary": response[:800],

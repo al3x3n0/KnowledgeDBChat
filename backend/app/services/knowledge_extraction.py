@@ -21,7 +21,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models.document import Document, DocumentChunk
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
-from app.services import llm_json
+from app.services import llm_json, llm_structured
 
 if TYPE_CHECKING:
     from app.services.llm_service import LLMService, UserLLMSettings
@@ -46,6 +46,42 @@ def _sanitize_type(s: str, default: str, max_len: int = 64) -> str:
     if not s:
         return default
     return s[:max_len]
+
+
+# Shape the extraction prompt asks for, expressed so providers that support
+# schema-constrained output can enforce it rather than us hoping for it.
+EXTRACTION_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "entities": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string"},
+                    "type": {"type": "string"},
+                    "description": {"type": "string"},
+                },
+                "required": ["text", "type"],
+            },
+        },
+        "relationships": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "source": {"type": "string"},
+                    "target": {"type": "string"},
+                    "type": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "evidence": {"type": "string"},
+                },
+                "required": ["source", "target", "type"],
+            },
+        },
+    },
+    "required": ["entities", "relationships"],
+}
 
 
 @dataclass
@@ -404,8 +440,13 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
 
         try:
             llm = self._get_llm_service()
-            response = await llm.generate_response(
-                query=prompt,
+            # Constrain the schema at the provider where it supports it; the
+            # helper falls back to the prompted path otherwise. The prompt still
+            # describes the shape, because that fallback depends on it.
+            payload = await llm_structured.ask_for_json(
+                llm,
+                schema=EXTRACTION_SCHEMA,
+                user_message=prompt,
                 temperature=0.1,  # Low temperature for consistent extraction
                 max_tokens=2000,
                 user_settings=user_settings,
@@ -413,7 +454,10 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
                 # System default for KG extraction; user_settings can still override.
                 model=getattr(settings, "KG_EXTRACTION_MODEL", None) or None,
             )
-            return self._parse_json_response(response)
+            if payload is None:
+                logger.warning("Failed to parse LLM extraction response")
+                return {"entities": [], "relationships": []}
+            return payload
         except Exception as e:
             logger.error(f"LLM extraction failed: {e}")
             return {"entities": [], "relationships": []}

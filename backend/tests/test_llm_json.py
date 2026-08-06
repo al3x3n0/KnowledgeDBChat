@@ -69,3 +69,22 @@ def test_returns_none_for_malformed_json():
 def test_prefers_the_whole_string_over_an_embedded_span():
     # A reply that is itself valid JSON must not be re-scanned for inner spans.
     assert extract_json_object('{"outer": {"inner": 1}}') == {"outer": {"inner": 1}}
+
+
+def test_recovers_an_inner_object_when_the_outer_span_is_malformed():
+    assert extract_json_object('{ bad {"a": 1} }') == {"a": 1}
+    assert extract_json_object('{oops} {"a": 1}') == {"a": 1}
+
+
+def test_scanning_stays_linear_on_malformed_input():
+    """Guards against the quadratic scan this replaced.
+
+    28KB of unbalanced braces took 37 seconds before, in a path that parses
+    untrusted model output. A generous ceiling still catches a regression.
+    """
+    import time
+
+    noisy = "text { " * 4000
+    started = time.perf_counter()
+    assert extract_json_object(noisy) is None
+    assert time.perf_counter() - started < 1.0

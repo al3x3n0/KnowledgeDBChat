@@ -25,6 +25,10 @@ from typing import Any
 
 FENCE_PATTERN = re.compile(r"```(?:json)?\s*(.*?)\s*```", re.IGNORECASE | re.DOTALL)
 
+# A reply with hundreds of brace pairs is malformed by any reasonable reading;
+# parsing every one of them is wasted work on untrusted input.
+MAX_SPAN_ATTEMPTS = 200
+
 
 def _loads_object(candidate: str) -> dict[str, Any] | None:
     try:
@@ -35,75 +39,43 @@ def _loads_object(candidate: str) -> dict[str, Any] | None:
 
 
 def _balanced_spans(text: str) -> dict[str, Any] | None:
-    """Return the first balanced ``{...}`` span that parses as an object."""
-    for start in (i for i, ch in enumerate(text) if ch == "{"):
-        depth = 0
-        in_string = False
-        escaped = False
-        for idx in range(start, len(text)):
-            ch = text[idx]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    in_string = False
-                continue
+    """Return the first balanced ``{...}`` span that parses as an object.
 
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    parsed = _loads_object(text[start : idx + 1])
-                    if parsed is not None:
-                        return parsed
-                    break
-        # Only the first unbalanced opening brace is worth retrying; scanning
-        # every brace in a long reply is not worth the time.
-        if depth != 0:
-            continue
-    return None
-
-
-def _loads_array(candidate: str) -> list[Any] | None:
-    try:
-        parsed = json.loads(candidate)
-    except (json.JSONDecodeError, ValueError):
-        return None
-    return parsed if isinstance(parsed, list) else None
-
-
-def extract_json_array(value: Any) -> list[Any] | None:
-    """Return the first JSON array in model output, or None.
-
-    Separate from ``extract_json_object`` rather than a general "first JSON
-    value": a reply containing both must still yield the object to callers that
-    asked for one, and the array to callers that asked for an array.
+    One left-to-right pass collecting every balanced span, then attempts in
+    order of opening brace. The previous implementation restarted a scan from
+    every ``{``, which is quadratic: 28KB of unbalanced braces — an entirely
+    plausible malformed reply — took 37 seconds, in a code path that parses
+    untrusted model output.
     """
-    if isinstance(value, list):
-        return value
-    if not isinstance(value, str) or not value:
-        return None
+    stack: list[int] = []
+    spans: list[tuple[int, int]] = []
+    in_string = False
+    escaped = False
 
-    direct = _loads_array(value.strip())
-    if direct is not None:
-        return direct
+    for idx, ch in enumerate(text):
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
 
-    fenced = FENCE_PATTERN.search(value)
-    if fenced:
-        parsed = _loads_array(fenced.group(1).strip())
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            stack.append(idx)
+        elif ch == "}" and stack:
+            spans.append((stack.pop(), idx))
+
+    # Attempt by opening position so the outermost, earliest object wins, which
+    # is what callers expect when a reply nests or repeats objects.
+    for span_start, span_end in sorted(spans)[:MAX_SPAN_ATTEMPTS]:
+        parsed = _loads_object(text[span_start : span_end + 1])
         if parsed is not None:
             return parsed
-
-    start = value.find("[")
-    end = value.rfind("]")
-    if start == -1 or end == -1 or end <= start:
-        return None
-    return _loads_array(value[start : end + 1])
+    return None
 
 
 def extract_json_object(value: Any) -> dict[str, Any] | None:

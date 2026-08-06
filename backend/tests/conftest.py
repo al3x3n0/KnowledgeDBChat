@@ -5,8 +5,11 @@ Pytest configuration and fixtures for backend tests.
 import asyncio
 import importlib.machinery
 import importlib.util
+import os
 import sys
+import tempfile
 import types
+from pathlib import Path
 from typing import AsyncGenerator
 
 import pytest
@@ -16,9 +19,18 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 from sqlalchemy.ext.compiler import compiles
 from sqlalchemy.pool import StaticPool
 
-from app.core.database import Base, get_db
-from app.models.user import User
-from app.services.auth_service import AuthService
+# Importing the app configures loguru with settings.LOG_FILE, so this has to be
+# set before that import happens. Without it every test run appends to
+# backend/data/logs/app.log with 10MB rotation and 30-day retention: hundreds of
+# megabytes of test noise, and concurrent runs racing each other on rotation
+# (which produces failures that look like real ones and are not).
+os.environ.setdefault(
+    "LOG_FILE", str(Path(tempfile.gettempdir()) / "kdbchat-tests" / "test.log")
+)
+
+from app.core.database import Base, get_db  # noqa: E402
+from app.models.user import User  # noqa: E402
+from app.services.auth_service import AuthService  # noqa: E402
 
 if "pptx" not in sys.modules:
     pptx_stub = types.ModuleType("pptx")

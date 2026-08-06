@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 
 
 class LLMCallSnapshotSummary(BaseModel):
@@ -25,8 +25,7 @@ class LLMCallSnapshotSummary(BaseModel):
     completion_tokens: Optional[int] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class LLMCallSnapshotResponse(LLMCallSnapshotSummary):

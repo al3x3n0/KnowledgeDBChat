@@ -4,7 +4,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from app.schemas.experiment import ScientificValidationRunSummaryResponse
 from app.services.scientific_validation_service import (
@@ -384,8 +384,7 @@ class DomainResearchProfileResponse(BaseModel):
     paused_at: Optional[datetime] = None
     last_run_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DomainResearchProfileListResponse(BaseModel):

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, validator
 
 
 class MemoryBase(BaseModel):
@@ -66,8 +66,7 @@ class MemoryResponse(MemoryBase):
     access_count: int
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MemoryInteractionBase(BaseModel):
@@ -114,8 +113,7 @@ class MemoryInteractionResponse(MemoryInteractionBase):
     message_id: Optional[UUID]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserPreferencesBase(BaseModel):
@@ -253,8 +251,7 @@ class UserPreferencesResponse(UserPreferencesBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MemorySearchRequest(BaseModel):

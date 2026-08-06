@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class NotificationBase(BaseModel):
@@ -25,8 +25,7 @@ class NotificationBase(BaseModel):
     read_at: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NotificationResponse(NotificationBase):
@@ -149,8 +148,7 @@ class NotificationPreferencesResponse(NotificationPreferencesBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BroadcastNotificationRequest(BaseModel):

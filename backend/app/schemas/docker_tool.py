@@ -4,7 +4,7 @@ Pydantic schemas for Docker container tool configuration.
 
 from typing import Dict, List, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class DockerToolConfig(BaseModel):
@@ -80,8 +80,8 @@ class DockerToolConfig(BaseModel):
         None, description="User to run the container as (e.g., 'nobody', '1000:1000')"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "image": "python:3.11-slim",
                 "command": ["python", "/workspace/script.py"],
@@ -96,7 +96,8 @@ class DockerToolConfig(BaseModel):
                 "working_dir": "/workspace",
                 "network_enabled": False,
             }
-        }
+        },
+    )
 
 
 class DockerToolExecutionInput(BaseModel):

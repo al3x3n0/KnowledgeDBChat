@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 WorkflowId = Literal["triage", "extraction", "literature"]
 ItemType = Literal["dataset_preset", "eval_template"]
@@ -35,8 +35,7 @@ class AIHubRecommendationFeedbackResponse(BaseModel):
     decision: Decision
     reason: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AIHubRecommendationFeedbackListResponse(BaseModel):

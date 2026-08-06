@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from loguru import logger
 from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
@@ -419,9 +419,7 @@ class Settings(BaseSettings):
             logger.warning("Using default SECRET_KEY. Change this in production!")
         return v
 
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
     # Validators
     @field_validator("OLLAMA_BASE_URL", mode="before")

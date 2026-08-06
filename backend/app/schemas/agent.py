@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID, uuid4
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class AgentToolCall(BaseModel):
@@ -26,8 +26,8 @@ class AgentToolCall(BaseModel):
         None, description="Execution time in milliseconds"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "abc123",
                 "tool_name": "search_documents",
@@ -36,7 +36,8 @@ class AgentToolCall(BaseModel):
                 "status": "completed",
                 "execution_time_ms": 150,
             }
-        }
+        },
+    )
 
 
 class AgentMessage(BaseModel):
@@ -50,8 +51,8 @@ class AgentMessage(BaseModel):
     )
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "id": "msg123",
                 "role": "assistant",
@@ -59,7 +60,8 @@ class AgentMessage(BaseModel):
                 "tool_calls": [],
                 "created_at": "2024-01-15T10:30:00Z",
             }
-        }
+        },
+    )
 
 
 class AgentChatRequest(BaseModel):
@@ -78,15 +80,16 @@ class AgentChatRequest(BaseModel):
         description="Optional: force using a specific agent definition (must be active)",
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "message": "Find all documents about machine learning",
                 "conversation_history": [],
                 "conversation_id": None,
                 "turn_number": 0,
             }
-        }
+        },
+    )
 
 
 class AgentRoutingInfo(BaseModel):
@@ -100,8 +103,8 @@ class AgentRoutingInfo(BaseModel):
         None, description="Name of agent that handed off (if this was a handoff)"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "agent_id": "550e8400-e29b-41d4-a716-446655440000",
                 "agent_name": "document_expert",
@@ -109,7 +112,8 @@ class AgentRoutingInfo(BaseModel):
                 "routing_reason": "Matched capabilities: document_search",
                 "handoff_from": None,
             }
-        }
+        },
+    )
 
 
 class AgentChatResponse(BaseModel):
@@ -133,8 +137,8 @@ class AgentChatResponse(BaseModel):
         None, description="IDs of memories that were injected into the agent context"
     )
 
-    class Config:
-        json_schema_extra = {
+    model_config = ConfigDict(
+        json_schema_extra={
             "example": {
                 "message": {
                     "id": "msg456",
@@ -159,7 +163,8 @@ class AgentChatResponse(BaseModel):
                 },
                 "injected_memories": ["mem-uuid-1", "mem-uuid-2"],
             }
-        }
+        },
+    )
 
 
 class DocumentSearchResult(BaseModel):
@@ -228,8 +233,7 @@ class AgentConversationResponse(BaseModel):
     updated_at: datetime
     last_message_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentConversationListItem(BaseModel):
@@ -244,8 +248,7 @@ class AgentConversationListItem(BaseModel):
     last_message_at: datetime
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentConversationListResponse(BaseModel):
@@ -346,9 +349,9 @@ class AgentDefinitionResponse(AgentDefinitionBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
-        json_schema_extra = {
+    model_config = ConfigDict(
+        from_attributes=True,
+        json_schema_extra={
             "example": {
                 "id": "550e8400-e29b-41d4-a716-446655440000",
                 "name": "code_expert",
@@ -363,7 +366,8 @@ class AgentDefinitionResponse(AgentDefinitionBase):
                 "created_at": "2024-01-15T10:30:00Z",
                 "updated_at": "2024-01-15T10:30:00Z",
             }
-        }
+        },
+    )
 
 
 class AgentDefinitionListResponse(BaseModel):

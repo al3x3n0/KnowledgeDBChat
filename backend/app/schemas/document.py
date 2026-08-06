@@ -6,7 +6,14 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, computed_field, field_validator, model_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    computed_field,
+    field_validator,
+    model_validator,
+)
 
 from app.schemas.persona import DocumentPersonaDetectionResponse, PersonaResponse
 
@@ -33,8 +40,7 @@ class DocumentSourceResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
     @computed_field(return_type=Dict[str, Any])
     def display_config(self) -> Dict[str, Any]:
@@ -66,8 +72,7 @@ class DocumentChunkResponse(BaseModel):
     extra_metadata: Optional[Dict[str, Any]]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentResponse(BaseModel):
@@ -100,8 +105,7 @@ class DocumentResponse(BaseModel):
     chunks: Optional[List[DocumentChunkResponse]] = []
     download_url: Optional[str] = None  # Presigned download URL (generated on demand)
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentUpload(BaseModel):

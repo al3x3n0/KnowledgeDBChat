@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, validator
+from pydantic import BaseModel, ConfigDict, Field, validator
 
 # =============================================================================
 # Section Types
@@ -328,8 +328,7 @@ class RepoReportJobResponse(BaseModel):
     # Analysis data (optional, for detail view)
     analysis_data: Optional[RepoAnalysisResult] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RepoReportJobListItem(BaseModel):
@@ -350,8 +349,7 @@ class RepoReportJobListItem(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class RepoReportJobListResponse(BaseModel):

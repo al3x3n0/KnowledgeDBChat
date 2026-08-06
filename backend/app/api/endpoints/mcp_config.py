@@ -9,7 +9,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from loguru import logger
-from pydantic import BaseModel
+from pydantic import BaseModel, ConfigDict
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -57,8 +57,7 @@ class MCPToolConfigResponse(BaseModel):
     is_enabled: bool
     config: Optional[dict]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MCPSourceAccessUpdate(BaseModel):
@@ -80,8 +79,7 @@ class MCPSourceAccessResponse(BaseModel):
     can_search: bool
     can_chat: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class MCPKeyConfigUpdate(BaseModel):

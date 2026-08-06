@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =============================================================================
 # Tool Type Configurations
@@ -155,8 +155,7 @@ class UserToolResponse(UserToolBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class UserToolListResponse(BaseModel):
@@ -242,8 +241,7 @@ class WorkflowNodeResponse(WorkflowNodeBase):
     workflow_id: UUID
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # =============================================================================
@@ -271,8 +269,7 @@ class WorkflowEdgeResponse(WorkflowEdgeBase):
     workflow_id: UUID
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # =============================================================================
@@ -377,8 +374,7 @@ class WorkflowResponse(WorkflowBase):
     nodes: List[WorkflowNodeResponse] = Field(default_factory=list)
     edges: List[WorkflowEdgeResponse] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkflowListItem(BaseModel):
@@ -395,8 +391,7 @@ class WorkflowListItem(BaseModel):
     node_count: int = 0
     execution_count: int = 0
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkflowListResponse(BaseModel):
@@ -414,8 +409,7 @@ class WorkflowSummary(BaseModel):
     description: Optional[str] = None
     is_active: bool
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # =============================================================================
@@ -436,8 +430,7 @@ class WorkflowNodeExecutionResponse(BaseModel):
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkflowExecutionBase(BaseModel):
@@ -474,8 +467,7 @@ class WorkflowExecutionResponse(BaseModel):
     completed_at: Optional[datetime]
     node_executions: List[WorkflowNodeExecutionResponse] = Field(default_factory=list)
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkflowExecutionListItem(BaseModel):
@@ -492,8 +484,7 @@ class WorkflowExecutionListItem(BaseModel):
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class WorkflowExecutionListResponse(BaseModel):

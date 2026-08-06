@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # ============================================================================
 # Dataset Schemas
@@ -38,8 +38,7 @@ class DatasetSampleResponse(BaseModel):
     flag_reason: Optional[str]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TrainingDatasetCreate(BaseModel):
@@ -88,8 +87,7 @@ class TrainingDatasetResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TrainingDatasetListResponse(BaseModel):
@@ -282,8 +280,7 @@ class TrainingJobResponse(BaseModel):
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TrainingJobListResponse(BaseModel):
@@ -322,8 +319,7 @@ class TrainingCheckpointResponse(BaseModel):
     metrics: Optional[Dict[str, Any]]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TrainingProgressUpdate(BaseModel):
@@ -425,8 +421,7 @@ class ModelAdapterResponse(BaseModel):
     created_at: datetime
     updated_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ModelAdapterListResponse(BaseModel):

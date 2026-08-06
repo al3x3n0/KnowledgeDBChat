@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PersonaBase(BaseModel):
@@ -46,8 +46,7 @@ class PersonaResponse(PersonaBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentPersonaDetectionBase(BaseModel):
@@ -73,8 +72,7 @@ class DocumentPersonaDetectionResponse(DocumentPersonaDetectionBase):
     created_at: datetime
     persona: PersonaResponse
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PersonaEditRequestCreate(BaseModel):
@@ -97,5 +95,4 @@ class PersonaEditRequestResponse(BaseModel):
     created_at: datetime
     resolved_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

@@ -6,7 +6,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.domain_research_profile import DomainResearchProfileResponse
 from app.schemas.research_portfolio import ResearchPortfolioResponse
@@ -1152,8 +1152,7 @@ class AgentJobResponse(BaseModel):
     approval_checkpoint: Optional[Dict[str, Any]] = None
     executive_digest: Optional[Dict[str, Any]] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentJobListResponse(BaseModel):
@@ -1228,8 +1227,7 @@ class AgentJobTemplateResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentJobTemplateListResponse(BaseModel):
@@ -1948,8 +1946,7 @@ class AgentDecisionTraceViewResponse(AgentDecisionTraceViewBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentDecisionTraceViewListResponse(BaseModel):
@@ -2081,8 +2078,7 @@ class AgentJobCheckpointResponse(BaseModel):
     phase: Optional[str]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Chain Definition schemas
@@ -2164,8 +2160,7 @@ class AgentJobChainDefinitionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentJobChainDefinitionListResponse(BaseModel):

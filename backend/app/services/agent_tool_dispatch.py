@@ -10,6 +10,28 @@ from sqlalchemy import select
 from app.services.data_analysis_tools import DATA_ANALYSIS_TOOL_DEFINITIONS
 
 
+def _unimplemented_tool(tool_name: str) -> Dict[str, Any]:
+    """Report a capability that does not exist, instead of faking success.
+
+    These handlers used to return {"success": True, ...} with invented fields —
+    "relationship_created": True from a function that created nothing,
+    "Comparison would be generated here" as an actual result. The agent believed
+    the work happened and recorded it as evidence, which corrupts every
+    downstream claim built on it.
+
+    Returning an error marks the call failed (success is derived as `not
+    error`), so the loop's existing tool-failure handling takes over and the
+    agent can pick a different route rather than proceeding on a fiction.
+    """
+    return {
+        "error": (
+            f"Tool '{tool_name}' is not implemented. It is advertised but has no "
+            "behaviour behind it; do not retry, choose a different approach."
+        ),
+        "unimplemented": True,
+    }
+
+
 @dataclass(slots=True)
 class AgentToolExecutionContext:
     """Execution context for app-side tool providers."""
@@ -1048,28 +1070,12 @@ Provide structured insights in JSON format:
     async def _compare_methodologies(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return {
-            "success": True,
-            "data": {
-                "documents_compared": len(params.get("document_ids", [])),
-                "aspects": params.get("comparison_aspects", ["approach", "results"]),
-                "comparison": "Comparison would be generated here",
-            },
-        }
+        return _unimplemented_tool("compare_methodologies")
 
     async def _identify_research_gaps(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        job = ctx.job
-        findings = executor._job_findings.get(str(job.id), [])
-        return {
-            "success": True,
-            "data": {
-                "topic": params.get("topic", job.goal),
-                "findings_analyzed": len(findings),
-                "gaps_identified": [],
-            },
-        }
+        return _unimplemented_tool("identify_research_gaps")
 
     async def _add_to_reading_list(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -1357,34 +1363,12 @@ Suggest the single best next action and explain why."""
     async def _generate_research_presentation(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return {
-            "success": True,
-            "data": {
-                "presentation_queued": True,
-                "title": params.get("title"),
-                "topic": params.get("topic"),
-                "slides": params.get("slide_count", 12),
-            },
-            "artifacts": [
-                {
-                    "type": "presentation_job",
-                    "title": params.get("title"),
-                    "status": "queued",
-                }
-            ],
-        }
+        return _unimplemented_tool("generate_research_presentation")
 
     async def _analyze_document_cluster(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return {
-            "success": True,
-            "data": {
-                "documents_analyzed": len(params.get("document_ids", [])),
-                "analysis_type": params.get("analysis_type", "comprehensive"),
-                "themes": [],
-            },
-        }
+        return _unimplemented_tool("analyze_document_cluster")
 
     return FunctionToolProvider(
         name="autonomous_research_tools",
@@ -5822,64 +5806,22 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
     async def _build_research_graph(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return {
-            "success": True,
-            "data": {
-                "documents_analyzed": len(params.get("document_ids", [])),
-                "focus": params.get("focus_on", ["methods", "concepts"]),
-                "entities_found": 0,
-                "relationships_found": 0,
-            },
-        }
+        return _unimplemented_tool("build_research_graph")
 
     async def _link_entities(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return {
-            "success": True,
-            "data": {
-                "relationship_created": True,
-                "source": params.get("source_name"),
-                "target": params.get("target_name"),
-                "type": params.get("relationship_type"),
-            },
-        }
+        return _unimplemented_tool("link_entities")
 
     async def _create_knowledge_base_entry(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return {
-            "success": True,
-            "data": {
-                "entry_created": True,
-                "title": params.get("title"),
-                "type": params.get("entry_type"),
-            },
-            "artifacts": [
-                {
-                    "type": "knowledge_entry",
-                    "title": params.get("title"),
-                    "content": params.get("content"),
-                    "entry_type": params.get("entry_type"),
-                }
-            ],
-        }
+        return _unimplemented_tool("create_knowledge_base_entry")
 
     async def _compare_documents(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return {
-            "success": True,
-            "data": {
-                "documents_compared": [
-                    params.get("document_id_1"),
-                    params.get("document_id_2"),
-                ],
-                "similarity_score": 0.0,
-                "common_themes": [],
-                "differences": [],
-            },
-        }
+        return _unimplemented_tool("compare_documents")
 
     async def _query_kg_entities(
         params: Dict[str, Any], ctx: AgentToolExecutionContext

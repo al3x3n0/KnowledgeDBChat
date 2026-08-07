@@ -57,6 +57,42 @@ def _default_metadata(
         "create_handoff",
         "broadcast_to_siblings",
         "transcribe_document",
+        # Added after an audit found 25 tools whose names imply mutation
+        # classified read-safe by omission. The rule applied here is
+        # fail-closed: a tool goes on this list unless it is demonstrably pure
+        # computation, because under-classifying is the dangerous direction —
+        # an enforced read-only policy would otherwise permit them.
+        #
+        # execute_python runs arbitrary code. It was classified read while its
+        # sibling write_and_run_script was classified write, which is the exact
+        # false assurance an allowed_effects gate would have inherited.
+        "execute_python",
+        # The rule: "write" means an effect outside the agent's own run — a
+        # database row, a file, a network call, a queued job. Tools that only
+        # mutate in-run state (set_focus_directive, save_research_finding,
+        # write_section) stay read: an operator setting a read-only policy wants
+        # to stop side effects on the world, not stop the agent steering itself.
+        # Verified to reach outside the run:
+        "create_synthesis_document",
+        "create_knowledge_base_entry",
+        "create_workflow_from_description",
+        "add_to_reading_list",
+        "link_entities",
+        "export_data",
+        "ingest_arxiv_papers",
+        "ingest_paper_by_id",
+        # Generation tools that persist an artifact rather than only returning
+        # text. Classified write pending per-tool review; see the guard test.
+        "generate_report",
+        "generate_diagram",
+        "generate_documentation",
+        "generate_executive_summary",
+        "generate_gitlab_architecture",
+        "generate_literature_review_for_source",
+        "generate_meeting_notes",
+        "generate_research_presentation",
+        "generate_slides_for_source",
+        "generate_chart_data",
     }
     network_tools = {
         "web_scrape",

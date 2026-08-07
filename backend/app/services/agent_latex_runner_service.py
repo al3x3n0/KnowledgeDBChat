@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services import llm_structured
+from app.services.agent_artifact_paths import insert_before_end_document
 
 # Keys the reviewer prompt asks for.
 LATEX_REVIEW_SCHEMA = {
@@ -93,16 +94,6 @@ class AgentLatexRunnerService:
         def _bib_stem(name: str) -> str:
             n = _sanitize_bib_filename(name)
             return n[:-4] if n.lower().endswith(".bib") else n
-
-        def _insert_before_end_document(source: str, addition: str) -> str:
-            marker = "\\end{document}"
-            s = source or ""
-            idx = s.rfind(marker)
-            if idx == -1:
-                return (s.rstrip() + "\n\n" + addition.strip() + "\n").lstrip("\n")
-            before = s[:idx].rstrip()
-            after = s[idx:]
-            return f"{before}\n\n{addition.strip()}\n\n{after}"
 
         def _escape_bibtex(s: str) -> str:
             t = (s or "").strip()
@@ -410,7 +401,7 @@ class AgentLatexRunnerService:
             # Ensure bibliography scaffold in LaTeX source.
             if "\\bibliography{" not in source:
                 scaffold = f"\\bibliographystyle{{plain}}\\n\\bibliography{{{stem}}}"
-                project.tex_source = _insert_before_end_document(
+                project.tex_source = insert_before_end_document(
                     project.tex_source or "", scaffold
                 )
                 await db.commit()
@@ -452,7 +443,7 @@ class AgentLatexRunnerService:
                     flags=re.S,
                 )
             else:
-                project.tex_source = _insert_before_end_document(
+                project.tex_source = insert_before_end_document(
                     project.tex_source or "", references_tex
                 )
             await db.commit()

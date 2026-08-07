@@ -11,6 +11,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services.agent_artifact_paths import insert_before_end_document, safe_relpath
 from app.services.llm_service import LLMService
 from app.services.project_profile_service import build_project_profile
 
@@ -828,15 +829,6 @@ class AgentExperimentRunnerService:
                 {"phase": phase, "action": "experiment_runner", "result": details}
             )
 
-        def _safe_relpath(p: str) -> str:
-            p = (p or "").replace("\\", "/").strip()
-            p = p.lstrip("/")
-            while p.startswith("./"):
-                p = p[2:]
-            parts = [x for x in p.split("/") if x not in {"", ".", ".."}]
-            safe = "/".join(parts)
-            return safe[:240]
-
         async def _linked_run() -> Optional[ExperimentRun]:
             run_id_raw = str(cfg.get("experiment_run_id") or "").strip()
             if not run_id_raw:
@@ -875,16 +867,6 @@ class AgentExperimentRunnerService:
             if completed:
                 run.completed_at = datetime.utcnow()
             await db.flush()
-
-        def _insert_before_end_document(source: str, addition: str) -> str:
-            marker = "\\end{document}"
-            s = source or ""
-            idx = s.rfind(marker)
-            if idx == -1:
-                return (s.rstrip() + "\n\n" + addition.strip() + "\n").lstrip("\n")
-            before = s[:idx].rstrip()
-            after = s[idx:]
-            return f"{before}\n\n{addition.strip()}\n\n{after}"
 
         cfg = job.config if isinstance(job.config, dict) else {}
         scientific_validation = (
@@ -1256,13 +1238,13 @@ class AgentExperimentRunnerService:
 
         docs_by_path: dict[str, Document] = {}
         for d in docs[:2000]:
-            p = _safe_relpath(d.file_path or d.source_identifier or d.title or "")
+            p = safe_relpath(d.file_path or d.source_identifier or d.title or "")
             if p and p not in docs_by_path:
                 docs_by_path[p] = d
 
         files_list: list[dict] = []
         for d in docs[:400]:
-            path = _safe_relpath(d.file_path or d.source_identifier or d.title or "")
+            path = safe_relpath(d.file_path or d.source_identifier or d.title or "")
             if not path:
                 continue
             content = d.content or ""
@@ -1306,12 +1288,12 @@ class AgentExperimentRunnerService:
                 if file_diffs:
                     files_by_path: dict[str, int] = {}
                     for idx, ff in enumerate(files_list):
-                        p = _safe_relpath(str(ff.get("path") or ""))
+                        p = safe_relpath(str(ff.get("path") or ""))
                         if p and p not in files_by_path:
                             files_by_path[p] = idx
 
                     for fd in file_diffs:
-                        p = _safe_relpath(fd.path or "")
+                        p = safe_relpath(fd.path or "")
                         if not p or p in files_by_path:
                             continue
                         d = docs_by_path.get(p)
@@ -1330,7 +1312,7 @@ class AgentExperimentRunnerService:
                         files_list.append({"path": p, "content": content})
 
                     for fd in file_diffs:
-                        p = _safe_relpath(fd.path or "")
+                        p = safe_relpath(fd.path or "")
                         if not p:
                             continue
                         idx = files_by_path.get(p)
@@ -1391,7 +1373,7 @@ class AgentExperimentRunnerService:
             with _tempfile.TemporaryDirectory(prefix="exp_runner_") as tmp:
                 tmp_path = _Path(tmp)
                 for f in files_list:
-                    p = _safe_relpath(str(f.get("path") or ""))
+                    p = safe_relpath(str(f.get("path") or ""))
                     if not p:
                         continue
                     out = tmp_path / p
@@ -1683,7 +1665,7 @@ class AgentExperimentRunnerService:
                         lines.append(
                             "\\noindent \\textbf{Note:} Execution was skipped because unsafe code execution is disabled on the server."
                         )
-                    proj.tex_source = _insert_before_end_document(
+                    proj.tex_source = insert_before_end_document(
                         proj.tex_source or "", "\n".join(lines)
                     )
                     await db.commit()

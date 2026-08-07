@@ -19,6 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
 from app.services import llm_json, llm_structured
+from app.services.agent_artifact_paths import insert_before_end_document
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 from app.services.ai_hub_eval_service import ai_hub_eval_service
 from app.services.autonomy_service import (
@@ -1818,16 +1819,6 @@ class AgentResearchRunnerService:
         def _bib_key_from_uuid(doc_id: _UUID) -> str:
             return f"KDB:{str(doc_id)}"
 
-        def _insert_before_end_document(source: str, addition: str) -> str:
-            marker = "\\end{document}"
-            s = source or ""
-            idx = s.rfind(marker)
-            if idx == -1:
-                return (s.rstrip() + "\n\n" + addition.strip() + "\n").lstrip("\n")
-            before = s[:idx].rstrip()
-            after = s[idx:]
-            return f"{before}\n\n{addition.strip()}\n\n{after}"
-
         config = job.config if isinstance(job.config, dict) else {}
         search_query = (
             str((config or {}).get("search_query") or "").strip()
@@ -1954,7 +1945,7 @@ class AgentResearchRunnerService:
         if latex_project_uuid:
             project = await db.get(LatexProject, latex_project_uuid)
             if project and project.user_id == job.user_id:
-                project.tex_source = _insert_before_end_document(
+                project.tex_source = insert_before_end_document(
                     project.tex_source or "", latex_section
                 )
                 await db.commit()
@@ -5586,16 +5577,6 @@ class AgentResearchRunnerService:
                 }
             )
 
-        def _insert_before_end_document(source: str, addition: str) -> str:
-            marker = "\\end{document}"
-            s = source or ""
-            idx = s.rfind(marker)
-            if idx == -1:
-                return (s.rstrip() + "\n\n" + addition.strip() + "\n").lstrip("\n")
-            before = s[:idx].rstrip()
-            after = s[idx:]
-            return f"{before}\n\n{addition.strip()}\n\n{after}"
-
         config = job.config if isinstance(job.config, dict) else {}
         latex_project_id = (config or {}).get("latex_project_id")
         if not latex_project_id:
@@ -5716,7 +5697,7 @@ class AgentResearchRunnerService:
             await db.commit()
             return {"status": "failed", "error": job.error}
 
-        project.tex_source = _insert_before_end_document(
+        project.tex_source = insert_before_end_document(
             project.tex_source or "", section
         )
         await db.commit()

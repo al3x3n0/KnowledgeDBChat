@@ -15,6 +15,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
+from app.services.agent_artifact_paths import safe_relpath
 
 
 class AgentIngestionDemoRunnerService:
@@ -529,18 +530,9 @@ class AgentIngestionDemoRunnerService:
             await db.commit()
             return {"status": "failed", "error": job.error}
 
-        def _safe_relpath(p: str) -> str:
-            p = (p or "").replace("\\", "/").strip()
-            p = p.lstrip("/")
-            while p.startswith("./"):
-                p = p[2:]
-            parts = [x for x in p.split("/") if x not in {"", ".", ".."}]
-            safe = "/".join(parts)
-            return safe[:240]
-
         files_list: list[dict] = []
         for d in docs[:200]:
-            path = _safe_relpath(d.file_path or d.source_identifier or d.title or "")
+            path = safe_relpath(d.file_path or d.source_identifier or d.title or "")
             if not path:
                 continue
             content = d.content or ""
@@ -641,7 +633,7 @@ class AgentIngestionDemoRunnerService:
         with tempfile.TemporaryDirectory(prefix="demo_check_") as tmp:
             base = Path(tmp)
             for ff in files_list:
-                rel = _safe_relpath(str(ff.get("path") or ""))
+                rel = safe_relpath(str(ff.get("path") or ""))
                 if not rel or rel.startswith("."):
                     continue
                 full = (base / rel).resolve()
@@ -653,7 +645,7 @@ class AgentIngestionDemoRunnerService:
                 except Exception:
                     continue
 
-            ep = _safe_relpath(entrypoint)
+            ep = safe_relpath(entrypoint)
             if not (base / ep).exists():
                 behavior["error"] = f"Entrypoint not found: {entrypoint}"
             else:

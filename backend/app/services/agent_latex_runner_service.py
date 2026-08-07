@@ -11,7 +11,29 @@ from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services import llm_json
+from app.services import llm_structured
+
+# Keys the reviewer prompt asks for.
+LATEX_REVIEW_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "issues": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "category": {"type": "string"},
+                    "severity": {"type": "string"},
+                    "message": {"type": "string"},
+                    "location_hint": {"type": "string"},
+                },
+                "required": ["category", "message"],
+            },
+        },
+        "diff_unified": {"type": "string"},
+    },
+    "required": ["issues"],
+}
 
 
 class AgentLatexRunnerService:
@@ -1381,9 +1403,13 @@ class AgentLatexRunnerService:
             f"{tex}\n"
             "```\n"
         )
-        response = await executor.llm_service.generate_response(
-            query=prompt,
-            context=None,
+        # Previously a bare json.loads, so a fenced reply failed the whole job.
+        # Now the provider enforces the shape where it can, and the prompted
+        # path still parses through the shared extractor.
+        payload = await llm_structured.ask_for_json(
+            executor.llm_service,
+            schema=LATEX_REVIEW_SCHEMA,
+            user_message=prompt,
             temperature=0.2,
             max_tokens=1800,
             user_settings=user_settings,
@@ -1392,9 +1418,6 @@ class AgentLatexRunnerService:
             db=db,
             routing=executor._llm_routing_from_job_config(job.config),
         )
-
-        # Previously a bare json.loads: a fenced reply failed the whole job.
-        payload = llm_json.extract_json_object(response)
 
         if not isinstance(payload, dict):
             job.status = AgentJobStatus.FAILED.value

@@ -14,8 +14,23 @@ from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services import llm_json
+from app.services import llm_structured
 from app.services.project_profile_service import infer_project_profile_from_paths
+
+# Keys the code-agent prompt asks for. Flat and well defined, so providers that
+# support schema-constrained output can enforce it.
+PATCH_PROPOSAL_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "title": {"type": "string"},
+        "summary": {"type": "string"},
+        "diff_unified": {"type": "string"},
+        "files_touched": {"type": "array", "items": {"type": "string"}},
+        "risks": {"type": "array", "items": {"type": "string"}},
+        "tests_to_run": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["title", "summary", "diff_unified"],
+}
 
 
 class AgentCodingRunnerService:
@@ -447,9 +462,12 @@ class AgentCodingRunnerService:
             f"FILES:\n{''.join(file_blocks)}\n"
         )
 
-        response = await executor.llm_service.generate_response(
-            query=prompt,
-            context=None,
+        # Ask the provider to enforce the shape where it can; the helper falls
+        # back to the prompted path, which the prompt above still describes.
+        payload = await llm_structured.ask_for_json(
+            executor.llm_service,
+            schema=PATCH_PROPOSAL_SCHEMA,
+            user_message=prompt,
             temperature=0.2,
             max_tokens=2000,
             user_settings=user_settings,
@@ -459,13 +477,10 @@ class AgentCodingRunnerService:
             routing=executor._llm_routing_from_job_config(job.config),
         )
 
-        # A fenced reply used to fall straight through to the stub below, so a
-        # perfectly good proposal was discarded as unparseable.
-        payload = llm_json.extract_json_object(response)
         if payload is None:
             payload = {
                 "title": "Code Patch Proposal",
-                "summary": response[:800],
+                "summary": "The model did not return a usable patch proposal.",
                 "diff_unified": "",
                 "files_touched": [],
                 "risks": [],
@@ -491,7 +506,10 @@ class AgentCodingRunnerService:
             job.status = AgentJobStatus.FAILED.value
             job.error = "LLM did not produce a valid unified diff"
             await db.commit()
-            return {"status": "failed", "error": job.error, "raw": response[:2000]}
+            # The payload is now the model output, structured or parsed, so it
+            # carries the same diagnostic value the raw text used to.
+            raw_payload = json.dumps(payload, ensure_ascii=False, default=str)
+            return {"status": "failed", "error": job.error, "raw": raw_payload[:2000]}
 
         proposal = CodePatchProposal(
             user_id=job.user_id,

@@ -18,7 +18,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
-from app.services import llm_json
+from app.services import llm_json, llm_structured
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 from app.services.ai_hub_eval_service import ai_hub_eval_service
 from app.services.autonomy_service import (
@@ -47,6 +47,37 @@ def _extract_json(text: Any) -> Optional[Dict[str, Any]]:
     runner used to drop — now parse.
     """
     return llm_json.extract_json_object(text)
+
+
+# Keys the domain-research prompt asks for.
+DOMAIN_RESEARCH_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "domain_summary": {"type": "string"},
+        "discovered_signals": {"type": "array", "items": {"type": "string"}},
+        "proposed_ideas": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "title": {"type": "string"},
+                    "hypothesis": {"type": "string"},
+                    "opportunity": {"type": "string"},
+                    "supporting_evidence": {"type": "string"},
+                    "confidence": {"type": "number"},
+                    "next_steps": {"type": "string"},
+                    "counterarguments": {"type": "string"},
+                },
+                "required": ["title", "hypothesis"],
+            },
+        },
+        "ranked_opportunities": {"type": "array", "items": {"type": "string"}},
+        "open_questions": {"type": "array", "items": {"type": "string"}},
+        "brief_markdown": {"type": "string"},
+        "report_markdown": {"type": "string"},
+    },
+    "required": ["domain_summary"],
+}
 
 
 class AgentResearchRunnerService:
@@ -2573,20 +2604,23 @@ class AgentResearchRunnerService:
             f"REPO_EVIDENCE: {json.dumps(repo_context, ensure_ascii=False)}\n"
             f"ARXIV_EVIDENCE: {json.dumps(paper_context, ensure_ascii=False)}\n"
         )
-        response = await executor.llm_service.generate_response(
-            query=prompt,
-            context=None,
-            temperature=0.2,
-            max_tokens=2200,
-            user_settings=user_settings,
-            task_type="domain_research_orchestrator",
-            user_id=job.user_id,
-            db=db,
-            routing=executor._llm_routing_from_job_config(job.config),
+        # A malformed reply used to collapse to {}, which reads downstream as a
+        # research run that found nothing rather than one that failed to parse.
+        payload = (
+            await llm_structured.ask_for_json(
+                executor.llm_service,
+                schema=DOMAIN_RESEARCH_SCHEMA,
+                user_message=prompt,
+                temperature=0.2,
+                max_tokens=2200,
+                user_settings=user_settings,
+                task_type="domain_research_orchestrator",
+                user_id=job.user_id,
+                db=db,
+                routing=executor._llm_routing_from_job_config(job.config),
+            )
+            or {}
         )
-        payload = _extract_json(response) or {}
-        if not isinstance(payload, dict):
-            payload = {}
 
         previous_idea_titles = {
             _normalize_key(raw)

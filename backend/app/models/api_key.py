@@ -20,6 +20,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.utils.datetimes import is_past
 
 
 class APIKey(Base):
@@ -82,7 +83,10 @@ class APIKey(Base):
             return False
         if self.revoked_at is not None:
             return False
-        if self.expires_at is not None and datetime.utcnow() > self.expires_at:
+        # expires_at is DateTime(timezone=True), so Postgres hands back an aware
+        # value; comparing it to a naive utcnow() raised TypeError for every key
+        # that had an expiry set.
+        if is_past(self.expires_at):
             return False
         return True
 

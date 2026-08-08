@@ -23,6 +23,7 @@ from app.services.autonomy_event_service import (
     event_to_trace_payload,
     maybe_emit_escalation_transition_notification,
 )
+from app.utils.datetimes import is_past
 
 VisibleUserIdsLoader = Callable[..., Awaitable[set[UUID]]]
 TraceEventDecorator = Callable[..., dict[str, Any]]
@@ -333,7 +334,7 @@ def build_decision_trace_query_api(
             for item in filtered_items
             if item.due_at
             and str(item.triage_status or "").strip().lower() != "resolved"
-            and item.due_at <= datetime.utcnow()
+            and is_past(item.due_at)
         )
         items = filtered_items[offset : offset + limit]
 

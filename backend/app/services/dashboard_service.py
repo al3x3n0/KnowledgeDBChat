@@ -21,6 +21,7 @@ from app.models.agent_definition import AgentConversationContext, AgentDefinitio
 from app.models.document import Document, DocumentChunk, DocumentSource
 from app.models.memory import AgentConversation
 from app.models.workflow import Workflow, WorkflowExecution
+from app.utils.datetimes import age
 
 
 class DashboardService:
@@ -391,7 +392,7 @@ class DashboardService:
             elif row.errors > 0:
                 status = "warning"
                 status_color = "yellow"
-            elif row.last_sync and (datetime.utcnow() - row.last_sync).days > 7:
+            elif (elapsed := age(row.last_sync)) is not None and elapsed.days > 7:
                 status = "stale"
                 status_color = "orange"
             else:

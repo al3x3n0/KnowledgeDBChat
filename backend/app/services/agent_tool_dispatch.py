@@ -7,6 +7,7 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, Optional, Protocol
 
 from sqlalchemy import select
 
+from app.services import llm_structured
 from app.services.data_analysis_tools import DATA_ANALYSIS_TOOL_DEFINITIONS
 
 
@@ -30,6 +31,106 @@ def _unimplemented_tool(tool_name: str) -> Dict[str, Any]:
         ),
         "unimplemented": True,
     }
+
+
+async def _load_documents_for_analysis(
+    ctx: AgentToolExecutionContext, document_ids: Any, *, max_docs: int = 8
+) -> tuple[list[Any], Optional[str]]:
+    """Load documents by id for an analysis tool, or return why it cannot run.
+
+    Bounded deliberately: these tools feed document text to a model, and an
+    unbounded list would blow the context window rather than fail cleanly.
+    """
+    from uuid import UUID as _UUID
+
+    from app.services.document_service import DocumentService
+
+    if not isinstance(document_ids, list) or not document_ids:
+        return [], "document_ids must be a non-empty list"
+
+    service = DocumentService()
+    documents: list[Any] = []
+    missing: list[str] = []
+    for raw in document_ids[:max_docs]:
+        try:
+            doc = await service.get_document(_UUID(str(raw)), ctx.db)
+        except (TypeError, ValueError):
+            missing.append(str(raw))
+            continue
+        if doc is None:
+            missing.append(str(raw))
+        else:
+            documents.append(doc)
+
+    if not documents:
+        return [], f"No documents found for: {', '.join(missing) or document_ids}"
+    return documents, None
+
+
+def _document_excerpts(documents: list[Any], *, per_doc_chars: int = 4000) -> str:
+    """Render documents for a prompt, truncated per document rather than overall
+    so a long first document cannot crowd the others out entirely."""
+    blocks = []
+    for doc in documents:
+        content = (getattr(doc, "content", "") or "")[:per_doc_chars]
+        blocks.append(
+            f"### {getattr(doc, 'title', 'Untitled')} (id={getattr(doc, 'id', '')})\n{content}"
+        )
+    return "\n\n".join(blocks)
+
+
+_CLUSTER_ANALYSIS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "common_themes": {"type": "array", "items": {"type": "string"}},
+        "differences": {"type": "array", "items": {"type": "string"}},
+        "patterns": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary"],
+}
+
+_METHODOLOGY_COMPARISON_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "summary": {"type": "string"},
+        "comparisons": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "aspect": {"type": "string"},
+                    "finding": {"type": "string"},
+                },
+                "required": ["aspect", "finding"],
+            },
+        },
+        "shared_approaches": {"type": "array", "items": {"type": "string"}},
+        "notable_differences": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["summary"],
+}
+
+_RESEARCH_GAPS_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "gaps_identified": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "gap": {"type": "string"},
+                    "why_it_matters": {"type": "string"},
+                    "supporting_evidence": {"type": "string"},
+                },
+                "required": ["gap"],
+            },
+        },
+        "opportunities": {"type": "array", "items": {"type": "string"}},
+        "evidence_sufficient": {"type": "boolean"},
+    },
+    "required": ["gaps_identified"],
+}
 
 
 @dataclass(slots=True)
@@ -1070,12 +1171,85 @@ Provide structured insights in JSON format:
     async def _compare_methodologies(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return _unimplemented_tool("compare_methodologies")
+        """Compare the methodologies described across several papers."""
+        documents, error = await _load_documents_for_analysis(
+            ctx, params.get("document_ids")
+        )
+        if error:
+            return {"error": error}
+
+        aspects = params.get("comparison_aspects")
+        if not isinstance(aspects, list) or not aspects:
+            aspects = ["approach", "results"]
+
+        payload = await llm_structured.ask_for_json(
+            executor.llm_service,
+            schema=_METHODOLOGY_COMPARISON_SCHEMA,
+            user_message=(
+                "Compare the methodologies in these papers. For each aspect, say "
+                "how the papers differ and what that implies. Return JSON with "
+                "comparisons, shared_approaches, notable_differences and summary.\n"
+                f"ASPECTS: {', '.join(str(a) for a in aspects)}\n\n"
+                + _document_excerpts(documents)
+            ),
+            task_type="methodology_comparison",
+            temperature=0.2,
+            max_tokens=1800,
+            user_id=ctx.user_id,
+            db=ctx.db,
+        )
+        if payload is None:
+            return {"error": "The model did not return a usable comparison"}
+        payload["documents_compared"] = [str(d.id) for d in documents]
+        return {"success": True, "data": payload}
 
     async def _identify_research_gaps(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return _unimplemented_tool("identify_research_gaps")
+        """Identify research gaps from the job's findings and named documents."""
+        job = ctx.job
+        findings = list(executor._job_findings.get(str(getattr(job, "id", "")), []))
+        documents: list[Any] = []
+        if isinstance(params.get("document_ids"), list) and params["document_ids"]:
+            documents, error = await _load_documents_for_analysis(
+                ctx, params.get("document_ids")
+            )
+            if error:
+                return {"error": error}
+
+        if not findings and not documents:
+            return {
+                "error": (
+                    "No evidence to analyse: pass document_ids, or record "
+                    "findings first with save_research_finding"
+                )
+            }
+
+        topic = str(params.get("topic") or getattr(job, "goal", "") or "").strip()
+        import json as _json
+
+        evidence = _json.dumps(findings[:40], ensure_ascii=False, default=str)
+        payload = await llm_structured.ask_for_json(
+            executor.llm_service,
+            schema=_RESEARCH_GAPS_SCHEMA,
+            user_message=(
+                "Identify research gaps and opportunities from the evidence "
+                "below. A gap must be supported by what is present; say so "
+                "explicitly when the evidence is too thin to support any.\n"
+                f"TOPIC: {topic}\n\nFINDINGS:\n{evidence}\n\n"
+                + (_document_excerpts(documents) if documents else "")
+            ),
+            task_type="research_gap_analysis",
+            temperature=0.3,
+            max_tokens=1500,
+            user_id=ctx.user_id,
+            db=ctx.db,
+        )
+        if payload is None:
+            return {"error": "The model did not return a usable gap analysis"}
+        payload["findings_analyzed"] = len(findings)
+        payload["topic"] = topic
+        return {"success": True, "data": payload}
 
     async def _add_to_reading_list(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -1363,12 +1537,87 @@ Suggest the single best next action and explain why."""
     async def _generate_research_presentation(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return _unimplemented_tool("generate_research_presentation")
+        """Queue a real presentation job.
+
+        Previously reported presentation_queued=True without queueing anything.
+        """
+        from app.models.presentation import PresentationJob
+        from app.tasks.presentation_tasks import generate_presentation_task
+
+        title = str(params.get("title") or "").strip()
+        topic = str(params.get("topic") or "").strip()
+        if not title or not topic:
+            return {"error": "title and topic are required"}
+
+        user_id = ctx.user_id or getattr(ctx.job, "user_id", None)
+        if user_id is None:
+            return {"error": "no user context for the presentation job"}
+
+        try:
+            slide_count = int(params.get("slide_count", 12) or 12)
+        except (TypeError, ValueError):
+            slide_count = 12
+        slide_count = max(1, min(slide_count, 60))
+
+        document_ids = params.get("source_document_ids")
+        job_record = PresentationJob(
+            user_id=user_id,
+            title=title[:500],
+            topic=topic[:500],
+            source_document_ids=(
+                [str(d) for d in document_ids] if isinstance(document_ids, list) else []
+            ),
+            slide_count=slide_count,
+            style=str(params.get("style") or "professional"),
+            include_diagrams=1 if params.get("include_diagrams", True) else 0,
+            status="pending",
+            progress=0,
+        )
+        ctx.db.add(job_record)
+        await ctx.db.commit()
+        await ctx.db.refresh(job_record)
+        generate_presentation_task.delay(str(job_record.id), str(user_id))
+
+        return {
+            "success": True,
+            "data": {
+                "presentation_queued": True,
+                "presentation_job_id": str(job_record.id),
+                "title": job_record.title,
+                "topic": job_record.topic,
+                "slides": slide_count,
+            },
+        }
 
     async def _analyze_document_cluster(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return _unimplemented_tool("analyze_document_cluster")
+        """Find common themes, differences and patterns across documents."""
+        documents, error = await _load_documents_for_analysis(
+            ctx, params.get("document_ids")
+        )
+        if error:
+            return {"error": error}
+
+        analysis_type = str(params.get("analysis_type") or "comprehensive").strip()
+        payload = await llm_structured.ask_for_json(
+            executor.llm_service,
+            schema=_CLUSTER_ANALYSIS_SCHEMA,
+            user_message=(
+                "Analyse this set of documents as a cluster. Return JSON with "
+                "common_themes, differences, patterns and a short summary.\n"
+                f"ANALYSIS TYPE: {analysis_type}\n\n" + _document_excerpts(documents)
+            ),
+            task_type="document_cluster_analysis",
+            temperature=0.2,
+            max_tokens=1500,
+            user_id=ctx.user_id,
+            db=ctx.db,
+        )
+        if payload is None:
+            return {"error": "The model did not return a usable cluster analysis"}
+        payload["documents_analyzed"] = [str(d.id) for d in documents]
+        return {"success": True, "data": payload}
 
     return FunctionToolProvider(
         name="autonomous_research_tools",
@@ -5806,22 +6055,179 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
     async def _build_research_graph(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return _unimplemented_tool("build_research_graph")
+        """Extract entities and relationships from documents into the graph.
+
+        Re-extracts per document, so calling it twice does not double up: the
+        rebuild clears that document's existing mentions and relationships
+        first.
+        """
+        from app.services.knowledge_graph_service import KnowledgeGraphService
+
+        documents, error = await _load_documents_for_analysis(
+            ctx, params.get("document_ids"), max_docs=20
+        )
+        if error:
+            return {"error": error}
+
+        kg = KnowledgeGraphService()
+        entities_found = 0
+        relationships_found = 0
+        failures: list[str] = []
+        for doc in documents:
+            try:
+                result = await kg.rebuild_for_document(ctx.db, doc.id)
+            except Exception as exc:  # noqa: BLE001 - reported per document
+                failures.append(f"{doc.id}: {exc}")
+                continue
+            if isinstance(result, dict):
+                entities_found += int(result.get("entities") or 0)
+                relationships_found += int(result.get("relationships") or 0)
+
+        if failures and not entities_found and not relationships_found:
+            return {"error": "Graph extraction failed: " + "; ".join(failures[:3])}
+
+        return {
+            "success": True,
+            "data": {
+                "documents_analyzed": len(documents),
+                "focus": params.get("focus_on", ["methods", "concepts"]),
+                "entities_found": entities_found,
+                "relationships_found": relationships_found,
+                "failed_documents": failures[:5],
+            },
+        }
 
     async def _link_entities(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return _unimplemented_tool("link_entities")
+        """Create a knowledge-graph relationship between two entities.
+
+        Accepts entity UUIDs or names; names are resolved case-insensitively
+        against canonical names, and an ambiguous name is reported rather than
+        guessed at, since linking the wrong entities silently corrupts the graph.
+        """
+        from app.services.knowledge_graph_service import KnowledgeGraphService
+
+        kg = KnowledgeGraphService()
+        relation_type = str(params.get("relationship_type") or "").strip()
+        if not relation_type:
+            return {"error": "relationship_type is required"}
+
+        async def _resolve(id_key: str, name_key: str, label: str):
+            raw_id = str(params.get(id_key) or "").strip()
+            if raw_id:
+                return raw_id, None
+            name = str(params.get(name_key) or "").strip()
+            if not name:
+                return None, f"{label} requires {id_key} or {name_key}"
+            matches = await kg.entities(ctx.db, q=name, limit=25)
+            exact = [
+                e for e in matches if str(e.canonical_name).lower() == name.lower()
+            ]
+            candidates = exact or matches
+            if not candidates:
+                return None, f"No entity found matching {name!r}"
+            if len(candidates) > 1:
+                names = ", ".join(str(e.canonical_name) for e in candidates[:5])
+                return None, f"{name!r} is ambiguous; candidates: {names}"
+            return str(candidates[0].id), None
+
+        source_id, error = await _resolve("source_entity_id", "source_name", "source")
+        if error:
+            return {"error": error}
+        target_id, error = await _resolve("target_entity_id", "target_name", "target")
+        if error:
+            return {"error": error}
+        if source_id == target_id:
+            return {"error": "source and target resolve to the same entity"}
+
+        try:
+            confidence = float(params.get("confidence", 0.8) or 0.8)
+        except (TypeError, ValueError):
+            confidence = 0.8
+        confidence = max(0.0, min(1.0, confidence))
+
+        try:
+            relationship = await kg.create_relationship(
+                ctx.db,
+                source_entity_id=source_id,
+                target_entity_id=target_id,
+                relation_type=relation_type,
+                confidence=confidence,
+                evidence=str(params.get("evidence") or "").strip() or None,
+            )
+        except ValueError as exc:
+            return {"error": str(exc)}
+
+        return {
+            "success": True,
+            "data": {
+                "relationship_id": str(relationship.id),
+                "source_entity_id": source_id,
+                "target_entity_id": target_id,
+                "relationship_type": relationship.relation_type,
+                "confidence": relationship.confidence,
+            },
+        }
 
     async def _create_knowledge_base_entry(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return _unimplemented_tool("create_knowledge_base_entry")
+        """Persist curated knowledge as a research note.
+
+        Previously claimed entry_created=True and emitted an artifact that was
+        never written anywhere.
+        """
+        from app.models.research_note import ResearchNote
+
+        title = str(params.get("title") or "").strip()
+        content = str(params.get("content") or "").strip()
+        if not title or not content:
+            return {"error": "title and content are required"}
+
+        user_id = ctx.user_id or getattr(ctx.job, "user_id", None)
+        if user_id is None:
+            return {"error": "no user context for the knowledge base entry"}
+
+        tags = params.get("tags")
+        entry_type = str(params.get("entry_type") or "").strip()
+        note = ResearchNote(
+            user_id=user_id,
+            title=title[:500],
+            content_markdown=content[:120000],
+            tags=(
+                [str(t).strip() for t in tags if str(t).strip()][:20]
+                if isinstance(tags, list)
+                else ([entry_type] if entry_type else None)
+            ),
+        )
+        ctx.db.add(note)
+        await ctx.db.commit()
+        await ctx.db.refresh(note)
+
+        return {
+            "success": True,
+            "data": {
+                "entry_created": True,
+                "research_note_id": str(note.id),
+                "title": note.title,
+                "type": entry_type or None,
+            },
+        }
 
     async def _compare_documents(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        return _unimplemented_tool("compare_documents")
+        """Compare two documents.
+
+        Delegates to the same implementation the interactive agent uses. This
+        path previously returned an invented similarity_score of 0.0 with
+        success=True, so the autonomous runner — the one nobody watches — was
+        the only consumer getting a fabricated answer.
+        """
+        from app.services.agent_service import AgentService
+
+        return await AgentService()._tool_compare_documents(params, ctx.user_id, ctx.db)
 
     async def _query_kg_entities(
         params: Dict[str, Any], ctx: AgentToolExecutionContext

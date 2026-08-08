@@ -18,6 +18,7 @@ classification stays deliberate.
 
 import pytest
 
+from app.agent_core.tool_catalog import iter_mcp_tools
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.tool_registry import get_tool_metadata
 
@@ -133,3 +134,53 @@ def test_metadata_fields_use_known_values(field):
         assert (
             getattr(meta, field) in allowed
         ), f"{name}.{field}={getattr(meta, field)!r} is outside {sorted(allowed)}"
+
+
+def test_mcp_tools_are_classified_deliberately_too():
+    """The MCP surface is policy-gated the same way and needs the same guard.
+
+    These tools live in a separate table that get_tool_metadata consults only
+    for mcp:-prefixed names. It sat outside this file's reach until it was
+    lifted to module level — and two job-creating tools, create_presentation
+    and create_repo_report, were sitting in it classified read-safe.
+    """
+    unclassified = []
+    for name in sorted(iter_mcp_tools()):
+        if not name.startswith(MUTATING_PREFIXES):
+            continue
+        if name in READ_ONLY_DESPITE_NAME:
+            continue
+        meta = get_tool_metadata(f"mcp:{name}")
+        if meta is None or meta.effects != "write":
+            unclassified.append(name)
+
+    assert (
+        not unclassified
+    ), "MCP tools with mutating-sounding names classified read-safe:\n" + "\n".join(
+        f"  - {name}" for name in unclassified
+    )
+
+
+def test_every_mcp_tool_resolves_only_under_its_prefix():
+    """Prefix handling is load-bearing: policy checks pass mcp:<name>.
+
+    A bare lookup returning None for an MCP tool is correct, not a defect — a
+    fact worth pinning, since mistaking it for one sent an earlier audit down
+    the wrong path entirely.
+    """
+    for name in iter_mcp_tools():
+        assert get_tool_metadata(f"mcp:{name}") is not None, f"mcp:{name} must resolve"
+        if not any(str(tool.get("name") or "") == name for tool in AGENT_TOOLS):
+            assert (
+                get_tool_metadata(name) is None
+            ), f"{name} is MCP-only and should not resolve unprefixed"
+
+
+def test_docker_execute_is_the_strictest_classification():
+    """It runs arbitrary commands in a container; nothing should be laxer."""
+    meta = get_tool_metadata("mcp:docker_execute")
+    assert meta is not None
+    assert meta.effects == "write"
+    assert meta.cost_tier == "high"
+    assert meta.pii_risk == "high"
+    assert meta.network == "egress"

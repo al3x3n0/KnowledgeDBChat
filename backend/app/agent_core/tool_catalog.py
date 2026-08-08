@@ -93,6 +93,11 @@ def _default_metadata(
         "generate_research_presentation",
         "generate_slides_for_source",
         "generate_chart_data",
+        # MCP-exposed tools that create persistent jobs. Classified read-safe by
+        # the same omission that hid execute_python; this surface sat outside
+        # the guard test until iter_mcp_tools was lifted to module level.
+        "create_presentation",
+        "create_repo_report",
     }
     network_tools = {
         "web_scrape",
@@ -200,7 +205,18 @@ def get_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
                 pii_risk=meta.pii_risk,
             )
 
-    mcp_fallback: Dict[str, ToolMetadata] = {
+    return iter_mcp_tools().get(base_name) if is_mcp else None
+
+
+def iter_mcp_tools() -> Dict[str, ToolMetadata]:
+    """Metadata for MCP-exposed tools, keyed by unprefixed name.
+
+    Module level so the classification guard can enumerate this surface too.
+    It previously lived inside get_tool_metadata, which put it out of reach of
+    the test that checks tools are classified deliberately — and that is exactly
+    where two mutating tools were found classified read-safe.
+    """
+    return {
         "search": _default_metadata(
             name="mcp:search",
             description="Semantic search over the knowledge base",
@@ -283,4 +299,3 @@ def get_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
             },
         ),
     }
-    return mcp_fallback.get(base_name) if is_mcp else None

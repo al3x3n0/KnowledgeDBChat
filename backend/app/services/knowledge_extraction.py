@@ -195,6 +195,10 @@ class KnowledgeExtractor:
 
         Returns: (entities_created_or_linked, relations_created)
         """
+        # Read the id up front: the handlers below must not be the first thing
+        # to touch the ORM object, since an expired instance turns a log line
+        # into IO and replaces this error with an unrelated MissingGreenlet.
+        chunk_id = chunk.id
         try:
             text = chunk.content or ""
             if not text.strip():
@@ -264,20 +268,22 @@ class KnowledgeExtractor:
                     evidence=r.sentence,
                 )
                 try:
-                    db.add(rel)
-                    await db.flush()  # Flush to trigger unique constraint check
+                    # A savepoint, not the whole transaction: rolling the
+                    # session back here would discard every entity, mention and
+                    # relationship extracted for this document since the last
+                    # commit, and expire every object in the caller's session.
+                    async with db.begin_nested():
+                        db.add(rel)  # unique constraint checked on flush
                     created_rels += 1
                 except IntegrityError:
                     # Duplicate relationship due to unique constraint; skip
-                    await db.rollback()
                     logger.debug("Duplicate relationship skipped")
                 except Exception as e:
-                    await db.rollback()
                     logger.warning(f"Failed to add relationship: {e}")
 
             return (created_mentions, created_rels)
         except Exception as e:
-            logger.warning(f"KG extraction failed for chunk {chunk.id}: {e}")
+            logger.warning(f"KG extraction failed for chunk {chunk_id}: {e}")
             return (0, 0)
 
 
@@ -632,6 +638,10 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
 
         Returns: (entities_created_or_linked, relations_created)
         """
+        # Read the id up front: the handlers below must not be the first thing
+        # to touch the ORM object, since an expired instance turns a log line
+        # into IO and replaces this error with an unrelated MissingGreenlet.
+        chunk_id = chunk.id
         try:
             text = chunk.content or ""
             if not text.strip():
@@ -734,20 +744,22 @@ Return ONLY valid JSON matching the original structure (keys: entities, relation
                     evidence=r.get("evidence"),
                 )
                 try:
-                    db.add(rel)
-                    await db.flush()
+                    # A savepoint, not the whole transaction: rolling the
+                    # session back here would discard every entity, mention and
+                    # relationship extracted for this document since the last
+                    # commit, and expire every object in the caller's session.
+                    async with db.begin_nested():
+                        db.add(rel)  # unique constraint checked on flush
                     created_rels += 1
                 except IntegrityError:
-                    await db.rollback()
                     logger.debug("Duplicate relationship skipped")
                 except Exception as e:
-                    await db.rollback()
                     logger.warning(f"Failed to add relationship: {e}")
 
             return (created_mentions, created_rels)
 
         except Exception as e:
-            logger.warning(f"LLM KG extraction failed for chunk {chunk.id}: {e}")
+            logger.warning(f"LLM KG extraction failed for chunk {chunk_id}: {e}")
             # Fall back to rule-based extraction
             if rule_extractor:
                 return await self._index_with_rule_extractor(

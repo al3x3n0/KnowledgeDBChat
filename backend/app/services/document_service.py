@@ -540,6 +540,10 @@ class DocumentService:
         self, document: Document, db: AsyncSession, user_id: Optional[UUID] = None
     ):
         """Process document for indexing (should be moved to background task)."""
+        # Held as a plain value so the error handlers below cannot be the first
+        # thing to touch an expired ORM instance, which would raise
+        # MissingGreenlet from the log line and bury the original failure.
+        document_id = document.id
         try:
             # Ensure vector store is initialized
             await self._ensure_vector_store_initialized()
@@ -636,7 +640,7 @@ class DocumentService:
                     )
                 except Exception as e:
                     logger.warning(
-                        f"Knowledge extraction failed for document {document.id}: {e}"
+                        f"Knowledge extraction failed for document {document_id}: {e}"
                     )
 
             # Update document as processed
@@ -676,7 +680,7 @@ class DocumentService:
                     )
 
         except Exception as e:
-            logger.error(f"Error processing document {document.id}: {e}")
+            logger.error(f"Error processing document {document_id}: {e}", exc_info=True)
 
             # Update document with error
             document.is_processed = False

@@ -614,7 +614,7 @@ async def _async_process_uploaded_document(task, document_id: str) -> Dict[str, 
             return result
 
         except Exception as e:
-            logger.error(f"Error processing document {document_id}: {e}")
+            logger.error(f"Error processing document {document_id}: {e}", exc_info=True)
 
             # Update document with error
             try:

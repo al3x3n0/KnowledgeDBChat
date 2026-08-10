@@ -60,7 +60,9 @@ class AutonomousRnDVerificationLaunchService:
         budget_limit: float,
         approval_note: str,
     ) -> VerificationLaunchResult:
-        if parent_job.user_id != current_user.id:
+        # Read before any transaction that may roll back and expire the object.
+        acting_user_id = current_user.id
+        if parent_job.user_id != acting_user_id:
             raise VerificationLaunchError(
                 "Parent agent job was not found", status_code=404
             )
@@ -343,7 +345,10 @@ class AutonomousRnDVerificationLaunchService:
             await db.rollback()
             existing = await self._existing_launch(
                 db=db,
-                user_id=current_user.id,
+                # Not current_user.id: the rollback above expired that object,
+                # and reloading it here would be IO outside an awaitable
+                # context. acting_user_id was read before the transaction.
+                user_id=acting_user_id,
                 plan_id=plan_id,
                 run_id=run_id,
                 job_id=job_id,

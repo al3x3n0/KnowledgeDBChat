@@ -1611,11 +1611,13 @@ class AgentResearchRunnerService:
                         position=max_pos + 1,
                         notes="Added automatically by Research Inbox monitor",
                     )
-                    db.add(item)
                     try:
-                        await db.flush()
+                        # Savepoint: a rollback here would drop the items added
+                        # earlier in this loop while `added` kept counting them,
+                        # and expire `rl`, whose id the next iteration reads.
+                        async with db.begin_nested():
+                            db.add(item)
                     except IntegrityError:
-                        await db.rollback()
                         continue
 
                     max_pos += 1

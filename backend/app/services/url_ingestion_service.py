@@ -53,6 +53,12 @@ class UrlIngestionService:
         if not url:
             return {"error": "Missing required parameter: url"}
 
+        # Held as a plain value: the per-page loop below rolls the session back
+        # when a page fails, which expires `user`, and reading an expired
+        # attribute is IO that fails outside an awaitable context. Without this
+        # a single bad page makes every remaining page fail too.
+        acting_user_id = user.id
+
         publish = publish or (lambda _t, _p: None)
         cancel_check = cancel_check or (lambda: False)
 
@@ -119,6 +125,8 @@ class UrlIngestionService:
             return {"error": "No pages scraped (blocked, unreachable, or empty)"}
 
         ingest_source = await self.document_service._get_or_create_url_ingest_source(db)
+        # Same reason as acting_user_id: read before the loop can expire it.
+        ingest_source_id = ingest_source.id
         owner_display_name = user.full_name or user.username or user.email
 
         created: List[Dict[str, Any]] = []
@@ -137,7 +145,7 @@ class UrlIngestionService:
             content_hash = hashlib.sha256(page_content.encode("utf-8")).hexdigest()
             existing_res = await db.execute(
                 select(Document).where(
-                    Document.source_id == ingest_source.id,
+                    Document.source_id == ingest_source_id,
                     Document.source_identifier == page_url,
                 )
             )
@@ -175,7 +183,7 @@ class UrlIngestionService:
                     existing.is_processed = False
                     await db.commit()
                     await self.document_service.reprocess_document(
-                        existing.id, db, user_id=user.id
+                        existing.id, db, user_id=acting_user_id
                     )
                     updated.append(
                         {
@@ -193,7 +201,7 @@ class UrlIngestionService:
                         file_path=None,
                         file_type="text/html",
                         file_size=len(page_content.encode("utf-8")),
-                        source_id=ingest_source.id,
+                        source_id=ingest_source_id,
                         source_identifier=page_url,
                         author=owner_display_name,
                         tags=tags,
@@ -210,7 +218,7 @@ class UrlIngestionService:
                     await db.commit()
                     await db.refresh(doc)
                     await self.document_service.reprocess_document(
-                        doc.id, db, user_id=user.id
+                        doc.id, db, user_id=acting_user_id
                     )
                     created.append(
                         {

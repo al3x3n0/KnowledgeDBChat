@@ -15,7 +15,10 @@ from app.models.research_inbox import ResearchInboxItem
 from app.models.research_note import ResearchNote
 from app.models.research_portfolio import ResearchPortfolio
 from app.services.agent_execution_planner import ExecutionPlan, PlanStep
-from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+from app.services.autonomous_agent_executor import (
+    AUTO_SUBGOAL_CHILD_MAX_DEPTH,
+    AutonomousAgentExecutor,
+)
 from app.services.project_profile_service import infer_project_profile_from_paths
 from app.services.research_opportunity_service import (
     merge_operator_fields,
@@ -2998,6 +3001,27 @@ def test_ensure_subgoal_chain_config_creates_child_jobs():
     assert isinstance(children, list)
     assert len(children) == 2
     assert "Subgoal:" in children[0]["goal"]
+    # Children must not decompose again, or the chain fans out exponentially.
+    assert all(
+        c["config"]["auto_subgoal_child_jobs_enabled"] is False for c in children
+    )
+
+
+def test_ensure_subgoal_chain_config_stops_at_max_chain_depth():
+    executor = AutonomousAgentExecutor()
+    job = _make_job(config={"auto_subgoal_child_jobs_enabled": True})
+    job.chain_depth = AUTO_SUBGOAL_CHILD_MAX_DEPTH
+    state = _make_state()
+    state["subgoals"] = [
+        {"title": "Scope", "status": "in_progress"},
+        {"title": "Collect evidence", "status": "pending"},
+        {"title": "Draft synthesis", "status": "pending"},
+    ]
+
+    executor._ensure_subgoal_chain_config(job, state)
+
+    assert state["subgoal_chain_configured"] is False
+    assert not (job.chain_config or {}).get("child_jobs")
 
 
 def test_ensure_swarm_chain_config_creates_specialized_child_jobs():

@@ -117,6 +117,10 @@ from app.services.project_profile_service import (
 from app.services.search_service import SearchService
 from app.services.vector_store import VectorStoreService
 
+# Deepest chain level at which a job may still spawn subgoal follow-up children.
+# Matches the ceiling the job-creating tools apply in agent_tool_dispatch.
+AUTO_SUBGOAL_CHILD_MAX_DEPTH = 3
+
 # Centralized tool fallback policies keyed by job type.
 # Used when a requested tool is unknown/unimplemented or fails with an error.
 # Per-job overrides can be provided via job.config.tool_fallback_map.
@@ -5712,6 +5716,11 @@ class AutonomousAgentExecutor:
             return
         if bool(state.get("subgoal_chain_configured")):
             return
+        # Same depth ceiling the job-creating tools enforce. Without it a job that
+        # decomposes into N subgoals spawns N children that each decompose again,
+        # which is exponential rather than a chain.
+        if int(job.chain_depth or 0) >= AUTO_SUBGOAL_CHILD_MAX_DEPTH:
+            return
 
         subgoals = state.get("subgoals")
         if not isinstance(subgoals, list) or len(subgoals) < 2:
@@ -5756,6 +5765,9 @@ class AutonomousAgentExecutor:
                         "origin": "auto_subgoal_child",
                         "subgoal_index": idx,
                         "subgoal_title": title[:220],
+                        # A subgoal follow-up is already a leaf of the parent's
+                        # decomposition; letting it decompose again fans out.
+                        "auto_subgoal_child_jobs_enabled": False,
                     },
                     "max_iterations": child_max_iterations,
                     "max_tool_calls": child_max_tool_calls,

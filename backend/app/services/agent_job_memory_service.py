@@ -1113,6 +1113,17 @@ class AgentJobMemoryService:
                 stats_out["status"] = "failed"
                 stats_out["error"] = str(e)[:500]
             await db.rollback()
+            # The rollback expired every object in the caller's session, this
+            # job included. Reading an expired attribute later is IO, and under
+            # asyncio that raises MissingGreenlet from whatever sync code
+            # touches it, so reload the job here where we can await it.
+            try:
+                await db.refresh(job)
+            except Exception as refresh_error:
+                logger.warning(
+                    f"Could not reload job {job.id} after failed memory "
+                    f"extraction: {refresh_error}"
+                )
             return []
 
     def _parse_extracted_memories(

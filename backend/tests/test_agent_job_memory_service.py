@@ -47,6 +47,8 @@ class _FakeAsyncSession:
         self._jobs_by_id = {str(k): v for k, v in (jobs_by_id or {}).items()}
         self.added = []
         self.commit_calls = 0
+        self.rollback_calls = 0
+        self.refreshed = []
 
     async def execute(self, _query):
         return _FakeExecuteResult(self._existing_memories)
@@ -60,10 +62,12 @@ class _FakeAsyncSession:
     async def commit(self):
         self.commit_calls += 1
 
-    async def refresh(self, _obj):
+    async def refresh(self, obj):
+        self.refreshed.append(obj)
         return None
 
     async def rollback(self):
+        self.rollback_calls += 1
         return None
 
 
@@ -202,3 +206,40 @@ async def test_create_memory_from_job_returns_existing_duplicate_in_relaunch_sco
 
     assert created is existing
     assert len([row for row in db.added if isinstance(row, ConversationMemory)]) == 0
+
+
+@pytest.mark.asyncio
+async def test_failed_extraction_reloads_job_after_rollback():
+    """A rollback expires the caller's job, so the service must reload it.
+
+    Otherwise the next attribute read in the caller happens outside an
+    awaitable context and raises MissingGreenlet, which used to abort job
+    finalization before chained jobs were triggered.
+    """
+    service = AgentJobMemoryService()
+    user_id = uuid4()
+    job = _make_job(user_id=user_id, config={})
+
+    db = _FakeAsyncSession()
+    service.get_user_preferences = AsyncMock(
+        return_value=SimpleNamespace(
+            auto_extract_job_memories=True,
+            agent_job_memory_types=["insight", "lesson"],
+        )
+    )
+    service.llm_service.generate_response = AsyncMock(
+        side_effect=RuntimeError("LLM service error: Failed to generate response")
+    )
+
+    extraction_stats = {}
+    created = await service.extract_memories_from_job(
+        job=job,
+        user_id=str(user_id),
+        db=db,
+        stats_out=extraction_stats,
+    )
+
+    assert created == []
+    assert extraction_stats.get("status") == "failed"
+    assert db.rollback_calls == 1
+    assert job in db.refreshed

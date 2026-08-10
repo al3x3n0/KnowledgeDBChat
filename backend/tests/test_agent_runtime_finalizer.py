@@ -209,3 +209,100 @@ async def test_finalize_job_paused_path_preserves_paused_status(monkeypatch):
     assert result["status"] == AgentJobStatus.PAUSED.value
     assert job.status == AgentJobStatus.PAUSED.value
     assert executor.trigger_calls == []
+
+
+class _ExpiringJob(_DummyJob):
+    """A job whose attribute reads fail the way an expired ORM object's do.
+
+    A rollback expires every object in the session; reading one of those
+    attributes is IO, which raises MissingGreenlet when it happens outside an
+    awaitable context. A refresh clears the condition.
+    """
+
+    def __init__(self, **kwargs) -> None:
+        self._expired = False
+        super().__init__(**kwargs)
+
+    @property
+    def status(self):
+        if self._expired:
+            raise RuntimeError(
+                "greenlet_spawn has not been called; can't call await_only() here"
+            )
+        return self._status
+
+    @status.setter
+    def status(self, value):
+        self._status = value
+
+    def expire(self):
+        self._expired = True
+
+    def reload(self):
+        self._expired = False
+
+
+class _RecoveringDb(_DummyDb):
+    def __init__(self) -> None:
+        super().__init__()
+        self.rollback = AsyncMock()
+        self.refreshed = []
+
+    async def refresh(self, obj):
+        self.refreshed.append(obj)
+        if hasattr(obj, "reload"):
+            obj.reload()
+
+
+class _MemoryExtractingExecutor(_DummyExecutor):
+    def _resolve_memory_extraction_policy(self, job):
+        return {"extract_on_statuses": [AgentJobStatus.COMPLETED.value]}
+
+
+@pytest.mark.asyncio
+async def test_finalize_job_triggers_chain_after_memory_extraction_expires_job(
+    monkeypatch,
+):
+    """A failed memory extraction must not cost the job its chained jobs."""
+    executor = _MemoryExtractingExecutor()
+    job = _ExpiringJob(status="running")
+    job.enable_memory = True
+
+    async def _extract_then_expire(**_kwargs):
+        # What the service does on an LLM failure: roll the session back, which
+        # leaves every ORM object in it expired.
+        job.expire()
+        return []
+
+    monkeypatch.setattr(
+        agent_runtime_finalizer.agent_job_memory_service,
+        "extract_memories_from_job",
+        _extract_then_expire,
+    )
+
+    state = {
+        "goal_progress": 100,
+        "findings": [],
+        "actions_taken": [],
+        "artifacts": [],
+        "execution_plan": [],
+        "step_events": [],
+        "tool_stats": {},
+        "tool_priors": {},
+        "execution_graph_nodes": [],
+        "execution_graph_edges": [],
+        "scope_events": [],
+        "scope_guard_events": [],
+        "skill_profile": {},
+        "skill_profile_metrics": {},
+        "memory_runtime": {},
+        "memory_extraction": {},
+        "injected_memories": [],
+    }
+    db = _RecoveringDb()
+
+    result = await finalize_job(executor, job, state, db)
+
+    assert job in db.refreshed
+    assert executor.trigger_calls == ["complete"]
+    assert result["status"] == AgentJobStatus.COMPLETED.value

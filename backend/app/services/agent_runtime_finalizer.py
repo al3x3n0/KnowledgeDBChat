@@ -1256,6 +1256,23 @@ async def finalize_job(
             except Exception:
                 pass
 
+        # Memory extraction is best-effort bookkeeping and must never cost the
+        # job its chain. If it left the session rolled back, `job` is expired
+        # and every attribute read below is IO that raises MissingGreenlet from
+        # sync context, which would skip the chain trigger at the end of this
+        # function. Probe one attribute and reload if that is where we are.
+        try:
+            _ = job.status
+        except Exception:
+            try:
+                await db.rollback()
+                await db.refresh(job)
+            except Exception as reload_error:
+                logger.error(
+                    f"Job {job.id} is unusable after memory extraction; "
+                    f"chained jobs may not be triggered: {reload_error}"
+                )
+
     if job.status == AgentJobStatus.PAUSED.value:
         return {
             "status": job.status,

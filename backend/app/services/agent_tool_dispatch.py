@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable, Dict, Iterable, Optional, Protocol
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Protocol
 
 from sqlalchemy import select
 
@@ -741,11 +741,21 @@ def build_agent_service_chat_core_provider(service: Any) -> FunctionToolProvider
 def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     """Research-family tools for AutonomousAgentExecutor."""
 
+    async def _arxiv_search(**kwargs: Any) -> List[Dict[str, Any]]:
+        """Run an arXiv search and return its entries as plain dicts.
+
+        ``ArxivSearchService.search`` returns an ``ArxivSearchResult`` dataclass;
+        every caller here wants the entry list.
+        """
+        result = await executor.arxiv_service.search(**kwargs)
+        items = getattr(result, "items", result) or []
+        return [item for item in items if isinstance(item, dict)]
+
     async def _search_arxiv(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         job = ctx.job
-        papers = await executor.arxiv_service.search(
+        papers = await _arxiv_search(
             query=params.get("query", job.goal[:100] if job else ""),
             max_results=params.get("max_results", 10),
         )
@@ -833,9 +843,7 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
         arxiv_id = params.get("arxiv_id")
         if not arxiv_id:
             return {"error": "Missing required parameter: arxiv_id"}
-        papers = await executor.arxiv_service.search(
-            query=f"id:{arxiv_id}", max_results=1
-        )
+        papers = await _arxiv_search(query=f"id:{arxiv_id}", max_results=1)
         if not papers:
             return {"error": f"Paper {arxiv_id} not found"}
         paper = papers[0]
@@ -942,7 +950,7 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         topic = params.get("topic")
-        papers = await executor.arxiv_service.search(
+        papers = await _arxiv_search(
             query=params.get("query") or f"all:{topic}",
             max_results=params.get("max_results", 20),
             sort_by="submittedDate",
@@ -980,18 +988,14 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             if doc:
                 query = doc.title
         elif arxiv_id:
-            papers = await executor.arxiv_service.search(
-                query=f"id:{arxiv_id}", max_results=1
-            )
+            papers = await _arxiv_search(query=f"id:{arxiv_id}", max_results=1)
             if papers:
                 query = papers[0].get("title", "")
 
         if not query or not params.get("search_external", True):
             return {"error": "No query could be built"}
 
-        related = await executor.arxiv_service.search(
-            query=query, max_results=params.get("limit", 10)
-        )
+        related = await _arxiv_search(query=query, max_results=params.get("limit", 10))
         return {
             "success": True,
             "data": related,

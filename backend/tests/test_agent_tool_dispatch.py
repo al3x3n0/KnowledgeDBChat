@@ -32,6 +32,7 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_workspace_mutation_provider,
     build_autonomous_workspace_read_provider,
 )
+from app.services.arxiv_search_service import ArxivSearchResult
 
 
 @pytest.mark.asyncio
@@ -119,6 +120,56 @@ def test_autonomous_research_provider_resolves_autonomous_tools():
     assert provider.can_handle("search_arxiv", ctx) is True
     assert provider.can_handle("save_research_finding", ctx) is True
     assert provider.can_handle("execute_python", ctx) is False
+
+
+@pytest.mark.asyncio
+async def test_autonomous_search_arxiv_unwraps_search_result():
+    """search_arxiv must read entries off ArxivSearchResult, not index it."""
+
+    class _FakeArxivService:
+        def __init__(self):
+            self.calls = []
+
+        async def search(self, **kwargs):
+            self.calls.append(kwargs)
+            return ArxivSearchResult(
+                total_results=1,
+                start=0,
+                max_results=int(kwargs.get("max_results") or 10),
+                items=[
+                    {
+                        "id": "2401.00001",
+                        "title": "Speculative Decoding Survey",
+                        "summary": "An abstract.",
+                        "authors": ["A. Author"],
+                        "published": "2024-01-01T00:00:00Z",
+                    }
+                ],
+            )
+
+    class _ArxivExecutor(_DummyService):
+        arxiv_service = _FakeArxivService()
+
+    executor = _ArxivExecutor()
+    provider = build_autonomous_research_provider(executor)
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
+
+    result = await provider.execute("search_arxiv", {"query": "speculative"}, ctx)
+
+    assert result["success"] is True
+    assert result["data"] == [
+        {
+            "id": "2401.00001",
+            "title": "Speculative Decoding Survey",
+            "summary": "An abstract.",
+            "authors": ["A. Author"],
+            "published": "2024-01-01T00:00:00Z",
+        }
+    ]
+    assert [f["title"] for f in result["findings"]] == ["Speculative Decoding Survey"]
+    assert [f["arxiv_id"] for f in result["findings"]] == ["2401.00001"]
 
 
 def test_autonomous_data_analysis_provider_resolves_autonomous_tools():

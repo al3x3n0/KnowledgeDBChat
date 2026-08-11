@@ -5752,25 +5752,41 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
         except Exception as exc:
             return {"error": f"Web search failed: {exc}"}
 
+    async def _scrape_one_page(url: str, max_chars: int) -> Dict[str, Any]:
+        """Fetch a single page.
+
+        WebScraperService exposes `scrape`, which crawls and returns a "pages"
+        list; there is no scrape_url. Both handlers below want one page.
+        """
+        from app.services.web_scraper_service import WebScraperService
+
+        scraper = WebScraperService()
+        try:
+            result = await scraper.scrape(
+                url,
+                follow_links=False,
+                max_pages=1,
+                include_links=False,
+                max_content_chars=max_chars,
+            )
+        finally:
+            await scraper.aclose()
+        pages = (result or {}).get("pages") or []
+        return pages[0] if isinstance(pages[0], dict) else {} if pages else {}
+
     async def _fetch_url_content(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        from app.services.web_scraper_service import WebScraperService
-
         url = str(params.get("url", "")).strip()
         if not url:
             return {"error": "url is required"}
         try:
             max_chars = min(int(params.get("max_chars", 50000) or 50000), 100000)
-            scraper = WebScraperService()
-            scraped = await scraper.scrape_url(url, max_content_length=max_chars)
-            content = ""
-            title = ""
-            if isinstance(scraped, dict):
-                content = str(scraped.get("content", ""))[:max_chars]
-                title = str(scraped.get("title", ""))[:200]
-            elif isinstance(scraped, str):
-                content = scraped[:max_chars]
+            page = await _scrape_one_page(url, max_chars)
+            content = str(page.get("content", ""))[:max_chars]
+            title = str(page.get("title", ""))[:200]
+            if not content.strip():
+                return {"error": f"No content extracted from {url}"}
             return {
                 "success": True,
                 "data": {
@@ -5786,25 +5802,26 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
     async def _summarize_url(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        from app.services.web_scraper_service import WebScraperService
-
         url = str(params.get("url", "")).strip()
         if not url:
             return {"error": "url is required"}
         try:
-            scraper = WebScraperService()
-            scraped = await scraper.scrape_url(url, max_content_length=100000)
-            text = (
-                str(scraped.get("content", ""))[:50000]
-                if isinstance(scraped, dict)
-                else str(scraped)[:50000]
-            )
+            page = await _scrape_one_page(url, 100000)
+            text = str(page.get("content", ""))[:50000]
             if not text.strip():
                 return {"error": f"No content extracted from {url}"}
             focus = str(params.get("focus", "")).strip()
             focus_clause = f" with focus on: {focus}" if focus else ""
-            prompt = f"Summarize the following web page content{focus_clause}. Be concise and extract key information:\n\n{text[:30000]}"
-            summary = await executor.llm_service.generate(prompt, max_tokens=1000)
+            # LLMService has no `generate`; the text entry point is
+            # generate_response(system_prompt=..., user_message=...).
+            summary = await executor.llm_service.generate_response(
+                system_prompt=(
+                    "Summarize the web page content the user provides"
+                    f"{focus_clause}. Be concise and extract key information."
+                ),
+                user_message=text[:30000],
+                max_tokens=1000,
+            )
             return {
                 "success": True,
                 "data": {

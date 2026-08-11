@@ -129,6 +129,23 @@ from app.services.project_profile_service import (
 from app.services.search_service import SearchService
 from app.services.vector_store import VectorStoreService
 
+
+def _tool_requires_params(tool_name: str) -> bool:
+    """Whether the catalog says this tool has required arguments.
+
+    Unknown tools are treated as requiring none, matching the previous
+    behaviour for anything the catalog does not describe.
+    """
+    try:
+        from app.agent_core.tool_catalog import get_tool_metadata
+
+        metadata = get_tool_metadata(tool_name)
+        schema = getattr(metadata, "input_schema", None) or {}
+        return bool(schema.get("required"))
+    except Exception:
+        return False
+
+
 # Deepest chain level at which a job may still spawn subgoal follow-up children.
 # Matches the ceiling the job-creating tools apply in agent_tool_dispatch.
 AUTO_SUBGOAL_CHILD_MAX_DEPTH = 3
@@ -5809,6 +5826,12 @@ class AutonomousAgentExecutor:
                 "params": _with_source({"query": goal[:200], "limit": 10}),
                 "purpose": purpose,
             }
+        if t == "search_web":
+            return {
+                "tool": t,
+                "params": {"query": goal[:200], "max_results": 8},
+                "purpose": purpose,
+            }
         if t == "project_bootstrap":
             return {
                 "tool": t,
@@ -5844,6 +5867,11 @@ class AutonomousAgentExecutor:
                 },
                 "purpose": purpose,
             }
+        # Nothing above knew how to fill this tool's arguments. Emitting an
+        # empty-param call spends an iteration to be told the argument is
+        # required, so decline and let the caller try the next candidate.
+        if _tool_requires_params(t):
+            return None
         return {"tool": t, "params": {}, "purpose": purpose}
 
     def _build_forced_exploration_action(

@@ -349,20 +349,36 @@ class CustomToolService:
         safe_imports = {"json", "re", "datetime", "math", "collections", "itertools"}
         allowed = safe_imports.union(allowed_imports)
 
+        # Import the sandbox itself outside the main block. An ImportError here
+        # means the library is missing; one raised further down comes from the
+        # submitted code importing something the sandbox does not allow.
+        # Catching both in one place reported "install RestrictedPython" for
+        # code whose real problem was that it tried to import subprocess.
         try:
-            # Import RestrictedPython for sandboxed execution
-            from RestrictedPython import compile_restricted, safe_globals
+            from RestrictedPython import compile_restricted_exec, safe_globals
             from RestrictedPython.Eval import default_guarded_getiter
             from RestrictedPython.Guards import (
                 guarded_iter_unpack_sequence,
                 safer_getattr,
             )
+        except ImportError as import_error:
+            raise ToolExecutionError(
+                "Python execution is not available. Install the "
+                f"RestrictedPython package ({import_error})."
+            )
 
-            # Compile the code in restricted mode
-            byte_code = compile_restricted(code, "<user_tool>", "exec")
+        try:
+            # compile_restricted returns a bare code object, so reading .errors
+            # off it raised AttributeError for every input, valid or not.
+            # compile_restricted_exec returns the CompileResult that carries
+            # the diagnostics.
+            compiled = compile_restricted_exec(code, filename="<user_tool>")
 
-            if byte_code.errors:
-                raise ToolExecutionError(f"Code compilation errors: {byte_code.errors}")
+            if compiled.errors:
+                raise ToolExecutionError(f"Code compilation errors: {compiled.errors}")
+            if compiled.code is None:
+                raise ToolExecutionError("Code could not be compiled under the sandbox")
+            byte_code = compiled.code
 
             # Prepare safe globals
             _globals = safe_globals.copy()
@@ -395,10 +411,13 @@ class CustomToolService:
 
         except asyncio.TimeoutError:
             raise ToolExecutionError(f"Execution timed out after {timeout}s")
-        except ImportError:
-            # RestrictedPython not installed - fall back to error
+        except ImportError as exc:
+            # Raised by the submitted code, not by the sandbox: it asked for a
+            # module outside the allowlist. Say so, and say which are allowed.
             raise ToolExecutionError(
-                "Python execution is not available. Install RestrictedPython package."
+                f"The code imported a module the sandbox does not allow ({exc}). "
+                f"Allowed modules: {', '.join(sorted(allowed))}. This sandbox "
+                "cannot run subprocesses or reach the filesystem."
             )
         except Exception as e:
             raise ToolExecutionError(f"Python execution failed: {str(e)}")

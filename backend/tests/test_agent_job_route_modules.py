@@ -1207,8 +1207,15 @@ def test_decision_trace_query_router_owns_expected_contract():
 
 def test_job_export_router_owns_expected_contract():
     signatures = _route_signatures(agent_jobs.job_export_api.router)
-    assert signatures == {("/{job_id}/export", "GET")}
+    assert signatures == {
+        ("/{job_id}/export", "GET"),
+        ("/{job_id}/export/transcript", "GET"),
+    }
     assert agent_jobs.export_job_results is agent_jobs.job_export_api.export_job_results
+    assert (
+        agent_jobs.export_job_transcript
+        is agent_jobs.job_export_api.export_job_transcript
+    )
     source = Path(job_exports.__file__).read_text(encoding="utf-8")
     assert "app.api.endpoints.agent_jobs" not in source
     assert callable(job_exports.build_job_export_api)

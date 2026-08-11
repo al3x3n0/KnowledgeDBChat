@@ -1,7 +1,7 @@
 """HTTP boundary for exporting autonomous-job results."""
 
 from dataclasses import dataclass
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Dict
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -31,6 +31,7 @@ CONTENT_TYPES = {
 class JobExportApi:
     router: APIRouter
     export_job_results: Callable[..., Any]
+    export_job_transcript: Callable[..., Any]
 
 
 def _default_exporter_factory(*, style: str) -> Any:
@@ -144,7 +145,78 @@ def build_job_export_api(
             headers={"Content-Disposition": f'attachment; filename="{filename}"'},
         )
 
-    return JobExportApi(router=router, export_job_results=export_job_results)
+    @router.get("/{job_id}/export/transcript")
+    async def export_job_transcript(
+        job_id: UUID,
+        include_prompts: bool = Query(
+            False,
+            description=(
+                "Include verbatim prompt and reply text. Only available for runs "
+                "made with LLM_CALL_SNAPSHOT_ENABLED."
+            ),
+        ),
+        db: AsyncSession = Depends(get_db),
+        current_user: User = Depends(get_current_active_user),
+    ) -> Dict[str, Any]:
+        """Export what a job decided, why, and what it said, as JSON.
+
+        The DOCX export above is a report for a reader; this is the record of
+        the run itself, for inspecting or replaying an agent's behaviour.
+        """
+        from app.models.agent_job import AgentJobCheckpoint
+        from app.models.llm_call_snapshot import LLMCallSnapshot
+        from app.services.agent_job_transcript_service import build_job_transcript
+
+        result = await db.execute(
+            select(AgentJob).where(
+                and_(AgentJob.id == job_id, AgentJob.user_id == current_user.id)
+            )
+        )
+        job = result.scalar_one_or_none()
+        if job is None:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Agent job not found",
+            )
+
+        checkpoints = (
+            (
+                await db.execute(
+                    select(AgentJobCheckpoint)
+                    .where(AgentJobCheckpoint.job_id == job_id)
+                    .order_by(
+                        AgentJobCheckpoint.iteration,
+                        AgentJobCheckpoint.created_at,
+                    )
+                )
+            )
+            .scalars()
+            .all()
+        )
+        snapshots = (
+            (
+                await db.execute(
+                    select(LLMCallSnapshot)
+                    .where(LLMCallSnapshot.job_id == job_id)
+                    .order_by(LLMCallSnapshot.created_at)
+                )
+            )
+            .scalars()
+            .all()
+        )
+
+        return build_job_transcript(
+            job,
+            checkpoints,
+            snapshots,
+            include_prompts=include_prompts,
+        )
+
+    return JobExportApi(
+        router=router,
+        export_job_results=export_job_results,
+        export_job_transcript=export_job_transcript,
+    )
 
 
 def _safe_job_name(name: Any) -> str:

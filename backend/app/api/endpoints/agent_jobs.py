@@ -2015,6 +2015,7 @@ get_job_step_events = job_step_event_api.get_job_step_events
 job_export_api = build_job_export_api()
 router.include_router(job_export_api.router)
 export_job_results = job_export_api.export_job_results
+export_job_transcript = job_export_api.export_job_transcript
 
 
 job_checkpoint_api = build_job_checkpoint_api()

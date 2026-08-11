@@ -159,6 +159,21 @@ class AutonomousRnDTrajectoryAdapter:
             if tool_type:
                 row["tool_type"] = tool_type
 
+            # A tool that failed and was replaced by a fallback still reports
+            # success, under the name of the tool the agent asked for. Without
+            # these fields the row is indistinguishable from the requested tool
+            # having worked, which is how a broken arXiv search was read as
+            # seven relevant findings that were really unrelated KB documents.
+            primary_tool = str(result.get("primary_tool") or "").strip()
+            executed_tool = str(result.get("tool") or "").strip()
+            if primary_tool and executed_tool and primary_tool != executed_tool:
+                row["substituted"] = True
+                row["requested_tool"] = primary_tool
+                row["executed_tool"] = executed_tool
+                primary_error = str(result.get("primary_error") or "").strip()
+                if primary_error:
+                    row["primary_error"] = primary_error[:300]
+
             provenance = self._find_external_agent_provenance(result)
             if provenance:
                 row["external_agent_provenance"] = provenance

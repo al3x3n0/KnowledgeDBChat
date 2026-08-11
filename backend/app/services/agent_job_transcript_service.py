@@ -64,17 +64,26 @@ def build_actions(checkpoints: Iterable[Any]) -> List[Dict[str, Any]]:
                 continue
             seen.add(key)
             result = _as_dict(entry.get("result"))
-            actions.append(
-                {
-                    "iteration": entry.get("iteration"),
-                    "node": entry.get("node"),
-                    "tool": action.get("tool"),
-                    "reason": action.get("purpose"),
-                    "params": action.get("params"),
-                    "success": result.get("success", result.get("ok")),
-                    "result": _clip(result, MAX_RESULT_CHARS),
-                }
-            )
+            row = {
+                "iteration": entry.get("iteration"),
+                "node": entry.get("node"),
+                "tool": action.get("tool"),
+                "reason": action.get("purpose"),
+                "params": action.get("params"),
+                "success": result.get("success", result.get("ok")),
+                "result": _clip(result, MAX_RESULT_CHARS),
+            }
+            # Say when a different tool actually ran. A successful fallback
+            # rewrites the result to success, so without this a reader sees the
+            # requested tool and a tick and has no way to tell them apart.
+            requested = str(result.get("primary_tool") or "").strip()
+            executed = str(result.get("tool") or "").strip()
+            if requested and executed and requested != executed:
+                row["substituted"] = True
+                row["requested_tool"] = requested
+                row["executed_tool"] = executed
+                row["primary_error"] = str(result.get("primary_error") or "")[:300]
+            actions.append(row)
     return actions
 
 

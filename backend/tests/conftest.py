@@ -207,6 +207,38 @@ def _restore_current_event_loop(event_loop):
         asyncio.set_event_loop(event_loop)
 
 
+@pytest.fixture(autouse=True)
+def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch):
+    """Keep the suite off real providers, whatever the developer has configured.
+
+    Tests stub the LLM by patching one entry point, usually generate_response.
+    `llm_structured.ask_for_json` tries generate_structured first and only falls
+    back to the prompted path when it fails, so on a machine with a provider key
+    the unpatched call succeeds against the live API: the stub is bypassed, the
+    test spends real credits and its result changes run to run. CI has no keys,
+    so this only ever bit developers who had one.
+
+    Clearing the credentials makes every machine behave like CI. A test that
+    wants a model must stub it.
+    """
+    from app.core.config import settings
+
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "QWEN_API_KEY",
+        "KIMI_API_KEY",
+    ):
+        if hasattr(settings, name):
+            monkeypatch.setattr(settings, name, None, raising=False)
+    # Ollama needs no key, so point it at an address nothing answers on.
+    monkeypatch.setattr(
+        settings, "OLLAMA_BASE_URL", "http://127.0.0.1:1", raising=False
+    )
+    yield
+
+
 @pytest.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create a test database session."""

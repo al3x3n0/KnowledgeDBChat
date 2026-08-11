@@ -619,9 +619,20 @@ async def test_domain_research_orchestrator_creates_structured_memo_and_experime
         }
         """
 
+    async def _no_structured_path(**kwargs):
+        """Force the prompted path this test scripts.
+
+        The orchestrator calls llm_structured.ask_for_json, which tries
+        generate_structured first. Leaving it unpatched sent the call to a real
+        provider on any machine holding a key, so the scripted response below
+        was silently ignored.
+        """
+        return None
+
     executor.search_service.search = _fake_search
     executor.arxiv_search_service.search = _fake_arxiv_search
     executor.llm_service.generate_response = _fake_generate_response
+    executor.llm_service.generate_structured = _no_structured_path
 
     result = await executor._run_domain_research_orchestrator(
         job=job, db=db_session, progress_callback=None

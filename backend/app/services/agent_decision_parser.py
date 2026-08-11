@@ -234,6 +234,7 @@ class AgentDecisionParser:
         user_message: str,
         routing: Optional[Dict[str, Any]] = None,
         max_retries: int = 2,
+        db: Optional[Any] = None,
     ) -> Optional[AgentDecision]:
         """
         Parse with up to *max_retries* attempts.
@@ -266,6 +267,12 @@ class AgentDecisionParser:
                         user_message=correction_msg,
                         user_settings=user_settings,
                         routing=routing,
+                        db=db,
+                        snapshot_context={
+                            "job_id": str(getattr(job, "id", "") or "") or None,
+                            "iteration": int(getattr(job, "iteration", 0) or 0),
+                            "phase": "decision_retry",
+                        },
                     )
                     decision, error = self.parse(str(response or ""), available_tools)
                     if decision is not None:
@@ -277,7 +284,16 @@ class AgentDecisionParser:
             elif attempt == 2:
                 # Retry 2: LLM-assisted JSON repair
                 repaired = await self.repair_json(
-                    raw_response, error, user_settings, routing
+                    raw_response,
+                    error,
+                    user_settings,
+                    routing,
+                    db=db,
+                    snapshot_context={
+                        "job_id": str(getattr(job, "id", "") or "") or None,
+                        "iteration": int(getattr(job, "iteration", 0) or 0),
+                        "phase": "decision_repair",
+                    },
                 )
                 if repaired:
                     decision, error = self.parse(repaired, available_tools)
@@ -298,6 +314,8 @@ class AgentDecisionParser:
         error_message: str,
         user_settings: Any,
         routing: Optional[Dict[str, Any]] = None,
+        db: Optional[Any] = None,
+        snapshot_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Use a fast LLM call to fix almost-valid JSON.
@@ -322,6 +340,8 @@ class AgentDecisionParser:
                 user_message=repair_prompt,
                 user_settings=user_settings,
                 routing=repair_routing,
+                db=db,
+                snapshot_context=snapshot_context,
             )
             return str(response or "")
         except Exception as exc:

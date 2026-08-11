@@ -276,6 +276,7 @@ class _AutonomousRuntimeAdapter:
             state=self.state,
             observation=observation,
             user_settings=self.user_settings,
+            db=self.db,
         )
         if used_causal_llm:
             self.job.llm_calls_used += 1
@@ -291,6 +292,7 @@ class _AutonomousRuntimeAdapter:
             self.state,
             observation,
             self.user_settings,
+            db=self.db,
         )
         if used_plan_llm:
             self.job.llm_calls_used += 1
@@ -300,7 +302,7 @@ class _AutonomousRuntimeAdapter:
 
         if self.executor._should_run_critic(self.job, self.state):
             critic_note = await self.executor._run_critic_pass(
-                self.job, self.state, observation, self.user_settings
+                self.job, self.state, observation, self.user_settings, db=self.db
             )
             if critic_note:
                 notes = self.state.get("critic_notes")
@@ -3999,6 +4001,7 @@ class AutonomousAgentExecutor:
         state: Dict[str, Any],
         observation: Dict[str, Any],
         user_settings: Optional[UserLLMSettings],
+        db: Optional[AsyncSession] = None,
     ) -> bool:
         """
         Generate causal hypotheses + minimal experiments once for research jobs.
@@ -4088,6 +4091,12 @@ class AutonomousAgentExecutor:
                 user_message=user_message,
                 user_settings=user_settings,
                 routing=self._llm_routing_from_job_config(job.config),
+                db=db,
+                snapshot_context={
+                    "job_id": str(getattr(job, "id", "") or "") or None,
+                    "iteration": int(job.iteration or 0),
+                    "phase": "causal_plan",
+                },
             )
             payload = self._extract_first_json_object(str(raw or "")) or {}
             hypotheses = self._normalize_causal_experiment_plan(
@@ -4137,6 +4146,7 @@ class AutonomousAgentExecutor:
         state: Dict[str, Any],
         observation: Dict[str, Any],
         user_settings: Optional[UserLLMSettings],
+        db: Optional[AsyncSession] = None,
     ) -> bool:
         """Generate a lightweight execution plan once per job when enabled."""
         cfg = job.config if isinstance(job.config, dict) else {}
@@ -4199,6 +4209,12 @@ class AutonomousAgentExecutor:
                 user_message=user_message,
                 user_settings=user_settings,
                 routing=self._llm_routing_from_job_config(job.config),
+                db=db,
+                snapshot_context={
+                    "job_id": str(getattr(job, "id", "") or "") or None,
+                    "iteration": int(job.iteration or 0),
+                    "phase": "execution_plan",
+                },
             )
             payload = self._extract_first_json_object(str(raw or "")) or {}
             plan = self._normalize_execution_plan(payload, max_steps=max_steps)
@@ -4726,6 +4742,7 @@ class AutonomousAgentExecutor:
         state: Dict[str, Any],
         observation: Dict[str, Any],
         user_settings: Optional[UserLLMSettings],
+        db: Optional[AsyncSession] = None,
     ) -> Optional[Dict[str, Any]]:
         """Run an LLM critic pass to identify risks and pivots."""
         profile = (
@@ -4773,6 +4790,12 @@ class AutonomousAgentExecutor:
                 user_message=user_message,
                 user_settings=user_settings,
                 routing=self._llm_routing_from_job_config(job.config),
+                db=db,
+                snapshot_context={
+                    "job_id": str(getattr(job, "id", "") or "") or None,
+                    "iteration": int(job.iteration or 0),
+                    "phase": "critic",
+                },
             )
         except Exception:
             return None

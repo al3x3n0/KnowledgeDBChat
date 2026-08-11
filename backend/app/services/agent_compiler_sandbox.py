@@ -216,6 +216,7 @@ async def compile_c_snippet(
             "flags": flags,
         }
 
+    codegen = count_codegen(stdout)
     return {
         "success": True,
         "data": {
@@ -223,9 +224,21 @@ async def compile_c_snippet(
             "emit": emit,
             "output": stdout[:MAX_OUTPUT_CHARS],
             "truncated": len(stdout) > MAX_OUTPUT_CHARS,
-            "codegen": count_codegen(stdout),
+            "codegen": codegen,
             "compiler_warnings": stderr[:2000] or None,
         },
+        # The loop harvests "findings"; without one a run that measured
+        # something records nothing, and downstream summaries report that the
+        # job produced no results.
+        "findings": [
+            {
+                "type": "codegen_measurement",
+                "title": f"clang {flags}: {codegen['vector_ops']} vector ops, "
+                f"{codegen['conditional_branches']} conditional branches",
+                "flags": flags,
+                "codegen": codegen,
+            }
+        ],
     }
 
 
@@ -319,4 +332,18 @@ async def benchmark_c_snippet(
                 "difference to a microarchitectural effect."
             ),
         },
+        "findings": [
+            {
+                "type": "benchmark_measurement",
+                "title": (
+                    f"clang {flags}: fastest {min(timings)} ms of {len(timings)} "
+                    "trials"
+                    if timings
+                    else f"clang {flags}: ran with no timing recorded"
+                ),
+                "flags": flags,
+                "fastest_ms": min(timings) if timings else None,
+                "all_ms": timings,
+            }
+        ],
     }

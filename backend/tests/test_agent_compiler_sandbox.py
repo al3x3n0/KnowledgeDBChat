@@ -152,3 +152,35 @@ async def test_compile_failure_returns_the_compiler_error(enabled, monkeypatch):
 
     assert result["success"] is False
     assert "expected identifier" in result["compiler_stderr"]
+
+
+@pytest.mark.asyncio
+async def test_compile_reports_a_finding_so_the_run_records_what_it_learned(
+    enabled, monkeypatch
+):
+    """Without a finding the loop harvests nothing, and the job's own summary
+    then reports that it produced no results."""
+
+    async def _fake_run(script, workdir, *, image, timeout_seconds):
+        return 0, "  uaddw v0.2d, v0.2d, v2.2s\n  b.ge .L2\n", ""
+
+    monkeypatch.setattr(sandbox, "_run", _fake_run)
+
+    result = await sandbox.compile_c_snippet(code="int main(){}", flags="-O3")
+
+    findings = result["findings"]
+    assert findings[0]["type"] == "codegen_measurement"
+    assert findings[0]["codegen"]["vector_ops"] >= 1
+    assert "-O3" in findings[0]["title"]
+
+
+@pytest.mark.asyncio
+async def test_benchmark_reports_a_finding_too(enabled, monkeypatch):
+    async def _fake_run(script, workdir, *, image, timeout_seconds):
+        return 0, "__elapsed_ms__ 42\n__elapsed_ms__ 37\n", ""
+
+    monkeypatch.setattr(sandbox, "_run", _fake_run)
+
+    result = await sandbox.benchmark_c_snippet(code="int main(){}", repeat=2)
+
+    assert result["findings"][0]["fastest_ms"] == 37

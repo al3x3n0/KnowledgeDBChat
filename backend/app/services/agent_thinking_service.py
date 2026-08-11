@@ -139,6 +139,7 @@ Respond in JSON format:
                 system_prompt=system_prompt,
                 user_message=user_message,
                 routing=routing,
+                db=db,
             )
 
             state["decision_parse_metrics"] = executor.decision_parser.metrics

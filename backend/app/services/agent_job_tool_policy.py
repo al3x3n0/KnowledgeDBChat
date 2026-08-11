@@ -42,6 +42,8 @@ def get_tools_for_job_type(
         "request_review",
         # Code execution
         "execute_python",
+        "compile_c_snippet",
+        "benchmark_c_snippet",
         # Memory (available to all job types)
         "create_memory",
         "search_memories",
@@ -342,6 +344,8 @@ def get_tools_for_job_type(
         "request_review",
         # Code execution tools
         "execute_python",
+        "compile_c_snippet",
+        "benchmark_c_snippet",
         "execute_data_pipeline",
         "write_and_run_script",
         # Coding workspace tools

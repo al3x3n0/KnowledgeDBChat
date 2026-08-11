@@ -37,6 +37,9 @@ def _default_metadata(
         "share_findings",
         "request_review",
         "execute_data_pipeline",
+        # Compile and run submitted code inside a Docker sandbox.
+        "compile_c_snippet",
+        "benchmark_c_snippet",
         "write_and_run_script",
         "write_file",
         "apply_patch",
@@ -120,12 +123,16 @@ def _default_metadata(
         "run_custom_tool",
         "execute_python",
         "execute_data_pipeline",
+        "compile_c_snippet",
+        "benchmark_c_snippet",
         "run_command",
         "search_code",
     }
     high_cost = {
         "docker_execute",
         "execute_data_pipeline",
+        "compile_c_snippet",
+        "benchmark_c_snippet",
         "write_and_run_script",
         "run_command",
     }

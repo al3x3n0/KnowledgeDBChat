@@ -3896,11 +3896,35 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         except Exception as exc:
             return {"error": f"Command failed: {exc}"}
 
+    async def _compile_c_snippet(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_compiler_sandbox
+
+        return await agent_compiler_sandbox.compile_c_snippet(
+            code=str(params.get("code") or ""),
+            flags=str(params.get("flags") or "-O2"),
+            emit=str(params.get("emit") or "asm"),
+        )
+
+    async def _benchmark_c_snippet(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_compiler_sandbox
+
+        return await agent_compiler_sandbox.benchmark_c_snippet(
+            code=str(params.get("code") or ""),
+            flags=str(params.get("flags") or "-O2"),
+            repeat=int(params.get("repeat") or 3),
+        )
+
     return FunctionToolProvider(
         name="autonomous_workspace_mutation_tools",
         modes={"autonomous"},
         handlers={
             "execute_python": _execute_python,
+            "compile_c_snippet": _compile_c_snippet,
+            "benchmark_c_snippet": _benchmark_c_snippet,
             "execute_data_pipeline": _execute_data_pipeline,
             "write_and_run_script": _write_and_run_script,
             "write_file": _write_file,

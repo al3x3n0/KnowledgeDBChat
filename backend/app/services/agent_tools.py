@@ -2706,8 +2706,66 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
     },
     # ── Code & Execution Tools ──────────────────────────────────────
     {
+        "name": "compile_c_snippet",
+        "description": (
+            "Compile a C snippet in the compiler research sandbox and return "
+            "the generated assembly plus codegen counts (vector instructions, "
+            "conditional branches, calls). Use this to check what the compiler "
+            "actually emitted before drawing conclusions from any timing: a "
+            "loop may be vectorized or if-converted, leaving no branch to "
+            "measure. Prefer this over execute_python for anything involving a "
+            "compiler."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {"type": "string", "description": "C source to compile"},
+                "flags": {
+                    "type": "string",
+                    "description": "Compiler flags, e.g. '-O2' or '-O3 -ffast-math'",
+                },
+                "emit": {
+                    "type": "string",
+                    "description": "'asm' (default) returns assembly, 'ir' returns LLVM IR",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
+        "name": "benchmark_c_snippet",
+        "description": (
+            "Compile and run a self-contained C program in the compiler "
+            "research sandbox, returning its stdout and wall-clock time over "
+            "repeated trials (minimum reported). The program must print its "
+            "own measurements; there are no performance counters in the "
+            "sandbox, and there is no network."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Self-contained C program including main()",
+                },
+                "flags": {"type": "string", "description": "Compiler flags"},
+                "repeat": {
+                    "type": "integer",
+                    "description": "Trials to run, 1-10 (default 3); the fastest is reported",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
         "name": "execute_python",
-        "description": "Run Python code in a sandboxed environment with whitelisted imports. Output via 'result' variable.",
+        "description": (
+            "Run Python code in a RestrictedPython sandbox. Output via the "
+            "'result' variable. Only whitelisted pure-Python modules are "
+            "importable: there is no subprocess, no filesystem and no network, "
+            "so this CANNOT compile code or invoke a toolchain. Use "
+            "compile_c_snippet or benchmark_c_snippet for compiler work."
+        ),
         "parameters": {
             "type": "object",
             "properties": {

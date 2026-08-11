@@ -124,6 +124,10 @@ Respond in JSON format:
                     user_settings=user_settings,
                     routing=routing,
                     snapshot_context=snapshot_context,
+                    # Without the session the snapshot recorder returns early,
+                    # so LLM_CALL_SNAPSHOT_ENABLED would capture nothing for
+                    # the decision calls it exists to record.
+                    db=db,
                 )
 
             decision = await executor.decision_parser.parse_with_retry(
@@ -376,6 +380,7 @@ Respond in JSON format:
         user_settings: Optional[Any],
         routing: Optional[Dict[str, Any]],
         snapshot_context: Optional[Dict[str, Any]] = None,
+        db: Optional[Any] = None,
     ) -> str:
         """Produce the raw decision text for parsing.
 
@@ -394,6 +399,7 @@ Respond in JSON format:
                 user_settings=user_settings,
                 routing=routing,
                 snapshot_context=snapshot_context,
+                db=db,
             )
             if completion is not None:
                 if getattr(completion, "structured", None) is not None:
@@ -412,6 +418,7 @@ Respond in JSON format:
             user_settings=user_settings,
             routing=routing,
             snapshot_context=snapshot_context,
+            db=db,
         )
         return str(response or "")
 

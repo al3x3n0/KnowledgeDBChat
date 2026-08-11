@@ -1,13 +1,28 @@
+# Overlay that lets the containerised app drive the host Docker daemon, for
+# Docker-backed custom tools and the scientific-validation sandbox.
+#
+# Mounting the socket grants the container control of the host daemon, which is
+# effectively root on the host. Use it on a development machine or an isolated
+# runner, never on a shared deployment.
+#
+# The sandbox runner builds a temp directory and bind-mounts it into the run
+# container (-v <tmp>:/work). That path is resolved by the *host* daemon, so a
+# temp dir that exists only inside this container silently mounts as empty.
+# SANDBOX_TMPDIR is therefore bind-mounted at the same absolute path inside and
+# out, and TMPDIR points at it so tempfile lands there.
 services:
   backend:
     environment:
       - CUSTOM_TOOL_DOCKER_ENABLED=true
+      - TMPDIR=${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
+      - ${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}:${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
 
   celery:
     environment:
       - CUSTOM_TOOL_DOCKER_ENABLED=true
+      - TMPDIR=${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
     volumes:
       - /var/run/docker.sock:/var/run/docker.sock
-
+      - ${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}:${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}

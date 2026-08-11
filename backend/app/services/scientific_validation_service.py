@@ -63,7 +63,7 @@ BUILTIN_SCIENTIFIC_SANDBOX_PROFILES: Dict[str, Dict[str, Any]] = {
         "description": "Docker-isolated compiler research sandbox for compile/codegen/regression validation.",
         "track_type": "compiler",
         "backend": "docker",
-        "docker_image": "ghcr.io/knowledgedb/compiler-research:latest",
+        "docker_image": "ghcr.io/al3x3n0/kdbc-compiler-research:latest",
         "timeout_seconds": 1200,
         "resource_caps": {"memory_mb": 4096, "cpus": 2.0, "pids_limit": 256},
         "allowed_benchmark_families": [
@@ -90,7 +90,7 @@ BUILTIN_SCIENTIFIC_SANDBOX_PROFILES: Dict[str, Dict[str, Any]] = {
         "description": "Docker-isolated sandbox for perf-counter and benchmark-based microarchitecture validation.",
         "track_type": "microarchitecture",
         "backend": "docker",
-        "docker_image": "ghcr.io/knowledgedb/microarch-research:latest",
+        "docker_image": "ghcr.io/al3x3n0/kdbc-microarch-research:latest",
         "timeout_seconds": 1200,
         "resource_caps": {"memory_mb": 4096, "cpus": 2.0, "pids_limit": 256},
         "allowed_benchmark_families": [

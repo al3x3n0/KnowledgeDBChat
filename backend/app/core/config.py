@@ -263,8 +263,8 @@ class Settings(BaseSettings):
     UNSAFE_CODE_EXEC_DOCKER_CPUS: float = 1.0
     UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT: int = 128
     SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
-        "ghcr.io/knowledgedb/compiler-research:latest,"
-        "ghcr.io/knowledgedb/microarch-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-microarch-research:latest,"
         "python:3.11-slim"
     )
     SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = (

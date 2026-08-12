@@ -70,24 +70,21 @@ class _Executor:
 
 @pytest.fixture
 def patched(monkeypatch):
+    """Patch the real llm_structured module.
+
+    synthesize_conclusion imports it inside the function, so replacing the
+    module object in sys.modules leaks into other tests and makes the result
+    depend on import order. Patching the attribute is restored automatically.
+    """
+    from app.services import llm_structured
+
     def _install(payload=None, raises=False):
         async def _ask(*args, **kwargs):
             if raises:
                 raise RuntimeError("provider exploded")
             return payload
 
-        monkeypatch.setattr(
-            synthesis,
-            "llm_structured",
-            type("M", (), {"ask_for_json": staticmethod(_ask)}),
-            raising=False,
-        )
-        import sys
-        import types
-
-        mod = types.ModuleType("app.services.llm_structured")
-        mod.ask_for_json = _ask
-        sys.modules["app.services.llm_structured"] = mod
+        monkeypatch.setattr(llm_structured, "ask_for_json", _ask)
 
     return _install
 

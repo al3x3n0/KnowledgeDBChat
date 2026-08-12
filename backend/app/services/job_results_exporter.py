@@ -90,6 +90,49 @@ Finding:
 Write the bullet points:"""
 
 
+def _conclusion_content(job: Any) -> list:
+    """Render a run's conclusion, or say plainly that it has none.
+
+    An absent section would read as a report whose author had nothing to add,
+    rather than a run that could not answer its own goal.
+    """
+    results = job.results if isinstance(getattr(job, "results", None), dict) else {}
+    conclusion = results.get("conclusion")
+    if not isinstance(conclusion, dict):
+        return []
+
+    blocks: list = [{"type": "heading", "level": 2, "text": "Conclusion"}]
+    answer = str(conclusion.get("answer") or "").strip()
+    if answer:
+        blocks.append({"type": "paragraph", "text": answer})
+        confidence = str(conclusion.get("confidence") or "").strip()
+        if confidence:
+            blocks.append({"type": "paragraph", "text": f"Confidence: {confidence}"})
+    else:
+        gaps = [str(g) for g in (conclusion.get("gaps") or []) if str(g).strip()]
+        blocks.append(
+            {
+                "type": "paragraph",
+                "text": (
+                    "This run did not reach a conclusion. "
+                    + (gaps[0] if gaps else "No reason was recorded.")
+                ),
+            }
+        )
+
+    evidence = [str(e) for e in (conclusion.get("evidence") or []) if str(e).strip()]
+    if evidence:
+        blocks.append({"type": "heading", "level": 3, "text": "Evidence"})
+        blocks.append({"type": "bullet_list", "items": evidence[:10]})
+
+    gaps = [str(g) for g in (conclusion.get("gaps") or []) if str(g).strip()]
+    if gaps and answer:
+        blocks.append({"type": "heading", "level": 3, "text": "Not established"})
+        blocks.append({"type": "bullet_list", "items": gaps[:10]})
+
+    return blocks
+
+
 class JobResultsExporter:
     """
     Exports agent job results to various document formats.
@@ -1575,6 +1618,11 @@ class JobResultsExporter:
                     }
                 )
 
+            # The conclusion leads: a reader wants the answer before the
+            # measurements it rests on. Reports previously listed findings and
+            # left the reader to work out what they meant.
+            content.extend(_conclusion_content(job))
+
             findings = job.results.get("findings", [])
             if findings:
                 content.append({"type": "heading", "level": 2, "text": "Key Findings"})
@@ -1664,6 +1712,37 @@ class JobResultsExporter:
             )
         )
         slide_num += 1
+
+        # Conclusion slide, straight after the goal: the answer belongs next to
+        # the question, not after the statistics.
+        conclusion = (job.results or {}).get("conclusion")
+        if isinstance(conclusion, dict):
+            answer = str(conclusion.get("answer") or "").strip()
+            if answer:
+                body = [answer]
+                confidence = str(conclusion.get("confidence") or "").strip()
+                if confidence:
+                    body.append(f"Confidence: {confidence}")
+                for item in (conclusion.get("evidence") or [])[:4]:
+                    body.append(f"Evidence: {str(item)[:160]}")
+            else:
+                gaps = [
+                    str(g) for g in (conclusion.get("gaps") or []) if str(g).strip()
+                ]
+                body = [
+                    "This run did not reach a conclusion.",
+                    *(gaps[:3] or ["No reason was recorded."]),
+                ]
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Conclusion",
+                    content=body,
+                    notes="Answer to the goal, drawn from the recorded findings.",
+                )
+            )
+            slide_num += 1
 
         # Metadata slide
         if include_metadata:

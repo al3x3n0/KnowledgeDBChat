@@ -738,6 +738,21 @@ def build_agent_service_chat_core_provider(service: Any) -> FunctionToolProvider
     )
 
 
+def _tool_snapshot_context(ctx: Any, tool: str) -> Dict[str, Any]:
+    """Attribute a tool's own LLM call to the job phase that made it.
+
+    Without db and this context the snapshot recorder returns early, so these
+    calls are absent from a run's export and its captured total falls short of
+    the calls the job reports making.
+    """
+    job = getattr(ctx, "job", None)
+    return {
+        "job_id": str(getattr(job, "id", "") or "") or None,
+        "iteration": int(getattr(job, "iteration", 0) or 0),
+        "phase": f"tool:{tool}",
+    }
+
+
 def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     """Research-family tools for AutonomousAgentExecutor."""
 
@@ -1050,6 +1065,7 @@ Provide structured insights in JSON format:
                 task_type="summarization",
                 user_id=job.user_id,
                 db=ctx.db,
+                snapshot_context=_tool_snapshot_context(ctx, "extract_paper_insights"),
             )
             insights = json.loads(response)
             return {
@@ -1533,6 +1549,7 @@ Suggest the single best next action and explain why."""
                 task_type="research_engineer_scientist",
                 user_id=job.user_id,
                 db=ctx.db,
+                snapshot_context=_tool_snapshot_context(ctx, "suggest_next_action"),
             )
             return {"success": True, "data": {"suggestion": suggestion}}
         except Exception as exc:
@@ -5117,6 +5134,8 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 system_prompt="You are a concise summarizer. Output only the summary, no preamble.",
                 user_message=compress_prompt,
                 user_settings=user_settings,
+                db=ctx.db,
+                snapshot_context=_tool_snapshot_context(ctx, "compress_history"),
             )
             summary_text = str(summary_resp or "").strip()[:2000]
             state["compressed_history"] = summary_text
@@ -5167,6 +5186,8 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 system_prompt="You are a research synthesizer. Output only the synthesis, no preamble.",
                 user_message=synth_prompt,
                 user_settings=user_settings,
+                db=ctx.db,
+                snapshot_context=_tool_snapshot_context(ctx, "summarize_findings"),
             )
             synthesis_text = str(synthesis_resp or "").strip()[:3000]
             out: Dict[str, Any] = {
@@ -5845,6 +5866,8 @@ def build_autonomous_web_research_provider(executor: Any) -> FunctionToolProvide
                 ),
                 user_message=text[:30000],
                 max_tokens=1000,
+                db=ctx.db,
+                snapshot_context=_tool_snapshot_context(ctx, "summarize_url"),
             )
             return {
                 "success": True,

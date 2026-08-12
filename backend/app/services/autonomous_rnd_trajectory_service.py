@@ -115,11 +115,29 @@ class AutonomousRnDTrajectoryAdapter:
     def compact_action_ledger(
         self, actions_taken: Any, *, max_actions: int = 200
     ) -> List[Dict[str, Any]]:
-        """Project runtime actions without retaining params or raw tool output."""
+        """Project runtime actions without retaining params or raw tool output.
+
+        A long run is cut to the most recent ``max_actions``. The ledger says so
+        rather than dropping the earlier ones quietly: a truncated list reads as
+        the whole run, and the beginning is where a trajectory usually goes
+        wrong.
+        """
         if not isinstance(actions_taken, list) or max_actions <= 0:
             return []
 
+        omitted = max(0, len(actions_taken) - max_actions)
         compact: List[Dict[str, Any]] = []
+        if omitted:
+            compact.append(
+                {
+                    "tool": "__omitted__",
+                    "success": None,
+                    "note": (
+                        f"{omitted} earlier action(s) omitted; showing the most "
+                        f"recent {max_actions}"
+                    ),
+                }
+            )
         for raw_item in actions_taken[-max_actions:]:
             if not isinstance(raw_item, Mapping):
                 continue

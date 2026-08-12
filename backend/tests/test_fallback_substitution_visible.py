@@ -81,3 +81,37 @@ def test_a_substituted_row_is_distinguishable_from_a_real_success():
 
     assert substituted != genuine
     assert substituted.get("substituted") and not genuine.get("substituted")
+
+
+def test_ledger_says_when_it_dropped_earlier_actions():
+    """A truncated ledger reads as the whole run, and the beginning is where a
+    trajectory usually goes wrong."""
+    actions = [
+        {
+            "iteration": i,
+            "action": {"tool": f"tool_{i}"},
+            "result": {"success": True, "tool": f"tool_{i}"},
+        }
+        for i in range(10)
+    ]
+
+    ledger = adapter.compact_action_ledger(actions, max_actions=4)
+
+    assert ledger[0]["tool"] == "__omitted__"
+    assert "6 earlier action(s) omitted" in ledger[0]["note"]
+    assert [row["tool"] for row in ledger[1:]] == [
+        "tool_6",
+        "tool_7",
+        "tool_8",
+        "tool_9",
+    ]
+
+
+def test_ledger_adds_no_marker_when_nothing_was_dropped():
+    actions = [
+        {"iteration": 1, "action": {"tool": "t"}, "result": {"success": True}},
+    ]
+
+    ledger = adapter.compact_action_ledger(actions, max_actions=200)
+
+    assert all(row["tool"] != "__omitted__" for row in ledger)

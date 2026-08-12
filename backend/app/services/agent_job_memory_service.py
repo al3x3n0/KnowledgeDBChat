@@ -1321,6 +1321,12 @@ class AgentJobMemoryService:
             system_prompt="You are ranking memories by relevance.",
             user_id=user_id,
             user_settings=llm_settings,
+            db=db,
+            snapshot_context={
+                "job_id": str(getattr(job, "id", "") or "") or None,
+                "iteration": int(getattr(job, "iteration", 0) or 0),
+                "phase": "memory_ranking",
+            },
         )
 
         # Parse ranked IDs

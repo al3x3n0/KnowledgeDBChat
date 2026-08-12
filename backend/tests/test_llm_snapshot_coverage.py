@@ -20,6 +20,14 @@ IN_LOOP_MODULES = (
     "agent_context_compaction.py",
     "agent_native_tool_loop.py",
     "autonomous_agent_executor.py",
+    # Added after a run captured 12 of 15 real provider calls: these make LLM
+    # calls during a job too, and each unlisted module is a blind spot the
+    # export reports as a shortfall without saying where.
+    "agent_job_memory_service.py",
+    "agent_tool_dispatch.py",
+    "agent_runtime_finalizer.py",
+    "agent_action_service.py",
+    "agent_observation_service.py",
 )
 
 LLM_METHODS = {"generate_response", "generate_structured"}
@@ -40,6 +48,8 @@ def _llm_calls(path: pathlib.Path):
 @pytest.mark.parametrize("module", IN_LOOP_MODULES)
 def test_in_loop_llm_calls_pass_a_session_with_their_context(module):
     path = SERVICES / module
+    if not path.exists():
+        pytest.skip(f"{module} not present")
     offenders = [
         line
         for line, kwargs in _llm_calls(path)
@@ -56,6 +66,8 @@ def test_in_loop_llm_calls_pass_a_session_with_their_context(module):
 def test_in_loop_llm_calls_declare_their_context(module):
     """A call with a session but no context records an unattributable row."""
     path = SERVICES / module
+    if not path.exists():
+        pytest.skip(f"{module} not present")
     offenders = [
         line
         for line, kwargs in _llm_calls(path)
@@ -81,3 +93,26 @@ def test_the_critic_and_planning_passes_are_instrumented():
 
     for phase in ("critic", "execution_plan", "causal_plan"):
         assert f'"phase": "{phase}"' in executor, f"{phase} pass is not captured"
+
+
+@pytest.mark.parametrize("module", IN_LOOP_MODULES)
+def test_no_in_loop_llm_call_is_left_uninstrumented(module):
+    """Every in-loop call must be recordable, not merely consistent.
+
+    The two tests above pass when a call declares neither db nor
+    snapshot_context, which is exactly the state that leaves a run's export
+    short of the calls it actually made.
+    """
+    path = SERVICES / module
+    if not path.exists():
+        pytest.skip(f"{module} not present")
+
+    offenders = [
+        line
+        for line, kwargs in _llm_calls(path)
+        if "snapshot_context" not in kwargs and "db" not in kwargs
+    ]
+
+    assert not offenders, (
+        f"{module} lines {offenders} make an LLM call that cannot be captured"
+    )

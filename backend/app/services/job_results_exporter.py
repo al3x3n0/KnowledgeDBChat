@@ -5,6 +5,7 @@ Converts autonomous agent job results into documents (DOCX/PDF) or presentations
 Supports optional LLM-enhanced content generation for executive summaries and insights.
 """
 
+import re
 from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from uuid import UUID
@@ -88,6 +89,30 @@ Finding:
 {finding_text}
 
 Write the bullet points:"""
+
+
+# The LLM answers in markdown by default, and the DOCX/PDF/PPTX builders render
+# text literally, so "**Executive Summary**" reached the page with its asterisks
+# intact. Strip the emphasis rather than teach three builders to parse markdown.
+_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+# Only asterisks. Underscores are markdown italics too, but stripping them
+# mangles snake_case: integer_sum_reduction_O3 came out as
+# integersumreduction_O3, silently renaming the labels findings are
+# identified by.
+_MD_BOLD_ITALIC = re.compile(r"(\*{1,3})(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
+_MD_STRAY_MARKS = re.compile(r"(?<![\w*])\*{1,3}(?![\w*])")
+_MD_BULLET = re.compile(r"^\s{0,3}[-*+]\s+", re.MULTILINE)
+
+
+def markdown_to_plain(text: Any) -> str:
+    """Render model markdown as plain prose for a document builder."""
+    out = str(text or "")
+    out = _MD_HEADING.sub("", out)
+    out = _MD_BOLD_ITALIC.sub(r"\2", out)
+    out = _MD_STRAY_MARKS.sub("", out)
+    out = _MD_BULLET.sub("", out)
+    out = out.replace("`", "")
+    return out.strip()
 
 
 def _conclusion_content(job: Any) -> list:
@@ -511,7 +536,7 @@ class JobResultsExporter:
         content.append({"type": "heading", "level": 1, "text": "Executive Summary"})
         if enhanced.get("executive_summary"):
             # Split into paragraphs
-            for para in enhanced["executive_summary"].split("\n\n"):
+            for para in markdown_to_plain(enhanced["executive_summary"]).split("\n\n"):
                 if para.strip():
                     content.append({"type": "paragraph", "text": para.strip()})
         else:
@@ -534,7 +559,7 @@ class JobResultsExporter:
         if enhanced.get("key_insights"):
             content.append({"type": "heading", "level": 1, "text": "Key Insights"})
             # Parse insights into bullet points
-            insights_text = enhanced["key_insights"]
+            insights_text = markdown_to_plain(enhanced["key_insights"])
             # Try to extract numbered items
             insight_items = self._parse_numbered_list(insights_text)
             if insight_items:
@@ -781,7 +806,13 @@ class JobResultsExporter:
                     if isinstance(finding, dict):
                         if finding.get("title"):
                             content.append(
-                                {"type": "paragraph", "text": f"**{finding['title']}**"}
+                                {
+                                    "type": "paragraph",
+                                    # The builders render text literally, so
+                                    # markdown emphasis here reached the page
+                                    # as asterisks around every finding title.
+                                    "text": markdown_to_plain(finding["title"]),
+                                }
                             )
                         if finding.get("summary") or finding.get("description"):
                             content.append(
@@ -805,12 +836,17 @@ class JobResultsExporter:
         if enhanced.get("recommendations"):
             content.append({"type": "page_break"})
             content.append({"type": "heading", "level": 1, "text": "Recommendations"})
-            rec_items = self._parse_numbered_list(enhanced["recommendations"])
+            rec_items = self._parse_numbered_list(
+                markdown_to_plain(enhanced["recommendations"])
+            )
             if rec_items:
                 content.append({"type": "numbered_list", "items": rec_items})
             else:
                 content.append(
-                    {"type": "paragraph", "text": enhanced["recommendations"]}
+                    {
+                        "type": "paragraph",
+                        "text": markdown_to_plain(enhanced["recommendations"]),
+                    }
                 )
 
         # Output artifacts
@@ -902,7 +938,7 @@ class JobResultsExporter:
         if enhanced.get("executive_summary"):
             # Split into bullet points
             summary_points = self._split_into_bullets(
-                enhanced["executive_summary"], max_points=5
+                markdown_to_plain(enhanced["executive_summary"]), max_points=5
             )
             slides.append(
                 SlideContent(
@@ -1633,7 +1669,13 @@ class JobResultsExporter:
                     if isinstance(finding, dict):
                         if finding.get("title"):
                             content.append(
-                                {"type": "paragraph", "text": f"**{finding['title']}**"}
+                                {
+                                    "type": "paragraph",
+                                    # The builders render text literally, so
+                                    # markdown emphasis here reached the page
+                                    # as asterisks around every finding title.
+                                    "text": markdown_to_plain(finding["title"]),
+                                }
                             )
                         if finding.get("summary") or finding.get("description"):
                             content.append(

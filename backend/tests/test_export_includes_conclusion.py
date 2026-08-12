@@ -116,3 +116,50 @@ def test_a_deck_for_an_unanswered_run_says_so():
     slide = next(s for s in outline.slides if s.title == "Conclusion")
 
     assert any("did not reach a conclusion" in str(c) for c in slide.content)
+
+
+@pytest.mark.parametrize(
+    "raw,expected",
+    [
+        ("**Executive Summary**", "Executive Summary"),
+        ("*1. Float reduction fails*", "1. Float reduction fails"),
+        ("### Heading", "Heading"),
+        ("- bullet point", "bullet point"),
+        ("use `-ffast-math` here", "use -ffast-math here"),
+        ("**bold** and *italic* mixed", "bold and italic mixed"),
+        ("A * B multiplied", "A  B multiplied"),
+        ("", ""),
+        (None, ""),
+    ],
+)
+def test_model_markdown_is_rendered_as_plain_prose(raw, expected):
+    """The builders render text literally, so markdown reached the page with
+    its asterisks intact."""
+    from app.services.job_results_exporter import markdown_to_plain
+
+    assert markdown_to_plain(raw) == expected
+
+
+def test_multiline_markdown_keeps_its_paragraphs():
+    from app.services.job_results_exporter import markdown_to_plain
+
+    out = markdown_to_plain("**First para**\n\nSecond *para*")
+
+    assert out == "First para\n\nSecond para"
+
+
+@pytest.mark.parametrize(
+    "raw",
+    [
+        "integer_sum_reduction_O3 @ clang -O3",
+        "float_sum_reduction_O3_fastmath",
+        "a_b_c_d_e",
+        "__dunder__",
+    ],
+)
+def test_snake_case_identifiers_survive_intact(raw):
+    """Underscores are markdown italics, and stripping them silently renamed
+    every labelled finding in the report."""
+    from app.services.job_results_exporter import markdown_to_plain
+
+    assert markdown_to_plain(raw) == raw

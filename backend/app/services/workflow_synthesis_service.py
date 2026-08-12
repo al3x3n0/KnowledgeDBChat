@@ -618,6 +618,22 @@ class WorkflowSynthesisService:
             )
             warnings.append("Added missing start node.")
 
+        # A workflow of start -> end does nothing. That state used to be
+        # returned as a success carrying "Added missing start node.", which
+        # reads as a tidy-up rather than as the model having produced no steps,
+        # so an empty workflow was saved and exposed as a runnable tool.
+        work_nodes = [
+            node
+            for node in nodes
+            if str(node.get("node_type") or "").strip().lower() not in {"start", "end"}
+        ]
+        if not work_nodes:
+            warnings.append(
+                "SYNTHESIS PRODUCED NO STEPS: the model returned no usable tool "
+                "nodes, so this workflow would do nothing. Retry with a more "
+                "specific description, or name the tools to use."
+            )
+
         if not has_end:
             end_id = "end"
             if end_id in node_ids:

@@ -15,7 +15,7 @@ conversation there is a fact about the run rather than missing data. The
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List
+from typing import Any, Dict, Iterable, List, Optional
 
 # Prompts and replies are unbounded; a transcript is for reading, not replay.
 MAX_TEXT_CHARS = 20000
@@ -32,19 +32,34 @@ def _clip(value: Any, limit: int) -> str:
     return text if len(text) <= limit else text[:limit] + "…[truncated]"
 
 
-def _shrink(value: Any, budget: int) -> Any:
-    """Shrink a result to fit without breaking its structure.
+MAX_LIST_ITEMS = 20
+
+
+def _shrink(value: Any, budget: int, stats: Optional[Dict[str, int]] = None) -> Any:
+    """Shrink a result to fit without breaking its structure or hiding the cut.
 
     Truncating serialized JSON leaves a string that no longer parses, so a
     reader analysing the export sees a compiled snippet's codegen counts as
-    absent rather than large. Shorten the long leaves instead and keep the
-    shape intact.
+    absent rather than large. Shorten the long leaves instead, keep the shape
+    intact, and say where something was dropped: a silently shortened list
+    reads as the whole list.
     """
+
+    def _count(key: str) -> None:
+        if stats is not None:
+            stats[key] = stats.get(key, 0) + 1
+
     if isinstance(value, dict):
-        return {key: _shrink(item, budget) for key, item in value.items()}
+        return {key: _shrink(item, budget, stats) for key, item in value.items()}
     if isinstance(value, list):
-        return [_shrink(item, budget) for item in value[:20]]
+        kept = [_shrink(item, budget, stats) for item in value[:MAX_LIST_ITEMS]]
+        dropped = len(value) - len(kept)
+        if dropped > 0:
+            _count("lists_shortened")
+            kept.append(f"…[{dropped} more items omitted]")
+        return kept
     if isinstance(value, str) and len(value) > budget:
+        _count("strings_shortened")
         return value[:budget] + f"…[{len(value) - budget} more chars]"
     return value
 
@@ -61,23 +76,38 @@ def _action_key(action: Dict[str, Any]) -> str:
     )[:400]
 
 
-def build_actions(checkpoints: Iterable[Any]) -> List[Dict[str, Any]]:
+def build_actions(
+    checkpoints: Iterable[Any],
+    stats_out: Optional[Dict[str, int]] = None,
+) -> List[Dict[str, Any]]:
     """Flatten checkpoint state into one ordered, de-duplicated action list.
 
     Checkpoints carry the whole accumulated state, so the same action appears in
     every later checkpoint.
+
+    Pass ``stats_out`` to learn what was dropped on the way. Without it a reader
+    cannot tell a run that took three actions from one whose entries were
+    discarded as malformed.
     """
+    stats: Dict[str, int] = stats_out if stats_out is not None else {}
     actions: List[Dict[str, Any]] = []
     seen: set[str] = set()
+
+    def _count(key: str) -> None:
+        stats[key] = stats.get(key, 0) + 1
+
     for checkpoint in checkpoints:
         state = _as_dict(getattr(checkpoint, "state", None))
         for entry in state.get("actions_taken") or []:
+            _count("entries_seen")
             entry = _as_dict(entry)
             action = _as_dict(entry.get("action"))
             if not action:
+                _count("entries_skipped_no_action")
                 continue
             key = _action_key(action)
             if key in seen:
+                _count("entries_deduplicated")
                 continue
             seen.add(key)
             result = _as_dict(entry.get("result"))
@@ -89,7 +119,7 @@ def build_actions(checkpoints: Iterable[Any]) -> List[Dict[str, Any]]:
                 "params": action.get("params"),
                 "success": result.get("success", result.get("ok")),
                 "error": result.get("error"),
-                "result": _shrink(result, MAX_RESULT_LEAF_CHARS),
+                "result": _shrink(result, MAX_RESULT_LEAF_CHARS, stats),
             }
             # Say when a different tool actually ran. A successful fallback
             # rewrites the result to success, so without this a reader sees the
@@ -175,7 +205,8 @@ def build_job_transcript(
     """Assemble the full transcript payload for one job."""
     checkpoints = list(checkpoints)
     snapshots = list(snapshots)
-    actions = build_actions(checkpoints)
+    build_stats: Dict[str, int] = {}
+    actions = build_actions(checkpoints, build_stats)
     llm_calls_used = int(getattr(job, "llm_calls_used", 0) or 0)
 
     if llm_calls_used == 0:
@@ -204,6 +235,25 @@ def build_job_transcript(
             "availability": availability,
             "include_prompts": bool(include_prompts),
             "calls": build_conversation(snapshots, include_prompts=include_prompts),
+        },
+        # What this transcript does not contain. A diagnostic that quietly drops
+        # data reads as evidence that there was none: reading an export whose
+        # long results had been cut, I concluded a tool had measured nothing
+        # when it had measured a great deal.
+        "completeness": {
+            "actions_listed": len(actions),
+            "action_entries_seen": build_stats.get("entries_seen", 0),
+            "action_entries_deduplicated": build_stats.get("entries_deduplicated", 0),
+            "action_entries_skipped_no_action": build_stats.get(
+                "entries_skipped_no_action", 0
+            ),
+            "results_with_shortened_text": build_stats.get("strings_shortened", 0),
+            "results_with_shortened_lists": build_stats.get("lists_shortened", 0),
+            "llm_calls_reported_by_job": llm_calls_used,
+            "llm_calls_captured": len(snapshots),
+            "llm_calls_not_captured": max(0, llm_calls_used - len(snapshots)),
+            "prompts_included": bool(include_prompts),
+            "checkpoints_read": len(checkpoints),
         },
         "results": getattr(job, "results", None),
     }

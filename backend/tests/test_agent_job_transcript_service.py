@@ -226,3 +226,72 @@ def test_an_error_is_surfaced_without_digging_into_the_result():
     action = build_actions([_checkpoint({"actions_taken": [entry]})])[0]
 
     assert action["error"] == "Compilation failed"
+
+
+def test_transcript_states_what_it_left_out():
+    """A diagnostic that drops data quietly reads as evidence there was none."""
+    entries = [
+        {
+            "iteration": 1,
+            "action": {"tool": "compile_c_snippet", "_idempotency_key": "k1"},
+            "result": {"success": True, "data": {"output": "x" * 50000}},
+        },
+        # the same action, as every later checkpoint repeats it
+        {
+            "iteration": 1,
+            "action": {"tool": "compile_c_snippet", "_idempotency_key": "k1"},
+            "result": {"success": True},
+        },
+        {"iteration": 1, "result": {"success": True}},  # no action at all
+    ]
+
+    transcript = build_job_transcript(
+        _job(llm_calls_used=9),
+        [_checkpoint({"actions_taken": entries})],
+        [_snapshot(), _snapshot()],
+    )
+
+    c = transcript["completeness"]
+    assert c["actions_listed"] == 1
+    assert c["action_entries_seen"] == 3
+    assert c["action_entries_deduplicated"] == 1
+    assert c["action_entries_skipped_no_action"] == 1
+    assert c["results_with_shortened_text"] >= 1
+    # The gap a reader would otherwise have to work out, and that I twice
+    # eyeballed wrongly.
+    assert c["llm_calls_reported_by_job"] == 9
+    assert c["llm_calls_captured"] == 2
+    assert c["llm_calls_not_captured"] == 7
+
+
+def test_a_shortened_list_says_so():
+    entry = {
+        "iteration": 1,
+        "action": {"tool": "search_documents", "_idempotency_key": "k9"},
+        "result": {"success": True, "findings": [{"n": i} for i in range(50)]},
+    }
+
+    action = build_actions([_checkpoint({"actions_taken": [entry]})])[0]
+    findings = action["result"]["findings"]
+
+    assert len(findings) == 21  # 20 kept plus the marker
+    assert "30 more items omitted" in findings[-1]
+
+
+def test_a_complete_transcript_reports_nothing_missing():
+    entry = {
+        "iteration": 1,
+        "action": {"tool": "search_documents", "_idempotency_key": "k1"},
+        "result": {"success": True, "findings": []},
+    }
+
+    transcript = build_job_transcript(
+        _job(llm_calls_used=1),
+        [_checkpoint({"actions_taken": [entry]})],
+        [_snapshot()],
+    )
+
+    c = transcript["completeness"]
+    assert c["llm_calls_not_captured"] == 0
+    assert c["action_entries_skipped_no_action"] == 0
+    assert c["results_with_shortened_text"] == 0

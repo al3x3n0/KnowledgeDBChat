@@ -107,6 +107,27 @@ def _docker_command(
     ]
 
 
+def describe_subject(code: str, label: str = "") -> str:
+    """Name what was compiled, for the finding this run will record.
+
+    A measurement that does not say what it measured cannot be compared with
+    another. An agent surveying five kernels got back five findings all reading
+    "clang -O3: N vector ops", could not map them to its kernels, and spent its
+    remaining iterations measuring them again.
+    """
+    explicit = (label or "").strip()
+    if explicit:
+        return explicit[:80]
+    # Fall back to the function names the snippet defines.
+    names = re.findall(
+        r"^\s*(?:static\s+|inline\s+)*[A-Za-z_][\w\s\*]*?([A-Za-z_]\w*)\s*\([^;{]*\)\s*\{",
+        code or "",
+        re.MULTILINE,
+    )
+    unique = list(dict.fromkeys(names))
+    return ", ".join(unique[:3]) if unique else "unnamed snippet"
+
+
 def count_codegen(assembly: str) -> Dict[str, int]:
     """Summarize what the compiler emitted, so timings can be trusted or not."""
     return {
@@ -168,6 +189,7 @@ async def compile_c_snippet(
     code: str,
     flags: str = "-O2",
     emit: str = "asm",
+    label: str = "",
     image: str = DEFAULT_IMAGE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
@@ -217,9 +239,11 @@ async def compile_c_snippet(
         }
 
     codegen = count_codegen(stdout)
+    subject = describe_subject(code, label)
     return {
         "success": True,
         "data": {
+            "subject": subject,
             "flags": flags,
             "emit": emit,
             "output": stdout[:MAX_OUTPUT_CHARS],
@@ -233,8 +257,14 @@ async def compile_c_snippet(
         "findings": [
             {
                 "type": "codegen_measurement",
-                "title": f"clang {flags}: {codegen['vector_ops']} vector ops, "
-                f"{codegen['conditional_branches']} conditional branches",
+                # Name the subject first: an unlabelled measurement cannot be
+                # compared with the next one.
+                "title": (
+                    f"{subject} @ clang {flags}: "
+                    f"{codegen['vector_ops']} vector ops, "
+                    f"{codegen['conditional_branches']} conditional branches"
+                ),
+                "subject": subject,
                 "flags": flags,
                 "codegen": codegen,
             }
@@ -247,6 +277,7 @@ async def benchmark_c_snippet(
     code: str,
     flags: str = "-O2",
     repeat: int = 3,
+    label: str = "",
     image: str = DEFAULT_IMAGE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
@@ -335,11 +366,13 @@ async def benchmark_c_snippet(
         "findings": [
             {
                 "type": "benchmark_measurement",
+                "subject": describe_subject(code, label),
                 "title": (
-                    f"clang {flags}: fastest {min(timings)} ms of {len(timings)} "
-                    "trials"
+                    f"{describe_subject(code, label)} @ clang {flags}: fastest "
+                    f"{min(timings)} ms of {len(timings)} trials"
                     if timings
-                    else f"clang {flags}: ran with no timing recorded"
+                    else f"{describe_subject(code, label)} @ clang {flags}: "
+                    "ran with no timing recorded"
                 ),
                 "flags": flags,
                 "fastest_ms": min(timings) if timings else None,

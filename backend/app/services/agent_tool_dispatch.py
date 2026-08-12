@@ -3922,6 +3922,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             code=str(params.get("code") or ""),
             flags=str(params.get("flags") or "-O2"),
             emit=str(params.get("emit") or "asm"),
+            label=str(params.get("label") or ""),
         )
 
     async def _benchmark_c_snippet(
@@ -3933,6 +3934,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             code=str(params.get("code") or ""),
             flags=str(params.get("flags") or "-O2"),
             repeat=int(params.get("repeat") or 3),
+            label=str(params.get("label") or ""),
         )
 
     return FunctionToolProvider(

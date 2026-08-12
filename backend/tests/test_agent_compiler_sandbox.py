@@ -184,3 +184,41 @@ async def test_benchmark_reports_a_finding_too(enabled, monkeypatch):
     result = await sandbox.benchmark_c_snippet(code="int main(){}", repeat=2)
 
     assert result["findings"][0]["fastest_ms"] == 37
+
+
+def test_subject_prefers_an_explicit_label():
+    assert sandbox.describe_subject(
+        "int f(void){return 0;}", "float sum reduction"
+    ) == ("float sum reduction")
+
+
+def test_subject_falls_back_to_function_names():
+    code = "int int_sum(int *a,int n){return 0;}\nfloat float_sum(float *a){return 0;}"
+
+    assert sandbox.describe_subject(code) == "int_sum, float_sum"
+
+
+def test_subject_is_never_empty():
+    assert sandbox.describe_subject("", "") == "unnamed snippet"
+    assert sandbox.describe_subject("/* just a comment */") == "unnamed snippet"
+
+
+@pytest.mark.asyncio
+async def test_a_measurement_names_what_it_measured(enabled, monkeypatch):
+    """Five findings all reading "clang -O3: N vector ops" could not be mapped
+    back to the kernels that produced them."""
+
+    async def _fake_run(script, workdir, *, image, timeout_seconds):
+        return 0, "  uaddw v0.2d, v0.2d, v2.2s\n", ""
+
+    monkeypatch.setattr(sandbox, "_run", _fake_run)
+
+    result = await sandbox.compile_c_snippet(
+        code="float float_sum(float *a,int n){return 0;}",
+        flags="-O3",
+        label="float sum reduction",
+    )
+
+    finding = result["findings"][0]
+    assert finding["subject"] == "float sum reduction"
+    assert finding["title"].startswith("float sum reduction @ clang -O3")

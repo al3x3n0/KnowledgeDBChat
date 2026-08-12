@@ -2728,6 +2728,14 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                     "type": "string",
                     "description": "'asm' (default) returns assembly, 'ir' returns LLVM IR",
                 },
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "Short name for what this snippet is, e.g. 'float sum "
+                        "reduction'. Recorded with the measurement; without it "
+                        "several measurements cannot be told apart afterwards."
+                    ),
+                },
             },
             "required": ["code"],
         },
@@ -2752,6 +2760,14 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                 "repeat": {
                     "type": "integer",
                     "description": "Trials to run, 1-10 (default 3); the fastest is reported",
+                },
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "Short name for what this snippet is, e.g. 'float sum "
+                        "reduction'. Recorded with the measurement; without it "
+                        "several measurements cannot be told apart afterwards."
+                    ),
                 },
             },
             "required": ["code"],

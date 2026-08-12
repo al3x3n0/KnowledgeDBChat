@@ -306,3 +306,51 @@ async def test_finalize_job_triggers_chain_after_memory_extraction_expires_job(
     assert job in db.refreshed
     assert executor.trigger_calls == ["complete"]
     assert result["status"] == AgentJobStatus.COMPLETED.value
+
+
+@pytest.mark.asyncio
+async def test_a_failing_conclusion_does_not_cost_the_job_its_chain(monkeypatch):
+    """The same shape as the memory-extraction bug: an optional step that
+    raises inside finalization would skip the chain trigger after it."""
+    monkeypatch.setattr(
+        agent_runtime_finalizer.agent_job_memory_service,
+        "extract_memories_from_job",
+        AsyncMock(return_value=[]),
+    )
+
+    async def _exploding_conclusion(*args, **kwargs):
+        raise RuntimeError("synthesis blew up")
+
+    monkeypatch.setattr(
+        agent_runtime_finalizer, "synthesize_conclusion", _exploding_conclusion
+    )
+
+    executor = _DummyExecutor()
+    job = _DummyJob(status="running")
+    state = {
+        "goal_progress": 100,
+        "findings": [{"type": "codegen_measurement", "title": "kernel @ -O3"}],
+        "actions_taken": [],
+        "artifacts": [],
+        "execution_plan": [],
+        "step_events": [],
+        "tool_stats": {},
+        "tool_priors": {},
+        "execution_graph_nodes": [],
+        "execution_graph_edges": [],
+        "scope_events": [],
+        "scope_guard_events": [],
+        "skill_profile": {},
+        "skill_profile_metrics": {},
+        "memory_runtime": {},
+        "memory_extraction_policy": {"extract_on_statuses": []},
+        "memory_extraction": {},
+        "injected_memories": [],
+    }
+
+    result = await finalize_job(executor, job, state, _DummyDb())
+
+    assert result["status"] == AgentJobStatus.COMPLETED.value
+    assert executor.trigger_calls == ["complete"], "the chain must still fire"
+    assert job.results["conclusion"]["generated_by"] == "error"
+    assert "synthesis blew up" in job.results["conclusion"]["gaps"][0]

@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.agent_job_memory_service import agent_job_memory_service
+from app.services.agent_run_synthesis_service import synthesize_conclusion
 from app.services.autonomous_rnd_trajectory_service import (
     autonomous_rnd_trajectory_adapter,
 )
@@ -561,18 +562,52 @@ async def finalize_job(
         ]
         created_doc_ids = [x for x in created_doc_ids if x]
 
+        # Findings this summary has no named bucket for. Counting only
+        # documents, papers and insights meant a compiler experiment that
+        # recorded nine measurements summarised itself as having found
+        # nothing, because none of them were documents.
+        counted_ids = {
+            id(f) for f in (*doc_findings, *paper_findings, *insight_findings)
+        }
+        other_by_type: dict[str, int] = {}
+        other_titles: list[str] = []
+        for finding in findings:
+            if not isinstance(finding, dict) or id(finding) in counted_ids:
+                continue
+            kind = _as_str(finding.get("type") or "finding") or "finding"
+            other_by_type[kind] = other_by_type.get(kind, 0) + 1
+            title = _as_str(finding.get("title"))
+            if title and len(other_titles) < 8:
+                other_titles.append(title)
+
         job.results["research"] = {
             "documents_found": len(doc_findings),
             "papers_found": len(paper_findings),
             "insights_saved": len(insight_findings),
+            "other_findings": sum(other_by_type.values()),
+            "other_findings_by_type": other_by_type,
             "top_documents": doc_titles,
             "top_papers": paper_titles,
             "top_insights": insight_titles,
+            "top_other_findings": other_titles,
             "created_documents": created_doc_ids[:10],
         }
+
+        parts: list[str] = []
+        if doc_findings:
+            parts.append(f"{len(doc_findings)} KB docs")
+        if paper_findings:
+            parts.append(f"{len(paper_findings)} papers")
+        if insight_findings:
+            parts.append(f"{len(insight_findings)} saved insights")
+        parts.extend(
+            f"{count} {kind.replace('_', ' ')}"
+            for kind, count in sorted(other_by_type.items())
+        )
         job.results["summary"] = (
-            f"Research run completed: {len(doc_findings)} KB docs, {len(paper_findings)} papers, "
-            f"{len(insight_findings)} saved insights."
+            "Research run completed: " + ", ".join(parts) + "."
+            if parts
+            else "Research run completed: no findings were recorded."
         )
 
         # Standardized schema for downstream UX/workflows.
@@ -1069,6 +1104,33 @@ async def finalize_job(
     job.results["evaluation_outcome"] = autonomous_rnd_trajectory_adapter.build_outcome(
         job
     )
+
+    # State what the run concluded, not only what it collected. The digest
+    # above lists finding titles; a reader still has to work out what they
+    # mean, which is how a run that measured nine kernels ended as a table
+    # with no answer. Best-effort by construction: synthesize_conclusion never
+    # raises, because an optional summary that aborts finalization would also
+    # skip the chain trigger that follows it.
+    conclusion_enabled = (job.config or {}).get("run_conclusion_enabled")
+    if conclusion_enabled is None:
+        conclusion_enabled = True
+    if conclusion_enabled and job.status != AgentJobStatus.PAUSED.value:
+        # synthesize_conclusion swallows its own errors, and this guards the
+        # call site as well: an optional summary must not be able to abort
+        # finalization, because the chain trigger comes after it.
+        try:
+            job.results["conclusion"] = await synthesize_conclusion(
+                executor, job, state, db
+            )
+        except Exception as exc:
+            logger.warning(f"Conclusion step failed for job {job.id}: {exc}")
+            job.results["conclusion"] = {
+                "answer": None,
+                "confidence": "low",
+                "evidence": [],
+                "gaps": [f"Conclusion step failed: {str(exc)[:200]}"],
+                "generated_by": "error",
+            }
 
     # Persist tool-learning signal for future jobs.
     try:

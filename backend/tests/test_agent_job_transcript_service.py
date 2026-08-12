@@ -191,3 +191,38 @@ def test_transcript_carries_job_identity_and_results():
     assert transcript["job"]["name"] == "Test Job"
     assert transcript["job"]["goal"] == "Do the thing"
     assert transcript["results"] == {"ok": True}
+
+
+def test_a_large_result_stays_parseable():
+    """Clipping the serialized JSON produced a string that no longer parsed, so
+    an analysis of the export read a compiled snippet's codegen counts as
+    absent rather than large."""
+    entry = {
+        "iteration": 1,
+        "action": {"tool": "compile_c_snippet", "_idempotency_key": "k1"},
+        "result": {
+            "success": True,
+            "data": {
+                "output": "x" * 50000,  # assembly listings are big
+                "codegen": {"vector_ops": 17, "conditional_branches": 3},
+            },
+        },
+    }
+
+    action = build_actions([_checkpoint({"actions_taken": [entry]})])[0]
+
+    assert isinstance(action["result"], dict)
+    assert action["result"]["data"]["codegen"]["vector_ops"] == 17
+    assert len(action["result"]["data"]["output"]) < 50000
+
+
+def test_an_error_is_surfaced_without_digging_into_the_result():
+    entry = {
+        "iteration": 1,
+        "action": {"tool": "compile_c_snippet", "_idempotency_key": "k2"},
+        "result": {"success": False, "error": "Compilation failed"},
+    }
+
+    action = build_actions([_checkpoint({"actions_taken": [entry]})])[0]
+
+    assert action["error"] == "Compilation failed"

@@ -19,7 +19,7 @@ from typing import Any, Dict, Iterable, List
 
 # Prompts and replies are unbounded; a transcript is for reading, not replay.
 MAX_TEXT_CHARS = 20000
-MAX_RESULT_CHARS = 4000
+MAX_RESULT_LEAF_CHARS = 2000
 
 
 def _as_dict(value: Any) -> Dict[str, Any]:
@@ -30,6 +30,23 @@ def _clip(value: Any, limit: int) -> str:
     text = value if isinstance(value, str) else json.dumps(value, default=str)
     text = text or ""
     return text if len(text) <= limit else text[:limit] + "…[truncated]"
+
+
+def _shrink(value: Any, budget: int) -> Any:
+    """Shrink a result to fit without breaking its structure.
+
+    Truncating serialized JSON leaves a string that no longer parses, so a
+    reader analysing the export sees a compiled snippet's codegen counts as
+    absent rather than large. Shorten the long leaves instead and keep the
+    shape intact.
+    """
+    if isinstance(value, dict):
+        return {key: _shrink(item, budget) for key, item in value.items()}
+    if isinstance(value, list):
+        return [_shrink(item, budget) for item in value[:20]]
+    if isinstance(value, str) and len(value) > budget:
+        return value[:budget] + f"…[{len(value) - budget} more chars]"
+    return value
 
 
 def _action_key(action: Dict[str, Any]) -> str:
@@ -71,7 +88,8 @@ def build_actions(checkpoints: Iterable[Any]) -> List[Dict[str, Any]]:
                 "reason": action.get("purpose"),
                 "params": action.get("params"),
                 "success": result.get("success", result.get("ok")),
-                "result": _clip(result, MAX_RESULT_CHARS),
+                "error": result.get("error"),
+                "result": _shrink(result, MAX_RESULT_LEAF_CHARS),
             }
             # Say when a different tool actually ran. A successful fallback
             # rewrites the result to success, so without this a reader sees the

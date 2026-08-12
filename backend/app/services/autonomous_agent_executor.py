@@ -151,7 +151,12 @@ def _tool_requires_params(tool_name: str) -> bool:
 AUTO_SUBGOAL_CHILD_MAX_DEPTH = 3
 
 # Centralized tool fallback policies keyed by job type.
-# Used when a requested tool is unknown/unimplemented or fails with an error.
+#
+# These name an alternative for a tool that failed. Substitution is OFF by
+# default (job.config.tool_fallback_enabled), because running the alternative
+# and reporting success under the requested tool's name hides that the
+# requested tool is broken. With it off these are used only to suggest an
+# alternative back to the agent, which decides whether to take it.
 # Per-job overrides can be provided via job.config.tool_fallback_map.
 _TOOL_FALLBACK_POLICIES: Dict[str, Dict[str, Dict[str, str]]] = {
     "_default": {

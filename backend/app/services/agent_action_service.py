@@ -166,7 +166,23 @@ class AgentActionService:
         cfg = job.config if isinstance(job.config, dict) else {}
         fallback_enabled = cfg.get("tool_fallback_enabled")
         if fallback_enabled is None:
-            fallback_enabled = True
+            # Off by default. Running a different tool and reporting success
+            # under the requested tool's name turns "this tool is broken" into
+            # "the agent got an answer": a broken arXiv search became a
+            # knowledge-base search whose unrelated documents were recorded as
+            # research findings. A failing tool now reports its failure, and
+            # the agent chooses what to do with it.
+            fallback_enabled = False
+
+        if not fallback_enabled and not result.get("success") and result.get("error"):
+            # Name an alternative without running it, so recovery stays the
+            # agent's decision and appears in its trajectory.
+            suggestion = self._fallback_action_for(
+                executor, job, tool_name=str(tool_name or "").strip(), params=params
+            )
+            suggested_tool = str((suggestion or {}).get("tool") or "").strip()
+            if suggested_tool and suggested_tool != tool_name:
+                result["suggested_alternative_tool"] = suggested_tool
 
         if fallback_enabled and not result.get("success") and result.get("error"):
             depth = 0

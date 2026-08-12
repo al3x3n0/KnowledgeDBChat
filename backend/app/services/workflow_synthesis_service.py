@@ -40,6 +40,21 @@ class SynthesisBundle:
     workflow_tool: Optional[Dict[str, Any]]
 
 
+MAX_SYNTHESIS_ATTEMPTS = 2
+
+RETRY_SUFFIX_NO_STEPS = (
+    "\n\nYour previous answer contained no tool nodes, so the workflow would "
+    "do nothing. Return the same JSON shape with at least one node of "
+    'node_type "tool" whose builtin_tool names a tool from the builtin list '
+    "above, plus the start and end nodes and the edges connecting them."
+)
+
+RETRY_SUFFIX_INVALID_JSON = (
+    "\n\nYour previous answer was not valid JSON. Return a single JSON object "
+    "and nothing else: no markdown, no code fences, no commentary."
+)
+
+
 class WorkflowSynthesisService:
     """Synthesize workflow definitions from descriptions."""
 
@@ -66,6 +81,14 @@ class WorkflowSynthesisService:
             workflow_tool_name=None,
         )
         return bundle.workflow, bundle.warnings
+
+    @staticmethod
+    def _has_work_nodes(normalized: Dict[str, Any]) -> bool:
+        """Whether the draft does anything beyond starting and stopping."""
+        return any(
+            str(node.get("node_type") or "").strip().lower() not in {"start", "end"}
+            for node in (normalized.get("nodes") or [])
+        )
 
     async def synthesize_bundle(
         self,
@@ -96,30 +119,72 @@ class WorkflowSynthesisService:
         llm_service = LLMService()
         user_settings = await self._load_user_settings(db, user_id)
 
-        response_text = await llm_service.generate_response(
-            query=prompt,
-            user_settings=user_settings,
-            task_type="workflow_synthesis",
-        )
+        # The model answers this prompt well most of the time and occasionally
+        # returns no steps at all, which normalizes to a start -> end workflow
+        # that does nothing. Ask again once, telling it what was wrong, rather
+        # than persisting an empty workflow and exposing it as a tool.
+        normalized: Dict[str, Any] = {}
+        warnings: List[str] = []
+        attempt_prompt = prompt
+        last_error: Optional[str] = None
 
-        try:
-            raw_data = self._extract_json(response_text)
-        except Exception as exc:
-            logger.error(f"Workflow synthesis JSON parse failed: {exc}")
-            raise ValueError("LLM response did not contain valid JSON") from exc
+        for attempt in range(1, MAX_SYNTHESIS_ATTEMPTS + 1):
+            response_text = await llm_service.generate_response(
+                query=attempt_prompt,
+                user_settings=user_settings,
+                task_type="workflow_synthesis",
+                db=db,
+                snapshot_context={
+                    "phase": "workflow_synthesis",
+                    "iteration": attempt,
+                },
+            )
 
-        normalized, warnings = self._normalize_workflow(
-            raw_data,
-            catalog,
-            fallback_name=name,
-            fallback_description=description,
-            fallback_trigger=trigger_config,
-            fallback_is_active=is_active,
-            synthesize_custom_tools=synthesize_custom_tools,
-            preferred_tool_type=preferred_tool_type,
-            expose_workflow_as_tool=expose_workflow_as_tool,
-            workflow_tool_name=workflow_tool_name,
-        )
+            # The snapshot recorder only adds its row to this session; the
+            # agent loop happens to commit later, but a synthesis request
+            # writes nothing else, so without this the diagnostics for the
+            # call that just ran are discarded when the session closes.
+            try:
+                await db.commit()
+            except Exception:  # pragma: no cover - diagnostics only
+                pass
+
+            try:
+                raw_data = self._extract_json(response_text)
+            except Exception as exc:
+                last_error = f"response did not contain valid JSON: {exc}"
+                logger.warning(
+                    f"Workflow synthesis attempt {attempt} failed: {last_error}"
+                )
+                attempt_prompt = prompt + RETRY_SUFFIX_INVALID_JSON
+                continue
+
+            normalized, warnings = self._normalize_workflow(
+                raw_data,
+                catalog,
+                fallback_name=name,
+                fallback_description=description,
+                fallback_trigger=trigger_config,
+                fallback_is_active=is_active,
+                synthesize_custom_tools=synthesize_custom_tools,
+                preferred_tool_type=preferred_tool_type,
+                expose_workflow_as_tool=expose_workflow_as_tool,
+                workflow_tool_name=workflow_tool_name,
+            )
+            if self._has_work_nodes(normalized):
+                if attempt > 1:
+                    warnings.append(
+                        f"Synthesis succeeded on attempt {attempt}; "
+                        "the earlier attempt produced no usable steps."
+                    )
+                break
+
+            last_error = "the draft contained no tool nodes"
+            logger.warning(f"Workflow synthesis attempt {attempt}: {last_error}")
+            attempt_prompt = prompt + RETRY_SUFFIX_NO_STEPS
+
+        if not normalized:
+            raise ValueError(f"LLM response did not contain valid JSON ({last_error})")
 
         custom_tools = normalized.pop("custom_tools", [])
         workflow_tool = normalized.pop("workflow_tool", None)
@@ -254,6 +319,9 @@ class WorkflowSynthesisService:
             "  } | null\n"
             "}\n\n"
             "Rules:\n"
+            "- The workflow MUST contain at least one node of node_type "
+            '"tool". A workflow of only start and end does nothing and will '
+            "be rejected.\n"
             "- Include exactly one start node and at least one end node.\n"
             "- Use tool nodes for actions; set builtin_tool to a name from the builtin tools list.\n"
             "- Use tool_id only for custom tools and only if provided in the custom tools list.\n"

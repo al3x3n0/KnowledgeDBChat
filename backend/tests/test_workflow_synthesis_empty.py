@@ -62,3 +62,42 @@ def test_a_draft_with_real_steps_is_not_flagged():
     assert any(
         n.get("builtin_tool") == "compile_c_snippet" for n in normalized["nodes"]
     )
+
+
+def test_the_prompt_demands_at_least_one_tool_node():
+    """The model occasionally returned no steps; the rules now forbid it."""
+    from app.services.workflow_synthesis_service import WorkflowSynthesisService
+
+    prompt = WorkflowSynthesisService()._build_prompt(
+        description="compile a kernel and compare flags",
+        name="probe",
+        trigger_config={"type": "manual"},
+        catalog=_Catalog(),
+        synthesize_custom_tools=False,
+        preferred_tool_type=None,
+        expose_workflow_as_tool=False,
+        workflow_tool_name=None,
+    )
+
+    assert "MUST contain at least one node" in prompt
+
+
+def test_work_node_detection_ignores_start_and_end():
+    from app.services.workflow_synthesis_service import WorkflowSynthesisService
+
+    svc = WorkflowSynthesisService()
+
+    assert not svc._has_work_nodes(
+        {"nodes": [{"node_type": "start"}, {"node_type": "end"}]}
+    )
+    assert svc._has_work_nodes(
+        {"nodes": [{"node_type": "start"}, {"node_type": "tool"}]}
+    )
+    assert not svc._has_work_nodes({})
+
+
+def test_the_retry_instruction_names_the_actual_problem():
+    from app.services.workflow_synthesis_service import RETRY_SUFFIX_NO_STEPS
+
+    assert "no tool nodes" in RETRY_SUFFIX_NO_STEPS
+    assert "would do nothing" in RETRY_SUFFIX_NO_STEPS

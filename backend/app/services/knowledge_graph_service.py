@@ -376,9 +376,16 @@ class KnowledgeGraphService:
         )
         await db.flush()
 
-        # Re-extract for each chunk in batches to avoid memory issues
+        # Re-extract for each chunk in batches to avoid memory issues.
+        # Ingestion uses the LLM extractor when KG_LLM_EXTRACTION_ENABLED is
+        # set; rebuilding with the rule-based one deleted a richer graph and
+        # replaced it with a poorer one. One paper went from 38 mentions and
+        # 31 relationships to 20 and 0, and the call reported success.
+        from app.core.config import settings as _settings
         from app.models.document import Document, DocumentChunk
-        from app.services.knowledge_extraction import extractor
+        from app.services.knowledge_extraction import extractor, llm_extractor
+
+        use_llm = bool(getattr(_settings, "KG_LLM_EXTRACTION_ENABLED", False))
 
         doc = (
             await db.execute(select(Document).where(Document.id == document_id))
@@ -403,7 +410,12 @@ class KnowledgeGraphService:
                 break
 
             for ch in chunks:
-                m, r = await extractor.index_chunk(db, doc, ch)
+                if use_llm:
+                    m, r = await llm_extractor.index_chunk(
+                        db, doc, ch, rule_extractor=extractor
+                    )
+                else:
+                    m, r = await extractor.index_chunk(db, doc, ch)
                 total_m += m
                 total_r += r
 

@@ -30,6 +30,8 @@ def _default_metadata(
         "merge_entities",
         "delete_entity",
         "rebuild_document_knowledge_graph",
+        # Deletes a document's mentions and relationships before re-extracting.
+        "build_research_graph",
         "run_custom_tool",
         # Creates a persistent, executable capability for this user.
         "create_custom_tool",

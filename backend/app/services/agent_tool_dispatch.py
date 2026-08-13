@@ -6334,7 +6334,13 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 failures.append(f"{doc.id}: {exc}")
                 continue
             if isinstance(result, dict):
-                entities_found += int(result.get("entities") or 0)
+                # rebuild_for_document reports "mentions"; reading "entities"
+                # found nothing every time, so a graph built from documents
+                # carrying 52, 38 and 33 mentions reported zero and still
+                # returned success.
+                entities_found += int(
+                    result.get("mentions") or result.get("entities") or 0
+                )
                 relationships_found += int(result.get("relationships") or 0)
 
         if failures and not entities_found and not relationships_found:
@@ -6346,6 +6352,7 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 "documents_analyzed": len(documents),
                 "focus": params.get("focus_on", ["methods", "concepts"]),
                 "entities_found": entities_found,
+                "mentions_found": entities_found,
                 "relationships_found": relationships_found,
                 "failed_documents": failures[:5],
             },

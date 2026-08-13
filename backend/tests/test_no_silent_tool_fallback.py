@@ -1,9 +1,10 @@
-"""A failing tool must report its failure.
+"""A failing tool must report its failure, and nothing else may run instead.
 
-Substituting a different tool and rewriting the result to success turns "this
+Substituting a different tool and rewriting the result to success turned "this
 tool is broken" into "the agent got an answer". A broken arXiv search became a
 knowledge-base search whose unrelated documents were recorded as research
-findings, and nothing in the run said otherwise.
+findings, and nothing in the run said otherwise. The substitution machinery is
+gone rather than disabled, so no configuration can bring it back.
 """
 
 import pytest
@@ -84,16 +85,26 @@ async def test_a_failing_tool_reports_failure_by_default(service):
 
 
 @pytest.mark.asyncio
-async def test_the_alternative_is_suggested_not_executed(service):
+async def test_nothing_runs_in_place_of_the_failed_tool(service):
     result = await _act(service, _Job())
 
-    assert result.get("suggested_alternative_tool") == "search_documents"
-    assert "fallback" not in result, "the alternative must not have been run"
+    assert "fallback" not in result
+    assert "suggested_alternative_tool" not in result
 
 
 @pytest.mark.asyncio
-async def test_substitution_still_available_when_asked_for_explicitly(service):
+async def test_no_configuration_can_re_enable_substitution(service):
+    """The old opt-in key must do nothing: the code path no longer exists."""
     result = await _act(service, _Job(tool_fallback_enabled=True))
 
-    # Opting in is allowed; it is no longer silent, and no longer the default.
-    assert "suggested_alternative_tool" not in result
+    assert not result.get("success")
+    assert "fallback" not in result
+    assert result.get("tool") in (None, "", "search_arxiv")
+
+
+def test_the_substitution_machinery_is_gone():
+    import app.services.agent_action_service as module
+
+    source = open(module.__file__).read()
+    assert "_fallback_action_for" not in source
+    assert "tool_fallback_enabled" not in source

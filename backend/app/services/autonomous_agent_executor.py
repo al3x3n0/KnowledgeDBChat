@@ -150,56 +150,6 @@ def _tool_requires_params(tool_name: str) -> bool:
 # Matches the ceiling the job-creating tools apply in agent_tool_dispatch.
 AUTO_SUBGOAL_CHILD_MAX_DEPTH = 3
 
-# Centralized tool fallback policies keyed by job type.
-#
-# These name an alternative for a tool that failed. Substitution is OFF by
-# default (job.config.tool_fallback_enabled), because running the alternative
-# and reporting success under the requested tool's name hides that the
-# requested tool is broken. With it off these are used only to suggest an
-# alternative back to the agent, which decides whether to take it.
-# Per-job overrides can be provided via job.config.tool_fallback_map.
-_TOOL_FALLBACK_POLICIES: Dict[str, Dict[str, Dict[str, str]]] = {
-    "_default": {
-        # Safe default: search the KB using the job goal.
-        "__default__": {"tool": "search_documents", "param": "goal"},
-        # Param-aware fallbacks.
-        "web_scrape": {"tool": "search_documents", "param": "url"},
-        "ingest_url": {"tool": "search_documents", "param": "url"},
-        "search_with_filters": {"tool": "search_documents", "param": "query"},
-        "search_arxiv": {"tool": "search_documents", "param": "query"},
-        "monitor_arxiv_topic": {"tool": "search_documents", "param": "query"},
-        "find_related_papers": {"tool": "search_documents", "param": "query"},
-        "get_document_details": {"tool": "search_documents", "param": "document_id"},
-        "read_document_content": {"tool": "search_documents", "param": "document_id"},
-        "summarize_document": {"tool": "search_documents", "param": "document_id"},
-        "find_similar_documents": {"tool": "search_documents", "param": "document_id"},
-    },
-    # Job-type specific safe defaults (can override _default).
-    "research": {
-        "__default__": {"tool": "search_documents", "param": "goal"},
-    },
-    "monitor": {
-        "__default__": {"tool": "search_documents", "param": "goal"},
-    },
-    "analysis": {
-        "__default__": {"tool": "search_documents", "param": "goal"},
-    },
-    "synthesis": {
-        "__default__": {"tool": "search_documents", "param": "goal"},
-    },
-    "knowledge_expansion": {
-        "__default__": {"tool": "search_documents", "param": "goal"},
-    },
-    "data_analysis": {
-        # Data analysis tool failures often indicate missing schema/context;
-        # searching the KB with the job goal is a safe best-effort fallback.
-        "__default__": {"tool": "search_documents", "param": "goal"},
-    },
-    "custom": {
-        "__default__": {"tool": "search_documents", "param": "goal"},
-    },
-}
-
 
 class _AutonomousRuntimeAdapter:
     """App-layer adapter that exposes executor phases to the core runtime runner."""
@@ -3248,10 +3198,6 @@ class AutonomousAgentExecutor:
     def _coerce_bool(self, value: Any, default: bool = False) -> bool:
         """Coerce flexible model outputs to booleans."""
         return agent_decision_parser.coerce_bool(value, default)
-
-    def _get_tool_fallback_policies(self) -> Dict[str, Dict[str, Dict[str, str]]]:
-        """Expose tool fallback policies to extracted runtime services."""
-        return _TOOL_FALLBACK_POLICIES
 
     def _resolve_default_source_scope(self, job: AgentJob) -> Optional[str]:
         """

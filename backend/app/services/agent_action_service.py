@@ -11,6 +11,24 @@ from app.services.agent_execution_journal_service import agent_execution_journal
 from app.services.agent_tool_dispatch import AgentToolExecutionContext
 
 
+def _surface_nested_error(result: Dict[str, Any]) -> None:
+    """Lift a nested failure reason to the top level.
+
+    A sweep of the tool catalog found fourteen data-analysis tools reporting
+    {"success": False, "data": {"error": ...}} while the rest report a
+    top-level "error". Everything that reacts to a failure keys off the
+    top-level field, so those tools failed without a reason attached: no
+    fallback suggestion, and nothing for a reader to act on.
+    """
+    if not isinstance(result, dict) or result.get("error"):
+        return
+    if result.get("success"):
+        return
+    nested = result.get("data")
+    if isinstance(nested, dict) and nested.get("error"):
+        result["error"] = str(nested["error"])[:500]
+
+
 class AgentActionService:
     """Execute autonomous tool actions and fallback routing."""
 
@@ -116,6 +134,7 @@ class AgentActionService:
                 result.update(
                     handled_result if isinstance(handled_result, dict) else {}
                 )
+                _surface_nested_error(result)
                 return result
 
             if job.job_type == "research":

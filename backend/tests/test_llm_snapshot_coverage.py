@@ -113,6 +113,6 @@ def test_no_in_loop_llm_call_is_left_uninstrumented(module):
         if "snapshot_context" not in kwargs and "db" not in kwargs
     ]
 
-    assert not offenders, (
-        f"{module} lines {offenders} make an LLM call that cannot be captured"
-    )
+    assert (
+        not offenders
+    ), f"{module} lines {offenders} make an LLM call that cannot be captured"

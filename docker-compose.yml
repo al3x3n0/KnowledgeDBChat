@@ -190,6 +190,21 @@ services:
       - knowledge_net
     environment:
       - KROKI_MAX_URI_LENGTH=8000
+      # Kroki delegates Mermaid to a companion service. Without this it tried
+      # 127.0.0.1:8002, got connection refused, and every Mermaid diagram fell
+      # through to the public kroki.io instead of rendering locally.
+      - KROKI_MERMAID_HOST=kroki-mermaid
+    depends_on:
+      - kroki-mermaid
+
+  # Mermaid renderer for Kroki. Separate image by Kroki's own design.
+  kroki-mermaid:
+    image: yuzutech/kroki-mermaid:latest
+    container_name: knowledge_db_kroki_mermaid
+    expose:
+      - "8002"
+    networks:
+      - knowledge_net
     healthcheck:
       test: ["CMD", "wget", "--quiet", "--tries=1", "--output-document=/dev/null", "http://localhost:8000/health"]
       interval: 30s

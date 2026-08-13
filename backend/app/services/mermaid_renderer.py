@@ -139,6 +139,7 @@ class MermaidRenderer:
         if not is_valid:
             raise MermaidRenderError(f"Invalid Mermaid code: {error}")
 
+        self.last_render_used_fallback = False
         try:
             # Try local Kroki first
             return await self._render_via_kroki(
@@ -150,7 +151,16 @@ class MermaidRenderer:
             # Try fallback if enabled
             if self._use_fallback and self._fallback_url != self._kroki_url:
                 try:
-                    logger.info("Trying fallback Kroki service...")
+                    # The fallback is a public service by default, so the
+                    # diagram source leaves the deployment. Say so at warning
+                    # level: a local Kroki missing its Mermaid companion sent
+                    # every diagram to kroki.io and nothing recorded it.
+                    logger.warning(
+                        "Rendering diagram via the external fallback "
+                        f"{self._fallback_url}; diagram source leaves this "
+                        "deployment. Local Kroki failed: %s" % e
+                    )
+                    self.last_render_used_fallback = True
                     return await self._render_via_kroki(
                         code, format="png", base_url=self._fallback_url
                     )

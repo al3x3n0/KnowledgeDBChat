@@ -3946,24 +3946,19 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         behind CUSTOM_TOOL_DOCKER_ENABLED, and workflow_runner is reserved for
         workflow synthesis, which fills in the workflow id it points at.
         """
-        from app.core.config import settings as app_settings
         from app.models.workflow import UserTool
+        from app.services.custom_tool_types import reject_custom_tool_type
 
         name = str(params.get("name") or "").strip()
         if not name:
             return {"error": "name is required"}
         tool_type = str(params.get("tool_type") or "").strip().lower()
 
-        allowed = {"webhook", "transform", "python", "llm_prompt"}
-        if bool(getattr(app_settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
-            allowed.add("docker_container")
-        if tool_type not in allowed:
-            return {
-                "error": (
-                    f"tool_type must be one of: {', '.join(sorted(allowed))}. "
-                    f"Got {tool_type!r}."
-                )
-            }
+        # An agent may not create a workflow_runner: that type points at a
+        # workflow id which workflow synthesis fills in.
+        rejection = reject_custom_tool_type(tool_type, include_workflow_runner=False)
+        if rejection:
+            return {"error": rejection}
 
         config = params.get("config")
         if not isinstance(config, dict) or not config:

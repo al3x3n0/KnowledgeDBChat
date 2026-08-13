@@ -10,7 +10,6 @@ from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.core.database import get_db
 from app.models.user import User
 from app.models.workflow import UserTool
@@ -24,6 +23,7 @@ from app.schemas.workflow import (
 )
 from app.services.auth_service import get_current_user
 from app.services.custom_tool_service import CustomToolService, ToolExecutionError
+from app.services.custom_tool_types import reject_custom_tool_type
 
 router = APIRouter()
 
@@ -85,21 +85,13 @@ async def create_user_tool(
                 detail=f"Tool with name '{tool_data.name}' already exists",
             )
 
-        # Validate tool type
-        valid_types = [
-            "webhook",
-            "transform",
-            "python",
-            "llm_prompt",
-            "workflow_runner",
-        ]
-        if bool(getattr(settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
-            valid_types.append("docker_container")
-        if tool_data.tool_type not in valid_types:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Invalid tool type. Must be one of: {valid_types}",
-            )
+        # Validate tool type. An operator may create a workflow_runner
+        # directly; the agent-facing path may not.
+        rejection = reject_custom_tool_type(
+            tool_data.tool_type, include_workflow_runner=True
+        )
+        if rejection:
+            raise HTTPException(status_code=400, detail=rejection)
 
         # Create tool
         tool = UserTool(

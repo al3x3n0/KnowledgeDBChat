@@ -44,6 +44,10 @@ def get_tools_for_job_type(
         "execute_python",
         "compile_c_snippet",
         "benchmark_c_snippet",
+        # Custom tools: create one, then call it in this run or a later one
+        "create_custom_tool",
+        "run_custom_tool",
+        "list_custom_tools",
         # Memory (available to all job types)
         "create_memory",
         "search_memories",
@@ -300,6 +304,9 @@ def get_tools_for_job_type(
 
     # Only expose tools implemented by the autonomous executor tool runner.
     supported_tools = {
+        "create_custom_tool",
+        "run_custom_tool",
+        "list_custom_tools",
         "search_arxiv",
         "search_documents",
         "search_with_filters",

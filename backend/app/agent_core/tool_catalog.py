@@ -31,6 +31,8 @@ def _default_metadata(
         "delete_entity",
         "rebuild_document_knowledge_graph",
         "run_custom_tool",
+        # Creates a persistent, executable capability for this user.
+        "create_custom_tool",
         "run_workflow",
         "docker_execute",
         "delegate_subtask",
@@ -121,6 +123,7 @@ def _default_metadata(
         "web_scrape",
         "ingest_url",
         "run_custom_tool",
+        "create_custom_tool",
         "execute_python",
         "execute_data_pipeline",
         "compile_c_snippet",

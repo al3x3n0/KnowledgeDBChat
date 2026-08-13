@@ -10,6 +10,7 @@ Supports:
 
 import asyncio
 import json
+import re
 import time
 from typing import Any, Dict
 from uuid import UUID
@@ -193,15 +194,30 @@ class CustomToolService:
                 elif prop_type == "object" and not isinstance(value, dict):
                     raise ToolExecutionError(f"Input '{field}' must be an object")
 
+    _SINGLE_BRACE = re.compile(r"\{\s*([A-Za-z_][A-Za-z0-9_]*)\s*\}")
+
     def _render_template(self, template: str, context: Dict[str, Any]) -> str:
-        """Render a Jinja2 template with the given context."""
+        """Render a Jinja2 template with the given context.
+
+        Single-brace placeholders are filled in afterwards when they name a
+        provided input. Jinja needs {{ name }}, and an agent authoring a tool
+        wrote {name}: the prompt rendered with its placeholders intact and the
+        model answered about literal "{baseline}". Only known input names are
+        substituted, so other braces are left alone.
+        """
         try:
             tpl = self.jinja_env.from_string(template)
-            return tpl.render(input=context, **context)
+            rendered = tpl.render(input=context, **context)
         except TemplateSyntaxError as e:
             raise ToolExecutionError(f"Template syntax error: {e}")
         except Exception as e:
             raise ToolExecutionError(f"Template rendering failed: {e}")
+
+        def _fill(match: "re.Match[str]") -> str:
+            key = match.group(1)
+            return str(context[key]) if key in context else match.group(0)
+
+        return self._SINGLE_BRACE.sub(_fill, rendered)
 
     async def _execute_webhook(
         self, config: Dict[str, Any], inputs: Dict[str, Any]
@@ -441,7 +457,9 @@ class CustomToolService:
             max_tokens: Optional max tokens override
         """
         system_prompt = config.get("system_prompt")
-        user_prompt = config.get("user_prompt", "")
+        # "prompt" is the obvious name and what callers reach for first;
+        # accepting it costs nothing and rejecting it renders an empty prompt.
+        user_prompt = config.get("user_prompt") or config.get("prompt") or ""
         output_format = config.get("output_format", "text")
         model_override = config.get("model_override")
 
@@ -474,13 +492,19 @@ class CustomToolService:
         # Call LLM
         llm_service = LLMService()
         try:
+            # generate_response takes system_prompt/user_message and returns a
+            # string. It was called with messages=, which it does not accept,
+            # so llm_prompt tools failed on every invocation; the .get below
+            # would then have failed on the string it returns.
             response = await llm_service.generate_response(
-                messages=messages,
+                system_prompt=(messages[0]["content"] if system_prompt else None),
+                user_message=rendered_prompt,
                 user_settings=user_settings,
                 task_type="chat",  # Use chat model by default
+                db=db,
             )
 
-            content = response.get("content", "")
+            content = response if isinstance(response, str) else str(response or "")
 
             # Parse JSON if requested
             if output_format == "json":

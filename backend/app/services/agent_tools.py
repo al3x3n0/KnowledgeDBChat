@@ -1038,6 +1038,52 @@ AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "create_custom_tool",
+        "description": (
+            "Create a reusable custom tool for later use by you, by workflows, "
+            "or by future jobs. Use it when you find yourself repeating the "
+            "same shaped work. The tool is owned by this user and persists "
+            "after the job ends. Types: transform (Jinja2/JSONPath over "
+            "inputs), llm_prompt (templated model call), webhook (HTTP call to "
+            "an external API), python (sandboxed, no subprocess/filesystem/"
+            "network)."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": "Tool name, unique for this user",
+                },
+                "description": {
+                    "type": "string",
+                    "description": "What the tool does and when to use it",
+                },
+                "tool_type": {
+                    "type": "string",
+                    "description": ("One of: transform, llm_prompt, webhook, python"),
+                },
+                "parameters_schema": {
+                    "type": "object",
+                    "description": "JSON Schema for the tool's inputs",
+                },
+                "config": {
+                    "type": "object",
+                    "description": (
+                        "Type-specific configuration. llm_prompt: "
+                        "{'user_prompt': '...'} and optional 'system_prompt'. "
+                        "python: {'code': '...'}. webhook: {'url': ..., "
+                        "'method': ...}. transform: {'expression': ...}. "
+                        "Templates use Jinja2, so reference inputs as "
+                        "{{ input_name }} with double braces; single braces are "
+                        "left as literal text."
+                    ),
+                },
+            },
+            "required": ["name", "tool_type", "config"],
+        },
+    },
+    {
         "name": "run_custom_tool",
         "description": "Execute a user-defined custom tool by name. Custom tools include webhooks, data transformers, Python scripts, and LLM prompts.",
         "parameters": {

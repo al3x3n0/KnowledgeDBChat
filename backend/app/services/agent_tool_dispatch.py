@@ -3937,11 +3937,195 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _create_custom_tool(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """Create a reusable tool owned by this user.
+
+        Mirrors the validation on POST /user-tools: docker_container stays
+        behind CUSTOM_TOOL_DOCKER_ENABLED, and workflow_runner is reserved for
+        workflow synthesis, which fills in the workflow id it points at.
+        """
+        from app.core.config import settings as app_settings
+        from app.models.workflow import UserTool
+
+        name = str(params.get("name") or "").strip()
+        if not name:
+            return {"error": "name is required"}
+        tool_type = str(params.get("tool_type") or "").strip().lower()
+
+        allowed = {"webhook", "transform", "python", "llm_prompt"}
+        if bool(getattr(app_settings, "CUSTOM_TOOL_DOCKER_ENABLED", False)):
+            allowed.add("docker_container")
+        if tool_type not in allowed:
+            return {
+                "error": (
+                    f"tool_type must be one of: {', '.join(sorted(allowed))}. "
+                    f"Got {tool_type!r}."
+                )
+            }
+
+        config = params.get("config")
+        if not isinstance(config, dict) or not config:
+            return {"error": "config is required and must be an object"}
+        schema = params.get("parameters_schema")
+        if not isinstance(schema, dict):
+            schema = {"type": "object", "properties": {}}
+
+        # ctx.user_id is not populated in autonomous runs; the owner is the
+        # job's user, which is how the other write tools resolve it.
+        owner_id = getattr(getattr(ctx, "job", None), "user_id", None) or ctx.user_id
+        if owner_id is None:
+            return {"error": "Cannot determine the owning user for the new tool"}
+
+        existing = (
+            await ctx.db.execute(
+                select(UserTool).where(
+                    UserTool.user_id == owner_id, UserTool.name == name
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            return {
+                "error": (
+                    f"A tool named {name!r} already exists. Choose another "
+                    "name, or call it with run_custom_tool."
+                )
+            }
+
+        tool = UserTool(
+            user_id=owner_id,
+            name=name,
+            description=str(params.get("description") or "").strip() or None,
+            tool_type=tool_type,
+            parameters_schema=schema,
+            config=config,
+            is_enabled=True,
+        )
+        # A savepoint, not the caller's transaction: a rejected insert here
+        # would otherwise poison the session the whole run shares, and one bad
+        # tool definition would end the job rather than the action.
+        try:
+            async with ctx.db.begin_nested():
+                ctx.db.add(tool)
+            await ctx.db.commit()
+        except Exception as exc:
+            return {"error": f"Could not create the tool: {str(exc)[:200]}"}
+
+        return {
+            "success": True,
+            "data": {
+                "tool_id": str(tool.id),
+                "name": tool.name,
+                "tool_type": tool.tool_type,
+            },
+            "findings": [
+                {
+                    "type": "tool_created",
+                    "title": f"Created custom tool {tool.name!r} ({tool.tool_type})",
+                    "tool_id": str(tool.id),
+                }
+            ],
+        }
+
+    def _tool_owner(ctx: AgentToolExecutionContext) -> Any:
+        """Autonomous runs carry the user on the job, not on the context."""
+        return getattr(getattr(ctx, "job", None), "user_id", None) or ctx.user_id
+
+    async def _run_custom_tool_autonomous(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        # AgentService is the chat-mode surface and is not reachable from the
+        # autonomous executor; go to the same service it uses.
+        from sqlalchemy import func
+
+        from app.models.user import User
+        from app.models.workflow import UserTool
+        from app.services.custom_tool_service import CustomToolService
+
+        owner_id = _tool_owner(ctx)
+        if owner_id is None:
+            return {"error": "Cannot determine the owning user for this tool"}
+        tool_name = str(params.get("tool_name") or "").strip()
+        if not tool_name:
+            return {"error": "tool_name is required"}
+
+        tool = (
+            await ctx.db.execute(
+                select(UserTool).where(
+                    UserTool.user_id == owner_id,
+                    func.lower(UserTool.name) == tool_name.lower(),
+                )
+            )
+        ).scalar_one_or_none()
+        if tool is None:
+            return {"error": f"No custom tool named {tool_name!r} for this user"}
+        if not tool.is_enabled:
+            return {"error": f"Custom tool {tool_name!r} is disabled"}
+
+        user = (
+            await ctx.db.execute(select(User).where(User.id == owner_id))
+        ).scalar_one_or_none()
+
+        inputs = params.get("inputs")
+        if not isinstance(inputs, dict):
+            inputs = {}
+        try:
+            output = await CustomToolService().execute_tool(
+                tool=tool, inputs=inputs, user=user, db=ctx.db
+            )
+        except Exception as exc:
+            return {"error": f"Custom tool {tool_name!r} failed: {str(exc)[:300]}"}
+
+        return {
+            "success": True,
+            "data": {"tool_name": tool.name, "output": output},
+            "findings": [
+                {
+                    "type": "custom_tool_result",
+                    "title": f"{tool.name}: {str(output)[:180]}",
+                }
+            ],
+        }
+
+    async def _list_custom_tools_autonomous(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.models.workflow import UserTool
+
+        owner_id = _tool_owner(ctx)
+        if owner_id is None:
+            return {"error": "Cannot determine the owning user for this tool"}
+        tools = (
+            (await ctx.db.execute(select(UserTool).where(UserTool.user_id == owner_id)))
+            .scalars()
+            .all()
+        )
+        return {
+            "success": True,
+            "data": {
+                "count": len(tools),
+                "tools": [
+                    {
+                        "name": t.name,
+                        "tool_type": t.tool_type,
+                        "description": t.description,
+                        "enabled": bool(t.is_enabled),
+                        "parameters_schema": t.parameters_schema or {},
+                    }
+                    for t in tools
+                ],
+            },
+        }
+
     return FunctionToolProvider(
         name="autonomous_workspace_mutation_tools",
         modes={"autonomous"},
         handlers={
             "execute_python": _execute_python,
+            "create_custom_tool": _create_custom_tool,
+            "run_custom_tool": _run_custom_tool_autonomous,
+            "list_custom_tools": _list_custom_tools_autonomous,
             "compile_c_snippet": _compile_c_snippet,
             "benchmark_c_snippet": _benchmark_c_snippet,
             "execute_data_pipeline": _execute_data_pipeline,

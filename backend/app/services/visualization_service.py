@@ -31,6 +31,72 @@ except Exception as e:
     _IMPORT_ERROR = str(e)
 
 
+def normalize_chart_data(data: Dict[str, Any]) -> "pd.DataFrame":
+    """Turn the documented chart-data shapes into a frame the charts can read.
+
+    The ``create_chart`` tool schema advertises ``{labels, values}``,
+    ``{labels, datasets: [...]}``, ``{points: [{x, y}]}`` and
+    ``{labels, matrix}``, but the only shape the frame constructor ever accepted
+    was a plain column mapping: every other one raised "All arrays must be of
+    the same length" — a caller that followed the documentation could not chart
+    anything. The chart builders are column-oriented (first column is x, the
+    rest are series), so each shape is reshaped to that here.
+    """
+    points = data.get("points")
+    if isinstance(points, list) and points:
+        return pd.DataFrame([point for point in points if isinstance(point, dict)])
+
+    labels = data.get("labels")
+    matrix = data.get("matrix")
+    if isinstance(matrix, list) and matrix:
+        matrix_columns = (
+            [str(label) for label in labels]
+            if isinstance(labels, list) and len(labels) == len(matrix[0] or [])
+            else None
+        )
+        frame = pd.DataFrame(matrix, columns=matrix_columns)
+        if isinstance(labels, list) and len(labels) == len(frame.index):
+            frame.index = [str(label) for label in labels]
+        return frame
+
+    if not isinstance(labels, list):
+        # Already a column mapping, or a shape only pandas can judge.
+        return pd.DataFrame(data)
+
+    columns: Dict[str, Any] = {"label": [str(label) for label in labels]}
+
+    def _add_series(name: str, values: Any) -> None:
+        if not isinstance(values, list):
+            raise ValueError(f"chart series '{name}' must be a list of numbers")
+        if len(values) != len(labels):
+            # Say which series is wrong. Pandas reports only "All arrays must be
+            # of the same length", which does not tell a caller what to fix.
+            raise ValueError(
+                f"chart series '{name}' has {len(values)} values "
+                f"but there are {len(labels)} labels"
+            )
+        columns[name] = values
+
+    datasets = data.get("datasets")
+    if isinstance(datasets, list) and datasets:
+        for index, dataset in enumerate(datasets, start=1):
+            if isinstance(dataset, dict):
+                # Chart.js writes the series as "data"; the schema calls it
+                # "values". Models send both, and both mean the same thing.
+                _add_series(
+                    str(dataset.get("label") or f"series_{index}"),
+                    dataset.get("values", dataset.get("data")),
+                )
+            else:
+                _add_series(f"series_{index}", dataset)
+    elif "values" in data:
+        _add_series("value", data.get("values"))
+    else:
+        return pd.DataFrame(data)
+
+    return pd.DataFrame(columns)
+
+
 class VisualizationService:
     """Service for generating visualizations."""
 
@@ -115,7 +181,7 @@ class VisualizationService:
 
         # Convert dict to DataFrame if needed
         if isinstance(data, dict):
-            data = pd.DataFrame(data)
+            data = normalize_chart_data(data)
 
         # Get configuration
         title = config.get("title", "")

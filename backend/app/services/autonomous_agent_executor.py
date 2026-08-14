@@ -6183,6 +6183,25 @@ class AutonomousAgentExecutor:
                 return False
         return True
 
+    @staticmethod
+    def _as_document_id(value: Any) -> str:
+        """Return the value if it is a knowledge-base document id, else "".
+
+        A finding's ``id`` is not necessarily a document: an arXiv result
+        carries its arXiv id there. Passing one to read_document_content or
+        summarize_document failed every time with "badly formed hexadecimal
+        UUID string", so a research run that had only searched arXiv could not
+        take a document action at all.
+        """
+        text = str(value or "").strip()
+        if not text:
+            return ""
+        try:
+            UUID(text)
+        except (ValueError, AttributeError, TypeError):
+            return ""
+        return text
+
     def _collect_recent_document_ids(
         self, state: Dict[str, Any], limit: int = 8
     ) -> List[str]:
@@ -6195,7 +6214,7 @@ class AutonomousAgentExecutor:
         for row in findings:
             if not isinstance(row, dict):
                 continue
-            did = str(row.get("document_id") or row.get("id") or "").strip()
+            did = self._as_document_id(row.get("document_id") or row.get("id"))
             if did and did not in out:
                 out.append(did)
                 if len(out) >= max_items:
@@ -6220,7 +6239,7 @@ class AutonomousAgentExecutor:
                     continue
                 if str(art.get("type") or "").strip().lower() != "document":
                     continue
-                did = str(art.get("document_id") or art.get("id") or "").strip()
+                did = self._as_document_id(art.get("document_id") or art.get("id"))
                 if did and did not in out:
                     out.append(did)
                     if len(out) >= max_items:
@@ -7952,7 +7971,9 @@ RESPONSE FORMAT:
             for f in findings:
                 if not isinstance(f, dict):
                     continue
-                doc_id = str(f.get("id") or f.get("document_id") or "").strip()
+                # A paper finding puts its arXiv id in "id"; only a knowledge-base
+                # id can be handed to a document tool. See _as_document_id.
+                doc_id = self._as_document_id(f.get("document_id") or f.get("id"))
                 if doc_id and doc_id not in out:
                     out.append(doc_id)
             return out

@@ -4503,3 +4503,45 @@ def test_build_executive_digest_includes_risks_contract_and_next_steps():
     assert digest["goal_contract"]["enabled"] is True
     assert digest["goal_contract"]["satisfied"] is False
     assert digest["next_actions"][0] == "Validate metrics"
+
+
+def test_arxiv_ids_are_not_harvested_as_document_ids():
+    """A finding's `id` is not a document id when the finding is a paper.
+
+    search_arxiv findings carry the arXiv id there, and handing one to
+    read_document_content or summarize_document failed every time with "badly
+    formed hexadecimal UUID string" — a research run that had only searched
+    arXiv could take no document action at all.
+    """
+    executor = AutonomousAgentExecutor()
+    document_id = str(uuid4())
+    state = {
+        "findings": [
+            {"type": "paper", "id": "2401.00001", "title": "A paper"},
+            {"type": "paper", "id": "2604.24971v1", "title": "Another"},
+            {"type": "document", "document_id": document_id},
+        ]
+    }
+
+    assert executor._collect_recent_document_ids(state) == [document_id]
+
+
+def test_document_ids_are_still_harvested_from_action_artifacts():
+    executor = AutonomousAgentExecutor()
+    document_id = str(uuid4())
+    state = {
+        "findings": [],
+        "actions_taken": [
+            {
+                "result": {
+                    "artifacts": [
+                        {"type": "document", "id": document_id},
+                        {"type": "document", "id": "not-a-uuid"},
+                        {"type": "chart", "id": str(uuid4())},
+                    ]
+                }
+            }
+        ],
+    }
+
+    assert executor._collect_recent_document_ids(state) == [document_id]

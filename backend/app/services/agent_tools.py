@@ -2791,6 +2791,74 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "analyze_snippet_cycles",
+        "description": (
+            "Cost a code sequence against a named core's scheduling model with "
+            "llvm-mca, without running it: cycles per iteration, IPC, uops and "
+            "block reciprocal throughput. Use this to compare two sequences "
+            "that do the same work, and to cost a sequence no hardware here "
+            "can run -- a proposed instruction, or a target that is not this "
+            "host. These are modelled estimates, not measurements: mca assumes "
+            "a warm front end and no cache misses."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "C source to compile and analyse. A function is enough; "
+                        "no main() is needed."
+                    ),
+                },
+                "asm": {
+                    "type": "string",
+                    "description": (
+                        "Assembly to analyse directly, instead of code. Use this "
+                        "to cost a hypothetical sequence, such as one where an "
+                        "idiom is replaced by the instruction being proposed. "
+                        "To cost a loop rather than a whole function, fence it "
+                        "with '# LLVM-MCA-BEGIN name' and '# LLVM-MCA-END': the "
+                        "same kernel measures 24.14 cycles as a function and "
+                        "7.18 as its inner loop."
+                    ),
+                },
+                "cpu": {
+                    "type": "string",
+                    "description": (
+                        "Required. The core model to cost against, e.g. "
+                        "'neoverse-n1', 'cortex-a78', 'cortex-x2'. A cycle "
+                        "count without a named model cannot be compared."
+                    ),
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "Compiler flags used when code is given (default -O3)",
+                },
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Target triple (default aarch64-linux-gnu). Cross-target "
+                        "analysis works: the code is never executed."
+                    ),
+                },
+                "iterations": {
+                    "type": "integer",
+                    "description": "Iterations to simulate (default 100)",
+                },
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "Short name for what this sequence is. Recorded with the "
+                        "estimate; without it several estimates cannot be told "
+                        "apart afterwards."
+                    ),
+                },
+            },
+            "required": ["cpu"],
+        },
+    },
+    {
         "name": "benchmark_c_snippet",
         "description": (
             "Compile and run a self-contained C program in the compiler "

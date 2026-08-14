@@ -3936,6 +3936,23 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _analyze_snippet_cycles(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_compiler_sandbox
+
+        return await agent_compiler_sandbox.analyze_snippet_cycles(
+            code=str(params.get("code") or ""),
+            asm=str(params.get("asm") or ""),
+            cpu=str(params.get("cpu") or ""),
+            flags=str(params.get("flags") or "-O3"),
+            target=str(
+                params.get("target") or agent_compiler_sandbox.DEFAULT_ANALYSIS_TARGET
+            ),
+            iterations=params.get("iterations", 100),
+            label=str(params.get("label") or ""),
+        )
+
     async def _benchmark_c_snippet(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -4133,6 +4150,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "run_custom_tool": _run_custom_tool_autonomous,
             "list_custom_tools": _list_custom_tools_autonomous,
             "compile_c_snippet": _compile_c_snippet,
+            "analyze_snippet_cycles": _analyze_snippet_cycles,
             "benchmark_c_snippet": _benchmark_c_snippet,
             "execute_data_pipeline": _execute_data_pipeline,
             "write_and_run_script": _write_and_run_script,

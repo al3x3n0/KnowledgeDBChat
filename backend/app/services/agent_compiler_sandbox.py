@@ -16,6 +16,7 @@ code.
 from __future__ import annotations
 
 import asyncio
+import json
 import re
 import tempfile
 from pathlib import Path
@@ -92,6 +93,13 @@ def explain_compiler_failure(stderr: str) -> str:
             return f"{message} — {remedy}"
     return message
 
+
+# A cycle count belongs to a specific core model, so the model is required
+# rather than defaulted: "1801 cycles" with no core named is not a measurement
+# anyone can check or reproduce.
+SAFE_MODEL_NAME = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
+DEFAULT_ANALYSIS_TARGET = "aarch64-linux-gnu"
+MAX_MCA_ITERATIONS = 10000
 
 MAX_REPORTED_METRICS = 12
 MAX_REPORTED_VALUES = 20
@@ -450,6 +458,200 @@ async def benchmark_c_snippet(
                 "fastest_ms": min(timings) if timings else None,
                 "all_ms": timings,
                 "reported_metrics": reported_metrics,
+            }
+        ],
+    }
+
+
+def _mca_summary(payload: Dict[str, Any]) -> Dict[str, Any]:
+    """Pull the per-region summary out of llvm-mca's JSON report."""
+    regions = payload.get("CodeRegions")
+    region = regions[0] if isinstance(regions, list) and regions else {}
+    summary = region.get("SummaryView") if isinstance(region, dict) else {}
+    return summary if isinstance(summary, dict) else {}
+
+
+async def analyze_snippet_cycles(
+    *,
+    code: str = "",
+    asm: str = "",
+    cpu: str = "",
+    flags: str = "-O3",
+    target: str = DEFAULT_ANALYSIS_TARGET,
+    iterations: int = 100,
+    label: str = "",
+    image: str = DEFAULT_IMAGE,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Model how a code sequence issues on a named core, without running it.
+
+    This is how a proposed instruction can be evidenced at all: the hardware
+    does not exist, so it cannot be benchmarked, but the sequence it would
+    replace can be costed against a published scheduling model, and so can the
+    sequence that replaces it. Wall clock cannot do that, and on this sandbox
+    it cannot do much anyway -- the microarchitecture image says plainly that
+    PMU access needs privileges the sandbox drops.
+
+    Pass ``code`` to compile and analyse, or ``asm`` to analyse a sequence
+    directly -- the second is what a hypothetical costing needs, since the
+    instruction being proposed cannot be produced by any compiler here.
+    """
+    source = asm or code
+    blocked = _preflight(source, image)
+    if blocked:
+        return blocked
+
+    cpu = str(cpu or "").strip()
+    if not cpu:
+        return {
+            "error": (
+                "cpu is required: a cycle count is a property of a specific core "
+                "model. Pass one llvm-mca knows, e.g. neoverse-n1 or cortex-a78."
+            )
+        }
+    target = str(target or DEFAULT_ANALYSIS_TARGET).strip()
+    for name, value in (("cpu", cpu), ("target", target)):
+        if not SAFE_MODEL_NAME.match(value):
+            return {"error": f"{name} contains unsupported characters: {value!r}"}
+
+    safe_flags = _clean_flags(flags)
+    if safe_flags is None:
+        return {"error": f"flags contain unsupported characters: {flags!r}"}
+    try:
+        iteration_count = max(1, min(int(iterations), MAX_MCA_ITERATIONS))
+    except (TypeError, ValueError):
+        iteration_count = 100
+
+    with tempfile.TemporaryDirectory(prefix="analyze_snippet_") as workdir:
+        if asm:
+            Path(workdir, "snippet.s").write_text(asm, encoding="utf-8")
+            compile_step = ""
+        else:
+            Path(workdir, "snippet.c").write_text(code, encoding="utf-8")
+            compile_step = (
+                f"clang --target={target} {safe_flags} -S -o snippet.s snippet.c "
+                "2>compile_err.txt || "
+                "{ cat compile_err.txt >&2; exit 90; }; "
+            )
+        script = (
+            compile_step + f"llvm-mca -mtriple={target} -mcpu={cpu} "
+            f"-iterations={iteration_count} -json snippet.s 2>mca_err.txt; "
+            "rc=$?; cat mca_err.txt >&2; exit $rc"
+        )
+        try:
+            returncode, stdout, stderr = await _run(
+                script, workdir, image=image, timeout_seconds=timeout_seconds
+            )
+        except asyncio.TimeoutError:
+            return {"error": f"Analysis timed out after {timeout_seconds}s"}
+        except FileNotFoundError:
+            return {"error": "Docker is not available to this process"}
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"analyze_snippet_cycles failed: {exc}")
+            return {"error": f"Analysis failed: {exc}"}
+
+    if returncode == 90:
+        return {
+            "success": False,
+            "error": explain_compiler_failure(stderr),
+            "compiler_stderr": stderr[:MAX_OUTPUT_CHARS],
+            "flags": flags,
+        }
+    if returncode != 0:
+        return {
+            "success": False,
+            "error": (
+                f"llvm-mca failed with exit code {returncode}. An unknown -mcpu "
+                "is the usual cause; llc -mcpu=help lists the models."
+            ),
+            "stderr": stderr[:MAX_OUTPUT_CHARS],
+            "cpu": cpu,
+        }
+
+    try:
+        summary = _mca_summary(json.loads(stdout))
+    except (ValueError, TypeError) as exc:
+        return {
+            "success": False,
+            "error": f"Could not read the llvm-mca report: {exc}",
+            "stdout": stdout[:MAX_OUTPUT_CHARS],
+        }
+    if not summary:
+        return {
+            "success": False,
+            "error": "llvm-mca reported no code region to analyse",
+            "stdout": stdout[:MAX_OUTPUT_CHARS],
+        }
+
+    total_cycles = summary.get("TotalCycles")
+    reported_iterations = summary.get("Iterations") or iteration_count
+    cycles_per_iteration = (
+        round(float(total_cycles) / float(reported_iterations), 3)
+        if isinstance(total_cycles, (int, float)) and reported_iterations
+        else None
+    )
+    # mca's own warnings change what the number means -- a region that swept up
+    # a return or the function prologue is not the loop the caller asked about.
+    warnings = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
+    analysed = asm or ""
+    if "LLVM-MCA-BEGIN" not in analysed and any(
+        "return instruction" in line for line in warnings
+    ):
+        # Costing a whole function reads as costing its loop, and the two differ
+        # by a lot: the same saxpy came out at 24.14 cycles as a function and
+        # 7.18 as its inner loop, because the prologue and scalar tail were
+        # being averaged in.
+        warnings.append(
+            "This estimate covers the whole sequence including prologue and "
+            "return, not a loop. Fence the region of interest with "
+            "'# LLVM-MCA-BEGIN name' and '# LLVM-MCA-END' comments in the "
+            "assembly and analyse that instead."
+        )
+    subject = describe_subject(code or asm, label)
+
+    return {
+        "success": True,
+        "data": {
+            "cpu": cpu,
+            "target": target,
+            "flags": flags if not asm else "",
+            "source": "asm" if asm else "c",
+            "iterations": reported_iterations,
+            "total_cycles": total_cycles,
+            "cycles_per_iteration": cycles_per_iteration,
+            "instructions": summary.get("Instructions"),
+            "total_uops": summary.get("TotaluOps"),
+            "ipc": summary.get("IPC"),
+            "uops_per_cycle": summary.get("uOpsPerCycle"),
+            "dispatch_width": summary.get("DispatchWidth"),
+            "block_rthroughput": summary.get("BlockRThroughput"),
+            "warnings": warnings[:10],
+            "note": (
+                "Modelled, not executed: these are llvm-mca's estimates for "
+                f"{cpu}, and they assume the whole region issues from a warm "
+                "front end with no cache misses."
+            ),
+        },
+        "findings": [
+            {
+                "type": "cycle_model_measurement",
+                "subject": subject,
+                # The core model belongs in the title: a cycle count quoted
+                # without it cannot be compared with anything.
+                "title": (
+                    f"{subject} @ {cpu}"
+                    + (f" (clang {flags})" if not asm else " (given assembly)")
+                    + f": {cycles_per_iteration} cycles/iteration, "
+                    f"IPC {round(float(summary.get('IPC') or 0), 3)}"
+                ),
+                "cpu": cpu,
+                "target": target,
+                "flags": flags if not asm else "",
+                "cycles_per_iteration": cycles_per_iteration,
+                "total_cycles": total_cycles,
+                "instructions": summary.get("Instructions"),
+                "block_rthroughput": summary.get("BlockRThroughput"),
+                "warnings": warnings[:5],
             }
         ],
     }

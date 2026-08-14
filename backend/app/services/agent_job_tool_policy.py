@@ -43,6 +43,7 @@ def get_tools_for_job_type(
         # Code execution
         "execute_python",
         "compile_c_snippet",
+        "analyze_snippet_cycles",
         "benchmark_c_snippet",
         # Custom tools: create one, then call it in this run or a later one
         "create_custom_tool",
@@ -352,6 +353,7 @@ def get_tools_for_job_type(
         # Code execution tools
         "execute_python",
         "compile_c_snippet",
+        "analyze_snippet_cycles",
         "benchmark_c_snippet",
         "execute_data_pipeline",
         "write_and_run_script",

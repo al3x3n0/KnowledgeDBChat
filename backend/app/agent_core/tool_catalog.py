@@ -43,6 +43,7 @@ def _default_metadata(
         "execute_data_pipeline",
         # Compile and run submitted code inside a Docker sandbox.
         "compile_c_snippet",
+        "analyze_snippet_cycles",
         "benchmark_c_snippet",
         "write_and_run_script",
         "write_file",
@@ -129,6 +130,7 @@ def _default_metadata(
         "execute_python",
         "execute_data_pipeline",
         "compile_c_snippet",
+        "analyze_snippet_cycles",
         "benchmark_c_snippet",
         "run_command",
         "search_code",
@@ -137,6 +139,7 @@ def _default_metadata(
         "docker_execute",
         "execute_data_pipeline",
         "compile_c_snippet",
+        "analyze_snippet_cycles",
         "benchmark_c_snippet",
         "write_and_run_script",
         "run_command",

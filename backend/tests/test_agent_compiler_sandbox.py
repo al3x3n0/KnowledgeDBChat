@@ -280,3 +280,60 @@ def test_metric_collection_is_bounded():
 
     assert len(metrics) <= sandbox.MAX_REPORTED_METRICS
     assert len(metrics["metric_0"]) <= sandbox.MAX_REPORTED_VALUES
+
+
+class TestCycleAnalysis:
+    """A proposed instruction cannot be run, so it has to be costed."""
+
+    @pytest.mark.asyncio
+    async def test_a_cycle_estimate_requires_a_named_core(self, enabled):
+        result = await sandbox.analyze_snippet_cycles(code="void f(void){}", cpu="")
+
+        assert "cpu is required" in result["error"]
+        assert "neoverse-n1" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_core_name_may_not_smuggle_shell_syntax(self, enabled):
+        result = await sandbox.analyze_snippet_cycles(
+            code="void f(void){}", cpu="neoverse-n1; rm -rf /"
+        )
+
+        assert "cpu contains unsupported characters" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_target_triple_may_not_smuggle_shell_syntax(self, enabled):
+        result = await sandbox.analyze_snippet_cycles(
+            code="void f(void){}", cpu="neoverse-n1", target="aarch64 && id"
+        )
+
+        assert "target contains unsupported characters" in result["error"]
+
+    def test_the_summary_is_read_from_the_report(self):
+        payload = {
+            "CodeRegions": [
+                {"SummaryView": {"TotalCycles": 2414, "Iterations": 100, "IPC": 2.23}}
+            ]
+        }
+
+        assert sandbox._mca_summary(payload)["TotalCycles"] == 2414
+
+    def test_a_report_with_no_region_yields_nothing_rather_than_raising(self):
+        assert sandbox._mca_summary({"CodeRegions": []}) == {}
+        assert sandbox._mca_summary({}) == {}
+
+
+def test_a_whole_function_estimate_is_flagged_as_not_being_a_loop():
+    """The two differ by 3.4x, so the number needs its scope attached."""
+    import re
+
+    warnings = ["warning: found a return instruction in the input assembly sequence."]
+    analysed = "  ldp q2, q3, [x10]\n  ret\n"
+    flagged = "LLVM-MCA-BEGIN" not in analysed and any(
+        "return instruction" in line for line in warnings
+    )
+
+    assert flagged
+
+    fenced = "# LLVM-MCA-BEGIN loop\n  ldp q2, q3, [x10]\n# LLVM-MCA-END\n  ret\n"
+    assert not ("LLVM-MCA-BEGIN" not in fenced)
+    assert re.search(r"LLVM-MCA-(BEGIN|END)", fenced)

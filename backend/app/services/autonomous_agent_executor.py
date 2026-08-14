@@ -7469,11 +7469,30 @@ RESPONSE FORMAT:
                 items = [str(x).strip() for x in value if str(x).strip()]
             elif isinstance(value, str):
                 items = [str(x).strip() for x in value.split(",") if str(x).strip()]
+            elif isinstance(value, dict):
+                items = [str(x).strip() for x in value if str(x).strip()]
             deduped: List[str] = []
             for item in items:
                 if item not in deduped:
                     deduped.append(item)
             return deduped
+
+        def _as_type_counts(value: Any) -> Dict[str, int]:
+            """Normalize required types to {type: how many are needed}.
+
+            A list keeps its long-standing meaning of "at least one of each".
+            A mapping lets a contract say how many, which matters because the
+            contract is also a stopping rule: a job asked for four measurements
+            stopped after one, having satisfied "at least one of each type".
+            """
+            if isinstance(value, dict):
+                counts: Dict[str, int] = {}
+                for key, raw_count in value.items():
+                    name = str(key).strip()
+                    if name:
+                        counts[name] = _as_int(raw_count, 1, 1, 100_000)
+                return counts
+            return {name: 1 for name in _as_str_list(value)}
 
         flat_contract_present = any(
             k in cfg
@@ -7491,18 +7510,20 @@ RESPONSE FORMAT:
             raw.get("enabled", cfg.get("goal_contract_enabled", enabled_default)),
             default=enabled_default,
         )
-        required_finding_types = _as_str_list(
+        required_finding_type_counts = _as_type_counts(
             raw.get(
                 "required_finding_types",
                 cfg.get("goal_contract_required_finding_types", []),
             )
         )
-        required_artifact_types = _as_str_list(
+        required_artifact_type_counts = _as_type_counts(
             raw.get(
                 "required_artifact_types",
                 cfg.get("goal_contract_required_artifact_types", []),
             )
         )
+        required_finding_types = list(required_finding_type_counts)
+        required_artifact_types = list(required_artifact_type_counts)
         required_result_keys = _as_str_list(
             raw.get(
                 "required_result_keys",
@@ -7532,6 +7553,14 @@ RESPONSE FORMAT:
             ),
             "required_finding_types": required_finding_types[:24],
             "required_artifact_types": required_artifact_types[:24],
+            "required_finding_type_counts": {
+                name: required_finding_type_counts[name]
+                for name in required_finding_types[:24]
+            },
+            "required_artifact_type_counts": {
+                name: required_artifact_type_counts[name]
+                for name in required_artifact_types[:24]
+            },
             "required_result_keys": required_result_keys[:24],
             "auto_complete_when_satisfied": self._coerce_bool(
                 raw.get(

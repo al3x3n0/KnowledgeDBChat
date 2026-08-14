@@ -251,3 +251,32 @@ def test_an_unrecognised_failure_still_reports_what_the_compiler_said():
 
 def test_an_empty_stderr_still_produces_a_message():
     assert sandbox.explain_compiler_failure("") == "Compilation failed"
+
+
+def test_numbers_the_program_printed_are_carried_into_the_result():
+    """A harness printing gflops has done the arithmetic; do not drop it."""
+    metrics = sandbox.parse_reported_metrics(
+        "runtime_seconds=0.132459\ngflops=1.510\nsink=200000000.000000\n"
+        "runtime_seconds=0.121536\ngflops=1.646\n"
+    )
+
+    assert metrics["gflops"] == [1.510, 1.646]
+    assert metrics["runtime_seconds"] == [0.132459, 0.121536]
+
+
+def test_prose_lines_are_not_mistaken_for_metrics():
+    metrics = sandbox.parse_reported_metrics(
+        "starting benchmark\nwarning: this is slow\nresult: ok\niterations: 5\n"
+    )
+
+    assert metrics == {"iterations": [5.0]}
+
+
+def test_metric_collection_is_bounded():
+    output = "\n".join(f"metric_{i}={i}" for i in range(40))
+    output += "\n" + "\n".join("repeated=1" for _ in range(40))
+
+    metrics = sandbox.parse_reported_metrics(output)
+
+    assert len(metrics) <= sandbox.MAX_REPORTED_METRICS
+    assert len(metrics["metric_0"]) <= sandbox.MAX_REPORTED_VALUES

@@ -93,6 +93,38 @@ def explain_compiler_failure(stderr: str) -> str:
     return message
 
 
+MAX_REPORTED_METRICS = 12
+MAX_REPORTED_VALUES = 20
+_REPORTED_METRIC = re.compile(
+    r"^\s*([A-Za-z][\w .%/-]{0,40}?)\s*[=:]\s*(-?\d+(?:\.\d+)?)\s*$"
+)
+
+
+def parse_reported_metrics(output: str) -> Dict[str, List[float]]:
+    """Collect the numbers the benchmarked program printed about itself.
+
+    A harness that prints "gflops=1.646" has already done the arithmetic that
+    makes its timings meaningful. The finding carried only the elapsed
+    milliseconds, so that figure was dropped on the floor and runs concluded
+    "no GFLOP/s was reported" about a program that had reported it four times.
+
+    Only plain key=value numbers are taken, and they are carried as printed:
+    what a key means is the program's business, not this module's.
+    """
+    metrics: Dict[str, List[float]] = {}
+    for line in (output or "").splitlines():
+        match = _REPORTED_METRIC.match(line)
+        if not match:
+            continue
+        name = match.group(1).strip()
+        if name not in metrics and len(metrics) >= MAX_REPORTED_METRICS:
+            continue
+        values = metrics.setdefault(name, [])
+        if len(values) < MAX_REPORTED_VALUES:
+            values.append(float(match.group(2)))
+    return metrics
+
+
 def _clean_flags(flags: str) -> Optional[str]:
     """Return usable flags, or None if they contain shell metacharacters."""
     candidate = (flags or "").strip()
@@ -385,6 +417,8 @@ async def benchmark_c_snippet(
         else:
             program_output.append(line)
 
+    reported_metrics = parse_reported_metrics("\n".join(program_output))
+
     return {
         "success": True,
         "data": {
@@ -393,6 +427,7 @@ async def benchmark_c_snippet(
             # The fastest trial is the least contaminated by scheduling noise.
             "fastest_ms": min(timings) if timings else None,
             "all_ms": timings,
+            "reported_metrics": reported_metrics,
             "stdout": "\n".join(program_output)[:MAX_OUTPUT_CHARS],
             "note": (
                 "Wall-clock only; the sandbox has no performance counters. "
@@ -414,6 +449,7 @@ async def benchmark_c_snippet(
                 "flags": flags,
                 "fastest_ms": min(timings) if timings else None,
                 "all_ms": timings,
+                "reported_metrics": reported_metrics,
             }
         ],
     }

@@ -17,6 +17,7 @@ from app.models.user import User
 
 ExporterFactory = Callable[..., Any]
 UserSettingsLoader = Callable[..., Awaitable[Any]]
+ToolLogLoader = Callable[..., Awaitable[Any]]
 
 SUPPORTED_FORMATS = frozenset({"docx", "pdf", "pptx"})
 SUPPORTED_STYLES = frozenset({"professional", "technical", "casual"})
@@ -54,10 +55,39 @@ async def _load_user_settings(*, db: AsyncSession, user_id: UUID) -> Any:
         return None
 
 
+async def _load_tool_log(*, db: AsyncSession, job_id: UUID) -> list:
+    """Read the job's checkpoints and derive the ordered list of tools it ran.
+
+    Tool calls are not in ``job.execution_log`` — that column holds phase
+    markers — so this is the only place a report can learn what the agent did.
+    A failure here propagates: a report that quietly omits the section reads
+    as a run that used no tools.
+    """
+    from app.models.agent_job import AgentJobCheckpoint
+    from app.services.agent_job_transcript_service import build_tool_log
+
+    checkpoints = (
+        (
+            await db.execute(
+                select(AgentJobCheckpoint)
+                .where(AgentJobCheckpoint.job_id == job_id)
+                .order_by(
+                    AgentJobCheckpoint.iteration,
+                    AgentJobCheckpoint.created_at,
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return build_tool_log(checkpoints)
+
+
 def build_job_export_api(
     *,
     exporter_factory: ExporterFactory = _default_exporter_factory,
     load_user_settings: UserSettingsLoader = _load_user_settings,
+    load_tool_log: ToolLogLoader = _load_tool_log,
 ) -> JobExportApi:
     """Build the job-results export route with generation dependencies injected."""
     router = APIRouter()
@@ -71,6 +101,12 @@ def build_job_export_api(
             description="Visual style: professional, technical, or casual",
         ),
         include_log: bool = Query(False, description="Include execution log in export"),
+        include_tool_log: bool = Query(
+            True,
+            description=(
+                "Include the log of tools the agent ran, with purpose and outcome"
+            ),
+        ),
         include_metadata: bool = Query(
             True, description="Include job metadata in export"
         ),
@@ -110,6 +146,9 @@ def build_job_export_api(
 
         try:
             exporter = exporter_factory(style=style)
+            tool_log = (
+                await load_tool_log(db=db, job_id=job_id) if include_tool_log else None
+            )
             if enhance:
                 user_settings = await load_user_settings(
                     db=db,
@@ -122,6 +161,7 @@ def build_job_export_api(
                     include_metadata=include_metadata,
                     user_id=current_user.id,
                     user_settings=user_settings,
+                    tool_log=tool_log,
                 )
             else:
                 file_bytes = exporter.export(
@@ -129,6 +169,7 @@ def build_job_export_api(
                     format=format,
                     include_log=include_log,
                     include_metadata=include_metadata,
+                    tool_log=tool_log,
                 )
         except Exception as error:
             logger.error(f"Failed to export job {job_id}: {error}")

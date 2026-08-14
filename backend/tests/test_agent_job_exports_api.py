@@ -75,6 +75,7 @@ async def test_job_export_returns_standard_attachment_with_safe_filename():
         format="pdf",
         style="technical",
         include_log=True,
+        include_tool_log=False,
         include_metadata=False,
         enhance=False,
         db=database,
@@ -89,6 +90,9 @@ async def test_job_export_returns_standard_attachment_with_safe_filename():
     assert exporter.standard_call["job"] is job
     assert exporter.standard_call["include_log"] is True
     assert exporter.standard_call["include_metadata"] is False
+    # Not requested is not the same as empty: None leaves the section out
+    # rather than claiming the run took no tool calls.
+    assert exporter.standard_call["tool_log"] is None
 
 
 @pytest.mark.asyncio
@@ -112,6 +116,7 @@ async def test_job_export_enhancement_receives_user_settings():
         format="docx",
         style="casual",
         include_log=False,
+        include_tool_log=False,
         include_metadata=True,
         enhance=True,
         db=database,
@@ -121,3 +126,34 @@ async def test_job_export_enhancement_receives_user_settings():
     assert response.body == b"enhanced-export"
     assert exporter.enhanced_call["user_settings"] is settings
     assert exporter.enhanced_call["user_id"] == user.id
+
+
+@pytest.mark.asyncio
+async def test_job_export_passes_tool_log_to_exporter():
+    user = SimpleNamespace(id=uuid4())
+    job = SimpleNamespace(id=uuid4(), user_id=user.id, name="Research run")
+    database = _Database(job=job)
+    exporter = _Exporter()
+    rows = [{"index": 1, "tool": "search_arxiv", "success": True}]
+
+    async def load_tool_log(**kwargs):
+        assert kwargs == {"db": database, "job_id": job.id}
+        return rows
+
+    api = build_job_export_api(
+        exporter_factory=lambda **_kwargs: exporter,
+        load_tool_log=load_tool_log,
+    )
+    await api.export_job_results(
+        job_id=job.id,
+        format="docx",
+        style="professional",
+        include_log=False,
+        include_tool_log=True,
+        include_metadata=True,
+        enhance=False,
+        db=database,
+        current_user=user,
+    )
+
+    assert exporter.standard_call["tool_log"] == rows

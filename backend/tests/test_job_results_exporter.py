@@ -414,3 +414,105 @@ def test_build_presentation_outline_includes_operator_intervention_stats_line():
         "Intervention timeline: restart (failed -> pending) [resolved]" in str(line)
         for line in (stats_slide.content or [])
     )
+
+
+def _tool_rows():
+    return [
+        {
+            "index": 1,
+            "iteration": 1,
+            "tool": "search_arxiv",
+            "purpose": "find recent work",
+            "success": True,
+            "error": "",
+        },
+        {
+            "index": 2,
+            "iteration": 2,
+            "tool": "compile_c_snippet",
+            "purpose": "measure the kernel",
+            "success": False,
+            "error": "clang: no such file",
+        },
+    ]
+
+
+def test_tool_log_section_lists_calls_purposes_and_failures():
+    exporter = JobResultsExporter()
+
+    content = exporter._build_document_content(
+        _make_job(), include_log=False, include_metadata=False, tool_log=_tool_rows()
+    )
+
+    headings = [item["text"] for item in content if item["type"] == "heading"]
+    assert "Tool Execution Log" in headings
+    assert "Failed Calls" in headings
+
+    tables = [item for item in content if item["type"] == "table"]
+    tally = next(table for table in tables if table["headers"][0] == "Tool")
+    assert ["search_arxiv", "1", "1", "0"] in tally["rows"]
+
+    record = next(table for table in tables if table["headers"][0] == "#")
+    assert [row[2] for row in record["rows"]] == ["search_arxiv", "compile_c_snippet"]
+    assert [row[3] for row in record["rows"]] == ["OK", "FAILED"]
+    assert "find recent work" in record["rows"][0][4]
+
+    text = " ".join(item.get("text", "") for item in content)
+    assert "1 succeeded, 1 failed" in text
+    assert "clang: no such file" in text
+
+
+def test_no_tool_log_section_when_none_was_requested():
+    exporter = JobResultsExporter()
+
+    content = exporter._build_document_content(
+        _make_job(), include_log=False, include_metadata=False, tool_log=None
+    )
+
+    assert "Tool Execution Log" not in [
+        item["text"] for item in content if item["type"] == "heading"
+    ]
+
+
+def test_empty_tool_log_says_so_rather_than_omitting_the_section():
+    """An absent section and a run that used no tools must not look alike."""
+    exporter = JobResultsExporter()
+
+    content = exporter._build_document_content(
+        _make_job(), include_log=False, include_metadata=False, tool_log=[]
+    )
+
+    assert "Tool Execution Log" in [
+        item["text"] for item in content if item["type"] == "heading"
+    ]
+    assert "No tool calls were recorded" in " ".join(
+        item.get("text", "") for item in content
+    )
+
+
+def test_tool_log_reports_how_many_calls_it_left_out():
+    exporter = JobResultsExporter()
+    rows = [
+        {
+            "index": i,
+            "iteration": 1,
+            "tool": "search_arxiv",
+            "purpose": "p",
+            "success": True,
+        }
+        for i in range(1, 205)
+    ]
+
+    content = exporter._build_document_content(
+        _make_job(), include_log=False, include_metadata=False, tool_log=rows
+    )
+
+    record = next(
+        item
+        for item in content
+        if item["type"] == "table" and item["headers"][0] == "#"
+    )
+    assert len(record["rows"]) == 120
+    assert "84 further tool call(s) are not listed" in " ".join(
+        item.get("text", "") for item in content
+    )

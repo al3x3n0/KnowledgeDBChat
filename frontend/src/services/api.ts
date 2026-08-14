@@ -3629,6 +3629,7 @@ class ApiClient {
     options?: {
       style?: 'professional' | 'technical' | 'casual';
       includeLog?: boolean;
+      includeToolLog?: boolean;
       includeMetadata?: boolean;
       enhance?: boolean;
     }
@@ -3637,6 +3638,9 @@ class ApiClient {
       format,
       style: options?.style || 'professional',
       include_log: String(options?.includeLog || false),
+      // The log of tools the agent ran is on by default: without it the report
+      // states conclusions with no record of the calls behind them.
+      include_tool_log: String(options?.includeToolLog !== false),
       include_metadata: String(options?.includeMetadata !== false),
       enhance: String(options?.enhance || false),
     });
@@ -3658,6 +3662,7 @@ class ApiClient {
     options?: {
       style?: 'professional' | 'technical' | 'casual';
       includeLog?: boolean;
+      includeToolLog?: boolean;
       includeMetadata?: boolean;
       enhance?: boolean;
     }

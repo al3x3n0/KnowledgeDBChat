@@ -14,6 +14,7 @@ from loguru import logger
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.schemas.presentation import PresentationOutline, SlideContent
+from app.services.agent_job_transcript_service import summarize_tool_log
 from app.services.docx_builder import DOCXBuilder
 from app.services.operator_interventions import (
     derive_operator_interventions_with_outcomes,
@@ -26,6 +27,13 @@ if TYPE_CHECKING:
 
 
 ExportFormat = Literal["docx", "pdf", "pptx"]
+
+# A long run can take hundreds of tool calls. Cap the chronological table, and
+# say how many were left out — a table that stops without saying so reads as
+# the whole run.
+MAX_TOOL_LOG_ROWS = 120
+MAX_TOOL_LOG_PURPOSE_CHARS = 160
+MAX_TOOL_LOG_FAILURES = 15
 
 
 # Prompts for LLM-enhanced content generation
@@ -189,6 +197,7 @@ class JobResultsExporter:
         format: ExportFormat,
         include_log: bool = False,
         include_metadata: bool = True,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """
         Export job results to the specified format (synchronous, no LLM enhancement).
@@ -198,16 +207,17 @@ class JobResultsExporter:
             format: Output format (docx, pdf, pptx)
             include_log: Whether to include execution log
             include_metadata: Whether to include job metadata
+            tool_log: Rows from ``build_tool_log``; None leaves the section out
 
         Returns:
             File content as bytes
         """
         if format == "docx":
-            return self._export_to_docx(job, include_log, include_metadata)
+            return self._export_to_docx(job, include_log, include_metadata, tool_log)
         elif format == "pdf":
-            return self._export_to_pdf(job, include_log, include_metadata)
+            return self._export_to_pdf(job, include_log, include_metadata, tool_log)
         elif format == "pptx":
-            return self._export_to_pptx(job, include_log, include_metadata)
+            return self._export_to_pptx(job, include_log, include_metadata, tool_log)
         else:
             raise ValueError(f"Unsupported format: {format}")
 
@@ -219,6 +229,7 @@ class JobResultsExporter:
         include_metadata: bool = True,
         user_id: Optional[UUID] = None,
         user_settings: Optional["UserLLMSettings"] = None,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """
         Export job results with LLM-enhanced content (async).
@@ -235,6 +246,7 @@ class JobResultsExporter:
             include_log: Whether to include execution log
             include_metadata: Whether to include job metadata
             user_id: Optional user ID for LLM settings
+            tool_log: Rows from ``build_tool_log``; None leaves the section out
 
         Returns:
             File content as bytes
@@ -246,15 +258,15 @@ class JobResultsExporter:
 
         if format == "docx":
             return self._export_to_docx_enhanced(
-                job, enhanced_content, include_log, include_metadata
+                job, enhanced_content, include_log, include_metadata, tool_log
             )
         elif format == "pdf":
             return self._export_to_pdf_enhanced(
-                job, enhanced_content, include_log, include_metadata
+                job, enhanced_content, include_log, include_metadata, tool_log
             )
         elif format == "pptx":
             return self._export_to_pptx_enhanced(
-                job, enhanced_content, include_log, include_metadata
+                job, enhanced_content, include_log, include_metadata, tool_log
             )
         else:
             raise ValueError(f"Unsupported format: {format}")
@@ -426,10 +438,13 @@ class JobResultsExporter:
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to DOCX format."""
         builder = DOCXBuilder(style=self.style)
-        content_items = self._build_document_content(job, include_log, include_metadata)
+        content_items = self._build_document_content(
+            job, include_log, include_metadata, tool_log
+        )
 
         return builder.build(
             title=f"Agent Job Report: {job.name}",
@@ -444,11 +459,12 @@ class JobResultsExporter:
         enhanced_content: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to DOCX format with LLM-enhanced content."""
         builder = DOCXBuilder(style=self.style)
         content_items = self._build_document_content_enhanced(
-            job, enhanced_content, include_log, include_metadata
+            job, enhanced_content, include_log, include_metadata, tool_log
         )
 
         return builder.build(
@@ -463,10 +479,13 @@ class JobResultsExporter:
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PDF format."""
         builder = PDFBuilder(style=self.style)
-        content_items = self._build_document_content(job, include_log, include_metadata)
+        content_items = self._build_document_content(
+            job, include_log, include_metadata, tool_log
+        )
 
         return builder.build(
             title=f"Agent Job Report: {job.name}",
@@ -480,11 +499,12 @@ class JobResultsExporter:
         enhanced_content: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PDF format with LLM-enhanced content."""
         builder = PDFBuilder(style=self.style)
         content_items = self._build_document_content_enhanced(
-            job, enhanced_content, include_log, include_metadata
+            job, enhanced_content, include_log, include_metadata, tool_log
         )
 
         return builder.build(
@@ -498,10 +518,13 @@ class JobResultsExporter:
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PPTX format."""
         builder = PPTXBuilder(style=self.style)
-        outline = self._build_presentation_outline(job, include_log, include_metadata)
+        outline = self._build_presentation_outline(
+            job, include_log, include_metadata, tool_log
+        )
 
         return builder.build(outline=outline)
 
@@ -511,11 +534,12 @@ class JobResultsExporter:
         enhanced_content: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PPTX format with LLM-enhanced content."""
         builder = PPTXBuilder(style=self.style)
         outline = self._build_presentation_outline_enhanced(
-            job, enhanced_content, include_log, include_metadata
+            job, enhanced_content, include_log, include_metadata, tool_log
         )
 
         return builder.build(outline=outline)
@@ -526,6 +550,7 @@ class JobResultsExporter:
         enhanced: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build content items for DOCX/PDF export with LLM enhancement.
@@ -871,6 +896,10 @@ class JobResultsExporter:
                     }
                 )
 
+        # Tool execution log
+        if tool_log is not None:
+            content.extend(self._build_tool_log_content(tool_log))
+
         # Execution log
         if include_log and job.execution_log:
             content.append({"type": "page_break"})
@@ -914,6 +943,7 @@ class JobResultsExporter:
         enhanced: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> PresentationOutline:
         """
         Build presentation outline for PPTX export with LLM enhancement.
@@ -1135,6 +1165,11 @@ class JobResultsExporter:
                     notes="The job encountered errors during execution.",
                 )
             )
+            slide_num += 1
+
+        # Tools used
+        if tool_log:
+            slides.append(self._build_tool_log_slide(tool_log, slide_num))
             slide_num += 1
 
         # Summary slide
@@ -1400,11 +1435,155 @@ class JobResultsExporter:
             "recent_items": recent_items,
         }
 
+    def _build_tool_log_content(
+        self, tool_log: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Render the tools a job ran as a report section.
+
+        Findings on their own cannot be checked: the reader cannot see which
+        tool produced a number, nor that the decisive call failed and the run
+        carried on around it. This section is that record.
+        """
+        content: List[Dict[str, Any]] = [
+            {"type": "page_break"},
+            {"type": "heading", "level": 1, "text": "Tool Execution Log"},
+        ]
+        if not tool_log:
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": (
+                        "No tool calls were recorded for this run. A job driven by "
+                        "a deterministic runner, or one that stopped before acting, "
+                        "records none."
+                    ),
+                }
+            )
+            return content
+
+        summary = summarize_tool_log(tool_log)
+        headline = (
+            f"The agent ran {summary['total']} tool call(s): "
+            f"{summary['succeeded']} succeeded, {summary['failed']} failed"
+        )
+        if summary["unknown"]:
+            headline += f", {summary['unknown']} reported no status"
+        headline += "."
+        if summary["substituted"]:
+            headline += (
+                f" {summary['substituted']} call(s) ran a substitute tool after the "
+                "requested one failed."
+            )
+        content.append({"type": "paragraph", "text": headline})
+
+        content.append({"type": "heading", "level": 2, "text": "Tools Used"})
+        content.append(
+            {
+                "type": "table",
+                "headers": ["Tool", "Calls", "Succeeded", "Failed"],
+                "rows": [
+                    [
+                        row["tool"],
+                        str(row["calls"]),
+                        str(row["ok"]),
+                        str(row["failed"]),
+                    ]
+                    for row in summary["per_tool"]
+                ],
+            }
+        )
+
+        content.append({"type": "heading", "level": 2, "text": "Chronological Record"})
+        rows = []
+        for entry in tool_log[:MAX_TOOL_LOG_ROWS]:
+            success = entry.get("success")
+            outcome = "OK" if success is True else "FAILED" if success is False else "-"
+            tool_name = str(entry.get("tool") or "unknown")
+            if entry.get("substituted") and entry.get("executed_tool"):
+                tool_name += f" -> {entry['executed_tool']}"
+            purpose = markdown_to_plain(entry.get("purpose") or "")
+            rows.append(
+                [
+                    str(entry.get("index", "")),
+                    str(entry.get("iteration", "")),
+                    tool_name,
+                    outcome,
+                    purpose[:MAX_TOOL_LOG_PURPOSE_CHARS] or "-",
+                ]
+            )
+        content.append(
+            {
+                "type": "table",
+                "headers": ["#", "Iteration", "Tool", "Result", "Purpose"],
+                "rows": rows,
+            }
+        )
+        omitted = len(tool_log) - len(rows)
+        if omitted > 0:
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": (
+                        f"{omitted} further tool call(s) are not listed here; the "
+                        "full record is available from the job transcript export."
+                    ),
+                }
+            )
+
+        failures = summary["failures"]
+        if failures:
+            content.append({"type": "heading", "level": 2, "text": "Failed Calls"})
+            for entry in failures[:MAX_TOOL_LOG_FAILURES]:
+                content.append(
+                    {
+                        "type": "paragraph",
+                        "text": (
+                            f"[{entry.get('index')}] {entry.get('tool')} "
+                            f"(iteration {entry.get('iteration')}): "
+                            f"{entry.get('error') or 'no reason recorded'}"
+                        ),
+                    }
+                )
+            if len(failures) > MAX_TOOL_LOG_FAILURES:
+                content.append(
+                    {
+                        "type": "paragraph",
+                        "text": (
+                            f"{len(failures) - MAX_TOOL_LOG_FAILURES} further failed "
+                            "call(s) are not detailed here."
+                        ),
+                    }
+                )
+        return content
+
+    def _build_tool_log_slide(
+        self, tool_log: List[Dict[str, Any]], slide_number: int
+    ) -> SlideContent:
+        """Summarize the tool log as one slide."""
+        summary = summarize_tool_log(tool_log)
+        body = [
+            f"{summary['total']} tool calls: {summary['succeeded']} succeeded, "
+            f"{summary['failed']} failed"
+        ]
+        for row in summary["per_tool"][:6]:
+            line = f"{row['tool']}: {row['calls']} call(s)"
+            if row["failed"]:
+                line += f", {row['failed']} failed"
+            body.append(line)
+        return SlideContent(
+            slide_number=slide_number,
+            slide_type="content",
+            title="Tools Used",
+            content=body,
+            notes="Which tools the agent ran, and how they fared.",
+        )
+
     def _build_document_content(
         self,
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build content items for DOCX/PDF export (non-enhanced version).
@@ -1688,6 +1867,10 @@ class JobResultsExporter:
                     else:
                         content.append({"type": "paragraph", "text": str(finding)})
 
+        # Tool execution log
+        if tool_log is not None:
+            content.extend(self._build_tool_log_content(tool_log))
+
         # Execution log
         if include_log and job.execution_log:
             content.append({"type": "page_break"})
@@ -1725,6 +1908,7 @@ class JobResultsExporter:
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> PresentationOutline:
         """Build presentation outline for PPTX export (non-enhanced version)."""
         slides: List[SlideContent] = []
@@ -1880,6 +2064,11 @@ class JobResultsExporter:
                         )
                     )
                     slide_num += 1
+
+        # Tools used
+        if tool_log:
+            slides.append(self._build_tool_log_slide(tool_log, slide_num))
+            slide_num += 1
 
         # Summary
         slides.append(

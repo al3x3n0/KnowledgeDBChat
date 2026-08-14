@@ -7,6 +7,8 @@ from app.services.agent_job_transcript_service import (
     build_conversation,
     build_job_transcript,
     build_reasoning,
+    build_tool_log,
+    summarize_tool_log,
 )
 
 
@@ -295,3 +297,61 @@ def test_a_complete_transcript_reports_nothing_missing():
     assert c["llm_calls_not_captured"] == 0
     assert c["action_entries_skipped_no_action"] == 0
     assert c["results_with_shortened_text"] == 0
+
+
+def test_tool_log_lists_every_call_in_order_with_its_purpose():
+    entries = [
+        _action("search_arxiv", "k1", purpose="find papers"),
+        _action("compile_c_snippet", "k2", purpose="measure it", ok=False),
+    ]
+
+    rows = build_tool_log([_checkpoint({"actions_taken": entries})])
+
+    assert [row["index"] for row in rows] == [1, 2]
+    assert [row["tool"] for row in rows] == ["search_arxiv", "compile_c_snippet"]
+    assert rows[0]["purpose"] == "find papers"
+    assert rows[1]["success"] is False
+
+
+def test_tool_log_summary_counts_a_missing_status_as_unknown():
+    """A result that reported nothing must not be counted as a success."""
+    rows = [
+        {"tool": "search_arxiv", "success": True},
+        {"tool": "search_arxiv", "success": False, "error": "boom"},
+        {"tool": "read_document", "success": None},
+    ]
+
+    summary = summarize_tool_log(rows)
+
+    assert (summary["total"], summary["succeeded"], summary["failed"]) == (3, 1, 1)
+    assert summary["unknown"] == 1
+    assert summary["per_tool"][0] == {
+        "tool": "search_arxiv",
+        "calls": 2,
+        "ok": 1,
+        "failed": 1,
+    }
+    assert [row["error"] for row in summary["failures"]] == ["boom"]
+
+
+def test_tool_log_names_the_tool_that_actually_ran_after_a_substitution():
+    entry = {
+        "iteration": 2,
+        "action": {
+            "tool": "web_search",
+            "purpose": "look it up",
+            "_idempotency_key": "k",
+        },
+        "result": {
+            "success": True,
+            "primary_tool": "web_search",
+            "tool": "search_arxiv",
+            "primary_error": "provider down",
+        },
+    }
+
+    row = build_tool_log([_checkpoint({"actions_taken": [entry]})])[0]
+
+    assert row["substituted"] is True
+    assert row["executed_tool"] == "search_arxiv"
+    assert summarize_tool_log([row])["substituted"] == 1

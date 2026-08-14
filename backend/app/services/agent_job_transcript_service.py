@@ -135,6 +135,82 @@ def build_actions(
     return actions
 
 
+# A report is read, not replayed: keep the reason and the parameters legible
+# without carrying a whole tool result onto the page.
+TOOL_LOG_PURPOSE_CHARS = 300
+TOOL_LOG_PARAM_CHARS = 200
+TOOL_LOG_ERROR_CHARS = 400
+
+
+def build_tool_log(checkpoints: Iterable[Any]) -> List[Dict[str, Any]]:
+    """List every tool the job ran, in order, compact enough for a document.
+
+    Tool calls live in checkpoint state, not in ``job.execution_log`` — that
+    column only carries phase markers — so a report built from the job row
+    alone cannot say what the agent actually did.
+    """
+    rows: List[Dict[str, Any]] = []
+    for index, action in enumerate(build_actions(checkpoints), start=1):
+        row = {
+            "index": index,
+            "iteration": action.get("iteration"),
+            "node": action.get("node"),
+            "tool": str(action.get("tool") or "unknown"),
+            "purpose": _clip(action.get("reason") or "", TOOL_LOG_PURPOSE_CHARS),
+            "params": _clip(action.get("params") or {}, TOOL_LOG_PARAM_CHARS),
+            "success": action.get("success"),
+            "error": _clip(action.get("error") or "", TOOL_LOG_ERROR_CHARS),
+        }
+        if action.get("substituted"):
+            row["substituted"] = True
+            row["requested_tool"] = action.get("requested_tool")
+            row["executed_tool"] = action.get("executed_tool")
+        rows.append(row)
+    return rows
+
+
+def summarize_tool_log(rows: Iterable[Dict[str, Any]]) -> Dict[str, Any]:
+    """Tally a tool log: totals, per-tool counts, and the calls that failed.
+
+    ``success`` is whatever the tool result reported, so a missing value is
+    counted as unknown rather than folded into either side — a run whose
+    results carried no status should not read as a run that succeeded.
+    """
+    rows = list(rows)
+    per_tool: Dict[str, Dict[str, int]] = {}
+    succeeded = failed = unknown = 0
+    failures: List[Dict[str, Any]] = []
+
+    for row in rows:
+        name = str(row.get("tool") or "unknown")
+        tally = per_tool.setdefault(
+            name, {"tool": name, "calls": 0, "ok": 0, "failed": 0}
+        )
+        tally["calls"] += 1
+        success = row.get("success")
+        if success is True:
+            succeeded += 1
+            tally["ok"] += 1
+        elif success is False:
+            failed += 1
+            tally["failed"] += 1
+            failures.append(row)
+        else:
+            unknown += 1
+
+    return {
+        "total": len(rows),
+        "succeeded": succeeded,
+        "failed": failed,
+        "unknown": unknown,
+        "substituted": sum(1 for row in rows if row.get("substituted")),
+        "per_tool": sorted(
+            per_tool.values(), key=lambda item: (-item["calls"], item["tool"])
+        ),
+        "failures": failures,
+    }
+
+
 def build_reasoning(checkpoints: Iterable[Any]) -> Dict[str, Any]:
     """Pull the model-written commentary out of the latest checkpoint."""
     latest: Dict[str, Any] = {}

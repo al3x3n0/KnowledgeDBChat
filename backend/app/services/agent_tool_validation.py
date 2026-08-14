@@ -12,7 +12,9 @@ told "invalid input" guesses again and spends another iteration.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 # JSON Schema types mapped to what Python actually arrives as. bool is checked
 # before int deliberately: bool is a subclass of int, so True would otherwise
@@ -27,8 +29,32 @@ _TYPE_CHECKS = {
 }
 
 
+"""Fields whose own description promises a UUID are checked as UUIDs.
+
+Keeping the rule tied to the description keeps one source of truth: the model
+is told "The UUID of the document to read", so that is what it is held to, and
+the check cannot drift away from the wording as fields are added. Schemas may
+also opt in explicitly with ``"format": "uuid"``.
+"""
+_PROMISES_UUID = re.compile(r"\bUUIDs?\b", re.IGNORECASE)
+
+
 def _describe(value: Any) -> str:
     return type(value).__name__
+
+
+def _expects_uuid(spec: Dict[str, Any]) -> bool:
+    if str(spec.get("format") or "").strip().lower() == "uuid":
+        return True
+    return bool(_PROMISES_UUID.search(str(spec.get("description") or "")))
+
+
+def _is_uuid(value: str) -> bool:
+    try:
+        UUID(value)
+    except (ValueError, AttributeError, TypeError):
+        return False
+    return True
 
 
 def validate_tool_params(
@@ -79,6 +105,20 @@ def validate_tool_params(
             problems.append(
                 f"field {name} should be one of {', '.join(map(str, choices))}, "
                 f"got {value!r}"
+            )
+        if (
+            isinstance(value, str)
+            and value.strip()
+            and _expects_uuid(spec)
+            and not _is_uuid(value.strip())
+        ):
+            # Say what kind of id is wanted. An arXiv id reached document_id
+            # often enough to stall runs, and the failure it produced deep in
+            # the handler — "badly formed hexadecimal UUID string" — named
+            # neither the tool nor the field.
+            problems.append(
+                f"field {name} should be a UUID, got {value!r}; this is a "
+                "knowledge-base id, not an external identifier"
             )
 
     if not problems:

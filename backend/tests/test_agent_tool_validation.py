@@ -74,3 +74,32 @@ def test_missing_code_is_caught_for_the_compiler_tool(params):
     message = validate_tool_params("compile_c_snippet", params)
 
     assert message is not None and "code" in message
+
+
+def test_an_arxiv_id_is_rejected_where_a_document_uuid_is_required():
+    """The failure this replaces named neither the tool nor the field.
+
+    Passing an arXiv id to summarize_document raised "badly formed hexadecimal
+    UUID string" from deep inside the handler, and the agent retried it.
+    """
+    message = validate_tool_params("summarize_document", {"document_id": "2401.00001"})
+
+    assert "field document_id should be a UUID" in message
+    assert "2401.00001" in message
+    assert "not an external identifier" in message
+
+
+def test_a_real_uuid_passes():
+    message = validate_tool_params(
+        "summarize_document",
+        {"document_id": "f873f8a1-842f-42d7-947e-5781eb997125"},
+    )
+
+    assert message is None
+
+
+def test_a_field_that_promises_no_uuid_is_left_alone():
+    """Only fields whose description promises a UUID are held to one."""
+    message = validate_tool_params("search_web", {"query": "not-a-uuid"})
+
+    assert message is None

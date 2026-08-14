@@ -63,6 +63,63 @@ SYSTEM_PROMPT = (
 )
 
 
+MAX_METRICS_PER_FINDING = 6
+# Containers a tool uses for the numbers it measured, alongside the title.
+METRIC_CONTAINERS = ("reported_metrics", "codegen", "metrics")
+
+
+def _format_number(value: float) -> str:
+    text = f"{value:.6g}"
+    return text
+
+
+def summarize_finding_metrics(finding: Dict[str, Any]) -> str:
+    """Render the numbers a finding carries, so the answer can cite them.
+
+    Only a finding's title used to reach this prompt, so every measurement a
+    tool recorded in a field rather than in its title was invisible here: runs
+    concluded "GFLOP/s values were not recorded" about findings that carried
+    five of them. Ranges rather than a single figure, because which end of a
+    series is the good one depends on the metric, and picking for the model
+    would be this module inventing an interpretation.
+    """
+    pairs: List[str] = []
+
+    def _add(name: str, value: Any) -> None:
+        if len(pairs) >= MAX_METRICS_PER_FINDING:
+            return
+        if isinstance(value, bool) or name.startswith("_"):
+            return
+        if isinstance(value, (int, float)):
+            pairs.append(f"{name}={_format_number(float(value))}")
+            return
+        if isinstance(value, list):
+            numbers = [v for v in value if isinstance(v, (int, float))]
+            numbers = [float(v) for v in numbers if not isinstance(v, bool)]
+            if not numbers:
+                return
+            low, high = min(numbers), max(numbers)
+            span = (
+                _format_number(low)
+                if low == high
+                else f"{_format_number(low)}..{_format_number(high)}"
+            )
+            pairs.append(f"{name}={span} (n={len(numbers)})")
+
+    for container in METRIC_CONTAINERS:
+        values = finding.get(container)
+        if isinstance(values, dict):
+            for name, value in values.items():
+                _add(str(name), value)
+    for name, value in finding.items():
+        if name in METRIC_CONTAINERS:
+            continue
+        if isinstance(value, (int, float)) and not isinstance(value, bool):
+            _add(str(name), value)
+
+    return ", ".join(pairs)
+
+
 def summarize_findings_for_prompt(findings: Any) -> List[str]:
     """Render findings as short lines, keeping whatever identifies them."""
     rows: List[str] = []
@@ -78,7 +135,11 @@ def summarize_findings_for_prompt(findings: Any) -> List[str]:
         if not title:
             continue
         kind = str(finding.get("type") or "finding").strip()
-        rows.append(f"[{kind}] {title[:MAX_FINDING_CHARS]}")
+        row = f"[{kind}] {title[:MAX_FINDING_CHARS]}"
+        metrics = summarize_finding_metrics(finding)
+        if metrics:
+            row += f" | {metrics}"
+        rows.append(row)
         if len(rows) >= MAX_FINDINGS_IN_PROMPT:
             break
     return rows

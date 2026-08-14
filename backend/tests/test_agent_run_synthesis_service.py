@@ -153,3 +153,56 @@ def test_conclusion_line_reads_cleanly_either_way():
     assert synthesis.conclusion_line(
         {"answer": None, "gaps": ["The run recorded no findings."]}
     ).startswith("No conclusion:")
+
+
+def test_the_numbers_a_finding_carries_reach_the_prompt():
+    """Only titles reached the conclusion prompt, so measurements vanished.
+
+    A run concluded "GFLOP/s values were not recorded in the findings" about a
+    finding carrying five of them.
+    """
+    from app.services.agent_run_synthesis_service import summarize_findings_for_prompt
+
+    rows = summarize_findings_for_prompt(
+        [
+            {
+                "type": "benchmark_measurement",
+                "title": "dotprod @ clang -O2: fastest 11 ms of 5 trials",
+                "fastest_ms": 11,
+                "reported_metrics": {
+                    "gflops": [0.98, 1.34, 1.53],
+                    "runtime_sec": [0.00137, 0.0022],
+                },
+            }
+        ]
+    )
+
+    assert "gflops=0.98..1.53 (n=3)" in rows[0]
+    assert "fastest_ms=11" in rows[0]
+    assert rows[0].startswith("[benchmark_measurement] dotprod @ clang -O2")
+
+
+def test_a_finding_without_numbers_is_unchanged():
+    from app.services.agent_run_synthesis_service import summarize_findings_for_prompt
+
+    rows = summarize_findings_for_prompt(
+        [{"type": "paper", "title": "VecTrans", "arxiv_id": "2401.00001"}]
+    )
+
+    assert rows == ["[paper] VecTrans"]
+
+
+def test_metric_rendering_is_bounded_and_skips_non_numbers():
+    from app.services.agent_run_synthesis_service import (
+        MAX_METRICS_PER_FINDING,
+        summarize_finding_metrics,
+    )
+
+    finding = {"flag": True, "label": "text", "empty_series": ["a", "b"]}
+    finding.update({f"m{i}": i for i in range(20)})
+
+    rendered = summarize_finding_metrics(finding)
+
+    assert "flag" not in rendered and "label" not in rendered
+    assert "empty_series" not in rendered
+    assert len(rendered.split(", ")) <= MAX_METRICS_PER_FINDING

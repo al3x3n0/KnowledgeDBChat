@@ -222,3 +222,32 @@ async def test_a_measurement_names_what_it_measured(enabled, monkeypatch):
     finding = result["findings"][0]
     assert finding["subject"] == "float sum reduction"
     assert finding["title"].startswith("float sum reduction @ clang -O3")
+
+
+def test_a_failure_message_carries_the_compiler_s_own_words():
+    """ "Compilation failed" alone filed the reason where nobody read it."""
+    message = sandbox.explain_compiler_failure(
+        "clang: error: no such file or directory: 'missing.c'\n"
+    )
+
+    assert message.startswith("Compilation failed: clang: error: no such file")
+
+
+def test_march_native_failure_names_the_flag_that_works_here():
+    """A run re-sent -march=native four times when told only that it failed."""
+    message = sandbox.explain_compiler_failure(
+        "clang: error: the clang compiler does not support '-march=native'\n"
+    )
+
+    assert "-mcpu=native" in message
+    assert "aarch64" in message
+
+
+def test_an_unrecognised_failure_still_reports_what_the_compiler_said():
+    message = sandbox.explain_compiler_failure("snippet.c:3:5: error: expected ';'\n")
+
+    assert "expected ';'" in message
+
+
+def test_an_empty_stderr_still_produces_a_message():
+    assert sandbox.explain_compiler_failure("") == "Compilation failed"

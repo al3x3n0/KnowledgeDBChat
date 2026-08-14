@@ -2768,7 +2768,11 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                 "code": {"type": "string", "description": "C source to compile"},
                 "flags": {
                     "type": "string",
-                    "description": "Compiler flags, e.g. '-O2' or '-O3 -ffast-math'",
+                    "description": (
+                        "Compiler flags, e.g. '-O2' or '-O3 -ffast-math'. The "
+                        "sandbox targets aarch64: use '-mcpu=native' to tune "
+                        "for the host, as clang there rejects '-march=native'."
+                    ),
                 },
                 "emit": {
                     "type": "string",
@@ -2802,7 +2806,13 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                     "type": "string",
                     "description": "Self-contained C program including main()",
                 },
-                "flags": {"type": "string", "description": "Compiler flags"},
+                "flags": {
+                    "type": "string",
+                    "description": (
+                        "Compiler flags. The sandbox targets aarch64: use "
+                        "'-mcpu=native', not '-march=native'."
+                    ),
+                },
                 "repeat": {
                     "type": "integer",
                     "description": "Trials to run, 1-10 (default 3); the fastest is reported",

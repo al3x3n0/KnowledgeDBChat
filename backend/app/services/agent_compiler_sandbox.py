@@ -56,6 +56,43 @@ EMIT_ALIASES = {
 }
 
 
+# Compiler complaints an agent cannot act on without knowing this sandbox, and
+# the flag that does work here. The remedy matters more than the diagnosis: a
+# run that was told only "Compilation failed" re-sent -march=native four times
+# and never measured the -O3 codegen it had been asked for.
+COMPILER_ERROR_REMEDIES = (
+    (
+        re.compile(r"does not support '-march=native'"),
+        "This sandbox targets aarch64, where clang rejects -march=native. "
+        "Use -mcpu=native instead.",
+    ),
+    (
+        re.compile(r"unsupported option '-m(avx\w*|sse\d*)'", re.IGNORECASE),
+        "x86 ISA flags do not apply on this aarch64 sandbox. Use -mcpu=native, "
+        "or plain -O3, and read the emitted assembly for the vector width.",
+    ),
+)
+
+
+def explain_compiler_failure(stderr: str) -> str:
+    """Build a failure message the caller can act on.
+
+    The compiler already said what was wrong; repeating "Compilation failed"
+    and filing the reason in a separate field means the reason may never reach
+    whoever decides the next call.
+    """
+    first_line = next(
+        (line.strip() for line in (stderr or "").splitlines() if line.strip()), ""
+    )
+    message = "Compilation failed"
+    if first_line:
+        message += f": {first_line[:400]}"
+    for pattern, remedy in COMPILER_ERROR_REMEDIES:
+        if pattern.search(stderr or ""):
+            return f"{message} — {remedy}"
+    return message
+
+
 def _clean_flags(flags: str) -> Optional[str]:
     """Return usable flags, or None if they contain shell metacharacters."""
     candidate = (flags or "").strip()
@@ -233,7 +270,7 @@ async def compile_c_snippet(
     if returncode != 0:
         return {
             "success": False,
-            "error": "Compilation failed",
+            "error": explain_compiler_failure(stderr),
             "compiler_stderr": stderr[:MAX_OUTPUT_CHARS],
             "flags": flags,
         }
@@ -321,7 +358,7 @@ async def benchmark_c_snippet(
     if returncode == 90:
         return {
             "success": False,
-            "error": "Compilation failed",
+            "error": explain_compiler_failure(stderr),
             "compiler_stderr": stderr[:MAX_OUTPUT_CHARS],
             "flags": flags,
         }

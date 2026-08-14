@@ -1665,6 +1665,17 @@ Suggest the single best next action and explain why."""
     )
 
 
+# Two different charting tools were both called ``create_chart``: the one the
+# builtin catalog advertises takes inline ``data`` and is served by the
+# visualization provider, while this dataset-backed one takes a ``dataset_id``.
+# Provider resolution is first-wins and this provider is registered earlier, so
+# it answered every catalog-conformant call with "Dataset 'None' not found" —
+# the advertised tool could not work at all. Expose it under a name that says
+# which contract it takes, and leave ``create_chart`` to the tool the catalog
+# describes.
+DATA_ANALYSIS_EXPOSED_NAMES = {"create_chart": "create_chart_from_dataset"}
+
+
 def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvider:
     """Data-analysis tools for AutonomousAgentExecutor."""
 
@@ -1871,7 +1882,7 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
         return result
 
     handlers = {
-        tool_name: (
+        DATA_ANALYSIS_EXPOSED_NAMES.get(tool_name, tool_name): (
             lambda params, ctx, _tool_name=tool_name: _execute(_tool_name, params, ctx)
         )
         for tool_name in DATA_ANALYSIS_TOOL_DEFINITIONS

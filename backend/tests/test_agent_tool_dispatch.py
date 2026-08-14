@@ -179,9 +179,22 @@ def test_autonomous_data_analysis_provider_resolves_autonomous_tools():
     )
     assert provider.can_handle("load_csv_data", ctx) is True
     assert provider.can_handle("aggregate_data", ctx) is True
-    assert provider.can_handle("create_chart", ctx) is True
     assert provider.can_handle("execute_python", ctx) is False
     assert provider.can_handle("render_diagram", ctx) is False
+
+
+def test_dataset_charting_does_not_claim_the_advertised_create_chart_name():
+    """The catalog's create_chart takes inline data, not a dataset id.
+
+    This provider resolves first, so while it claimed the name every call that
+    matched the advertised schema failed with "Dataset 'None' not found".
+    """
+    provider = build_autonomous_data_analysis_provider(_DummyService())
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id="u", job=_DummyJob(), state={}
+    )
+    assert provider.can_handle("create_chart", ctx) is False
+    assert provider.can_handle("create_chart_from_dataset", ctx) is True
 
 
 def test_autonomous_memory_provider_resolves_autonomous_tools():
@@ -561,3 +574,23 @@ class _DummyJob:
     progress = 10
     max_iterations = 10
     config = {}
+
+
+def test_no_two_providers_claim_the_same_tool_name():
+    """Resolution is first-wins, so a shared name silently hides one tool.
+
+    That is not a theoretical risk: `create_chart` was registered by two
+    providers with incompatible parameter contracts, and the one the catalog
+    advertised was unreachable for as long as both claimed the name.
+    """
+    from collections import defaultdict
+
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    owners = defaultdict(list)
+    for provider in AutonomousAgentExecutor().tool_registry._providers:
+        for tool_name in provider.supported_tools:
+            owners[tool_name].append(provider.name)
+
+    shadowed = {name: sorted(names) for name, names in owners.items() if len(names) > 1}
+    assert shadowed == {}

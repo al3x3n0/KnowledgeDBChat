@@ -79,3 +79,112 @@ def test_goal_contract_service_builds_executive_digest():
     assert digest["goal_contract"]["enabled"] is True
     assert digest["goal_contract"]["satisfied"] is False
     assert digest["next_actions"][0] == "Validate metrics"
+
+
+def test_an_explicit_zero_progress_minimum_is_honoured():
+    """A contract can require the deliverable instead of a percentage.
+
+    `min_progress` defaults to 100 and was read as `value or 100`, so setting
+    it to 0 -- because the real requirement is the measurement finding types --
+    silently demanded 100 instead, and the job could never satisfy its contract
+    however much it measured.
+    """
+    executor = AutonomousAgentExecutor()
+    service = AgentGoalContractService()
+    job = _make_job(
+        {
+            "goal_contract": {
+                "enabled": True,
+                "min_progress": 0,
+                "min_findings": 2,
+                "required_finding_types": [
+                    "codegen_measurement",
+                    "benchmark_measurement",
+                ],
+            }
+        }
+    )
+    state = {
+        "goal_progress": 44,
+        "findings": [
+            {"type": "codegen_measurement"},
+            {"type": "benchmark_measurement"},
+        ],
+        "artifacts": [],
+    }
+
+    result = service.evaluate_goal_contract(executor, job, state)
+
+    assert result["missing"] == []
+    assert result["satisfied"] is True
+
+
+def test_the_progress_minimum_still_defaults_to_a_complete_run():
+    executor = AutonomousAgentExecutor()
+    service = AgentGoalContractService()
+    job = _make_job({"goal_contract": {"enabled": True, "min_findings": 1}})
+    state = {"goal_progress": 44, "findings": [{"type": "paper"}], "artifacts": []}
+
+    result = service.evaluate_goal_contract(executor, job, state)
+
+    assert result["missing"] == ["progress>=100"]
+
+
+def test_a_contract_can_say_how_many_of_each_finding_type_it_needs():
+    """The contract is also a stopping rule, so it must match the deliverable.
+
+    Asked for four measurements, a job stopped after one: "at least one of
+    each type" was satisfied and auto-complete fired at three of four steps.
+    """
+    executor = AutonomousAgentExecutor()
+    service = AgentGoalContractService()
+    job = _make_job(
+        {
+            "goal_contract": {
+                "enabled": True,
+                "min_progress": 0,
+                "required_finding_types": {
+                    "codegen_measurement": 2,
+                    "benchmark_measurement": 2,
+                },
+            }
+        }
+    )
+    state = {
+        "goal_progress": 44,
+        "findings": [
+            {"type": "codegen_measurement"},
+            {"type": "codegen_measurement"},
+            {"type": "benchmark_measurement"},
+        ],
+        "artifacts": [],
+    }
+
+    result = service.evaluate_goal_contract(executor, job, state)
+
+    assert result["missing"] == ["finding_type:benchmark_measurement>=2"]
+
+    state["findings"].append({"type": "benchmark_measurement"})
+    assert service.evaluate_goal_contract(executor, job, state)["satisfied"] is True
+
+
+def test_a_list_of_required_types_still_means_one_of_each():
+    executor = AutonomousAgentExecutor()
+    service = AgentGoalContractService()
+    job = _make_job(
+        {
+            "goal_contract": {
+                "enabled": True,
+                "min_progress": 0,
+                "required_finding_types": ["codegen_measurement"],
+            }
+        }
+    )
+    state = {"goal_progress": 1, "findings": [], "artifacts": []}
+
+    assert service.evaluate_goal_contract(executor, job, state)["missing"] == [
+        "finding_type:codegen_measurement"
+    ]
+
+    state["findings"].append({"type": "codegen_measurement"})
+    assert service.evaluate_goal_contract(executor, job, state)["satisfied"] is True

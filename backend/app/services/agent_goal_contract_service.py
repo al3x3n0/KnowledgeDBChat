@@ -5,6 +5,41 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 
+def _required_type_counts(contract: Dict[str, Any], kind: str) -> Dict[str, int]:
+    """Read required finding/artifact types as {type: how many are needed}.
+
+    Contracts normalized by the executor carry the counts; a contract passed in
+    by hand may still be a plain list, which means one of each.
+    """
+    counts = contract.get(f"required_{kind}_type_counts")
+    if isinstance(counts, dict):
+        return {
+            str(name).strip(): max(1, int(needed or 1))
+            for name, needed in counts.items()
+            if str(name).strip()
+        }
+    names = contract.get(f"required_{kind}_types")
+    if isinstance(names, list):
+        return {str(x).strip(): 1 for x in names if str(x).strip()}
+    if isinstance(names, dict):
+        return {
+            str(name).strip(): max(1, int(needed or 1))
+            for name, needed in names.items()
+            if str(name).strip()
+        }
+    return {}
+
+
+def _as_threshold(value: Any, default: int) -> int:
+    """Read a contract threshold, keeping an explicit zero as zero."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class AgentGoalContractService:
     """Evaluate deterministic completion contracts and build operator digests."""
 
@@ -64,9 +99,14 @@ class AgentGoalContractService:
                 artifact_types[atype] = int(artifact_types.get(atype, 0) or 0) + 1
 
         missing: List[str] = []
-        min_progress = int(contract.get("min_progress", 100) or 100)
-        min_findings = int(contract.get("min_findings", 0) or 0)
-        min_artifacts = int(contract.get("min_artifacts", 0) or 0)
+        # `x or default` turns an explicit 0 into the default, which read as the
+        # opposite of what the contract said: a job asking for no progress
+        # minimum -- because its real requirement is the measurement types
+        # below -- was held to progress>=100 and could never satisfy its
+        # contract, however much it measured.
+        min_progress = _as_threshold(contract.get("min_progress"), 100)
+        min_findings = _as_threshold(contract.get("min_findings"), 0)
+        min_artifacts = _as_threshold(contract.get("min_artifacts"), 0)
 
         if progress < min_progress:
             missing.append(f"progress>={min_progress}")
@@ -75,21 +115,26 @@ class AgentGoalContractService:
         if len(artifacts) < min_artifacts:
             missing.append(f"artifacts>={min_artifacts}")
 
-        required_finding_types = contract.get("required_finding_types")
-        if isinstance(required_finding_types, list):
-            for ftype in [
-                str(x).strip() for x in required_finding_types if str(x).strip()
-            ]:
-                if int(finding_types.get(ftype, 0) or 0) <= 0:
-                    missing.append(f"finding_type:{ftype}")
-
-        required_artifact_types = contract.get("required_artifact_types")
-        if isinstance(required_artifact_types, list):
-            for atype in [
-                str(x).strip() for x in required_artifact_types if str(x).strip()
-            ]:
-                if int(artifact_types.get(atype, 0) or 0) <= 0:
-                    missing.append(f"artifact_type:{atype}")
+        for label, counts, seen in (
+            (
+                "finding_type",
+                _required_type_counts(contract, "finding"),
+                finding_types,
+            ),
+            (
+                "artifact_type",
+                _required_type_counts(contract, "artifact"),
+                artifact_types,
+            ),
+        ):
+            for type_name, needed in counts.items():
+                have = int(seen.get(type_name, 0) or 0)
+                if have < needed:
+                    missing.append(
+                        f"{label}:{type_name}"
+                        if needed <= 1
+                        else f"{label}:{type_name}>={needed}"
+                    )
 
         required_result_keys = contract.get("required_result_keys")
         if include_result_keys and isinstance(required_result_keys, list):

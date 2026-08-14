@@ -4545,3 +4545,46 @@ def test_document_ids_are_still_harvested_from_action_artifacts():
     }
 
     assert executor._collect_recent_document_ids(state) == [document_id]
+
+
+def test_new_evidence_means_the_run_is_not_stalled():
+    """Reported progress freezes long before the work does.
+
+    Across five live runs the model's percentage sat unchanged for up to nine
+    iterations while the agent kept compiling and benchmarking successfully;
+    counting those as stalls spent recovery actions pulling the run off plan.
+    """
+    executor = AutonomousAgentExecutor()
+    job = _make_job()
+    state = {"findings": [{"type": "codegen_measurement"}], "artifacts": []}
+
+    executor._update_stall_state(job, state, 61, {"tool": "compile_c_snippet"})
+    state["findings"].append({"type": "benchmark_measurement"})
+    executor._update_stall_state(job, state, 61, {"tool": "benchmark_c_snippet"})
+
+    assert state["stalled_iterations"] == 0
+
+
+def test_flat_progress_without_new_evidence_still_counts_as_stalled():
+    executor = AutonomousAgentExecutor()
+    job = _make_job()
+    state = {"findings": [{"type": "paper"}], "artifacts": []}
+
+    for _ in range(3):
+        executor._update_stall_state(job, state, 61, {"tool": "search_arxiv"})
+
+    assert state["stalled_iterations"] == 2
+
+
+def test_an_artifact_counts_as_evidence_too():
+    """create_chart records an artifact rather than a finding."""
+    executor = AutonomousAgentExecutor()
+    job = _make_job()
+    state = {"findings": [], "artifacts": [], "last_progress": 61}
+
+    executor._update_stall_state(job, state, 61, {"tool": "search_arxiv"})
+    assert state["stalled_iterations"] == 1
+
+    state["artifacts"].append({"type": "chart"})
+    executor._update_stall_state(job, state, 61, {"tool": "create_chart"})
+    assert state["stalled_iterations"] == 0

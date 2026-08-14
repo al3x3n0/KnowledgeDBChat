@@ -7779,8 +7779,23 @@ RESPONSE FORMAT:
         delta = int(progress or 0) - prev_progress
         state["last_progress"] = int(progress or 0)
 
+        # Progress is whatever the model reports, and it stops moving long
+        # before the work does: across five live runs it froze for up to nine
+        # consecutive iterations while the agent went on compiling,
+        # benchmarking and charting successfully. Every one of those counted as
+        # a stall, which spent recovery actions pulling the run off its plan.
+        # Recorded findings and artifacts are an outcome rather than an
+        # opinion, so treat a growing count as the forward motion it is.
+        evidence_count = len(
+            state.get("findings") if isinstance(state.get("findings"), list) else []
+        ) + len(
+            state.get("artifacts") if isinstance(state.get("artifacts"), list) else []
+        )
+        gained_evidence = evidence_count > int(state.get("last_evidence_count", 0) or 0)
+        state["last_evidence_count"] = evidence_count
+
         min_delta = int(cfg["min_progress_delta"])
-        if delta <= min_delta:
+        if delta <= min_delta and not gained_evidence:
             state["stalled_iterations"] = (
                 int(state.get("stalled_iterations", 0) or 0) + 1
             )

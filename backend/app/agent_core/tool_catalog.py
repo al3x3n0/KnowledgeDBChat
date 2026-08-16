@@ -44,6 +44,7 @@ def _default_metadata(
         # Compile and run submitted code inside a Docker sandbox.
         "compile_c_snippet",
         "analyze_snippet_cycles",
+        "profile_c_workload",
         "record_prediction",
         "record_measurement",
         "axis_check",
@@ -136,6 +137,7 @@ def _default_metadata(
         "execute_data_pipeline",
         "compile_c_snippet",
         "analyze_snippet_cycles",
+        "profile_c_workload",
         "record_prediction",
         "record_measurement",
         "axis_check",
@@ -150,6 +152,7 @@ def _default_metadata(
         "execute_data_pipeline",
         "compile_c_snippet",
         "analyze_snippet_cycles",
+        "profile_c_workload",
         "record_prediction",
         "record_measurement",
         "axis_check",

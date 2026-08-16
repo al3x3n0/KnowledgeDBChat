@@ -3936,6 +3936,20 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _profile_c_workload(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_profile_sandbox
+
+        return await agent_profile_sandbox.profile_c_workload(
+            code=str(params.get("code") or ""),
+            flags=str(params.get("flags") or agent_profile_sandbox.DEFAULT_FLAGS),
+            run_args=str(params.get("run_args") or ""),
+            label=str(params.get("label") or ""),
+            top_functions=min(int(params.get("top_functions", 8) or 8), 25),
+            top_blocks=min(int(params.get("top_blocks", 5) or 5), 15),
+        )
+
     async def _record_prediction(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -4309,6 +4323,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "list_custom_tools": _list_custom_tools_autonomous,
             "compile_c_snippet": _compile_c_snippet,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
+            "profile_c_workload": _profile_c_workload,
             "record_prediction": _record_prediction,
             "record_measurement": _record_measurement,
             "calibration_report": _calibration_report,

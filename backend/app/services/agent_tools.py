@@ -2791,6 +2791,58 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "profile_c_workload",
+        "description": (
+            "Compile a self-contained C program, run it under callgrind, and "
+            "report what actually executed: exact dynamic instruction counts "
+            "per function, and the hottest straight-line blocks with their "
+            "disassembly. Use this to find where the time really goes before "
+            "proposing anything -- source occurrence is not execution "
+            "frequency, and a sequence appearing often in cold code is worth "
+            "less than one appearing twice in an inner loop. Instrumented "
+            "execution is ~50x slower than native, so give the program a "
+            "bounded input. It counts instructions; it does not time them."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Self-contained C program including main()",
+                },
+                "flags": {
+                    "type": "string",
+                    "description": (
+                        "Compiler flags (default '-O3 -g'). Debug info is added "
+                        "if absent, since without it nothing can be attributed "
+                        "to a function. This sandbox targets aarch64: use "
+                        "'-mcpu=native', not '-march=native'."
+                    ),
+                },
+                "run_args": {
+                    "type": "string",
+                    "description": "Arguments passed to the program (optional)",
+                },
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "Short name for this workload, recorded with the "
+                        "profile so several can be told apart afterwards."
+                    ),
+                },
+                "top_functions": {
+                    "type": "integer",
+                    "description": "How many functions to rank (default 8)",
+                },
+                "top_blocks": {
+                    "type": "integer",
+                    "description": "How many hot blocks to return (default 5)",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
         "name": "record_prediction",
         "description": (
             "State what you expect a measurement to show, and how you reached "

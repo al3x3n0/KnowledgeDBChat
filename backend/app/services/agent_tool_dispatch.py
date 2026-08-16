@@ -3936,6 +3936,137 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _record_prediction(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_calibration_service as calibration
+
+        job = getattr(ctx, "job", None)
+        # ctx.user_id is not populated in autonomous runs; the owner is the
+        # job's user, which is how the other write tools resolve it.
+        owner_id = getattr(job, "user_id", None) or ctx.user_id
+        tags = params.get("methodology_tags")
+        try:
+            # A savepoint, not the caller's transaction: a rejected insert
+            # would otherwise poison the session the whole run shares.
+            async with ctx.db.begin_nested():
+                prediction = await calibration.record_prediction(
+                    ctx.db,
+                    subject=str(params.get("subject") or ""),
+                    metric=str(params.get("metric") or ""),
+                    predicted_value=float(params.get("predicted_value") or 0.0),
+                    methodology=str(params.get("methodology") or ""),
+                    prediction_basis=str(params.get("prediction_basis") or ""),
+                    methodology_tags=[str(t) for t in tags]
+                    if isinstance(tags, list)
+                    else None,
+                    job_id=getattr(job, "id", None),
+                    user_id=owner_id,
+                )
+            await ctx.db.commit()
+        except calibration.CalibrationError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"Could not record the prediction: {str(exc)[:200]}"}
+
+        return {
+            "success": True,
+            "data": {
+                "prediction_id": str(prediction.id),
+                "subject": prediction.subject,
+                "metric": prediction.metric,
+                "predicted_value": prediction.predicted_value,
+                "note": (
+                    "Recorded before the outcome is known. Settle it with "
+                    "record_measurement once the referee has run."
+                ),
+            },
+            "findings": [
+                {
+                    "type": "prediction_recorded",
+                    "title": (
+                        f"Predicted {prediction.metric}={prediction.predicted_value} "
+                        f"for {prediction.subject}"
+                    ),
+                    "prediction_id": str(prediction.id),
+                }
+            ],
+        }
+
+    async def _record_measurement(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from uuid import UUID as _PredUUID
+
+        from app.services import agent_calibration_service as calibration
+
+        raw_id = str(params.get("prediction_id") or "").strip()
+        try:
+            prediction_id = _PredUUID(raw_id)
+        except (ValueError, AttributeError, TypeError):
+            return {
+                "error": (
+                    f"prediction_id should be a UUID, got {raw_id!r}; it is the id "
+                    "record_prediction returned."
+                )
+            }
+        try:
+            async with ctx.db.begin_nested():
+                settled = await calibration.record_measurement(
+                    ctx.db,
+                    prediction_id=prediction_id,
+                    measured_value=float(params.get("measured_value") or 0.0),
+                    measurement_source=str(params.get("measurement_source") or ""),
+                    notes=str(params.get("notes") or ""),
+                )
+            await ctx.db.commit()
+        except calibration.CalibrationError as exc:
+            return {"error": str(exc)}
+        except Exception as exc:
+            return {"error": f"Could not record the measurement: {str(exc)[:200]}"}
+
+        return {
+            "success": True,
+            "data": {
+                "prediction_id": str(settled.id),
+                "predicted_value": settled.predicted_value,
+                "measured_value": settled.measured_value,
+                "error_absolute": settled.error_absolute,
+                "relative_error": settled.error_relative,
+                "measurement_source": settled.measurement_source,
+            },
+            "findings": [
+                {
+                    "type": "prediction_settled",
+                    "title": (
+                        f"{settled.subject}: predicted {settled.predicted_value}, "
+                        f"measured {settled.measured_value} "
+                        f"({settled.measurement_source})"
+                    ),
+                    "relative_error": settled.error_relative,
+                }
+            ],
+        }
+
+    async def _calibration_report(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_calibration_service as calibration
+
+        try:
+            report = await calibration.calibration_report(
+                ctx.db,
+                metric=str(params.get("metric") or "") or None,
+                subject=str(params.get("subject") or "") or None,
+                limit=min(int(params.get("limit", 50) or 50), 200),
+            )
+        except Exception as exc:
+            return {
+                "error": f"Could not read the calibration history: {str(exc)[:200]}"
+            }
+
+        return {"success": True, "data": report}
+
     async def _axis_check(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -4178,6 +4309,9 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "list_custom_tools": _list_custom_tools_autonomous,
             "compile_c_snippet": _compile_c_snippet,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
+            "record_prediction": _record_prediction,
+            "record_measurement": _record_measurement,
+            "calibration_report": _calibration_report,
             "axis_check": _axis_check,
             "axis_emit": _axis_emit,
             "axis_prove": _axis_prove,

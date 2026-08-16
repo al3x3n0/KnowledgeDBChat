@@ -142,3 +142,83 @@ async def test_errors_group_by_methodology_tag(db_session):
 
     assert by_tag["gem5-sampled"]["mean_relative_error"] == pytest.approx(0.0)
     assert by_tag["mca-only"]["mean_relative_error"] == pytest.approx(1.0)
+
+
+@pytest.mark.asyncio
+async def test_the_tools_round_trip_a_prediction_through_dispatch(db_session):
+    """The agent-facing path: predict, then settle, then read the history."""
+    from types import SimpleNamespace
+
+    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    executor = AutonomousAgentExecutor()
+    job = SimpleNamespace(id=None, user_id=None, config={})
+    ctx = AgentToolExecutionContext(
+        mode="autonomous", db=db_session, service=None, user_id=None, job=job, state={}
+    )
+    provider = executor.tool_registry.resolve("record_prediction", ctx)
+    assert provider is not None, "record_prediction is not registered"
+
+    recorded = await provider.execute(
+        "record_prediction",
+        {
+            "subject": "fused rsqrt",
+            "metric": "speedup",
+            "predicted_value": 1.4,
+            "methodology": "mca delta scaled by dynamic block count",
+            "methodology_tags": ["mca"],
+        },
+        ctx,
+    )
+    assert recorded["success"] is True
+    prediction_id = recorded["data"]["prediction_id"]
+
+    settled = await provider.execute(
+        "record_measurement",
+        {
+            "prediction_id": prediction_id,
+            "measured_value": 1.0,
+            "measurement_source": "gem5 O3 neoverse-n1",
+        },
+        ctx,
+    )
+    assert settled["success"] is True
+    assert settled["data"]["relative_error"] == pytest.approx(0.4)
+
+    report = await provider.execute("calibration_report", {"metric": "speedup"}, ctx)
+    assert report["data"]["summary"]["settled"] == 1
+    assert report["data"]["summary"]["by_methodology_tag"]["mca"][
+        "mean_relative_error"
+    ] == pytest.approx(0.4)
+
+
+@pytest.mark.asyncio
+async def test_a_non_uuid_prediction_id_is_explained_not_raised(db_session):
+    from types import SimpleNamespace
+
+    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    executor = AutonomousAgentExecutor()
+    ctx = AgentToolExecutionContext(
+        mode="autonomous",
+        db=db_session,
+        service=None,
+        user_id=None,
+        job=SimpleNamespace(id=None, user_id=None, config={}),
+        state={},
+    )
+    provider = executor.tool_registry.resolve("record_measurement", ctx)
+
+    result = await provider.execute(
+        "record_measurement",
+        {
+            "prediction_id": "not-a-uuid",
+            "measured_value": 1.0,
+            "measurement_source": "gem5",
+        },
+        ctx,
+    )
+
+    assert "should be a UUID" in result["error"]

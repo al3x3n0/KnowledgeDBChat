@@ -2791,6 +2791,107 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "record_prediction",
+        "description": (
+            "State what you expect a measurement to show, and how you reached "
+            "that, BEFORE running the thing that measures it. This is what "
+            "makes a methodology scoreable: the error between this number and "
+            "what is measured is the score, and a prediction written after the "
+            "outcome is known scores perfectly while teaching nothing. Returns "
+            "a prediction_id to settle later with record_measurement."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "subject": {
+                    "type": "string",
+                    "description": "What this is about, e.g. 'fused ldp+fmla in saxpy loop'",
+                },
+                "metric": {
+                    "type": "string",
+                    "description": (
+                        "The quantity, e.g. 'speedup' or 'cycles_per_iteration'. "
+                        "Errors on different quantities cannot be compared."
+                    ),
+                },
+                "predicted_value": {
+                    "type": "number",
+                    "description": "The number you expect the measurement to produce",
+                },
+                "methodology": {
+                    "type": "string",
+                    "description": (
+                        "How you arrived at it. This is what is being scored, "
+                        "so describe the approach, not just the answer."
+                    ),
+                },
+                "methodology_tags": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Short tags for the approach, e.g. ['mca', 'sampled']. "
+                        "Later runs group errors by these to see which "
+                        "approach predicts well."
+                    ),
+                },
+                "prediction_basis": {
+                    "type": "string",
+                    "description": "The evidence behind the number (optional)",
+                },
+            },
+            "required": ["subject", "metric", "predicted_value", "methodology"],
+        },
+    },
+    {
+        "name": "record_measurement",
+        "description": (
+            "Settle a prediction with what was actually measured, naming the "
+            "referee that produced it. A prediction can only be settled once, "
+            "so the flattering measurement cannot be the one kept."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "prediction_id": {
+                    "type": "string",
+                    "description": "The UUID returned by record_prediction",
+                },
+                "measured_value": {
+                    "type": "number",
+                    "description": "What the measurement produced",
+                },
+                "measurement_source": {
+                    "type": "string",
+                    "description": (
+                        "What produced it, e.g. 'gem5 O3 neoverse-n1' or "
+                        "'wall clock, 5 trials'. A number without its source "
+                        "cannot be compared with another."
+                    ),
+                },
+                "notes": {"type": "string", "description": "Optional context"},
+            },
+            "required": ["prediction_id", "measured_value", "measurement_source"],
+        },
+    },
+    {
+        "name": "calibration_report",
+        "description": (
+            "Read how past predictions held up, overall and grouped by "
+            "methodology tag. Use this before choosing an approach: it says "
+            "which methods have been predicting well and which have not, "
+            "including how many predictions were never checked."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "metric": {"type": "string", "description": "Filter by metric"},
+                "subject": {"type": "string", "description": "Filter by subject"},
+                "limit": {"type": "integer", "description": "Max rows (default 50)"},
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "axis_check",
         "description": (
             "Validate an AXIS architecture description (.axisl) of an "

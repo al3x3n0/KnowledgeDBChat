@@ -77,6 +77,15 @@ class AgentExecutionLeaseService:
                 execution_fence=func.coalesce(AgentJob.execution_fence, 0) + 1,
             )
             .returning(AgentJob.execution_fence)
+            # The database compares these times, not Python. With the default
+            # "auto" strategy SQLAlchemy evaluates the WHERE clause in memory
+            # against loaded rows, and Postgres returns this column
+            # timezone-aware while utcnow() is naive: "can't compare
+            # offset-naive and offset-aware datetimes". It only ever evaluated
+            # when a previous lease existed, so the fault stayed hidden until a
+            # job whose worker had died was claimed by another one -- the exact
+            # path crash recovery depends on.
+            .execution_options(synchronize_session=False)
         )
         result = await db.execute(statement)
         fence = result.scalar_one_or_none()
@@ -115,6 +124,7 @@ class AgentExecutionLeaseService:
                 execution_lease_expires_at=expires_at,
                 execution_lease_heartbeat_at=renewed_at,
             )
+            .execution_options(synchronize_session=False)
         )
         await db.commit()
         if int(result.rowcount or 0) != 1:

@@ -668,13 +668,46 @@ def cleanup_old_agent_jobs(days: int = 30):
     asyncio.run(_cleanup())
 
 
+MAX_ORPHAN_RECOVERIES = 3
+ORPHAN_RECOVERY_PHASE = "orphan_recovered"
+
+
+def count_orphan_recoveries(job: AgentJob) -> int:
+    """How many times this job has already been recovered from a lost worker."""
+    entries = job.execution_log if isinstance(job.execution_log, list) else []
+    return sum(
+        1
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("phase") == ORPHAN_RECOVERY_PHASE
+    )
+
+
+def is_orphaned(job: AgentJob, now: datetime) -> bool:
+    """True when no worker holds this job any more.
+
+    The lease is what distinguishes a job whose worker died from one that is
+    genuinely wedged: a live lease is heartbeated by the worker running it, so
+    if it has expired or was never taken, nobody is executing this job and it
+    is safe to queue again. Without that distinction the only options are to
+    fail every quiet job -- losing hours of work a checkpoint could restore --
+    or to requeue every quiet job and risk two workers running one job.
+    """
+    expires_at = job.execution_lease_expires_at
+    if expires_at is None:
+        return True
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    return expires_at < now
+
+
 @celery_app.task
 def check_stalled_agent_jobs(timeout_minutes: int = 30):
     """
     Check for stalled agent jobs that haven't made progress.
 
-    Jobs that have been running without activity for too long
-    are marked as failed.
+    A job whose worker died is queued again, resuming from its last
+    checkpoint; a job that is quiet while its lease is still being
+    heartbeated is genuinely stuck and is failed.
 
     Args:
         timeout_minutes: Minutes without activity before marking as stalled
@@ -700,12 +733,61 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30):
             )
             stalled_jobs = result.scalars().all()
 
+            now = datetime.utcnow()
+            recovered_count = 0
+            failed_count = 0
             for job in stalled_jobs:
+                recoveries = count_orphan_recoveries(job)
+                limited, limit_reason = job.is_resource_limited()
+                if (
+                    is_orphaned(job, now)
+                    and not limited
+                    and recoveries < MAX_ORPHAN_RECOVERIES
+                ):
+                    logger.warning(
+                        f"Agent job {job.id} lost its worker; queueing again "
+                        f"(recovery {recoveries + 1}/{MAX_ORPHAN_RECOVERIES})"
+                    )
+                    job.add_log_entry(
+                        {
+                            "phase": ORPHAN_RECOVERY_PHASE,
+                            "reason": "execution lease expired with no worker",
+                            "recovery_attempt": recoveries + 1,
+                        }
+                    )
+                    job.status = AgentJobStatus.PENDING.value
+                    job.celery_task_id = None
+                    job.last_activity_at = now
+                    # A job queued to run again has not completed and carries no
+                    # error; leaving either set describes a finished run.
+                    job.completed_at = None
+                    job.error = None
+                    execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                    recovered_count += 1
+                    await _publish_job_progress(
+                        job_id=str(job.id),
+                        progress=job.progress,
+                        phase=ORPHAN_RECOVERY_PHASE,
+                        status="pending",
+                    )
+                    continue
+
                 logger.warning(f"Marking stalled agent job {job.id} as failed")
                 job.status = AgentJobStatus.FAILED.value
-                job.error = f"Job stalled - no activity for {timeout_minutes} minutes"
-                job.completed_at = datetime.utcnow()
+                if limited:
+                    job.error = f"Job stalled and cannot continue: {limit_reason}"
+                elif recoveries >= MAX_ORPHAN_RECOVERIES:
+                    job.error = (
+                        f"Job lost its worker {recoveries} times; not retried again"
+                    )
+                else:
+                    job.error = (
+                        f"Job stalled - no activity for {timeout_minutes} minutes "
+                        "while its execution lease was still held"
+                    )
+                job.completed_at = now
                 job.celery_task_id = None
+                failed_count += 1
                 _record_scheduler_outcome(
                     job,
                     outcome=AgentJobStatus.FAILED.value,
@@ -723,7 +805,10 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30):
                 )
 
             await db.commit()
-            logger.info(f"Marked {len(stalled_jobs)} stalled jobs as failed")
+            logger.info(
+                f"Stalled-job sweep: {recovered_count} requeued after losing a "
+                f"worker, {failed_count} failed"
+            )
 
     asyncio.run(_check_stalled())
 

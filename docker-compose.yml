@@ -378,6 +378,43 @@ services:
       retries: 3
       start_period: 40s
 
+  # Celery beat scheduler.
+  #
+  # Without this, nothing on beat_schedule ever fires, which for agent work
+  # means the periodic tasks that make a long-running job durable never run:
+  # process_scheduled_agent_jobs (every 5m), check_stalled_agent_jobs (10m),
+  # and resume_paused_agent_jobs (15m). A job whose worker dies then stays
+  # dead. That was only defined in docker-compose.prod.yml, so the recovery
+  # path could not be exercised in development at all.
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: knowledge_db_backend:latest
+    container_name: knowledge_db_celery_beat
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - VECTOR_STORE_PROVIDER=qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION_NAME=knowledge_base
+      # The scheduler only enqueues; workers do the work and run migrations.
+      - RUN_ALEMBIC_MIGRATIONS=false
+    volumes:
+      - ./data:/app/data
+      - ./backend:/app
+    depends_on:
+      - postgres
+      - redis
+    networks:
+      - knowledge_net
+    # The schedule file lives in a writable path that is not bind-mounted from
+    # the host, so a stale schedule cannot survive a rebuild and silently
+    # suppress runs.
+    command: celery -A app.core.celery beat --loglevel=info --schedule /tmp/celerybeat-schedule
+
   # Dedicated Celery worker for LaTeX compilation (recommended to isolate heavy/unsafe workloads)
   celery_latex:
     build:

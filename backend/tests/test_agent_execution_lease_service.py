@@ -146,3 +146,22 @@ async def test_duplicate_celery_delivery_exits_before_executor(db_session, monke
 
     assert result["status"] == "lease_conflict"
     assert await service.release(db=db_session, lease=first) is True
+
+
+def test_lease_predicates_are_evaluated_by_the_database():
+    """Comparing lease times in Python crashed the takeover path.
+
+    Postgres returns execution_lease_expires_at timezone-aware while the
+    service uses a naive utcnow(), so SQLAlchemy's default in-memory
+    evaluation of the WHERE clause raised "can't compare offset-naive and
+    offset-aware datetimes". It only evaluated when a previous lease existed,
+    which is why it stayed hidden until a job whose worker had died was
+    claimed by another worker -- the path crash recovery depends on.
+    """
+    import inspect
+
+    from app.services import agent_execution_lease_service as module
+
+    for name in ("acquire", "renew"):
+        source = inspect.getsource(getattr(module.AgentExecutionLeaseService, name))
+        assert "synchronize_session=False" in source, name

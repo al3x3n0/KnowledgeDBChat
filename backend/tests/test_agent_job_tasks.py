@@ -228,6 +228,10 @@ def test_check_stalled_agent_jobs_marks_job_failed_and_reports_progress(
     job.last_activity_at = datetime.utcnow() - timedelta(minutes=45)
     job.progress = 21
     job.results = {}
+    # Still leased: a worker is holding this job and heartbeating it, so it is
+    # wedged rather than orphaned, and failing it is the right outcome.
+    job.execution_lease_owner = "worker-1"
+    job.execution_lease_expires_at = datetime.utcnow() + timedelta(minutes=5)
 
     _run(_seed_job(db_session, job))
 
@@ -260,7 +264,10 @@ def test_check_stalled_agent_jobs_marks_job_failed_and_reports_progress(
     assert progress_calls[0]["phase"] == "stalled"
     assert progress_calls[0]["status"] == "failed"
     assert job.status == AgentJobStatus.FAILED.value
-    assert job.error == "Job stalled - no activity for 30 minutes"
+    assert job.error == (
+        "Job stalled - no activity for 30 minutes while its execution lease "
+        "was still held"
+    )
     assert job.completed_at is not None
     assert job.celery_task_id is None
     state = ((job.results or {}).get("execution_strategy") or {}).get(
@@ -546,3 +553,46 @@ async def _seed_job(db_session, job, checkpoint=None):
     await db_session.refresh(job)
     if checkpoint is not None:
         await db_session.refresh(checkpoint)
+
+
+def test_check_stalled_agent_jobs_requeues_a_job_that_lost_its_worker(
+    db_session, monkeypatch
+):
+    """A dead worker must not cost the run; the checkpoint is there to resume."""
+    _patch_celery_session_factory(monkeypatch)
+
+    job = _make_job(status=AgentJobStatus.RUNNING.value)
+    job.last_activity_at = datetime.utcnow() - timedelta(minutes=45)
+    job.progress = 40
+    job.results = {}
+    job.execution_lease_owner = "worker-that-died"
+    job.execution_lease_expires_at = datetime.utcnow() - timedelta(minutes=10)
+
+    _run(_seed_job(db_session, job))
+
+    queued = []
+    monkeypatch.setattr(
+        agent_job_tasks.execute_agent_job_task,
+        "delay",
+        lambda *args, **kwargs: queued.append(args),
+    )
+
+    async def _noop(**kwargs):
+        return None
+
+    async def _noop_follow_up(db, job_obj):
+        return None
+
+    monkeypatch.setattr(agent_job_tasks, "_publish_job_progress", _noop)
+    monkeypatch.setattr(
+        agent_job_tasks, "sync_follow_up_outcome_for_job", _noop_follow_up
+    )
+
+    agent_job_tasks.check_stalled_agent_jobs(timeout_minutes=30)
+    _run(db_session.refresh(job))
+
+    assert job.status == AgentJobStatus.PENDING.value
+    assert job.error is None
+    assert job.completed_at is None
+    assert queued and str(job.id) in queued[0]
+    assert agent_job_tasks.count_orphan_recoveries(job) == 1

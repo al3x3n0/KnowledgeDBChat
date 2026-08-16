@@ -24,6 +24,8 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
+from app.services import agent_sandbox_runtime
+
 DEFAULT_IMAGE = "ghcr.io/al3x3n0/kdbc-compiler-research:latest"
 MAX_CODE_CHARS = 20000
 MAX_OUTPUT_CHARS = 12000
@@ -139,49 +141,18 @@ def _clean_flags(flags: str) -> Optional[str]:
     return candidate if SAFE_FLAGS.match(candidate) else None
 
 
-def _allowed_images() -> List[str]:
-    from app.core.config import settings
-
-    raw = getattr(settings, "SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES", "") or ""
-    return [item.strip() for item in raw.split(",") if item.strip()]
-
-
-def _execution_enabled() -> bool:
-    from app.core.config import settings
-
-    return bool(getattr(settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
+# The confinement posture lives in one module so a second copy cannot drift
+# into being weaker than this one. These aliases keep the existing names, which
+# tests monkeypatch to enable execution without a real Docker daemon.
+_allowed_images = agent_sandbox_runtime.allowed_images
+_execution_enabled = agent_sandbox_runtime.execution_enabled
+_docker_command = agent_sandbox_runtime.docker_command
 
 
-def _docker_command(
-    *, image: str, workdir: str, script: str, timeout_seconds: int
-) -> List[str]:
-    return [
-        "docker",
-        "run",
-        "--rm",
-        "--network",
-        "none",
-        "--cap-drop",
-        "ALL",
-        "--security-opt",
-        "no-new-privileges",
-        "--pids-limit",
-        "256",
-        "--memory",
-        "2048m",
-        "--cpus",
-        "2",
-        "--user",
-        "65534:65534",
-        "-v",
-        f"{workdir}:/work:rw",
-        "-w",
-        "/work",
-        image,
-        "/bin/sh",
-        "-lc",
-        script,
-    ]
+async def _run(script: str, workdir: str, *, image: str, timeout_seconds: int):
+    return await agent_sandbox_runtime.run_in_sandbox(
+        script, workdir, image=image, timeout_seconds=timeout_seconds
+    )
 
 
 def describe_subject(code: str, label: str = "") -> str:
@@ -211,31 +182,6 @@ def count_codegen(assembly: str) -> Dict[str, int]:
         name: len(re.findall(pattern, assembly))
         for name, pattern in CODEGEN_PATTERNS.items()
     }
-
-
-async def _run(script: str, workdir: str, *, image: str, timeout_seconds: int):
-    process = await asyncio.create_subprocess_exec(
-        *_docker_command(
-            image=image,
-            workdir=workdir,
-            script=script,
-            timeout_seconds=timeout_seconds,
-        ),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        stdout, stderr = await asyncio.wait_for(
-            process.communicate(), timeout=timeout_seconds
-        )
-    except asyncio.TimeoutError:
-        process.kill()
-        raise
-    return (
-        process.returncode,
-        (stdout or b"").decode("utf-8", "replace"),
-        (stderr or b"").decode("utf-8", "replace"),
-    )
 
 
 def _preflight(code: str, image: str) -> Optional[Dict[str, Any]]:

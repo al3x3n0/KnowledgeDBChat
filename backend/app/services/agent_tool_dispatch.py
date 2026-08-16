@@ -3936,6 +3936,33 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _axis_check(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_axis_sandbox
+
+        return await agent_axis_sandbox.check_description(
+            source=str(params.get("source") or "")
+        )
+
+    async def _axis_emit(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
+        from app.services import agent_axis_sandbox
+
+        return await agent_axis_sandbox.emit_artifact(
+            source=str(params.get("source") or ""),
+            target=str(params.get("target") or ""),
+        )
+
+    async def _axis_prove(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_axis_sandbox
+
+        return await agent_axis_sandbox.prove_equivalence(
+            source=str(params.get("source") or ""),
+            obligation=str(params.get("obligation") or ""),
+        )
+
     async def _analyze_snippet_cycles(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -4151,6 +4178,9 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "list_custom_tools": _list_custom_tools_autonomous,
             "compile_c_snippet": _compile_c_snippet,
             "analyze_snippet_cycles": _analyze_snippet_cycles,
+            "axis_check": _axis_check,
+            "axis_emit": _axis_emit,
+            "axis_prove": _axis_prove,
             "benchmark_c_snippet": _benchmark_c_snippet,
             "execute_data_pipeline": _execute_data_pipeline,
             "write_and_run_script": _write_and_run_script,

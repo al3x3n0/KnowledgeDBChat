@@ -265,6 +265,7 @@ class Settings(BaseSettings):
     SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
         "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
         "ghcr.io/al3x3n0/kdbc-microarch-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-axis-research:latest,"
         "python:3.11-slim"
     )
     SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = (

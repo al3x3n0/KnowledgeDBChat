@@ -2791,6 +2791,92 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "axis_check",
+        "description": (
+            "Validate an AXIS architecture description (.axisl) of an "
+            "instruction-set extension. AXIS is the source of truth for a "
+            "proposal: one description elaborates into encoder, decoder, "
+            "semantics, compiler patterns and SMT-LIB semantics, so a proposal "
+            "is checkable and its artifacts are regenerable rather than "
+            "hand-written per candidate. Run this before emitting anything."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "The AXIS description source (.axisl text)",
+                },
+            },
+            "required": ["source"],
+        },
+    },
+    {
+        "name": "axis_emit",
+        "description": (
+            "Generate one artifact from an AXIS description: 'smt2' for formal "
+            "semantics, 'decode-c'/'encode-c' to get the instruction into and "
+            "out of a binary, 'semantics-c'/'sim-c' for a simulator, "
+            "'golden-python' for a reference model, 'llvm-patterns'/'tablegen' "
+            "for compiler support, 'pyrtl' for hardware. Note that the TableGen "
+            "backend emits RISC-V instruction formats; check it before relying "
+            "on it for another target."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "The AXIS description source (.axisl text)",
+                },
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "What to emit: json, bundle-manifest, legality-json, "
+                        "encode-c, encode-json, decode-c, decode-json, "
+                        "roundtrip-json, asm-disasm-json, semantics-c, "
+                        "semantics-rust, semantics-json, sim-c, exec-c, "
+                        "exec-python, golden-python, smt2, tablegen, llvm-ir, "
+                        "llvm-patterns, llvm-intrinsics, intrinsics, pyrtl"
+                    ),
+                },
+            },
+            "required": ["source", "target"],
+        },
+    },
+    {
+        "name": "axis_prove",
+        "description": (
+            "Prove a claim about a proposed instruction against the formal "
+            "semantics AXIS emits for it, using an SMT solver. This is the "
+            "strongest gate available: a cycle count says a sequence is "
+            "faster, a proof says the replacement computes the same thing for "
+            "every input. Use it to show a fused instruction is equivalent to "
+            "the sequence it replaces before spending simulation on it."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "source": {
+                    "type": "string",
+                    "description": "The AXIS description source (.axisl text)",
+                },
+                "obligation": {
+                    "type": "string",
+                    "description": (
+                        "SMT-LIB appended to the emitted semantics, so it can "
+                        "call the generated functions by name. Assert the "
+                        "NEGATION of your claim and end with (check-sat): "
+                        "'unsat' then means no counterexample exists and the "
+                        "claim holds for all inputs, while 'sat' returns a "
+                        "counterexample showing the candidate is wrong."
+                    ),
+                },
+            },
+            "required": ["source", "obligation"],
+        },
+    },
+    {
         "name": "analyze_snippet_cycles",
         "description": (
             "Cost a code sequence against a named core's scheduling model with "

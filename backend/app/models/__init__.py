@@ -18,6 +18,7 @@ from .agent_job import (
     AgentJobType,
     ChainTriggerCondition,
 )
+from .agent_prediction import AgentPrediction
 from .agent_tool_prior import AgentToolPrior
 from .ai_hub_recommendation_feedback import AIHubRecommendationFeedback
 from .api_key import APIKey, APIKeyUsageLog
@@ -215,6 +216,7 @@ __all__ = [
     "BenchmarkSuite",
     "BenchmarkCase",
     "BenchmarkBaseline",
+    "AgentPrediction",
     "AutonomyDecisionEvent",
     "AutonomyDecisionTraceView",
     "AgentControlPlaneView",

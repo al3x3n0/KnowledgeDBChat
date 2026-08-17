@@ -3057,9 +3057,11 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                         "to cost a hypothetical sequence, such as one where an "
                         "idiom is replaced by the instruction being proposed. "
                         "To cost a loop rather than a whole function, fence it "
-                        "with '# LLVM-MCA-BEGIN name' and '# LLVM-MCA-END': the "
-                        "same kernel measures 24.14 cycles as a function and "
-                        "7.18 as its inner loop."
+                        "with '# LLVM-MCA-BEGIN name' and a bare '# LLVM-MCA-END' "
+                        "(no name after END, or llvm-mca rejects it): the same "
+                        "kernel measures 24.14 cycles as a function and 7.18 as "
+                        "its inner loop. These markers are assembly comments and "
+                        "must go in 'asm', never in 'code'."
                     ),
                 },
                 "cpu": {

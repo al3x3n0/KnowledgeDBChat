@@ -337,3 +337,54 @@ def test_a_whole_function_estimate_is_flagged_as_not_being_a_loop():
     fenced = "# LLVM-MCA-BEGIN loop\n  ldp q2, q3, [x10]\n# LLVM-MCA-END\n  ret\n"
     assert not ("LLVM-MCA-BEGIN" not in fenced)
     assert re.search(r"LLVM-MCA-(BEGIN|END)", fenced)
+
+
+class TestMcaFailureMessages:
+    """A guessed cause sends the caller to check the wrong thing.
+
+    A live run was told "an unknown -mcpu is the usual cause" four times while
+    llvm-mca had been saying plainly that its region markers did not match.
+    """
+
+    def test_an_unpaired_region_marker_is_named_as_the_problem(self):
+        message = sandbox.explain_mca_failure(
+            "snippet.s:18:2: error: found an invalid region end directive\n", 1
+        )
+
+        assert "did not pair up" in message
+        assert "invalid region end directive" in message
+
+    def test_an_unknown_core_model_still_says_so(self):
+        message = sandbox.explain_mca_failure(
+            "error: unsupported CPU 'neoverse-n99'\n", 1
+        )
+
+        assert "unknown to this LLVM" in message
+        assert "neoverse-n1" in message
+
+    def test_an_unrecognised_failure_still_repeats_what_mca_said(self):
+        message = sandbox.explain_mca_failure("error: something else entirely\n", 2)
+
+        assert "something else entirely" in message
+        assert "exit code 2" in message
+
+    def test_assembly_is_given_a_trailing_newline(self):
+        """Without one, llvm-mca reads "# LLVM-MCA-END loop" as region "loo".
+
+        A live run spent four calls on an error about markers that were
+        correct; the file simply did not end with a newline.
+        """
+        asm = "# LLVM-MCA-BEGIN loop\n\tnop\n# LLVM-MCA-END loop"
+        normalized = asm if asm.endswith("\n") else asm + "\n"
+
+        assert normalized.endswith("END loop\n")
+
+    @pytest.mark.asyncio
+    async def test_region_markers_in_c_are_refused_with_the_fix(self, enabled):
+        """clang says "invalid preprocessing directive", which helps nobody."""
+        result = await sandbox.analyze_snippet_cycles(
+            code="# LLVM-MCA-BEGIN loop\nvoid f(void){}\n", cpu="neoverse-n1"
+        )
+
+        assert "cannot appear in C" in result["error"]
+        assert "pass the fenced assembly as 'asm'" in result["error"]

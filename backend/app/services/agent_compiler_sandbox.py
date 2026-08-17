@@ -96,6 +96,43 @@ def explain_compiler_failure(stderr: str) -> str:
     return message
 
 
+# llvm-mca complaints a caller cannot act on without knowing the directive
+# syntax. A run guessing "an unknown -mcpu is the usual cause" sent an agent to
+# check its cpu name four times while mca had been saying, plainly, that its
+# region markers did not match.
+MCA_ERROR_REMEDIES = (
+    (
+        re.compile(r"invalid region end directive|unable to find an active region"),
+        "A region marker did not pair up. Every '# LLVM-MCA-BEGIN name' needs a "
+        "matching '# LLVM-MCA-END' (named or bare) after it.",
+    ),
+    (
+        re.compile(r"invalid region start directive"),
+        "The begin marker is '# LLVM-MCA-BEGIN name' as an assembly comment, "
+        "and it must appear in assembly rather than in C.",
+    ),
+    (
+        re.compile(r"unsupported CPU|invalid -mcpu|not a recognized processor"),
+        "That core model is unknown to this LLVM. 'llc -march=aarch64 "
+        "-mcpu=help' lists them; neoverse-n1 and cortex-a78 are present.",
+    ),
+)
+
+
+def explain_mca_failure(stderr: str, returncode: int) -> str:
+    """Say what llvm-mca actually complained about, and how to fix it."""
+    first_line = next(
+        (line.strip() for line in (stderr or "").splitlines() if line.strip()), ""
+    )
+    message = f"llvm-mca failed with exit code {returncode}"
+    if first_line:
+        message += f": {first_line[:300]}"
+    for pattern, remedy in MCA_ERROR_REMEDIES:
+        if pattern.search(stderr or ""):
+            return f"{message} — {remedy}"
+    return message
+
+
 # A cycle count belongs to a specific core model, so the model is required
 # rather than defaulted: "1801 cycles" with no core named is not a measurement
 # anyone can check or reproduce.
@@ -447,6 +484,25 @@ async def analyze_snippet_cycles(
     if blocked:
         return blocked
 
+    # Region markers are assembly comments. In C they are preprocessor
+    # directives and the compile dies on "invalid preprocessing directive",
+    # which says nothing about what to do instead. A caller asked to fence a
+    # loop reaches for them naturally, so catch it here rather than in clang.
+    if not asm and "LLVM-MCA-" in code:
+        return {
+            "error": (
+                "LLVM-MCA region markers are assembly comments and cannot appear "
+                "in C: pass the fenced assembly as 'asm' instead. Compile first "
+                "with compile_c_snippet, add '# LLVM-MCA-BEGIN name' and "
+                "'# LLVM-MCA-END' around the loop in the output, then analyse "
+                "that."
+            )
+        }
+    if asm and code:
+        # Both were supplied and only one is used; saying which prevents a
+        # caller reading a number as being about the other.
+        logger.info("analyze_snippet_cycles: asm given alongside code; using asm")
+
     cpu = str(cpu or "").strip()
     if not cpu:
         return {
@@ -470,7 +526,14 @@ async def analyze_snippet_cycles(
 
     with tempfile.TemporaryDirectory(prefix="analyze_snippet_") as workdir:
         if asm:
-            Path(workdir, "snippet.s").write_text(asm, encoding="utf-8")
+            # llvm-mca's directive parser does not terminate the region name at
+            # end of file, so assembly whose last line is "# LLVM-MCA-END loop"
+            # with no newline is read as region "loo" and rejected. That cost a
+            # live run four calls chasing an error about markers that were
+            # correct. Nobody should have to know this: end the file properly.
+            Path(workdir, "snippet.s").write_text(
+                asm if asm.endswith("\n") else asm + "\n", encoding="utf-8"
+            )
             compile_step = ""
         else:
             Path(workdir, "snippet.c").write_text(code, encoding="utf-8")
@@ -506,10 +569,7 @@ async def analyze_snippet_cycles(
     if returncode != 0:
         return {
             "success": False,
-            "error": (
-                f"llvm-mca failed with exit code {returncode}. An unknown -mcpu "
-                "is the usual cause; llc -mcpu=help lists the models."
-            ),
+            "error": explain_mca_failure(stderr, returncode),
             "stderr": stderr[:MAX_OUTPUT_CHARS],
             "cpu": cpu,
         }

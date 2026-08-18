@@ -222,3 +222,98 @@ async def test_a_non_uuid_prediction_id_is_explained_not_raised(db_session):
     )
 
     assert "should be a UUID" in result["error"]
+
+
+async def _provider_and_ctx(db_session, findings):
+    from types import SimpleNamespace
+
+    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    executor = AutonomousAgentExecutor()
+    ctx = AgentToolExecutionContext(
+        mode="autonomous",
+        db=db_session,
+        service=None,
+        user_id=None,
+        job=SimpleNamespace(id=None, user_id=None, config={}),
+        state={"findings": findings},
+    )
+    return executor.tool_registry.resolve("record_prediction", ctx), ctx
+
+
+@pytest.mark.asyncio
+async def test_a_prediction_cannot_cite_evidence_the_run_never_obtained(db_session):
+    """A run predicted from "llvm-mca reported 11.8 cycles" while its only mca
+    call had failed; the real answer, 59.05, arrived three iterations later."""
+    provider, ctx = await _provider_and_ctx(db_session, [{"type": "dynamic_profile"}])
+
+    result = await provider.execute(
+        "record_prediction",
+        {
+            "subject": "norm loop",
+            "metric": "cycles",
+            "predicted_value": 300000,
+            "methodology": "mca per-iteration cost times trip count",
+            "derived_from": ["cycle_model_measurement"],
+        },
+        ctx,
+    )
+
+    assert "no such finding exists in this run yet" in result["error"]
+    assert "dynamic_profile" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_prediction_derived_from_real_evidence_is_accepted(db_session):
+    provider, ctx = await _provider_and_ctx(
+        db_session, [{"type": "cycle_model_measurement"}, {"type": "dynamic_profile"}]
+    )
+
+    result = await provider.execute(
+        "record_prediction",
+        {
+            "subject": "norm loop",
+            "metric": "cycles",
+            "predicted_value": 1209344,
+            "methodology": "mca 59.05 cycles/iteration times 20480 iterations",
+            "methodology_tags": ["mca-scaled"],
+            "derived_from": ["cycle_model_measurement"],
+        },
+        ctx,
+    )
+
+    assert result["success"] is True
+
+
+@pytest.mark.asyncio
+async def test_the_evidence_on_hand_is_recorded_whether_or_not_it_is_cited(db_session):
+    """So a reader can tell a derived prediction from a guess without taking
+    the methodology text at its word."""
+    from sqlalchemy import select
+
+    from app.models.agent_prediction import AgentPrediction
+
+    provider, ctx = await _provider_and_ctx(
+        db_session, [{"type": "dynamic_profile"}, {"type": "simulated_measurement"}]
+    )
+
+    await provider.execute(
+        "record_prediction",
+        {
+            "subject": "guessed",
+            "metric": "cycles",
+            "predicted_value": 1.0,
+            "methodology": "a hunch",
+        },
+        ctx,
+    )
+
+    row = (
+        await db_session.execute(
+            select(AgentPrediction).where(AgentPrediction.subject == "guessed")
+        )
+    ).scalar_one()
+    assert "evidence:dynamic_profile" in row.methodology_tags
+    assert "evidence:simulated_measurement" in row.methodology_tags
+    assert "evidence:cycle_model_measurement" not in row.methodology_tags

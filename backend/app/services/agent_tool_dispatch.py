@@ -3973,6 +3973,41 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         # job's user, which is how the other write tools resolve it.
         owner_id = getattr(job, "user_id", None) or ctx.user_id
         tags = params.get("methodology_tags")
+
+        # What evidence actually exists in this run right now. A prediction
+        # that cites a measurement it never obtained is the worst failure this
+        # store can suffer: a run predicted from "llvm-mca reported 11.8 cycles
+        # per iteration" while its only mca call had failed, and the real
+        # answer -- 59.05 -- arrived three iterations later. The error column
+        # caught the consequence and could not see the cause.
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        findings = (
+            state.get("findings") if isinstance(state.get("findings"), list) else []
+        )
+        available = sorted(
+            {
+                str(f.get("type")).strip()
+                for f in findings
+                if isinstance(f, dict) and str(f.get("type") or "").strip()
+            }
+        )
+        required = params.get("derived_from")
+        required = (
+            [str(r).strip() for r in required if str(r).strip()]
+            if isinstance(required, list)
+            else []
+        )
+        missing = [r for r in required if r not in available]
+        if missing:
+            return {
+                "error": (
+                    "This prediction says it derives from "
+                    f"{', '.join(missing)}, but no such finding exists in this "
+                    f"run yet. Findings so far: {', '.join(available) or 'none'}. "
+                    "Obtain the measurement first, then predict from what it "
+                    "actually returned."
+                )
+            }
         try:
             # A savepoint, not the caller's transaction: a rejected insert
             # would otherwise poison the session the whole run shares.
@@ -3984,9 +4019,15 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     predicted_value=float(params.get("predicted_value") or 0.0),
                     methodology=str(params.get("methodology") or ""),
                     prediction_basis=str(params.get("prediction_basis") or ""),
-                    methodology_tags=[str(t) for t in tags]
-                    if isinstance(tags, list)
-                    else None,
+                    # Record what evidence was on hand when the claim was
+                    # made, so a later reader can tell a derived prediction
+                    # from a guess without taking the methodology text at its
+                    # word.
+                    methodology_tags=(
+                        ([str(t) for t in tags] if isinstance(tags, list) else [])
+                        + [f"evidence:{name}" for name in available]
+                    )
+                    or None,
                     job_id=getattr(job, "id", None),
                     user_id=owner_id,
                 )

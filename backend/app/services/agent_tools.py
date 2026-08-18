@@ -2941,6 +2941,18 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                     "type": "string",
                     "description": "The evidence behind the number (optional)",
                 },
+                "derived_from": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Finding types this prediction is computed from, e.g. "
+                        "['cycle_model_measurement']. Each must already exist "
+                        "in this run or the call is refused: a prediction "
+                        "citing a measurement it never obtained is worse than "
+                        "no prediction. The finding types present when you "
+                        "predicted are recorded either way."
+                    ),
+                },
             },
             "required": ["subject", "metric", "predicted_value", "methodology"],
         },

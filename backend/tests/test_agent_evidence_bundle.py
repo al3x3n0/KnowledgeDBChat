@@ -6,6 +6,8 @@ make an as-it-goes bundle worth having: failures are kept, artifacts are
 hashed, and the image is pinned by id rather than tag.
 """
 
+import pytest
+
 from app.services import agent_evidence_bundle as bundle
 
 
@@ -178,3 +180,124 @@ def test_the_readme_states_what_verification_does_not_prove(tmp_path):
 
     assert "does not re-execute" in readme
     assert "does not prove they can be produced again" in readme
+
+
+class TestReplay:
+    """Re-running the recorded calls and judging what came back."""
+
+    @staticmethod
+    def _executor(results):
+        async def execute(tool, params):
+            return results.pop(0)
+
+        return execute
+
+    @pytest.mark.asyncio
+    async def test_an_identical_result_counts_as_reproduced(self, tmp_path):
+        original = {"success": True, "data": {"cycles_per_iteration": 59.05}}
+        _record(tmp_path, "analyze_snippet_cycles", {"cpu": "neoverse-n1"}, original)
+
+        report = await bundle.replay_bundle(
+            "job-1", self._executor([dict(original)]), root=tmp_path
+        )
+
+        assert report["verdict"] == "reproduced"
+        assert report["reproduced"] == 1
+        assert report["differed"] == []
+
+    @pytest.mark.asyncio
+    async def test_a_differing_measurement_is_reported_with_both_hashes(self, tmp_path):
+        _record(
+            tmp_path,
+            "simulate_c_workload",
+            {"code": "x"},
+            {"success": True, "data": {"cycles": 1259204}},
+        )
+
+        report = await bundle.replay_bundle(
+            "job-1",
+            self._executor([{"success": True, "data": {"cycles": 999999}}]),
+            root=tmp_path,
+        )
+
+        assert report["verdict"] == "differed"
+        assert report["differed"][0]["tool"] == "simulate_c_workload"
+        assert report["differed"][0]["recorded"] != report["differed"][0]["actual"]
+
+    @pytest.mark.asyncio
+    async def test_a_changed_timestamp_is_not_a_failure_to_reproduce(self, tmp_path):
+        """Otherwise every replay fails and the report teaches nothing."""
+        _record(
+            tmp_path,
+            "profile_c_workload",
+            {"code": "x"},
+            {
+                "success": True,
+                "data": {"instructions_executed": 40891677, "timestamp": "t1"},
+            },
+        )
+
+        report = await bundle.replay_bundle(
+            "job-1",
+            self._executor(
+                [
+                    {
+                        "success": True,
+                        "data": {"instructions_executed": 40891677, "timestamp": "t2"},
+                    }
+                ]
+            ),
+            root=tmp_path,
+        )
+
+        assert report["verdict"] == "reproduced"
+
+    @pytest.mark.asyncio
+    async def test_a_benchmark_is_replayed_but_never_judged(self, tmp_path):
+        """Two honest runs of a wall-clock benchmark disagree."""
+        _record(
+            tmp_path,
+            "benchmark_c_snippet",
+            {"code": "x"},
+            {"success": True, "data": {"fastest_ms": 126}},
+        )
+
+        report = await bundle.replay_bundle("job-1", self._executor([]), root=tmp_path)
+
+        assert report["judged"] == 0
+        assert report["skipped"][0]["tool"] == "benchmark_c_snippet"
+        assert "wall clock" in report["skipped"][0]["why"]
+        assert report["verdict"] == "inconclusive"
+
+    @pytest.mark.asyncio
+    async def test_a_failed_call_is_not_replayed(self, tmp_path):
+        _record(
+            tmp_path,
+            "analyze_snippet_cycles",
+            {"cpu": "bogus"},
+            {"success": False, "error": "unknown cpu"},
+        )
+
+        report = await bundle.replay_bundle("job-1", self._executor([]), root=tmp_path)
+
+        assert report["judged"] == 0
+        assert report["skipped"][0]["why"] == "did not succeed"
+
+    @pytest.mark.asyncio
+    async def test_nothing_judged_is_inconclusive_not_reproduced(self, tmp_path):
+        """A replay that judged nothing must not read as a bundle that held up."""
+        _record(tmp_path, "benchmark_c_snippet", {"code": "x"}, {"success": True})
+
+        report = await bundle.replay_bundle("job-1", self._executor([]), root=tmp_path)
+
+        assert report["verdict"] == "inconclusive"
+
+    def test_canonicalisation_drops_only_volatile_fields(self):
+        payload = {
+            "success": True,
+            "data": {"cycles": 42, "timestamp": "now", "url": "https://signed"},
+        }
+
+        canonical = bundle.canonicalize(payload)
+
+        assert canonical == {"success": True, "data": {"cycles": 42}}

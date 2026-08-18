@@ -4009,6 +4009,64 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _verify_run_bundle(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_evidence_bundle as bundle
+
+        job_id = getattr(getattr(ctx, "job", None), "id", None)
+        if not job_id:
+            return {"error": "No job in context; there is no bundle to verify"}
+
+        integrity = bundle.verify_integrity(str(job_id))
+        if not integrity["entries"]:
+            return {
+                "error": (
+                    "This run has recorded no evidence yet, so there is nothing "
+                    "to verify. Run the measurements first."
+                )
+            }
+
+        replay: Dict[str, Any] = {}
+        if bool(params.get("replay", False)):
+
+            async def execute(tool: str, tool_params: Dict[str, Any]) -> Any:
+                _, result = await executor.tool_registry.try_execute(
+                    tool, tool_params, ctx
+                )
+                return result
+
+            replay = await bundle.replay_bundle(str(job_id), execute)
+
+        summary = bundle.summarize(str(job_id))
+        verdict = replay.get("verdict") if replay else "not replayed"
+        return {
+            "success": True,
+            "data": {
+                "bundle": summary,
+                "integrity": integrity,
+                "replay": replay,
+                "note": (
+                    "Integrity shows the artifacts are the ones this run "
+                    "produced. Only a replay shows they can be produced again, "
+                    "and it judges nothing that reports wall clock."
+                ),
+            },
+            "findings": [
+                {
+                    "type": "bundle_verified",
+                    "title": (
+                        f"Evidence bundle: {summary['entries']} calls recorded, "
+                        f"integrity {'intact' if integrity['intact'] else 'BROKEN'}, "
+                        f"replay {verdict}"
+                    ),
+                    "intact": integrity["intact"],
+                    "replay_verdict": verdict,
+                    "entries": summary["entries"],
+                }
+            ],
+        }
+
     async def _record_prediction(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -4425,6 +4483,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "analyze_snippet_cycles": _analyze_snippet_cycles,
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,
+            "verify_run_bundle": _verify_run_bundle,
             "record_prediction": _record_prediction,
             "record_measurement": _record_measurement,
             "calibration_report": _calibration_report,

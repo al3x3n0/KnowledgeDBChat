@@ -2894,6 +2894,33 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "verify_run_bundle",
+        "description": (
+            "Check this run's evidence bundle, which is written as the run "
+            "goes: every measurement call, its parameters, its result and the "
+            "image it ran in. Without replay it confirms the artifacts are the "
+            "ones this run produced. With replay=true it re-runs each recorded "
+            "call and reports whether the same results come back, judging "
+            "nothing that reports wall clock, since two honest runs of a "
+            "benchmark disagree. Use it before claiming a result is "
+            "reproducible."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "replay": {
+                    "type": "boolean",
+                    "description": (
+                        "Re-run the recorded calls and compare (slow: it "
+                        "repeats every measurement). Default false, which "
+                        "checks integrity only."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "record_prediction",
         "description": (
             "State what you expect a measurement to show, and how you reached "

@@ -156,6 +156,9 @@ def record_entry(
             "image_id": image_id,
             "params_sha256": _digest(params_bytes),
             "result_sha256": _digest(result_bytes),
+            # The result with volatile fields removed: what a repeat run has
+            # to match, since a differing timestamp is not a differing result.
+            "canonical_sha256": canonical_digest(payload),
             "artifact_dir": str(entry_dir.relative_to(directory)),
             "spilled_files": spilled,
         }
@@ -391,4 +394,154 @@ def verify_integrity(job_id: str, root: Optional[Path] = None) -> Dict[str, Any]
         "changed": changed,
         "missing": missing,
         "intact": not changed and not missing,
+    }
+
+
+# Fields that differ between two identical runs and say nothing about whether
+# the result reproduced.
+VOLATILE_FIELDS = {
+    "timestamp",
+    "recorded_at",
+    "_journal_invocation_id",
+    "url",
+    "elapsed_ms",
+}
+
+# Tools whose output is not expected to repeat exactly. A benchmark reports
+# wall clock; two honest runs of it disagree, and calling that a reproduction
+# failure would train a reader to ignore the report. Their entries are replayed
+# and reported, but not judged by hash.
+TIMING_DEPENDENT_TOOLS = {
+    "benchmark_c_snippet",
+    "execute_python",
+    "run_command",
+    "write_and_run_script",
+}
+
+
+def canonicalize(payload: Any) -> Any:
+    """Drop the fields that vary between two identical runs."""
+    if isinstance(payload, dict):
+        return {
+            key: canonicalize(value)
+            for key, value in sorted(payload.items())
+            if key not in VOLATILE_FIELDS
+        }
+    if isinstance(payload, list):
+        return [canonicalize(item) for item in payload]
+    return payload
+
+
+def canonical_digest(result: Any) -> str:
+    payload = result if isinstance(result, dict) else {"result": result}
+    return _digest(
+        json.dumps(canonicalize(payload), sort_keys=True, default=str).encode()
+    )
+
+
+async def replay_bundle(
+    job_id: str,
+    execute,
+    *,
+    root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Re-run each recorded call and report whether its result came back.
+
+    ``execute`` is an async callable taking (tool, params) and returning the
+    tool's result, so the caller supplies the machinery rather than this module
+    reaching for it.
+
+    Reproduction is judged on the canonical result -- the recorded one with
+    volatile fields removed -- because a timestamp differing is not a failure
+    to reproduce. Timing-dependent tools are replayed and reported but never
+    judged: two honest runs of a benchmark disagree, and a report that called
+    that a failure would teach a reader to ignore it.
+    """
+    entries = read_manifest(job_id, root)
+    directory = bundle_dir(job_id, root)
+    reproduced: List[int] = []
+    differed: List[Dict[str, Any]] = []
+    skipped: List[Dict[str, Any]] = []
+    errored: List[Dict[str, Any]] = []
+
+    for entry in entries:
+        sequence = int(entry.get("sequence") or 0)
+        tool = str(entry.get("tool") or "")
+        if not entry.get("succeeded"):
+            # Replaying a failure proves nothing about the evidence, and a
+            # preflight rejection would just be rejected again.
+            skipped.append(
+                {"sequence": sequence, "tool": tool, "why": "did not succeed"}
+            )
+            continue
+        params_path = directory / str(entry.get("artifact_dir") or "") / "params.json"
+        if not params_path.exists():
+            errored.append(
+                {"sequence": sequence, "tool": tool, "why": "params missing"}
+            )
+            continue
+        try:
+            params = json.loads(params_path.read_text())
+        except ValueError as exc:
+            errored.append(
+                {"sequence": sequence, "tool": tool, "why": f"params unreadable: {exc}"}
+            )
+            continue
+
+        if tool in TIMING_DEPENDENT_TOOLS:
+            skipped.append(
+                {
+                    "sequence": sequence,
+                    "tool": tool,
+                    "why": "reports wall clock; two honest runs disagree",
+                }
+            )
+            continue
+
+        try:
+            result = await execute(tool, params)
+        except Exception as exc:  # pragma: no cover - defensive
+            errored.append({"sequence": sequence, "tool": tool, "why": str(exc)[:200]})
+            continue
+
+        expected = entry.get("canonical_sha256")
+        actual = canonical_digest(result)
+        if not expected:
+            skipped.append(
+                {
+                    "sequence": sequence,
+                    "tool": tool,
+                    "why": "recorded before canonical hashing existed",
+                }
+            )
+        elif actual == expected:
+            reproduced.append(sequence)
+        else:
+            differed.append(
+                {
+                    "sequence": sequence,
+                    "tool": tool,
+                    "recorded": expected,
+                    "actual": actual,
+                }
+            )
+
+    judged = len(reproduced) + len(differed)
+    return {
+        "job_id": str(job_id),
+        "entries": len(entries),
+        "judged": judged,
+        "reproduced": len(reproduced),
+        "differed": differed,
+        # Reported rather than hidden: a replay that judged three of twenty
+        # calls should not read as a bundle that reproduced.
+        "skipped": skipped,
+        "errored": errored,
+        "verdict": (
+            "reproduced"
+            if judged and not differed and not errored
+            else "differed"
+            if differed
+            else "inconclusive"
+        ),
     }

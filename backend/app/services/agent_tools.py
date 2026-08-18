@@ -2843,6 +2843,57 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "simulate_c_workload",
+        "description": (
+            "Run a self-contained C program in a simulated out-of-order core "
+            "with caches and a branch predictor, and report the cycles it "
+            "took. This is the referee for a performance claim: "
+            "analyze_snippet_cycles estimates how a sequence issues assuming a "
+            "warm front end and no cache misses, while this executes it and "
+            "measures. Simulation runs on the order of 100k instructions a "
+            "second, so bring a kernel with a bounded input, and screen "
+            "candidates with analyze_snippet_cycles first. Compare runs by "
+            "cycles rather than sim_seconds."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Self-contained C program including main()",
+                },
+                "flags": {
+                    "type": "string",
+                    "description": (
+                        "Compiler flags (default '-O3 -static'). Static linking "
+                        "is added if absent: syscall-emulation mode has no "
+                        "dynamic loader."
+                    ),
+                },
+                "cpu_type": {
+                    "type": "string",
+                    "description": (
+                        "O3CPU (out-of-order, the one a timing claim needs), "
+                        "MinorCPU (in-order), TimingSimpleCPU, or "
+                        "AtomicSimpleCPU (no timing model at all)."
+                    ),
+                },
+                "run_args": {
+                    "type": "string",
+                    "description": "Arguments passed to the program (optional)",
+                },
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "Short name for this run, recorded with the "
+                        "measurement so variants can be told apart."
+                    ),
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
         "name": "record_prediction",
         "description": (
             "State what you expect a measurement to show, and how you reached "

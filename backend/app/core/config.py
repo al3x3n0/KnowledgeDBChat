@@ -267,6 +267,7 @@ class Settings(BaseSettings):
         "ghcr.io/al3x3n0/kdbc-microarch-research:latest,"
         "ghcr.io/al3x3n0/kdbc-axis-research:latest,"
         "ghcr.io/al3x3n0/kdbc-profiling-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-gem5-research:latest,"
         "python:3.11-slim"
     )
     SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = (

@@ -3107,6 +3107,13 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                         "Assembly to analyse directly, instead of code. Use this "
                         "to cost a hypothetical sequence, such as one where an "
                         "idiom is replaced by the instruction being proposed. "
+                        "If you intend to compare the estimate against a "
+                        "measurement of a compiled program, this must be the "
+                        "compiler's own output with your edit applied, never "
+                        "assembly you wrote by hand: a run that hand-wrote a "
+                        "plausible-looking loop estimated 36.26 cycles per "
+                        "iteration where the code that actually ran cost 59.05, "
+                        "and blamed the estimate rather than the substitution. "
                         "To cost a loop rather than a whole function, fence it "
                         "with '# LLVM-MCA-BEGIN name' and a bare '# LLVM-MCA-END' "
                         "(no name after END, or llvm-mca rejects it): the same "
@@ -3130,8 +3137,10 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                 "target": {
                     "type": "string",
                     "description": (
-                        "Target triple (default aarch64-linux-gnu). Cross-target "
-                        "analysis works: the code is never executed."
+                        "Target TRIPLE, e.g. aarch64-linux-gnu (the default). "
+                        "Not a core model and not a name for the run: the core "
+                        "goes in 'cpu' and a name goes in 'label'. Cross-target "
+                        "analysis works, since the code is never executed."
                     ),
                 },
                 "iterations": {

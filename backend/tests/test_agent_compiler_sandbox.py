@@ -388,3 +388,44 @@ class TestMcaFailureMessages:
 
         assert "cannot appear in C" in result["error"]
         assert "pass the fenced assembly as 'asm'" in result["error"]
+
+
+class TestTargetAndRegionChecks:
+    """Two ways a caller silently measures something other than they meant."""
+
+    @pytest.mark.asyncio
+    async def test_a_core_name_in_target_is_caught_before_a_container_starts(
+        self, enabled
+    ):
+        """llvm-mca's "unable to get target for 'neoverse-n1'" names neither
+        the parameter at fault nor what belongs in it."""
+        result = await sandbox.analyze_snippet_cycles(
+            asm="\tnop\n", cpu="neoverse-n1", target="neoverse-n1"
+        )
+
+        assert "should be a target triple" in result["error"]
+        assert "goes in 'cpu'" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_label_in_target_is_caught_too(self, enabled):
+        result = await sandbox.analyze_snippet_cycles(
+            asm="\tnop\n", cpu="neoverse-n1", target="norm"
+        )
+
+        assert "should be a target triple" in result["error"]
+        assert "goes in 'label'" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_a_real_triple_passes_the_check(self, enabled, monkeypatch):
+        """The check must not reject the targets that actually work."""
+        for triple in ("aarch64-linux-gnu", "riscv64", "x86_64-unknown-linux-gnu"):
+            architecture = triple.split("-")[0].lower()
+            assert architecture in sandbox.KNOWN_TARGET_ARCHITECTURES, triple
+
+    def test_the_mca_remedy_explains_an_unknown_target(self):
+        message = sandbox.explain_mca_failure(
+            "llvm-mca: : error: unable to get target for 'norm', see --version\n", 1
+        )
+
+        assert "belongs in 'target'" in message
+        assert "aarch64-linux-gnu" in message

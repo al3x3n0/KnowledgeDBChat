@@ -112,6 +112,11 @@ MCA_ERROR_REMEDIES = (
         "and it must appear in assembly rather than in C.",
     ),
     (
+        re.compile(r"unable to get target for"),
+        "The target triple was not understood. It belongs in 'target' as "
+        "something like aarch64-linux-gnu; the core model goes in 'cpu'.",
+    ),
+    (
         re.compile(r"unsupported CPU|invalid -mcpu|not a recognized processor"),
         "That core model is unknown to this LLVM. 'llc -march=aarch64 "
         "-mcpu=help' lists them; neoverse-n1 and cortex-a78 are present.",
@@ -137,6 +142,31 @@ def explain_mca_failure(stderr: str, returncode: int) -> str:
 # rather than defaulted: "1801 cycles" with no core named is not a measurement
 # anyone can check or reproduce.
 SAFE_MODEL_NAME = re.compile(r"^[A-Za-z0-9_.+-]{1,64}$")
+# The architecture part of a target triple. Checked because a caller reaching
+# for "the thing I am analysing" naturally puts a label or a cpu name here.
+KNOWN_TARGET_ARCHITECTURES = {
+    "aarch64",
+    "aarch64_be",
+    "arm",
+    "armeb",
+    "thumb",
+    "x86_64",
+    "i386",
+    "i686",
+    "riscv32",
+    "riscv64",
+    "mips",
+    "mips64",
+    "mipsel",
+    "powerpc",
+    "powerpc64",
+    "ppc64le",
+    "sparc",
+    "sparcv9",
+    "s390x",
+    "wasm32",
+    "wasm64",
+}
 DEFAULT_ANALYSIS_TARGET = "aarch64-linux-gnu"
 MAX_MCA_ITERATIONS = 10000
 
@@ -515,6 +545,18 @@ async def analyze_snippet_cycles(
     for name, value in (("cpu", cpu), ("target", target)):
         if not SAFE_MODEL_NAME.match(value):
             return {"error": f"{name} contains unsupported characters: {value!r}"}
+    # A label or a core name in `target` reaches llvm-mca as a triple and comes
+    # back as "unable to get target for 'norm'", which names neither the
+    # parameter at fault nor what belongs in it.
+    if not target.split("-")[0].lower() in KNOWN_TARGET_ARCHITECTURES:
+        return {
+            "error": (
+                f"target should be a target triple such as "
+                f"{DEFAULT_ANALYSIS_TARGET}, not {target!r}. The core model "
+                f"goes in 'cpu' (you passed cpu={cpu!r}), and a name for the "
+                "run goes in 'label'."
+            )
+        }
 
     safe_flags = _clean_flags(flags)
     if safe_flags is None:
@@ -596,6 +638,17 @@ async def analyze_snippet_cycles(
         if isinstance(total_cycles, (int, float)) and reported_iterations
         else None
     )
+    # How many instructions the fenced region actually contains. A weak check
+    # rather than a strong one: a run that hand-wrote its assembly instead of
+    # analysing the compiler's output was 40% off in cycles while differing by
+    # a single instruction, so this catches a wildly wrong region and not a
+    # subtly wrong one.
+    instructions_value = summary.get("Instructions")
+    instructions_per_iteration = (
+        round(float(instructions_value) / float(reported_iterations), 3)
+        if isinstance(instructions_value, (int, float)) and reported_iterations
+        else None
+    )
     # mca's own warnings change what the number means -- a region that swept up
     # a return or the function prologue is not the loop the caller asked about.
     warnings = [line.strip() for line in (stderr or "").splitlines() if line.strip()]
@@ -626,6 +679,7 @@ async def analyze_snippet_cycles(
             "total_cycles": total_cycles,
             "cycles_per_iteration": cycles_per_iteration,
             "instructions": summary.get("Instructions"),
+            "instructions_per_iteration": instructions_per_iteration,
             "total_uops": summary.get("TotaluOps"),
             "ipc": summary.get("IPC"),
             "uops_per_cycle": summary.get("uOpsPerCycle"),
@@ -654,6 +708,7 @@ async def analyze_snippet_cycles(
                 "target": target,
                 "flags": flags if not asm else "",
                 "cycles_per_iteration": cycles_per_iteration,
+                "instructions_per_iteration": instructions_per_iteration,
                 "total_cycles": total_cycles,
                 "instructions": summary.get("Instructions"),
                 "block_rthroughput": summary.get("BlockRThroughput"),

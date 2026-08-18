@@ -4101,7 +4101,23 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             if isinstance(required, list)
             else []
         )
-        missing = [r for r in required if r not in available]
+        # Required, not optional. Left optional, the guard never fired: a run
+        # that had just fabricated an llvm-mca result simply did not mention
+        # what it derived from, and nothing asked. A prediction with no
+        # measurement behind it is legitimate, but it has to say so.
+        if not required:
+            return {
+                "error": (
+                    "derived_from is required: list the finding types this "
+                    "number comes from, e.g. ['cycle_model_measurement']. "
+                    f"Findings available in this run: "
+                    f"{', '.join(available) or 'none'}. If the prediction is a "
+                    "judgement with no measurement behind it, pass ['none'] "
+                    "and say so in the methodology."
+                )
+            }
+        declared_guess = required == ["none"]
+        missing = [] if declared_guess else [r for r in required if r not in available]
         if missing:
             return {
                 "error": (
@@ -4130,6 +4146,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     methodology_tags=(
                         ([str(t) for t in tags] if isinstance(tags, list) else [])
                         + [f"evidence:{name}" for name in available]
+                        + (["declared:no-measurement"] if declared_guess else [])
                     )
                     or None,
                     job_id=getattr(job, "id", None),

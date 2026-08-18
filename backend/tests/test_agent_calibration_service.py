@@ -168,6 +168,7 @@ async def test_the_tools_round_trip_a_prediction_through_dispatch(db_session):
             "predicted_value": 1.4,
             "methodology": "mca delta scaled by dynamic block count",
             "methodology_tags": ["mca"],
+            "derived_from": ["none"],
         },
         ctx,
     )
@@ -287,9 +288,9 @@ async def test_a_prediction_derived_from_real_evidence_is_accepted(db_session):
 
 
 @pytest.mark.asyncio
-async def test_the_evidence_on_hand_is_recorded_whether_or_not_it_is_cited(db_session):
-    """So a reader can tell a derived prediction from a guess without taking
-    the methodology text at its word."""
+async def test_the_evidence_on_hand_is_recorded_alongside_what_was_cited(db_session):
+    """So a reader can tell a derived prediction from a declared guess without
+    taking the methodology text at its word."""
     from sqlalchemy import select
 
     from app.models.agent_prediction import AgentPrediction
@@ -304,7 +305,8 @@ async def test_the_evidence_on_hand_is_recorded_whether_or_not_it_is_cited(db_se
             "subject": "guessed",
             "metric": "cycles",
             "predicted_value": 1.0,
-            "methodology": "a hunch",
+            "methodology": "a hunch, with the measurements not yet taken",
+            "derived_from": ["none"],
         },
         ctx,
     )
@@ -317,3 +319,54 @@ async def test_the_evidence_on_hand_is_recorded_whether_or_not_it_is_cited(db_se
     assert "evidence:dynamic_profile" in row.methodology_tags
     assert "evidence:simulated_measurement" in row.methodology_tags
     assert "evidence:cycle_model_measurement" not in row.methodology_tags
+
+
+@pytest.mark.asyncio
+async def test_a_prediction_must_say_what_it_derives_from(db_session):
+    """Left optional, the guard never fired: the run that had just fabricated
+    an mca result simply did not mention a basis, and nothing asked."""
+    provider, ctx = await _provider_and_ctx(db_session, [{"type": "dynamic_profile"}])
+
+    result = await provider.execute(
+        "record_prediction",
+        {
+            "subject": "norm loop",
+            "metric": "cycles",
+            "predicted_value": 752068,
+            "methodology": "mca per-iteration cost times trip count",
+        },
+        ctx,
+    )
+
+    assert "derived_from is required" in result["error"]
+    assert "dynamic_profile" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_guess_may_be_declared_but_not_disguised(db_session):
+    """A judgement with no measurement is legitimate; a silent one is not."""
+    from sqlalchemy import select
+
+    from app.models.agent_prediction import AgentPrediction
+
+    provider, ctx = await _provider_and_ctx(db_session, [{"type": "dynamic_profile"}])
+
+    result = await provider.execute(
+        "record_prediction",
+        {
+            "subject": "declared guess",
+            "metric": "cycles",
+            "predicted_value": 1.0,
+            "methodology": "no measurement yet; judgement from the loop shape",
+            "derived_from": ["none"],
+        },
+        ctx,
+    )
+
+    assert result["success"] is True
+    row = (
+        await db_session.execute(
+            select(AgentPrediction).where(AgentPrediction.subject == "declared guess")
+        )
+    ).scalar_one()
+    assert "declared:no-measurement" in row.methodology_tags

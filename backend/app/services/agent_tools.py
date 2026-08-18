@@ -2972,16 +2972,25 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                     "type": "array",
                     "items": {"type": "string"},
                     "description": (
-                        "Finding types this prediction is computed from, e.g. "
-                        "['cycle_model_measurement']. Each must already exist "
-                        "in this run or the call is refused: a prediction "
-                        "citing a measurement it never obtained is worse than "
-                        "no prediction. The finding types present when you "
-                        "predicted are recorded either way."
+                        "Required. The finding types this prediction is "
+                        "computed from, e.g. ['cycle_model_measurement']. Each "
+                        "must already exist in this run or the call is "
+                        "refused: a prediction citing a measurement it never "
+                        "obtained is worse than no prediction. If this is a "
+                        "judgement with no measurement behind it, pass "
+                        "['none'] and explain in the methodology -- that is "
+                        "recorded as such, and is honest where a silent guess "
+                        "is not."
                     ),
                 },
             },
-            "required": ["subject", "metric", "predicted_value", "methodology"],
+            "required": [
+                "subject",
+                "metric",
+                "predicted_value",
+                "methodology",
+                "derived_from",
+            ],
         },
     },
     {

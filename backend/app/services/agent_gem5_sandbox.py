@@ -176,6 +176,7 @@ async def simulate_c_workload(
     return {
         "success": True,
         "data": {
+            "image": image,
             "subject": subject,
             "cpu_type": model,
             "flags": safe_flags,

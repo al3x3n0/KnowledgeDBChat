@@ -139,7 +139,7 @@ async def check_description(
         }
     return {
         "success": True,
-        "data": {"result": _first_line(stdout) or "ok"},
+        "data": {"image": image, "result": _first_line(stdout) or "ok"},
         "findings": [
             {
                 "type": "axis_description_valid",
@@ -200,6 +200,7 @@ async def emit_artifact(
     return {
         "success": True,
         "data": {
+            "image": image,
             "target": requested,
             "command": command,
             "artifact": stdout[:MAX_OUTPUT_CHARS],
@@ -303,6 +304,7 @@ async def prove_equivalence(
     return {
         "success": True,
         "data": {
+            "image": image,
             "verdict": verdict,
             "proved": proved,
             "counterexample": stdout[:MAX_OUTPUT_CHARS] if verdict == "sat" else "",

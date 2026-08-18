@@ -333,6 +333,7 @@ async def compile_c_snippet(
     return {
         "success": True,
         "data": {
+            "image": image,
             "subject": subject,
             "flags": flags,
             "emit": emit,
@@ -443,6 +444,7 @@ async def benchmark_c_snippet(
     return {
         "success": True,
         "data": {
+            "image": image,
             "flags": flags,
             "repeat": repeat,
             # The fastest trial is the least contaminated by scheduling noise.
@@ -671,6 +673,7 @@ async def analyze_snippet_cycles(
     return {
         "success": True,
         "data": {
+            "image": image,
             "cpu": cpu,
             "target": target,
             "flags": flags if not asm else "",

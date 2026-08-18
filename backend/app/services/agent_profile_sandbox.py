@@ -203,6 +203,7 @@ async def profile_c_workload(
     return {
         "success": True,
         "data": {
+            "image": image,
             "subject": subject,
             "flags": safe_flags,
             "instructions_executed": profile.total,

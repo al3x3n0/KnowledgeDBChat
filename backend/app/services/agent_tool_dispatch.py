@@ -253,7 +253,53 @@ class AgentToolRegistry:
         provider = self.resolve(tool_name, context)
         if provider is None:
             return False, None
-        return True, await provider.execute(tool_name, params, context)
+        result = await provider.execute(tool_name, params, context)
+        await self._record_evidence(tool_name, params, result, context)
+        return True, result
+
+    @staticmethod
+    async def _record_evidence(
+        tool_name: str,
+        params: Dict[str, Any],
+        result: Any,
+        context: AgentToolExecutionContext,
+    ) -> None:
+        """Add this call to the run's bundle, as it happens.
+
+        Here rather than in each tool because every call passes through this
+        point: a bundle that depends on tools opting in is a bundle missing
+        whichever tool was added last. Failures are recorded too -- a run that
+        cited a measurement from a call that had failed is only visible if the
+        failure is in the record.
+
+        Never allowed to affect the call itself. A bundle is a description of
+        the run, not a participant in it.
+        """
+        from loguru import logger
+
+        from app.services import agent_evidence_bundle as bundle
+
+        if tool_name not in bundle.EVIDENCE_TOOLS:
+            return
+        job_id = getattr(getattr(context, "job", None), "id", None)
+        if not job_id:
+            return
+        try:
+            image = ""
+            if isinstance(result, dict):
+                image = str((result.get("data") or {}).get("image") or "")
+            if not image:
+                image = str(params.get("image") or "")
+            image_id = await bundle.resolve_image_id(image) if image else ""
+            bundle.record_entry(
+                job_id=str(job_id),
+                tool=tool_name,
+                params=params if isinstance(params, dict) else {"params": params},
+                result=result,
+                image_id=image_id,
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"evidence bundle: skipped {tool_name}: {exc}")
 
 
 def build_agent_service_document_provider(service: Any) -> FunctionToolProvider:

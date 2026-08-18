@@ -161,6 +161,9 @@ def record_entry(
         }
         with (directory / MANIFEST_NAME).open("a") as handle:
             handle.write(json.dumps(entry, sort_keys=True) + "\n")
+        # Refreshed per entry so a run that dies partway still leaves a bundle
+        # that says what it is and can check itself.
+        write_verifier(job_id, root)
         return entry
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(f"evidence bundle: could not record {tool}: {exc}")
@@ -206,4 +209,186 @@ def summarize(job_id: str, root: Optional[Path] = None) -> Dict[str, Any]:
         "tools": dict(sorted(tools.items())),
         "image_ids": images,
         "unpinned_entries": sum(1 for e in entries if not e.get("image_id")),
+    }
+
+
+VERIFIER_NAME = "verify.py"
+README_NAME = "README.md"
+
+VERIFIER_SOURCE = '''#!/usr/bin/env python3
+"""Check this bundle against its own manifest.
+
+Two different questions, and this answers only the first:
+
+  integrity   -- are the artifacts the ones this run produced?
+  reproduction -- does re-running the recorded calls produce them again?
+
+Integrity needs nothing but python3 and these files. Reproduction needs the
+images the manifest pins and the tools that made the calls; the manifest holds
+what that requires -- tool, parameters, image id, and the hash to compare
+against.
+
+Exit status is 0 when every artifact matches, 1 otherwise.
+"""
+
+import hashlib
+import json
+import sys
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+
+
+def digest(path):
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def main():
+    manifest = HERE / "manifest.jsonl"
+    if not manifest.exists():
+        print("no manifest.jsonl: this is not a bundle")
+        return 1
+
+    entries = [json.loads(line) for line in manifest.read_text().splitlines() if line.strip()]
+    checked = mismatched = missing = 0
+    for entry in entries:
+        directory = HERE / entry["artifact_dir"]
+        for name, expected in (
+            ("params.json", entry.get("params_sha256")),
+            ("result.json", entry.get("result_sha256")),
+        ):
+            path = directory / name
+            if not path.exists():
+                print(f"MISSING  #{entry['sequence']:>4} {entry['tool']}/{name}")
+                missing += 1
+                continue
+            actual = digest(path)
+            checked += 1
+            if actual != expected:
+                print(f"CHANGED  #{entry['sequence']:>4} {entry['tool']}/{name}")
+                print(f"           recorded {expected}")
+                print(f"           actual   {actual}")
+                mismatched += 1
+
+    succeeded = sum(1 for e in entries if e.get("succeeded"))
+    unpinned = sum(1 for e in entries if not e.get("image_id"))
+    print()
+    print(f"calls recorded    : {len(entries)} ({succeeded} succeeded, {len(entries) - succeeded} failed)")
+    print(f"artifacts checked : {checked}")
+    print(f"unpinned entries  : {unpinned}")
+    if mismatched or missing:
+        print(f"FAILED: {mismatched} changed, {missing} missing")
+        return 1
+    print("OK: every artifact matches the manifest")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+'''
+
+README_TEMPLATE = """# Evidence bundle for job {job_id}
+
+Written while the run happened, one entry per evidence-producing tool call, so
+this describes what actually ran rather than what was reconstructed afterwards.
+
+## What is here
+
+- `manifest.jsonl` — one line per call, in order: the tool, whether it
+  succeeded, the image it ran in (pinned by id, since a tag moves), and the
+  sha256 of its recorded parameters and result.
+- `artifacts/NNNN-<tool>/params.json` — exactly what the call was given.
+- `artifacts/NNNN-<tool>/result.json` — exactly what it returned.
+- `artifacts/NNNN-<tool>/*.txt` — large outputs given their own file, such as
+  an assembly listing or a proof obligation, so they can be read and diffed
+  directly.
+
+Failed calls are here too. A bundle showing only what worked would describe a
+run that did not happen, and a claim resting on a measurement that never
+succeeded is only detectable if the failure was kept.
+
+## Checking it
+
+```
+python3 {verifier}
+```
+
+That recomputes every artifact hash and compares it with the manifest. It
+proves the artifacts are the ones this run produced; it does not re-execute
+anything, so it does not prove they can be produced again. Re-execution needs
+the pinned images and the tools that made the calls -- the manifest records
+which image id each call used, and the hash any repeat run has to match.
+
+## Summary at time of writing
+
+- calls recorded: {entries} ({succeeded} succeeded, {failed} failed)
+- tools: {tools}
+- images: {images}
+- entries with no image pin: {unpinned}
+"""
+
+
+def write_verifier(job_id: str, root: Optional[Path] = None) -> Optional[Path]:
+    """Refresh the bundle's verifier and README.
+
+    Rewritten on every entry rather than at the end, so a bundle is complete
+    and self-describing at any moment -- including when a run dies partway,
+    which is exactly when its evidence matters most.
+    """
+    try:
+        directory = bundle_dir(job_id, root)
+        if not directory.exists():
+            return None
+        verifier = directory / VERIFIER_NAME
+        verifier.write_text(VERIFIER_SOURCE, encoding="utf-8")
+        verifier.chmod(0o755)
+
+        summary = summarize(job_id, root)
+        (directory / README_NAME).write_text(
+            README_TEMPLATE.format(
+                job_id=job_id,
+                verifier=VERIFIER_NAME,
+                entries=summary["entries"],
+                succeeded=summary["succeeded"],
+                failed=summary["failed"],
+                tools=", ".join(f"{k} x{v}" for k, v in summary["tools"].items())
+                or "none",
+                images=", ".join(summary["image_ids"]) or "none pinned",
+                unpinned=summary["unpinned_entries"],
+            ),
+            encoding="utf-8",
+        )
+        return verifier
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"evidence bundle: could not write verifier: {exc}")
+        return None
+
+
+def verify_integrity(job_id: str, root: Optional[Path] = None) -> Dict[str, Any]:
+    """Recompute artifact hashes and compare them with the manifest."""
+    directory = bundle_dir(job_id, root)
+    entries = read_manifest(job_id, root)
+    checked = 0
+    changed: List[str] = []
+    missing: List[str] = []
+    for entry in entries:
+        entry_dir = directory / str(entry.get("artifact_dir") or "")
+        for name, expected in (
+            ("params.json", entry.get("params_sha256")),
+            ("result.json", entry.get("result_sha256")),
+        ):
+            path = entry_dir / name
+            label = f"{entry.get('sequence')}/{name}"
+            if not path.exists():
+                missing.append(label)
+                continue
+            checked += 1
+            if _digest(path.read_bytes()) != expected:
+                changed.append(label)
+    return {
+        "entries": len(entries),
+        "artifacts_checked": checked,
+        "changed": changed,
+        "missing": missing,
+        "intact": not changed and not missing,
     }

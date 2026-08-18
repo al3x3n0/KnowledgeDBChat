@@ -118,3 +118,63 @@ def test_only_evidence_producing_tools_are_bundled():
     # A bundle of every search would bury the measurements a reviewer checks.
     assert "search_arxiv" not in bundle.EVIDENCE_TOOLS
     assert "write_progress_report" not in bundle.EVIDENCE_TOOLS
+
+
+def test_the_bundle_carries_its_own_verifier_from_the_first_entry(tmp_path):
+    """A run that dies partway still leaves a bundle that can check itself."""
+    _record(tmp_path, "simulate_c_workload", {"code": "x"}, {"success": True})
+
+    directory = bundle.bundle_dir("job-1", tmp_path)
+    verifier = directory / bundle.VERIFIER_NAME
+    readme = directory / bundle.README_NAME
+
+    assert verifier.exists() and verifier.stat().st_mode & 0o111
+    assert "manifest.jsonl" in verifier.read_text()
+    assert "simulate_c_workload x1" in readme.read_text()
+
+
+def test_integrity_passes_on_an_untouched_bundle(tmp_path):
+    _record(tmp_path, "compile_c_snippet", {"code": "a"}, {"success": True})
+    _record(tmp_path, "axis_prove", {"source": "b"}, {"success": False, "error": "no"})
+
+    report = bundle.verify_integrity("job-1", tmp_path)
+
+    assert report["intact"] is True
+    assert report["entries"] == 2
+    assert report["artifacts_checked"] == 4
+
+
+def test_integrity_notices_an_edited_artifact(tmp_path):
+    """The point of hashing: a result that was changed after the fact."""
+    entry = _record(tmp_path, "compile_c_snippet", {"code": "a"}, {"success": True})
+    tampered = (
+        bundle.bundle_dir("job-1", tmp_path) / entry["artifact_dir"] / "result.json"
+    )
+    tampered.write_text('{"success": true, "data": {"cycles": 1}}')
+
+    report = bundle.verify_integrity("job-1", tmp_path)
+
+    assert report["intact"] is False
+    assert report["changed"] == ["1/result.json"]
+
+
+def test_integrity_notices_a_deleted_artifact(tmp_path):
+    entry = _record(tmp_path, "profile_c_workload", {"code": "a"}, {"success": True})
+    (
+        bundle.bundle_dir("job-1", tmp_path) / entry["artifact_dir"] / "params.json"
+    ).unlink()
+
+    report = bundle.verify_integrity("job-1", tmp_path)
+
+    assert report["intact"] is False
+    assert report["missing"] == ["1/params.json"]
+
+
+def test_the_readme_states_what_verification_does_not_prove(tmp_path):
+    """Integrity is not reproduction, and the bundle should not imply it is."""
+    _record(tmp_path, "simulate_c_workload", {"code": "x"}, {"success": True})
+
+    readme = (bundle.bundle_dir("job-1", tmp_path) / bundle.README_NAME).read_text()
+
+    assert "does not re-execute" in readme
+    assert "does not prove they can be produced again" in readme

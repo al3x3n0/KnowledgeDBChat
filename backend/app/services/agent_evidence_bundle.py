@@ -54,38 +54,207 @@ EVIDENCE_TOOLS = {
 SPILL_FIELDS = ("output", "artifact", "assembly", "stdout", "compiler_stderr")
 
 _image_ids: Dict[str, str] = {}
+_image_details: Dict[str, Dict[str, Any]] = {}
+
+IMAGES_NAME = "images.json"
+
+# Where each sandbox image comes from, so a pinned id is something a reader can
+# act on rather than an opaque hash. Rebuilding is not the same as loading the
+# exact image -- packages move -- which is why the export path exists too.
+IMAGE_ORIGINS = {
+    "kdbc-compiler-research": {
+        "dockerfile": "deploy/sandbox-images/compiler-research/Dockerfile",
+        "context": "that directory",
+    },
+    "kdbc-microarch-research": {
+        "dockerfile": "deploy/sandbox-images/microarch-research/Dockerfile",
+        "context": "that directory",
+    },
+    "kdbc-profiling-research": {
+        "dockerfile": "deploy/sandbox-images/profiling-research/Dockerfile",
+        "context": "that directory",
+    },
+    "kdbc-axis-research": {
+        "dockerfile": "deploy/sandbox-images/axis-research/Dockerfile",
+        "context": "the AXIS repository, not this one",
+    },
+    "kdbc-gem5-research": {
+        "dockerfile": "deploy/sandbox-images/README.md (built from gem5 source)",
+        "context": "see the README: the published gem5 image is not used",
+    },
+}
+
+
+def image_origin(reference: str) -> Dict[str, str]:
+    """How to rebuild an image, when it is one of ours."""
+    for name, origin in IMAGE_ORIGINS.items():
+        if name in (reference or ""):
+            return dict(origin)
+    return {}
 
 
 def _digest(payload: bytes) -> str:
     return hashlib.sha256(payload).hexdigest()
 
 
-async def resolve_image_id(image: str) -> str:
-    """Pin the image by content id, since a tag moves and a bundle must not.
+async def describe_image(image: str) -> Dict[str, Any]:
+    """Read what a bundle needs to say about the image a call ran in.
 
-    Returns "" when the id cannot be read; an empty pin is honest, a guessed
-    one is not.
+    The id pins it, the size says what obtaining it costs, and the origin says
+    how to get it. An empty result is honest; a guessed one is not.
     """
-    if image in _image_ids:
-        return _image_ids[image]
+    if image in _image_details:
+        return _image_details[image]
+    details: Dict[str, Any] = {}
     try:
         process = await asyncio.create_subprocess_exec(
             "docker",
             "image",
             "inspect",
             "--format",
-            "{{.Id}}",
+            "{{.Id}}\t{{.Size}}\t{{.Created}}",
             image,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
         )
         stdout, _ = await asyncio.wait_for(process.communicate(), timeout=15)
-        identifier = (stdout or b"").decode().strip()
+        parts = (stdout or b"").decode().strip().split("\t")
+        if parts and parts[0]:
+            details = {
+                "reference": image,
+                "id": parts[0],
+                "size_bytes": int(parts[1])
+                if len(parts) > 1 and parts[1].isdigit()
+                else 0,
+                "created": parts[2] if len(parts) > 2 else "",
+                "origin": image_origin(image),
+            }
     except Exception:  # pragma: no cover - defensive
-        identifier = ""
-    if identifier:
-        _image_ids[image] = identifier
-    return identifier
+        details = {}
+    if details:
+        _image_details[image] = details
+        _image_ids[image] = details["id"]
+    return details
+
+
+async def resolve_image_id(image: str) -> str:
+    """Pin the image by content id, since a tag moves and a bundle must not."""
+    if image in _image_ids:
+        return _image_ids[image]
+    details = await describe_image(image)
+    return str(details.get("id") or "")
+
+
+def write_images_manifest(job_id: str, root: Optional[Path] = None) -> Optional[Path]:
+    """Describe every image this bundle depends on, and how to obtain it."""
+    try:
+        directory = bundle_dir(job_id, root)
+        if not directory.exists():
+            return None
+        used = {
+            str(e.get("image_id"))
+            for e in read_manifest(job_id, root)
+            if e.get("image_id")
+        }
+        images = [dict(d) for d in _image_details.values() if d.get("id") in used]
+        for image in images:
+            image["obtain"] = (
+                "docker load -i images/<file>.tar (exact), or rebuild from "
+                f"{image['origin']['dockerfile']} using {image['origin']['context']} "
+                "(equivalent, not identical: packages move)"
+                if image.get("origin")
+                else "not a known project image; obtain it from wherever it came from"
+            )
+        payload = {
+            "images": images,
+            # Named rather than implied: a bundle whose images cannot be
+            # obtained is checkable but not reproducible, and should say so.
+            "note": (
+                "These ids are what the calls ran in. Verifying artifact "
+                "integrity needs none of them; replaying the calls needs all "
+                "of them, and they are not included here -- see the README."
+            ),
+            "unknown_image_ids": sorted(used - {str(i.get("id")) for i in images}),
+        }
+        path = directory / IMAGES_NAME
+        path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        return path
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"evidence bundle: could not write images manifest: {exc}")
+        return None
+
+
+async def export_images(
+    job_id: str,
+    destination: Path,
+    *,
+    root: Optional[Path] = None,
+) -> Dict[str, Any]:
+    """Save the images this bundle used, so it can be replayed elsewhere.
+
+    Deliberately not automatic: these images run to hundreds of megabytes each,
+    and writing them beside every bundle would make the evidence too heavy to
+    keep. Exporting is a decision about shipping a bundle, taken once.
+    """
+    destination.mkdir(parents=True, exist_ok=True)
+    used = {
+        str(e.get("image_id")) for e in read_manifest(job_id, root) if e.get("image_id")
+    }
+    exported: List[Dict[str, Any]] = []
+    failed: List[Dict[str, Any]] = []
+
+    for details in _image_details.values():
+        if details.get("id") not in used:
+            continue
+        reference = str(details.get("reference") or details["id"])
+        safe = reference.replace("/", "_").replace(":", "_")
+        target = destination / f"{safe}.tar"
+        try:
+            process = await asyncio.create_subprocess_exec(
+                "docker",
+                "save",
+                "-o",
+                str(target),
+                reference,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr = await asyncio.wait_for(process.communicate(), timeout=1800)
+            if process.returncode != 0 or not target.exists():
+                failed.append(
+                    {"reference": reference, "why": (stderr or b"").decode()[:200]}
+                )
+                continue
+            exported.append(
+                {
+                    "reference": reference,
+                    "id": details["id"],
+                    "file": target.name,
+                    "bytes": target.stat().st_size,
+                    "sha256": _digest(target.read_bytes()),
+                }
+            )
+        except Exception as exc:  # pragma: no cover - defensive
+            failed.append({"reference": reference, "why": str(exc)[:200]})
+
+    (destination / "load.sh").write_text(
+        "#!/bin/sh\n"
+        "# Load the images this bundle's calls ran in, then replay it.\n"
+        "set -e\n"
+        + "".join(f'docker load -i "$(dirname "$0")/{e["file"]}"\n' for e in exported),
+        encoding="utf-8",
+    )
+    (destination / "load.sh").chmod(0o755)
+    (destination / "exported.json").write_text(
+        json.dumps({"exported": exported, "failed": failed}, indent=2, sort_keys=True),
+        encoding="utf-8",
+    )
+    return {
+        "destination": str(destination),
+        "exported": exported,
+        "failed": failed,
+        "total_bytes": sum(e["bytes"] for e in exported),
+    }
 
 
 def bundle_dir(job_id: str, root: Optional[Path] = None) -> Path:
@@ -167,6 +336,7 @@ def record_entry(
         # Refreshed per entry so a run that dies partway still leaves a bundle
         # that says what it is and can check itself.
         write_verifier(job_id, root)
+        write_images_manifest(job_id, root)
         return entry
     except Exception as exc:  # pragma: no cover - defensive
         logger.warning(f"evidence bundle: could not record {tool}: {exc}")
@@ -309,6 +479,23 @@ this describes what actually ran rather than what was reconstructed afterwards.
 Failed calls are here too. A bundle showing only what worked would describe a
 run that did not happen, and a claim resting on a measurement that never
 succeeded is only detectable if the failure was kept.
+
+## Reproducing it elsewhere
+
+`images.json` lists every image these calls ran in, pinned by id. The images
+themselves are not here: they run to hundreds of megabytes each, and a bundle
+carrying them would be too heavy to keep. Two ways to obtain them:
+
+- **exact** — if the bundle was shipped with an `images/` directory, run
+  `sh images/load.sh`, which loads the saved images by id. Replaying then
+  compares like with like.
+- **equivalent** — rebuild from the Dockerfile each entry names. That gives an
+  image that does the same job, not the same image: base layers and packages
+  move, so a replay may differ for reasons that have nothing to do with the
+  result being studied.
+
+Without either, this bundle can still be checked for integrity. It cannot be
+replayed, and it says so rather than implying otherwise.
 
 ## Checking it
 

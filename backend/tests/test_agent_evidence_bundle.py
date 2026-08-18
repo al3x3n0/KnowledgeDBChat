@@ -301,3 +301,82 @@ class TestReplay:
         canonical = bundle.canonicalize(payload)
 
         assert canonical == {"success": True, "data": {"cycles": 42}}
+
+
+class TestImagePortability:
+    """A pinned id is only useful if a reader can act on it."""
+
+    def test_a_project_image_says_how_to_rebuild_it(self):
+        origin = bundle.image_origin("ghcr.io/al3x3n0/kdbc-profiling-research:latest")
+
+        assert "profiling-research/Dockerfile" in origin["dockerfile"]
+
+    def test_the_axis_image_warns_that_its_context_is_another_repository(self):
+        """Building it against this repo silently produces the wrong image."""
+        origin = bundle.image_origin("ghcr.io/al3x3n0/kdbc-axis-research:latest")
+
+        assert "AXIS repository" in origin["context"]
+
+    def test_an_unknown_image_claims_no_origin(self):
+        assert bundle.image_origin("someone-elses/image:latest") == {}
+
+    def test_the_images_manifest_lists_what_a_replay_would_need(
+        self, tmp_path, monkeypatch
+    ):
+        monkeypatch.setitem(
+            bundle._image_details,
+            "ghcr.io/al3x3n0/kdbc-gem5-research:latest",
+            {
+                "reference": "ghcr.io/al3x3n0/kdbc-gem5-research:latest",
+                "id": "sha256:aaa",
+                "size_bytes": 574_000_000,
+                "created": "2026-08-18",
+                "origin": bundle.image_origin("kdbc-gem5-research"),
+            },
+        )
+        _record(
+            tmp_path,
+            "simulate_c_workload",
+            {"code": "x"},
+            {"success": True},
+            image_id="sha256:aaa",
+        )
+
+        import json as _json
+
+        payload = _json.loads(
+            (bundle.bundle_dir("job-1", tmp_path) / bundle.IMAGES_NAME).read_text()
+        )
+
+        assert payload["images"][0]["id"] == "sha256:aaa"
+        assert "docker load" in payload["images"][0]["obtain"]
+        assert "packages move" in payload["images"][0]["obtain"]
+        assert payload["unknown_image_ids"] == []
+
+    def test_an_image_the_run_cannot_describe_is_listed_as_unknown(self, tmp_path):
+        """Silently omitting it would understate what a replay needs."""
+        _record(
+            tmp_path,
+            "simulate_c_workload",
+            {"code": "x"},
+            {"success": True},
+            image_id="sha256:zzz",
+        )
+
+        import json as _json
+
+        payload = _json.loads(
+            (bundle.bundle_dir("job-1", tmp_path) / bundle.IMAGES_NAME).read_text()
+        )
+
+        assert payload["unknown_image_ids"] == ["sha256:zzz"]
+
+    def test_the_readme_does_not_claim_the_images_are_included(self, tmp_path):
+        _record(tmp_path, "simulate_c_workload", {"code": "x"}, {"success": True})
+
+        readme = (bundle.bundle_dir("job-1", tmp_path) / bundle.README_NAME).read_text()
+
+        # Asserted on fragments that do not span the template's line wraps.
+        assert "themselves are not here" in readme
+        assert "cannot be" in readme and "replayed" in readme
+        assert "Reproducing it elsewhere" in readme

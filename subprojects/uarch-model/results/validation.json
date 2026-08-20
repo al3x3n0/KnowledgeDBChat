@@ -1,0 +1,29 @@
+{
+  "fit_generalises": true,
+  "kernel": "dependent mixed chain (fmul, fadd, fsqrt, fmul, fadd, fmadd)",
+  "m3_cycles_per_op": 3.339,
+  "m3_frequency_ghz": 1.773,
+  "overrides": [
+    "system.cpu[0].instQueues[0].fuPool.FUList[1].opList[0].opLat=3",
+    "system.cpu[0].instQueues[0].fuPool.FUList[2].opList[0].opLat=3",
+    "system.cpu[0].instQueues[0].fuPool.FUList[3].opList[0].opLat=4",
+    "system.cpu[0].instQueues[0].fuPool.FUList[3].opList[1].opLat=4",
+    "system.cpu[0].instQueues[0].fuPool.FUList[3].opList[3].opLat=8",
+    "system.cpu[0].instQueues[0].fuPool.FUList[3].opList[4].opLat=10",
+    "system.cpu[0].instQueues[0].fuPool.FUList[5].opList[20].opLat=4"
+  ],
+  "stock_cycles_per_op": 6.834,
+  "stock_relative_error": 1.047,
+  "sum_of_measured_latencies": 4.503,
+  "tuned_cycles_per_op": 4.667,
+  "tuned_from": [
+    "IntMult=3 (measured 2.78)",
+    "FloatAdd=3 (measured 2.62)",
+    "FloatMult=4 (measured 3.75)",
+    "FloatMultAcc=4 (measured 4.14)",
+    "FloatDiv=8 (measured 8.0)",
+    "FloatSqrt=10 (measured 10.14)",
+    "SimdFloatMultAcc=4 (measured 4.29)"
+  ],
+  "tuned_relative_error": 0.398
+}

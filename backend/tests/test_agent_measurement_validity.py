@@ -483,3 +483,34 @@ def test_the_method_requirement_survives_normalization_and_the_prompt():
 
     prompt = executor._build_thinking_prompt_stable(job, None, {})
     assert "record_method" in prompt
+
+
+def test_the_benchmark_tool_satisfies_a_request_for_error_bars():
+    """The two halves must actually meet.
+
+    benchmark_c_snippet names its dispersion `trial_spread` and carries the raw
+    per-trial numbers in `all_ms`. A contract asking for uncertainty was
+    unsatisfiable by the only tool in this codebase that reports it.
+    """
+    from app.services.agent_compiler_sandbox import measurement_quality
+
+    finding = {
+        "type": "benchmark_measurement",
+        "fastest_ms": 670,
+        "all_ms": [806, 704, 819, 670, 744],
+        **measurement_quality(8.67, 8, [806, 704, 819, 670, 744]),
+    }
+    contract = {"validity": {"require_uncertainty": ["benchmark_measurement"]}}
+
+    assert validity.evaluate(contract, {"findings": [finding], "actions_taken": []})[
+        "missing"
+    ] == []
+
+
+def test_a_lone_trial_is_still_not_an_error_bar():
+    finding = {"type": "benchmark_measurement", "fastest_ms": 670, "all_ms": [670]}
+    contract = {"validity": {"require_uncertainty": ["benchmark_measurement"]}}
+
+    assert "validity:uncertainty:benchmark_measurement" in validity.evaluate(
+        contract, {"findings": [finding], "actions_taken": []}
+    )["missing"]

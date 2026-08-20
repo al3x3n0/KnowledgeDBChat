@@ -58,10 +58,12 @@ def test_the_load_of_this_host_during_the_session_would_have_warned():
 
 
 def test_a_single_trial_has_no_spread_to_report():
+    """It reports no spread, and now says so: silence read as approval."""
     quality = measurement_quality(0.5, 8, [100])
 
     assert "trial_spread" not in quality
-    assert "measurement_warning" not in quality
+    assert quality["single_trial"] is True
+    assert "one trial" in quality["measurement_warning"].lower()
 
 
 def test_missing_samples_are_reported_as_nothing_rather_than_as_quiet():
@@ -123,3 +125,13 @@ def test_the_sandbox_script_emits_both_markers():
     assert "__loadavg__" in source
     assert "__cpus__" in source
     assert "/proc/loadavg" in source
+
+
+def test_a_single_trial_says_why_it_is_not_enough():
+    """A live run benchmarked once, was refused by a contract wanting error
+    bars, and had nothing in the tool's output telling it what to change."""
+    quality = measurement_quality(2.4, 8, [44])
+
+    assert quality["single_trial"] is True
+    assert "trial_spread" not in quality
+    assert "repeat=5" in quality["measurement_warning"]

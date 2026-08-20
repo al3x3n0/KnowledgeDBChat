@@ -261,7 +261,8 @@ async def test_a_prediction_cannot_cite_evidence_the_run_never_obtained(db_sessi
         ctx,
     )
 
-    assert "no such finding exists in this run yet" in result["error"]
+    assert "No finding of type" in result["error"]
+    assert "dynamic_profile" in result["error"], "must list what can be cited"
     assert "dynamic_profile" in result["error"]
 
 

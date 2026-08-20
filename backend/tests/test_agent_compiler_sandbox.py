@@ -429,3 +429,26 @@ class TestTargetAndRegionChecks:
 
         assert "belongs in 'target'" in message
         assert "aarch64-linux-gnu" in message
+
+
+def test_x86_idioms_are_named_as_such_on_this_aarch64_sandbox():
+    """Every one of these blocked a live run trying to write a timing harness.
+
+    The model knew the technique and reached for the x86 spelling of it. The
+    remedy has to name the aarch64 equivalent, or the next attempt guesses.
+    """
+    from app.services.agent_compiler_sandbox import explain_compiler_failure
+
+    fpmath = explain_compiler_failure("error: unknown FP unit '387'")
+    assert "x86 option" in fpmath and "aarch64" in fpmath
+
+    constraint = explain_compiler_failure(
+        "snippet.c:7:26: error: couldn't allocate output register for constraint 'x'"
+    )
+    assert '"w"' in constraint and '"r"' in constraint
+    assert "v0.4s" in constraint, "must name how AArch64 registers are written"
+
+    libm = explain_compiler_failure(
+        "snippet.c:10:42: warning: implicitly declaring library function 'sqrtf'"
+    )
+    assert "math.h" in libm and "-lm" in libm

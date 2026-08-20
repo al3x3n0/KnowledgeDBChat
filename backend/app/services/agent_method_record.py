@@ -117,17 +117,17 @@ def build_record(
         status = UNVALIDATED
         evidence: List[str] = []
     else:
-        missing = [item for item in cited if item not in available]
+        from app.services import agent_evidence_citation
+
+        resolved, missing = agent_evidence_citation.resolve_all(cited, available)
         if missing:
             raise MethodRecordError(
-                f"This method says it derives from {', '.join(missing)}, but no "
-                f"such finding exists in this run. Findings so far: "
-                f"{', '.join(sorted(available)) or 'none'}. Demonstrate the "
-                "method before recording it, or record it as unvalidated with "
-                f"derived_from=['{NO_EVIDENCE}']"
+                agent_evidence_citation.explain_unresolved(missing, available)
+                + f" Or record the method as unvalidated with "
+                f"derived_from=['{NO_EVIDENCE}']."
             )
         status = VALIDATED
-        evidence = cited
+        evidence = resolved
 
     targets = applies_to
     if isinstance(targets, str):

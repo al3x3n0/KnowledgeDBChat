@@ -4226,17 +4226,19 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 )
             }
         declared_guess = required == ["none"]
-        missing = [] if declared_guess else [r for r in required if r not in available]
-        if missing:
-            return {
-                "error": (
-                    "This prediction says it derives from "
-                    f"{', '.join(missing)}, but no such finding exists in this "
-                    f"run yet. Findings so far: {', '.join(available) or 'none'}. "
-                    "Obtain the measurement first, then predict from what it "
-                    "actually returned."
-                )
-            }
+        if not declared_guess:
+            from app.services import agent_evidence_citation
+
+            resolved, missing = agent_evidence_citation.resolve_all(required, available)
+            if missing:
+                return {
+                    "error": agent_evidence_citation.explain_unresolved(
+                        missing, available
+                    )
+                }
+            # Store the resolved type names rather than the prose the caller
+            # wrote, so the record says which evidence it rests on.
+            required = resolved
         try:
             # A savepoint, not the caller's transaction: a rejected insert
             # would otherwise poison the session the whole run shares.

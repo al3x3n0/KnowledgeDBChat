@@ -57,6 +57,56 @@ def _is_uuid(value: str) -> bool:
     return True
 
 
+def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List[str]:
+    """Repair unambiguous shape mistakes in place, returning what was changed.
+
+    A model asked for an array of strings routinely sends one string. Rejecting
+    that teaches it nothing a retry can use: a live run lost two attempts to
+    "field derived_from should be array, got str" while the value itself was
+    exactly right. Wrapping a lone string in a list cannot change what the call
+    means, so it is repaired rather than refused.
+
+    The mirror case is repaired too: a one-item list where a string is wanted.
+    A live run sent run_args as a list twice and lost both attempts to it.
+
+    Only those. A list of several items where a string is wanted is not
+    repaired, because joining them would be a guess about the separator, and a
+    number where a string is wanted is a real mistake about what the tool does.
+    """
+    from app.agent_core.tool_catalog import get_tool_metadata
+
+    if not isinstance(params, dict):
+        return []
+    metadata = get_tool_metadata(tool_name)
+    schema = getattr(metadata, "input_schema", None) or {}
+    properties = schema.get("properties")
+    if not isinstance(properties, dict):
+        return []
+
+    repaired: List[str] = []
+    for name, value in list(params.items()):
+        spec = properties.get(name)
+        if not isinstance(spec, dict):
+            continue
+        expected = spec.get("type")
+
+        if expected == "array" and isinstance(value, str) and value.strip():
+            if (spec.get("items") or {}).get("type", "string") == "string":
+                params[name] = [value.strip()]
+                repaired.append(name)
+            continue
+
+        if (
+            expected == "string"
+            and isinstance(value, list)
+            and len(value) == 1
+            and isinstance(value[0], str)
+        ):
+            params[name] = value[0]
+            repaired.append(name)
+    return repaired
+
+
 def validate_tool_params(
     tool_name: str, params: Optional[Dict[str, Any]]
 ) -> Optional[str]:

@@ -35,6 +35,15 @@ from typing import Any, Dict, List, Mapping, Optional
 CALL_OUT_AFTER = 2
 ESCALATE_AFTER = 3
 
+# A model rarely retries verbatim: it edits the code and calls again, so the
+# params differ every time while the failure does not. Measured on a live run,
+# benchmark_c_snippet failed seven times with five different compile errors and
+# never once tripped the identical-call check. Same tool, same kind of failure,
+# different arguments is its own signal and needs a higher bar, because
+# genuinely making progress through a series of different errors looks the same
+# from here for the first few attempts.
+CLASS_ESCALATE_AFTER = 4
+
 # Params that identify *what* was asked rather than how it was labelled.
 # Labels and free-text notes change between otherwise identical calls and
 # would hide a verbatim retry.
@@ -84,7 +93,12 @@ def _canonical_params(params: Any) -> str:
 def signature(tool: str, params: Any, error: Any) -> str:
     """Identify a failure by what was asked and how it broke."""
     digest = hashlib.sha256(_canonical_params(params).encode("utf-8")).hexdigest()[:16]
-    return f"{str(tool).strip()}:{classify_error(error)}:{digest}"
+    return f"{class_signature(tool, error)}:{digest}"
+
+
+def class_signature(tool: str, error: Any) -> str:
+    """Identify a failure by tool and kind, ignoring what was asked."""
+    return f"{str(tool).strip()}:{classify_error(error)}"
 
 
 def _error_of(result: Any) -> str:
@@ -107,8 +121,14 @@ def _failed(result: Any) -> bool:
     return bool(result.get("error")) and not result.get("success")
 
 
-def prior_failures(state: Mapping[str, Any], target: str) -> int:
-    """Count earlier failures in this run carrying the same signature."""
+def prior_failures(
+    state: Mapping[str, Any], target: str, *, by_class: bool = False
+) -> int:
+    """Count earlier failures in this run matching a signature.
+
+    `by_class` ignores the arguments, which is what catches a run editing its
+    input between attempts and hitting the same wall each time.
+    """
     actions = state.get("actions_taken")
     if not isinstance(actions, list):
         return 0
@@ -120,10 +140,13 @@ def prior_failures(state: Mapping[str, Any], target: str) -> int:
         result = entry.get("result") if isinstance(entry.get("result"), dict) else {}
         if not _failed(result):
             continue
-        if (
-            signature(action.get("tool"), action.get("params"), _error_of(result))
-            == target
-        ):
+        error = _error_of(result)
+        found = (
+            class_signature(action.get("tool"), error)
+            if by_class
+            else signature(action.get("tool"), action.get("params"), error)
+        )
+        if found == target:
             seen += 1
     return seen
 
@@ -165,7 +188,28 @@ def analyze(
     # add this one, rather than trusting either arrangement.
     attempt = prior_failures(state, target) + 1
 
+    by_class = class_signature(tool, error)
+    class_attempt = prior_failures(state, by_class, by_class=True) + 1
+
     if attempt < CALL_OUT_AFTER:
+        # The arguments changed, so this is not a verbatim retry -- but a run
+        # that keeps rewriting its input and keeps hitting the same kind of
+        # failure is not converging either, and nothing else would say so.
+        if class_attempt >= CLASS_ESCALATE_AFTER:
+            return {
+                "signature": by_class,
+                "attempt": class_attempt,
+                "error_class": classify_error(error),
+                "varied_arguments": True,
+                "guidance": (
+                    f"{tool} has failed {class_attempt} times in this run with "
+                    f"{classify_error(error)} errors, each time with different "
+                    "arguments. Editing the input and trying again is not "
+                    "working. Establish what the tool does accept before "
+                    "changing it further."
+                ),
+                "protocol": diagnostic_protocol(tool),
+            }
         return None
 
     diagnosis: Dict[str, Any] = {

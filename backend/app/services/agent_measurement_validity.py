@@ -37,6 +37,11 @@ from typing import Any, Dict, List, Mapping, Optional, Sequence
 # its own dispersion somehow, not that it picks a particular spelling.
 UNCERTAINTY_FIELDS = (
     "spread",
+    # What benchmark_c_snippet actually names its dispersion. Omitting it made
+    # a contract asking for error bars unsatisfiable by the one tool in this
+    # codebase that reports them -- the two halves were built apart and did
+    # not meet.
+    "trial_spread",
     "relative_spread",
     "std_dev",
     "stddev",
@@ -88,7 +93,19 @@ def _find_number(finding: Mapping[str, Any], field: str) -> Optional[float]:
     return None
 
 
+SAMPLE_LIST_FIELDS = ("all_ms", "samples", "timings", "measurements")
+
+
 def _has_uncertainty(finding: Mapping[str, Any]) -> bool:
+    for container in (finding, finding.get("data"), finding.get("details")):
+        if not isinstance(container, Mapping):
+            continue
+        for field in SAMPLE_LIST_FIELDS:
+            value = container.get(field)
+            # More than one trial is itself a statement about dispersion; a
+            # single one says nothing and must not pass.
+            if isinstance(value, (list, tuple)) and len(value) > 1:
+                return True
     for field in UNCERTAINTY_FIELDS:
         if _find_number(finding, field) is not None:
             return True

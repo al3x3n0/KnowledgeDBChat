@@ -9,7 +9,10 @@ from loguru import logger
 
 from app.services.agent_execution_journal_service import agent_execution_journal_service
 from app.services.agent_tool_dispatch import AgentToolExecutionContext
-from app.services.agent_tool_validation import validate_tool_params
+from app.services.agent_tool_validation import (
+    coerce_tool_params,
+    validate_tool_params,
+)
 
 
 def _surface_nested_error(result: Dict[str, Any]) -> None:
@@ -121,6 +124,12 @@ class AgentActionService:
         # Check the call against the tool's own schema before running it, so a
         # malformed call is rejected with the offending field named rather than
         # failing somewhere inside the tool.
+        # A lone string where the schema wants a list of strings is repaired
+        # first: it cannot mean anything else, and refusing it costs an
+        # iteration to re-send the same value inside brackets.
+        coerced = coerce_tool_params(str(tool_name or ""), params)
+        if coerced:
+            result["coerced_params"] = coerced
         invalid = validate_tool_params(str(tool_name or ""), params)
         if invalid:
             result["error"] = invalid

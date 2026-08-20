@@ -198,3 +198,72 @@ def test_classification_buckets_the_common_shapes():
     assert diagnosis.classify_error("Image is not allowlisted") == "permission"
     assert diagnosis.classify_error("cc1plus killed: out of memory") == "resource"
     assert diagnosis.classify_error("") == "unknown"
+
+
+def _varied(tool: str, code: str, error: str):
+    return {
+        "action": {"tool": tool, "params": {"code": code, "flags": "-O2"}},
+        "result": {"success": False, "error": error},
+    }
+
+
+def test_editing_the_input_between_attempts_still_escalates_eventually():
+    """The failure mode a live run actually produced.
+
+    benchmark_c_snippet failed seven times with five different compile errors.
+    Every call had different arguments, so the identical-call check never
+    fired, and the run kept rewriting the code instead of finding out what the
+    tool accepts.
+    """
+    state = _state(
+        _varied(
+            "benchmark_c_snippet", "v1", "Compilation failed: unknown FP unit '387'"
+        ),
+        _varied("benchmark_c_snippet", "v2", "Compilation failed: constraint 'x'"),
+        _varied("benchmark_c_snippet", "v3", "Compilation failed: implicit sqrtf"),
+    )
+
+    result = diagnosis.analyze(
+        {"tool": "benchmark_c_snippet", "params": {"code": "v4", "flags": "-O2"}},
+        {"success": False, "error": "Compilation failed: no -march=native"},
+        state,
+    )
+
+    assert result is not None, "four different compile failures went unremarked"
+    assert result["varied_arguments"] is True
+    assert result["attempt"] == 4
+    assert "different arguments" in result["guidance"]
+    assert result["protocol"]
+
+
+def test_a_few_varied_failures_are_left_alone():
+    """Working through two or three different errors is normal progress."""
+    state = _state(
+        _varied("benchmark_c_snippet", "v1", "Compilation failed: one"),
+        _varied("benchmark_c_snippet", "v2", "Compilation failed: two"),
+    )
+
+    result = diagnosis.analyze(
+        {"tool": "benchmark_c_snippet", "params": {"code": "v3", "flags": "-O2"}},
+        {"success": False, "error": "Compilation failed: three"},
+        state,
+    )
+
+    assert result is None
+
+
+def test_varied_failures_of_different_kinds_do_not_accumulate():
+    """A compile error then a timeout is not one wall being hit repeatedly."""
+    state = _state(
+        _varied("simulate_c_workload", "v1", "Compilation failed: one"),
+        _varied("simulate_c_workload", "v2", "Simulation timed out after 900s"),
+        _varied("simulate_c_workload", "v3", "Compilation failed: three"),
+    )
+
+    result = diagnosis.analyze(
+        {"tool": "simulate_c_workload", "params": {"code": "v4", "flags": "-O2"}},
+        {"success": False, "error": "Simulation timed out after 900s"},
+        state,
+    )
+
+    assert result is None

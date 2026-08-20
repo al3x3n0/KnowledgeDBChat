@@ -74,6 +74,32 @@ COMPILER_ERROR_REMEDIES = (
         "x86 ISA flags do not apply on this aarch64 sandbox. Use -mcpu=native, "
         "or plain -O3, and read the emitted assembly for the vector width.",
     ),
+    # Every one of these was hit by a live run trying to hand-write a timing
+    # harness: the model knew the technique and reached for x86 spellings of
+    # it. Naming the aarch64 equivalent is the difference between one retry
+    # and seven.
+    (
+        re.compile(r"unknown FP unit"),
+        "-mfpmath is an x86 option and has no meaning on aarch64, where "
+        "floating point is not optional. Drop it; -O2 or -O3 alone is enough.",
+    ),
+    (
+        re.compile(
+            r"couldn't allocate (?:output|input) register for constraint '([xyt])'"
+        ),
+        'That inline-assembly register constraint is x86. On AArch64 use "w" '
+        'for a floating-point or SIMD register, "r" for a general-purpose '
+        "one, and name registers as s0/d0/v0.4s rather than xmm0.",
+    ),
+    (
+        re.compile(r"implicitly declaring library function '(sqrtf?|fabsf?|powf?)'"),
+        "The maths function has no declaration: add #include <math.h>. If the "
+        "link then fails, pass -lm in flags.",
+    ),
+    (
+        re.compile(r"undefined (?:reference|symbol).{0,40}\b(sqrtf?|powf?|logf?)\b"),
+        "The maths library is not linked by default here. Add -lm to flags.",
+    ),
 )
 
 
@@ -405,6 +431,11 @@ def measurement_quality(
     if timings and len(timings) > 1 and min(timings) > 0:
         spread = (max(timings) - min(timings)) / min(timings)
         quality["trial_spread"] = round(spread, 3)
+    elif timings is not None and len(timings) == 1:
+        # One trial is a number, not a measurement. Said here because a live
+        # run benchmarked once, was refused by a contract requiring error
+        # bars, and had nothing in the tool's own output to tell it why.
+        quality["single_trial"] = True
 
     environment = quality.get("measurement_environment")
     spread = quality.get("trial_spread")
@@ -420,6 +451,12 @@ def measurement_quality(
             f"The host was busy during this measurement "
             f"({quality['load_per_cpu']} runnable tasks per CPU); treat small "
             "differences as noise."
+        )
+    if quality.get("single_trial"):
+        warnings.append(
+            "Only one trial was run, so this reports no spread and cannot show "
+            "whether the number is stable. Pass repeat=5 or more; on this host "
+            "repeated runs of the same benchmark have varied by up to 44%."
         )
     if spread is not None and spread >= SPREAD_UNSTABLE:
         warnings.append(

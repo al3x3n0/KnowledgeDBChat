@@ -35,7 +35,11 @@ def test_a_method_needs_evidence_that_exists_in_the_run():
             available_finding_types=["dynamic_profile"],
         )
 
-    assert "no such finding exists" in str(excinfo.value)
+    # The refusal now names the exact spellings that would be accepted, which
+    # is what a run needs in order to cite correctly on the next attempt.
+    assert "does not exist" in str(excinfo.value) or "No finding of type" in str(
+        excinfo.value
+    )
     assert "dynamic_profile" in str(excinfo.value), "must say what is available"
 
 
@@ -200,7 +204,8 @@ async def test_the_tool_stores_a_method_and_refuses_a_fabricated_one(db_session)
     )
 
     assert "error" in refused
-    assert "no such finding exists" in refused["error"]
+    assert "No finding of type" in refused["error"]
+    assert "cycle_model_measurement" in refused["error"], "must list what is citable"
 
 
 @pytest.mark.asyncio

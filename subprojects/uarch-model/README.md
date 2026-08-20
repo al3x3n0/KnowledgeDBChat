@@ -96,13 +96,38 @@ mixed instructions:
 | tuned O3CPU | 4.67 | +40% |
 
 Halving the error on a sequence the fit never saw is real, but the residual
-says something more useful. Summing the measured latencies predicts 4.50
-cycles/op for this chain, and the M3 runs it at 3.34 — a chain cannot beat the
-sum of its own latencies, so the per-instruction numbers are about 26% high
-(loop overhead and anchor drift between runs are the candidates). That gap,
-not gem5, is what currently limits the model: the tuned simulator reproduces
-the latencies it was given almost exactly. Fixing the measurement comes before
-tuning anything else.
+looked like a measurement bias and was not one.
+
+**The apparent 26% bias was anchor drift, and it is now understood.** Summing
+the measured latencies predicted 4.50 cycles/op for a chain the M3 ran at 3.34.
+A dependent chain cannot beat the sum of its own latencies, so the
+per-instruction numbers looked about 26% high. They were not: cycles are wall
+clock times an assumed frequency, the latencies were taken with the anchor
+reading 2.35 GHz and the chain with it reading 1.77 GHz, and the two factors
+match almost exactly — 1.349 of apparent error against 1.328 of frequency.
+Nothing was biased; two measurements were simply on different scales.
+
+`harness/selfanchor.py` is the fix: it times the anchor and the target in the
+same process, so the result is a ratio and the frequency divides out.
+
+**What that then exposed is the real limit.** Run the anchor against *itself* —
+the same instruction on both sides, so the answer must be 1.00 by construction
+— and this host returns 0.87, while reporting its load as quiet. A 13%
+disagreement between two identical measurements in one process is the floor:
+no effect smaller than that can be claimed from wall clock here, whatever
+statistic is used and however many trials are run.
+
+Two statistics were tried and both fail their own sanity check in opposite
+directions under contention: pooling every round gives a defensible 0.97 for
+the anchor but 400–800% spreads across trials, while taking the least disturbed
+round reports a dependent integer add at 0.32 cycles, which is impossible —
+the minimum ratio prefers whichever round had the slowest *anchor*. The harness
+now refuses to report latencies at all when the anchor check fails, rather than
+returning numbers that look like measurements.
+
+Getting a clean set needs a quiet machine, which is a scheduling problem rather
+than an engineering one. The competing workload on this host is described
+below.
 
 ## Doing this from an agent
 

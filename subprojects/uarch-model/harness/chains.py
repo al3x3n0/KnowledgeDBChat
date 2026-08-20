@@ -270,3 +270,108 @@ int main(void) {{
     return 0;
 }}
 """
+
+
+def _asm_block(lines, clobbers, iterations):
+    body = "\n".join(lines)
+    return f"""    clock_gettime(CLOCK_MONOTONIC, &t0);
+    for (long i = 0; i < {iterations}; i++) {{
+        asm volatile(
+{body}
+            ::: {clobbers}
+        );
+    }}
+    clock_gettime(CLOCK_MONOTONIC, &t1);"""
+
+
+def build_paired_source(
+    instruction=None,
+    *,
+    sequence=None,
+    unroll: int = 32,
+    iterations: int = 200_000,
+    rounds: int = 11,
+) -> str:
+    """Time a chain against the anchor *inside one program*, and report both.
+
+    Cycles are wall clock times an assumed frequency, and the frequency is
+    whatever the core happened to be running at. Measuring the anchor in one
+    process and the target in another compares two different frequencies: the
+    per-instruction latencies here were taken with the anchor reading 2.35 GHz
+    and a mixed chain with it reading 1.77 GHz, and the resulting 26%
+    disagreement -- which looked like a real bias in the measurements -- was
+    1.328 of frequency against 1.349 of apparent error.
+
+    Timing both in the same program, alternating so slow drift cancels, makes
+    the result a ratio: how many anchor operations this instruction costs. The
+    frequency divides out and never has to be known.
+    """
+    if instruction is not None:
+        register = FP_REGS[0] if instruction.regclass != "x" else INT_REGS[1]
+        target_lines = [
+            '        "' + instruction.template.format(d=register, s=register) + r'\n\t"'
+        ] * unroll
+        ops = unroll
+        if instruction.regclass == "x":
+            setup = f'    asm volatile("mov x{register}, #1" ::: "x{register}");'
+            clobbers = f'"x{register}"'
+        elif instruction.regclass == "v":
+            setup = f'    asm volatile("fmov v{register}.4s, #1.0" ::: "v{register}");'
+            clobbers = f'"v{register}"'
+        else:
+            setup = f'    asm volatile("fmov s{register}, #1.0" ::: "s{register}");'
+            clobbers = f'"s{register}"'
+        name = instruction.name
+    else:
+        register = FP_REGS[0]
+        steps = sequence or MIXED_SEQUENCE
+        target_lines = [
+            '        "' + step.format(r=register) + r'\n\t"'
+            for _ in range(unroll)
+            for step in steps
+        ]
+        ops = unroll * len(steps)
+        setup = f'    asm volatile("fmov s{register}, #1.0" ::: "s{register}");'
+        clobbers = f'"s{register}"'
+        name = "mixed"
+
+    anchor_register = INT_REGS[0]
+    anchor_lines = [f'        "add x{anchor_register}, x{anchor_register}, #1\\n\\t"'] * unroll
+    anchor_setup = f'    asm volatile("mov x{anchor_register}, #1" ::: "x{anchor_register}");'
+
+    return f"""
+#include <stdio.h>
+#include <time.h>
+
+/* {name}: measured against the anchor in the same process, {rounds} rounds. */
+int main(void) {{
+{anchor_setup}
+{setup}
+    struct timespec t0, t1;
+    double anchor_ns = 0.0, target_ns = 0.0;
+    double best_ratio = 1e18;
+    for (int round = 0; round < {rounds}; round++) {{
+{_asm_block(anchor_lines, f'"x{anchor_register}"', iterations)}
+        double this_anchor = (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
+        anchor_ns += this_anchor;
+{_asm_block(target_lines, clobbers, iterations)}
+        double this_target = (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
+        target_ns += this_target;
+        double this_ratio =
+            (this_target / (double){ops}) / (this_anchor / (double){unroll});
+        if (this_ratio < best_ratio) best_ratio = this_ratio;
+    }}
+    double anchor_per_op = anchor_ns / ((double){rounds} * {iterations} * {unroll});
+    double target_per_op = target_ns / ((double){rounds} * {iterations} * {ops});
+    printf("anchor_ns_per_op=%.6f\\n", anchor_per_op);
+    printf("target_ns_per_op=%.6f\\n", target_per_op);
+    /* Pooled over all rounds. Taking instead the ratio of the least disturbed
+       round seemed the obvious repair for a noisy host and is badly biased:
+       the minimum ratio prefers whichever round had the *slowest anchor*, and
+       it reported a dependent integer add at 0.32 cycles, which is impossible.
+       Both statistics are printed so the anchor check can judge them. */
+    printf("cycles_per_op=%.4f\\n", target_per_op / anchor_per_op);
+    printf("cycles_per_op_min_round=%.4f\\n", best_ratio);
+    return 0;
+}}
+"""

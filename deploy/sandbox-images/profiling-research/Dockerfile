@@ -15,18 +15,14 @@
 #     --user 65534:65534 -v <tmp>:/work -w /work <image> /bin/sh -lc "<command>"
 # so there is no network at run time, and nothing may write outside /work.
 
-FROM debian:bookworm-slim
+# Built on the shared base (deploy/sandbox-images/base), which carries clang,
+# lld, binutils, make, python3 and time.
+FROM ghcr.io/al3x3n0/kdbc-sandbox-base:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        clang \
-        lld \
-        binutils \
         valgrind \
-        make \
-        python3 \
-        time \
     && rm -rf /var/lib/apt/lists/*
 
 # Assert the toolchain at build time rather than inside a sandboxed run that

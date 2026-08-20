@@ -8,17 +8,15 @@
 # entirely when the daemon runs in a VM (Docker Desktop). perf is installed so
 # a run can report what it found, but experiments here are expected to measure
 # microarchitectural behaviour the way lmbench and STREAM do: with a clock.
-FROM debian:bookworm-slim
+# Built on the shared base (deploy/sandbox-images/base), which carries clang,
+# lld, binutils, make, python3 and time.
+FROM ghcr.io/al3x3n0/kdbc-sandbox-base:latest
 
 ENV DEBIAN_FRONTEND=noninteractive
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        clang \
-        make \
-        python3 \
-        python3-pytest \
         linux-perf \
-        time \
+        python3-pytest \
     && rm -rf /var/lib/apt/lists/*
 
 RUN set -eux; \

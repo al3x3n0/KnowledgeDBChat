@@ -19,19 +19,57 @@ An image must also be listed in `SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES`
 
 | Image | Tools | Contains |
 |---|---|---|
-| `compiler-research` | `compile_c_snippet`, `benchmark_c_snippet`, `analyze_snippet_cycles` | clang, lld, llvm (incl. `llvm-mca`), cmake, ninja, python3 |
-| `microarch-research` | scientific-validation runs | clang, linux-perf, python3 |
-| `profiling-research` | `profile_c_workload` | clang, binutils, valgrind (callgrind), python3 |
+| `sandbox-base` | (not run directly) | clang, lld, binutils, make, python3, time |
+| `compiler-research` | `compile_c_snippet`, `benchmark_c_snippet`, `analyze_snippet_cycles` | base + llvm (incl. `llvm-mca`), cmake, ninja, `candidate-coster` |
+| `microarch-research` | scientific-validation runs | base + linux-perf, pytest |
+| `profiling-research` | `profile_c_workload` | base + valgrind (callgrind) |
 | `axis-research` | `axis_check`, `axis_emit`, `axis_prove` | the AXIS binary, z3, python3 |
 | `gem5-research` | `simulate_c_workload` | gem5 `build/ARM/gem5.opt` and `configs/`, gcc |
 
+## One base, several images
+
+Three of these compile code, and each used to install clang, make, python3 and
+time for itself. Docker shares layers only when they are literally the same
+layer, so that was three separate copies of the same toolchain: nothing reused
+on disk, and pulling the set downloaded clang three times. They now build on
+`base`, which holds exactly what more than one of them needs.
+
+Measured on this machine, for the three together:
+
+| | disk |
+|---|---|
+| standalone | 2245.8 MB |
+| on the shared base | 1358.1 MB |
+
+so 888 MB, about 40%, and adding a tool to a derived image now costs a layer of
+megabytes rather than a new image of hundreds. A package only one image needs
+stays in that image, where changing it does not invalidate everyone else's
+cache.
+
+`axis-research` is deliberately **not** rebased. It needs only z3 and python3
+and is 235 MB standing alone; putting it on a clang-bearing base would nearly
+triple it. Sharing a base is worth it exactly when the shared part is most of
+the image, and blanket-applying it is how a layering scheme makes things worse.
+
 ## Building
 
-Most build normally:
+The base comes first, since the others are `FROM` it:
 
 ```bash
+docker build -t ghcr.io/al3x3n0/kdbc-sandbox-base:latest \
+  deploy/sandbox-images/base
+
 docker build -t ghcr.io/al3x3n0/kdbc-profiling-research:latest \
   deploy/sandbox-images/profiling-research
+```
+
+`compiler-research` builds from the **repository root**, not from its own
+directory, because it compiles `tools/candidate-coster` in a stage that never
+reaches the final image:
+
+```bash
+docker build -f deploy/sandbox-images/compiler-research/Dockerfile \
+  -t ghcr.io/al3x3n0/kdbc-compiler-research:latest .
 ```
 
 Two do not, and the reasons are worth knowing before you spend an afternoon on

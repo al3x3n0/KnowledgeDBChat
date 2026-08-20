@@ -2843,6 +2843,60 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "find_fusion_candidates",
+        "description": (
+            "Mine hot blocks for instruction sequences that could become one "
+            "instruction. Builds the data-flow graph of each block, finds the "
+            "connected groups a single opcode could encode -- convex, and "
+            "within the operand budget -- and ranks them by how often the "
+            "containing block actually executed. This is the step between "
+            "profiling and proposing: it answers 'which sequences recur on "
+            "the hot path', which reading disassembly by hand does not scale "
+            "to. Feed it the blocks from profile_c_workload. A result is a "
+            "claim that a shape is frequent, not that fusing it pays; cost it "
+            "with analyze_snippet_cycles before proposing anything."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "blocks": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": (
+                        "Hot blocks from profile_c_workload, or objects with "
+                        "an `instructions` list of assembly lines and an "
+                        "`executions` count."
+                    ),
+                },
+                "max_instructions": {
+                    "type": "integer",
+                    "description": (
+                        "Largest group to consider (default 3). Bigger groups "
+                        "are harder to encode and rarer."
+                    ),
+                },
+                "max_inputs": {
+                    "type": "integer",
+                    "description": (
+                        "External registers the fused instruction may read "
+                        "(default 2, the usual budget for a 32-bit encoding)."
+                    ),
+                },
+                "max_outputs": {
+                    "type": "integer",
+                    "description": "Results it may write (default 1).",
+                },
+                "min_executions": {
+                    "type": "integer",
+                    "description": (
+                        "Drop candidates whose blocks ran fewer times than " "this."
+                    ),
+                },
+            },
+            "required": ["blocks"],
+        },
+    },
+    {
         "name": "describe_model_parameters",
         "description": (
             "List the tunable parameters of a simulated core model and the "

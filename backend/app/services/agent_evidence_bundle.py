@@ -44,6 +44,7 @@ EVIDENCE_TOOLS = {
     # the tuned run but not the model it started from cannot show what the
     # tuning changed.
     "describe_model_parameters",
+    "find_fusion_candidates",
     "axis_check",
     "axis_emit",
     "axis_prove",

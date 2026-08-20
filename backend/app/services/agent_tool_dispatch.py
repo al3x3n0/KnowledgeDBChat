@@ -4102,6 +4102,84 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _find_fusion_candidates(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import isa_candidate_mining
+
+        blocks = params.get("blocks")
+        if isinstance(blocks, dict):
+            blocks = [blocks]
+        if not isinstance(blocks, list) or not blocks:
+            return {
+                "error": (
+                    "blocks is required: pass the hot blocks from "
+                    "profile_c_workload, or objects with an `instructions` "
+                    "list of assembly lines and an `executions` count. "
+                    "Mining source text instead of a profiled run measures "
+                    "how often a pattern is written, not how often it runs."
+                )
+            }
+
+        def _as_int(value: Any, default: int, low: int, high: int) -> int:
+            try:
+                return max(low, min(int(value), high))
+            except (TypeError, ValueError):
+                return default
+
+        ranked = isa_candidate_mining.mine_blocks(
+            [b for b in blocks if isinstance(b, dict)],
+            max_nodes=_as_int(params.get("max_instructions"), 3, 2, 6),
+            max_inputs=_as_int(params.get("max_inputs"), 2, 1, 8),
+            max_outputs=_as_int(params.get("max_outputs"), 1, 1, 4),
+            min_dynamic=_as_int(params.get("min_executions"), 0, 0, 10**15),
+        )
+        if not ranked:
+            return {
+                "success": True,
+                "data": {
+                    "candidates": [],
+                    "note": (
+                        "No group of instructions in these blocks both passes "
+                        "values between its members and fits the operand "
+                        "budget. Widen max_instructions or max_inputs, or "
+                        "check the blocks carry disassembly."
+                    ),
+                },
+            }
+
+        top = ranked[:25]
+        best = top[0]
+        return {
+            "success": True,
+            "data": {
+                "candidates": top,
+                "blocks_examined": len(blocks),
+                "note": (
+                    "Ranked by how often the containing block executed. This "
+                    "says a shape is frequent, not that fusing it pays: cost "
+                    "the sequence and its replacement with "
+                    "analyze_snippet_cycles before proposing it, because "
+                    "instruction count is not cycles."
+                ),
+            },
+            "findings": [
+                {
+                    "type": "fusion_candidate",
+                    "title": (
+                        f"{' + '.join(best['mnemonics'])}: "
+                        f"{best['dynamic_occurrences']:,} dynamic occurrences, "
+                        f"{best['inputs']} in / {best['outputs']} out"
+                    ),
+                    "pattern": best["pattern"],
+                    "dynamic_occurrences": best["dynamic_occurrences"],
+                    "static_occurrences": best["static_occurrences"],
+                    "example": best["example"],
+                    "category": "insight",
+                }
+            ],
+        }
+
     async def _describe_model_parameters(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -4612,6 +4690,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,
             "describe_model_parameters": _describe_model_parameters,
+            "find_fusion_candidates": _find_fusion_candidates,
             "verify_run_bundle": _verify_run_bundle,
             "record_prediction": _record_prediction,
             "record_measurement": _record_measurement,

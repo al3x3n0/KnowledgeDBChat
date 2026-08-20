@@ -1943,6 +1943,90 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
 def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
     """Memory tools for AutonomousAgentExecutor."""
 
+    async def _record_method(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_method_record
+
+        job = ctx.job
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        findings = (
+            state.get("findings") if isinstance(state.get("findings"), list) else []
+        )
+        available = sorted(
+            {
+                str(f.get("type")).strip()
+                for f in findings
+                if isinstance(f, dict) and str(f.get("type") or "").strip()
+            }
+        )
+
+        try:
+            record = agent_method_record.build_record(
+                name=params.get("name"),
+                procedure=params.get("procedure"),
+                prevents=params.get("prevents"),
+                derived_from=params.get("derived_from"),
+                available_finding_types=available,
+                applies_to=params.get("applies_to"),
+                limits=str(params.get("limits") or ""),
+            )
+        except agent_method_record.MethodRecordError as exc:
+            return {"error": str(exc)}
+
+        content = agent_method_record.render(record)
+        try:
+            # Constructed directly rather than through MemoryCreate: that
+            # schema's types exclude "pattern", and a method stored under a
+            # type the job-memory filter does not inject would be written and
+            # never recalled -- the one outcome that makes this tool pointless.
+            from app.models.memory import ConversationMemory
+
+            stored = ConversationMemory(
+                user_id=job.user_id,
+                job_id=getattr(job, "id", None),
+                memory_type=agent_method_record.MEMORY_TYPE,
+                content=content,
+                # A method outranks an observation about one subject: it is
+                # what a later job on a different subject can still use.
+                importance_score=(
+                    0.9 if record["status"] == agent_method_record.VALIDATED else 0.6
+                ),
+                tags=agent_method_record.tags_for(record),
+                context={
+                    "record": "method",
+                    "status": record["status"],
+                    "evidence": record["evidence"],
+                },
+            )
+            ctx.db.add(stored)
+            await ctx.db.commit()
+            await ctx.db.refresh(stored)
+        except Exception as exc:
+            return {"error": f"Failed to record the method: {str(exc)[:200]}"}
+
+        return {
+            "success": True,
+            "data": {
+                "memory_id": str(stored.id),
+                "name": record["name"],
+                "status": record["status"],
+                "evidence": record["evidence"],
+                "note": (
+                    "Stored where later jobs recall it. A method recorded "
+                    "unvalidated stays that way until a run demonstrates it."
+                ),
+            },
+            "findings": [
+                {
+                    "type": "method_recorded",
+                    "title": f"Method: {record['name']} ({record['status']})",
+                    "content": content,
+                    "category": "insight",
+                }
+            ],
+        }
+
     async def _create_memory(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -2078,6 +2162,7 @@ def build_autonomous_memory_provider(executor: Any) -> FunctionToolProvider:
         modes={"autonomous"},
         handlers={
             "create_memory": _create_memory,
+            "record_method": _record_method,
             "search_memories": _search_memories,
             "recall_memories": _recall_memories,
             "get_memory_stats": _get_memory_stats,
@@ -5641,6 +5726,33 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         except Exception as exc:
             return {"error": f"Failed to count findings: {exc}"}
 
+    def _contract_status(state: Dict[str, Any]) -> Dict[str, Any]:
+        """Summarize the executor's most recent goal-contract evaluation.
+
+        Reuses `goal_contract_last` rather than re-evaluating: the executor
+        writes it every iteration, and a second evaluation here could disagree
+        with the one that actually gates completion.
+        """
+        from app.services import agent_measurement_validity
+
+        last = state.get("goal_contract_last")
+        if not isinstance(last, dict) or not last.get("enabled"):
+            return {"goal_contract_enabled": False}
+
+        missing = last.get("missing") if isinstance(last.get("missing"), list) else []
+        validity = (last.get("metrics") or {}).get("validity") or {}
+        status: Dict[str, Any] = {
+            "goal_contract_enabled": True,
+            "goal_contract_satisfied": bool(last.get("satisfied")),
+            "goal_contract_missing": [str(x) for x in missing][:10],
+        }
+        remedies = agent_measurement_validity.explain(
+            missing, validity.get("details") or {}
+        )
+        if remedies:
+            status["goal_contract_remedies"] = remedies[:4]
+        return status
+
     async def _check_goal_status(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -5666,6 +5778,11 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     "has_execution_plan": bool(exec_plan),
                     "plan_steps_completed": state.get("plan_step_index", 0),
                     "plan_steps_total": plan_steps_total,
+                    # What the run still has to satisfy, from the executor's
+                    # own last evaluation. Without this the contract is only
+                    # discoverable by trying to finish and being refused,
+                    # which wastes the iteration that discovers it.
+                    **_contract_status(state),
                 },
             }
         except Exception as exc:

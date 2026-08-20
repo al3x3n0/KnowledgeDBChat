@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from app.services import agent_measurement_validity
+
 
 def _required_type_counts(contract: Dict[str, Any], kind: str) -> Dict[str, int]:
     """Read required finding/artifact types as {type: how many are needed}.
@@ -143,6 +145,12 @@ class AgentGoalContractService:
                 if key not in results:
                     missing.append(f"result_key:{key}")
 
+        # Everything above counts outputs, which cannot distinguish a
+        # measurement from an artifact of the harness that produced it. A
+        # contract may additionally declare what makes its numbers sound.
+        validity = agent_measurement_validity.evaluate(contract, state)
+        missing.extend(validity["missing"])
+
         return {
             "enabled": True,
             "satisfied": len(missing) == 0,
@@ -154,6 +162,7 @@ class AgentGoalContractService:
                 "artifacts_count": len(artifacts),
                 "finding_types": finding_types,
                 "artifact_types": artifact_types,
+                "validity": validity,
             },
         }
 

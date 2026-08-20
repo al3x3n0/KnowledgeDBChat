@@ -3949,6 +3949,75 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
     },
     # ==================== Memory Tools ====================
     {
+        "name": "record_method",
+        "description": (
+            "Record how to investigate something, with the evidence that it "
+            "works, so later jobs inherit it. Findings say what you learned "
+            "about the subject; this is for what you learned about method -- "
+            "the part that transfers to a different subject. Record one when "
+            "an approach turned out to be necessary, when an obvious approach "
+            "produced a wrong answer, or when you found a check that catches a "
+            "class of mistake. You must name the finding types in this run "
+            "that establish it: a method claimed without evidence can only be "
+            "stored by passing derived_from=['none'], and is marked unvalidated."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "name": {
+                    "type": "string",
+                    "description": (
+                        "Short name, e.g. 'measure instruction latency with "
+                        "inline-asm dependent chains'."
+                    ),
+                },
+                "procedure": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "The steps in order, concrete enough that another run "
+                        "can follow them without rediscovering the method."
+                    ),
+                },
+                "prevents": {
+                    "type": "string",
+                    "description": (
+                        "The wrong answer this exists to stop, stated "
+                        "specifically. This is what tells a future reader "
+                        "whether their situation is the same one, so 'improves "
+                        "accuracy' is not an answer -- 'the compiler vectorises "
+                        "a C loop so the measurement is of different code' is."
+                    ),
+                },
+                "derived_from": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Finding types produced in THIS run that establish the "
+                        "method. Refused if no such finding exists. Pass "
+                        "['none'] to record an untested method, which is stored "
+                        "as unvalidated."
+                    ),
+                },
+                "applies_to": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "What it applies to -- tools, domains or workload kinds "
+                        "-- so it is recalled by jobs that need it."
+                    ),
+                },
+                "limits": {
+                    "type": "string",
+                    "description": (
+                        "Where it stops working, and what would falsify it."
+                    ),
+                },
+            },
+            "required": ["name", "procedure", "prevents", "derived_from"],
+        },
+    },
+    {
         "name": "create_memory",
         "description": "Store a persistent memory for the current user. Use this to save important facts, insights, decisions, or context that should be available to future jobs.",
         "parameters": {

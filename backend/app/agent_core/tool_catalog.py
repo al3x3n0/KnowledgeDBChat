@@ -60,6 +60,7 @@ def _default_metadata(
         "run_command",
         "export_document",
         "create_memory",
+        "record_method",
         "execute_workflow",
         "send_message_to_agent",
         "send_notification",

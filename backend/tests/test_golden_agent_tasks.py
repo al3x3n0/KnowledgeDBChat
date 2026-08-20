@@ -325,3 +325,62 @@ async def test_golden_job_survives_tool_failure(db_session):
     assert run.job.status == AgentJobStatus.COMPLETED.value
     assert run.actions.tools_called.count("search_documents") == 2
     assert run.job.error_count in (0, 1)  # tool failure must not fail the job
+
+
+@pytest.mark.asyncio
+async def test_golden_repeated_identical_failure_escalates_to_a_protocol(db_session):
+    """The real loop must tell a run to stop retrying what cannot work.
+
+    One run called the compiler with an unsupported flag four times, reading a
+    message that could not help because no retry could have fixed it. By the
+    third identical failure the run's own record should show the escalation.
+    """
+    params = {"code": "int main(void){return 0;}", "flags": "-O3 -march=native"}
+    failure = {
+        "success": False,
+        "error": "Compilation failed: clang: error: unsupported argument 'native'",
+    }
+
+    run = await run_golden_job(
+        db_session,
+        decisions=[
+            decision(tool="compile_c_snippet", params=params),
+            decision(tool="compile_c_snippet", params=params),
+            decision(tool="compile_c_snippet", params=params),
+            decision(goal_achieved=True, reasoning="done"),
+        ],
+        tool_results={"compile_c_snippet": failure},
+        max_iterations=6,
+    )
+
+    ledger = (run.job.results or {}).get("actions") or []
+    repeats = [
+        row
+        for row in ledger
+        if row.get("tool") == "compile_c_snippet" and row.get("repeat_attempt")
+    ]
+    assert repeats, "a thrice-repeated identical failure left no trace in the ledger"
+    assert max(row["repeat_attempt"] for row in repeats) >= 3
+    assert any(row.get("diagnosis_escalated") for row in repeats)
+    assert all(row.get("failure_class") == "compilation" for row in repeats)
+
+
+@pytest.mark.asyncio
+async def test_golden_varied_retries_are_not_flagged_as_repeats(db_session):
+    """Changing the call between attempts is the wanted behaviour."""
+    failure = {"success": False, "error": "Compilation failed: some error"}
+
+    run = await run_golden_job(
+        db_session,
+        decisions=[
+            decision(tool="compile_c_snippet", params={"code": "a", "flags": "-O1"}),
+            decision(tool="compile_c_snippet", params={"code": "a", "flags": "-O2"}),
+            decision(tool="compile_c_snippet", params={"code": "a", "flags": "-O3"}),
+            decision(goal_achieved=True, reasoning="done"),
+        ],
+        tool_results={"compile_c_snippet": failure},
+        max_iterations=6,
+    )
+
+    ledger = (run.job.results or {}).get("actions") or []
+    assert not [row for row in ledger if row.get("repeat_attempt")]

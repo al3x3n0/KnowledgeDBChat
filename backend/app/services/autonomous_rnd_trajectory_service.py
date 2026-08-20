@@ -166,6 +166,17 @@ class AutonomousRnDTrajectoryAdapter:
                 if value is not None and value != "":
                     row[field] = value
 
+            # A repeated identical failure carries its escalation. The ledger
+            # is where an operator reviews what a run did, and "this call
+            # failed three times and was told to stop" is exactly the shape of
+            # trouble worth seeing without replaying the whole run.
+            diagnosis = _mapping(result.get("diagnosis"))
+            if diagnosis:
+                row["repeat_attempt"] = diagnosis.get("attempt")
+                row["failure_class"] = diagnosis.get("error_class")
+                if diagnosis.get("protocol"):
+                    row["diagnosis_escalated"] = True
+
             tool_name = str(
                 result.get("tool_name")
                 or _mapping(action.get("params")).get("tool_name")

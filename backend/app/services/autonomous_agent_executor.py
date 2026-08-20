@@ -39,6 +39,7 @@ from app.models.memory import UserPreferences
 from app.services import (
     agent_decision_parser,
     agent_execution_graph,
+    agent_failure_diagnosis,
     agent_plan_normalization,
     agent_prompt_sections,
     agent_tool_scoring,
@@ -382,9 +383,20 @@ class _AutonomousRuntimeAdapter:
                     else []
                 )
                 decision["goal_achieved"] = False
+                # Validity requirements are the ones a model cannot act on
+                # from their label alone, so they carry their remedy instead:
+                # "validity:predictions_measured" becomes the ids it left
+                # open and the tool that settles them.
+                from app.services import agent_measurement_validity
+
+                validity_detail = (
+                    (contract_before.get("metrics") or {}).get("validity") or {}
+                ).get("details") or {}
+                remedies = agent_measurement_validity.explain(unmet, validity_detail)
                 decision["reasoning"] = (
                     f"{str(decision.get('reasoning') or '').strip()[:260]} "
                     f"Goal contract not yet satisfied: {', '.join([str(x)[:80] for x in unmet[:4]])}"
+                    + ("" if not remedies else " " + " ".join(remedies[:2]))
                 ).strip()
                 self.job.add_log_entry(
                     {
@@ -663,6 +675,25 @@ class _AutonomousRuntimeAdapter:
                 self.state,
                 self.db,
             )
+            # A repeated identical failure is the signal that the tool's own
+            # message is not going to fix anything -- one run called the
+            # compiler with the same unsupported flag four times. Attach the
+            # escalation to the result so it travels with the history the
+            # model reads, rather than needing a tool call to discover.
+            diagnosis = agent_failure_diagnosis.analyze(
+                action, action_result, self.state
+            )
+            if diagnosis:
+                action_result = {**action_result, "diagnosis": diagnosis}
+                self.job.add_log_entry(
+                    {
+                        "phase": "repeated_tool_failure",
+                        "tool": str(action.get("tool") or ""),
+                        "attempt": diagnosis["attempt"],
+                        "error_class": diagnosis["error_class"],
+                    }
+                )
+
             self.state["actions_taken"].append(
                 {
                     "action": action,
@@ -7108,6 +7139,24 @@ GOAL:
 {job.goal}
 
 """
+        # Soundness requirements belong in the stable prompt rather than being
+        # discovered on being blocked: they change how the work is done, not
+        # only when it may stop. A run told at the end that its measurements
+        # need error bars has already taken them all without.
+        # Per-job and fixed for the job's life, so this stays byte-stable.
+        from app.services import agent_measurement_validity
+
+        validity_lines = agent_measurement_validity.describe(
+            self._get_goal_contract_config(job).get("validity")
+        )
+        if validity_lines:
+            base_prompt += (
+                "THIS RUN'S RESULTS MUST SATISFY:\n"
+                + "\n".join(f"- {line}" for line in validity_lines)
+                + "\nThese are checked deterministically and cannot be argued "
+                "past. Plan the work so they hold, rather than discovering "
+                "them when the job tries to finish.\n\n"
+            )
         inherited_data = (
             (job.config or {}).get("inherited_data")
             if isinstance(job.config, dict)
@@ -7494,6 +7543,47 @@ RESPONSE FORMAT:
                 return counts
             return {name: 1 for name in _as_str_list(value)}
 
+        def _as_validity(value: Any) -> Dict[str, Any]:
+            """Normalize the soundness block, dropping anything unrecognized.
+
+            A malformed rule must not silently become a requirement no run can
+            satisfy, nor one that quietly passes everything: only the three
+            known forms survive, in the shapes the checker expects.
+            """
+            if not isinstance(value, dict):
+                return {}
+            spec: Dict[str, Any] = {}
+            if self._coerce_bool(value.get("predictions_measured"), default=False):
+                spec["predictions_measured"] = True
+            if self._coerce_bool(value.get("records_method"), default=False):
+                spec["records_method"] = True
+            uncertainty = _as_str_list(value.get("require_uncertainty"))
+            if uncertainty:
+                spec["require_uncertainty"] = uncertainty[:24]
+            bounds_raw = value.get("bounds")
+            if isinstance(bounds_raw, dict):
+                bounds: Dict[str, Any] = {}
+                for type_name, rule in list(bounds_raw.items())[:24]:
+                    if not isinstance(rule, dict):
+                        continue
+                    field = str(rule.get("field") or "").strip()
+                    if not field:
+                        continue
+                    entry: Dict[str, Any] = {"field": field[:80]}
+                    for edge in ("min", "max"):
+                        try:
+                            if rule.get(edge) is not None:
+                                entry[edge] = float(rule.get(edge))
+                        except (TypeError, ValueError):
+                            continue
+                    # A bound with neither edge constrains nothing; keeping it
+                    # would advertise a check that never fires.
+                    if "min" in entry or "max" in entry:
+                        bounds[str(type_name).strip()[:80]] = entry
+                if bounds:
+                    spec["bounds"] = bounds
+            return spec
+
         flat_contract_present = any(
             k in cfg
             for k in [
@@ -7503,6 +7593,7 @@ RESPONSE FORMAT:
                 "goal_contract_required_finding_types",
                 "goal_contract_required_artifact_types",
                 "goal_contract_required_result_keys",
+                "goal_contract_validity",
             ]
         )
         enabled_default = bool(raw) or bool(flat_contract_present)
@@ -7575,6 +7666,12 @@ RESPONSE FORMAT:
                     cfg.get("goal_contract_strict_completion", False),
                 ),
                 default=False,
+            ),
+            # Soundness requirements, kept separate from the counting ones
+            # because they answer a different question: not whether the run
+            # produced enough results, but whether the results can be believed.
+            "validity": _as_validity(
+                raw.get("validity", cfg.get("goal_contract_validity", {}))
             ),
         }
 

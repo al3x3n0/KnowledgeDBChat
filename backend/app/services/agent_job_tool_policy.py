@@ -60,6 +60,7 @@ def get_tools_for_job_type(
         "list_custom_tools",
         # Memory (available to all job types)
         "create_memory",
+        "record_method",
         "search_memories",
         "recall_memories",
         "get_memory_stats",
@@ -402,6 +403,7 @@ def get_tools_for_job_type(
         "get_workspace_artifact_url",
         # Memory tools
         "create_memory",
+        "record_method",
         "search_memories",
         "recall_memories",
         "get_memory_stats",

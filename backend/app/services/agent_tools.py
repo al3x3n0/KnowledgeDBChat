@@ -2843,6 +2843,44 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "describe_model_parameters",
+        "description": (
+            "List the tunable parameters of a simulated core model and the "
+            "exact paths that set them. Tuning a model is impossible without "
+            "this: the per-op-class latencies live in a functional-unit pool "
+            "whose layout differs per model, and the paths gem5 prints in its "
+            "own config.ini are not the paths that can be assigned to. Returns "
+            "op-class latencies (what a single-instruction benchmark "
+            "constrains) separately from widths and queue depths (which only "
+            "whole-kernel behaviour can pin down). Feed the `parameter` "
+            "strings to simulate_c_workload's param_overrides with =<value> "
+            "appended. Costs one short simulation, so call it once per model "
+            "rather than per candidate."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "cpu_type": {
+                    "type": "string",
+                    "description": (
+                        "Which model to inspect: O3CPU, MinorCPU, "
+                        "TimingSimpleCPU, AtomicSimpleCPU, NeoverseV2, "
+                        "O3_ARM_v7a_3, HPI, ex5_big or ex5_LITTLE."
+                    ),
+                },
+                "op_classes": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Optional filter, e.g. ['FloatSqrt','FloatDiv']. "
+                        "Omit to see every op class the model defines."
+                    ),
+                },
+            },
+            "required": [],
+        },
+    },
+    {
         "name": "simulate_c_workload",
         "description": (
             "Run a self-contained C program in a simulated out-of-order core "
@@ -2873,9 +2911,33 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                 "cpu_type": {
                     "type": "string",
                     "description": (
-                        "O3CPU (out-of-order, the one a timing claim needs), "
-                        "MinorCPU (in-order), TimingSimpleCPU, or "
-                        "AtomicSimpleCPU (no timing model at all)."
+                        "Which core to model. Generic: O3CPU (out-of-order, the "
+                        "one a timing claim needs), MinorCPU (in-order), "
+                        "TimingSimpleCPU, AtomicSimpleCPU (no timing model at "
+                        "all). Named ARM cores: NeoverseV2, O3_ARM_v7a_3, HPI, "
+                        "ex5_big, ex5_LITTLE. The generic models carry gem5's "
+                        "default latencies, which match no shipped silicon -- "
+                        "measured against an Apple M3 host, O3CPU is 40% off "
+                        "per instruction and NeoverseV2 77%, so name the core a "
+                        "claim is about and calibrate it. NeoverseV2, ex5_big "
+                        "and ex5_LITTLE have no functional unit for scalar "
+                        "fused multiply-add: this tool refuses such workloads "
+                        "rather than hanging, and -ffp-contract=off avoids it."
+                    ),
+                },
+                "param_overrides": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Tune the core model for this run: full parameter "
+                        "assignments such as "
+                        "'system.cpu[0].instQueues[0].fuPool.FUList[3]"
+                        ".opList[4].opLat=10' or 'system.cpu[0].issueWidth=6'. "
+                        "Call describe_model_parameters to get the exact paths "
+                        "a model exposes -- they are not guessable, and the "
+                        "flattened names in gem5's config.ini cannot be "
+                        "assigned to. This is how a model is calibrated "
+                        "against measured silicon without forking a config."
                     ),
                 },
                 "run_args": {

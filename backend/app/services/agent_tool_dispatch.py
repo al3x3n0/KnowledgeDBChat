@@ -4001,12 +4001,36 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         from app.services import agent_gem5_sandbox
 
+        overrides = params.get("param_overrides")
+        if isinstance(overrides, str):
+            # A single assignment is the common case and arrives unwrapped.
+            overrides = [overrides]
+
         return await agent_gem5_sandbox.simulate_c_workload(
             code=str(params.get("code") or ""),
             flags=str(params.get("flags") or agent_gem5_sandbox.DEFAULT_FLAGS),
             cpu_type=str(params.get("cpu_type") or agent_gem5_sandbox.DEFAULT_CPU),
+            param_overrides=[str(x) for x in overrides]
+            if isinstance(overrides, list)
+            else None,
             run_args=str(params.get("run_args") or ""),
             label=str(params.get("label") or ""),
+        )
+
+    async def _describe_model_parameters(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_sandbox
+
+        op_classes = params.get("op_classes")
+        if isinstance(op_classes, str):
+            op_classes = [x.strip() for x in op_classes.split(",") if x.strip()]
+
+        return await agent_gem5_sandbox.describe_model_parameters(
+            cpu_type=str(params.get("cpu_type") or agent_gem5_sandbox.DEFAULT_CPU),
+            op_classes=[str(x) for x in op_classes]
+            if isinstance(op_classes, list)
+            else None,
         )
 
     async def _verify_run_bundle(
@@ -4500,6 +4524,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "analyze_snippet_cycles": _analyze_snippet_cycles,
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,
+            "describe_model_parameters": _describe_model_parameters,
             "verify_run_bundle": _verify_run_bundle,
             "record_prediction": _record_prediction,
             "record_measurement": _record_measurement,

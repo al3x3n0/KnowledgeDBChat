@@ -363,6 +363,75 @@ async def compile_c_snippet(
     }
 
 
+# A machine busier than roughly one runnable task per CPU cannot give a stable
+# wall-clock reading. The thresholds are deliberately loose: the point is to
+# separate "quiet enough to compare numbers" from "these timings are noise",
+# not to grade the host.
+LOAD_BUSY = 0.7
+LOAD_SATURATED = 1.5
+
+# Spread across trials that a difference has to beat to mean anything. Repeated
+# runs of the same benchmark on this host varied by up to 44%, which is larger
+# than most effects worth proposing an instruction for.
+SPREAD_UNSTABLE = 0.25
+
+
+def measurement_quality(
+    load_average: Optional[float],
+    cpu_count: Optional[int],
+    timings: Optional[List[int]] = None,
+) -> Dict[str, Any]:
+    """Describe how trustworthy a wall-clock timing taken just now is.
+
+    Two independent signals, because each catches what the other misses: the
+    machine's load says whether something else was competing, and the spread
+    across trials says whether the result actually held still. A quiet machine
+    can still produce unstable timings, and a busy one can occasionally produce
+    tight ones by luck.
+    """
+    quality: Dict[str, Any] = {}
+    if load_average is not None and cpu_count:
+        per_cpu = load_average / max(1, cpu_count)
+        quality["load_average"] = round(load_average, 2)
+        quality["cpu_count"] = cpu_count
+        quality["load_per_cpu"] = round(per_cpu, 2)
+        if per_cpu >= LOAD_SATURATED:
+            quality["measurement_environment"] = "saturated"
+        elif per_cpu >= LOAD_BUSY:
+            quality["measurement_environment"] = "busy"
+        else:
+            quality["measurement_environment"] = "quiet"
+
+    if timings and len(timings) > 1 and min(timings) > 0:
+        spread = (max(timings) - min(timings)) / min(timings)
+        quality["trial_spread"] = round(spread, 3)
+
+    environment = quality.get("measurement_environment")
+    spread = quality.get("trial_spread")
+    warnings = []
+    if environment == "saturated":
+        warnings.append(
+            f"The host was saturated during this measurement "
+            f"({quality['load_per_cpu']} runnable tasks per CPU): the timing "
+            "reflects competition for the machine as much as the code."
+        )
+    elif environment == "busy":
+        warnings.append(
+            f"The host was busy during this measurement "
+            f"({quality['load_per_cpu']} runnable tasks per CPU); treat small "
+            "differences as noise."
+        )
+    if spread is not None and spread >= SPREAD_UNSTABLE:
+        warnings.append(
+            f"Trials varied by {spread * 100:.0f}%, so any difference smaller "
+            "than that is not evidence. Repeat on a quiet machine before "
+            "concluding anything from it."
+        )
+    if warnings:
+        quality["measurement_warning"] = " ".join(warnings)
+    return quality
+
+
 async def benchmark_c_snippet(
     *,
     code: str,
@@ -395,7 +464,14 @@ async def benchmark_c_snippet(
             # failed would be reported as a successful benchmark.
             '  if [ $rc -ne 0 ]; then echo "program exited $rc" >&2; exit 91; fi; '
             '  echo "__elapsed_ms__ $(( (e - s) / 1000000 ))"; '
-            "done"
+            "done; "
+            # Sampled in the same container, around the same trials: a timing
+            # taken while the machine is busy is not a property of the code,
+            # and nothing else in this pipeline would ever notice. Measured
+            # here: competing work pushed identical runs from 10s to over
+            # 150s, and an orphaned container raised load for an hour.
+            'echo "__loadavg__ $(cut -d" " -f1 /proc/loadavg 2>/dev/null || echo 0)"; '
+            'echo "__cpus__ $(nproc 2>/dev/null || echo 1)"'
         )
         try:
             returncode, stdout, stderr = await _run(
@@ -430,14 +506,28 @@ async def benchmark_c_snippet(
 
     timings: List[int] = []
     program_output: List[str] = []
+    load_average: Optional[float] = None
+    cpu_count: Optional[int] = None
     for line in stdout.splitlines():
         if line.startswith("__elapsed_ms__ "):
             try:
                 timings.append(int(line.split()[1]))
             except (IndexError, ValueError):
                 continue
+        elif line.startswith("__loadavg__ "):
+            try:
+                load_average = float(line.split()[1])
+            except (IndexError, ValueError):
+                continue
+        elif line.startswith("__cpus__ "):
+            try:
+                cpu_count = int(line.split()[1])
+            except (IndexError, ValueError):
+                continue
         else:
             program_output.append(line)
+
+    quality = measurement_quality(load_average, cpu_count, timings)
 
     reported_metrics = parse_reported_metrics("\n".join(program_output))
 
@@ -452,10 +542,16 @@ async def benchmark_c_snippet(
             "all_ms": timings,
             "reported_metrics": reported_metrics,
             "stdout": "\n".join(program_output)[:MAX_OUTPUT_CHARS],
+            **quality,
             "note": (
                 "Wall-clock only; the sandbox has no performance counters. "
                 "Check codegen with compile_c_snippet before attributing a "
                 "difference to a microarchitectural effect."
+                + (
+                    f" {quality['measurement_warning']}"
+                    if quality.get("measurement_warning")
+                    else ""
+                )
             ),
         },
         "findings": [
@@ -473,6 +569,11 @@ async def benchmark_c_snippet(
                 "fastest_ms": min(timings) if timings else None,
                 "all_ms": timings,
                 "reported_metrics": reported_metrics,
+                # Carried on the finding, not just the tool result, so a goal
+                # contract can bound it (validity.bounds on load_per_cpu or
+                # trial_spread) and refuse a run whose numbers were taken on a
+                # machine too busy to measure anything.
+                **quality,
             }
         ],
     }

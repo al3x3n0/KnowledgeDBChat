@@ -70,5 +70,49 @@ def test_every_offered_cpu_model_explains_what_it_models():
     """A caller picking a model must be able to tell what it will measure."""
     for name, why in gem5.CPU_TYPES.items():
         assert why.strip(), name
-    assert "timing claim" in gem5.CPU_TYPES["O3CPU"]
+    assert "timing-capable" in gem5.CPU_TYPES["O3CPU"]
     assert "no timing model" in gem5.CPU_TYPES["AtomicSimpleCPU"]
+    # The generic models must not read as stand-ins for silicon. Measured
+    # against this host, O3CPU is 40% off per instruction and NeoverseV2 77%,
+    # so a caller choosing between them is choosing which core to model, not
+    # merely how much detail to pay for.
+    assert "no real core" in gem5.CPU_TYPES["O3CPU"]
+    assert "real core" in gem5.CPU_TYPES["NeoverseV2"]
+
+
+def test_models_missing_scalar_fma_are_named():
+    """The deadlock is silent, so the set that hits it must be explicit.
+
+    NeoverseV2, ex5_big and ex5_LITTLE declare SimdFloatMultAcc but not
+    FloatMultAcc, so a scalar fmadd can never issue and the simulation hangs
+    instead of failing. Every model named here is one the guard must cover.
+    """
+    assert gem5.MODELS_WITHOUT_SCALAR_FMA <= set(gem5.CPU_TYPES)
+    assert "NeoverseV2" in gem5.MODELS_WITHOUT_SCALAR_FMA
+    assert "O3CPU" not in gem5.MODELS_WITHOUT_SCALAR_FMA
+
+
+@pytest.mark.asyncio
+async def test_parameter_overrides_must_be_full_paths(enabled):
+    """A path without `system` is rejected rather than silently prefixed.
+
+    Prepending `system.cpu[0].` for the caller doubled the prefix whenever a
+    full path was passed, and gem5 reported that as `KeyError: system` from
+    deep inside its config machinery.
+    """
+    result = await gem5.simulate_c_workload(
+        code="int main(void){return 0;}",
+        param_overrides=["instQueues[0].fuPool.FUList[3].opList[4].opLat=10"],
+    )
+
+    assert "system.<path>=<value>" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_parameter_overrides_reject_shell_syntax(enabled):
+    result = await gem5.simulate_c_workload(
+        code="int main(void){return 0;}",
+        param_overrides=["system.cpu[0].numROBEntries=64; curl evil"],
+    )
+
+    assert "not of the form" in result["error"]

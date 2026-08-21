@@ -18,7 +18,7 @@ from __future__ import annotations
 import re
 import tempfile
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 
 from loguru import logger
 
@@ -105,6 +105,9 @@ async def profile_c_workload(
     *,
     code: str,
     flags: str = DEFAULT_FLAGS,
+    language: str = "c",
+    extra_files: Optional[Dict[str, str]] = None,
+    include_dirs: Optional[Sequence[str]] = None,
     run_args: str = "",
     label: str = "",
     top_functions: int = 8,
@@ -112,14 +115,34 @@ async def profile_c_workload(
     image: str = DEFAULT_IMAGE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
-    """Compile a self-contained C program, run it, and profile what executed."""
+    """Compile a self-contained program, run it, and profile what executed.
+
+    Real code arrives with headers. An engine's hot loops live in C++ behind an
+    include tree, so a profiler that only takes one self-contained C file can
+    only ever profile something written for it -- which is not evidence about
+    the engine. `extra_files` carries the headers in and `include_dirs` puts
+    them on the path.
+    """
     blocked = _preflight(code, image)
     if blocked:
         return blocked
 
+    language = str(language or "c").strip().lower()
+    if language not in ("c", "c++", "cpp", "cxx"):
+        return {"error": f"language must be 'c' or 'c++', got {language!r}"}
+    is_cpp = language != "c"
+    compiler = "clang++" if is_cpp else "clang"
+    source_name = "workload.cpp" if is_cpp else "workload.c"
+
     safe_flags = (flags or DEFAULT_FLAGS).strip()
     if not SAFE_FLAGS.match(safe_flags):
         return {"error": f"flags contain unsupported characters: {flags!r}"}
+    if is_cpp and not any(f.startswith("-std=") for f in safe_flags.split()):
+        # clang 14 in this image defaults to C++14, and real C++ says so in a
+        # static_assert rather than at the line that needs the feature: Godot's
+        # typedefs.h fails with "201402L >= 201703L", which names neither the
+        # flag nor the caller.
+        safe_flags = f"{safe_flags} -std=c++17"
     if "-g" not in safe_flags.split():
         # Without debug info the profile still counts instructions, but nothing
         # can be attributed to a function, which is most of its value.
@@ -129,9 +152,29 @@ async def profile_c_workload(
         return {"error": f"run_args contain unsupported characters: {run_args!r}"}
 
     with tempfile.TemporaryDirectory(prefix="profile_workload_") as workdir:
-        Path(workdir, "workload.c").write_text(code, encoding="utf-8")
+        Path(workdir, source_name).write_text(code, encoding="utf-8")
+
+        root = Path(workdir).resolve()
+        for name, content in (extra_files or {}).items():
+            # Every path is resolved and checked to stay under the work
+            # directory: these names come from a caller, and a "header" called
+            # ../../etc/something is not a header.
+            candidate = (root / str(name)).resolve()
+            if not str(candidate).startswith(str(root) + "/"):
+                return {"error": f"extra_files path escapes the workspace: {name!r}"}
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text(str(content), encoding="utf-8")
+
+        include_flags = ""
+        for directory in include_dirs or []:
+            resolved = (root / str(directory)).resolve()
+            if not str(resolved).startswith(str(root)):
+                return {"error": f"include_dirs path escapes the workspace: {directory!r}"}
+            include_flags += f"-I{Path(directory).as_posix()} "
+
         script = (
-            f"clang {safe_flags} -o workload workload.c -lm 2>compile_err.txt || "
+            f"{compiler} {safe_flags} {include_flags}-o workload {source_name} "
+            "-lm 2>compile_err.txt || "
             "{ cat compile_err.txt >&2; exit 90; }; "
             "valgrind --tool=callgrind --dump-instr=yes "
             "--callgrind-out-file=cg.out ./workload "

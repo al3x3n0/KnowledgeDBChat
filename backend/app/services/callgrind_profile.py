@@ -37,6 +37,13 @@ class Profile:
     event: str = "Ir"
     total: int = 0
     by_address: Dict[int, int] = field(default_factory=dict)
+    # Costs kept per binary object. Addresses are only meaningful relative to
+    # the object they came from: a position-independent executable and every
+    # shared library it loads all start near zero, so merging them into one map
+    # produces addresses that belong to nothing. A run whose hot code was in
+    # libc built "hot blocks" that could not be disassembled against the
+    # program, and reported them as instructions the program had run.
+    by_object: Dict[str, Dict[int, int]] = field(default_factory=dict)
     by_function: Dict[str, int] = field(default_factory=dict)
     # Recorded rather than inferred: a profile whose addresses are file-relative
     # cannot be matched against a disassembly without knowing that.
@@ -99,6 +106,7 @@ def parse(lines: Iterable[str]) -> Profile:
     names: Dict[str, str] = {}
     function = "???"
     pending_call = False
+    current_object = "?"
 
     for raw in lines:
         line = raw.rstrip("\n")
@@ -119,7 +127,11 @@ def parse(lines: Iterable[str]) -> Profile:
             current = {}
             pending_call = False
             continue
-        if line.startswith(("fl=", "fi=", "fe=", "ob=")):
+        if line.startswith("ob="):
+            current_object = _name(line.split("=", 1)[1].strip(), names)
+            current = {}
+            continue
+        if line.startswith(("fl=", "fi=", "fe=")):
             _name(line.split("=", 1)[1].strip(), names)
             current = {}
             continue
@@ -163,6 +175,8 @@ def parse(lines: Iterable[str]) -> Profile:
             address = resolved[positions.index("instr")]
             if address is not None:
                 profile.by_address[address] = profile.by_address.get(address, 0) + cost
+                per_object = profile.by_object.setdefault(current_object, {})
+                per_object[address] = per_object.get(address, 0) + cost
 
     return profile
 
@@ -178,6 +192,34 @@ def parse_disassembly(text: str) -> Dict[int, str]:
         if match:
             listing[int(match.group(1), 16)] = match.group(2).strip()
     return listing
+
+
+def program_addresses(profile: Profile, binary: str = "workload") -> Dict[int, int]:
+    """Costs for the program's own object, not everything it linked against.
+
+    Blocks are runs of contiguous addresses, and addresses only mean anything
+    within one object. Mixing a PIE executable with the shared libraries it
+    loads -- all of which start near zero -- yields runs that span objects and
+    disassemble to nothing.
+    """
+    if not profile.by_object:
+        return profile.by_address
+    named = {
+        obj: costs
+        for obj, costs in profile.by_object.items()
+        if binary in obj and not obj.endswith(".so")
+    }
+    if named:
+        return max(named.values(), key=lambda costs: sum(costs.values()))
+    # Nothing matched by name: fall back to the object carrying the most cost
+    # that is not obviously a library, and say nothing more confident than that.
+    ranked = sorted(
+        profile.by_object.items(), key=lambda kv: -sum(kv[1].values())
+    )
+    for obj, costs in ranked:
+        if ".so" not in obj:
+            return costs
+    return profile.by_address
 
 
 def hot_blocks(
@@ -199,15 +241,18 @@ def hot_blocks(
     unit a dataflow graph is built from, so it carries its instructions rather
     than just its cost.
     """
-    if not profile.by_address:
+    # The program's own object only: a run of contiguous addresses spanning two
+    # objects is not a basic block, and cannot be disassembled against either.
+    costs = program_addresses(profile)
+    if not costs:
         return []
-    addresses = sorted(profile.by_address)
+    addresses = sorted(costs)
     runs: List[List[int]] = [[addresses[0]]]
     for address in addresses[1:]:
         previous = runs[-1][-1]
         same_block = (
             address - previous <= max_gap
-            and profile.by_address[address] == profile.by_address[previous]
+            and costs[address] == costs[previous]
         )
         if same_block:
             runs[-1].append(address)
@@ -216,7 +261,7 @@ def hot_blocks(
 
     blocks: List[Dict[str, object]] = []
     for run in runs:
-        counts = [profile.by_address[a] for a in run]
+        counts = [costs[a] for a in run]
         blocks.append(
             {
                 "start": run[0],
@@ -231,7 +276,7 @@ def hot_blocks(
                 "listing": [
                     {
                         "address": a,
-                        "count": profile.by_address[a],
+                        "count": costs[a],
                         "text": listing.get(a, "?"),
                     }
                     for a in run

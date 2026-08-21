@@ -4134,6 +4134,25 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 return blocks
         return None
 
+    async def _cost_fusion_candidate(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_compiler_sandbox
+
+        def _as_int(value: Any, default: int) -> int:
+            try:
+                return int(value)
+            except (TypeError, ValueError):
+                return default
+
+        return await agent_compiler_sandbox.cost_fusion_candidate(
+            pattern=str(params.get("pattern") or ""),
+            cpu=str(params.get("cpu") or ""),
+            copies=_as_int(params.get("copies"), 20),
+            mode=str(params.get("mode") or "dependent"),
+            label=str(params.get("label") or ""),
+        )
+
     async def _find_fusion_candidates(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -4741,6 +4760,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "simulate_c_workload": _simulate_c_workload,
             "describe_model_parameters": _describe_model_parameters,
             "find_fusion_candidates": _find_fusion_candidates,
+            "cost_fusion_candidate": _cost_fusion_candidate,
             "verify_run_bundle": _verify_run_bundle,
             "record_prediction": _record_prediction,
             "record_measurement": _record_measurement,

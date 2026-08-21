@@ -45,6 +45,7 @@ EVIDENCE_TOOLS = {
     # tuning changed.
     "describe_model_parameters",
     "find_fusion_candidates",
+    "cost_fusion_candidate",
     "axis_check",
     "axis_emit",
     "axis_prove",

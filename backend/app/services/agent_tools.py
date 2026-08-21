@@ -2843,6 +2843,54 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "cost_fusion_candidate",
+        "description": (
+            "Cost a mined fusion candidate and bound what fusing it could "
+            "save, per occurrence, on a named core. Costs the sequence as it "
+            "stands and each operation in it alone, then reports the saving as "
+            "a range: at best the sequence's cost minus the slowest operation "
+            "the fused form still has to perform, at worst nothing. It does "
+            "not ask you to name an instruction to stand for the fused one, "
+            "because the answer would then depend on that choice -- picking a "
+            "slow stand-in manufactures a regression. Multiply the range by "
+            "the candidate's dynamic_occurrences for the benefit."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "pattern": {
+                    "type": "string",
+                    "description": (
+                        "The candidate, as find_fusion_candidates spells it, "
+                        "e.g. 'fsqrt fdiv | 0>1'."
+                    ),
+                },
+                "cpu": {
+                    "type": "string",
+                    "description": (
+                        "The core model to cost against, e.g. neoverse-n1. "
+                        "Required: a cycle count is a property of a core."
+                    ),
+                },
+                "mode": {
+                    "type": "string",
+                    "description": (
+                        "'dependent' (default) measures the chain's latency, "
+                        "what a loop-carried computation meets; 'independent' "
+                        "measures throughput, what an unrolled loop meets. "
+                        "They disagree by a lot."
+                    ),
+                },
+                "copies": {
+                    "type": "integer",
+                    "description": "Repetitions inside the region (default 20).",
+                },
+                "label": {"type": "string", "description": "A name for the run."},
+            },
+            "required": ["pattern", "cpu"],
+        },
+    },
+    {
         "name": "find_fusion_candidates",
         "description": (
             "Mine hot blocks for instruction sequences that could become one "

@@ -7367,6 +7367,28 @@ RESPONSE FORMAT:
         if focus_directive:
             parts.append(f"FOCUS DIRECTIVE (set by agent):\n{focus_directive}")
 
+        # The exact finding types this run has produced. Tools that ask what a
+        # claim derives from -- record_prediction, record_method -- check the
+        # citation against these and refuse an invented one, and a model
+        # composing that call cannot otherwise see the list. Four live runs
+        # lost calls to citations like "fused-candidate-cost-analysis" while
+        # the evidence itself was sitting in the run.
+        recorded = state.get("findings")
+        if isinstance(recorded, list):
+            types: List[str] = []
+            for finding in recorded:
+                if not isinstance(finding, dict):
+                    continue
+                name = str(finding.get("type") or "").strip()
+                if name and name not in types:
+                    types.append(name)
+            if types:
+                parts.append(
+                    "EVIDENCE RECORDED SO FAR (cite these exact type names in "
+                    "derived_from, not a description of them):\n"
+                    + ", ".join(sorted(types)[:24])
+                )
+
         for formatter in (
             self._format_causal_experiment_plan_for_prompt,
             self._format_execution_plan_for_prompt,

@@ -2860,11 +2860,19 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
             "type": "object",
             "properties": {
                 "blocks": {
-                    "type": "array",
+                    # Either shape: the schema check is what refused a model
+                    # that described its blocks in prose instead of omitting
+                    # the field, before the handler could fall back to the
+                    # profile this run had already taken.
+                    "type": ["array", "string"],
                     "items": {"type": "object"},
                     "description": (
-                        "Hot blocks from profile_c_workload, or objects with "
-                        "an `instructions` list of assembly lines and an "
+                        "Optional. If you have already run profile_c_workload "
+                        "in this job, leave this out and its hot blocks are "
+                        "used automatically -- do not copy the disassembly "
+                        "across, since a truncated copy mines a different "
+                        "program than the one profiled. Otherwise pass objects "
+                        "with an `instructions` list of assembly lines and an "
                         "`executions` count."
                     ),
                 },
@@ -2893,7 +2901,7 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                     ),
                 },
             },
-            "required": ["blocks"],
+            "required": [],
         },
     },
     {

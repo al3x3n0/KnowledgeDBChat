@@ -12,6 +12,8 @@ told "invalid input" guesses again and spends another iteration.
 
 from __future__ import annotations
 
+import json
+
 import re
 from typing import Any, Dict, List, Optional
 from uuid import UUID
@@ -69,6 +71,12 @@ def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List
     The mirror case is repaired too: a one-item list where a string is wanted.
     A live run sent run_args as a list twice and lost both attempts to it.
 
+    A structure serialised as JSON text is parsed back for the same reason. A
+    model handed a large object from one tool and asked to pass it to the next
+    sends it as a string, and refusing that costs an iteration to re-send the
+    identical bytes: "field blocks should be array, got str" happened twice in
+    one run while the value was exactly right.
+
     Only those. A list of several items where a string is wanted is not
     repaired, because joining them would be a guess about the separator, and a
     number where a string is wanted is a real mistake about what the tool does.
@@ -90,9 +98,32 @@ def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List
             continue
         expected = spec.get("type")
 
-        if expected == "array" and isinstance(value, str) and value.strip():
-            if (spec.get("items") or {}).get("type", "string") == "string":
-                params[name] = [value.strip()]
+        if expected in ("array", "object") and isinstance(value, str) and value.strip():
+            text = value.strip()
+            if text.startswith(("[", "{")):
+                try:
+                    parsed = json.loads(text)
+                except ValueError:
+                    parsed = None
+                if expected == "array" and isinstance(parsed, list):
+                    params[name] = parsed
+                    repaired.append(name)
+                    continue
+                if expected == "array" and isinstance(parsed, dict):
+                    params[name] = [parsed]
+                    repaired.append(name)
+                    continue
+                if expected == "object" and isinstance(parsed, dict):
+                    params[name] = parsed
+                    repaired.append(name)
+                    continue
+            # Not JSON: a lone string still means one item, when the array is
+            # an array of strings.
+            if (
+                expected == "array"
+                and (spec.get("items") or {}).get("type", "string") == "string"
+            ):
+                params[name] = [text]
                 repaired.append(name)
             continue
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Protocol
 
@@ -4102,22 +4103,71 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    def _recent_hot_blocks(state: Any) -> Any:
+        """The hot blocks from the most recent successful profile in this run.
+
+        Tools that hand a large structure to the next tool should not make the
+        model retype it: the copy is expensive, and a truncated one mines a
+        different program than the one that was profiled.
+        """
+        actions = (
+            (state or {}).get("actions_taken") if isinstance(state, dict) else None
+        )
+        if not isinstance(actions, list):
+            return None
+        for entry in reversed(actions):
+            if not isinstance(entry, dict):
+                continue
+            action = (
+                entry.get("action") if isinstance(entry.get("action"), dict) else {}
+            )
+            result = (
+                entry.get("result") if isinstance(entry.get("result"), dict) else {}
+            )
+            if str(action.get("tool") or "") != "profile_c_workload":
+                continue
+            if not bool(result.get("success")):
+                continue
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            blocks = data.get("hot_blocks")
+            if isinstance(blocks, list) and blocks:
+                return blocks
+        return None
+
     async def _find_fusion_candidates(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         from app.services import isa_candidate_mining
 
         blocks = params.get("blocks")
+        if isinstance(blocks, str):
+            # A model asked for a large structure sends it as text. Parsing it
+            # costs nothing and refusing it costs an iteration, which is what
+            # happened: a live run serialised the profiler's blocks and was
+            # told the field should be an array.
+            try:
+                blocks = json.loads(blocks)
+            except (TypeError, ValueError):
+                blocks = None
         if isinstance(blocks, dict):
-            blocks = [blocks]
+            blocks = blocks.get("hot_blocks") if "hot_blocks" in blocks else [blocks]
+
+        if not isinstance(blocks, list) or not blocks:
+            # Copying kilobytes of disassembly from one tool call into the next
+            # is work the run should not have to do by hand, and a truncated
+            # copy would mine the wrong thing silently. Fall back to the
+            # profile this run already produced.
+            blocks = _recent_hot_blocks(ctx.state)
+
         if not isinstance(blocks, list) or not blocks:
             return {
                 "error": (
-                    "blocks is required: pass the hot blocks from "
-                    "profile_c_workload, or objects with an `instructions` "
-                    "list of assembly lines and an `executions` count. "
-                    "Mining source text instead of a profiled run measures "
-                    "how often a pattern is written, not how often it runs."
+                    "No hot blocks to mine. Run profile_c_workload first and "
+                    "this tool will pick up its blocks automatically, or pass "
+                    "`blocks` as objects with an `instructions` list of "
+                    "assembly lines and an `executions` count. Mining source "
+                    "text instead of a profiled run measures how often a "
+                    "pattern is written, not how often it runs."
                 )
             }
 

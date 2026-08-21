@@ -203,3 +203,97 @@ def test_the_profilers_own_block_format_is_read():
 def test_a_block_too_short_to_fuse_yields_nothing():
     assert mining.mine_blocks([{"instructions": ["ret"], "executions": 10}]) == []
     assert mining.mine_blocks([]) == []
+
+
+BLOCK = {
+    "start": 0x4005A0,
+    "instructions": 4,
+    "executions": 65_536,
+    "listing": [
+        {"address": 1, "count": 65_536, "text": "fmul s3, s1, s1"},
+        {"address": 2, "count": 65_536, "text": "fmadd s3, s2, s2, s3"},
+        {"address": 3, "count": 65_536, "text": "fsqrt s4, s3"},
+        {"address": 4, "count": 65_536, "text": "fdiv s5, s0, s4"},
+    ],
+}
+
+
+def _context(state):
+    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+
+    return AgentToolExecutionContext(
+        mode="autonomous", db=None, service=None, user_id=None, job=None, state=state
+    )
+
+
+async def _call(params, state):
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    ctx = _context(state)
+    provider = AutonomousAgentExecutor().tool_registry.resolve(
+        "find_fusion_candidates", ctx
+    )
+    return await provider.execute("find_fusion_candidates", params, ctx)
+
+
+def _profiled_state():
+    return {
+        "actions_taken": [
+            {
+                "action": {"tool": "profile_c_workload", "params": {}},
+                "result": {"success": True, "data": {"hot_blocks": [BLOCK]}},
+            }
+        ]
+    }
+
+
+async def test_the_miner_picks_up_the_profile_this_run_already_produced():
+    """Copying kilobytes of disassembly between two tool calls is work the run
+    should not do by hand, and a truncated copy mines a different program."""
+    result = await _call({}, _profiled_state())
+
+    assert result["success"] is True
+    assert result["data"]["candidates"], "should have mined the profiled blocks"
+    assert result["data"]["candidates"][0]["dynamic_occurrences"] == 65_536
+
+
+async def test_blocks_sent_as_json_text_are_parsed():
+    """A model asked for a large structure sends it as text; a live run lost an
+    iteration to 'field blocks should be array, got str'."""
+    import json
+
+    result = await _call({"blocks": json.dumps([BLOCK])}, {"actions_taken": []})
+
+    assert result["success"] is True
+    assert result["data"]["candidates"]
+
+
+async def test_a_whole_profile_result_object_is_accepted():
+    result = await _call({"blocks": {"hot_blocks": [BLOCK]}}, {"actions_taken": []})
+
+    assert result["success"] is True
+    assert result["data"]["candidates"]
+
+
+async def test_with_no_blocks_and_no_profile_it_says_what_to_run():
+    result = await _call({}, {"actions_taken": []})
+
+    assert "error" in result
+    assert "profile_c_workload" in result["error"]
+
+
+async def test_prose_in_blocks_falls_back_to_the_profile():
+    """A model that describes its blocks instead of omitting the field should
+    still get the run's own profile mined, not a type error."""
+    result = await _call(
+        {"blocks": "the hot blocks from the profile above"}, _profiled_state()
+    )
+
+    assert result["success"] is True
+    assert result["data"]["candidates"]
+
+
+async def test_prose_with_no_profile_still_says_what_to_run():
+    result = await _call({"blocks": "the hot blocks"}, {"actions_taken": []})
+
+    assert "error" in result and "profile_c_workload" in result["error"]

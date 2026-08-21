@@ -502,15 +502,49 @@ def test_the_benchmark_tool_satisfies_a_request_for_error_bars():
     }
     contract = {"validity": {"require_uncertainty": ["benchmark_measurement"]}}
 
-    assert validity.evaluate(contract, {"findings": [finding], "actions_taken": []})[
-        "missing"
-    ] == []
+    assert (
+        validity.evaluate(contract, {"findings": [finding], "actions_taken": []})[
+            "missing"
+        ]
+        == []
+    )
 
 
 def test_a_lone_trial_is_still_not_an_error_bar():
     finding = {"type": "benchmark_measurement", "fastest_ms": 670, "all_ms": [670]}
     contract = {"validity": {"require_uncertainty": ["benchmark_measurement"]}}
 
-    assert "validity:uncertainty:benchmark_measurement" in validity.evaluate(
-        contract, {"findings": [finding], "actions_taken": []}
-    )["missing"]
+    assert (
+        "validity:uncertainty:benchmark_measurement"
+        in validity.evaluate(contract, {"findings": [finding], "actions_taken": []})[
+            "missing"
+        ]
+    )
+
+
+def test_the_prompt_lists_the_evidence_types_a_citation_must_use():
+    """Four live runs lost record_prediction calls to invented citation names
+    while the evidence was sitting in the run. The model cannot cite what it
+    cannot see."""
+    job = _Job({})
+    executor = _executor()
+    state = {
+        "findings": [
+            {"type": "cycle_model_measurement"},
+            {"type": "dynamic_profile"},
+            {"type": "cycle_model_measurement"},
+        ]
+    }
+
+    prompt = executor._build_thinking_prompt_volatile(job, state)
+
+    assert "EVIDENCE RECORDED SO FAR" in prompt
+    assert "cycle_model_measurement" in prompt
+    assert "dynamic_profile" in prompt
+    assert prompt.count("cycle_model_measurement") == 1, "types listed once each"
+
+
+def test_a_run_with_no_findings_adds_no_evidence_section():
+    prompt = _executor()._build_thinking_prompt_volatile(_Job({}), {"findings": []})
+
+    assert "EVIDENCE RECORDED SO FAR" not in prompt

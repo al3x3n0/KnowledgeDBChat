@@ -94,3 +94,35 @@ def test_a_multi_item_list_is_not_joined_into_a_string():
 
     assert coerce_tool_params("simulate_c_workload", params) == []
     assert "run_args" in (validate_tool_params("simulate_c_workload", params) or "")
+
+
+def test_a_structure_serialised_as_json_is_parsed_back():
+    """Refused twice in one live run while the value was exactly right.
+
+    Uses share_findings because it still declares a strict array of objects;
+    find_fusion_candidates now accepts either shape so its own handler can
+    fall back to the profile the run already took.
+    """
+    params = {"findings": '[{"title": "a", "detail": "b"}]', "agent_name": "x"}
+
+    repaired = coerce_tool_params("share_findings", params)
+
+    assert repaired == ["findings"]
+    assert isinstance(params["findings"], list)
+    assert params["findings"][0]["title"] == "a"
+
+
+def test_a_single_json_object_becomes_a_one_item_array():
+    params = {"findings": '{"title": "a"}', "agent_name": "x"}
+
+    coerce_tool_params("share_findings", params)
+
+    assert isinstance(params["findings"], list) and len(params["findings"]) == 1
+
+
+def test_text_that_is_not_json_is_left_for_validation_to_refuse():
+    """An array of objects cannot be salvaged from prose."""
+    params = {"findings": "the things I found", "agent_name": "x"}
+
+    assert coerce_tool_params("share_findings", params) == []
+    assert "findings" in (validate_tool_params("share_findings", params) or "")

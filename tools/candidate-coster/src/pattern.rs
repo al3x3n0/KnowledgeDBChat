@@ -33,6 +33,10 @@ pub fn operand_arity(mnemonic: &str) -> Option<(usize, Bank)> {
         | "mul" | "and" | "orr" | "eor" | "lsl" | "lsr" | "asr" | "sdiv" | "udiv"
         | "cmp" => 2,
         "fmadd" | "fmsub" | "fnmadd" | "fnmsub" | "madd" | "msub" => 3,
+        // Conditional select reads two registers and a condition code. The
+        // condition is spelled out by `condition_suffix`, because it is not a
+        // register and giving it one produces assembly nothing will accept.
+        "fcsel" | "csel" | "csinc" => 2,
         _ => return None,
     };
     Some((sources, bank))
@@ -86,6 +90,28 @@ pub fn vector_form(mnemonic: &str) -> Option<VectorForm> {
             accumulates: true,
         },
         "addv" | "saddlv" => VectorForm { dest: "4s", sources: &["4s"], accumulates: false },
+        // Compare producing a lane mask, then a bitwise select on that mask:
+        // how min, max and clamp are expressed without a branch. Mined from
+        // Godot's AABB and Vector3 at 98,280 occurrences apiece, so a costing
+        // tool that cannot spell them cannot cost an engine's hot loop.
+        "fcmgt" | "fcmge" | "fcmeq" | "fcmlt" | "fcmle" => VectorForm {
+            dest: "4s",
+            sources: &["4s", "4s"],
+            accumulates: false,
+        },
+        // The mask operand of an insert is bytes, and the destination is read
+        // as well as written: `bit v22.8b, v0.8b, v3.8b` keeps whichever lanes
+        // the mask did not select.
+        "bit" | "bif" | "bsl" => VectorForm {
+            dest: "8b",
+            sources: &["8b", "8b"],
+            accumulates: true,
+        },
+        "fmax" | "fmin" | "fmaxnm" | "fminnm" => VectorForm {
+            dest: "4s",
+            sources: &["4s", "4s"],
+            accumulates: false,
+        },
         _ => return None,
     };
     Some(form)
@@ -103,6 +129,17 @@ impl Bank {
             Bank::Int => format!("x{index}"),
             Bank::Float => format!("s{index}"),
         }
+    }
+}
+
+/// The condition code a select-family instruction ends with.
+///
+/// Any condition costs the same, so the choice is arbitrary and stated here
+/// rather than left to whoever writes the pattern.
+pub fn condition_suffix(mnemonic: &str) -> Option<&'static str> {
+    match mnemonic {
+        "fcsel" | "csel" | "csinc" | "cset" => Some("mi"),
+        _ => None,
     }
 }
 
@@ -265,6 +302,10 @@ impl Pattern {
                 }
             }
             text.push_str(&operands.join(", "));
+            if let Some(condition) = condition_suffix(mnemonic) {
+                text.push_str(", ");
+                text.push_str(condition);
+            }
             lines.push(text);
         }
         lines

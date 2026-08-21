@@ -132,8 +132,19 @@ def parse(lines: Iterable[str]) -> Profile:
             current = {}
             continue
         if line.startswith(("fl=", "fi=", "fe=")):
+            # A file record, and *not* a reason to forget where we are. `fi=`
+            # and `fe=` mark entering and leaving an inlined header inside one
+            # function, and the instruction position runs straight through
+            # them: the line after `fe=` reads "+4 26 4096", four bytes on from
+            # the instruction before it. Clearing the position state here left
+            # every following "+4" with nothing to be relative to, so it
+            # resolved to nothing and the cost was recorded against no address.
+            #
+            # C code that inlines nothing has no fi=/fe= lines and was
+            # unaffected, which is why this survived until a header-only C++
+            # math library was profiled: of 8.3M instructions, 447k kept an
+            # address and the hot loop was not among them.
             _name(line.split("=", 1)[1].strip(), names)
-            current = {}
             continue
         if line.startswith(("cfn=", "cfl=", "cob=", "cfi=")):
             _name(line.split("=", 1)[1].strip(), names)
@@ -213,9 +224,7 @@ def program_addresses(profile: Profile, binary: str = "workload") -> Dict[int, i
         return max(named.values(), key=lambda costs: sum(costs.values()))
     # Nothing matched by name: fall back to the object carrying the most cost
     # that is not obviously a library, and say nothing more confident than that.
-    ranked = sorted(
-        profile.by_object.items(), key=lambda kv: -sum(kv[1].values())
-    )
+    ranked = sorted(profile.by_object.items(), key=lambda kv: -sum(kv[1].values()))
     for obj, costs in ranked:
         if ".so" not in obj:
             return costs
@@ -250,10 +259,7 @@ def hot_blocks(
     runs: List[List[int]] = [[addresses[0]]]
     for address in addresses[1:]:
         previous = runs[-1][-1]
-        same_block = (
-            address - previous <= max_gap
-            and costs[address] == costs[previous]
-        )
+        same_block = address - previous <= max_gap and costs[address] == costs[previous]
         if same_block:
             runs[-1].append(address)
         else:

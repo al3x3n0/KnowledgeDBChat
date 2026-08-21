@@ -75,6 +75,14 @@ PAIR_FORMS = frozenset({"ldp", "stp", "ldnp", "stnp"})
 # Registers that are not data flow between instructions in the ordinary sense.
 IGNORED_OPERANDS = frozenset({"sp", "wsp", "xzr", "wzr", "pc", "lr"})
 
+# Instructions whose first operand is read, not written. Tested by name rather
+# than by prefix: a prefix rule for "cmp" misses `fcmp`, which then looked like
+# it defined its first register and invented a data-flow edge that is not
+# there. A candidate built on a false edge is a shape the code never had.
+NO_RESULT = frozenset(
+    {"cmp", "cmn", "tst", "fcmp", "fcmpe", "ccmp", "ccmn", "fccmp", "fccmpe"}
+)
+
 _REGISTER = re.compile(
     r"""^(?:
         (?P<gp>[wx](?P<gpn>\d{1,2}))            |   # w3 / x3
@@ -174,7 +182,7 @@ def parse_instruction(line: str, index: int = 0) -> Optional[Instruction]:
             is_store
             or mnemonic in CONTROL_FLOW
             or CONDITIONAL_BRANCH.match(mnemonic)
-            or mnemonic.startswith(("cmp", "cmn", "tst"))
+            or mnemonic in NO_RESULT
         )
         destination_slots = 2 if mnemonic in PAIR_FORMS else 1
         if position < destination_slots and writes_first:

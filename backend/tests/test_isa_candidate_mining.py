@@ -297,3 +297,30 @@ async def test_prose_with_no_profile_still_says_what_to_run():
     result = await _call({"blocks": "the hot blocks"}, {"actions_taken": []})
 
     assert "error" in result and "profile_c_workload" in result["error"]
+
+
+def test_a_floating_point_compare_defines_nothing():
+    """Tested by name, not by prefix: a rule keyed on "cmp" misses `fcmp`,
+    which then looks like it defines its first register and invents an edge."""
+    scalar = mining.parse_instruction("fcmp s4, s15")
+
+    assert scalar.defs == ()
+    assert set(scalar.uses) == {"v4", "v15"}
+
+
+def test_a_vector_compare_does_define_its_mask():
+    """fcmgt writes a lane mask, unlike fcmp; the two must not be lumped."""
+    vector = mining.parse_instruction("fcmgt v3.4s, v22.4s, v0.4s")
+
+    assert vector.defs == ("v3",)
+
+
+def test_no_edge_is_invented_from_a_compare():
+    """Mined from Godot: fcmp, then a select reading the same registers. The
+    select depends on the flags, which this graph does not model, and pretending
+    it depends on the data produces a shape the code never had."""
+    block = ["fcmp s4, s15", "fcsel s15, s4, s15, mi", "fsub s21, s1, s15"]
+    graph = mining.build_dfg(mining.parse_block(block))
+
+    assert (0, 1) not in graph.edges
+    assert (1, 2) in graph.edges

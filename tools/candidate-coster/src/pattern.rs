@@ -18,6 +18,9 @@ use std::fmt;
 /// assembler error at the far end of the pipeline, where it is hard to trace
 /// back to this table.
 pub fn operand_arity(mnemonic: &str) -> Option<(usize, Bank)> {
+    if let Some(form) = vector_form(mnemonic) {
+        return Some((form.sources.len(), Bank::Float));
+    }
     let bank = if mnemonic.starts_with('f') {
         Bank::Float
     } else {
@@ -33,6 +36,59 @@ pub fn operand_arity(mnemonic: &str) -> Option<(usize, Bank)> {
         _ => return None,
     };
     Some((sources, bank))
+}
+
+/// How a NEON instruction arranges its operands.
+///
+/// Vector instructions name a lane arrangement (`v3.4s`), and the widening
+/// ones use a *different* arrangement for the result than for the sources:
+/// `sxtl v5.8h, v5.8b` reads bytes and writes halfwords. Emitting one
+/// arrangement for both is an assembler error; guessing which is worse. Real
+/// code is full of these -- an int8 attention loop mined from a live profile
+/// produced sxtl, smlal, scvtf and fmla and none of them could be costed.
+#[derive(Clone, Copy, Debug)]
+pub struct VectorForm {
+    pub dest: &'static str,
+    pub sources: &'static [&'static str],
+    /// True when the destination is also read: `fmla` and `smlal` accumulate
+    /// into it, which is where the dependence in a dot-product loop lives.
+    pub accumulates: bool,
+}
+
+pub fn vector_form(mnemonic: &str) -> Option<VectorForm> {
+    let form = match mnemonic {
+        // Widening sign/zero extend: bytes in, halfwords out.
+        "sxtl" | "uxtl" => VectorForm { dest: "8h", sources: &["8b"], accumulates: false },
+        "sxtl2" | "uxtl2" => VectorForm { dest: "8h", sources: &["16b"], accumulates: false },
+        // Widening multiply-accumulate: halfwords in, words out, accumulating.
+        "smlal" | "umlal" => VectorForm {
+            dest: "4s",
+            sources: &["4h", "4h"],
+            accumulates: true,
+        },
+        "smull" | "umull" => VectorForm {
+            dest: "4s",
+            sources: &["4h", "4h"],
+            accumulates: false,
+        },
+        // The instruction this whole exercise keeps rediscovering: a dot
+        // product over bytes accumulating into words.
+        "sdot" | "udot" => VectorForm {
+            dest: "4s",
+            sources: &["16b", "16b"],
+            accumulates: true,
+        },
+        "scvtf" | "ucvtf" => VectorForm { dest: "4s", sources: &["4s"], accumulates: false },
+        "fcvtzs" | "fcvtzu" => VectorForm { dest: "4s", sources: &["4s"], accumulates: false },
+        "fmla" | "fmls" => VectorForm {
+            dest: "4s",
+            sources: &["4s", "4s"],
+            accumulates: true,
+        },
+        "addv" | "saddlv" => VectorForm { dest: "4s", sources: &["4s"], accumulates: false },
+        _ => return None,
+    };
+    Some(form)
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -157,48 +213,53 @@ impl Pattern {
     /// it is the difference between measuring latency and throughput -- so the
     /// caller states it rather than this guessing.
     pub fn render(&self, results: &mut RegisterPool, carry: Option<String>) -> Vec<String> {
-        let mut produced: BTreeMap<usize, String> = BTreeMap::new();
+        let mut produced: BTreeMap<usize, usize> = BTreeMap::new();
         let mut incoming: BTreeMap<usize, Vec<usize>> = BTreeMap::new();
         for (producer, consumer) in &self.edges {
             incoming.entry(*consumer).or_default().push(*producer);
         }
 
         let mut lines = Vec::new();
-        let mut carry = carry;
+        let mut carry = carry.and_then(|c| register_index(&c));
         for (index, mnemonic) in self.mnemonics.iter().enumerate() {
             let (sources, bank) = operand_arity(mnemonic).expect("checked at parse");
-            let mut operands: Vec<String> = Vec::new();
+            let form = vector_form(mnemonic);
 
+            // An accumulating instruction reads its destination as well as
+            // writing it, so in a dependent chain the accumulator *is* the
+            // carried value: fmla and smlal are where the dependence in a
+            // dot-product loop actually lives.
+            let accumulates = form.map(|f| f.accumulates).unwrap_or(false);
             let destination = if writes_result(mnemonic) {
-                let register = results.next(bank);
-                produced.insert(index, register.clone());
+                let register = if accumulates {
+                    carry.take().unwrap_or_else(|| results.next_index(bank))
+                } else {
+                    results.next_index(bank)
+                };
+                produced.insert(index, register);
                 Some(register)
             } else {
                 None
             };
 
             let feeders = incoming.get(&index).cloned().unwrap_or_default();
+            let mut operands: Vec<String> = Vec::new();
             for slot in 0..sources {
-                if let Some(producer) = feeders.get(slot) {
-                    operands.push(
-                        produced
-                            .get(producer)
-                            .cloned()
-                            .unwrap_or_else(|| results.next(bank)),
-                    );
-                } else if slot == 0 && carry.is_some() {
-                    // The chaining slot, consumed once so only the first
-                    // unfilled source of the copy depends on the last one.
-                    operands.push(carry.take().expect("checked"));
+                let arrangement = form.map(|f| f.sources[slot.min(f.sources.len() - 1)]);
+                let register = if let Some(producer) = feeders.get(slot) {
+                    *produced.get(producer).unwrap_or(&results.next_index(bank))
+                } else if slot == 0 && carry.is_some() && !accumulates {
+                    carry.take().expect("checked")
                 } else {
-                    operands.push(results.borrow_input(bank));
-                }
+                    results.borrow_index(bank)
+                };
+                operands.push(format_register(bank, register, arrangement));
             }
 
             let mut text = String::from(mnemonic.as_str());
             text.push(' ');
-            if let Some(register) = &destination {
-                text.push_str(register);
+            if let Some(register) = destination {
+                text.push_str(&format_register(bank, register, form.map(|f| f.dest)));
                 if sources > 0 {
                     text.push_str(", ");
                 }
@@ -223,6 +284,28 @@ impl Pattern {
     }
 }
 
+/// The numeric part of a register name, ignoring any lane arrangement.
+///
+/// A vector register is written differently by each instruction that touches
+/// it -- `v5.8h` here, `v5.4h` there -- so a chain has to be carried by the
+/// number and re-dressed at each use, not by the spelling.
+pub fn register_index(name: &str) -> Option<usize> {
+    let digits: String = name
+        .trim_start_matches(|c: char| c.is_alphabetic())
+        .chars()
+        .take_while(|c| c.is_ascii_digit())
+        .collect();
+    digits.parse().ok()
+}
+
+pub fn format_register(bank: Bank, index: usize, arrangement: Option<&str>) -> String {
+    match (bank, arrangement) {
+        (_, Some(arr)) => format!("v{index}.{arr}"),
+        (Bank::Int, None) => format!("x{index}"),
+        (Bank::Float, None) => format!("s{index}"),
+    }
+}
+
 /// Hands out registers, keeping results away from the read-only inputs.
 pub struct RegisterPool {
     next_int: usize,
@@ -240,6 +323,36 @@ impl RegisterPool {
             next_float: 0,
             input_int: 20,
             input_float: 20,
+        }
+    }
+
+    pub fn next_index(&mut self, bank: Bank) -> usize {
+        match bank {
+            Bank::Int => {
+                let index = self.next_int % 16;
+                self.next_int += 1;
+                index
+            }
+            Bank::Float => {
+                let index = self.next_float % 16;
+                self.next_float += 1;
+                index
+            }
+        }
+    }
+
+    pub fn borrow_index(&mut self, bank: Bank) -> usize {
+        match bank {
+            Bank::Int => {
+                let index = 20 + (self.input_int - 20 + 1) % 8;
+                self.input_int = index;
+                index
+            }
+            Bank::Float => {
+                let index = 20 + (self.input_float - 20 + 1) % 8;
+                self.input_float = index;
+                index
+            }
         }
     }
 

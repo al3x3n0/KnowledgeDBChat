@@ -146,6 +146,11 @@ async def finalize_job(
         "satisfied_iteration": int(
             state.get("goal_contract_satisfied_iteration", 0) or 0
         ),
+        # A run that chose to stop with its contract unmet, after being told
+        # twice what was missing. Recorded because the job still finishes with
+        # status "completed", and an operator reading that alone would take it
+        # for a run that met its requirements.
+        "stopped_short": bool(state.get("stopped_short_of_contract", False)),
     }
     job_config = job.config if isinstance(job.config, dict) else {}
     if bool(job_config.get("coding_harness_enabled")):
@@ -1096,6 +1101,11 @@ async def finalize_job(
         "satisfied_iteration": int(
             state.get("goal_contract_satisfied_iteration", 0) or 0
         ),
+        # A run that chose to stop with its contract unmet, after being told
+        # twice what was missing. Recorded because the job still finishes with
+        # status "completed", and an operator reading that alone would take it
+        # for a run that met its requirements.
+        "stopped_short": bool(state.get("stopped_short_of_contract", False)),
     }
 
     if job.status != AgentJobStatus.PAUSED.value and not job.completed_at:

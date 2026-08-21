@@ -384,3 +384,82 @@ async def test_golden_varied_retries_are_not_flagged_as_repeats(db_session):
 
     ledger = (run.job.results or {}).get("actions") or []
     assert not [row for row in ledger if row.get("repeat_attempt")]
+
+
+@pytest.mark.asyncio
+async def test_golden_a_voluntary_stop_cannot_skip_the_contract(db_session):
+    """Deciding the answer is "no" is a reason to stop, not a reason to skip
+    settling the prediction that produced it.
+
+    A live run stopped at iteration 6 with its predictions unsettled and no
+    method recorded, and still reported completed: the contract gated
+    goal_achieved and left this path open.
+    """
+    run = await run_golden_job(
+        db_session,
+        decisions=[
+            decision(tool="search_documents", params={"query": "x"}),
+            decision(should_stop=True, reasoning="nothing worth proposing"),
+            decision(tool="search_documents", params={"query": "y"}),
+            decision(goal_achieved=True, reasoning="done"),
+        ],
+        tool_results={"search_documents": SEARCH_RESULT},
+        config={
+            "goal_contract": {
+                "enabled": True,
+                "min_progress": 0,
+                "required_finding_types": ["never_produced"],
+            }
+        },
+        max_iterations=6,
+    )
+
+    assert run.job.iteration > 2, "the run stopped despite an unmet contract"
+    blocked = [
+        entry
+        for entry in run.job.execution_log or []
+        if entry.get("phase") == "voluntary_stop_blocked"
+    ]
+    contract = (run.job.results or {}).get("goal_contract") or {}
+    assert contract.get("satisfied") is False
+    assert blocked or contract.get("stopped_short"), (
+        "a voluntary stop under an unmet contract must be blocked or recorded "
+        "as stopping short"
+    )
+
+
+@pytest.mark.asyncio
+async def test_golden_an_insistent_stop_is_honoured_and_recorded(db_session):
+    """The contract holds a run to its requirements; it must not trap one
+    whose tools have genuinely stopped working."""
+    run = await run_golden_job(
+        db_session,
+        decisions=[decision(should_stop=True, reasoning="cannot proceed")] * 6,
+        tool_results={},
+        config={
+            "goal_contract": {
+                "enabled": True,
+                "min_progress": 0,
+                "required_finding_types": ["never_produced"],
+            }
+        },
+        max_iterations=8,
+    )
+
+    contract = (run.job.results or {}).get("goal_contract") or {}
+    assert contract.get("satisfied") is False
+    assert (
+        contract.get("stopped_short") is True
+    ), "an insistent stop must be honoured, and recorded as short of contract"
+
+
+@pytest.mark.asyncio
+async def test_golden_a_stop_with_no_contract_is_left_alone(db_session):
+    run = await run_golden_job(
+        db_session,
+        decisions=[decision(should_stop=True, reasoning="done here")],
+        tool_results={},
+        max_iterations=6,
+    )
+
+    assert run.job.iteration == 1, "an ungated run should stop when it says so"

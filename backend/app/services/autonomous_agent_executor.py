@@ -423,12 +423,70 @@ class _AutonomousRuntimeAdapter:
                 self.state["goal_progress"] = 100
 
         if decision.get("should_stop"):
-            logger.info(
-                f"Job {self.job.id} decided to stop: {decision.get('stop_reason')}"
-            )
-            self.job.add_log_entry(
-                {"phase": "voluntary_stop", "reason": decision.get("stop_reason")}
-            )
+            # A contract gates goal_achieved but used to leave this path open,
+            # so a run could conclude its way out of its own requirements: one
+            # stopped at iteration 6 with its predictions unsettled and no
+            # method recorded, and still reported completed. Deciding the
+            # answer is "no" is a fine reason to stop and not a reason to skip
+            # settling the prediction that produced it.
+            blocked_stops = int(self.state.get("voluntary_stop_blocked", 0) or 0)
+            if (
+                bool(contract_before.get("enabled"))
+                and not bool(contract_before.get("satisfied"))
+                # Blocked at most twice. The contract should hold a run to its
+                # requirements, not trap one whose tools have genuinely stopped
+                # working -- and the iteration cap is not a graceful ending.
+                and blocked_stops < 2
+            ):
+                from app.services import agent_measurement_validity
+
+                unmet = (
+                    contract_before.get("missing")
+                    if isinstance(contract_before.get("missing"), list)
+                    else []
+                )
+                remedies = agent_measurement_validity.explain(
+                    unmet,
+                    ((contract_before.get("metrics") or {}).get("validity") or {}).get(
+                        "details"
+                    )
+                    or {},
+                )
+                decision["should_stop"] = False
+                self.state["voluntary_stop_blocked"] = blocked_stops + 1
+                decision["reasoning"] = (
+                    f"{str(decision.get('reasoning') or '').strip()[:260]} "
+                    "Stopping was blocked: the goal contract is not satisfied "
+                    f"({', '.join(str(x)[:60] for x in unmet[:3])}). Finish "
+                    "those before stopping, including for a negative result."
+                    + ("" if not remedies else " " + " ".join(remedies[:2]))
+                ).strip()
+                self.job.add_log_entry(
+                    {
+                        "phase": "voluntary_stop_blocked",
+                        "reason": decision.get("stop_reason"),
+                        "missing": unmet[:8],
+                        "attempt": blocked_stops + 1,
+                    }
+                )
+            else:
+                logger.info(
+                    f"Job {self.job.id} decided to stop: {decision.get('stop_reason')}"
+                )
+                self.job.add_log_entry(
+                    {
+                        "phase": "voluntary_stop",
+                        "reason": decision.get("stop_reason"),
+                        "contract_satisfied": bool(contract_before.get("satisfied")),
+                    }
+                )
+                if bool(contract_before.get("enabled")) and not bool(
+                    contract_before.get("satisfied")
+                ):
+                    # Insisted after being told twice. Honour it, and record
+                    # that the run stopped short so the outcome is not read as
+                    # a run that met its requirements.
+                    self.state["stopped_short_of_contract"] = True
 
         return decision
 

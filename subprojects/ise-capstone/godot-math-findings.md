@@ -28,10 +28,17 @@ visible only because the run is short.
 
 | candidate | costs now | floor | best saving | occurrences | up to |
 |---|---|---|---|---|---|
-| `fcmgt` → `bit` → `fsub` | 13.1 | `fcmgt` 5.1 | 8.0 | 98,280 | 786,240 |
+| `fcmgt.2s` → `bit.8b` → `fsub.2s` | 13.1 | `fcmgt.2s` 5.1 | 8.0 | 98,280 | 786,240 |
 | `fmov` → `fmul` | 8.1 | `fmul` 5.1 | 3.0 | 196,632 | 589,896 |
-| `bit` → `fsub` | 8.1 | `fsub` 5.1 | 3.0 | 98,280 | 294,840 |
-| `fcmgt` → `bif` | 8.1 | `fcmgt` 5.1 | 3.0 | 98,280 | 294,840 |
+| `bit.8b` → `fsub.2s` | 8.1 | `fsub.2s` 5.1 | 3.0 | 98,280 | 294,840 |
+| `fcmgt.2s` → `bif.8b` | 8.1 | `fcmgt.2s` 5.1 | 3.0 | 98,280 | 294,840 |
+
+Widths are the ones the engine actually runs: the geometry code is two-lane
+(`.2s`), which is what a `Vector3` occupies. On Neoverse N1 the narrower form
+costs the same as the wide one -- fewer lanes do less work, not less work per
+cycle -- so recording the width did not move these numbers. It would on a core
+that prices them apart, and the figure is now attached to the instruction that
+ran rather than to whichever width the costing tool defaulted to.
 
 ## What the top candidate is
 
@@ -55,9 +62,6 @@ encoding space.
 - **Upper bounds.** The floor is the slowest operation the fused form must
   still perform; the real saving depends on what the fused instruction would
   cost, which nothing here can measure.
-- **The mined shape does not record vector width.** The engine's code uses
-  `.2s` here and the costing renders `.4s`, so the per-occurrence cycles are
-  the right shape at a possibly different width.
 - **One workload.** A batch vertex transform, not a running game. A real frame
   mixes physics, scripting and rendering, and the ranking would move.
 - **No denominator.** Cycles saved, not a speedup: the profile counts

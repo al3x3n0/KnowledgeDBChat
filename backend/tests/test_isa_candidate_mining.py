@@ -324,3 +324,49 @@ def test_no_edge_is_invented_from_a_compare():
 
     assert (0, 1) not in graph.edges
     assert (1, 2) in graph.edges
+
+
+def test_a_candidate_records_the_width_it_ran_at():
+    """Godot's geometry code runs .2s. Without the width the candidate gets
+    costed at whatever the costing tool defaults to, which prices a program
+    that was not run."""
+    block = [
+        "fcmgt v3.2s, v22.2s, v0.2s",
+        "bit v22.8b, v0.8b, v3.8b",
+        "fsub v23.2s, v0.2s, v22.2s",
+    ]
+
+    ranked = mining.mine_blocks([{"instructions": block, "executions": 98_280}])
+    top = ranked[0]
+
+    assert top["pattern"].startswith("fcmgt.2s bit.8b fsub.2s")
+    assert top["mnemonics"] == ["fcmgt.2s", "bit.8b", "fsub.2s"]
+
+
+def test_the_same_operation_at_two_widths_is_two_candidates():
+    # Registers are reused so the pair stays inside the two-input budget;
+    # three distinct external inputs would be rejected for encoding reasons
+    # rather than anything to do with width.
+    narrow = ["fadd v1.2s, v2.2s, v2.2s", "fmul v4.2s, v1.2s, v2.2s"]
+    wide = ["fadd v1.4s, v2.4s, v2.4s", "fmul v4.4s, v1.4s, v2.4s"]
+
+    ranked = mining.mine_blocks(
+        [
+            {"instructions": narrow, "executions": 100},
+            {"instructions": wide, "executions": 100},
+        ]
+    )
+    patterns = {r["pattern"] for r in ranked}
+
+    assert any("fadd.2s" in p for p in patterns)
+    assert any("fadd.4s" in p for p in patterns)
+
+
+def test_scalar_instructions_carry_no_width():
+    scalar = mining.parse_instruction("fmul s3, s1, s1")
+
+    assert scalar.arrangement == ""
+    ranked = mining.mine_blocks(
+        [{"instructions": ["fmul s3, s1, s1", "fadd s4, s3, s3"], "executions": 10}]
+    )
+    assert ranked[0]["pattern"] == "fmul fadd | 0>1"

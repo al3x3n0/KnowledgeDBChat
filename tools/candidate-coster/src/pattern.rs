@@ -151,6 +151,11 @@ pub fn writes_result(mnemonic: &str) -> bool {
 #[derive(Debug, PartialEq, Eq)]
 pub struct Pattern {
     pub mnemonics: Vec<String>,
+    /// The width each instruction ran at, when the miner recorded one.
+    /// `fcmgt.2s` and `fcmgt.4s` are different candidates and cost
+    /// differently; costing both at whatever this table defaults to reports a
+    /// number for a program that was not run.
+    pub widths: Vec<Option<String>>,
     /// `(producer, consumer)` positions within the pattern.
     pub edges: Vec<(usize, usize)>,
 }
@@ -190,11 +195,24 @@ impl Pattern {
             Some((l, r)) => (l, r),
             None => (text, ""),
         };
-        let mnemonics: Vec<String> = left
-            .split_whitespace()
-            .map(|m| m.trim().to_lowercase())
-            .filter(|m| !m.is_empty())
-            .collect();
+        let mut mnemonics: Vec<String> = Vec::new();
+        let mut widths: Vec<Option<String>> = Vec::new();
+        for token in left.split_whitespace() {
+            let token = token.trim().to_lowercase();
+            if token.is_empty() {
+                continue;
+            }
+            match token.split_once('.') {
+                Some((name, width)) => {
+                    mnemonics.push(name.to_string());
+                    widths.push(Some(width.to_string()));
+                }
+                None => {
+                    mnemonics.push(token);
+                    widths.push(None);
+                }
+            }
+        }
         if mnemonics.is_empty() {
             return Err(PatternError::Empty);
         }
@@ -222,7 +240,7 @@ impl Pattern {
                 edges.push((a, b));
             }
         }
-        Ok(Pattern { mnemonics, edges })
+        Ok(Pattern { mnemonics, widths, edges })
     }
 
     /// External inputs the pattern needs: source slots no edge fills.
@@ -261,6 +279,22 @@ impl Pattern {
         for (index, mnemonic) in self.mnemonics.iter().enumerate() {
             let (sources, bank) = operand_arity(mnemonic).expect("checked at parse");
             let form = vector_form(mnemonic);
+            // An explicit width replaces the table's, but only where one width
+            // describes the whole instruction. A widening op reads one shape
+            // and writes another -- sxtl takes bytes and gives halfwords -- so
+            // a single arrangement cannot describe it and the table wins.
+            let widening = form
+                .map(|f| !f.sources.is_empty() && f.dest != f.sources[0])
+                .unwrap_or(false);
+            // A width observed in real code is enough on its own: `fsub.2s`
+            // is a vector subtract whether or not this table happens to list
+            // fsub, and rendering it scalar prices a different instruction.
+            let width = self
+                .widths
+                .get(index)
+                .cloned()
+                .flatten()
+                .filter(|_| !widening);
 
             // An accumulating instruction reads its destination as well as
             // writing it, so in a dependent chain the accumulator *is* the
@@ -282,7 +316,11 @@ impl Pattern {
             let feeders = incoming.get(&index).cloned().unwrap_or_default();
             let mut operands: Vec<String> = Vec::new();
             for slot in 0..sources {
-                let arrangement = form.map(|f| f.sources[slot.min(f.sources.len() - 1)]);
+                let arrangement = match (&width, form) {
+                    (Some(w), _) => Some(w.as_str()),
+                    (None, Some(f)) => Some(f.sources[slot.min(f.sources.len() - 1)]),
+                    (None, None) => None,
+                };
                 let register = if let Some(producer) = feeders.get(slot) {
                     *produced.get(producer).unwrap_or(&results.next_index(bank))
                 } else if slot == 0 && carry.is_some() && !accumulates {
@@ -296,7 +334,12 @@ impl Pattern {
             let mut text = String::from(mnemonic.as_str());
             text.push(' ');
             if let Some(register) = destination {
-                text.push_str(&format_register(bank, register, form.map(|f| f.dest)));
+                let dest_arrangement = match (&width, form) {
+                    (Some(w), _) => Some(w.as_str()),
+                    (None, Some(f)) => Some(f.dest),
+                    (None, None) => None,
+                };
+                text.push_str(&format_register(bank, register, dest_arrangement));
                 if sources > 0 {
                     text.push_str(", ");
                 }

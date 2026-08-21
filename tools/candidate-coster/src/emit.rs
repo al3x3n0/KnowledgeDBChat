@@ -186,3 +186,56 @@ mod tests {
         assert_eq!(line.matches(',').count(), 1, "fcmp reads two, writes none: {line}");
     }
 }
+
+#[cfg(test)]
+mod width_tests {
+    use super::*;
+    use crate::pattern::Pattern;
+
+    fn body(pattern: &str) -> Vec<String> {
+        let parsed = Pattern::parse(pattern).expect("should parse");
+        emit_sequence(&parsed, Mode::Dependent, 2, "t")
+            .text
+            .lines()
+            .filter(|l| l.trim_start().starts_with(|c: char| c.is_alphabetic()))
+            .map(|l| l.trim().to_string())
+            .collect()
+    }
+
+    #[test]
+    fn an_observed_width_is_used_rather_than_the_default() {
+        // Godot's geometry code runs .2s; costing it as .4s prices a program
+        // that was not run.
+        let lines = body("fcmgt.2s bit.8b | 0>1");
+
+        assert!(lines[0].contains(".2s"), "{lines:?}");
+        assert!(!lines[0].contains(".4s"), "{lines:?}");
+        assert!(lines[1].contains(".8b"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_width_makes_an_instruction_vector_even_without_a_table_entry() {
+        let lines = body("fsub.2s");
+
+        assert!(lines[0].starts_with("fsub v"), "{lines:?}");
+        assert!(lines[0].contains(".2s"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_widening_instruction_keeps_its_own_pair_of_shapes() {
+        // One arrangement cannot describe sxtl: it reads bytes and writes
+        // halfwords, so the table wins over whatever width was recorded.
+        let lines = body("sxtl.8h smlal.4s | 0>1");
+
+        assert!(lines[0].contains("v0.8h") && lines[0].contains(".8b"), "{lines:?}");
+        assert!(lines[1].contains("v1.4s") && lines[1].contains(".4h"), "{lines:?}");
+    }
+
+    #[test]
+    fn a_pattern_with_no_width_still_renders_scalar() {
+        let lines = body("fmul fadd | 0>1");
+
+        assert!(lines[0].starts_with("fmul s"), "{lines:?}");
+        assert!(!lines[0].contains('.'), "{lines:?}");
+    }
+}

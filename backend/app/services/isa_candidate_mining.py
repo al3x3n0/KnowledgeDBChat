@@ -126,6 +126,11 @@ class Instruction:
     uses: Tuple[str, ...]
     text: str
     is_memory: bool = False
+    # The destination's lane arrangement ("2s", "4s", "8b"), empty when scalar.
+    # Without it a candidate loses the width it ran at, and gets costed at
+    # whatever width the costing tool happens to default to -- Godot's geometry
+    # code is ".2s" and was being priced as ".4s".
+    arrangement: str = ""
 
 
 def parse_instruction(line: str, index: int = 0) -> Optional[Instruction]:
@@ -209,6 +214,12 @@ def parse_instruction(line: str, index: int = 0) -> Optional[Instruction]:
         if base and base not in defs:
             defs.append(base)
 
+    arrangement = ""
+    if operands:
+        shape = re.search(r"\.(\d+[bhsd])\b", operands[0])
+        if shape:
+            arrangement = shape.group(1)
+
     return Instruction(
         index=index,
         mnemonic=mnemonic,
@@ -216,6 +227,7 @@ def parse_instruction(line: str, index: int = 0) -> Optional[Instruction]:
         uses=tuple(dict.fromkeys(uses)),
         text=text,
         is_memory=is_load or is_store,
+        arrangement=arrangement,
     )
 
 
@@ -338,6 +350,17 @@ def external_operands(
     return inputs, outputs
 
 
+def _spelled(instruction: Instruction) -> str:
+    """The mnemonic with the width it ran at, when it has one.
+
+    `fcmgt.2s` and `fcmgt.4s` are different candidates: they cost differently
+    and a proposal has to say which one it means.
+    """
+    if instruction.arrangement:
+        return f"{instruction.mnemonic}.{instruction.arrangement}"
+    return instruction.mnemonic
+
+
 def pattern_key(nodes: FrozenSet[int], graph: DataFlowGraph) -> str:
     """A name for the *shape*, so the same shape counts wherever it appears.
 
@@ -348,7 +371,7 @@ def pattern_key(nodes: FrozenSet[int], graph: DataFlowGraph) -> str:
     """
     ordered = sorted(nodes)
     position = {node: i for i, node in enumerate(ordered)}
-    mnemonics = [graph.instructions[node].mnemonic for node in ordered]
+    mnemonics = [_spelled(graph.instructions[node]) for node in ordered]
     edges = sorted(
         f"{position[a]}>{position[b]}"
         for a, b in graph.edges
@@ -493,7 +516,7 @@ def mine_blocks(
                 entry = Candidate(
                     key=key,
                     mnemonics=tuple(
-                        graph.instructions[n].mnemonic for n in sorted(nodes)
+                        _spelled(graph.instructions[n]) for n in sorted(nodes)
                     ),
                     size=len(nodes),
                     inputs=len(inputs),

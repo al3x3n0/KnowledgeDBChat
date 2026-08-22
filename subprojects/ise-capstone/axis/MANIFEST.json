@@ -1,0 +1,38 @@
+{
+  "bundle": "smlalb",
+  "candidate": "sxtl + smlal -> SMLALB (widening multiply-accumulate from signed bytes)",
+  "provenance": {
+    "corpus": "KevinAI/pce/software INT8 multi-head attention (xnn_transformer_mha_i8 + softmax)",
+    "dynamic_occurrences": 1572864,
+    "bounded_saving_cycles_each": 5.0,
+    "cost_model": "llvm-mca, neoverse-n1",
+    "found_by": "isa_candidate_mining.find_fusion_candidates over a callgrind profile"
+  },
+  "tools": {
+    "axis": "7acc8be (working tree +2 modified)",
+    "z3": "4.16.0",
+    "smt_logic": "QF_BV"
+  },
+  "source_sha256": "a77aebcce08e323f45cf13fcd2afb09880f5f5c4d8654271173270192918d5cd",
+  "semantics_sha256": "0d023aae3bd95154e9043e4a11905b05d237fc7b5a34eaa378cc9f7b51a1a2ec",
+  "obligations": [
+    {
+      "file": "proof/lane_reference.smt2",
+      "expect": "unsat",
+      "claim": "the description means what it claims, lane by lane",
+      "sha256": "9d9f43ff9e7bc558b43af9f4c93a019d4c281c0a41004d5a3de8f53377e5030c"
+    },
+    {
+      "file": "proof/fusion_equivalence.smt2",
+      "expect": "unsat",
+      "claim": "the fused instruction equals the pair it replaces, for every input",
+      "sha256": "bcacf157eaea2ed701536c44b1c8c5f1c5743e7812e1fbb9488d26d7a14275ec"
+    },
+    {
+      "file": "proof/negative_control.smt2",
+      "expect": "sat",
+      "claim": "a wrongly-widened variant is caught, so the check is not vacuous",
+      "sha256": "4a5dd23434fb544ce7835e046d87ab7e5a5e45a43b6909bc37be1945599bcd76"
+    }
+  ]
+}

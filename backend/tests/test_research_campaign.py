@@ -290,3 +290,46 @@ async def test_advancing_all_skips_campaigns_that_are_not_active(db_session):
     advanced = {row["campaign"] for row in results}
     assert str(active.id) in advanced
     assert str(done.id) not in advanced
+
+
+def test_the_scheduler_is_told_to_advance_campaigns():
+    """A mechanism nothing calls on a timer is not an unattended programme."""
+    from app.core.celery import celery_app
+
+    schedule = celery_app.conf.beat_schedule
+    entry = schedule.get("advance-research-campaigns")
+
+    assert entry, "campaigns must be advanced on a timer to run unattended"
+    assert entry["task"] == "app.tasks.agent_job_tasks.advance_research_campaigns"
+
+
+@pytest.mark.asyncio
+async def test_a_tick_launches_the_job_and_leaves_it_ready_to_run(db_session):
+    """The campaign records the job; a worker still has to be told about it."""
+    campaign = await _campaign(db_session, items=[{"title": "only item"}])
+
+    steps = await campaigns.advance_all(db_session)
+    await db_session.commit()
+
+    launched = [s for s in steps if s.get("action") == "launched"]
+    assert len(launched) == 1
+    job = await db_session.get(AgentJob, UUID(launched[0]["launched_job"]))
+    assert job.status == "pending", "a launched job waits for a worker"
+    assert job.user_id == campaign.user_id
+
+
+@pytest.mark.asyncio
+async def test_a_tick_over_many_campaigns_launches_one_job_each(db_session):
+    """Cost per tick is bounded by how many campaigns are active, not by how
+    much work is on their backlogs."""
+    for index in range(3):
+        await _campaign(
+            db_session,
+            name=f"campaign {index}",
+            items=[{"title": "a"}, {"title": "b"}, {"title": "c"}],
+        )
+
+    steps = await campaigns.advance_all(db_session)
+
+    launched = [s for s in steps if s.get("action") == "launched"]
+    assert len(launched) == 3, "one job per campaign, not one per item"

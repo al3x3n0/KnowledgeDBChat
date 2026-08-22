@@ -141,6 +141,17 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.agent_job_tasks.check_stalled_agent_jobs",
         "schedule": crontab(minute="*/10"),
     },
+    # Advance research campaigns (every 5 minutes).
+    #
+    # A campaign is a line of enquiry across many jobs, and it keeps all its
+    # state in the database rather than in a process. Running one is therefore
+    # a matter of asking it to take a step often enough: five minutes is short
+    # against jobs that take tens of minutes, and each tick launches at most
+    # one job per campaign, so the cost is bounded by how many are active.
+    "advance-research-campaigns": {
+        "task": "app.tasks.agent_job_tasks.advance_research_campaigns",
+        "schedule": crontab(minute="*/5"),
+    },
     # Resume paused agent jobs (every 15 minutes)
     "resume-paused-agent-jobs": {
         "task": "app.tasks.agent_job_tasks.resume_paused_agent_jobs",

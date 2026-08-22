@@ -895,3 +895,56 @@ Provide a 2-3 sentence summary of what was accomplished."""
                 logger.error(f"Failed to generate summary for job {job_id}: {e}")
 
     asyncio.run(_generate_summary())
+
+
+@celery_app.task
+def advance_research_campaigns(limit: int = 25):
+    """Move every active campaign forward one step.
+
+    A campaign holds a line of enquiry across many jobs and keeps all its state
+    in the database, so running one is a matter of asking it to take a step
+    often enough. This is that asking. Nothing is held between calls, which is
+    why a restart costs only the time the machine was off.
+
+    Each step launches at most one job per campaign, so this tick's cost is
+    bounded by the number of active campaigns rather than by the size of their
+    backlogs.
+    """
+
+    async def _advance():
+        session_factory = create_celery_session()
+        async with session_factory() as db:
+            from app.services import research_campaign_service
+
+            steps = await research_campaign_service.advance_all(db, limit=limit)
+            await db.commit()
+
+            launched = [s for s in steps if s.get("action") == "launched"]
+            for step in launched:
+                job_id = step.get("launched_job")
+                campaign_id = step.get("campaign")
+                if not job_id:
+                    continue
+                # The campaign records the job; a worker still has to run it.
+                job = await db.get(AgentJob, UUID(str(job_id)))
+                if job is None:
+                    continue
+                execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                logger.info(f"Campaign {campaign_id} launched job {job_id}")
+
+            finished = [
+                s for s in steps if s.get("action") in ("completed", "exhausted")
+            ]
+            for step in finished:
+                logger.info(
+                    f"Campaign {step.get('campaign')} {step.get('action')} "
+                    f"after {step.get('jobs_launched')} jobs"
+                )
+            if steps:
+                logger.info(
+                    f"Advanced {len(steps)} campaign(s): "
+                    f"{len(launched)} launched, {len(finished)} finished"
+                )
+            return {"advanced": len(steps), "launched": len(launched)}
+
+    return asyncio.run(_advance())

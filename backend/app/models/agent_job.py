@@ -24,6 +24,7 @@ from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.models.mutable_json import NestedMutableDict, NestedMutableList
 
 
 class AgentJobStatus(str, enum.Enum):
@@ -118,14 +119,19 @@ class AgentJob(Base):
     max_iterations = Column(Integer, default=100)  # Maximum iterations before stopping
 
     # Execution log - stores the agent's thought process and actions
-    execution_log = Column(JSON, nullable=True)
+    # Mutable: every writer appends in place via add_log_entry, and a plain
+    # Column(JSON) does not notice, so the entries were never written.
+    execution_log = Column(NestedMutableList.as_mutable(JSON), nullable=True)
     # Structure: [
     #   {"iteration": 1, "phase": "planning", "thought": "...", "action": "...", "result": "...", "timestamp": "..."},
     #   ...
     # ]
 
     # Results and outputs
-    results = Column(JSON, nullable=True)  # Structured results
+    # Mutable: written by key, including nested (results['research'][...]).
+    results = Column(
+        NestedMutableDict.as_mutable(JSON), nullable=True
+    )  # Structured results
     # Example results for research job:
     # {
     #   "papers_found": 45,
@@ -135,7 +141,10 @@ class AgentJob(Base):
     #   "knowledge_graph_nodes_added": 150
     # }
 
-    output_artifacts = Column(JSON, nullable=True)  # References to created artifacts
+    # Mutable: appended in place by the runners.
+    output_artifacts = Column(
+        NestedMutableList.as_mutable(JSON), nullable=True
+    )  # References to created artifacts
     # Example: [
     #   {"type": "document", "id": "...", "title": "Research Synthesis"},
     #   {"type": "presentation", "id": "...", "title": "Research Summary"}

@@ -22,7 +22,7 @@ guessed and corrected one refusal at a time.
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple
 
 

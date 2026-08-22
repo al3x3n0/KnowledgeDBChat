@@ -940,6 +940,24 @@ async def cost_fusion_candidate(
             )
         }
     if not SAFE_PATTERN.match(spec):
+        # Raw assembly is the mistake worth naming: a run with no method
+        # reached for this tool correctly and then fed it the instructions the
+        # candidate was found in, three times, because "unsupported
+        # characters" describes the string rather than what belongs there.
+        looks_like_assembly = any(
+            marker in spec for marker in (",", "[", "\n", ";")
+        ) and any(register in spec for register in (" s", " d", " v", " x", " w"))
+        if looks_like_assembly:
+            return {
+                "error": (
+                    "This looks like assembly. What belongs here is the shape "
+                    "of a candidate as find_fusion_candidates spells it -- its "
+                    "`pattern` field, such as 'fsqrt fdiv | 0>1': mnemonics, "
+                    "then which result feeds which. Registers and operands are "
+                    "chosen when the sequence is rendered, and passing the "
+                    "ones it happened to use costs a different program."
+                )
+            }
         return {"error": f"pattern contains unsupported characters: {pattern!r}"}
     cpu = str(cpu or "").strip()
     if not cpu or not SAFE_MODEL_NAME.match(cpu):

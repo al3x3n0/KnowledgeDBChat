@@ -7204,8 +7204,50 @@ GOAL:
         # Per-job and fixed for the job's life, so this stays byte-stable.
         from app.services import agent_measurement_validity
 
+        contract_config = self._get_goal_contract_config(job)
+
+        # How the evidence this contract demands is actually obtained. A run
+        # given a goal and no method chooses its tools well and then gets the
+        # order and the hand-offs wrong: one called the miner before profiling
+        # anything and spent three attempts passing raw assembly where a mined
+        # pattern belongs. That is knowledge about the tools, and withholding
+        # it turns planning into a sequence of refusals.
+        from app.services import agent_evidence_map
+
+        required_types = list(
+            (contract_config.get("required_finding_type_counts") or {}).keys()
+        )
+        # A validity rule can demand evidence the counting requirements never
+        # name: `predictions_measured` is satisfied by record_measurement, and
+        # a chain built from the counts alone stops at record_prediction. A run
+        # given no method did exactly that -- everything else right, the
+        # prediction left unsettled.
+        validity_spec = contract_config.get("validity") or {}
+        if validity_spec.get("predictions_measured"):
+            required_types.append("prediction_settled")
+        if validity_spec.get("records_method"):
+            required_types.append("method_recorded")
+        chain_lines = agent_evidence_map.describe_chain(required_types)
+        if chain_lines:
+            base_prompt += (
+                "HOW THIS RUN'S REQUIRED EVIDENCE IS PRODUCED (in an order "
+                "that works):\n"
+                + "\n".join(f"- {line}" for line in chain_lines)
+                + "\nYou are not required to follow this and it is not the "
+                "whole method -- deciding what is worth measuring is yours. "
+                "It says only which tool yields which evidence, and what must "
+                "come first.\n\n"
+            )
+        missing_producers = agent_evidence_map.unobtainable(required_types)
+        if missing_producers:
+            base_prompt += (
+                "NOTE: no tool here produces "
+                + ", ".join(missing_producers)
+                + ", which this run's contract nonetheless requires.\n\n"
+            )
+
         validity_lines = agent_measurement_validity.describe(
-            self._get_goal_contract_config(job).get("validity")
+            contract_config.get("validity")
         )
         if validity_lines:
             base_prompt += (

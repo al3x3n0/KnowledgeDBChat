@@ -28,6 +28,19 @@ async def finalize_job(
     limited, limit_reason = job.is_resource_limited()
     contract_eval = executor._evaluate_goal_contract(job, state)
     state["goal_contract_last"] = contract_eval
+
+    # Attach this run's outcome to every method it carried. Methods were
+    # recorded and recalled and never scored, so one that misleads was recalled
+    # with the authority of one that works. Scoring must never fail the run:
+    # a job that did its work and could not be graded still did its work.
+    try:
+        from app.services import agent_method_standing_service
+
+        await agent_method_standing_service.record_outcomes_for_job(
+            db, job, state, contract_eval
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Failed to score methods for job {job.id}: {exc}")
     existing_status = str(job.status or "")
 
     if existing_status == AgentJobStatus.PAUSED.value:

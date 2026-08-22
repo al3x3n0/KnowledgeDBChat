@@ -4123,6 +4123,17 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                         "Where it stops working, and what would falsify it."
                     ),
                 },
+                "builds_on": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Names of methods recalled into this run that you "
+                        "actually followed. Saying so is what lets a method "
+                        "earn a track record: a method merely present in your "
+                        "context is weak evidence about this run, and one you "
+                        "name is strong."
+                    ),
+                },
             },
             "required": ["name", "procedure", "prevents", "derived_from"],
         },

@@ -40,6 +40,7 @@ from app.services import (
     agent_decision_parser,
     agent_execution_graph,
     agent_failure_diagnosis,
+    agent_method_record,
     agent_plan_normalization,
     agent_prompt_sections,
     agent_tool_scoring,
@@ -3125,12 +3126,70 @@ class AutonomousAgentExecutor:
                         else None
                     ),
                 )
+                # Methods are procedural knowledge meant to transfer; findings
+                # are about a subject already studied. Ranked together for one
+                # budget the findings win every time -- ten memories were
+                # injected into each recent job and not one was a method, so
+                # nothing recorded was ever reused or scored. Reserve room.
+                try:
+                    method_memories = (
+                        await agent_job_memory_service.get_relevant_memories_for_job(
+                            job,
+                            str(job.user_id),
+                            db,
+                            limit=3,
+                            memory_types_override=["pattern"],
+                        )
+                    )
+                    known = {str(m.id) for m in memories}
+                    for candidate in method_memories:
+                        if str(candidate.id) in known:
+                            continue
+                        if not agent_method_record.parse(str(candidate.content or "")):
+                            continue
+                        memories.append(candidate)
+                        known.add(str(candidate.id))
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.warning(f"Could not recall methods for job {job.id}: {exc}")
+
                 if memories:
                     state[
                         "memory_context"
                     ] = agent_job_memory_service.format_memories_for_job_context(
                         memories, include_metadata=True
                     )
+                    # A recalled method arrives with what became of the runs
+                    # that carried it before. Without that, one that keeps
+                    # preceding failure is recalled exactly as confidently as
+                    # one that keeps preceding work that held up.
+                    try:
+                        from app.services import agent_method_standing_service
+
+                        standing = await agent_method_standing_service.standing_for(
+                            db, [str(m.id) for m in memories]
+                        )
+                        lines = []
+                        for memory in memories:
+                            summary = standing.get(str(memory.id))
+                            if not summary or not summary.get("runs"):
+                                continue
+                            parsed = agent_method_record.parse(
+                                str(memory.content or "")
+                            )
+                            name = (parsed or {}).get("name") or str(memory.id)[:8]
+                            lines.append(
+                                f"- {name}: "
+                                f"{agent_method_standing_service.describe(summary)}"
+                            )
+                        if lines:
+                            state["memory_context"] += (
+                                "\n\nHOW THESE METHODS HAVE FARED (an association "
+                                "with what those runs did, not proof the method "
+                                "caused it):\n" + "\n".join(lines)
+                            )
+                            state["method_standing"] = standing
+                    except Exception as exc:  # pragma: no cover - defensive
+                        logger.warning(f"Could not attach method standing: {exc}")
                     state["injected_memories"] = [str(m.id) for m in memories]
                     state["injected_memory_payloads"] = [
                         {

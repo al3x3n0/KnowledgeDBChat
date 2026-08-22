@@ -3137,10 +3137,23 @@ class AutonomousAgentExecutor:
                             job,
                             str(job.user_id),
                             db,
-                            limit=3,
+                            limit=8,
                             memory_types_override=["pattern"],
                         )
                     )
+                    from app.services import agent_method_standing_service
+
+                    # More candidates than there is room for, then ordered by
+                    # what became of the runs that carried them -- but only
+                    # where that record is established. Below the threshold
+                    # relevance keeps its order, because sorting on one run
+                    # dresses noise as judgement.
+                    method_standing = await agent_method_standing_service.standing_for(
+                        db, [str(m.id) for m in method_memories]
+                    )
+                    method_memories = agent_method_standing_service.rank(
+                        method_memories, method_standing
+                    )[:3]
                     known = {str(m.id) for m in memories}
                     for candidate in method_memories:
                         if str(candidate.id) in known:
@@ -3177,9 +3190,11 @@ class AutonomousAgentExecutor:
                                 str(memory.content or "")
                             )
                             name = (parsed or {}).get("name") or str(memory.id)[:8]
+                            warning = agent_method_standing_service.caution(summary)
                             lines.append(
                                 f"- {name}: "
                                 f"{agent_method_standing_service.describe(summary)}"
+                                + (f" -- {warning}" if warning else "")
                             )
                         if lines:
                             state["memory_context"] += (

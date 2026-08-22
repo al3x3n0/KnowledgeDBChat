@@ -293,3 +293,88 @@ async def test_methods_are_recalled_alongside_ordinary_memories(db_session):
     assert any(
         agent_method_record.parse(str(m.content or "")) for m in recalled
     ), "a reserved method query must return the method"
+
+
+class _Memory:
+    def __init__(self, name):
+        self.id = uuid4()
+        self.name = name
+
+
+def _standing_of(memory, *, graded, satisfied):
+    return {
+        str(memory.id): standing.summarize(
+            [
+                _outcome(
+                    method_memory_id=memory.id,
+                    contract_enabled=True,
+                    contract_satisfied=index < satisfied,
+                )
+                for index in range(graded)
+            ]
+        )
+    }
+
+
+def test_an_established_record_orders_ahead_of_an_established_bad_one():
+    good, bad = _Memory("good"), _Memory("bad")
+    table = {}
+    table.update(_standing_of(good, graded=4, satisfied=4))
+    table.update(_standing_of(bad, graded=4, satisfied=0))
+
+    # Deliberately handed in the wrong order.
+    ordered = standing.rank([bad, good], table)
+
+    assert ordered[0] is good
+    assert ordered[-1] is bad
+
+
+def test_a_barely_used_method_keeps_the_order_relevance_gave_it():
+    """One run is not evidence, and sorting on it dresses noise as judgement."""
+    first, second = _Memory("first"), _Memory("second")
+    table = _standing_of(second, graded=1, satisfied=1)
+
+    assert standing.rank([first, second], table) == [first, second]
+
+
+def test_an_untried_method_is_not_pushed_behind_a_tried_one():
+    tried, untried = _Memory("tried"), _Memory("untried")
+    table = _standing_of(tried, graded=2, satisfied=2)
+
+    assert standing.rank([untried, tried], table) == [untried, tried]
+
+
+def test_a_poor_record_is_demoted_rather_than_dropped():
+    """Removing it would end its record there; it may have been the wrong
+    method or may have been handed hard problems."""
+    bad, plain = _Memory("bad"), _Memory("plain")
+    table = _standing_of(bad, graded=3, satisfied=0)
+
+    ordered = standing.rank([bad, plain], table)
+
+    assert bad in ordered, "a demoted method is still recalled"
+    assert ordered[-1] is bad
+
+
+def test_a_caution_is_raised_only_once_the_record_is_established():
+    assert (
+        standing.caution(standing.summarize([_outcome(contract_satisfied=False)])) == ""
+    )
+
+    poor = standing.summarize([_outcome(contract_satisfied=False) for _ in range(3)])
+    assert "none of the 3 runs" in standing.caution(poor)
+
+
+def test_a_good_record_raises_no_caution():
+    good = standing.summarize([_outcome(contract_satisfied=True) for _ in range(4)])
+
+    assert standing.caution(good) == ""
+
+
+def test_a_caution_says_what_happened_rather_than_passing_a_verdict():
+    mixed = standing.summarize([_outcome(contract_satisfied=i == 0) for i in range(4)])
+
+    line = standing.caution(mixed)
+
+    assert "1 of 4 runs" in line
+    assert "bad" not in line.lower() and "wrong" not in line.lower()

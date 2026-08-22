@@ -26,7 +26,7 @@ stays quiet until there are any.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Iterable, List, Mapping, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
@@ -235,3 +235,54 @@ async def standing_for(
     for row in rows:
         grouped.setdefault(str(row.method_memory_id), []).append(row)
     return {key: summarize(value) for key, value in grouped.items()}
+
+
+def rank(candidates: List[Any], standing: Mapping[str, Mapping[str, Any]]) -> List[Any]:
+    """Order recalled methods by what became of the runs that carried them.
+
+    Standing only ranks where standing means something. Below the threshold a
+    method keeps whatever order relevance gave it: a method used once is not
+    better or worse than an untried one, and sorting on a single run would
+    dress noise as judgement.
+
+    A method whose record is established and bad is moved to the back rather
+    than dropped. Removing it would end its record there, and a method that
+    preceded three failures may have been the wrong method or may have been
+    handed three hard problems -- demotion says which is suspected without
+    deciding it.
+    """
+
+    def key(candidate: Any) -> Tuple[int, float, int]:
+        summary = standing.get(str(getattr(candidate, "id", "")), {})
+        graded = int(summary.get("graded_runs", 0) or 0)
+        if graded < MIN_RUNS_FOR_A_RATE:
+            # Untried and barely-tried alike: leave them where they were.
+            return (1, 0.0, 0)
+        rate = float(summary.get("satisfied_rate", 0.0) or 0.0)
+        # Established and good first, established and bad last, the rest in
+        # between where relevance put them.
+        band = 0 if rate > 0.5 else 2
+        return (band, -rate, -graded)
+
+    return sorted(candidates, key=key)
+
+
+def caution(summary: Mapping[str, Any]) -> str:
+    """A warning to travel with a method whose record is established and poor.
+
+    Said as what happened rather than as a verdict: the runs that carried this
+    did not meet their contracts, which is a reason to look at it and not proof
+    that it is why they failed.
+    """
+    graded = int(summary.get("graded_runs", 0) or 0)
+    if graded < MIN_RUNS_FOR_A_RATE:
+        return ""
+    satisfied = int(summary.get("contracts_satisfied", 0) or 0)
+    if satisfied == 0:
+        return (
+            f"none of the {graded} runs carrying this met their contract -- "
+            "worth checking before following it again"
+        )
+    if satisfied / graded <= 0.5:
+        return f"only {satisfied} of {graded} runs carrying this met their contract"
+    return ""

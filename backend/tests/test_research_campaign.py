@@ -1,0 +1,292 @@
+"""A line of enquiry that survives the process running it.
+
+Job chaining fires children at completion and then nobody is watching, and a
+restart ends the sequence silently. A campaign holds the sequence instead, and
+is advanced a step at a time so that all the state that matters lives in the
+database rather than in a running program.
+
+Idempotence is the property under test throughout: calling a step twice must
+not do the work twice, because the caller is a scheduler and schedulers repeat.
+"""
+
+from __future__ import annotations
+
+from uuid import UUID, uuid4
+
+import pytest
+
+from app.models.agent_job import AgentJob
+from app.models.research_campaign import CampaignItemStatus, CampaignStatus
+from app.services import research_campaign_service as campaigns
+
+
+async def _campaign(db, **overrides):
+    kwargs = dict(
+        user_id=uuid4(),
+        name="fusion study",
+        goal="find an instruction worth proposing",
+        items=[{"title": "profile the kernel"}, {"title": "cost the top candidate"}],
+        max_jobs=5,
+    )
+    kwargs.update(overrides)
+    campaign = await campaigns.create_campaign(db, **kwargs)
+    await db.commit()
+    return campaign
+
+
+async def _finish(db, job_id, *, status="completed", results=None):
+    # advance() reports ids as strings; the column is a UUID.
+    job = await db.get(AgentJob, UUID(str(job_id)))
+    job.status = status
+    job.results = (
+        results if results is not None else {"goal_contract": {"satisfied": True}}
+    )
+    await db.commit()
+    return job
+
+
+@pytest.mark.asyncio
+async def test_a_campaign_needs_a_goal(db_session):
+    with pytest.raises(ValueError) as excinfo:
+        await campaigns.create_campaign(
+            db_session, user_id=uuid4(), name="nameless", goal="  "
+        )
+
+    assert "goal" in str(excinfo.value)
+
+
+@pytest.mark.asyncio
+async def test_a_step_launches_one_item(db_session):
+    campaign = await _campaign(db_session)
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["action"] == "launched"
+    assert step["launched_job"]
+    assert step["running"] == 1
+    assert step["pending"] == 1, "the other item waits its turn"
+
+
+@pytest.mark.asyncio
+async def test_a_second_step_does_not_relaunch_the_same_item(db_session):
+    """The caller is a scheduler, and schedulers repeat."""
+    campaign = await _campaign(db_session)
+    await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+
+    second = await campaigns.advance(db_session, campaign)
+
+    assert second["launched_job"] is None
+    assert second["action"] == "waiting"
+    assert campaign.jobs_launched == 1
+
+
+@pytest.mark.asyncio
+async def test_a_finished_job_settles_its_item_and_frees_the_next(db_session):
+    campaign = await _campaign(db_session)
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(db_session, launched["launched_job"])
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["settled"] == 1
+    assert step["action"] == "launched", "the next item starts once the first settles"
+    items = await campaigns._items(db_session, campaign)
+    assert any(i.status == CampaignItemStatus.DONE for i in items)
+
+
+@pytest.mark.asyncio
+async def test_a_failed_job_marks_its_item_failed_without_stopping_the_campaign(
+    db_session,
+):
+    campaign = await _campaign(db_session)
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(db_session, launched["launched_job"], status="failed")
+
+    step = await campaigns.advance(db_session, campaign)
+
+    items = await campaigns._items(db_session, campaign)
+    assert any(i.status == CampaignItemStatus.FAILED for i in items)
+    assert step["action"] == "launched", "one failure does not end the enquiry"
+
+
+@pytest.mark.asyncio
+async def test_a_campaign_completes_when_the_work_runs_out(db_session):
+    campaign = await _campaign(db_session, items=[{"title": "only item"}])
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(db_session, launched["launched_job"])
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["action"] == "completed"
+    assert campaign.status == CampaignStatus.COMPLETED
+    assert campaign.completed_at is not None
+
+
+@pytest.mark.asyncio
+async def test_running_out_of_budget_is_not_the_same_as_finishing(db_session):
+    """A campaign that stopped early looks exactly like one that finished
+    unless someone writes down which it was."""
+    campaign = await _campaign(
+        db_session, items=[{"title": "a"}, {"title": "b"}], max_jobs=1
+    )
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(db_session, launched["launched_job"])
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["action"] == "exhausted"
+    assert campaign.status == CampaignStatus.EXHAUSTED
+
+
+@pytest.mark.asyncio
+async def test_findings_can_become_further_work(db_session):
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "profile the kernel"}],
+        job_template={"spawn_items_from": ["fusion_candidate"]},
+    )
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(
+        db_session,
+        launched["launched_job"],
+        results={
+            "goal_contract": {"satisfied": True},
+            "findings": [
+                {"type": "fusion_candidate", "title": "fcmgt.2s + bit.8b"},
+                {"type": "fusion_candidate", "title": "sxtl.8h + smlal.4s"},
+                {"type": "document", "title": "an unrelated document"},
+            ],
+        },
+    )
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["discovered"] == 2
+    items = await campaigns._items(db_session, campaign)
+    discovered = [i for i in items if i.origin == "discovered"]
+    assert {i.title for i in discovered} == {"fcmgt.2s + bit.8b", "sxtl.8h + smlal.4s"}
+    assert all(i.origin == "seed" or i.origin == "discovered" for i in items)
+
+
+@pytest.mark.asyncio
+async def test_findings_of_other_types_do_not_become_work(db_session):
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "one"}],
+        job_template={"spawn_items_from": ["fusion_candidate"]},
+    )
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(
+        db_session,
+        launched["launched_job"],
+        results={"findings": [{"type": "document", "title": "a document"}]},
+    )
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["discovered"] == 0
+
+
+@pytest.mark.asyncio
+async def test_the_same_finding_twice_makes_one_item(db_session):
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "one"}],
+        job_template={"spawn_items_from": ["fusion_candidate"]},
+    )
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(
+        db_session,
+        launched["launched_job"],
+        results={
+            "findings": [
+                {"type": "fusion_candidate", "title": "same shape"},
+                {"type": "fusion_candidate", "title": "same shape"},
+            ]
+        },
+    )
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["discovered"] == 1
+
+
+@pytest.mark.asyncio
+async def test_a_job_that_vanished_does_not_strand_its_item(db_session):
+    campaign = await _campaign(db_session, items=[{"title": "one"}])
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    job = await db_session.get(AgentJob, UUID(launched["launched_job"]))
+    await db_session.delete(job)
+    await db_session.commit()
+
+    await campaigns.advance(db_session, campaign)
+
+    items = await campaigns._items(db_session, campaign)
+    assert items[0].status == CampaignItemStatus.FAILED
+    assert "no longer exists" in items[0].outcome["error"]
+
+
+@pytest.mark.asyncio
+async def test_the_job_carries_the_campaign_goal_and_its_own_part(db_session):
+    campaign = await _campaign(
+        db_session, items=[{"title": "cost it", "detail": "at n1"}]
+    )
+    launched = await campaigns.advance(db_session, campaign)
+
+    job = await db_session.get(AgentJob, UUID(launched["launched_job"]))
+
+    assert campaign.goal in job.goal
+    assert "cost it" in job.goal
+    assert "at n1" in job.goal
+    assert job.config["campaign_id"] == str(campaign.id)
+
+
+@pytest.mark.asyncio
+async def test_a_finished_campaign_is_left_alone(db_session):
+    campaign = await _campaign(db_session, items=[{"title": "one"}])
+    campaign.status = CampaignStatus.CANCELLED
+    await db_session.commit()
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["action"] == "none"
+    assert campaign.jobs_launched == 0
+
+
+@pytest.mark.asyncio
+async def test_a_summary_says_what_the_campaign_has_done(db_session):
+    campaign = await _campaign(db_session)
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(db_session, launched["launched_job"])
+    await campaigns.advance(db_session, campaign)
+
+    summary = await campaigns.summarize(db_session, campaign)
+
+    assert summary["items"] == 2
+    assert summary["by_status"][CampaignItemStatus.DONE] == 1
+    assert summary["items_meeting_contract"] == 1
+    assert summary["budget"] == 5
+
+
+@pytest.mark.asyncio
+async def test_advancing_all_skips_campaigns_that_are_not_active(db_session):
+    active = await _campaign(db_session, name="active one")
+    done = await _campaign(db_session, name="finished one")
+    done.status = CampaignStatus.COMPLETED
+    await db_session.commit()
+
+    results = await campaigns.advance_all(db_session)
+
+    advanced = {row["campaign"] for row in results}
+    assert str(active.id) in advanced
+    assert str(done.id) not in advanced

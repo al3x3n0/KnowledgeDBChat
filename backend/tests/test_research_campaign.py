@@ -333,3 +333,201 @@ async def test_a_tick_over_many_campaigns_launches_one_job_each(db_session):
 
     launched = [s for s in steps if s.get("action") == "launched"]
     assert len(launched) == 3, "one job per campaign, not one per item"
+
+
+# --- judgement: which item to do next, and which line to stop -----------------
+
+
+@pytest.mark.asyncio
+async def test_discovered_work_records_where_it_came_from(db_session):
+    """Without lineage a cold line cannot be told from a cold item."""
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "profile the kernel"}],
+        job_template={"spawn_items_from": ["fusion_candidate"]},
+    )
+    launched = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(
+        db_session,
+        launched["launched_job"],
+        results={"findings": [{"type": "fusion_candidate", "title": "fcmgt + bit"}]},
+    )
+
+    await campaigns.advance(db_session, campaign)
+
+    items = await campaigns._items(db_session, campaign)
+    parent = next(i for i in items if i.origin == "seed")
+    child = next(i for i in items if i.origin == "discovered")
+    assert child.parent_item_id == parent.id
+    assert child.generation == 1
+    assert parent.generation == 0
+
+
+@pytest.mark.asyncio
+async def test_the_campaign_prefers_work_from_a_job_that_produced_something(db_session):
+    """The point of judgement: not the oldest item, the better one."""
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "a stale seed"}, {"title": "profile the kernel"}],
+        job_template={"spawn_items_from": ["fusion_candidate"]},
+        max_jobs=9,
+    )
+    # Run the second seed, not the first, by finishing whatever launches and
+    # letting the discovered item compete with the remaining seed.
+    first = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(
+        db_session,
+        first["launched_job"],
+        results={
+            "goal_contract": {"satisfied": True},
+            "findings": [{"type": "fusion_candidate", "title": "a real candidate"}],
+        },
+    )
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["chose"]["title"] == "a real candidate", step["chose"]
+    assert "met its contract" in step["chose"]["why"]
+
+
+@pytest.mark.asyncio
+async def test_a_line_that_twice_produced_nothing_is_abandoned(db_session):
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "root"}],
+        job_template={
+            "spawn_items_from": ["fusion_candidate"],
+            "target_finding_types": ["codegen_measurement"],
+        },
+        max_jobs=9,
+    )
+    barren = {
+        "goal_contract": {"satisfied": False},
+        "findings": [{"type": "fusion_candidate", "title": "offshoot"}],
+    }
+    step = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(db_session, step["launched_job"], results=barren)
+
+    # The offshoot runs and is equally barren, spawning one of its own.
+    step = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(
+        db_session,
+        step["launched_job"],
+        results={
+            "goal_contract": {"satisfied": False},
+            "findings": [{"type": "fusion_candidate", "title": "grand offshoot"}],
+        },
+    )
+
+    step = await campaigns.advance(db_session, campaign)
+
+    items = await campaigns._items(db_session, campaign)
+    dropped = [i for i in items if i.status == CampaignItemStatus.DROPPED]
+    assert [i.title for i in dropped] == ["grand offshoot"]
+    assert "line abandoned" in dropped[0].priority_reason
+
+
+@pytest.mark.asyncio
+async def test_a_campaign_that_never_said_what_it_wanted_abandons_nothing(db_session):
+    """Undeclared targets is how a campaign opts out of giving up."""
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "root"}],
+        job_template={"spawn_items_from": ["fusion_candidate"]},
+        max_jobs=9,
+    )
+    barren = {
+        "goal_contract": {"satisfied": False},
+        "findings": [{"type": "fusion_candidate", "title": "offshoot"}],
+    }
+    for _ in range(2):
+        step = await campaigns.advance(db_session, campaign)
+        await db_session.commit()
+        await _finish(db_session, step["launched_job"], results=barren)
+    await campaigns.advance(db_session, campaign)
+
+    items = await campaigns._items(db_session, campaign)
+    assert not [i for i in items if i.status == CampaignItemStatus.DROPPED]
+
+
+@pytest.mark.asyncio
+async def test_a_seed_is_never_abandoned_however_bad_the_record(db_session):
+    """A cold line may be cold because the questions were hard."""
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "seed one"}, {"title": "seed two"}],
+        job_template={"target_finding_types": ["codegen_measurement"]},
+        max_jobs=9,
+    )
+    step = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(
+        db_session,
+        step["launched_job"],
+        results={"goal_contract": {"satisfied": False}},
+    )
+
+    await campaigns.advance(db_session, campaign)
+
+    items = await campaigns._items(db_session, campaign)
+    assert not [i for i in items if i.status == CampaignItemStatus.DROPPED]
+
+
+@pytest.mark.asyncio
+async def test_dropping_the_last_work_completes_rather_than_hangs(db_session):
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "root"}],
+        job_template={
+            "spawn_items_from": ["fusion_candidate"],
+            "target_finding_types": ["codegen_measurement"],
+        },
+        max_jobs=9,
+    )
+    barren = {
+        "goal_contract": {"satisfied": False},
+        "findings": [{"type": "fusion_candidate", "title": "offshoot"}],
+    }
+    step = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(db_session, step["launched_job"], results=barren)
+    step = await campaigns.advance(db_session, campaign)
+    await db_session.commit()
+    await _finish(
+        db_session,
+        step["launched_job"],
+        results={"goal_contract": {"satisfied": False}, "findings": []},
+    )
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["action"] == "completed"
+
+
+@pytest.mark.asyncio
+async def test_the_launch_records_what_it_thought_and_why(db_session):
+    campaign = await _campaign(db_session, items=[{"title": "only item"}])
+
+    await campaigns.advance(db_session, campaign)
+
+    item = (await campaigns._items(db_session, campaign))[0]
+    assert item.priority is not None
+    assert item.priority_reason
+    assert item.launched_at is not None
+
+
+@pytest.mark.asyncio
+async def test_a_summary_shows_what_it_would_do_next_and_why(db_session):
+    """An operator should be able to disagree before a job is spent."""
+    campaign = await _campaign(db_session)
+
+    summary = await campaigns.summarize(db_session, campaign)
+
+    assert len(summary["next_up"]) == 2
+    assert all(
+        row["why"] is None or isinstance(row["why"], str) for row in summary["next_up"]
+    )

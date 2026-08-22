@@ -28,6 +28,7 @@ from sqlalchemy import (
     JSON,
     Column,
     DateTime,
+    Float,
     ForeignKey,
     Index,
     Integer,
@@ -114,10 +115,23 @@ class ResearchCampaignItem(Base):
     # chased its own tail is visible as one.
     origin = Column(String(40), default="seed", nullable=False)
 
+    # Which item's job revealed this one, and how far from the seed list it
+    # is. Without these a cold *line* cannot be told from a single cold item,
+    # and the tenth speculative offshoot looks like the first.
+    parent_item_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    generation = Column(Integer, default=0, nullable=False)
+
     # Not a foreign key: the job may be deleted, and losing the record that
     # this item was worked on would be the wrong repair.
     job_id = Column(UUID(as_uuid=True), nullable=True, index=True)
+    launched_at = Column(DateTime, nullable=True)
     outcome = Column(JSON, nullable=True)
+
+    # What the campaign thought of this item when it last looked, and why. Kept
+    # so that a choice can be read afterwards and argued with, rather than only
+    # observed.
+    priority = Column(Float, nullable=True)
+    priority_reason = Column(String(400), nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

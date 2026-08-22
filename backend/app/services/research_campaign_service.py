@@ -39,6 +39,7 @@ from app.models.research_campaign import (
     ResearchCampaign,
     ResearchCampaignItem,
 )
+from app.services import agent_campaign_priority as priority
 
 TERMINAL_JOB_STATUSES = {"completed", "failed", "cancelled", "stopped"}
 DEFAULT_MAX_JOBS = 10
@@ -161,7 +162,7 @@ async def _reconcile(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, 
         settled += 1
 
         if spawn_from:
-            discovered += await _spawn_items(db, campaign, findings, spawn_from)
+            discovered += await _spawn_items(db, campaign, findings, spawn_from, item)
 
     return {"settled": settled, "discovered": discovered}
 
@@ -179,6 +180,7 @@ async def _spawn_items(
     campaign: ResearchCampaign,
     findings: Sequence[Mapping[str, Any]],
     spawn_from: set,
+    parent: Optional[ResearchCampaignItem] = None,
 ) -> int:
     """Turn findings of the named types into further work, within a limit."""
     existing = {item.title for item in await _items(db, campaign)}
@@ -198,6 +200,10 @@ async def _spawn_items(
                 detail=str(finding.get("content") or finding.get("example") or "")
                 or None,
                 origin="discovered",
+                # Where this came from, so a line can be followed back and a
+                # run of unproductive ancestors can be recognised as one.
+                parent_item_id=parent.id if parent is not None else None,
+                generation=(int(parent.generation or 0) + 1) if parent else 1,
             )
         )
         existing.add(title)
@@ -208,7 +214,10 @@ async def _spawn_items(
 
 
 async def _launch(
-    db: AsyncSession, campaign: ResearchCampaign, item: ResearchCampaignItem
+    db: AsyncSession,
+    campaign: ResearchCampaign,
+    item: ResearchCampaignItem,
+    chose: Optional[Mapping[str, Any]] = None,
 ) -> AgentJob:
     """Create the job for one item, and mark the item running with it."""
     template = campaign.job_template if isinstance(campaign.job_template, dict) else {}
@@ -238,9 +247,124 @@ async def _launch(
     # recording it would launch the same item again on the next call.
     item.status = CampaignItemStatus.RUNNING
     item.job_id = job.id
+    item.launched_at = datetime.utcnow()
+    if chose:
+        item.priority = float(chose.get("score") or 0.0)
+        item.priority_reason = str(chose.get("reason") or "")[:400]
     campaign.jobs_launched = int(campaign.jobs_launched or 0) + 1
     await db.flush()
     return job
+
+
+def _target_types(campaign: ResearchCampaign) -> List[str]:
+    """The finding types this campaign counts as a result.
+
+    Deliberately *not* defaulted to `spawn_items_from`. Those answer different
+    questions -- what is worth looking into next, versus what would count as
+    having found something -- and conflating them makes abandonment impossible:
+    any parent that spawned a child produced findings of exactly the spawn
+    types, so no line could ever read as cold.
+
+    Leaving it undeclared is therefore how a campaign opts out of having its
+    lines abandoned, which is the right default. A campaign that never said
+    what it was looking for has not earned the right to give up on anything.
+    """
+    template = campaign.job_template if isinstance(campaign.job_template, dict) else {}
+    declared = template.get("target_finding_types")
+    if isinstance(declared, (list, tuple)):
+        return [str(x) for x in declared]
+    return []
+
+
+def _view(
+    item: ResearchCampaignItem, by_id: Mapping[str, ResearchCampaignItem]
+) -> Dict[str, Any]:
+    """What the scorer is allowed to see about one pending item."""
+    parent = by_id.get(str(item.parent_item_id)) if item.parent_item_id else None
+    siblings = 0
+    if parent is not None:
+        siblings = sum(
+            1
+            for other in by_id.values()
+            if str(other.parent_item_id or "") == str(parent.id)
+            and other.id != item.id
+            and other.job_id is not None
+        )
+    return {
+        "origin": item.origin,
+        "generation": int(item.generation or 0),
+        "parent_outcome": parent.outcome if parent is not None else None,
+        "siblings_launched": siblings,
+    }
+
+
+def _ancestry(
+    item: ResearchCampaignItem, by_id: Mapping[str, ResearchCampaignItem]
+) -> List[Optional[Dict[str, Any]]]:
+    """Outcomes of this item's ancestors, nearest first."""
+    chain: List[Optional[Dict[str, Any]]] = []
+    seen = {str(item.id)}
+    current = by_id.get(str(item.parent_item_id)) if item.parent_item_id else None
+    while current is not None and str(current.id) not in seen:
+        seen.add(str(current.id))
+        chain.append(current.outcome if isinstance(current.outcome, dict) else None)
+        current = (
+            by_id.get(str(current.parent_item_id)) if current.parent_item_id else None
+        )
+    return chain
+
+
+def _recent_origins(items: Sequence[ResearchCampaignItem]) -> List[str]:
+    """Origins of items in the order their jobs actually started.
+
+    Launch order, not creation order: an item spawned early may run late, and
+    the guard against a campaign chasing its own tail cares what ran.
+    """
+    launched = [item for item in items if item.launched_at is not None]
+    launched.sort(key=lambda item: item.launched_at)
+    return [str(item.origin or "seed") for item in launched]
+
+
+async def _triage(
+    db: AsyncSession,
+    campaign: ResearchCampaign,
+    items: Sequence[ResearchCampaignItem],
+) -> Dict[str, Any]:
+    """Score every pending item, and abandon the ones on lines gone cold.
+
+    Both are written down: the score so a choice can be read afterwards, the
+    drop with the reason for it, because a campaign that quietly stops doing
+    something looks the same as one that finished it.
+    """
+    targets = _target_types(campaign)
+    by_id = {str(item.id): item for item in items}
+    dropped = 0
+
+    for item in items:
+        if item.status != CampaignItemStatus.PENDING:
+            continue
+        # Seeds are never dropped, whatever their line's record: they are what
+        # a person actually asked for, and a cold line may be cold because the
+        # questions were hard rather than wrong.
+        if item.origin == "discovered" and priority.is_cold(
+            _ancestry(item, by_id), targets
+        ):
+            item.status = CampaignItemStatus.DROPPED
+            item.priority_reason = (
+                f"line abandoned: {priority.COLD_RUN_LIMIT} consecutive ancestors "
+                "settled without meeting a contract or finding anything wanted"
+            )
+            item.outcome = {"dropped": True, "reason": item.priority_reason}
+            dropped += 1
+            continue
+
+        value, reason = priority.score(_view(item, by_id), targets)
+        item.priority = value
+        item.priority_reason = reason[:400]
+
+    if dropped:
+        await db.flush()
+    return {"dropped": dropped, "targets": targets, "by_id": by_id}
 
 
 async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any]:
@@ -258,11 +382,15 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
 
     reconciled = await _reconcile(db, campaign)
 
-    running = await _items(db, campaign, CampaignItemStatus.RUNNING)
-    pending = await _items(db, campaign, CampaignItemStatus.PENDING)
+    all_items = await _items(db, campaign)
+    triage = await _triage(db, campaign, all_items)
+
+    running = [i for i in all_items if i.status == CampaignItemStatus.RUNNING]
+    pending = [i for i in all_items if i.status == CampaignItemStatus.PENDING]
 
     action = "waiting"
     launched_job: Optional[AgentJob] = None
+    chose: Optional[Dict[str, Any]] = None
 
     if running:
         # Nothing starts while something is running. The reason to have a
@@ -271,7 +399,12 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
         # have been informed by it.
         action = "waiting"
     elif pending and int(campaign.jobs_launched or 0) < int(campaign.max_jobs or 0):
-        launched_job = await _launch(db, campaign, pending[0])
+        chose = priority.choose(
+            [_view(item, triage["by_id"]) for item in pending],
+            target_types=triage["targets"],
+            recent_origins=_recent_origins(all_items),
+        )
+        launched_job = await _launch(db, campaign, pending[chose["index"]], chose)
         action = "launched"
     elif not pending:
         campaign.status = CampaignStatus.COMPLETED
@@ -294,7 +427,17 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
         "status": campaign.status,
         "settled": reconciled["settled"],
         "discovered": reconciled["discovered"],
+        "dropped": triage["dropped"],
         "launched_job": str(launched_job.id) if launched_job else None,
+        "chose": (
+            {
+                "title": pending[chose["index"]].title,
+                "score": chose["score"],
+                "why": chose["reason"],
+            }
+            if chose
+            else None
+        ),
         "pending": len(pending) - (1 if launched_job else 0),
         "running": len(running) + (1 if launched_job else 0),
         "jobs_launched": int(campaign.jobs_launched or 0),
@@ -325,6 +468,25 @@ async def summarize(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, A
         "jobs_launched": int(campaign.jobs_launched or 0),
         "budget": int(campaign.max_jobs or 0),
         "items_meeting_contract": len(with_contract),
+        "dropped_items": sum(
+            1 for item in items if item.status == CampaignItemStatus.DROPPED
+        ),
+        "max_generation": max((int(i.generation or 0) for i in items), default=0),
+        # What it would do next, in the order it would do it. An operator
+        # should be able to disagree with a campaign before it spends a job.
+        "next_up": [
+            {
+                "title": item.title,
+                "origin": item.origin,
+                "generation": int(item.generation or 0),
+                "priority": item.priority,
+                "why": item.priority_reason,
+            }
+            for item in sorted(
+                (i for i in items if i.status == CampaignItemStatus.PENDING),
+                key=lambda i: (-(i.priority or 0.0), i.created_at),
+            )[:5]
+        ],
     }
 
 

@@ -36,7 +36,7 @@ NULL_CONTROL_BAND = 0.05
 
 UNROLL = 16
 ITERATIONS = 100_000
-ROUNDS = 11
+ROUNDS = 31
 
 _BLOCK = """    clock_gettime(CLOCK_MONOTONIC, &t0);
     for (long i = 0; i < {iters}; i++) {{
@@ -50,20 +50,46 @@ _BLOCK = """    clock_gettime(CLOCK_MONOTONIC, &t0);
 
 
 def _null_control_source() -> str:
+    """Two identical chains, timed adjacently, ratio taken per round.
+
+    Three statistics were tried on this host and only the third is usable.
+    Pooling the totals reads 0.53 because whichever block runs first is about
+    twice as slow. ABBA ordering, which cancels *linear* drift, made it worse
+    and more variable (0.61 to 1.16), so the disturbance is not a trend across
+    the round -- it is bursty, and a sum lets one disturbed block dominate.
+
+    The median of per-round ratios is robust to exactly that: a round that was
+    preempted is one sample out of many rather than a term in a total. It is
+    also the statistic to distrust least on a machine that cannot be made
+    quiet, which is the situation here.
+
+    Deliberately not the minimum ratio: that prefers whichever round had the
+    slowest *anchor*, which is a bias rather than a cleaner sample.
+    """
     body = "\n".join(['            "add %[x], %[x], #1\\n\\t"'] * UNROLL)
-    first = _BLOCK.format(iters=ITERATIONS, body=body, reg="a", acc="first")
-    second = _BLOCK.format(iters=ITERATIONS, body=body, reg="b", acc="second")
+    a = _BLOCK.format(iters=ITERATIONS, body=body, reg="a", acc="ta")
+    b = _BLOCK.format(iters=ITERATIONS, body=body, reg="b", acc="tb")
     return f"""
 #include <stdio.h>
+#include <stdlib.h>
 #include <time.h>
+
+static int cmp(const void *x, const void *y) {{
+    double a = *(const double *)x, b = *(const double *)y;
+    return (a > b) - (a < b);
+}}
+
 int main(void) {{
     register long a asm("x9") = 1;
     register long b asm("x10") = 1;
     struct timespec t0, t1;
-    double first = 0, second = 0;
+    double ratios[{ROUNDS}];
     for (int r = 0; r < {ROUNDS}; r++) {{
-{first}{second}    }}
-    printf("ratio=%.6f\\n", second / first);
+        double ta = 0, tb = 0;
+{a}{b}        ratios[r] = tb / ta;
+    }}
+    qsort(ratios, {ROUNDS}, sizeof(double), cmp);
+    printf("ratio=%.6f\\n", ratios[{ROUNDS} / 2]);
     return 0;
 }}
 """
@@ -87,6 +113,88 @@ def null_control() -> Tuple[float, bool]:
         ).stdout
     ratio = float(output.strip().split("=", 1)[1])
     return ratio, abs(ratio - 1.0) <= NULL_CONTROL_BAND
+
+
+def _scale_control_source() -> str:
+    """A control whose answer is a known ratio that is NOT one.
+
+    The null control compares two identical chains, and a disturbance that hits
+    both sides equally cancels -- which is why it can read a clean 1.000 on a
+    host that still cannot measure. This one gives the target twice the
+    dependent work and counts the same number of operations, so it must read
+    2.000, and a disturbance no longer cancels.
+
+    It catches what the null control cannot. Measured on this host after the
+    compose stack was stopped: null control 1.0000 four times running, while
+    this read 2.5048 and then 2.0035 -- a 25% error on a chain whose answer is
+    known exactly.
+    """
+    anchor = "\n".join(['            "add %[x], %[x], #1\\n\\t"'] * UNROLL)
+    target = "\n".join(['            "add %[y], %[y], #1\\n\\t"'] * (2 * UNROLL))
+    return f"""
+#include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+
+static int cmp(const void *x, const void *y) {{
+    double a = *(const double *)x, b = *(const double *)y;
+    return (a > b) - (a < b);
+}}
+
+int main(void) {{
+    register long a asm("x9") = 1;
+    register long b asm("x10") = 1;
+    struct timespec t0, t1;
+    double ratios[{ROUNDS}];
+    for (int r = 0; r < {ROUNDS}; r++) {{
+        double ta, tb;
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (long i = 0; i < {ITERATIONS}; i++) {{
+            asm volatile(
+{anchor}
+                : [x] "+r"(a));
+        }}
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        ta = (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
+        clock_gettime(CLOCK_MONOTONIC, &t0);
+        for (long i = 0; i < {ITERATIONS}; i++) {{
+            asm volatile(
+{target}
+                : [y] "+r"(b));
+        }}
+        clock_gettime(CLOCK_MONOTONIC, &t1);
+        tb = (t1.tv_sec - t0.tv_sec) * 1e9 + (t1.tv_nsec - t0.tv_nsec);
+        ratios[r] = (tb / (double){UNROLL}) / (ta / (double){UNROLL});
+    }}
+    qsort(ratios, {ROUNDS}, sizeof(double), cmp);
+    printf("ratio=%.6f\\n", ratios[{ROUNDS} / 2]);
+    return 0;
+}}
+"""
+
+
+def scale_control(repeats: int = 3) -> Tuple[float, bool]:
+    """Time a chain of known ratio 2.0, `repeats` times. Returns (worst, usable).
+
+    Repeated because a single pass has been seen to land on 2.00 and on 2.50 on
+    the same host minutes apart. One good reading is not evidence that the next
+    one will be.
+    """
+    worst = 2.0
+    for _ in range(max(1, repeats)):
+        with tempfile.TemporaryDirectory() as work:
+            source = os.path.join(work, "scale.c")
+            binary = os.path.join(work, "scale")
+            with open(source, "w", encoding="utf-8") as handle:
+                handle.write(_scale_control_source())
+            subprocess.run(["clang", "-O2", "-o", binary, source], check=True)
+            out = subprocess.run(
+                [binary], capture_output=True, text=True, check=True
+            ).stdout
+        ratio = float(out.strip().split("=", 1)[1])
+        if abs(ratio - 2.0) > abs(worst - 2.0):
+            worst = ratio
+    return worst, abs(worst - 2.0) <= 2.0 * NULL_CONTROL_BAND
 
 
 def host_load() -> Tuple[float, int, float]:
@@ -172,13 +280,17 @@ def stays_finite(sequence: Sequence[str], start: float = 1.0) -> bool:
 def preflight(sequence: Sequence[str] | None = None) -> Dict[str, object]:
     """Everything that must hold before a timing on this host is worth keeping."""
     load, cpus, per_cpu = host_load()
-    ratio, usable = null_control()
+    ratio, null_ok = null_control()
+    scale, scale_ok = scale_control()
+    usable = null_ok and scale_ok
     report: Dict[str, object] = {
         "load_1min": round(load, 2),
         "cpus": cpus,
         "load_per_cpu": round(per_cpu, 2),
         "null_control_ratio": round(ratio, 4),
-        "null_control_passes": usable,
+        "null_control_passes": null_ok,
+        "scale_control_ratio": round(scale, 4),
+        "scale_control_passes": scale_ok,
     }
     if sequence is not None:
         finite = stays_finite(sequence)
@@ -189,10 +301,16 @@ def preflight(sequence: Sequence[str] | None = None) -> Dict[str, object]:
             len(walk) if len(walk) < FINITE_HORIZON else None
         )
     report["usable"] = bool(usable) and bool(report.get("sequence_stays_finite", True))
-    if not usable:
+    if not null_ok:
         report["refusal"] = (
             f"two identical chains timed {ratio:.3f} apart; at load {per_cpu:.2f} "
             "per CPU this host is measuring position, not instructions"
+        )
+    elif not scale_ok:
+        report["refusal"] = (
+            f"a chain of known ratio 2.0 read {scale:.3f}. The null control "
+            "passes because a disturbance hitting two identical chains cancels; "
+            "this one shows the host still cannot measure a difference."
         )
     elif not report["usable"]:
         report["refusal"] = (

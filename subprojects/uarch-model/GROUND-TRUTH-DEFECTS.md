@@ -73,6 +73,36 @@ is no measurement at all, and the null control is what distinguishes them —
 `harness/control.py::null_control` refuses the host rather than returning a
 number.
 
+## 3. A null control is not enough — and stopping the stack is not enough
+
+Two further things were learned trying to re-take the measurements.
+
+**The statistic mattered more than the machine.** Pooling totals across rounds
+gave a null control of 0.53. ABBA ordering, which cancels linear drift, made it
+*worse* and more variable (0.61 to 1.16), so the disturbance is bursty rather
+than a trend — a sum lets one preempted block dominate. Taking the **median of
+per-round ratios** over 31 rounds took the null control to 1.0000 repeatedly.
+The original per-instruction measurements pooled totals, so they carry the
+position bias as well as defect 1.
+
+**A control on identical chains cannot detect a host that cannot measure.**
+With the compose stack stopped, the null control read 1.0000 four times running
+while a control whose answer is a known ratio of **2.0** read 2.50, then 2.00,
+then 3.47. A disturbance that hits two identical chains cancels; one that hits
+two different chains does not. `harness/control.py::scale_control` is that
+second gate, and `preflight` now requires both.
+
+So the re-measurement attempted here is **not published**. Every class was timed
+once, and a control with a known answer was off by up to 74% in the same
+session. The numbers it produced (`fdiv_s` at 36 cycles, `fsqrt_s` at 40) are
+not credible and are recorded here only as an example of what an ungated
+harness will hand you.
+
+**Stopping the compose stack was necessary and not sufficient.** It took the
+null control from 0.09 to ~0.97, but load stayed near 200 on 8 cores with the
+Docker VM alone at 79% CPU, plus dotnet, another AI CLI and unrelated
+containers. The machine has to be genuinely idle.
+
 ## What this does *not* invalidate
 
 The `aha-cycle-arm` model reproduces its inputs exactly, and that check is

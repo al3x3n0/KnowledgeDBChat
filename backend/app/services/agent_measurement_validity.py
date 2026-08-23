@@ -169,6 +169,21 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
             missing.append("validity:predictions_measured")
             details["unsettled_predictions"] = unsettled[:10]
 
+    if bool(spec.get("instruments_verified")):
+        # Checks the instrument rather than the result. Every other requirement
+        # in this module assumes the tool that produced the numbers was
+        # working, and on this project that assumption failed twice in ways no
+        # count, bound or uncertainty check could see.
+        from app.services import agent_tool_controls
+
+        unverified = agent_tool_controls.unverified_instruments(state)
+        if unverified:
+            missing.append("validity:instruments_verified")
+            details["unverified_instruments"] = [
+                {"tool": u.get("tool"), "reason": u.get("reason")}
+                for u in unverified[:5]
+            ]
+
     if bool(spec.get("records_method")):
         recorded = [
             f for f in findings if str(f.get("type") or "").strip() == "method_recorded"
@@ -223,6 +238,20 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
     return {"declared": True, "missing": missing, "details": details}
 
 
+def _explain_instruments(details: Mapping[str, Any]) -> List[str]:
+    lines = []
+    for entry in details.get("unverified_instruments") or []:
+        tool = entry.get("tool")
+        lines.append(
+            f"{tool} produced numbers this run without a passing control on "
+            f"both sides of them. {entry.get('reason')} "
+            f"Run the control for {tool} before your first measurement and "
+            "again after your last, and treat anything measured in between as "
+            "unusable until both pass."
+        )
+    return lines
+
+
 def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
     """Turn unmet validity labels into instructions that name the remedy.
 
@@ -232,7 +261,9 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
     lines: List[str] = []
     for label in missing:
         text = str(label)
-        if text == "validity:predictions_measured":
+        if text == "validity:instruments_verified":
+            lines.extend(_explain_instruments(details))
+        elif text == "validity:predictions_measured":
             open_ids = details.get("unsettled_predictions")
             listed = ", ".join(str(x) for x in open_ids[:3]) if open_ids else ""
             lines.append(
@@ -277,6 +308,10 @@ def describe(spec: Any) -> Sequence[str]:
     lines: List[str] = []
     if bool(spec.get("predictions_measured")):
         lines.append("every prediction must be settled with a measurement")
+    if bool(spec.get("instruments_verified")):
+        from app.services import agent_tool_controls
+
+        lines.extend(agent_tool_controls.describe())
     if bool(spec.get("records_method")):
         lines.append(
             "the run must record at least one method (record_method): the "

@@ -338,6 +338,42 @@ class _AutonomousRuntimeAdapter:
 
         return observation
 
+    async def _close_instrument_bracket(self) -> None:
+        """Re-run the controls for every measurement tool used since its last.
+
+        Deliberately not fatal on its own: a failing control does not end the
+        run, it records that the measurements in that window are not evidence.
+        The contract decides what to do about that, which keeps the judgement
+        in one place instead of two.
+        """
+        from loguru import logger
+
+        from app.services.agent_tool_dispatch import AgentToolExecutionContext
+        from app.services import agent_tool_controls as controls
+
+        for tool in controls.controlled_tools():
+            if not controls.needs_post_control(self.state, tool):
+                continue
+
+            async def _call(name: str, params: Dict[str, Any]) -> Any:
+                handled, result = await self.executor.tool_registry.try_execute(
+                    name,
+                    params,
+                    AgentToolExecutionContext(
+                        mode="autonomous",
+                        db=self.db,
+                        service=self.executor,
+                        job=self.job,
+                        state=self.state,
+                    ),
+                )
+                return result if handled else {"success": False, "error": "no provider"}
+
+            try:
+                await controls.run_controls(_call, tool, self.state, when="after")
+            except Exception as exc:  # pragma: no cover - defensive
+                logger.warning(f"Could not close the control bracket for {tool}: {exc}")
+
     async def think_phase(self, observation: Dict[str, Any]) -> Dict[str, Any]:
         decision = await self.executor.thinking_service.think(
             self.executor,
@@ -354,6 +390,14 @@ class _AutonomousRuntimeAdapter:
         self.job.current_phase = "thinking"
         self.job.phase_details = decision.get("reasoning", "")[:200]
         self.job.llm_calls_used += 1
+
+        # Close the instrument bracket before the contract is judged. This is
+        # the first moment the run knows which measurement was its last, which
+        # is why the closing control cannot be automated at call time the way
+        # the opening one is. A host that drifted mid-run is invisible to a
+        # control that only preceded the work.
+        if decision.get("goal_achieved"):
+            await self._close_instrument_bracket()
 
         contract_before = self.executor._evaluate_goal_contract(
             self.job, self.state, include_result_keys=False

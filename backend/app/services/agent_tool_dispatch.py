@@ -254,9 +254,60 @@ class AgentToolRegistry:
         provider = self.resolve(tool_name, context)
         if provider is None:
             return False, None
+        await self._verify_instrument(provider, tool_name, context)
         result = await provider.execute(tool_name, params, context)
         await self._record_evidence(tool_name, params, result, context)
         return True, result
+
+    @staticmethod
+    async def _verify_instrument(
+        provider: AgentToolProvider,
+        tool_name: str,
+        context: AgentToolExecutionContext,
+    ) -> None:
+        """Run this tool's controls before its first use in the run.
+
+        Here for the same reason evidence capture is here: every call passes
+        through this point, so the run cannot use a measurement tool without
+        first establishing that the tool works. A control the agent has to
+        remember is a control that is missing from whichever run mattered.
+
+        Only the *opening* half of the bracket can be automated -- nothing at
+        call time knows which measurement is the last one. The closing half is
+        the evaluate phase's job, and `validity.instruments_verified` refuses
+        the run until it has happened.
+
+        Never allowed to fail the call it precedes. A failing control does not
+        stop the tool; it records that nothing the tool produces in this window
+        is evidence, which the contract then acts on.
+        """
+        from loguru import logger
+
+        from app.services import agent_tool_controls as controls
+
+        if not controls.is_controlled(tool_name):
+            return
+        state = getattr(context, "state", None)
+        if not isinstance(state, dict):
+            return
+        if not controls.needs_pre_control(state, tool_name):
+            return
+
+        async def _call(name: str, params: Dict[str, Any]) -> Any:
+            return await provider.execute(name, params, context)
+
+        try:
+            verdicts = await controls.run_controls(
+                _call, tool_name, state, when="before"
+            )
+            failed = [v for v in verdicts if not v.get("passed")]
+            if failed:
+                logger.warning(
+                    f"Instrument control failed for {tool_name}: "
+                    f"{failed[0].get('reason')}"
+                )
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Could not run controls for {tool_name}: {exc}")
 
     @staticmethod
     async def _record_evidence(

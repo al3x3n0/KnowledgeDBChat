@@ -103,6 +103,46 @@ null control from 0.09 to ~0.97, but load stayed near 200 on 8 cores with the
 Docker VM alone at 79% CPU, plus dotnet, another AI CLI and unrelated
 containers. The machine has to be genuinely idle.
 
+## 4. Re-taken, on a machine that finally went quiet
+
+Load fell to 0.42 per CPU roughly half an hour after the compose stack stopped,
+and both gates passed: null control **1.0000**, scale control **1.9979**. The
+corrected table is `results/m3-truth-v2.json`.
+
+Three runs were taken and **one was discarded**. The scale control run
+immediately after run C read **2.2012** against a required 2.000, and C's data
+shows exactly the damage that predicts — `fsqrt_s` at 16.91 where the two
+accepted runs read 10.01 and 10.43, `fdiv_s` at 10.13 against 8.01 twice. The
+control caught a bad run on its own evidence, which is the point of bracketing
+a measurement rather than only preceding it.
+
+**Latencies reproduce and land on integers**, which is what a correct
+measurement of a real pipeline should do — 8 of 9 within 5% across the two
+accepted runs:
+
+| class | new | old | change | was measured on `inf` |
+|---|---|---|---|---|
+| `add` | 1.00 | 1.01 | −1.0% | no |
+| `mul` | 3.18 | 2.78 | +14.4% | no (least reproducible, 12%) |
+| `fadd_s` | 2.81 | 2.62 | +7.3% | **yes** |
+| `fmul_s` | 4.00 | 3.75 | +6.7% | no |
+| `fmadd_s` | 4.01 | 4.14 | −3.1% | **yes** |
+| `fdiv_s` | 8.01 | 8.00 | +0.1% | no |
+| `fsqrt_s` | 10.22 | 10.14 | +0.8% | no |
+| `fadd_v` | 2.79 | 3.03 | −7.9% | **yes** |
+| `fmla_v` | 4.05 | 4.29 | −5.6% | **yes** |
+
+The four infinity-affected classes moved by −8% to +7%. `fmul_s` moved +6.7%
+despite never having been at infinity — that is the pooling bias of defect 3,
+not defect 1.
+
+**Reciprocal throughput still does not reproduce**: 12% to 55% run-to-run
+spread on a host whose controls passed, only **1 of 9** within 5%. It is
+recorded in v2 and marked unusable. Either the 16-way independent chain is too
+narrow, or loop overhead dominates for the cheap operations, or both. Until
+that is fixed, issue capacity in the `aha-cycle-arm` model is **Assumed**
+rather than inferred from measurement, and its provenance says so.
+
 ## What this does *not* invalidate
 
 The `aha-cycle-arm` model reproduces its inputs exactly, and that check is

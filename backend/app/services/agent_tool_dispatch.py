@@ -255,9 +255,48 @@ class AgentToolRegistry:
         if provider is None:
             return False, None
         await self._verify_instrument(provider, tool_name, context)
-        result = await provider.execute(tool_name, params, context)
+        result = await self._execute_maybe_replicated(
+            provider, tool_name, params, context
+        )
         await self._record_evidence(tool_name, params, result, context)
         return True, result
+
+    @staticmethod
+    async def _execute_maybe_replicated(
+        provider: AgentToolProvider,
+        tool_name: str,
+        params: Dict[str, Any],
+        context: AgentToolExecutionContext,
+    ) -> Any:
+        """Take a nondeterministic measurement several times, once.
+
+        Only tools whose answers actually move are replicated -- callgrind
+        counts, llvm-mca and gem5 are deterministic, and calling them three
+        times buys the same number at three times the cost.
+
+        A control call is never itself replicated: the controls already run a
+        median over 31 rounds internally, and replicating them would multiply
+        the cost of verifying the instrument by the cost of using it.
+        """
+        from loguru import logger
+
+        from app.services import agent_measurement_replication as replication
+
+        from app.services import agent_tool_controls as controls
+
+        if not replication.is_replicated(tool_name):
+            return await provider.execute(tool_name, params, context)
+        if controls.is_control_call(params):
+            return await provider.execute(tool_name, params, context)
+
+        async def _once() -> Any:
+            return await provider.execute(tool_name, dict(params), context)
+
+        try:
+            return await replication.run_replicated(_once, tool_name)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Could not replicate {tool_name}: {exc}")
+            return await provider.execute(tool_name, params, context)
 
     @staticmethod
     async def _verify_instrument(

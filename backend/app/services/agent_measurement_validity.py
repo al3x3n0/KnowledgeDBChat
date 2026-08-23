@@ -184,6 +184,18 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
                 for u in unverified[:5]
             ]
 
+    if bool(spec.get("measurements_reproduce")):
+        # Variance, not bias. A measurement that is wrong the same way every
+        # time reproduces perfectly -- this project's infinity defect did --
+        # so this sits alongside the instrument controls rather than replacing
+        # them, and neither catches measuring the wrong thing.
+        from app.services import agent_measurement_replication
+
+        unreproduced = agent_measurement_replication.unreproduced_measurements(state)
+        if unreproduced:
+            missing.append("validity:measurements_reproduce")
+            details["unreproduced_measurements"] = unreproduced[:5]
+
     if bool(spec.get("records_method")):
         recorded = [
             f for f in findings if str(f.get("type") or "").strip() == "method_recorded"
@@ -263,6 +275,17 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
         text = str(label)
         if text == "validity:instruments_verified":
             lines.extend(_explain_instruments(details))
+        elif text == "validity:measurements_reproduce":
+            for entry in details.get("unreproduced_measurements") or []:
+                names = ", ".join(str(x) for x in entry.get("not_reproduced") or [])
+                lines.append(
+                    f"\"{entry.get('title')}\" did not hold up across "
+                    f"{entry.get('runs')} independent measurements: {names} "
+                    f"moved by more than {float(entry.get('band') or 0.05):.0%}. "
+                    "Do not report a number that moves that much. Quieten the "
+                    "host or widen the measurement until it repeats, and if it "
+                    "will not repeat, say so instead of quoting one run."
+                )
         elif text == "validity:predictions_measured":
             open_ids = details.get("unsettled_predictions")
             listed = ", ".join(str(x) for x in open_ids[:3]) if open_ids else ""
@@ -312,6 +335,10 @@ def describe(spec: Any) -> Sequence[str]:
         from app.services import agent_tool_controls
 
         lines.extend(agent_tool_controls.describe())
+    if bool(spec.get("measurements_reproduce")):
+        from app.services import agent_measurement_replication
+
+        lines.extend(agent_measurement_replication.describe())
     if bool(spec.get("records_method")):
         lines.append(
             "the run must record at least one method (record_method): the "

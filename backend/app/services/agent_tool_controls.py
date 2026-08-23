@@ -136,6 +136,18 @@ class Control:
     catches: str
 
 
+#: Marker put on a control's parameters so other machinery can recognise one.
+#: Matching on the label instead works until someone edits the label, and the
+#: failure would be silent and expensive -- replicating a control three times
+#: multiplies the cost of verifying the instrument by the cost of using it.
+CONTROL_MARKER = "_is_instrument_control"
+
+
+def is_control_call(params: Any) -> bool:
+    """True when these parameters belong to a control rather than real work."""
+    return bool(isinstance(params, Mapping) and params.get(CONTROL_MARKER))
+
+
 CONTROLS: Dict[str, List[Control]] = {
     "benchmark_c_snippet": [
         Control(
@@ -404,7 +416,9 @@ async def run_controls(
     verdicts: List[Dict[str, Any]] = []
     for control in controls_for(tool):
         try:
-            result = await call(control.tool, dict(control.params))
+            params = dict(control.params)
+            params[CONTROL_MARKER] = True
+            result = await call(control.tool, params)
             verdict = judge(control, result)
         except Exception as exc:  # pragma: no cover - defensive
             verdict = {

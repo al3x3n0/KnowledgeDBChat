@@ -1,0 +1,94 @@
+(axis-module fcvtmlab
+  (version "0.1.0")
+  (target rvmt)
+  (description "Convert a signed byte to float and multiply-accumulate, fusing sxtl+scvtf+fmla")
+
+  (defisa cvt32
+    (base rv32im)
+    (word-bits 32)
+    (registers "f[32]:i32" "pc:i32")
+    (features fp custom)
+    (memory-model rvwmo)
+    (endianness little))
+
+  (defformat FP_R
+    (bits 32)
+    (fields (opcode 6 0) (fd 11 7) (func3 14 12) (fn1 19 15) (fm 24 20) (func7 31 25)))
+
+  (definstruction fcvtmlab
+    (mnemonic FCVTMLAB) (isa cvt32) (category float) (format FP_R)
+    (opcode 11) (func3 0) (func7 1)
+    (operands (fd reg i32 inout) (fn1 reg i32 in) (fm reg i32 in))
+    (asm "fcvtmlab $fd, $fn1, $fm")
+    (semantics "fd = float(signed low byte of fn1) * fm + fd, one rounding")
+    (formal (fma f32 (fcvt_s2f f32 8 fn1) fm fd))
+    (latency 6) (throughput 1.0)
+    (area-estimate-um2 9000.0) (power-estimate-mw 10.0) (expected-speedup 1.0)
+    (rationale "Top candidate by bounded benefit on the PCE INT8 attention profile: 786,432 occurrences, 13.0 cycles each at neoverse-n1."))
+
+  (definstruction sxtl_s
+    (mnemonic SXTL_S) (isa cvt32) (category simd) (format FP_R)
+    (opcode 11) (func3 1) (func7 1)
+    (operands (fd reg i32 out) (fn1 reg i32 in))
+    (asm "sxtl_s $fd, $fn1")
+    (semantics "Sign-extend the low byte to the full word")
+    (formal (sext i32 8 fn1))
+    (latency 1) (throughput 1.0)
+    (area-estimate-um2 200.0) (power-estimate-mw 0.3) (expected-speedup 1.0)
+    (rationale "First of the mined triple."))
+
+  (definstruction scvtf_s
+    (mnemonic SCVTF_S) (isa cvt32) (category float) (format FP_R)
+    (opcode 11) (func3 2) (func7 1)
+    (operands (fd reg i32 out) (fn1 reg i32 in))
+    (asm "scvtf_s $fd, $fn1")
+    (semantics "Signed 32-bit integer to float, round-to-nearest-even")
+    (formal (fcvt_s2f f32 32 fn1))
+    (latency 4) (throughput 1.0)
+    (area-estimate-um2 6000.0) (power-estimate-mw 7.0) (expected-speedup 1.0)
+    (rationale "Second of the mined triple."))
+
+  (definstruction fmla_s
+    (mnemonic FMLA_S) (isa cvt32) (category float) (format FP_R)
+    (opcode 11) (func3 3) (func7 1)
+    (operands (fd reg i32 inout) (fn1 reg i32 in) (fm reg i32 in))
+    (asm "fmla_s $fd, $fn1, $fm")
+    (semantics "Fused multiply-add with a single rounding: fd = fn1 * fm + fd")
+    (formal (fma f32 fn1 fm fd))
+    (latency 5) (throughput 1.0)
+    (area-estimate-um2 8000.0) (power-estimate-mw 9.0) (expected-speedup 1.0)
+    (rationale "Third of the mined triple."))
+
+  (definstruction fcvtmlab_unsigned_bug
+    (mnemonic FCVTMLAB_UNSIGNED_BUG) (isa cvt32) (category float) (format FP_R)
+    (opcode 11) (func3 4) (func7 1)
+    (operands (fd reg i32 inout) (fn1 reg i32 in) (fm reg i32 in))
+    (asm "fcvtmlab_unsigned_bug $fd, $fn1, $fm")
+    (semantics "The same fusion reading the byte as unsigned")
+    (formal (fma f32 (fcvt_u2f f32 8 fn1) fm fd))
+    (latency 6) (throughput 1.0)
+    (area-estimate-um2 9000.0) (power-estimate-mw 10.0) (expected-speedup 1.0)
+    (rationale "Negative control: INT8 activations are signed."))
+
+  (definstruction cvtb_s
+    (mnemonic CVTB_S) (isa cvt32) (category float) (format FP_R)
+    (opcode 11) (func3 5) (func7 1)
+    (operands (fd reg i32 out) (fn1 reg i32 in))
+    (asm "cvtb_s $fd, $fn1")
+    (semantics "Signed low byte to float, in one step -- the operand FCVTMLAB forms internally")
+    (formal (fcvt_s2f f32 8 fn1))
+    (latency 4) (throughput 1.0)
+    (area-estimate-um2 5000.0) (power-estimate-mw 6.0) (expected-speedup 1.0)
+    (rationale "Exposed separately so the part that actually differs can be proven on its own."))
+
+  (definstruction cvtb_u_bug
+    (mnemonic CVTB_U_BUG) (isa cvt32) (category float) (format FP_R)
+    (opcode 11) (func3 6) (func7 1)
+    (operands (fd reg i32 out) (fn1 reg i32 in))
+    (asm "cvtb_u_bug $fd, $fn1")
+    (semantics "The same conversion reading the byte as unsigned")
+    (formal (fcvt_u2f f32 8 fn1))
+    (latency 4) (throughput 1.0)
+    (area-estimate-um2 5000.0) (power-estimate-mw 6.0) (expected-speedup 1.0)
+    (rationale "Negative control at the conversion level."))
+)

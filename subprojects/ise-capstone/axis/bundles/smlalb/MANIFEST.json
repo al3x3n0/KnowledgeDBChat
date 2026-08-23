@@ -1,6 +1,7 @@
 {
   "bundle": "smlalb",
   "candidate": "sxtl + smlal -> SMLALB (widening multiply-accumulate from signed bytes)",
+  "source": "smlalb.axisl",
   "provenance": {
     "corpus": "KevinAI/pce/software INT8 multi-head attention (xnn_transformer_mha_i8 + softmax)",
     "dynamic_occurrences": 1572864,

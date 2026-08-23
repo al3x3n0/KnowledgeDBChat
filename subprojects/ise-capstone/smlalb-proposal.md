@@ -3,7 +3,7 @@
 A worked proposal, from a dynamic profile of real code to a machine-checked
 proof, with a bundle that re-establishes every claim from source.
 
-The bundle is `axis/`. `python3 axis/verify.py` regenerates the semantics from
+The bundle is `axis/bundles/smlalb/`. `python3 axis/verify.py smlalb` regenerates the semantics from
 the description and re-solves every obligation; it needs `axis` and `z3` on
 PATH and exits non-zero if anything fails to reproduce.
 
@@ -29,7 +29,7 @@ without being told what to look for.
 
 ## What was formalized
 
-`axis/smlalb.axisl` describes four instructions: the proposed `SMLALB`, the two
+`axis/bundles/smlalb/smlalb.axisl` describes four instructions: the proposed `SMLALB`, the two
 constituents `SXTL_B_H` and `SMLAL_H_S` it would replace, and a deliberately
 wrong variant. AXIS elaborates one description into encoder, decoder, semantics,
 compiler patterns and SMT-LIB, so the proposal has one source of truth and its
@@ -120,8 +120,9 @@ and it is settled rather than argued.
 
 ```
 cd subprojects/ise-capstone/axis
-python3 verify.py            # regenerate semantics, re-solve all obligations
-python3 verify.py --hashes   # current hashes, for updating MANIFEST.json
+python3 verify.py                  # every bundle
+python3 verify.py smlalb           # just this one
+python3 verify.py --hashes smlalb  # current hashes, for updating MANIFEST.json
 ```
 
 Exit `0` all reproduced, `1` something failed, `2` inconclusive — a missing

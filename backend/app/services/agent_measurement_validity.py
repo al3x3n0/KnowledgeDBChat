@@ -196,6 +196,16 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
             missing.append("validity:measurements_reproduce")
             details["unreproduced_measurements"] = unreproduced[:5]
 
+    if bool(spec.get("measures_what_it_names")):
+        # The failure controls and replication both miss: a measurement that
+        # is precise, stable, reproducible and about something else.
+        from app.services import agent_measurement_sanity
+
+        unsound = agent_measurement_sanity.unsound_measurements(state)
+        if unsound:
+            missing.append("validity:measures_what_it_names")
+            details["unsound_measurements"] = unsound[:5]
+
     if bool(spec.get("records_method")):
         recorded = [
             f for f in findings if str(f.get("type") or "").strip() == "method_recorded"
@@ -275,6 +285,12 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
         text = str(label)
         if text == "validity:instruments_verified":
             lines.extend(_explain_instruments(details))
+        elif text == "validity:measures_what_it_names":
+            for entry in details.get("unsound_measurements") or []:
+                lines.append(
+                    f"\"{entry.get('title')}\" did not measure what it names. "
+                    + " ".join(str(p) for p in entry.get("problems") or [])
+                )
         elif text == "validity:measurements_reproduce":
             for entry in details.get("unreproduced_measurements") or []:
                 names = ", ".join(str(x) for x in entry.get("not_reproduced") or [])
@@ -339,6 +355,10 @@ def describe(spec: Any) -> Sequence[str]:
         from app.services import agent_measurement_replication
 
         lines.extend(agent_measurement_replication.describe())
+    if bool(spec.get("measures_what_it_names")):
+        from app.services import agent_measurement_sanity
+
+        lines.extend(agent_measurement_sanity.describe())
     if bool(spec.get("records_method")):
         lines.append(
             "the run must record at least one method (record_method): the "

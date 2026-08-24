@@ -258,6 +258,7 @@ class AgentToolRegistry:
         result = await self._execute_maybe_replicated(
             provider, tool_name, params, context
         )
+        result = self._check_measures_what_it_names(tool_name, params, result)
         await self._record_evidence(tool_name, params, result, context)
         return True, result
 
@@ -347,6 +348,61 @@ class AgentToolRegistry:
                 )
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"Could not run controls for {tool_name}: {exc}")
+
+    @staticmethod
+    def _check_measures_what_it_names(
+        tool_name: str, params: Dict[str, Any], result: Any
+    ) -> Any:
+        """Ask whether the call measured the thing it named.
+
+        The one failure controls and replication both miss, because it is
+        neither broken nor noisy: a chain that reaches infinity is precise,
+        stable, reproducible and about something else.
+
+        Attached to the result and to its findings rather than raised. A tool
+        that refused would strand a run mid-measurement over an analysis this
+        module can only sometimes perform; the contract is where the judgement
+        belongs.
+        """
+        from loguru import logger
+
+        from app.services import agent_measurement_replication as replication
+        from app.services import agent_measurement_sanity as sanity
+
+        if not replication.is_replicated(tool_name):
+            return result
+        if not isinstance(result, dict):
+            return result
+
+        try:
+            verdict = sanity.check(params, result)
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"Could not sanity-check {tool_name}: {exc}")
+            return result
+
+        if not verdict.get("checked"):
+            return result
+        if not verdict.get("sound"):
+            logger.warning(
+                f"{tool_name} may not have measured what it named: "
+                f"{'; '.join(verdict.get('problems') or [])[:300]}"
+            )
+
+        enriched = dict(result)
+        data = (
+            dict(enriched.get("data") or {})
+            if isinstance(enriched.get("data"), dict)
+            else {}
+        )
+        data["measurement_sanity"] = verdict
+        enriched["data"] = data
+        findings = enriched.get("findings")
+        if isinstance(findings, list):
+            enriched["findings"] = [
+                {**f, "measurement_sanity": verdict} if isinstance(f, dict) else f
+                for f in findings
+            ]
+        return enriched
 
     @staticmethod
     async def _record_evidence(

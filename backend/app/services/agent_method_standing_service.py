@@ -231,6 +231,19 @@ async def standing_for(
         .scalars()
         .all()
     )
+    # Runs scored against retracted measurements leave the record entirely.
+    # Counting them as failures would punish a method for evidence that was
+    # withdrawn, which is a different claim from the method having failed.
+    from app.services import agent_retraction_service
+
+    user_ids = {row.user_id for row in rows if row.user_id is not None}
+    for user_id in user_ids:
+        mine = [r for r in rows if r.user_id == user_id]
+        kept = await agent_retraction_service.live_outcomes(db, user_id, mine)
+        dropped = {id(r) for r in mine} - {id(r) for r in kept}
+        if dropped:
+            rows = [r for r in rows if id(r) not in dropped]
+
     grouped: Dict[str, List[AgentMethodOutcome]] = {}
     for row in rows:
         grouped.setdefault(str(row.method_memory_id), []).append(row)

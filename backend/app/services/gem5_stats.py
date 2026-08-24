@@ -14,7 +14,7 @@ configurations as much as their code.
 from __future__ import annotations
 
 import re
-from typing import Any, Dict, Iterable, Optional
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
 # "name    value    # description", with values that may be ints, floats, nan
 # or inf. Distribution rows carry extra columns and are skipped by taking only
@@ -101,3 +101,100 @@ def speedup(
     if not baseline_cycles or not variant_cycles:
         return None
     return round(baseline_cycles / variant_cycles, 4)
+
+
+# --- counters over time ---------------------------------------------------
+#
+# A hardware predictor does not see run totals. It sees counters sampled while
+# the program runs, and decides from the recent past what to do next. gem5
+# gives that shape when the workload calls the m5 dump-and-reset pseudo-op:
+# stats.txt then holds one section per interval, each holding the counts since
+# the previous one.
+#
+# This is the difference between "the program missed cache 4M times" and "here
+# is the miss rate every 200k instructions", and only the second can train or
+# evaluate a predictor.
+
+DUMP_MARKER = "Begin Simulation Statistics"
+
+
+def parse_intervals(lines: Iterable[str]) -> List[Dict[str, float]]:
+    """Every dump in a stats.txt, in order, as one dict per interval.
+
+    A run that never called the pseudo-op yields a single interval, which is
+    the same thing `parse` returns and is not an error -- it is a trace of
+    length one, and the caller can see that from its length.
+    """
+    intervals: List[Dict[str, float]] = []
+    current: Dict[str, float] = {}
+    started = False
+
+    for raw in lines:
+        line = raw.strip()
+        if DUMP_MARKER in line:
+            if started and current:
+                intervals.append(current)
+            current = {}
+            started = True
+            continue
+        if not line or line.startswith("-"):
+            continue
+        match = _STAT_LINE.match(line)
+        if not match:
+            continue
+        try:
+            value = float(match.group("value"))
+        except ValueError:
+            continue
+        current.setdefault(match.group("name"), value)
+
+    if current:
+        intervals.append(current)
+    return intervals
+
+
+def varying_counters(
+    intervals: Sequence[Mapping[str, float]], limit: int = 60
+) -> List[str]:
+    """Counters that actually move across the trace, most variable first.
+
+    A counter with the same value in every interval cannot predict anything
+    that changes, and gem5 emits several hundred of them -- clock periods,
+    configured sizes, totals that never reset. Returning them all buries the
+    signal in constants, so they are dropped here rather than left for whatever
+    reads this to notice.
+
+    Ranked by coefficient of variation rather than raw spread, so a counter
+    measured in millions does not outrank one measured in tens purely for being
+    large.
+    """
+    if len(intervals) < 2:
+        return []
+
+    names = set()
+    for interval in intervals:
+        names.update(interval)
+
+    scored: List[tuple] = []
+    for name in names:
+        values = [float(i.get(name, 0.0)) for i in intervals]
+        if len(set(values)) < 2:
+            continue
+        mean = sum(values) / len(values)
+        if mean == 0:
+            continue
+        spread = (max(values) - min(values)) / abs(mean)
+        scored.append((spread, name))
+
+    scored.sort(reverse=True)
+    return [name for _, name in scored[: max(1, limit)]]
+
+
+def as_series(
+    intervals: Sequence[Mapping[str, float]], names: Sequence[str]
+) -> Dict[str, List[float]]:
+    """The named counters as one list per counter, aligned by interval."""
+    return {
+        name: [float(interval.get(name, 0.0)) for interval in intervals]
+        for name in names
+    }

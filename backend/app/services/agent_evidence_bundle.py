@@ -40,6 +40,7 @@ EVIDENCE_TOOLS = {
     "analyze_snippet_cycles",
     "profile_c_workload",
     "simulate_c_workload",
+    "sample_hardware_counters",
     # The baseline a tuning claim is measured against. A bundle that records
     # the tuned run but not the model it started from cannot show what the
     # tuning changed.

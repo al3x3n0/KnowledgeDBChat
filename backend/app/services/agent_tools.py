@@ -3380,6 +3380,47 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "sample_hardware_counters",
+        "description": (
+            "Run a C workload in a simulated core and return its hardware "
+            "counters SAMPLED OVER TIME, rather than as run totals. Call "
+            "M5_SAMPLE() in the program wherever a sample should be taken -- "
+            "typically once per outer-loop iteration or per phase -- and each "
+            "interval reports what happened since the previous call. This is "
+            "the shape a hardware predictor reads: run totals cannot train or "
+            "evaluate one. The macro is injected; do not define it. Only "
+            "counters that vary across the trace are returned, because a "
+            "counter that never changes cannot predict anything that does."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Self-contained C program calling M5_SAMPLE() at each "
+                        "sampling point. Fewer than 4 samples is a total, not "
+                        "a trace, and the result says so."
+                    ),
+                },
+                "cpu_type": {
+                    "type": "string",
+                    "description": "Core model to simulate; see describe_model_parameters",
+                },
+                "flags": {"type": "string", "description": "Compiler flags"},
+                "label": {
+                    "type": "string",
+                    "description": "Short name for what this workload is",
+                },
+                "max_counters": {
+                    "type": "integer",
+                    "description": "How many varying counters to return (default 60)",
+                },
+            },
+            "required": ["code"],
+        },
+    },
+    {
         "name": "benchmark_c_snippet",
         "description": (
             "Compile and run a self-contained C program in the compiler "

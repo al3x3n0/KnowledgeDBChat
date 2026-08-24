@@ -537,3 +537,199 @@ async def simulate_c_workload(
             }
         ],
     }
+
+
+# --- counters over time ---------------------------------------------------
+
+#: The m5 dump-and-reset pseudo-op, as a magic instruction rather than a call.
+#:
+#: gem5 normally supplies these through util/m5, which this image does not
+#: carry -- the build was stripped to keep the sandbox to 574 MB. On AArch64
+#: the ops are a single instruction word, `0xff000110 | (func << 16)`, and
+#: DUMP_RESET_STATS is func 0x42, so the library is not needed. Verified
+#: against this image: a workload calling it four times produced four stats
+#: sections with the counts reset between them.
+M5_SAMPLE_MACRO = (
+    "/* Injected: take one counter sample. gem5 m5 DUMP_RESET_STATS. */\n"
+    '#define M5_SAMPLE() __asm__ __volatile__(".inst 0xff420110" ::: "memory")\n'
+)
+
+#: A trace of one interval is a total, not a trace. Below this a predictor
+#: study has nothing to learn from and should say so rather than proceed.
+MIN_USEFUL_INTERVALS = 4
+
+
+async def sample_counters(
+    *,
+    code: str,
+    flags: str = DEFAULT_FLAGS,
+    cpu_type: str = DEFAULT_CPU,
+    param_overrides: Optional[Sequence[str]] = None,
+    run_args: str = "",
+    label: str = "",
+    max_counters: int = 60,
+    image: str = DEFAULT_IMAGE,
+    timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
+) -> Dict[str, Any]:
+    """Run a workload and return its hardware counters sampled over time.
+
+    The workload calls `M5_SAMPLE()` wherever it wants a sample taken; the
+    macro is injected, so the program does not have to declare it. Each call
+    dumps every counter and resets them, so an interval holds what happened
+    since the previous call -- which is the shape a hardware predictor reads,
+    and not the shape a run total has.
+
+    Only counters that actually move are returned. gem5 emits several hundred,
+    most of them clock periods and configured sizes that are identical in every
+    interval, and a counter that never changes cannot predict anything that
+    does.
+    """
+    blocked = _preflight(code, image)
+    if blocked:
+        return blocked
+    if "M5_SAMPLE" not in code:
+        return {
+            "success": False,
+            "error": (
+                "The program never calls M5_SAMPLE(), so there is nothing to "
+                "sample and this would return one total rather than a trace. "
+                "Call M5_SAMPLE() at each point you want counters read -- "
+                "typically once per outer-loop iteration or phase. The macro "
+                "is injected for you; do not define it."
+            ),
+        }
+
+    model = str(cpu_type or DEFAULT_CPU)
+    if model not in CPU_TYPES:
+        return {
+            "success": False,
+            "error": (
+                f"Unknown cpu_type {cpu_type!r}. Available: " + ", ".join(CPU_TYPES)
+            ),
+        }
+    overrides = [str(x).strip() for x in (param_overrides or []) if str(x).strip()]
+    if len(overrides) > MAX_PARAM_OVERRIDES:
+        return {
+            "success": False,
+            "error": (
+                f"{len(overrides)} parameter overrides exceeds the limit of "
+                f"{MAX_PARAM_OVERRIDES}"
+            ),
+        }
+    for override in overrides:
+        if not SAFE_PARAM.match(override):
+            return {
+                "success": False,
+                "error": (
+                    f"parameter override {override!r} is not of the form "
+                    "system.<path>=<value>."
+                ),
+            }
+
+    safe_flags = (flags or DEFAULT_FLAGS).strip()
+    if not SAFE_FLAGS.match(safe_flags):
+        return {
+            "success": False,
+            "error": f"flags contain unsupported characters: {flags!r}",
+        }
+    if "-static" not in safe_flags.split():
+        # Syscall-emulation mode has no dynamic loader.
+        safe_flags = f"{safe_flags} -static"
+    arguments = (run_args or "").strip()
+    if not SAFE_RUN_ARGS.match(arguments):
+        return {
+            "success": False,
+            "error": f"run_args contain unsupported characters: {run_args!r}",
+        }
+
+    source = M5_SAMPLE_MACRO + str(code)
+
+    with tempfile.TemporaryDirectory() as workdir:
+        Path(workdir, "workload.c").write_text(source, encoding="utf-8")
+        options = f" --options='{arguments}'" if arguments else ""
+        script = (
+            f"gcc {safe_flags} -o workload workload.c -lm 2>compile_err.txt || "
+            "{ cat compile_err.txt >&2; exit 90; }; "
+            + f"{GEM5_BINARY} --outdir=m5out {GEM5_SE_CONFIG} "
+            f"--cmd=./workload{options} --cpu-type={model} --caches --l2cache "
+            + "".join(f"-P '{o}' " for o in overrides)
+            + "> gem5.log 2>&1 || { tail -25 gem5.log >&2; exit 91; }; "
+            "tail -3 gem5.log"
+        )
+        try:
+            returncode, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
+                script,
+                workdir,
+                image=image,
+                timeout_seconds=timeout_seconds,
+                memory="4096m",
+                cpus="2",
+            )
+        except TimeoutError:
+            return {
+                "error": (
+                    f"Sampling timed out after {timeout_seconds}s. An "
+                    "out-of-order model runs on the order of 100k instructions "
+                    "a second; shrink the workload or take fewer samples."
+                )
+            }
+        except Exception as exc:  # pragma: no cover - defensive
+            logger.warning(f"sample_counters failed: {exc}")
+            return {"error": f"Counter sampling failed: {exc}"}
+
+        if returncode == 90:
+            return {"success": False, "error": f"Compilation failed: {stderr[:800]}"}
+        if returncode != 0:
+            return {
+                "success": False,
+                "error": explain_gem5_failure(stderr, overrides),
+            }
+
+        stats_path = Path(workdir, "m5out", "stats.txt")
+        if not stats_path.exists():
+            return {"success": False, "error": "gem5 produced no stats.txt"}
+        with stats_path.open() as handle:
+            intervals = gem5_stats.parse_intervals(handle)
+
+    names = gem5_stats.varying_counters(intervals, limit=max_counters)
+    series = gem5_stats.as_series(intervals, names)
+    enough = len(intervals) >= MIN_USEFUL_INTERVALS
+
+    return {
+        "success": True,
+        "data": {
+            "cpu_type": model,
+            "label": str(label or ""),
+            "intervals": len(intervals),
+            "counters_varying": len(names),
+            "counters": names,
+            "series": series,
+            "stdout": str(stdout)[:2000],
+            "note": (
+                "Each interval holds the counts since the previous M5_SAMPLE(). "
+                "Only counters that move across the trace are returned; the "
+                "rest are constants that cannot predict anything. "
+                + (
+                    ""
+                    if enough
+                    else f"WARNING: {len(intervals)} interval(s) is a total, "
+                    "not a trace -- add more M5_SAMPLE() calls before drawing "
+                    "any conclusion about predictability."
+                )
+            ),
+        },
+        "findings": [
+            {
+                "type": "counter_trace",
+                "subject": str(label or "workload"),
+                "title": (
+                    f"{label or 'workload'} @ {model}: {len(intervals)} intervals, "
+                    f"{len(names)} counters that vary"
+                ),
+                "cpu_type": model,
+                "intervals": len(intervals),
+                "counters_varying": len(names),
+                "usable_as_trace": enough,
+            }
+        ],
+    }

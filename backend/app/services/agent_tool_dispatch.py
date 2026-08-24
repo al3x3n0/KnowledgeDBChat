@@ -4228,6 +4228,19 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             top_blocks=min(int(params.get("top_blocks", 5) or 5), 15),
         )
 
+    async def _sample_hardware_counters(
+        params: Dict[str, Any], context: AgentToolExecutionContext
+    ) -> Dict[str, Any]:
+        from app.services import agent_gem5_sandbox
+
+        return await agent_gem5_sandbox.sample_counters(
+            code=str(params.get("code") or ""),
+            flags=str(params.get("flags") or agent_gem5_sandbox.DEFAULT_FLAGS),
+            cpu_type=str(params.get("cpu_type") or agent_gem5_sandbox.DEFAULT_CPU),
+            label=str(params.get("label") or ""),
+            max_counters=int(params.get("max_counters") or 60),
+        )
+
     async def _simulate_c_workload(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -4915,6 +4928,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "axis_emit": _axis_emit,
             "axis_prove": _axis_prove,
             "benchmark_c_snippet": _benchmark_c_snippet,
+            "sample_hardware_counters": _sample_hardware_counters,
             "execute_data_pipeline": _execute_data_pipeline,
             "write_and_run_script": _write_and_run_script,
             "write_file": _write_file,

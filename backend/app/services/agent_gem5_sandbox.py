@@ -562,6 +562,25 @@ M5_SAMPLE_MACRO = (
     'mov x1, #0\\n\\t.inst 0xff420110" ::: "x0", "x1", "memory")\n'
 )
 
+#: Physical register file sizes SMT needs on this build, and the reason they
+#: are here rather than left to the caller.
+#:
+#: O3CPU's defaults are sized for one thread, and running two panics in
+#: `cpu.cc` with "Not enough physical registers". The panics come one at a
+#: time -- fix numPhysVecPredRegs and it panics on numPhysMatRegs, fix that and
+#: it runs -- so a caller discovering this pays for a full simulator startup
+#: per register class. The values are generous rather than tuned: they are a
+#: structural requirement for the run to start, not a microarchitectural
+#: claim, and a study that varies them is studying the register file.
+SMT_REGISTER_OVERRIDES = (
+    "system.cpu[0].numPhysVecPredRegs=128",
+    "system.cpu[0].numPhysMatRegs=32",
+    "system.cpu[0].numPhysIntRegs=512",
+    "system.cpu[0].numPhysFloatRegs=512",
+    "system.cpu[0].numPhysVecRegs=512",
+    "system.cpu[0].numPhysCCRegs=512",
+)
+
 #: A trace of one interval is a total, not a trace. Below this a predictor
 #: study has nothing to learn from and should say so rather than proceed.
 MIN_USEFUL_INTERVALS = 4
@@ -579,6 +598,7 @@ async def sample_counters(
     language: str = "c",
     extra_files: Optional[Dict[str, str]] = None,
     include_dirs: Optional[Sequence[str]] = None,
+    co_runner: str = "",
     image: str = DEFAULT_IMAGE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
@@ -594,6 +614,13 @@ async def sample_counters(
     most of them clock periods and configured sizes that are identical in every
     interval, and a counter that never changes cannot predict anything that
     does.
+
+    `co_runner` runs a second program on the same core under SMT, which is the
+    arrangement an SMT scheduling hint is about: two threads competing, and a
+    predictor deciding which to favour. gem5 then reports progress per thread
+    (`commitStats0`/`commitStats1`), so "will this thread make progress" is
+    answerable. Only the primary program samples; its intervals cover both
+    threads' activity.
 
     `language`, `extra_files` and `include_dirs` mirror `profile_c_workload`,
     because the corpora worth studying are not single files: Godot's core/math
@@ -719,13 +746,27 @@ async def sample_counters(
                 }
             include_flags += f"-I{Path(directory).as_posix()} "
 
+        smt = bool(str(co_runner or "").strip())
+        if smt:
+            Path(workdir, "co_runner.c").write_text(str(co_runner), encoding="utf-8")
+            overrides = list(SMT_REGISTER_OVERRIDES) + list(overrides)
+
         options = f" --options='{arguments}'" if arguments else ""
+        cmd = "'./workload;./co_runner'" if smt else "./workload"
+        smt_flags = " --smt -n 1" if smt else ""
+        co_build = (
+            "gcc -O2 -static -o co_runner co_runner.c -lm 2>co_err.txt || "
+            "{ cat co_err.txt >&2; exit 93; }; "
+            if smt
+            else ""
+        )
         script = (
             f"{compiler} {safe_flags} {include_flags}-o workload {source_name} "
             "-lm 2>compile_err.txt || "
             "{ cat compile_err.txt >&2; exit 90; }; "
+            + co_build
             + f"{GEM5_BINARY} --outdir=m5out {GEM5_SE_CONFIG} "
-            f"--cmd=./workload{options} --cpu-type={model} --caches --l2cache "
+            f"--cmd={cmd}{options}{smt_flags} --cpu-type={model} --caches --l2cache "
             + "".join(f"-P '{o}' " for o in overrides)
             + "> gem5.log 2>&1 || { tail -25 gem5.log >&2; exit 91; }; "
             "tail -3 gem5.log"
@@ -753,6 +794,11 @@ async def sample_counters(
 
         if returncode == 90:
             return {"success": False, "error": f"Compilation failed: {stderr[:800]}"}
+        if returncode == 93:
+            return {
+                "success": False,
+                "error": f"The co-runner failed to compile: {stderr[:600]}",
+            }
         if returncode != 0:
             return {
                 "success": False,
@@ -767,13 +813,49 @@ async def sample_counters(
 
     names = gem5_stats.varying_counters(intervals, limit=max_counters)
     series = gem5_stats.as_series(intervals, names)
+
+    # Per-thread IPC, because "will this thread make progress" is a rate and
+    # neither of its two counters answers it alone. A thread doing identical
+    # work each interval commits a constant instruction count whatever the
+    # contention -- measured here as entropy 0.0, a target with nothing to
+    # predict -- while the cycles it took to do so vary a great deal. Under
+    # SMT the cycle count is shared by both threads, so it is not thread
+    # progress either. The ratio is.
+    for thread in (0, 1):
+        insts = [
+            i.get(f"system.cpu.commitStats{thread}.numInsts", 0.0) for i in intervals
+        ]
+        cycles = [i.get("system.cpu.numCycles", 0.0) for i in intervals]
+        if any(insts) and all(c > 0 for c in cycles):
+            series[f"derived.thread{thread}_ipc"] = [
+                round(n / c, 6) for n, c in zip(insts, cycles)
+            ]
     enough = len(intervals) >= MIN_USEFUL_INTERVALS
+
+    # A co-runner that finishes early leaves the rest of the trace running
+    # solo. Those intervals are not SMT and must not be read as contention --
+    # the counters look calm because nothing is competing, not because the
+    # predictor would have found it calm.
+    co_active = 0
+    smt_warning = ""
+    if smt:
+        thread1 = [i.get("system.cpu.commitStats1.numInsts", 0.0) for i in intervals]
+        co_active = sum(1 for v in thread1 if v and v > 0)
+        if co_active < len(intervals):
+            smt_warning = (
+                f"the co-runner was active for {co_active} of {len(intervals)} "
+                "intervals; the rest ran solo and are not SMT. Lengthen the "
+                "co-runner or shorten the primary, and do not read the solo "
+                "intervals as contention."
+            )
 
     return {
         "success": True,
         "data": {
             "cpu_type": model,
             "label": str(label or ""),
+            "smt": smt,
+            "co_runner_active_intervals": co_active if smt else None,
             "intervals": len(intervals),
             "counters_varying": len(names),
             "counters": names,
@@ -790,6 +872,7 @@ async def sample_counters(
                     "not a trace -- add more M5_SAMPLE() calls before drawing "
                     "any conclusion about predictability."
                 )
+                + (f" WARNING: {smt_warning}" if smt_warning else "")
             ),
         },
         "findings": [
@@ -804,6 +887,8 @@ async def sample_counters(
                 "intervals": len(intervals),
                 "counters_varying": len(names),
                 "usable_as_trace": enough,
+                "smt": smt,
+                "co_runner_active_intervals": co_active if smt else None,
             }
         ],
     }

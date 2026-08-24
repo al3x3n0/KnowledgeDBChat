@@ -94,6 +94,52 @@ kept because the lesson is the point: **a workload written to look irregular
 was not**, and only the longer trace exposed it. The xorshift row is the honest
 version.
 
+## Under SMT: the customer's actual question
+
+The named example was a scheduling hint, which means two threads competing and
+a predictor deciding which to favour. That is now runnable, and the answer has
+a shape.
+
+Getting there needed one piece of knowledge the tool now carries. O3CPU's
+physical register files are sized for one thread, and running two panics with
+"Not enough physical registers" — **one register class at a time**, so a caller
+discovering it pays a simulator startup per panic. Six overrides are applied
+automatically; they are a structural requirement for the run to start, not a
+microarchitectural claim.
+
+Primary: a steady FP loop, identical work every interval, so any variation in
+its progress comes from contention. Co-runner: alternating cache-resident and
+memory-hostile phases, ten intervals each. 401 intervals, co-runner active in
+all of them.
+
+| target | entropy | persistence | best beyond | null p95 | margin | top counter |
+|---|---|---|---|---|---|---|
+| thread-0 IPC | 1.585 | 0.843 | 0.106 | 0.053 | 2.0× | `iew.iqFullEvents` |
+| thread-1 IPC | 1.585 | 0.832 | 0.070 | 0.055 | 1.3× | `simInsts` |
+| cycles | 1.585 | 0.793 | 0.132 | 0.055 | 2.4× | `iew.iqFullEvents` |
+
+**The top tap is issue-queue-full events.** That is the microarchitectural
+signature of SMT contention rather than a counter that happened to correlate:
+when the co-runner floods the issue queue, the other thread stalls. It is the
+counter an architect would have named.
+
+**What it says about a design.** The thread's own recent IPC carries 53% of the
+entropy, and one contention tap adds about 14% of what persistence leaves. So
+the shape indicated is **last-value plus one issue-queue-pressure tap** — a
+saturating counter and a single signal, not a perceptron. That is a smaller
+design than the question implied, and the measurement is the argument for it.
+
+**Instructions is the wrong progress metric**, found by measuring it: a thread
+doing identical work each interval commits a constant instruction count
+whatever the contention, and the target came back with entropy 0.0 — nothing to
+predict. Under SMT the cycle count is shared by both threads, so it is not
+thread progress either. Per-thread IPC is now derived and returned for exactly
+this reason.
+
+Caveats, all real: the co-runner's phases are planted, one counter at a time
+rather than combinations, three bins, a generic O3CPU rather than a named
+AArch64 core, and a synthetic primary.
+
 ## What this does and does not establish
 
 **Established.** The method detects planted structure at 6.3× its own null and

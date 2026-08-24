@@ -4332,6 +4332,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 if isinstance(params.get("include_dirs"), list)
                 else None
             ),
+            co_runner=str(params.get("co_runner") or ""),
         )
 
     async def _simulate_c_workload(

@@ -201,3 +201,26 @@ async def test_an_unknown_language_is_refused():
 
     assert result["success"] is False
     assert "must be 'c' or 'c++'" in result["error"]
+
+
+def test_smt_carries_the_register_overrides_a_run_needs_to_start():
+    """O3CPU's physical register files are sized for one thread, and running
+    two panics one register class at a time -- a caller discovering this pays
+    a simulator startup per panic."""
+    assert any("numPhysVecPredRegs" in o for o in gem5.SMT_REGISTER_OVERRIDES)
+    assert any("numPhysMatRegs" in o for o in gem5.SMT_REGISTER_OVERRIDES)
+    for override in gem5.SMT_REGISTER_OVERRIDES:
+        assert gem5.SAFE_PARAM.match(override), f"{override} would be rejected"
+
+
+@pytest.mark.asyncio
+async def test_a_co_runner_that_fails_to_compile_says_which_program():
+    """Two programs are compiled; "compilation failed" without saying which
+    sends the caller to the wrong source."""
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }",
+        co_runner="this is not C at all {{{",
+    )
+
+    assert result["success"] is False
+    assert "co-runner" in result["error"]

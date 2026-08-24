@@ -4321,6 +4321,17 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             cpu_type=str(params.get("cpu_type") or agent_gem5_sandbox.DEFAULT_CPU),
             label=str(params.get("label") or ""),
             max_counters=int(params.get("max_counters") or 60),
+            language=str(params.get("language") or "c"),
+            extra_files=(
+                params.get("extra_files")
+                if isinstance(params.get("extra_files"), dict)
+                else None
+            ),
+            include_dirs=(
+                params.get("include_dirs")
+                if isinstance(params.get("include_dirs"), list)
+                else None
+            ),
         )
 
     async def _simulate_c_workload(

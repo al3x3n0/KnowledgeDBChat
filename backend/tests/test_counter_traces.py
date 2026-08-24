@@ -152,3 +152,52 @@ async def test_an_unknown_core_is_refused_with_the_list():
 
     assert result["success"] is False
     assert "Unknown cpu_type" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_staged_file_may_not_escape_the_workspace():
+    """These names come from a caller, and a 'header' called ../../etc is not
+    a header."""
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }",
+        extra_files={"../../etc/passwd": "x"},
+    )
+
+    assert result["success"] is False
+    assert "escapes the workspace" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_include_dir_may_not_escape_the_workspace():
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }",
+        include_dirs=["../../.."],
+    )
+
+    assert result["success"] is False
+    assert "escapes the workspace" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_cpp_is_refused_with_the_real_reason():
+    """The gem5 image has no C++ compiler and no static libstdc++. Left to the
+    compiler this surfaces as 'g++: not found', an error about a missing binary
+    when the situation is that this image cannot build C++ at all."""
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", language="c++"
+    )
+
+    assert result["success"] is False
+    assert "no C++ compiler" in result["error"]
+    assert "profile_c_workload" in result["error"], "name the tool that can"
+    assert "do not read a C result as standing in" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_language_is_refused():
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", language="rust"
+    )
+
+    assert result["success"] is False
+    assert "must be 'c' or 'c++'" in result["error"]

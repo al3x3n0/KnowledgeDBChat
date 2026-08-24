@@ -576,6 +576,9 @@ async def sample_counters(
     run_args: str = "",
     label: str = "",
     max_counters: int = 60,
+    language: str = "c",
+    extra_files: Optional[Dict[str, str]] = None,
+    include_dirs: Optional[Sequence[str]] = None,
     image: str = DEFAULT_IMAGE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
@@ -591,6 +594,12 @@ async def sample_counters(
     most of them clock periods and configured sizes that are identical in every
     interval, and a counter that never changes cannot predict anything that
     does.
+
+    `language`, `extra_files` and `include_dirs` mirror `profile_c_workload`,
+    because the corpora worth studying are not single files: Godot's core/math
+    is C++ with a 25-header closure, and without these this tool can only be
+    pointed at workloads written for it. A study run entirely on workloads
+    written for the study is a study about the study.
     """
     blocked = _preflight(code, image)
     if blocked:
@@ -606,6 +615,33 @@ async def sample_counters(
                 "is injected for you; do not define it."
             ),
         }
+
+    language = str(language or "c").strip().lower()
+    if language not in ("c", "c++", "cpp", "cxx"):
+        return {
+            "success": False,
+            "error": f"language must be 'c' or 'c++', got {language!r}",
+        }
+    is_cpp = language != "c"
+    if is_cpp:
+        # Checked here rather than left to the compiler, which reports
+        # "g++: not found" -- an error about a missing binary, when the real
+        # situation is that this image cannot build C++ at all and no wording
+        # of the request will change that.
+        return {
+            "success": False,
+            "error": (
+                f"The gem5 image ({image}) has no C++ compiler and no static "
+                "libstdc++, so a C++ corpus cannot be counter-sampled yet. "
+                "gcc is present and C works. profile_c_workload runs C++ "
+                "because it uses a different image. Fixing this means adding "
+                "g++ and libstdc++-static to the gem5 image; until then, "
+                "sample counters on a C workload, and do not read a C result "
+                "as standing in for the C++ corpus."
+            ),
+        }
+    compiler = "gcc"
+    source_name = "workload.c"
 
     model = str(cpu_type or DEFAULT_CPU)
     if model not in CPU_TYPES:
@@ -643,6 +679,10 @@ async def sample_counters(
     if "-static" not in safe_flags.split():
         # Syscall-emulation mode has no dynamic loader.
         safe_flags = f"{safe_flags} -static"
+    if is_cpp and "-std=" not in safe_flags:
+        # The compiler defaults below C++17 and a corpus that needs it fails
+        # with a static_assert naming neither the flag nor the caller.
+        safe_flags = f"{safe_flags} -std=c++17"
     arguments = (run_args or "").strip()
     if not SAFE_RUN_ARGS.match(arguments):
         return {
@@ -652,11 +692,37 @@ async def sample_counters(
 
     source = M5_SAMPLE_MACRO + str(code)
 
-    with tempfile.TemporaryDirectory() as workdir:
-        Path(workdir, "workload.c").write_text(source, encoding="utf-8")
+    with tempfile.TemporaryDirectory(prefix="gem5_sample_") as workdir:
+        Path(workdir, source_name).write_text(source, encoding="utf-8")
+
+        root = Path(workdir).resolve()
+        for name, content in (extra_files or {}).items():
+            # Resolved and checked to stay under the work directory: these
+            # names come from a caller, and a "header" called ../../etc is not
+            # a header.
+            candidate = (root / str(name)).resolve()
+            if not str(candidate).startswith(str(root) + "/"):
+                return {
+                    "success": False,
+                    "error": f"extra_files path escapes the workspace: {name!r}",
+                }
+            candidate.parent.mkdir(parents=True, exist_ok=True)
+            candidate.write_text(str(content), encoding="utf-8")
+
+        include_flags = ""
+        for directory in include_dirs or []:
+            resolved = (root / str(directory)).resolve()
+            if not str(resolved).startswith(str(root)):
+                return {
+                    "success": False,
+                    "error": f"include_dirs path escapes the workspace: {directory!r}",
+                }
+            include_flags += f"-I{Path(directory).as_posix()} "
+
         options = f" --options='{arguments}'" if arguments else ""
         script = (
-            f"gcc {safe_flags} -o workload workload.c -lm 2>compile_err.txt || "
+            f"{compiler} {safe_flags} {include_flags}-o workload {source_name} "
+            "-lm 2>compile_err.txt || "
             "{ cat compile_err.txt >&2; exit 90; }; "
             + f"{GEM5_BINARY} --outdir=m5out {GEM5_SE_CONFIG} "
             f"--cmd=./workload{options} --cpu-type={model} --caches --l2cache "

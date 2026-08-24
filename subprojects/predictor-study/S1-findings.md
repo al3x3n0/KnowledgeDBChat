@@ -101,11 +101,23 @@ correctly rejects noise. Trace length must be in the hundreds of intervals.
 Where phases exist, persistence dominates and the headroom for a learned
 predictor is roughly 0.23 bits of 1.54.
 
-**Not established.** No real corpus has been run. All three workloads are
-synthetic: `sample_hardware_counters` compiles a single C file, while the Godot
-math corpus is C++ with a 25-header closure, so the plumbing to point this at
-real code does not exist yet. That is the next piece of work and nothing here
-should be read as a statement about real programs.
+**Not established.** No real corpus has been run, and the reason has now been
+pinned down rather than guessed at.
+
+The multi-file plumbing exists — `sample_hardware_counters` takes `language`,
+`extra_files` and `include_dirs`, mirroring `profile_c_workload`, and the Godot
+header closure was computed (21 headers, via `clang++ -MM`) and staged. The
+blocker is one level below: **the gem5 image has no C++ compiler and no static
+libstdc++.** Only `gcc` is installed. `profile_c_workload` runs C++ because it
+uses a different image.
+
+So a C++ corpus cannot be counter-sampled until g++ and libstdc++-static are
+added to the gem5 image. The tool now refuses C++ with that reason rather than
+surfacing `g++: not found`, which is an error about a missing binary when the
+situation is that this image cannot build C++ at all.
+
+Until then, nothing here should be read as a statement about real programs, and
+a C workload must not be read as standing in for the C++ corpus.
 
 Also untested: targets other than cycles (stalls, misses, per-thread progress —
 the last being what an SMT hint would actually predict), counter *combinations*

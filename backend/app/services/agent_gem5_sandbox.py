@@ -546,12 +546,20 @@ async def simulate_c_workload(
 #: gem5 normally supplies these through util/m5, which this image does not
 #: carry -- the build was stripped to keep the sandbox to 574 MB. On AArch64
 #: the ops are a single instruction word, `0xff000110 | (func << 16)`, and
-#: DUMP_RESET_STATS is func 0x42, so the library is not needed. Verified
-#: against this image: a workload calling it four times produced four stats
-#: sections with the counts reset between them.
+#: DUMP_RESET_STATS is func 0x42, so the library is not needed.
+#:
+#: x0 and x1 must be zeroed, and this is the whole trap. The op reads them as
+#: (delay, period): a non-zero delay SCHEDULES the dump that many ticks ahead
+#: rather than taking it now, so whatever the surrounding loop happened to
+#: leave in x0 became a delay and the sample never fired before the program
+#: exited. A simple probe appeared to work because those registers happened to
+#: hold zero; a heavier workload emitted the instruction, executed it six
+#: times, and produced exactly one dump. The failure is silent -- gem5 reports
+#: nothing, and the result reads as a program that never sampled.
 M5_SAMPLE_MACRO = (
     "/* Injected: take one counter sample. gem5 m5 DUMP_RESET_STATS. */\n"
-    '#define M5_SAMPLE() __asm__ __volatile__(".inst 0xff420110" ::: "memory")\n'
+    '#define M5_SAMPLE() __asm__ __volatile__("mov x0, #0\\n\\t'
+    'mov x1, #0\\n\\t.inst 0xff420110" ::: "x0", "x1", "memory")\n'
 )
 
 #: A trace of one interval is a total, not a trace. Below this a predictor

@@ -4228,6 +4228,88 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             top_blocks=min(int(params.get("top_blocks", 5) or 5), 15),
         )
 
+    def _recent_counter_trace(state: Any) -> Any:
+        """The series from the most recent successful counter sampling.
+
+        Read from the run rather than retyped by the model, for the reason
+        _recent_hot_blocks exists: a trace is tens of counters by tens of
+        intervals, and a truncated copy answers a question about different
+        data than the one that was sampled.
+        """
+        actions = (
+            (state or {}).get("actions_taken") if isinstance(state, dict) else None
+        )
+        if not isinstance(actions, list):
+            return None
+        for entry in reversed(actions):
+            if not isinstance(entry, dict):
+                continue
+            action = (
+                entry.get("action") if isinstance(entry.get("action"), dict) else {}
+            )
+            result = (
+                entry.get("result") if isinstance(entry.get("result"), dict) else {}
+            )
+            if str(action.get("tool") or "") != "sample_hardware_counters":
+                continue
+            if not bool(result.get("success")):
+                continue
+            data = result.get("data") if isinstance(result.get("data"), dict) else {}
+            series = data.get("series")
+            if isinstance(series, dict) and series:
+                return series
+        return None
+
+    async def _measure_predictability(
+        params: Dict[str, Any], context: AgentToolExecutionContext
+    ) -> Dict[str, Any]:
+        from app.services import agent_predictability
+
+        series = _recent_counter_trace(getattr(context, "state", None))
+        if not series:
+            return {
+                "success": False,
+                "error": (
+                    "No counter trace in this run. Call sample_hardware_counters "
+                    "first, with M5_SAMPLE() in the workload -- predictability is "
+                    "a property of counters over time and cannot be read from a "
+                    "run total."
+                ),
+            }
+
+        result = agent_predictability.ceiling(
+            series,
+            str(params.get("target") or ""),
+            bins=int(params.get("bins") or agent_predictability.DEFAULT_BINS),
+        )
+        if not result.get("measured"):
+            return {"success": False, "error": result.get("refusal"), "data": result}
+
+        return {
+            "success": True,
+            "data": result,
+            "findings": [
+                {
+                    "type": "predictability_ceiling",
+                    "subject": result["target"],
+                    "title": (
+                        f"{result['target']}: {result['best_counter_beyond_persistence_bits']} "
+                        f"bits available beyond persistence over {result['intervals']} intervals"
+                    ),
+                    "target": result["target"],
+                    "intervals": result["intervals"],
+                    "target_entropy_bits": result["target_entropy_bits"],
+                    "persistence_information_bits": result[
+                        "persistence_information_bits"
+                    ],
+                    "best_counter_beyond_persistence_bits": result[
+                        "best_counter_beyond_persistence_bits"
+                    ],
+                    "verdict": result["verdict"],
+                }
+            ],
+        }
+
     async def _sample_hardware_counters(
         params: Dict[str, Any], context: AgentToolExecutionContext
     ) -> Dict[str, Any]:
@@ -4929,6 +5011,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "axis_prove": _axis_prove,
             "benchmark_c_snippet": _benchmark_c_snippet,
             "sample_hardware_counters": _sample_hardware_counters,
+            "measure_predictability": _measure_predictability,
             "execute_data_pipeline": _execute_data_pipeline,
             "write_and_run_script": _write_and_run_script,
             "write_file": _write_file,

@@ -3380,6 +3380,39 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "measure_predictability",
+        "description": (
+            "Measure how much signal the sampled hardware counters carry about "
+            "a target counter's NEXT interval -- the ceiling on any predictor "
+            "tapping them, established before designing one. Reads the trace "
+            "from the sample_hardware_counters call this run already made; do "
+            "not paste it back. The number that decides anything is "
+            "'information beyond persistence': what a counter adds over simply "
+            "predicting the same value as last interval. Programs run in "
+            "phases, so almost every counter looks predictive until you ask "
+            "what it contributes, and a predictor that cannot beat last-value "
+            "is not worth building in hardware. A trace too short to estimate "
+            "on is refused rather than answered."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Counter to predict, e.g. system.cpu.numCycles. Must be "
+                        "present in the trace."
+                    ),
+                },
+                "bins": {
+                    "type": "integer",
+                    "description": "Discretisation levels, default 3. More bins need a longer trace",
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    {
         "name": "sample_hardware_counters",
         "description": (
             "Run a C workload in a simulated core and return its hardware "

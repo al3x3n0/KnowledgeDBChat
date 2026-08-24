@@ -13,6 +13,7 @@ configurations as much as their code.
 
 from __future__ import annotations
 
+import math
 import re
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
 
@@ -167,6 +168,19 @@ def varying_counters(
     Ranked by coefficient of variation rather than raw spread, so a counter
     measured in millions does not outrank one measured in tens purely for being
     large.
+
+    Two filters, both learned from the first real trace. A counter carrying
+    NaN is dropped, because gem5 prints that for a statistic with no samples
+    and it poisons every arithmetic downstream. And a counter that is zero in
+    most intervals is dropped, because it describes an *event* rather than a
+    level -- program startup fires dozens of them exactly once, and ranking by
+    coefficient of variation puts precisely those at the top while burying the
+    counters that track the workload. On the first trace tried, the entire top
+    of the list was startup noise and `numCycles` did not make the first forty.
+
+    The usual prediction targets -- cycles and committed instructions -- are
+    kept at the front regardless of rank, since a trace that omits the thing
+    you want to predict is not usable for prediction.
     """
     if len(intervals) < 2:
         return []
@@ -178,7 +192,16 @@ def varying_counters(
     scored: List[tuple] = []
     for name in names:
         values = [float(i.get(name, 0.0)) for i in intervals]
+        # gem5 prints `nan` for statistics with no samples in an interval --
+        # a rate whose denominator was zero, say. Carrying those forward
+        # poisons every arithmetic downstream of here silently, and a counter
+        # that reports NaN is the measurement saying it has nothing, which is
+        # not a value to predict from.
+        if any(math.isnan(v) or math.isinf(v) for v in values):
+            continue
         if len(set(values)) < 2:
+            continue
+        if sum(1 for v in values if v != 0) * 2 < len(values):
             continue
         mean = sum(values) / len(values)
         if mean == 0:
@@ -187,7 +210,14 @@ def varying_counters(
         scored.append((spread, name))
 
     scored.sort(reverse=True)
-    return [name for _, name in scored[: max(1, limit)]]
+    ranked = [name for _, name in scored]
+
+    # Keep the usual targets whatever their rank.
+    pinned = [
+        name for name in list(CYCLE_KEYS) + list(INSTRUCTION_KEYS) if name in ranked
+    ]
+    rest = [name for name in ranked if name not in pinned]
+    return (pinned + rest)[: max(1, limit)]
 
 
 def as_series(

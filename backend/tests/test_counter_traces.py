@@ -57,14 +57,52 @@ def test_constant_counters_are_dropped():
     assert "system.cpu.dcache.overallMisses" in varying
 
 
+def test_the_usual_prediction_targets_are_kept_whatever_their_rank():
+    """A trace that omits the thing you want to predict is not usable for
+    prediction, and on the first real trace numCycles did not make the top
+    forty -- it was crowded out by startup events."""
+    intervals = gem5_stats.parse_intervals(STATS.splitlines())
+
+    varying = gem5_stats.varying_counters(intervals)
+
+    assert varying[0] == "system.cpu.numCycles"
+
+
 def test_counters_are_ranked_by_relative_not_absolute_movement():
     """Misses swing 10 -> 900 -> 20; cycles only 1000 -> 2000. Ranking by raw
     spread would put cycles first purely for being measured in thousands."""
     intervals = gem5_stats.parse_intervals(STATS.splitlines())
 
-    varying = gem5_stats.varying_counters(intervals)
+    unpinned = [
+        n
+        for n in gem5_stats.varying_counters(intervals)
+        if n not in gem5_stats.CYCLE_KEYS
+    ]
 
-    assert varying[0] == "system.cpu.dcache.overallMisses"
+    assert unpinned[0] == "system.cpu.dcache.overallMisses"
+
+
+def test_a_counter_that_fires_once_is_an_event_not_a_level():
+    """Program startup fires dozens of these exactly once. Their coefficient
+    of variation is enormous and their predictive value is nil, so ranking by
+    it put the entire startup at the top of the first real trace."""
+    intervals = [
+        {"startup": 80.0},
+        {"startup": 0.0},
+        {"startup": 0.0},
+        {"startup": 0.0},
+    ]
+
+    assert gem5_stats.varying_counters(intervals) == []
+
+
+def test_a_counter_carrying_nan_is_dropped():
+    """gem5 prints nan for a statistic with no samples in an interval -- a
+    rate whose denominator was zero. Carrying it forward poisons every
+    arithmetic downstream, silently."""
+    intervals = [{"a": 1.0, "b": float("nan")}, {"a": 2.0, "b": 3.0}]
+
+    assert gem5_stats.varying_counters(intervals) == ["a"]
 
 
 def test_a_single_interval_has_nothing_to_vary():

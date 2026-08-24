@@ -33,7 +33,7 @@ from __future__ import annotations
 
 import math
 from collections import Counter
-from typing import Any, Dict, List, Mapping, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 
 #: Discretisation bins. Three -- low, middle, high -- on purpose: the sample
 #: cost of estimating a conditional entropy grows with the square of this, and
@@ -150,6 +150,69 @@ def counter_signal(
     }
 
 
+#: Permutations for the null. Enough to place an observed value against a 95th
+#: percentile without making the check cost more than the study.
+NULL_TRIALS = 100
+
+
+def shuffle_null(
+    counters: Mapping[str, Sequence[float]],
+    target: Sequence[float],
+    bins: int = DEFAULT_BINS,
+    trials: int = NULL_TRIALS,
+    seed: int = 12345,
+) -> Dict[str, Any]:
+    """What this statistic reports on data where the relationship is destroyed.
+
+    Conditional mutual information is *positively biased* with small samples:
+    conditioning on two discretised variables splits a short trace across
+    bins**2 cells, and sparse cells manufacture apparent structure. The
+    signature is a counter that scores near zero alone and high in
+    combination, which is exactly what the first real trace produced.
+
+    So the observed value is placed against a null built by permuting the
+    counter -- same marginal distribution, same trace length, same bin counts,
+    no relationship to the target. Whatever the estimator reports on that is
+    bias, and an observation inside the null is not a finding.
+
+    The null is over the MAXIMUM across all counters, not one counter at a
+    time. A trace carries tens of counters, and comparing each against a 95th
+    percentile means one in twenty clears it by chance: with fifty counters,
+    two or three "findings" are guaranteed on data with no structure at all.
+    The max-statistic null asks the right question -- how large is the best of
+    fifty counters when none of them is related -- and answers it at the same
+    trace length, bin count and marginals as the real thing.
+
+    Deterministic: a null that moves between runs cannot be argued with.
+    """
+    import random
+
+    series = {k: list(v) for k, v in counters.items()}
+    rng = random.Random(seed)
+    null = []
+    for _ in range(max(1, trials)):
+        best = 0.0
+        for values in series.values():
+            shuffled = values[:]
+            rng.shuffle(shuffled)
+            best = max(
+                best,
+                counter_signal(shuffled, target, bins)[
+                    "information_beyond_persistence"
+                ],
+            )
+        null.append(best)
+    null.sort()
+    index = min(len(null) - 1, int(0.95 * len(null)))
+    return {
+        "trials": len(null),
+        "counters_tested": len(series),
+        "null_median": round(null[len(null) // 2], 4),
+        "null_p95": round(null[index], 4),
+        "statistic": "maximum across counters",
+    }
+
+
 def ceiling(
     series: Mapping[str, Sequence[float]],
     target: str,
@@ -196,6 +259,22 @@ def ceiling(
         scored.append({"counter": name, **signal})
 
     scored.sort(key=lambda row: row["information_beyond_persistence"], reverse=True)
+
+    # Place the best counter against a null. A number the estimator would have
+    # reported on unrelated data is not a finding, and this trace length is
+    # where that bias lives.
+    null: Dict[str, Any] = {}
+    if scored:
+        candidates = {
+            row["counter"]: series[row["counter"]]
+            for row in scored
+            if row["counter"] in series
+        }
+        null = shuffle_null(candidates, target_values, bins)
+        for row in scored:
+            row["above_null_p95"] = bool(
+                row["information_beyond_persistence"] > null["null_p95"]
+            )
     persistence = scored[0]["persistence_information"] if scored else 0.0
     target_entropy = scored[0]["target_entropy"] if scored else 0.0
     best_beyond = scored[0]["information_beyond_persistence"] if scored else 0.0
@@ -209,11 +288,20 @@ def ceiling(
         "persistence_information_bits": round(persistence, 4),
         "best_counter_beyond_persistence_bits": round(best_beyond, 4),
         "counters": scored[:top],
-        "verdict": _verdict(target_entropy, persistence, best_beyond),
+        "null": null,
+        "survives_null": bool(null and best_beyond > null.get("null_p95", 0.0)),
+        "verdict": _verdict(
+            target_entropy, persistence, best_beyond, null.get("null_p95")
+        ),
     }
 
 
-def _verdict(target_entropy: float, persistence: float, best_beyond: float) -> str:
+def _verdict(
+    target_entropy: float,
+    persistence: float,
+    best_beyond: float,
+    null_p95: Optional[float] = None,
+) -> str:
     """What the numbers mean for whether to build anything."""
     if target_entropy <= 0.05:
         return (
@@ -235,6 +323,14 @@ def _verdict(target_entropy: float, persistence: float, best_beyond: float) -> s
             "single counter recovers any of them. Either the signal is not in "
             "this counter set, or it needs a combination -- which costs more "
             "taps and should only be tried with a reason."
+        )
+    if null_p95 is not None and best_beyond <= null_p95:
+        return (
+            f"{best_beyond:.2f} bits beyond persistence is INSIDE the null "
+            f"({null_p95:.2f} at the 95th percentile on permuted data), so it "
+            "is what this estimator reports on a relationship that does not "
+            "exist. Conditional mutual information is positively biased at "
+            "this trace length. Take a longer trace before believing it."
         )
     share = best_beyond / remaining if remaining else 0.0
     return (

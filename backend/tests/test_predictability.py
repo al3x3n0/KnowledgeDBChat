@@ -153,3 +153,73 @@ def test_both_new_tools_are_registered_everywhere():
     if names:
         assert "sample_hardware_counters" in names
         assert "measure_predictability" in names
+
+
+# --- the null --------------------------------------------------------------
+
+
+def test_pure_noise_does_not_survive_the_null():
+    """The check that made this module honest. At 65 intervals with 50
+    counters, the best 'information beyond persistence' on data with no
+    relationship at all reads about 0.31 bits -- which is more than a real
+    kernel produced. Without the null, that was reported as a finding."""
+    import random
+
+    rng = random.Random(7)
+    target = [rng.random() for _ in range(65)]
+    series = {"t": target}
+    for i in range(50):
+        series[f"n{i}"] = [rng.random() for _ in range(65)]
+
+    result = pred.ceiling(series, "t")
+
+    assert result["measured"] is True
+    assert result["survives_null"] is False
+    assert result["best_counter_beyond_persistence_bits"] > 0.2, (
+        "the estimator does report apparent signal on noise -- that is the bias "
+        "this null exists to expose"
+    )
+    assert "INSIDE the null" in result["verdict"]
+
+
+def test_the_null_is_over_the_maximum_across_counters():
+    """Comparing fifty counters against a 95th percentile means two or three
+    clear it by chance. The max-statistic null asks how large the best of
+    fifty is when none is related."""
+    import random
+
+    rng = random.Random(3)
+    target = [rng.random() for _ in range(60)]
+    series = {
+        "t": target,
+        **{f"n{i}": [rng.random() for _ in range(60)] for i in range(20)},
+    }
+
+    result = pred.ceiling(series, "t")
+
+    assert result["null"]["statistic"] == "maximum across counters"
+    assert result["null"]["counters_tested"] == 20
+
+
+def test_a_planted_relationship_does_survive_the_null():
+    """The null must not reject everything, or it is not a discriminator."""
+    target = _long([10.0] * 8 + [90.0] * 8, times=6)
+    lead = _long([0.0] * 7 + [1.0] + [0.0] * 7 + [1.0], times=6)
+
+    result = pred.ceiling({"target": target, "lead": lead}, "target")
+
+    assert result["survives_null"] is True
+
+
+def test_the_null_is_deterministic():
+    """A null that moves between runs cannot be argued with."""
+    import random
+
+    rng = random.Random(11)
+    target = [rng.random() for _ in range(60)]
+    series = {"t": target, "a": [rng.random() for _ in range(60)]}
+
+    first = pred.ceiling(series, "t")["null"]["null_p95"]
+    second = pred.ceiling(series, "t")["null"]["null_p95"]
+
+    assert first == second

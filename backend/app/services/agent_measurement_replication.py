@@ -175,6 +175,17 @@ def judge(
         # mistake as calling a skipped control a pass.
         "all_reproduced": bool(metrics) and not failed,
         "any_metrics": bool(metrics),
+        # Without this a call that printed nothing reports all_reproduced
+        # false with an empty not_reproduced list, which reads as "nothing
+        # failed" -- seen in a live run and genuinely confusing.
+        "note": (
+            ""
+            if metrics
+            else (
+                "the program printed no key=value metrics, so there was "
+                "nothing to reproduce; this is not agreement"
+            )
+        ),
     }
 
 

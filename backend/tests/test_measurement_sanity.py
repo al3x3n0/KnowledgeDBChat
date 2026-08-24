@@ -210,3 +210,39 @@ def test_this_is_the_gap_controls_and_replication_leave():
     identical = [{"cycles_per_op": 3.339}] * 3
     assert replication.judge(identical)["all_reproduced"] is True
     assert sanity.chain_leaves_normal_range(MIXED) is not None
+
+
+def test_every_validity_predicate_survives_contract_normalisation():
+    """The registration point that made three predicates dead on arrival.
+
+    `_get_goal_contract_config` normalises the validity block and drops
+    anything unrecognised -- correct for a malformed rule, and a silent trap
+    for a new one. A predicate missing from that allowlist reads as a contract
+    declaring nothing, which is exactly what a live run showed: the config held
+    the block, the evaluator saw `declared: false`, and nothing ran.
+    """
+    from app.models.agent_job import AgentJob
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    declared = {
+        "predictions_measured": True,
+        "records_method": True,
+        "instruments_verified": True,
+        "measurements_reproduce": True,
+        "measures_what_it_names": True,
+    }
+    job = AgentJob(
+        name="n",
+        goal="g",
+        job_type="research",
+        config={"goal_contract": {"min_findings": 1, "validity": declared}},
+    )
+
+    normalised = AutonomousAgentExecutor._get_goal_contract_config(
+        AutonomousAgentExecutor.__new__(AutonomousAgentExecutor), job
+    )
+
+    assert normalised["validity"] == declared, (
+        "a predicate absent from the normaliser's allowlist is dropped in "
+        "silence and the contract requires nothing"
+    )

@@ -468,3 +468,42 @@ def needs_post_control(state: Mapping[str, Any], tool: str) -> bool:
         return True
     latest_control = max(int(e.get("at_action", -1)) for e in events)
     return latest_control < max(uses)
+
+
+async def close_bracket(executor: Any, job: Any, db: Any, state: Any) -> None:
+    """Re-run the controls for every measurement tool used since its last.
+
+    Called both when a run claims success and when it ends for any other
+    reason. The second is not a nicety: a live run stopped at its iteration cap
+    without ever claiming `goal_achieved`, so the closing control never fired
+    and the contract would have refused it for a bracket it was given no
+    opportunity to close.
+
+    Never fatal. A failing control records that the window produced no
+    evidence; the contract is what acts on that.
+    """
+    from app.services.agent_tool_dispatch import AgentToolExecutionContext
+
+    if not isinstance(state, dict):
+        return
+
+    for tool in controlled_tools():
+        if not needs_post_control(state, tool):
+            continue
+
+        async def _call(name: str, params: Dict[str, Any]) -> Any:
+            handled, result = await executor.tool_registry.try_execute(
+                name,
+                params,
+                AgentToolExecutionContext(
+                    mode="autonomous", db=db, service=executor, job=job, state=state
+                ),
+            )
+            return result if handled else {"success": False, "error": "no provider"}
+
+        try:
+            await run_controls(_call, tool, state, when="after")
+        except Exception as exc:  # pragma: no cover - defensive
+            from loguru import logger
+
+            logger.warning(f"Could not close the control bracket for {tool}: {exc}")

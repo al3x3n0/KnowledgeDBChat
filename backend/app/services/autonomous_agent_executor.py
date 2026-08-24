@@ -339,40 +339,9 @@ class _AutonomousRuntimeAdapter:
         return observation
 
     async def _close_instrument_bracket(self) -> None:
-        """Re-run the controls for every measurement tool used since its last.
-
-        Deliberately not fatal on its own: a failing control does not end the
-        run, it records that the measurements in that window are not evidence.
-        The contract decides what to do about that, which keeps the judgement
-        in one place instead of two.
-        """
-        from loguru import logger
-
-        from app.services.agent_tool_dispatch import AgentToolExecutionContext
         from app.services import agent_tool_controls as controls
 
-        for tool in controls.controlled_tools():
-            if not controls.needs_post_control(self.state, tool):
-                continue
-
-            async def _call(name: str, params: Dict[str, Any]) -> Any:
-                handled, result = await self.executor.tool_registry.try_execute(
-                    name,
-                    params,
-                    AgentToolExecutionContext(
-                        mode="autonomous",
-                        db=self.db,
-                        service=self.executor,
-                        job=self.job,
-                        state=self.state,
-                    ),
-                )
-                return result if handled else {"success": False, "error": "no provider"}
-
-            try:
-                await controls.run_controls(_call, tool, self.state, when="after")
-            except Exception as exc:  # pragma: no cover - defensive
-                logger.warning(f"Could not close the control bracket for {tool}: {exc}")
+        await controls.close_bracket(self.executor, self.job, self.db, self.state)
 
     async def think_phase(self, observation: Dict[str, Any]) -> Dict[str, Any]:
         decision = await self.executor.thinking_service.think(
@@ -7793,10 +7762,20 @@ RESPONSE FORMAT:
             if not isinstance(value, dict):
                 return {}
             spec: Dict[str, Any] = {}
-            if self._coerce_bool(value.get("predictions_measured"), default=False):
-                spec["predictions_measured"] = True
-            if self._coerce_bool(value.get("records_method"), default=False):
-                spec["records_method"] = True
+            # Every boolean predicate has to be named here or it is dropped
+            # silently and the contract reads as declaring nothing. That is the
+            # right default for a malformed rule and a trap for a new one:
+            # three predicates were added and none reached a live run, because
+            # this allowlist is a registration point and was not updated.
+            for flag in (
+                "predictions_measured",
+                "records_method",
+                "instruments_verified",
+                "measurements_reproduce",
+                "measures_what_it_names",
+            ):
+                if self._coerce_bool(value.get(flag), default=False):
+                    spec[flag] = True
             uncertainty = _as_str_list(value.get("require_uncertainty"))
             if uncertainty:
                 spec["require_uncertainty"] = uncertainty[:24]

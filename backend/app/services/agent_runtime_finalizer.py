@@ -26,6 +26,18 @@ async def finalize_job(
     """Finalize a runtime job and build the terminal result payload."""
     # Determine final status
     limited, limit_reason = job.is_resource_limited()
+
+    # Close the instrument bracket before the contract is judged, for a run
+    # ending any way at all. A run stopped at its iteration cap never claims
+    # goal_achieved, so the think phase's closing control never fires, and the
+    # contract would refuse it for a bracket it was given no chance to close.
+    try:
+        from app.services import agent_tool_controls
+
+        await agent_tool_controls.close_bracket(executor, job, db, state)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not close the control bracket for job {job.id}: {exc}")
+
     contract_eval = executor._evaluate_goal_contract(job, state)
     state["goal_contract_last"] = contract_eval
 

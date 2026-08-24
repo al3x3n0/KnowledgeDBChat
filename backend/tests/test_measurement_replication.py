@@ -264,3 +264,21 @@ def test_a_control_call_is_never_itself_replicated():
     control = controls.controls_for("benchmark_c_snippet")[0]
     assert controls.is_control_call(dict(control.params)) is False
     assert controls.is_control_call({controls.CONTROL_MARKER: True}) is True
+
+
+def test_no_metrics_says_so_rather_than_looking_like_nothing_failed():
+    """Seen in a live run: a call that printed nothing reported
+    all_reproduced false with an empty not_reproduced list, which reads as
+    'nothing failed'."""
+    verdict = replication.judge([{}, {}, {}])
+
+    assert verdict["all_reproduced"] is False
+    assert verdict["not_reproduced"] == []
+    assert "nothing to reproduce" in verdict["note"]
+    assert "not agreement" in verdict["note"]
+
+
+def test_a_verdict_with_metrics_carries_no_note():
+    verdict = replication.judge([{"a": 1.0}, {"a": 1.0}, {"a": 1.0}])
+
+    assert verdict["note"] == ""

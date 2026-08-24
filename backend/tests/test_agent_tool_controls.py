@@ -269,3 +269,31 @@ def test_no_post_control_is_needed_if_the_tool_was_never_used():
         controls.needs_post_control({"actions_taken": []}, "benchmark_c_snippet")
         is False
     )
+
+
+@pytest.mark.asyncio
+async def test_the_bracket_closes_for_a_run_that_ends_at_its_iteration_cap():
+    """A live run stopped at its cap without ever claiming goal_achieved, so
+    the think phase's closing control never fired and the contract would have
+    refused it for a bracket it was given no chance to close."""
+
+    class _Registry:
+        def __init__(self):
+            self.calls = []
+
+        async def try_execute(self, name, params, context):
+            self.calls.append(params.get("label", ""))
+            return True, _ok(1.0)
+
+    class _Executor:
+        def __init__(self):
+            self.tool_registry = _Registry()
+
+    state = _state([_passing("null_control", 0)], ["benchmark_c_snippet"] * 3)
+    assert controls.needs_post_control(state, "benchmark_c_snippet") is True
+
+    executor = _Executor()
+    await controls.close_bracket(executor, object(), object(), state)
+
+    assert len(executor.tool_registry.calls) == 2, "both controls re-run"
+    assert controls.needs_post_control(state, "benchmark_c_snippet") is False

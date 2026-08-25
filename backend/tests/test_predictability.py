@@ -315,3 +315,41 @@ def test_a_tap_is_judged_on_what_it_added_not_on_the_running_total():
     second = result["selection"][1]
     assert second["survives_null"] is False
     assert second["total_beyond_persistence"] > result["total_beyond_persistence"]
+
+
+# --- a signal that barely moves --------------------------------------------
+
+
+def test_a_target_that_barely_moves_is_reported_as_such():
+    """Quantile bins always produce bins. Handed a signal that hardly moves
+    they split its jitter into levels, and the estimator then finds real
+    structure in what the quantiser invented. A Godot math kernel whose cycle
+    count varied by 1.08% across 400 intervals read as 0.146 bits beyond
+    persistence surviving its null at 4.2x -- the relationship was genuine and
+    the finding was not."""
+    flat = [18600.0 + (i % 3) * 40 for i in range(300)]
+    series = {"t": flat, "c": [float(i % 7) for i in range(300)]}
+
+    result = pred.ceiling(series, "t")
+
+    assert result["measured"] is True, "this is a measurement, not a failure"
+    assert result["target_relative_spread"] < 0.01
+    assert "changes no design" in result["verdict"]
+
+
+def test_a_target_that_moves_is_not_dismissed():
+    wide = [100.0 if i % 20 < 10 else 900.0 for i in range(300)]
+    series = {"t": wide, "c": [float(i % 7) for i in range(300)]}
+
+    result = pred.ceiling(series, "t")
+
+    assert result["target_relative_spread"] > 0.5
+    assert "changes no design" not in result["verdict"]
+
+
+def test_spread_is_measured_from_percentiles_not_extremes():
+    """One startup interval should not describe the trace: min-to-max would
+    call a flat signal with a single 60x outlier wildly variable."""
+    flat_with_spike = [100.0] * 200 + [6000.0]
+
+    assert pred.relative_spread(flat_with_spike) < 0.05

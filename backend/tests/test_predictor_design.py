@@ -12,6 +12,10 @@ import random
 from app.services import agent_predictor_design as design
 
 
+def _long(pattern, times=20):
+    return list(pattern) * times
+
+
 def _tap_driven(n=400, seed=1):
     """A tap at t that names the target at t+1 outright, persistence weak."""
     rng = random.Random(seed)
@@ -103,7 +107,12 @@ def test_a_tap_carrying_nothing_does_not_survive_the_null():
     result = design.evaluate(series, "t", "tap", trials=20)
 
     assert result["survives_null"] is False
-    assert "INSIDE the null" in result["verdict"]
+    # Not asserting which sentence comes back. Against the stronger of the two
+    # baselines this case now has no headroom at all, so the honest verdict is
+    # "nothing to build" rather than "inside the null" -- a better answer, and
+    # a test pinned to the wording would have called the improvement a
+    # regression.
+    assert result["best_gain_over_persistence"] <= result["null_p95_gain"]
 
 
 def test_the_reference_is_fit_on_the_warmup_not_the_scored_segment():
@@ -188,3 +197,51 @@ def test_the_tool_is_registered_everywhere():
 
     names = {t["name"] for t in agent_tools.AGENT_TOOLS}
     assert "evaluate_predictor_design" in names
+
+
+# --- what "persistence" means ----------------------------------------------
+
+
+def test_the_baseline_is_the_stronger_of_repeating_and_a_last_value_table():
+    """These are not the same thing and this module conflated them. Repeating
+    the last value is free. A table indexed by it is what the information
+    measure means by persistence -- H(next) - H(next|last) is the best any use
+    of the last value could do, and repeating is only one such use."""
+    # Bins alternate, so repeating is never right and the table is nearly
+    # always right. A real Godot trace looked exactly like this.
+    alternating = [0.0 if i % 2 else 100.0 for i in range(400)]
+    series = {"t": alternating, "tap": [float(i % 5) for i in range(400)]}
+
+    result = design.evaluate(series, "t", "tap", trials=10)
+
+    assert result["repeat_last_value_accuracy"] == 0.0
+    assert result["last_value_table_accuracy"] > 0.9
+    assert result["baseline"] == "last-value table"
+    assert result["persistence_accuracy"] == result["last_value_table_accuracy"]
+
+
+def test_a_table_that_learned_the_cycle_is_not_called_a_slower_repeat():
+    """The defect this replaced: scored against repeating alone, a table that
+    had learned an alternation read as gaining +99.5% over persistence and was
+    then dismissed as 'a slower way of predicting the same as last interval'.
+    Both halves of that sentence were wrong."""
+    alternating = [0.0 if i % 2 else 100.0 for i in range(400)]
+    series = {"t": alternating, "tap": [float(i % 5) for i in range(400)]}
+
+    result = design.evaluate(series, "t", "tap", trials=10)
+
+    assert result["headroom"] < 0.05, "the last value already explains it"
+    assert result["best_gain_over_persistence"] < 0.05
+    assert result["survives_null"] is False
+
+
+def test_where_repeating_wins_it_stays_the_baseline():
+    """On an autocorrelated target a freshly trained table is worse than the
+    free thing, and the tap must still beat the free thing."""
+    runs = _long([10.0] * 8 + [90.0] * 8, times=25)
+    series = {"t": runs, "tap": [float(i % 5) for i in range(len(runs))]}
+
+    result = design.evaluate(series, "t", "tap", trials=10)
+
+    assert result["repeat_last_value_accuracy"] > result["last_value_table_accuracy"]
+    assert result["baseline"] == "repeat last value"

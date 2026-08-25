@@ -75,6 +75,37 @@ def discretize(values: Sequence[float], bins: int = DEFAULT_BINS) -> List[int]:
     return labels
 
 
+def relative_spread(values: Sequence[float]) -> Optional[float]:
+    """How much the target moves, as a fraction of its own level.
+
+    Quantile bins always produce bins. Handed a signal that barely moves, they
+    split its jitter into levels and the estimator then finds real structure in
+    what the quantiser invented -- on a Godot math kernel whose cycle count
+    varied by 1.08% across 400 intervals, that read as 0.146 bits beyond
+    persistence surviving its null at 4.2x. The relationship was genuine and
+    the finding was not: a predictor getting every interval right would be
+    predicting a 1% difference in cycles.
+
+    So the spread travels with every estimate. p5 to p95 rather than min to
+    max, because one startup interval should not describe the trace.
+    """
+    numbers = sorted(float(v) for v in values)
+    if len(numbers) < 3:
+        return None
+    low = numbers[int(0.05 * len(numbers))]
+    high = numbers[min(len(numbers) - 1, int(0.95 * len(numbers)))]
+    middle = numbers[len(numbers) // 2]
+    if not middle:
+        return None
+    return abs(high - low) / abs(middle)
+
+
+#: Below this, three bins are separating values that differ by less than a few
+#: percent. Not a refusal: the measurement is sound, and "it varies too little
+#: to be worth predicting" is a finding rather than a failure to measure.
+NEGLIGIBLE_SPREAD = 0.05
+
+
 def entropy(labels: Sequence[int]) -> float:
     """Shannon entropy in bits."""
     if not labels:
@@ -279,11 +310,13 @@ def ceiling(
     target_entropy = scored[0]["target_entropy"] if scored else 0.0
     best_beyond = scored[0]["information_beyond_persistence"] if scored else 0.0
 
+    spread = relative_spread(target_values)
     return {
         "measured": True,
         "target": target,
         "intervals": intervals,
         "bins": bins,
+        "target_relative_spread": (round(spread, 4) if spread is not None else None),
         "target_entropy_bits": target_entropy,
         "persistence_information_bits": round(persistence, 4),
         "best_counter_beyond_persistence_bits": round(best_beyond, 4),
@@ -291,7 +324,7 @@ def ceiling(
         "null": null,
         "survives_null": bool(null and best_beyond > null.get("null_p95", 0.0)),
         "verdict": _verdict(
-            target_entropy, persistence, best_beyond, null.get("null_p95")
+            target_entropy, persistence, best_beyond, null.get("null_p95"), spread
         ),
     }
 
@@ -301,8 +334,21 @@ def _verdict(
     persistence: float,
     best_beyond: float,
     null_p95: Optional[float] = None,
+    spread: Optional[float] = None,
 ) -> str:
     """What the numbers mean for whether to build anything."""
+    if spread is not None and spread < NEGLIGIBLE_SPREAD:
+        return (
+            f"The target moves by {spread:.1%} from its 5th to its 95th "
+            "percentile across this trace, so the three bins are separating "
+            "values that are nearly the same. Whatever is found here is a "
+            "property of the quantiser as much as of the workload: a predictor "
+            f"that got every interval right would be predicting a {spread:.1%} "
+            "difference, which changes no design. This is a measurement, not a "
+            "failed one -- the answer is that this workload has nothing worth "
+            "predicting at this granularity. Measure something that varies, or "
+            "a target that does."
+        )
     if target_entropy <= 0.05:
         return (
             "The target barely varies across this trace, so there is nothing "

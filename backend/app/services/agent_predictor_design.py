@@ -355,7 +355,20 @@ def evaluate(
             ),
         }
 
-    persistence = (
+    # Two baselines, because they are not the same thing and this module used
+    # to conflate them under one name. Repeating the last value is free and
+    # needs no state. A table indexed by the last value is what the information
+    # measure means by "persistence": H(next) - H(next|last) is the best any
+    # use of the last value could do, and repeating it is only one such use.
+    #
+    # On a target whose bins alternate, repeating is 0% correct while the table
+    # is 99.5%, and scoring against the repeat alone reported a table that had
+    # learned the cycle as "a slower way of predicting the same as last
+    # interval". A real Godot trace produced exactly that.
+    #
+    # The baseline is the stronger of the two: a tap has to beat the best
+    # simple thing available, not the most convenient one.
+    repeat = (
         sum(
             1
             for lastval, outcome in zip(last[warm:], outcomes[warm:])
@@ -363,6 +376,12 @@ def evaluate(
         )
         / scored
     )
+    solo = [(a,) for a in last]
+    last_table = max(
+        _run(solo, outcomes, warm, bins, 2, False),
+        _run(solo, outcomes, warm, bins, 2, True),
+    )
+    persistence = max(repeat, last_table)
     ceiling_accuracy, unseen = _oracle(
         [(a, b) for a, b in zip(last, tap_at_t)], outcomes, warm
     )
@@ -412,6 +431,11 @@ def evaluate(
         "warmup_intervals": warm,
         "scored_intervals": scored,
         "persistence_accuracy": round(persistence, 4),
+        "repeat_last_value_accuracy": round(repeat, 4),
+        "last_value_table_accuracy": round(last_table, 4),
+        "baseline": (
+            "last-value table" if last_table > repeat else "repeat last value"
+        ),
         "ceiling_accuracy": round(ceiling_accuracy, 4),
         "headroom": round(headroom, 4),
         "scored_rows_in_untrained_cells": unseen,
@@ -425,7 +449,13 @@ def evaluate(
             best["share_of_headroom"] is not None and best["share_of_headroom"] > 1.0
         ),
         "verdict": _verdict(
-            persistence, ceiling_accuracy, best, null_p95, unseen, scored
+            persistence,
+            ceiling_accuracy,
+            best,
+            null_p95,
+            unseen,
+            scored,
+            "last-value table" if last_table > repeat else "repeat last value",
         ),
     }
 
@@ -437,6 +467,7 @@ def _verdict(
     null_p95: float,
     unseen: int,
     scored: int,
+    baseline: str = "predicting the same as last interval",
 ) -> str:
     """What the numbers mean for whether to build this or something bigger."""
     headroom = ceiling - persistence
@@ -444,8 +475,8 @@ def _verdict(
 
     if headroom <= 0.005:
         return (
-            f"Predicting the same as last interval is already {persistence:.1%} "
-            f"correct, and the best a table on this feature set could do is "
+            f"The baseline ({baseline}) is already {persistence:.1%} correct, "
+            f"and the best a table on this feature set could do is "
             f"{ceiling:.1%}. There is nothing here to build: no predictor "
             "reading this counter can be meaningfully better than a wire."
         )

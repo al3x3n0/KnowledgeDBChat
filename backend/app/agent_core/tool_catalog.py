@@ -245,72 +245,31 @@ def _default_metadata(
     )
 
 
-def _data_analysis_schema(parameters: Any) -> Dict[str, Any]:
-    """A JSON-Schema shell around the data-analysis parameter descriptions.
-
-    Those definitions describe parameters as ``{name: prose}`` rather than as a
-    schema, so the properties carry no ``type``. That is deliberate: the
-    validators in agent_tool_validation repair and reject on declared types,
-    and inventing ``"type": "string"`` for ``nodes`` or ``y_columns`` -- which
-    take lists -- would make them repair correct calls into broken ones. The
-    names are what the catalog needs; the types stay unstated until the
-    definitions state them.
-    """
-    if not isinstance(parameters, dict):
-        return {}
-    return {
-        "type": "object",
-        "properties": {
-            str(name): {"description": str(text)} for name, text in parameters.items()
-        },
-    }
-
-
 def iter_builtin_tools() -> Iterable[ToolMetadata]:
-    """Every tool a run can execute, from all registries that define one.
+    """Every tool a run can execute.
 
-    The data-analysis tools are defined in their own module and were absent
-    here, so 21 tools an agent job could call had no metadata at all: invisible
-    to the tool-policy UI, unclassifiable by effects, and denied as "unknown"
-    by any policy carrying constraints. The guard that exists for exactly that
-    failure could not see them either, because it read the same partial
-    registry this did.
+    There is one registry to read now. There were several, and the
+    data-analysis tools were in a different one from this, so 21 tools an agent
+    job could call had no metadata at all: invisible to the tool-policy UI,
+    unclassifiable by effects, and denied as "unknown" by any policy carrying
+    constraints. The guard written for exactly that failure could not see them
+    either, because it derived its universe from the same partial registry.
     """
     try:
         from app.services.agent_tools import AGENT_TOOLS
     except Exception:
         AGENT_TOOLS = []
 
-    seen: set[str] = set()
     for tool in AGENT_TOOLS or []:
         name = str(tool.get("name") or "").strip()
         if not name:
             continue
-        seen.add(name)
         yield _default_metadata(
             name=name,
             description=str(tool.get("description") or "").strip(),
             input_schema=tool.get("parameters")
             if isinstance(tool.get("parameters"), dict)
             else {},
-        )
-
-    try:
-        from app.services.data_analysis_tools import exposed_data_analysis_tools
-
-        data_analysis = exposed_data_analysis_tools()
-    except Exception:
-        data_analysis = {}
-
-    for name, tool in (data_analysis or {}).items():
-        name = str(name).strip()
-        if not name or name in seen:
-            continue
-        seen.add(name)
-        yield _default_metadata(
-            name=name,
-            description=str(tool.get("description") or "").strip(),
-            input_schema=_data_analysis_schema(tool.get("parameters")),
         )
 
 

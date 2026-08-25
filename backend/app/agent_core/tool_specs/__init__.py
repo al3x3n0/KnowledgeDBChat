@@ -27,6 +27,7 @@ from typing import Any, Dict, List, Tuple
 from app.agent_core.tool_specs import (
     agent_ops,
     authoring,
+    data_analysis,
     documents,
     execution,
     knowledge_graph,
@@ -49,6 +50,7 @@ _MODULES = (
     memory,
     orchestration,
     agent_ops,
+    data_analysis,
     measurement,
 )
 

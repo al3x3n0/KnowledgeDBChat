@@ -40,7 +40,6 @@ from app.agent_core.tool_catalog import iter_builtin_tools
 from app.services import agent_evidence_map, agent_job_tool_policy
 from app.services import agent_tool_dispatch as dispatch
 from app.services.agent_tools import AGENT_TOOLS
-from app.services.data_analysis_tools import exposed_data_analysis_tools
 
 # Job types with their own tool list in agent_job_tool_policy.
 JOB_TYPES = ("research", "coding", "data_analysis", "analysis", "custom")
@@ -60,14 +59,18 @@ class _Stub:
 
 
 def advertised_tools() -> Set[str]:
-    """Every tool name a run can be shown, across all registries that hold one."""
-    names = {
+    """Every tool name a run can be shown.
+
+    This used to union two registries, because the data-analysis tools were
+    declared in their own module and absent from AGENT_TOOLS. They are ordinary
+    specs now and AGENT_TOOLS is a view of the specs, so there is one place to
+    look -- which is the point of the change that made this simpler.
+    """
+    return {
         str(tool.get("name") or "").strip()
         for tool in AGENT_TOOLS
         if str(tool.get("name") or "").strip()
     }
-    names |= {str(name).strip() for name in exposed_data_analysis_tools()}
-    return names
 
 
 def dispatchable_tools() -> Set[str]:
@@ -106,25 +109,19 @@ def test_every_dispatchable_tool_is_advertised():
     )
 
 
-def test_no_tool_name_is_offered_by_two_registries():
-    """One name, one contract.
+def test_one_name_means_one_contract():
+    """``create_chart`` was defined in two registries with different
+    parameters. Provider resolution is first-wins, so every call conforming to
+    the advertised contract was answered by the other tool and failed on a
+    field the run had not been asked for.
 
-    ``create_chart`` was defined in both registries with different parameters.
-    Provider resolution is first-wins, so every call conforming to the
-    advertised contract was answered by the other tool and failed on a field
-    the run had not been asked for.
+    There is one registry now, and the spec package refuses to assemble if two
+    modules declare the same name -- so this asserts the property the old
+    collision violated, rather than the collision itself.
     """
-    builtin = {
-        str(tool.get("name") or "").strip()
-        for tool in AGENT_TOOLS
-        if str(tool.get("name") or "").strip()
-    }
-    collisions = sorted(builtin & set(exposed_data_analysis_tools()))
-    assert not collisions, (
-        "These names are defined in AGENT_TOOLS and in the data-analysis "
-        "registry with different parameters; a run is shown one and gets the "
-        "other:\n" + "\n".join(f"  - {n}" for n in collisions)
-    )
+    names = [str(t.get("name") or "") for t in AGENT_TOOLS]
+    duplicated = sorted({n for n in names if names.count(n) > 1})
+    assert not duplicated, f"advertised twice, with two contracts: {duplicated}"
 
 
 def test_the_governed_universe_is_the_executable_universe():

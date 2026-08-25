@@ -187,3 +187,89 @@ def test_a_spec_belonging_to_no_job_type_is_offered_to_none(monkeypatch):
 
     for job_type in JOB_TYPES:
         assert "chat_only_thing" not in tool_specs.tools_for_job_type(job_type)
+
+
+class TestDataAnalysisSchemasMatchTheirService:
+    """The data-analysis schemas were converted, not moved.
+
+    They were declared as prose keyed by parameter name, carrying no types at
+    all, so nothing could check them and the repair pass had nothing to work
+    from. The types now in the specs were read from the service signatures;
+    these tests keep them tied to those signatures, because a schema that
+    drifts from what the service accepts is the defect this whole registry
+    exists to prevent -- and a wrong type is worse than none, since the repair
+    pass acts on it.
+    """
+
+    def _pairs(self):
+        import inspect
+        import typing
+
+        from app.agent_core.tool_specs import data_analysis
+        from app.services.data_analysis_tools import (
+            DATA_ANALYSIS_EXPOSED_NAMES,
+            DataAnalysisTools,
+        )
+
+        method_for = {v: k for k, v in DATA_ANALYSIS_EXPOSED_NAMES.items()}
+        for spec in data_analysis.SPECS:
+            fn = getattr(DataAnalysisTools, method_for.get(spec.name, spec.name))
+            params = {
+                k: v for k, v in inspect.signature(fn).parameters.items() if k != "self"
+            }
+            yield spec, params, typing.get_type_hints(fn), inspect._empty
+
+    def test_the_schema_offers_exactly_what_the_service_accepts(self):
+        for spec, params, _hints, _empty in self._pairs():
+            offered = set(spec.parameters["properties"])
+            assert offered == set(params), (
+                f"{spec.name}: schema offers {sorted(offered)}, "
+                f"service accepts {sorted(params)}"
+            )
+
+    def test_required_means_the_service_has_no_default(self):
+        for spec, params, _hints, empty in self._pairs():
+            required = set(spec.parameters.get("required") or [])
+            expected = {k for k, v in params.items() if v.default is empty}
+            assert required == expected, f"{spec.name}: required {sorted(required)}"
+
+    def test_every_declared_type_matches_the_signature(self):
+        import typing
+
+        def json_type(ann):
+            origin = typing.get_origin(ann)
+            args = typing.get_args(ann)
+            if origin is typing.Union:
+                inner = [a for a in args if a is not type(None)]
+                return json_type(inner[0]) if inner else None
+            if origin is list:
+                return "array"
+            if origin is dict:
+                return "object"
+            return {
+                str: "string",
+                bool: "boolean",
+                float: "number",
+                int: "integer",
+            }.get(ann)
+
+        for spec, params, hints, _empty in self._pairs():
+            for name, prop in spec.parameters["properties"].items():
+                assert prop.get("type") == json_type(
+                    hints.get(name)
+                ), f"{spec.name}.{name}: declared {prop.get('type')!r}"
+
+    def test_the_list_parameters_are_arrays(self):
+        """The specific trap: guessing ``string`` for these would have had the
+        repair pass rewrite correct calls into broken ones."""
+        from app.agent_core.tool_specs import data_analysis
+
+        by_name = {s.name: s for s in data_analysis.SPECS}
+        for tool, field in (
+            ("create_flowchart", "nodes"),
+            ("create_pie_chart_diagram", "slices"),
+            ("create_chart_from_dataset", "y_columns"),
+            ("create_sequence_diagram", "participants"),
+        ):
+            prop = by_name[tool].parameters["properties"][field]
+            assert prop["type"] == "array", f"{tool}.{field} is {prop['type']!r}"

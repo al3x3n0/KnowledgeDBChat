@@ -8,11 +8,9 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Pro
 
 from sqlalchemy import select
 
+from app.agent_core.tool_specs import data_analysis as data_analysis_specs
 from app.services import llm_structured
-from app.services.data_analysis_tools import (
-    DATA_ANALYSIS_EXPOSED_NAMES,
-    DATA_ANALYSIS_TOOL_DEFINITIONS,
-)
+from app.services.data_analysis_tools import DATA_ANALYSIS_EXPOSED_NAMES
 
 
 def _unimplemented_tool(tool_name: str) -> Dict[str, Any]:
@@ -2075,11 +2073,17 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
 
         return result
 
+    # Keyed by the name a run calls, valued by the method that answers it.
+    # The specs declare the exposed names; the alias map is still needed here
+    # because one of them is dispatched under a different method name.
+    _method_for = {exposed: raw for raw, exposed in DATA_ANALYSIS_EXPOSED_NAMES.items()}
     handlers = {
-        DATA_ANALYSIS_EXPOSED_NAMES.get(tool_name, tool_name): (
-            lambda params, ctx, _tool_name=tool_name: _execute(_tool_name, params, ctx)
+        spec.name: (
+            lambda params, ctx, _tool_name=_method_for.get(spec.name, spec.name): (
+                _execute(_tool_name, params, ctx)
+            )
         )
-        for tool_name in DATA_ANALYSIS_TOOL_DEFINITIONS
+        for spec in data_analysis_specs.SPECS
     }
     return FunctionToolProvider(
         name="autonomous_data_analysis_tools",

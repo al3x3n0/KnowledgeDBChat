@@ -11,19 +11,6 @@ from typing import Any, Dict, List, Optional
 
 from app.agent_core import tool_specs
 from app.models.agent_job import AgentJob
-from app.services.data_analysis_tools import exposed_data_analysis_tools
-
-
-def _data_analysis_tools_for(job_type: str) -> set:
-    """The data-analysis tools, which only that job type may call.
-
-    They are declared in their own module in a different shape and have not
-    moved to specs; until they do, this is the one place their availability is
-    decided.
-    """
-    if str(job_type or "").strip() != "data_analysis":
-        return set()
-    return set(exposed_data_analysis_tools().keys())
 
 
 def get_tools_for_job_type(
@@ -39,17 +26,7 @@ def get_tools_for_job_type(
     name listed here but nowhere else was not an error, only a capability the
     job type quietly did without.
     """
-    supported_tools = set(tool_specs.spec_names())
-    # Exposed names, not definition keys: dispatch routes on the exposed name,
-    # so filtering against the raw keys silently dropped the renamed tool from
-    # every proposal that asked for it.
-    supported_tools.update(exposed_data_analysis_tools().keys())
-
-    proposed = sorted(
-        set(tool_specs.tools_for_job_type(job_type))
-        | _data_analysis_tools_for(job_type)
-    )
-    proposed = [t for t in proposed if t in supported_tools]
+    proposed = sorted(tool_specs.tools_for_job_type(job_type))
 
     cfg = config if isinstance(config, dict) else {}
 

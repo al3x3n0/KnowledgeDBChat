@@ -3453,6 +3453,54 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "evaluate_predictor_design",
+        "description": (
+            "Run the predictor a measurement indicated and score it against "
+            "its own ceiling, on intervals it was not trained on. Use after "
+            "select_counter_taps has named a tap. An information ceiling says "
+            "what is available; this says what a table of saturating counters "
+            "actually reaches, which is the number that decides whether to "
+            "stop or to spend more. Reports a design's cost in bits of state "
+            "next to what it gains OVER PREDICTING THE SAME AS LAST INTERVAL "
+            "-- never over chance, which flatters every predictor on an "
+            "autocorrelated target. The split is contiguous, never random, "
+            "because adjacent intervals are near-identical and a random split "
+            "puts each scored row's twin in the warm-up. If the cheap design "
+            "captures most of its ceiling, a learned model is competing for "
+            "the remainder and no training corpus needs generating to find "
+            "that out."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": "Counter to predict, e.g. derived.thread0_ipc.",
+                },
+                "tap": {
+                    "type": "string",
+                    "description": (
+                        "The counter the predictor reads alongside the target's "
+                        "own last value. Normally the tap select_counter_taps "
+                        "recommended."
+                    ),
+                },
+                "bins": {
+                    "type": "integer",
+                    "description": "Discretisation levels, default 3.",
+                },
+                "split": {
+                    "type": "number",
+                    "description": (
+                        "Fraction of the trace that warms the tables, default "
+                        "0.5. The rest is scored and never trained on."
+                    ),
+                },
+            },
+            "required": ["target", "tap"],
+        },
+    },
+    {
         "name": "sample_hardware_counters",
         "description": (
             "Run a C workload in a simulated core and return its hardware "

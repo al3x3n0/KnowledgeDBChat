@@ -15,6 +15,7 @@ pay. The tool says that rather than letting it be discovered as a timeout.
 from __future__ import annotations
 
 import re
+
 import tempfile
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
@@ -28,6 +29,10 @@ GEM5_BINARY = "/opt/gem5/build/ARM/gem5.opt"
 GEM5_SE_CONFIG = "/opt/gem5/configs/deprecated/example/se.py"
 DEFAULT_TIMEOUT_SECONDS = 1800
 DEFAULT_FLAGS = "-O3 -static"
+
+#: Intervals each side of a candidate split needs before its median means
+#: anything. Below this every trace has a "regime change" at its second sample.
+MIN_PER_SIDE = 15
 DEFAULT_CPU = "O3CPU"
 MAX_CODE_CHARS = 40_000
 MAX_OUTPUT_CHARS = 8_000
@@ -99,6 +104,107 @@ TUNABLE_CPU_PARAMS = frozenset(
 
 SAFE_RUN_ARGS = re.compile(r"^[-A-Za-z0-9_=+.,/ ]*$")
 SAFE_FLAGS = re.compile(r"^[-A-Za-z0-9_=+., /]*$")
+
+
+#: A level shift this large between the two sides of a split is a regime
+#: change rather than the workload's own variation.
+REGIME_SHIFT_RATIO = 1.5
+
+
+def _quantile(ordered: Sequence[float], q: float) -> float:
+    """Nearest-rank quantile of an already sorted sequence."""
+    index = min(len(ordered) - 1, max(0, int(round(q * (len(ordered) - 1)))))
+    return ordered[index]
+
+
+def _absolute_deviation(ordered: Sequence[float]) -> float:
+    """Total absolute deviation from the median -- the L1 change-point cost.
+
+    Deliberately unnormalised and a total rather than a mean. Scaling each side
+    by its own median lets the cheaper regime dominate the objective, which
+    drags the reported break towards the start of the trace; taking means
+    instead of totals makes a two-interval side look perfectly homogeneous and
+    drags it towards the ends. Both were tried on a real trace, and both put
+    the break in the wrong place.
+    """
+    middle = ordered[len(ordered) // 2]
+    return sum(abs(v - middle) for v in ordered)
+
+
+def find_regime_change(cycles: Sequence[float]) -> Optional[Dict[str, Any]]:
+    """The interval where the trace stops being one experiment and becomes two.
+
+    A co-runner that has not finished initialising, a cache that is still cold,
+    a phase the workload enters once and never leaves: the counters before such
+    a point describe a machine that does not recur. Measuring across it reports
+    persistence that is mostly the detection of the break -- on the SMT trace
+    this was written for, persistence read 0.843 across the break and 0.405
+    after it, so more than half of what looked like predictable structure was
+    the trace announcing that solo intervals stay solo.
+
+    **A level shift is not a phase.** A workload alternating between two costs
+    is doing what it was written to do, and flagging that as a regime change
+    would condemn every interesting trace. Comparing medians is not enough to
+    tell them apart -- on a period-two alternation the median of each side
+    lands on whichever level happens to hold the majority there, and a one-
+    element parity difference flips it, which reported a clean 9x regime change
+    on an alternating control. So the test is separation, not distance: the
+    upper quartile of the lower side must sit below the lower quartile of the
+    upper side. Two regimes barely overlap; two phases overlap completely.
+
+    Reported, never trimmed. Silently dropping the front of a caller's trace
+    would change what was measured without saying so.
+    """
+    n = len(cycles)
+    if n < 4 * MIN_PER_SIDE:
+        return None
+
+    # Two objectives, and conflating them puts the break in the wrong place.
+    # Separation decides WHICH splits are candidates, and the ratio decides
+    # whether the shift is worth reporting at all -- but on a clean step every
+    # split from the floor onwards ties on both, so neither locates anything.
+    # The break is where the two sides are most internally homogeneous, which
+    # is the change point rather than the first split that qualifies.
+    best = None
+    for split in range(MIN_PER_SIDE, n - MIN_PER_SIDE):
+        before = sorted(cycles[:split])
+        after = sorted(cycles[split:])
+        median_before = before[len(before) // 2]
+        median_after = after[len(after) // 2]
+        if median_before <= 0 or median_after <= 0:
+            continue
+
+        low, high = (
+            (before, after) if median_before <= median_after else (after, before)
+        )
+        if _quantile(low, 0.75) >= _quantile(high, 0.25):
+            continue
+
+        # Not the interquartile range: when a side is mostly one level with a
+        # block of another at one end, both quartiles land inside the majority
+        # block and the IQR reads zero, so a split straddling two regimes
+        # scores as homogeneous as one that separates them. Absolute deviation
+        # counts every interval that disagrees with its own side.
+        spread = sum(_absolute_deviation(side) for side in (before, after))
+        if best is None or spread < best["spread"]:
+            best = {
+                "at": split,
+                "spread": spread,
+                "ratio": max(
+                    median_before / median_after, median_after / median_before
+                ),
+                "before": median_before,
+                "after": median_after,
+            }
+
+    if not best or best["ratio"] < REGIME_SHIFT_RATIO:
+        return None
+    return {
+        "at_interval": best["at"],
+        "ratio": round(best["ratio"], 2),
+        "median_cycles_before": round(best["before"], 1),
+        "median_cycles_after": round(best["after"], 1),
+    }
 
 
 def _preflight(code: str, image: str) -> Optional[Dict[str, Any]]:
@@ -836,6 +942,26 @@ async def sample_counters(
     # solo. Those intervals are not SMT and must not be read as contention --
     # the counters look calm because nothing is competing, not because the
     # predictor would have found it calm.
+    # A trace that changes regime part way through is two experiments, and the
+    # break is not detected by asking whether the co-runner is present -- it
+    # was present throughout the run that motivated this, and merely finished
+    # initialising at interval 104.
+    regime = find_regime_change(cycles)
+    regime_warning = (
+        (
+            f"the trace changes regime at interval {regime['at_interval']}: "
+            f"median cycles per interval go "
+            f"{regime['median_cycles_before']:,.0f} -> "
+            f"{regime['median_cycles_after']:,.0f} ({regime['ratio']}x). "
+            "Intervals either side describe different machines, so a "
+            "predictability estimate taken across the break largely measures "
+            "the break. Study one side, or lengthen the run until the opening "
+            "regime is a negligible fraction of it."
+        )
+        if regime
+        else ""
+    )
+
     co_active = 0
     smt_warning = ""
     if smt:
@@ -856,6 +982,7 @@ async def sample_counters(
             "label": str(label or ""),
             "smt": smt,
             "co_runner_active_intervals": co_active if smt else None,
+            "regime_change": regime,
             "intervals": len(intervals),
             "counters_varying": len(names),
             "counters": names,
@@ -873,6 +1000,7 @@ async def sample_counters(
                     "any conclusion about predictability."
                 )
                 + (f" WARNING: {smt_warning}" if smt_warning else "")
+                + (f" WARNING: {regime_warning}" if regime_warning else "")
             ),
         },
         "findings": [
@@ -889,6 +1017,7 @@ async def sample_counters(
                 "usable_as_trace": enough,
                 "smt": smt,
                 "co_runner_active_intervals": co_active if smt else None,
+                "regime_change": regime,
             }
         ],
     }

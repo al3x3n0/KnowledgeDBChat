@@ -4360,6 +4360,61 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             ],
         }
 
+    async def _evaluate_predictor_design(
+        params: Dict[str, Any], context: AgentToolExecutionContext
+    ) -> Dict[str, Any]:
+        from app.services import agent_predictor_design
+
+        series = _recent_counter_trace(getattr(context, "state", None))
+        if not series:
+            return {
+                "success": False,
+                "error": (
+                    "No counter trace in this run. Call sample_hardware_counters "
+                    "first -- a predictor is scored on intervals over time, and "
+                    "there is nothing to hold out of a run total."
+                ),
+            }
+
+        result = agent_predictor_design.evaluate(
+            series,
+            str(params.get("target") or ""),
+            str(params.get("tap") or ""),
+            bins=int(params.get("bins") or agent_predictor_design.DEFAULT_BINS),
+            split=float(params.get("split") or agent_predictor_design.DEFAULT_SPLIT),
+        )
+        if not result.get("measured"):
+            return {"success": False, "error": result.get("refusal"), "data": result}
+
+        return {
+            "success": True,
+            "data": result,
+            "findings": [
+                {
+                    "type": "predictor_design_result",
+                    "subject": f"{result['target']} from {result['tap']}",
+                    "title": (
+                        f"{result['best_design']} gains "
+                        f"{result['best_gain_over_persistence']:+.4f} over "
+                        f"persistence on {result['scored_intervals']} held-out "
+                        "intervals"
+                    ),
+                    "target": result["target"],
+                    "tap": result["tap"],
+                    "scored_intervals": result["scored_intervals"],
+                    "persistence_accuracy": result["persistence_accuracy"],
+                    "ceiling_accuracy": result["ceiling_accuracy"],
+                    "best_design": result["best_design"],
+                    "best_gain_over_persistence": result["best_gain_over_persistence"],
+                    "share_of_headroom": result["best_share_of_headroom"],
+                    "survives_null": result["survives_null"],
+                    "ceiling_exceeded": result["ceiling_exceeded"],
+                    "designs": result["designs"],
+                    "verdict": result["verdict"],
+                }
+            ],
+        }
+
     async def _sample_hardware_counters(
         params: Dict[str, Any], context: AgentToolExecutionContext
     ) -> Dict[str, Any]:
@@ -5075,6 +5130,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "sample_hardware_counters": _sample_hardware_counters,
             "measure_predictability": _measure_predictability,
             "select_counter_taps": _select_counter_taps,
+            "evaluate_predictor_design": _evaluate_predictor_design,
             "execute_data_pipeline": _execute_data_pipeline,
             "write_and_run_script": _write_and_run_script,
             "write_file": _write_file,

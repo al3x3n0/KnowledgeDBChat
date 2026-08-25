@@ -224,3 +224,51 @@ async def test_a_co_runner_that_fails_to_compile_says_which_program():
 
     assert result["success"] is False
     assert "co-runner" in result["error"]
+
+
+# --- regime changes --------------------------------------------------------
+
+
+def test_a_trace_that_changes_regime_is_flagged():
+    """The defect a predictor evaluation found. The SMT run's co-runner was
+    present in every interval, so the presence check stayed silent -- it had
+    merely not finished initialising, and the first hundred intervals describe
+    a machine that never recurs. Persistence read 0.843 across that break and
+    0.405 after it."""
+    trace = [131080.0] * 104 + [509338.0] * 297
+
+    regime = gem5.find_regime_change(trace)
+
+    assert regime is not None
+    assert regime["ratio"] > 3.0
+    assert regime["at_interval"] == 104, "the break is located, not just noticed"
+
+
+def test_the_break_is_located_by_homogeneity_not_by_the_first_split_that_fits():
+    """On a clean step every split from the floor onwards separates the two
+    levels and reports the same ratio, so neither criterion locates anything.
+    The break is where the two sides are most internally homogeneous."""
+    early = gem5.find_regime_change([5.0] * 40 + [100.0] * 300)
+    late = gem5.find_regime_change([5.0] * 300 + [100.0] * 40)
+
+    assert early["at_interval"] == 40
+    assert late["at_interval"] == 300
+
+
+def test_a_workload_alternating_between_phases_is_not_a_regime_change():
+    """A workload alternating between two costs is doing what it was written
+    to do. Comparing medians alone condemns it: on a period-two alternation
+    each side's median lands on whichever level holds the majority there, and a
+    one-element parity difference flips it, which read as a clean 9x shift."""
+    assert gem5.find_regime_change([100.0, 900.0] * 100) is None
+    assert gem5.find_regime_change(([100.0] * 20 + [900.0] * 20) * 5) is None
+
+
+def test_a_steady_trace_has_no_regime_change():
+    assert gem5.find_regime_change([100.0 + (i % 7) for i in range(200)]) is None
+
+
+def test_a_trace_too_short_to_have_two_sides_is_not_judged():
+    """Below a floor per side every trace has a regime change at its second
+    sample, which is a statement about the floor and not about the trace."""
+    assert gem5.find_regime_change([1.0] * 10 + [900.0] * 10) is None

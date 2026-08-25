@@ -3576,6 +3576,58 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                     "type": "integer",
                     "description": "How many varying counters to return (default 60)",
                 },
+                "co_runner": {
+                    "type": "string",
+                    "description": (
+                        "A second C program to run on the same core under SMT. "
+                        "This is how a contention experiment is built: the "
+                        "workload above is the thread being predicted, and "
+                        "this is what competes with it. Give the primary "
+                        "steady work so that any variation in its progress is "
+                        "the co-runner's doing. The register-file overrides "
+                        "SMT needs are applied automatically."
+                    ),
+                },
+                "language": {
+                    "type": "string",
+                    "description": (
+                        "'c' (default) or 'c++'. C++ needs a toolchain in the "
+                        "image; the tool checks and says so rather than "
+                        "failing at the compiler."
+                    ),
+                },
+                "extra_files": {
+                    "type": "object",
+                    "description": (
+                        "Headers or sources to stage alongside the workload, "
+                        "as {relative path: contents}. This is how a real "
+                        "corpus is measured rather than a workload written "
+                        "for the study -- stage the header closure and include "
+                        "the corpus from the workload."
+                    ),
+                },
+                "include_dirs": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Directories added to the compiler's include path, "
+                        "relative to the staged files."
+                    ),
+                },
+                "intends_alternating_phases": {
+                    "type": "boolean",
+                    "description": (
+                        "Set true when the workload is meant to ALTERNATE "
+                        "between phases interval by interval. The design is "
+                        "measured in a cheap simulator before the real run, "
+                        "and running all of one phase and then all of the "
+                        "other produces two regimes rather than an "
+                        "alternation -- refused when you declare the intent, "
+                        "and only warned about when you do not, because a run "
+                        "with a legitimate startup phase should not be told "
+                        "its design is wrong."
+                    ),
+                },
             },
             "required": ["code"],
         },

@@ -394,3 +394,43 @@ async def test_cpp_is_accepted_once_the_image_can_build_it(monkeypatch):
     compiles = [c for c in calls if "workload.cc" in c["script"]]
     assert compiles, "the workload must be compiled as C++, with g++"
     assert "g++ " in compiles[0]["script"]
+
+
+def test_the_schema_offers_what_the_service_accepts():
+    """A capability the schema omits does not exist as far as an agent is
+    concerned. co_runner, language, extra_files and include_dirs were all
+    supported by the service and absent from the schema, so SMT experiments
+    and real C++ corpora -- the two things this tool was extended for -- were
+    unreachable from the loop while looking finished from the outside."""
+    import inspect
+
+    from app.services import agent_tools
+
+    schema = [
+        t for t in agent_tools.AGENT_TOOLS if t["name"] == "sample_hardware_counters"
+    ][0]
+    offered = set(schema["parameters"]["properties"])
+    accepted = set(inspect.signature(gem5.sample_counters).parameters)
+
+    # Not every parameter belongs in a model-facing schema: these are set by
+    # the harness or the operator, not decided by a run.
+    internal = {"image", "timeout_seconds", "preflight", "param_overrides", "run_args"}
+    missing = accepted - offered - internal
+
+    assert not missing, f"the service accepts {missing}, the schema does not offer it"
+
+
+def test_the_schema_offers_nothing_the_service_cannot_take():
+    """The other direction: a parameter a model is invited to send and the
+    service drops is a promise the tool does not keep."""
+    import inspect
+
+    from app.services import agent_tools
+
+    schema = [
+        t for t in agent_tools.AGENT_TOOLS if t["name"] == "sample_hardware_counters"
+    ][0]
+    offered = set(schema["parameters"]["properties"])
+    accepted = set(inspect.signature(gem5.sample_counters).parameters)
+
+    assert not (offered - accepted), f"schema offers {offered - accepted}"

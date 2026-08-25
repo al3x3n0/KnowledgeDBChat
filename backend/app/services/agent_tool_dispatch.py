@@ -4455,6 +4455,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                 else None
             ),
             co_runner=str(params.get("co_runner") or ""),
+            intends_alternating_phases=bool(params.get("intends_alternating_phases")),
         )
 
     async def _simulate_c_workload(

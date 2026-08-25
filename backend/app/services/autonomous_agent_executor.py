@@ -85,10 +85,7 @@ from app.services.agent_scientific_validation_service import (
     AgentScientificValidationService,
 )
 from app.services.agent_skill_profile_service import AgentSkillProfileService
-from app.services.agent_swarm_chain_config import (
-    ensure_swarm_chain_config,
-    get_swarm_config,
-)
+from app.services.agent_swarm_chain_config import ensure_swarm_chain_config
 from app.services.agent_swarm_fan_in import (
     build_swarm_fan_in_result,
     normalize_role_token,
@@ -3323,26 +3320,6 @@ class AutonomousAgentExecutor:
         """Compatibility wrapper around the extracted observation service."""
         return await self.observation_service.observe(self, job, state, db)
 
-    async def _think(
-        self,
-        job: AgentJob,
-        agent_def: Optional[AgentDefinition],
-        state: Dict[str, Any],
-        observation: Dict[str, Any],
-        user_settings: Optional[UserLLMSettings],
-        db: AsyncSession,
-    ) -> Dict[str, Any]:
-        """Compatibility wrapper around the extracted thinking service."""
-        return await self.thinking_service.think(
-            self,
-            job,
-            agent_def,
-            state,
-            observation,
-            user_settings,
-            db,
-        )
-
     def _parse_decision_response(
         self,
         raw_response: Any,
@@ -4485,9 +4462,6 @@ class AutonomousAgentExecutor:
             out[0]["status"] = "in_progress"
             state["subgoals"] = out
             state["subgoal_index"] = 0
-
-    def _get_swarm_config(self, job: AgentJob) -> Dict[str, Any]:
-        return get_swarm_config(job)
 
     def _ensure_swarm_chain_config(self, job: AgentJob, state: Dict[str, Any]) -> None:
         """Create swarm child job chain config when enabled and absent."""
@@ -7133,20 +7107,6 @@ class AutonomousAgentExecutor:
         """Render compact human-feedback guidance for prompt conditioning."""
         return agent_prompt_sections.format_feedback_learning(state)
 
-    def _feedback_tool_bias(
-        self,
-        tool_name: str,
-        state: Optional[Dict[str, Any]],
-        *,
-        weight: float = 0.08,
-        max_abs: float = 0.30,
-        enabled: bool = True,
-    ) -> float:
-        """Map feedback signals to a bounded additive tool-priority adjustment."""
-        return agent_tool_scoring.feedback_tool_bias(
-            tool_name, state, weight=weight, max_abs=max_abs, enabled=enabled
-        )
-
     def _update_skill_profile_metrics(
         self,
         state: Dict[str, Any],
@@ -8606,22 +8566,6 @@ RESPONSE FORMAT:
             target_papers=target_papers,
         )
 
-    async def _evaluate_progress(
-        self,
-        job: AgentJob,
-        state: Dict[str, Any],
-        user_settings: Optional[UserLLMSettings],
-        db: AsyncSession,
-    ) -> int:
-        """Compatibility wrapper around the extracted progress service."""
-        return await self.progress_evaluation_service.evaluate_progress(
-            self,
-            job,
-            state,
-            user_settings,
-            db,
-        )
-
     async def _finalize_job(
         self,
         job: AgentJob,
@@ -8762,18 +8706,6 @@ RESPONSE FORMAT:
                 AgentJob.id == job_id, AgentJob.status == AgentJobStatus.RUNNING.value
             )
             .values(status=AgentJobStatus.PAUSED.value)
-        )
-        await db.commit()
-        return result.rowcount > 0
-
-    async def resume_job(self, job_id: UUID, db: AsyncSession) -> bool:
-        """Resume a paused job."""
-        result = await db.execute(
-            update(AgentJob)
-            .where(
-                AgentJob.id == job_id, AgentJob.status == AgentJobStatus.PAUSED.value
-            )
-            .values(status=AgentJobStatus.RUNNING.value)
         )
         await db.commit()
         return result.rowcount > 0

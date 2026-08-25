@@ -960,6 +960,14 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
             "title": "(optional) Chart title",
         },
     },
+    "create_pie_chart_diagram": {
+        "name": "create_pie_chart_diagram",
+        "description": "Create a pie chart diagram from labelled slices.",
+        "parameters": {
+            "slices": "List of slices, each with a label and a value",
+            "title": "(optional) Chart title",
+        },
+    },
     # Export
     "export_dataset_csv": {
         "name": "export_dataset_csv",

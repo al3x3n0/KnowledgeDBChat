@@ -5,7 +5,6 @@ Input validation utilities.
 import re
 from pathlib import Path
 from typing import List, Optional
-from urllib.parse import urlparse
 
 # Allowed file types for uploads
 ALLOWED_FILE_TYPES = {
@@ -97,91 +96,6 @@ def validate_file_type(filename: str, content_type: Optional[str] = None) -> boo
             return False
 
     return True
-
-
-def validate_url(url: str) -> bool:
-    """
-    Validate if a URL is well-formed.
-
-    Args:
-        url: URL string to validate
-
-    Returns:
-        True if URL is valid, False otherwise
-    """
-    try:
-        result = urlparse(url)
-        return all([result.scheme, result.netloc])
-    except Exception:
-        return False
-
-
-def validate_email(email: str) -> bool:
-    """
-    Validate email address format.
-
-    Args:
-        email: Email address to validate
-
-    Returns:
-        True if email is valid, False otherwise
-    """
-    pattern = r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$"
-    return bool(re.match(pattern, email))
-
-
-def validate_username(username: str) -> bool:
-    """
-    Validate username format.
-
-    Args:
-        username: Username to validate
-
-    Returns:
-        True if username is valid, False otherwise
-    """
-    # Username should be 3-50 characters, alphanumeric and underscores only
-    pattern = r"^[a-zA-Z0-9_]{3,50}$"
-    return bool(re.match(pattern, username))
-
-
-def validate_password_strength(password: str) -> tuple[bool, Optional[str]]:
-    """
-    Validate password strength.
-
-    Args:
-        password: Password to validate
-
-    Returns:
-        Tuple of (is_valid, error_message)
-    """
-    if len(password) < 8:
-        return False, "Password must be at least 8 characters long"
-
-    if not re.search(r"[A-Z]", password):
-        return False, "Password must contain at least one uppercase letter"
-
-    if not re.search(r"[a-z]", password):
-        return False, "Password must contain at least one lowercase letter"
-
-    if not re.search(r"\d", password):
-        return False, "Password must contain at least one digit"
-
-    return True, None
-
-
-def validate_source_type(source_type: str) -> bool:
-    """
-    Validate document source type.
-
-    Args:
-        source_type: Source type to validate
-
-    Returns:
-        True if source type is valid, False otherwise
-    """
-    valid_types = ["gitlab", "confluence", "web", "file"]
-    return source_type.lower() in valid_types
 
 
 def validate_tags(tags: List[str]) -> bool:

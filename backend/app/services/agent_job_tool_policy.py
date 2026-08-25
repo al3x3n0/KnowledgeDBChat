@@ -312,6 +312,7 @@ def get_tools_for_job_type(
             "create_architecture_diagram",
             "create_drawio_diagram",
             "create_gantt_chart",
+            "create_pie_chart_diagram",
             "export_dataset_csv",
             "export_dataset_json",
             "search_documents",

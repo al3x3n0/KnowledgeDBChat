@@ -26,7 +26,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Set
 
-from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -100,11 +99,6 @@ async def retractions(
 async def retracted_refs(db: AsyncSession, user_id: Any, kind: str) -> Set[str]:
     rows = await retractions(db, user_id, kind)
     return {str(r.subject_ref) for r in rows}
-
-
-async def reasons_for(db: AsyncSession, user_id: Any, kind: str) -> Dict[str, str]:
-    rows = await retractions(db, user_id, kind)
-    return {str(r.subject_ref): str(r.reason) for r in rows}
 
 
 # --- propagation ----------------------------------------------------------
@@ -248,18 +242,3 @@ async def note_for_prompt(db: AsyncSession, user_id: Any, limit: int = 5) -> str
         "Retracted -- do not cite these as evidence, and do not treat a result "
         "derived from them as established:\n- " + "\n- ".join(lines) + more
     )
-
-
-async def apply_to_standing(
-    db: AsyncSession, user_id: Any, outcomes: Iterable[AgentMethodOutcome]
-) -> Dict[str, Any]:
-    """Summarise a method's standing with retracted runs removed."""
-    from app.services import agent_method_standing_service as standing
-
-    kept = await live_outcomes(db, user_id, outcomes)
-    summary = standing.summarize(kept)
-    dropped = len(list(outcomes)) - len(kept)
-    if dropped:
-        summary["runs_retracted"] = dropped
-        logger.debug(f"Standing excludes {dropped} retracted run(s)")
-    return summary

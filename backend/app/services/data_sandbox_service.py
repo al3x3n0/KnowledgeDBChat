@@ -136,40 +136,6 @@ class DataSandbox:
             logger.error(f"Failed to load JSON: {e}")
             raise ValueError(f"Failed to load JSON: {str(e)}")
 
-    def load_excel(
-        self, content: bytes, name: str, sheet_name: Union[str, int] = 0, **kwargs
-    ) -> Dict[str, Any]:
-        """Load Excel data into sandbox."""
-        try:
-            df = pd.read_excel(io.BytesIO(content), sheet_name=sheet_name, **kwargs)
-
-            self._validate_dataframe(df, name)
-
-            dataset_id = self._generate_dataset_id(name)
-            self.datasets[dataset_id] = df
-            self.metadata[dataset_id] = {
-                "name": name,
-                "source": "excel",
-                "sheet": sheet_name,
-                "rows": len(df),
-                "columns": list(df.columns),
-                "dtypes": {col: str(dtype) for col, dtype in df.dtypes.items()},
-                "created_at": datetime.utcnow().isoformat(),
-            }
-
-            self.last_accessed = datetime.utcnow()
-
-            return {
-                "dataset_id": dataset_id,
-                "name": name,
-                "rows": len(df),
-                "columns": list(df.columns),
-                "preview": df.head(5).to_dict(orient="records"),
-            }
-        except Exception as e:
-            logger.error(f"Failed to load Excel: {e}")
-            raise ValueError(f"Failed to load Excel: {str(e)}")
-
     def create_from_dict(self, data: Dict[str, List], name: str) -> Dict[str, Any]:
         """Create dataset from dictionary."""
         try:
@@ -210,14 +176,6 @@ class DataSandbox:
     def list_datasets(self) -> List[Dict[str, Any]]:
         """List all datasets in sandbox."""
         return [{"dataset_id": did, **meta} for did, meta in self.metadata.items()]
-
-    def remove_dataset(self, dataset_id: str) -> bool:
-        """Remove a dataset from sandbox."""
-        if dataset_id in self.datasets:
-            del self.datasets[dataset_id]
-            del self.metadata[dataset_id]
-            return True
-        return False
 
     def describe_dataset(self, dataset_id: str) -> Dict[str, Any]:
         """Get detailed statistics about a dataset."""
@@ -717,13 +675,6 @@ class DataSandbox:
         """Export dataset to JSON string."""
         df = self.get_dataset(dataset_id)
         return df.to_json(orient=orient)
-
-    def export_to_excel(self, dataset_id: str) -> bytes:
-        """Export dataset to Excel bytes."""
-        df = self.get_dataset(dataset_id)
-        output = io.BytesIO()
-        df.to_excel(output, index=False, engine="openpyxl")
-        return output.getvalue()
 
     def clear(self) -> None:
         """Clear all datasets from sandbox."""

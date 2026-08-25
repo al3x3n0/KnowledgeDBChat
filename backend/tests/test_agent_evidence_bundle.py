@@ -6,6 +6,8 @@ make an as-it-goes bundle worth having: failures are kept, artifacts are
 hashed, and the image is pinned by id rather than tag.
 """
 
+import json
+
 import pytest
 
 from app.services import agent_evidence_bundle as bundle
@@ -380,3 +382,38 @@ class TestImagePortability:
         assert "themselves are not here" in readme
         assert "cannot be" in readme and "replayed" in readme
         assert "Reproducing it elsewhere" in readme
+
+
+def test_the_images_a_bundle_needs_are_readable_without_the_run(tmp_path, monkeypatch):
+    """A bundle is exported by a process that did not produce it.
+
+    ``_image_details`` is filled as a run makes its calls, so it is empty
+    everywhere except inside that run. Reading it alone meant the export
+    exported nothing -- silently, with a ``load.sh`` that loads no images --
+    in exactly the situation it exists for: shipping a finished bundle from
+    another process, later, or on another machine.
+    """
+    _record(
+        tmp_path,
+        "simulate_c_workload",
+        {"n": 1},
+        {"success": True},
+        image_id="sha256:abc",
+    )
+    directory = bundle.bundle_dir("job-1", tmp_path)
+    (directory / bundle.IMAGES_NAME).write_text(
+        json.dumps(
+            {
+                "images": [
+                    {"id": "sha256:abc", "reference": "gem5-research:latest"},
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    # Nothing in this process ever described an image, as in a fresh export.
+    monkeypatch.setattr(bundle, "_image_details", {})
+
+    known = bundle._images_known_to_bundle("job-1", tmp_path)
+
+    assert [d["reference"] for d in known] == ["gem5-research:latest"]

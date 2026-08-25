@@ -76,6 +76,7 @@ READ_ONLY_DESPITE_NAME: dict[str, str] = {
     "create_er_diagram": "returns mermaid source in the response",
     "create_architecture_diagram": "returns mermaid source in the response",
     "create_gantt_chart": "returns mermaid source in the response",
+    "create_pie_chart_diagram": "returns mermaid source in the response",
     "create_drawio_diagram": "returns drawio XML in the response",
     "export_dataset_csv": "returns base64 CSV in the response; writes no file",
     "export_dataset_json": "returns JSON in the response; writes no file",

@@ -1999,6 +1999,11 @@ def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvid
                 sections=params.get("sections", []),
                 title=params.get("title", "Project Timeline"),
             )
+        elif tool_name == "create_pie_chart_diagram":
+            tool_result = tools.create_pie_chart_diagram(
+                slices=params.get("slices", []),
+                title=params.get("title", ""),
+            )
         elif tool_name == "export_dataset_csv":
             tool_result = tools.export_dataset_csv(dataset_id=params.get("dataset_id"))
         elif tool_name == "export_dataset_json":

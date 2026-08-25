@@ -206,6 +206,34 @@ def write_images_manifest(job_id: str, root: Optional[Path] = None) -> Optional[
         return None
 
 
+def _images_known_to_bundle(
+    job_id: str, root: Optional[Path] = None
+) -> List[Dict[str, Any]]:
+    """Every image this bundle used, from memory or from the bundle itself.
+
+    ``_image_details`` is filled by ``describe_image`` as a run makes its
+    calls, so it holds nothing in a process that did not produce the bundle --
+    which is every process that would want to ship one. Reading the manifest
+    back is what lets an export run later, or on another machine, which is the
+    whole point of exporting.
+    """
+    known: Dict[str, Dict[str, Any]] = {
+        str(details["id"]): details
+        for details in _image_details.values()
+        if details.get("id")
+    }
+    try:
+        path = bundle_dir(job_id, root) / IMAGES_NAME
+        if path.exists():
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            for details in payload.get("images") or []:
+                if isinstance(details, dict) and details.get("id"):
+                    known.setdefault(str(details["id"]), details)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"evidence bundle: could not read images manifest: {exc}")
+    return list(known.values())
+
+
 async def export_images(
     job_id: str,
     destination: Path,
@@ -216,7 +244,8 @@ async def export_images(
 
     Deliberately not automatic: these images run to hundreds of megabytes each,
     and writing them beside every bundle would make the evidence too heavy to
-    keep. Exporting is a decision about shipping a bundle, taken once.
+    keep. Exporting is a decision about shipping a bundle, taken once --
+    ``scripts/export_bundle_images.py`` is where that decision is made.
     """
     destination.mkdir(parents=True, exist_ok=True)
     used = {
@@ -225,7 +254,7 @@ async def export_images(
     exported: List[Dict[str, Any]] = []
     failed: List[Dict[str, Any]] = []
 
-    for details in _image_details.values():
+    for details in _images_known_to_bundle(job_id, root):
         if details.get("id") not in used:
             continue
         reference = str(details.get("reference") or details["id"])

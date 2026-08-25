@@ -4310,6 +4310,56 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             ],
         }
 
+    async def _select_counter_taps(
+        params: Dict[str, Any], context: AgentToolExecutionContext
+    ) -> Dict[str, Any]:
+        from app.services import agent_predictability
+
+        series = _recent_counter_trace(getattr(context, "state", None))
+        if not series:
+            return {
+                "success": False,
+                "error": (
+                    "No counter trace in this run. Call sample_hardware_counters "
+                    "first -- which counters to tap together is a question about "
+                    "counters over time and cannot be read from a run total."
+                ),
+            }
+
+        result = agent_predictability.select_taps(
+            series,
+            str(params.get("target") or ""),
+            bins=int(params.get("bins") or agent_predictability.DEFAULT_BINS),
+        )
+        if not result.get("measured"):
+            return {"success": False, "error": result.get("refusal"), "data": result}
+
+        kept = result["taps"]
+        return {
+            "success": True,
+            "data": result,
+            "findings": [
+                {
+                    "type": "counter_tap_selection",
+                    "subject": result["target"],
+                    "title": (
+                        f"{result['target']}: {result['recommended_taps']} tap(s) "
+                        f"survive their own null of "
+                        f"{result['max_taps_supported']} this trace can support"
+                    ),
+                    "target": result["target"],
+                    "intervals": result["intervals"],
+                    "recommended_taps": result["recommended_taps"],
+                    "taps": kept,
+                    "max_taps_supported": result["max_taps_supported"],
+                    "total_beyond_persistence_bits": result["total_beyond_persistence"],
+                    "total_at_full_depth_bits": result["total_at_full_depth"],
+                    "selection": result["selection"],
+                    "verdict": result["verdict"],
+                }
+            ],
+        }
+
     async def _sample_hardware_counters(
         params: Dict[str, Any], context: AgentToolExecutionContext
     ) -> Dict[str, Any]:
@@ -5024,6 +5074,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "benchmark_c_snippet": _benchmark_c_snippet,
             "sample_hardware_counters": _sample_hardware_counters,
             "measure_predictability": _measure_predictability,
+            "select_counter_taps": _select_counter_taps,
             "execute_data_pipeline": _execute_data_pipeline,
             "write_and_run_script": _write_and_run_script,
             "write_file": _write_file,

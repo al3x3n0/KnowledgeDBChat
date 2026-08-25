@@ -128,7 +128,7 @@ def test_counters_are_ranked_by_what_they_add_not_what_they_know():
     assert order[0] == "lead", "an echo of the target adds nothing over persistence"
 
 
-def test_both_new_tools_are_registered_everywhere():
+def test_every_counter_tool_is_registered_everywhere():
     """A tool missing from any one of these is invisible to agents, and three
     validity predicates were dead on arrival earlier today for exactly that."""
     from app.agent_core import tool_catalog
@@ -142,7 +142,11 @@ def test_both_new_tools_are_registered_everywhere():
             agent_tools.__file__,
         )
     )
-    for tool in ("sample_hardware_counters", "measure_predictability"):
+    for tool in (
+        "sample_hardware_counters",
+        "measure_predictability",
+        "select_counter_taps",
+    ):
         assert source.count(tool) >= 3, f"{tool} is not registered everywhere"
 
     names = (
@@ -153,6 +157,7 @@ def test_both_new_tools_are_registered_everywhere():
     if names:
         assert "sample_hardware_counters" in names
         assert "measure_predictability" in names
+        assert "select_counter_taps" in names
 
 
 # --- the null --------------------------------------------------------------
@@ -223,3 +228,90 @@ def test_the_null_is_deterministic():
     second = pred.ceiling(series, "t")["null"]["null_p95"]
 
     assert first == second
+
+
+# --- which taps, together --------------------------------------------------
+
+
+def test_the_depth_limit_counts_the_interval_the_shift_spends():
+    """Three taps at three bins need 5 * 3**4 = 405 usable pairs. A trace of
+    405 intervals yields 404 of them, and rounding that in the tool's favour is
+    how a depth limit stops limiting anything exactly at the boundary."""
+    assert pred.max_taps_for(405) == 2
+    assert pred.max_taps_for(406) == 3
+
+
+def test_a_trace_too_short_for_even_one_tap_is_refused():
+    """Same rule the single-counter estimate follows: 'could not measure' and
+    'measured, and there is nothing' are opposite findings."""
+    short = {
+        "t": [float(i % 5) for i in range(40)],
+        "c": [float(i % 3) for i in range(40)],
+    }
+
+    result = pred.select_taps(short, "t")
+
+    assert result["measured"] is False
+    assert "46" in result["refusal"], "the refusal must name the length it needs"
+
+
+def test_two_real_taps_both_survive_their_own_null():
+    """The target's next value is the sum of two independent drivers, so each
+    adds over persistence and neither is redundant with the other."""
+    import random
+
+    rng = random.Random(11)
+    a = [float(rng.randint(0, 1)) for _ in range(400)]
+    b = [float(rng.randint(0, 1)) for _ in range(400)]
+    target = [0.0] + [a[t] + b[t] for t in range(399)]
+    series = {"t": target, "a": a, "b": b}
+    series.update({f"noise{i}": [rng.random() for _ in range(400)] for i in range(8)})
+
+    result = pred.select_taps(series, "t", trials=20)
+
+    assert result["recommended_taps"] == 2
+    assert set(result["taps"]) == {"a", "b"}
+    assert all(step["survives_null"] for step in result["selection"])
+
+
+def test_selection_bias_alone_does_not_recommend_a_tap():
+    """Fifty counters and no relationship at all. Greedy selection reports a
+    number here whatever the data says, which is the whole reason the null runs
+    the selection rather than scoring a counter someone else picked."""
+    import random
+
+    rng = random.Random(3)
+    series = {"t": [rng.random() for _ in range(200)]}
+    series.update({f"c{i}": [rng.random() for _ in range(200)] for i in range(50)})
+
+    result = pred.select_taps(series, "t", trials=20)
+
+    assert result["recommended_taps"] == 0
+    assert result["survives_null"] is False
+    assert "worth a wire" in result["verdict"]
+
+
+def test_a_tap_is_judged_on_what_it_added_not_on_the_running_total():
+    """The defect this replaced. A second tap that is pure selection bias still
+    lifts the cumulative total above a null taken at full depth, so scoring the
+    total buys wires for noise. Each tap is bought with its own increment."""
+    import random
+
+    rng = random.Random(5)
+    driver = [float(rng.randint(0, 2)) for _ in range(400)]
+    # Corrupted, so entropy is left over for a spurious second tap to shave.
+    # A driver that determined the target exactly would leave nothing to buy,
+    # and the greedy would stop on its own -- which is not the trap here.
+    target = [0.0] + [
+        d if rng.random() > 0.3 else float(rng.randint(0, 2)) for d in driver[:-1]
+    ]
+    series = {"t": target, "driver": driver}
+    series.update({f"c{i}": [rng.random() for _ in range(400)] for i in range(40)})
+
+    result = pred.select_taps(series, "t", trials=20)
+
+    assert result["selection"][0]["tap"] == "driver"
+    assert result["recommended_taps"] == 1, "only the real driver may be bought"
+    second = result["selection"][1]
+    assert second["survives_null"] is False
+    assert second["total_beyond_persistence"] > result["total_beyond_persistence"]

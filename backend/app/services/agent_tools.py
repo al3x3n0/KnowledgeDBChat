@@ -3413,6 +3413,46 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
         },
     },
     {
+        "name": "select_counter_taps",
+        "description": (
+            "Which counters, TOGETHER, a predictor should tap -- and how many "
+            "of them are worth the wires. Reads the trace this run already "
+            "sampled. measure_predictability scores counters one at a time; "
+            "this does greedy forward selection from persistence, stopping at "
+            "the depth the trace can support, because conditioning on one more "
+            "counter multiplies the cells the estimate needs by the bin count "
+            "and a trace is hundreds of intervals, not millions. Every tap is "
+            "placed against a null that runs the SAME selection on permuted "
+            "counters, so the threshold contains the advantage that picking "
+            "the best of fifty confers -- and each tap is judged on what IT "
+            "added, not on the running total, because its own increment is "
+            "what its area is being bought with. Use this once a single "
+            "counter has shown signal, to decide whether a second tap is a "
+            "design or a coincidence."
+        ),
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "target": {
+                    "type": "string",
+                    "description": (
+                        "Counter to predict, e.g. derived.thread0_ipc. Must be "
+                        "present in the trace."
+                    ),
+                },
+                "bins": {
+                    "type": "integer",
+                    "description": (
+                        "Discretisation levels, default 3. More bins cost "
+                        "supported taps: the depth this trace allows falls as "
+                        "the bin count rises."
+                    ),
+                },
+            },
+            "required": ["target"],
+        },
+    },
+    {
         "name": "sample_hardware_counters",
         "description": (
             "Run a C workload in a simulated core and return its hardware "

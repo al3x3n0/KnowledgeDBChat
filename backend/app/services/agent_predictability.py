@@ -348,4 +348,251 @@ def describe() -> List[str]:
         "counter adds over predicting the same as last interval",
         "a trace too short to estimate on returns a refusal naming how many "
         "intervals it needs, never a number",
+        "which counters to tap together is decided by greedy selection whose "
+        "null runs the same selection on permuted data, and each tap is bought "
+        "with its own increment rather than the running total -- a second tap "
+        "that lifts the cumulative number while sitting inside its own null is "
+        "a counter that won an auction among fifty, not a design",
+        "the depth of that selection is computed from the trace, not chosen: "
+        "each further tap multiplies the cells the estimate needs by the bin "
+        "count, and a trace of a few hundred intervals supports one or two",
     ]
+
+
+# --- which taps, together --------------------------------------------------
+#
+# Each PMU tap costs wires and area, so the design question is not "is there
+# signal" but "which four counters get most of it". That is a subset-selection
+# problem, and two things make it dangerous in a way the single-counter version
+# was not.
+#
+# Sample cost grows exponentially. Conditioning on the target's last value plus
+# k counters at b bins needs b**(k+1) cells: at 3 bins, one counter is 9 cells,
+# two is 27, three is 81. A 400-interval trace supports two taps and not three,
+# and the depth limit is computed rather than chosen.
+#
+# And selection is itself a source of bias. Picking the best of fifty and then
+# measuring it is the multiple-comparisons trap; picking the best of fifty,
+# then the best of the remaining forty-nine, compounds it. So the null runs the
+# WHOLE greedy selection on permuted data, which is the only way its answer
+# includes the cost of having selected.
+
+
+def max_taps_for(intervals: int, bins: int = DEFAULT_BINS) -> int:
+    """How many counters this trace can support jointly, with persistence.
+
+    Counted in *usable* samples, not intervals. Predicting t+1 from t spends
+    one interval on the shift, so a 405-interval trace estimates over 404
+    pairs -- and three taps at three bins need 405. Counting the interval the
+    shift consumed is how a depth limit stops limiting anything exactly at the
+    boundary where it was supposed to bite.
+    """
+    usable = max(0, intervals - 1)
+    taps = 0
+    while True:
+        cells = bins ** (taps + 2)
+        if MIN_PER_CELL * cells > usable:
+            return taps
+        taps += 1
+
+
+def _joint_information(
+    target_ahead: Sequence[int],
+    last_target: Sequence[int],
+    features: Sequence[Sequence[int]],
+) -> float:
+    """Information about the next interval from persistence plus these taps."""
+    base = conditional_entropy(target_ahead, [last_target])
+    return base - conditional_entropy(target_ahead, [last_target, *features])
+
+
+def _greedy(
+    labels: Mapping[str, List[int]],
+    target_ahead: List[int],
+    last_target: List[int],
+    max_taps: int,
+) -> List[Dict[str, Any]]:
+    chosen: List[str] = []
+    chosen_labels: List[List[int]] = []
+    gained = 0.0
+    steps: List[Dict[str, Any]] = []
+
+    for _ in range(max_taps):
+        best_name, best_total = None, gained
+        for name, values in labels.items():
+            if name in chosen:
+                continue
+            total = _joint_information(
+                target_ahead, last_target, [*chosen_labels, values]
+            )
+            if total > best_total:
+                best_name, best_total = name, total
+        if best_name is None:
+            break
+        chosen.append(best_name)
+        chosen_labels.append(labels[best_name])
+        steps.append(
+            {
+                "tap": best_name,
+                "taps": len(chosen),
+                "total_beyond_persistence": round(best_total, 4),
+                "added": round(best_total - gained, 4),
+            }
+        )
+        gained = best_total
+    return steps
+
+
+def select_taps(
+    series: Mapping[str, Sequence[float]],
+    target: str,
+    bins: int = DEFAULT_BINS,
+    trials: int = 50,
+    seed: int = 4242,
+) -> Dict[str, Any]:
+    """Which counters, together, carry the signal -- and whether they really do.
+
+    Greedy forward selection over the counters, starting from persistence,
+    stopping at the depth the trace can support. The null runs the same
+    selection on permuted counters and takes the best it reaches, so the
+    threshold already contains the advantage that selection itself confers.
+    """
+    import random
+
+    if target not in series:
+        return {
+            "measured": False,
+            "refusal": f"no counter named {target!r} in this trace",
+        }
+
+    target_values = list(series[target])
+    intervals = len(target_values)
+    depth = max_taps_for(intervals, bins)
+    if depth < 1:
+        return {
+            "measured": False,
+            "intervals": intervals,
+            "refusal": (
+                f"{intervals} intervals cannot support even one tap alongside "
+                f"persistence at {bins} bins: that needs "
+                f"{MIN_PER_CELL * bins ** 2 + 1} intervals, one of which the "
+                "t-to-t+1 shift spends. A shorter trace can be asked about "
+                "single counters, not combinations."
+            ),
+        }
+
+    target_labels = discretize(target_values, bins)
+    last_target, target_ahead = _shift(target_labels)
+    labels = {
+        name: _shift(discretize(list(values), bins))[0]
+        for name, values in series.items()
+        if name != target and len(values) == intervals
+    }
+
+    steps = _greedy(labels, target_ahead, last_target, depth)
+
+    # A null per depth, and -- the number that decides anything -- a null per
+    # INCREMENT. Whether the selected set carries signal and whether the second
+    # tap earns its wires are different questions, and only the second one is a
+    # design decision. At step d the greedy still has forty-odd counters to
+    # choose from, so the best increment it can reach on permuted data is not
+    # small, and an increment inside that is a counter that won an auction.
+    rng = random.Random(seed)
+    null_added: Dict[int, List[float]] = {d: [] for d in range(1, depth + 1)}
+    for _ in range(max(1, trials)):
+        shuffled = {}
+        for name, values in labels.items():
+            copy = values[:]
+            rng.shuffle(copy)
+            shuffled[name] = copy
+        trial = _greedy(shuffled, target_ahead, last_target, depth)
+        for d in range(1, depth + 1):
+            null_added[d].append(trial[d - 1]["added"] if len(trial) >= d else 0.0)
+
+    def _p95(values: List[float]) -> float:
+        ordered = sorted(values)
+        return ordered[min(len(ordered) - 1, int(0.95 * len(ordered)))]
+
+    surviving = 0
+    still_surviving = True
+    for step in steps:
+        threshold = _p95(null_added[step["taps"]])
+        step["null_p95_added"] = round(threshold, 4)
+        step["survives_null"] = bool(step["added"] > threshold)
+        # Once a tap fails its own null the deeper ones were selected on top of
+        # noise, so the recommendation stops here rather than skipping past it.
+        if still_surviving and step["survives_null"]:
+            surviving = step["taps"]
+        else:
+            still_surviving = False
+
+    kept = steps[:surviving]
+    observed = kept[-1]["total_beyond_persistence"] if kept else 0.0
+
+    return {
+        "measured": True,
+        "target": target,
+        "intervals": intervals,
+        "bins": bins,
+        "max_taps_supported": depth,
+        "selection": steps,
+        "recommended_taps": surviving,
+        "taps": [step["tap"] for step in kept],
+        "total_beyond_persistence": observed,
+        "total_at_full_depth": (
+            steps[-1]["total_beyond_persistence"] if steps else 0.0
+        ),
+        "survives_null": bool(surviving),
+        "verdict": _tap_verdict(steps, surviving, depth),
+        "note": (
+            f"At {bins} bins a trace of {intervals} intervals supports "
+            f"{depth} tap(s) alongside persistence; each further tap "
+            f"multiplies the cells by {bins}. Every tap is placed against a "
+            "null of the same greedy selection on permuted counters, so the "
+            "threshold already contains the advantage selection confers -- and "
+            "each tap is judged on what IT added, not on the running total, "
+            "because that is what its wires are being bought with."
+        ),
+    }
+
+
+def _tap_verdict(steps: List[Dict[str, Any]], surviving: int, depth: int) -> str:
+    """What the selection means for how many taps to build."""
+    if not steps:
+        return (
+            "No counter adds anything to persistence at all. The signal is not "
+            "in this counter set, and no combination of them changes that."
+        )
+    if surviving == 0:
+        best = steps[0]
+        return (
+            f"The best first tap ({best['tap']}) adds {best['added']:.3f} bits, "
+            f"INSIDE the null of {best['null_p95_added']:.3f} for choosing the "
+            "best of this many counters on permuted data. That is what greedy "
+            "selection reports on no relationship at all. Nothing here is "
+            "worth a wire."
+        )
+    kept = steps[:surviving]
+    names = ", ".join(step["tap"] for step in kept)
+    total = kept[-1]["total_beyond_persistence"]
+    if surviving < len(steps):
+        first_dead = steps[surviving]
+        return (
+            f"{surviving} tap(s) survive their own null: {names}, "
+            f"{total:.3f} bits beyond persistence together. The next one "
+            f"({first_dead['tap']}) adds {first_dead['added']:.3f} against a "
+            f"null of {first_dead['null_p95_added']:.3f}, so it is selection "
+            "bias and not signal -- build the survivors and stop."
+        )
+    if surviving == depth:
+        return (
+            f"All {surviving} tap(s) this trace can support survive their null "
+            f"({names}, {total:.3f} bits beyond persistence). Whether a further "
+            "tap would add anything is UNMEASURED, not answered: the trace is "
+            "too short to condition on one more. A longer trace, not a "
+            "conclusion."
+        )
+    return (
+        f"{surviving} tap(s) survive their null: {names}, {total:.3f} bits "
+        "beyond persistence."
+    )

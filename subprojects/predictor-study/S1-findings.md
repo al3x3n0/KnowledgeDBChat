@@ -222,6 +222,73 @@ The other two targets do not land the same way. Cycles reaches its ceiling with
 27 bits. **Thread-1 has no buildable design here**: its best gain is +2.7
 against a null of +3.4, so on this feature pair nothing beats last-value.
 
+## Real code under contention: where a predictor finally has room
+
+Every measurement above is either synthetic or solo. This one is neither: the
+primary is Godot's own `core/math` -- the same inline `Vector3::normalized()`
+and `AABB::expand_to()` that read as flat and unpredictable on their own -- run
+against a co-runner that alternates cache-resident and memory-hostile phases.
+
+**The flatness that made it useless solo is what makes it a good primary here.**
+It does identical work every frame, so any variation in its progress is the
+co-runner's doing rather than its own.
+
+80 frames run unsampled first, so the co-runner finishes filling its array
+before sampling starts. The regime detector reports **no regime change** across
+the 401 sampled intervals, which is how we know that worked -- the tool built
+to catch the previous SMT trace's defect certifies this one.
+
+| target | spread | entropy | persistence | best beyond | null | margin | top tap |
+|---|---|---|---|---|---|---|---|
+| thread-0 IPC | 39% | 1.581 | 0.122 | 0.316 | 0.064 | 5.0x | `dcache.writebacks` |
+| thread-1 IPC | 112% | 1.580 | 0.442 | 0.329 | 0.048 | 6.8x | `tol2bus.reqLayer0.occupancy` |
+| cycles | 47% | 1.584 | 0.093 | 0.309 | 0.062 | 5.0x | `derived.thread1_ipc` |
+
+**Contention is what makes prediction both necessary and possible.** Solo, the
+same kernel's persistence carried 1.387 of 1.563 bits and there was nothing
+left to predict. Under contention it carries 0.122 of 1.581. The thread's own
+history stops being sufficient, and a counter recovers 0.316 bits of what is
+left -- the largest headroom anywhere in this study, at 5x its null.
+
+The taps are mechanistically right, which is the same weak check that made the
+synthetic SMT result credible. Thread-0 is a victim: what predicts its progress
+is **d-cache writebacks**, the co-runner evicting its working set. Thread-1 is
+the aggressor: what predicts *its* progress is **L2 bus occupancy**, its own
+demand queueing up. Note that neither is `iqFullEvents`, which topped the
+synthetic study -- there the victim was a steady FP loop competing for issue
+slots, here it is vector math competing for cache.
+
+### What a buildable predictor gets
+
+| target | baseline | ceiling | design | state | gain | share of headroom |
+|---|---|---|---|---|---|---|
+| thread-0 IPC | 50.5% | 62.5% | last value + tap, hysteresis | 27 b | +7.0 | 58% |
+| thread-1 IPC | 59.0% | 72.0% | last value + tap, per-level counters | 54 b | +9.5 | 73% |
+| cycles | 48.5% | 54.0% | last value + tap, hysteresis | 27 b | +6.5 | *see below* |
+
+Both survive their nulls (+2.0 and +1.0 points respectively). **This is the
+first configuration in the study where a small table wins something worth
+having**: 27 bits of state buys 7 points of accuracy on a real kernel's
+progress under contention, and 54 bits buys 9.5 on the co-runner's.
+
+Thread-1 also supports **two** taps where every earlier target supported one --
+L2 bus occupancy plus the issue-width distribution, each surviving its own
+increment null.
+
+The cycles row is reported and not used: its design reads 118% of the headroom
+its ceiling allows, which means the ceiling is not a bound at 200 scored
+intervals. That is the guard doing its job rather than a result.
+
+### What this does not establish
+
+The primary is real; **the contention is not**. The co-runner's phases are
+planted, ten intervals each, and a real second workload would not oblige. What
+is established is that a real kernel's progress under contention is
+predictable to a small table; what is not is that any particular co-tenant
+produces the same structure.
+
+Still a generic O3CPU rather than a named AArch64 core, and still three bins.
+
 ## What this does and does not establish
 
 **Established.** The method rejects noise — demonstrated directly, on fifty
@@ -230,6 +297,12 @@ must be in the hundreds of intervals. A trace must be checked for regime
 changes before anything is measured across it. Under SMT, for thread-0
 progress, one issue-queue-pressure tap carries real signal and a 54-bit table
 extracts all of it that the feature pair holds.
+
+**On real code under contention, a small table wins something worth having.**
+Godot's own inline vector math as the primary: 27 bits of state buys 7 points
+of accuracy on its progress, 54 bits buys 9.5 on the co-runner's, both against
+their nulls. That is the study's answer to the customer's question, and it took
+a real kernel and a contended machine to get it -- neither alone was enough.
 
 That the method *detects* planted structure rests on the positive control's
 6.3× margin, which shares the unverified status of its row. The SMT results are

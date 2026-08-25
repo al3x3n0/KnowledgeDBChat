@@ -1340,11 +1340,20 @@ Citation format:
             else int(settings.DEEPSEEK_TIMEOUT_SECONDS or 120)
         )
 
+        # The caller sized an answer; the model spends an unknown amount
+        # reasoning before it writes one. Raising a cap costs nothing that is
+        # not generated -- max_tokens is a ceiling, not a purchase -- and
+        # without it every call site that asked for a short reply gets an empty
+        # string instead of a short reply.
+        effective_max_tokens = max(
+            int(max_tokens or 0), int(settings.DEEPSEEK_MIN_COMPLETION_TOKENS or 0)
+        )
+
         payload = {
             "model": model or settings.DEEPSEEK_MODEL,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": effective_max_tokens,
             "stream": False,
             "top_p": settings.TOP_P,
         }
@@ -1384,7 +1393,8 @@ Citation format:
                 raise LLMServiceError(
                     f"{model} returned no content "
                     f"(finish_reason={choice.get('finish_reason')!r}, "
-                    f"max_tokens={max_tokens}, "
+                    f"max_tokens={effective_max_tokens} "
+                    f"(caller asked {max_tokens}), "
                     f"completion_tokens={usage.get('completion_tokens')}). "
                     "These models spend max_tokens on reasoning before "
                     "answering, so a budget that fits the answer may not fit "

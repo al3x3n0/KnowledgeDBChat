@@ -275,11 +275,40 @@ class AgentChainOrchestrationService:
 
         await db.commit()
 
-        # Trigger execution of created jobs
+        # Trigger execution of created jobs.
+        #
+        # Guarded, and per job rather than around the loop. The children are
+        # already committed by the line above; a broker that cannot be reached
+        # is a dispatch problem, not a reason to raise out of a parent whose
+        # own work is finished and finalized. Unguarded, a Redis outage turned
+        # a completed run into an exception at its caller -- after the parent
+        # had extracted its memories and created every child -- which is the
+        # opposite of the property the campaign machinery is built on, that a
+        # reboot costs only the downtime.
+        #
+        # An undispatched child stays queued in the database and is picked up
+        # by reconciliation, so the loss is a delay rather than the job.
         from app.tasks.agent_job_tasks import execute_agent_job_task
 
+        undispatched: List[str] = []
         for job_id in created_job_ids:
-            execute_agent_job_task.delay(job_id, str(parent_job.user_id))
+            try:
+                execute_agent_job_task.delay(job_id, str(parent_job.user_id))
+            except Exception as exc:
+                undispatched.append(job_id)
+                logger.error(
+                    f"Chained job {job_id} was created but could not be "
+                    f"dispatched: {exc}. It stays queued for reconciliation."
+                )
+        if undispatched:
+            executor._append_job_result_step_event(
+                parent_job,
+                {
+                    "type": "chain_dispatch_failed",
+                    "iteration": int(parent_job.iteration or 0),
+                    "job_ids": undispatched[:20],
+                },
+            )
 
         return created_job_ids
 

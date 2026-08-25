@@ -27,7 +27,17 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-BUNDLE_ROOT = Path("/app/data/agent-bundles")
+
+def _bundle_root() -> Path:
+    """Where bundles go, from settings rather than from the container layout."""
+    from app.core.config import settings
+
+    return Path(
+        getattr(settings, "AGENT_BUNDLE_ROOT", None) or "/app/data/agent-bundles"
+    )
+
+
+BUNDLE_ROOT = _bundle_root()
 MANIFEST_NAME = "manifest.jsonl"
 MAX_ARTIFACT_BYTES = 2_000_000
 
@@ -270,7 +280,7 @@ async def export_images(
 
 
 def bundle_dir(job_id: str, root: Optional[Path] = None) -> Path:
-    return (root or BUNDLE_ROOT) / str(job_id)
+    return (root or _bundle_root()) / str(job_id)
 
 
 def _next_sequence(directory: Path) -> int:

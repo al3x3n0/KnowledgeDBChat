@@ -64,6 +64,20 @@ class Settings(BaseSettings):
     # this has to fit the thinking as well as the answer. At 2000 an agent
     # decision came back empty once the prompt grew.
     DEEPSEEK_MAX_RESPONSE_TOKENS: int = 8000
+    # A floor under whatever a caller asks for. Call sites across this
+    # codebase name budgets between 200 and 4096, all written when a model
+    # emitted its answer directly. These models reason first and charge it
+    # to the same budget, so a number that sizes the answer truncates the
+    # thinking and the call returns empty. The caller's number stays the
+    # intent; this is the headroom it did not know it needed.
+    DEEPSEEK_MIN_COMPLETION_TOKENS: int = 4000
+
+    # Where reproducibility bundles are written. Hardcoded to the container
+    # path until a run outside it failed every record_entry with "Read-only
+    # file system: '/app'" -- a warning, so the run continued and simply
+    # produced no bundle. That is the quietest possible version of the gap
+    # this machinery exists to close.
+    AGENT_BUNDLE_ROOT: str = "/app/data/agent-bundles"
 
     # OpenAI (external, official SDK) — optional
     OPENAI_API_BASE: str = "https://api.openai.com/v1"

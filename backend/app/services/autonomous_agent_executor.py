@@ -7325,6 +7325,17 @@ GOAL:
                 "It says only which tool yields which evidence, and what must "
                 "come first.\n\n"
             )
+        method_lines = agent_evidence_map.method_notes(required_types)
+        if method_lines:
+            base_prompt += (
+                "WHAT MAKES THIS EVIDENCE WORTH HAVING (the traps, not the "
+                "order):\n"
+                + "\n".join(f"- {line}" for line in method_lines)
+                + "\nThese are how the numbers go wrong while every tool "
+                "reports success. They are not checked automatically unless "
+                "this run's contract says so.\n\n"
+            )
+
         missing_producers = agent_evidence_map.unobtainable(required_types)
         if missing_producers:
             base_prompt += (

@@ -89,6 +89,45 @@ EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = (
         consumes="a core model name; returns its tunable parameters and paths.",
     ),
     ToolEvidence(
+        tool="sample_hardware_counters",
+        produces=("counter_trace",),
+        consumes=(
+            "a self-contained program that calls M5_SAMPLE() wherever a sample "
+            "should be taken. Without those calls it returns one total, which "
+            "is not a trace: predictability is a property of counters over "
+            "time and cannot be read from a run's totals."
+        ),
+    ),
+    ToolEvidence(
+        tool="measure_predictability",
+        produces=("predictability_ceiling",),
+        requires=("sample_hardware_counters",),
+        consumes=(
+            "the name of the counter to predict. The trace this run already "
+            "sampled is read from the run -- do not paste it back."
+        ),
+    ),
+    ToolEvidence(
+        tool="select_counter_taps",
+        produces=("counter_tap_selection",),
+        # Not a hard refusal, a method: which counters to tap TOGETHER is worth
+        # asking only once one has shown signal on its own, because the joint
+        # estimate costs samples exponentially and a trace is finite.
+        requires=("measure_predictability",),
+        consumes="the counter to predict; returns which taps survive their own null.",
+    ),
+    ToolEvidence(
+        tool="evaluate_predictor_design",
+        produces=("predictor_design_result",),
+        requires=("select_counter_taps",),
+        consumes=(
+            "the counter to predict and the tap to read alongside its own last "
+            "value -- normally the one select_counter_taps recommended. An "
+            "information ceiling says what is available; this says what a "
+            "table of counters reaches."
+        ),
+    ),
+    ToolEvidence(
         tool="record_prediction",
         produces=("prediction_recorded",),
         consumes=(
@@ -169,6 +208,49 @@ def describe_chain(required: Sequence[str]) -> List[str]:
         after = f" after {', '.join(entry.requires)}" if entry.requires else ""
         detail = f" Takes {entry.consumes}" if entry.consumes else ""
         lines.append(f"{tool} yields {produced}{after}.{detail}")
+    return lines
+
+
+#: Where the methodology for a tool lives. The chain above says which tool
+#: yields what and in what order; these say what makes the number wrong even
+#: when the order is right, which is a different kind of knowledge and belongs
+#: with the module that implements the check.
+_METHOD_SOURCES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
+    (
+        ("sample_hardware_counters", "measure_predictability", "select_counter_taps"),
+        "app.services.agent_predictability",
+    ),
+    (("evaluate_predictor_design",), "app.services.agent_predictor_design"),
+)
+
+
+def method_notes(required: Iterable[str]) -> List[str]:
+    """Methodology for the work this run's contract actually implies.
+
+    Keyed to the derived CHAIN rather than to the evidence types named, because
+    a contract asking only for a design result still makes the run sample a
+    trace and measure a ceiling on the way there -- and the traps it needs
+    warning about are the traps of the tools it will run.
+
+    Every module here already carried a `describe()` saying what makes its
+    numbers worth having: that predictability is measured beyond persistence,
+    that a time series is split contiguously and never at random. None of it
+    reached a model. The only caller of any `describe()` was the validity
+    block, so the notes belonging to modules that implement no validity
+    predicate were written and then never read. This is the path that reads
+    them.
+    """
+    import importlib
+
+    tools = set(chain_for(required))
+    lines: List[str] = []
+    for owned, module_path in _METHOD_SOURCES:
+        if not tools.intersection(owned):
+            continue
+        module = importlib.import_module(module_path)
+        for line in module.describe():
+            if line not in lines:
+                lines.append(line)
     return lines
 
 

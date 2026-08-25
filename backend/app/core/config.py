@@ -55,9 +55,15 @@ class Settings(BaseSettings):
     # DeepSeek (external) — optional
     DEEPSEEK_API_BASE: str = "https://api.deepseek.com/v1"
     DEEPSEEK_API_KEY: Optional[str] = None
-    DEEPSEEK_MODEL: str = "deepseek-chat"
+    # deepseek-chat was retired; the API now accepts deepseek-v4-pro,
+    # deepseek-v4-flash and deepseek-v4-flash-vision-exp, and rejects
+    # anything else with a 400 naming the three.
+    DEEPSEEK_MODEL: str = "deepseek-v4-pro"
     DEEPSEEK_TIMEOUT_SECONDS: int = 120
-    DEEPSEEK_MAX_RESPONSE_TOKENS: int = 2000
+    # These models reason before answering and charge it to max_tokens, so
+    # this has to fit the thinking as well as the answer. At 2000 an agent
+    # decision came back empty once the prompt grew.
+    DEEPSEEK_MAX_RESPONSE_TOKENS: int = 8000
 
     # OpenAI (external, official SDK) — optional
     OPENAI_API_BASE: str = "https://api.openai.com/v1"

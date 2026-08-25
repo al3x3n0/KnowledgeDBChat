@@ -843,6 +843,15 @@ class LLMService:
                 temperature = (
                     temperature if temperature is not None else settings.TEMPERATURE
                 )
+                # Deliberately NOT defaulted here. Each provider applies its
+                # own cap below when the caller named none, and coercing to the
+                # generic one first made those unreachable: a request with no
+                # max_tokens arrived at DeepSeek as 1000 rather than
+                # DEEPSEEK_MAX_RESPONSE_TOKENS, and its reasoning models spend
+                # the budget thinking before they answer, so the call returned
+                # empty. The agent's decision path passes no budget, which is
+                # how that setting came to be dead exactly where it mattered.
+                requested_max_tokens = max_tokens
                 max_tokens = max_tokens or settings.MAX_RESPONSE_LENGTH
 
                 # Routing decision provenance (best-effort)
@@ -1020,7 +1029,8 @@ class LLMService:
                         messages=messages,
                         temperature=temperature,
                         max_tokens=(
-                            max_tokens or settings.DEEPSEEK_MAX_RESPONSE_TOKENS
+                            requested_max_tokens
+                            or settings.DEEPSEEK_MAX_RESPONSE_TOKENS
                         ),
                         api_key_override=api_key,
                         api_base_override=api_base,
@@ -1351,12 +1361,35 @@ Citation format:
             response.raise_for_status()
             data = response.json()
             # OpenAI-compatible shape: choices[0].message.content
-            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
+            choice = (data.get("choices") or [{}])[0]
+            content = (choice.get("message") or {}).get("content", "")
             meta: Dict[str, Any] = {
                 "id": data.get("id"),
                 "model": data.get("model") or model,
                 "usage": data.get("usage"),
+                "finish_reason": choice.get("finish_reason"),
             }
+
+            # DeepSeek's current models reason before they answer, and the
+            # reasoning is charged against max_tokens. Ask for too few and the
+            # call succeeds, spends the whole budget thinking, and returns an
+            # empty string -- which every caller here reports as the model
+            # producing unusable output. The decision parser says "No valid
+            # JSON object found in response", an error about the model when the
+            # cause is a number in the config, and it only bites once the
+            # prompt grows enough to make the reasoning long: early iterations
+            # of a run parse, later ones do not.
+            if not (content or "").strip():
+                usage = data.get("usage") or {}
+                raise LLMServiceError(
+                    f"{model} returned no content "
+                    f"(finish_reason={choice.get('finish_reason')!r}, "
+                    f"max_tokens={max_tokens}, "
+                    f"completion_tokens={usage.get('completion_tokens')}). "
+                    "These models spend max_tokens on reasoning before "
+                    "answering, so a budget that fits the answer may not fit "
+                    "the thinking. Raise DEEPSEEK_MAX_RESPONSE_TOKENS."
+                )
             return (content or "").strip(), meta
         except httpx.HTTPStatusError as e:
             logger.error(

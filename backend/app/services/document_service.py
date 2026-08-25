@@ -1008,7 +1008,7 @@ class DocumentService:
                 )
                 if use_deepseek:
                     actual_model_used = getattr(
-                        _settings, "DEEPSEEK_MODEL", "deepseek-chat"
+                        _settings, "DEEPSEEK_MODEL", "deepseek-v4-pro"
                     )
                 else:
                     actual_model_used = model or self.llm.default_model
@@ -1107,7 +1107,7 @@ class DocumentService:
         document.summary = summary
         # Set the model that was actually used (may differ from preferred if fallback occurred)
         document.summary_model = actual_model_used or (
-            getattr(_settings, "DEEPSEEK_MODEL", "deepseek-chat")
+            getattr(_settings, "DEEPSEEK_MODEL", "deepseek-v4-pro")
             if prefer_deepseek and bool(getattr(_settings, "DEEPSEEK_API_KEY", None))
             else (model or self.llm.default_model)
         )

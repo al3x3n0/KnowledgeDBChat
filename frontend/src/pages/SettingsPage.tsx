@@ -333,7 +333,7 @@ const LLM_PRESETS: LLMPreset[] = [
     id: 'deepseek_official',
     name: 'DeepSeek Official',
     provider: 'deepseek',
-    model: 'deepseek-chat',
+    model: 'deepseek-v4-pro',
     apiUrl: 'https://api.deepseek.com/v1',
     description: 'Official DeepSeek API - fast and affordable',
     requiresApiKey: true,
@@ -342,7 +342,7 @@ const LLM_PRESETS: LLMPreset[] = [
     id: 'deepseek_reasoner',
     name: 'DeepSeek Reasoner',
     provider: 'deepseek',
-    model: 'deepseek-reasoner',
+    model: 'deepseek-v4-flash',
     apiUrl: 'https://api.deepseek.com/v1',
     description: 'DeepSeek R1 reasoning model for complex tasks',
     requiresApiKey: true,
@@ -395,7 +395,7 @@ const LLM_PRESETS: LLMPreset[] = [
 ];
 
 const KNOWN_MODELS_BY_PROVIDER: Record<string, string[]> = {
-  deepseek: ['deepseek-chat', 'deepseek-reasoner'],
+  deepseek: ['deepseek-v4-pro', 'deepseek-v4-flash', 'deepseek-v4-flash-vision-exp'],
   openai: [
     'gpt-4o-mini',
     'gpt-4o',
@@ -658,7 +658,7 @@ const LLMSettingsTab: React.FC = () => {
               setModel(e.target.value);
               setSelectedPreset('');
             }}
-            placeholder="e.g., gpt-4, llama3.2:1b, deepseek-chat"
+            placeholder="e.g., gpt-4, llama3.2:1b, deepseek-v4-pro"
             className="w-full px-3 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
           />
           <p className="text-xs text-gray-500 mt-1">

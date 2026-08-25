@@ -1,76 +1,14 @@
-"""One declaration per tool, for the tools that change most.
+"""Measurement and sandbox tools: the ones this project's research runs on.
 
-Defining a tool used to mean editing four files that knew nothing about each
-other: the schema a model reads (``agent_tools.AGENT_TOOLS``), the governance
-metadata (``agent_core.tool_catalog``), the per-job-type allowlist
-(``agent_job_tool_policy``), and — for measurement tools — the evidence map a
-plan is derived from (``agent_evidence_map``). Sixteen commits in the last year
-touched all four. Nothing failed when one was missed, because a tool absent
-from a registry is not a broken tool, it is a quieter one: unadvertised,
-ungoverned, or believed to produce no evidence.
-
-Three of the defects found in a single day came from exactly that. A sampler
-offered five of the nine parameters its service accepted. A renamed charting
-tool was advertised under the old name and dispatched under the new one.
-Twenty-one tools had no governance metadata at all, so a policy carrying
-constraints denied them as unknown.
-
-So the facts live here once and the registries derive from them. The handler
-still lives in ``agent_tool_dispatch`` — that is code, not data, and a test
-asserts every spec has one.
-
-This holds the measurement and sandbox family: the tools this project's
-research runs actually use, and the ones whose registration went wrong. The
-other ~200 tools still use the four-registry form and are merged in alongside
-these; both shapes work, and a tool moves when it is next touched.
+The first family to declare itself once. These are also the tools whose
+registration went wrong most often, which is why they moved first.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import Any, Dict, List, Tuple
+from app.agent_core.tool_specs.spec import ToolSpec
 
-
-@dataclass(frozen=True)
-class ToolSpec:
-    """Everything the registries need to know about one tool.
-
-    ``job_types`` empty means every job type may use it, which is what all of
-    the tools below are: a measurement tool is not owned by a job type.
-    """
-
-    name: str
-    description: str
-    parameters: Dict[str, Any]
-
-    # Governance. Defaults are the safe-sounding ones, so a spec that says
-    # nothing is classified read-only and cheap -- state the opposite loudly.
-    effects: str = "read"
-    network: str = "none"
-    cost_tier: str = "low"
-    pii_risk: str = "low"
-
-    #: Job types allowed to call it; empty means all of them.
-    job_types: Tuple[str, ...] = ()
-
-    # Evidence: what a run gets from calling this, and what it needs first.
-    # Only measurement tools carry these; an empty ``produces`` keeps the tool
-    # out of the evidence map entirely, which is the honest default.
-    produces: Tuple[str, ...] = ()
-    requires: Tuple[str, ...] = ()
-    typical_seconds: int = 0
-    consumes: str = ""
-
-    def schema(self) -> Dict[str, Any]:
-        """The shape ``AGENT_TOOLS`` holds, so a model sees no difference."""
-        return {
-            "name": self.name,
-            "description": self.description,
-            "parameters": self.parameters,
-        }
-
-
-TOOL_SPECS: Tuple[ToolSpec, ...] = (
+SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="compile_c_snippet",
         description="Compile a C snippet in the compiler research sandbox and return "
@@ -1119,32 +1057,3 @@ TOOL_SPECS: Tuple[ToolSpec, ...] = (
         pii_risk="medium",
     ),
 )
-
-_BY_NAME: Dict[str, ToolSpec] = {spec.name: spec for spec in TOOL_SPECS}
-
-
-def all_specs() -> Tuple[ToolSpec, ...]:
-    return TOOL_SPECS
-
-
-def spec_for(tool_name: str) -> ToolSpec | None:
-    return _BY_NAME.get(str(tool_name or "").strip())
-
-
-def spec_names() -> frozenset[str]:
-    return frozenset(_BY_NAME)
-
-
-def schemas() -> List[Dict[str, Any]]:
-    """Schema entries for every spec, in declaration order."""
-    return [spec.schema() for spec in TOOL_SPECS]
-
-
-def tools_for_job_type(job_type: str) -> List[str]:
-    """Spec-declared tools this job type may call."""
-    wanted = str(job_type or "").strip()
-    return [
-        spec.name
-        for spec in TOOL_SPECS
-        if not spec.job_types or wanted in spec.job_types
-    ]

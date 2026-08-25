@@ -114,7 +114,7 @@ from app.services.agent_tool_dispatch import (
     build_autonomous_workspace_mutation_provider,
     build_autonomous_workspace_read_provider,
 )
-from app.services.agent_tools import AGENT_TOOLS, AUTONOMOUS_AGENT_TOOLS
+from app.services.agent_tools import AGENT_TOOLS
 from app.services.arxiv_search_service import ArxivSearchService
 from app.services.data_analysis_tools import (
     DataAnalysisTools,
@@ -7617,8 +7617,9 @@ RESPONSE FORMAT:
         )
         tool_descriptions = []
 
-        # Combine all tool definitions
-        all_tools = AGENT_TOOLS + AUTONOMOUS_AGENT_TOOLS
+        # AGENT_TOOLS is every tool there is; it used to be concatenated with
+        # AUTONOMOUS_AGENT_TOOLS, which it already contained.
+        all_tools = AGENT_TOOLS
         seen = set()
 
         for tool_def in all_tools:

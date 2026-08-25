@@ -16,7 +16,19 @@ from app.services import agent_evidence_map, agent_job_tool_policy
 from app.services.agent_tools import AGENT_TOOLS
 
 SPECS = tool_specs.all_specs()
-JOB_TYPES = ("research", "coding", "data_analysis", "analysis", "custom")
+# Every job type the policy defines. This listed five of the nine, so a spec
+# could have been wrong about four of them without any test noticing.
+JOB_TYPES = (
+    "research",
+    "monitor",
+    "analysis",
+    "synthesis",
+    "coding",
+    "document_authoring",
+    "knowledge_expansion",
+    "custom",
+    "data_analysis",
+)
 
 
 def test_there_are_specs_to_check():
@@ -41,7 +53,7 @@ class TestEveryRegistryReadsTheSpec:
         assert meta.pii_risk == spec.pii_risk
 
     def test_the_job_types_that_may_call_it_are_the_declared_ones(self, spec):
-        expected = set(spec.job_types) or set(JOB_TYPES)
+        expected = set(JOB_TYPES) if spec.job_types is None else set(spec.job_types)
         for job_type in JOB_TYPES:
             allowed = spec.name in agent_job_tool_policy.get_tools_for_job_type(
                 job_type, {}
@@ -105,14 +117,20 @@ def test_declared_classifications_use_known_values():
         assert spec.pii_risk in {"low", "medium", "high"}
 
 
-def test_a_spec_is_not_also_a_hand_written_schema():
-    """The point of the move is that there is one declaration, not two that
-    happen to match today."""
-    from app.services import agent_tools
+def test_the_schema_list_is_exactly_the_specs():
+    """There is one declaration, not two that happen to match today.
 
-    hand_written = agent_tools.AGENT_TOOLS[: -len(tool_specs.schemas())]
-    duplicated = {t["name"] for t in hand_written} & tool_specs.spec_names()
-    assert not duplicated, f"declared twice: {sorted(duplicated)}"
+    ``AGENT_TOOLS`` was a literal list of 197 schemas maintained beside the
+    catalog, the policy and the evidence map. It is now a view of the specs,
+    so a tool cannot be declared in one and missing from the other.
+    """
+    assert [t["name"] for t in AGENT_TOOLS] == [s.name for s in SPECS]
+
+
+def test_no_tool_is_declared_in_two_modules():
+    """Assembly raises on a duplicate, so this pins the guard itself."""
+    names = [s.name for s in SPECS]
+    assert len(names) == len(set(names))
 
 
 def test_one_declaration_is_enough(monkeypatch):
@@ -154,3 +172,18 @@ def test_a_spec_limited_to_one_job_type_is_offered_only_there(monkeypatch):
 
     assert "coding_only_thing" in tool_specs.tools_for_job_type("coding")
     assert "coding_only_thing" not in tool_specs.tools_for_job_type("research")
+
+
+def test_a_spec_belonging_to_no_job_type_is_offered_to_none(monkeypatch):
+    """Distinct from "all", and 58 tools depend on the difference: they are
+    reachable from chat or MCP and from no autonomous job."""
+    chat_only = tool_specs.ToolSpec(
+        name="chat_only_thing",
+        description="Reachable from chat, from no job type.",
+        parameters={"type": "object", "properties": {}},
+        job_types=(),
+    )
+    monkeypatch.setattr(tool_specs, "TOOL_SPECS", SPECS + (chat_only,))
+
+    for job_type in JOB_TYPES:
+        assert "chat_only_thing" not in tool_specs.tools_for_job_type(job_type)

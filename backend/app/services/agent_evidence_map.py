@@ -33,6 +33,13 @@ class ToolEvidence:
     tool: str
     produces: Tuple[str, ...] = ()
     requires: Tuple[str, ...] = ()
+    #: Seconds for one call that produced USABLE evidence, from runs recorded
+    #: in this project. Not a floor: the first version used the smallest
+    #: plausible figure, pronounced a 60-minute budget sufficient for a chain
+    #: that had just failed to finish in 90, and was therefore useless for the
+    #: case it was written for. Workload size sets the real cost and nothing
+    #: here knows it, so these are order-of-magnitude and the check says so.
+    typical_seconds: int = 0
     # Said in the tool's own terms, because "pattern" and "the instructions the
     # pattern came from" are easy to confuse and the difference is three
     # wasted attempts.
@@ -42,11 +49,13 @@ class ToolEvidence:
 EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = (
     ToolEvidence(
         tool="compile_c_snippet",
+        typical_seconds=10,  # a compile in a container that must start first
         produces=("codegen_measurement",),
         consumes="C source; returns the assembly the compiler really emitted.",
     ),
     ToolEvidence(
         tool="profile_c_workload",
+        typical_seconds=60,  # instrumented execution, minutes on real code
         produces=("dynamic_profile",),
         consumes="a self-contained program; runs it and counts what executed.",
     ),
@@ -70,16 +79,19 @@ EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = (
     ),
     ToolEvidence(
         tool="analyze_snippet_cycles",
+        typical_seconds=10,  # llvm-mca is fast; the container is not
         produces=("cycle_model_measurement",),
         consumes="assembly fenced with # LLVM-MCA-BEGIN / # LLVM-MCA-END.",
     ),
     ToolEvidence(
         tool="benchmark_c_snippet",
+        typical_seconds=30,  # repeated trials on the host
         produces=("benchmark_measurement",),
         consumes="a program that times itself; runs it on the real host.",
     ),
     ToolEvidence(
         tool="simulate_c_workload",
+        typical_seconds=60,  # observed 60-190s across recorded bundles
         produces=("simulated_measurement",),
         consumes="a self-contained program; runs it in a modelled core.",
     ),
@@ -90,6 +102,11 @@ EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = (
     ),
     ToolEvidence(
         tool="sample_hardware_counters",
+        # 38 and 105 minutes, the only two traces this project has taken that
+        # were long enough to estimate on. A trace cheap enough to sample in
+        # ten minutes is too short for the estimator downstream, so the cheap
+        # case is not the relevant one.
+        typical_seconds=2400,
         produces=("counter_trace",),
         consumes=(
             "a self-contained program that calls M5_SAMPLE() wherever a sample "
@@ -153,6 +170,7 @@ EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = (
     ),
     ToolEvidence(
         tool="axis_prove",
+        typical_seconds=30,  # an SMT solver, unbounded above
         produces=("equivalence_proof",),
         requires=("axis_check",),
         consumes="an .axisl description and the sequence it should be equivalent to.",
@@ -252,6 +270,92 @@ def method_notes(required: Iterable[str]) -> List[str]:
             if line not in lines:
                 lines.append(line)
     return lines
+
+
+#: What one iteration costs before any tool runs: the model reads a large
+#: prompt and reasons before answering. Measured at roughly half a minute per
+#: decision on the provider this was written against.
+ITERATION_OVERHEAD_SECONDS = 30
+
+#: How many times a run actually calls an expensive tool. Not once: the live
+#: run this was written from called the counter sampler twice, at 38 and 105
+#: minutes, and neither call was wasted -- an agent refines a workload it has
+#: seen the output of. Assuming one call per tool made the check agree that a
+#: budget which had just expired was ample.
+EXPENSIVE_TOOL_ATTEMPTS = 2
+
+#: Above this a tool is expensive enough that a second attempt matters.
+EXPENSIVE_SECONDS = 300
+
+
+def estimate_chain_seconds(required: Iterable[str], iterations: int = 0) -> int:
+    """A floor on what obtaining this evidence costs, in seconds.
+
+    One call per cheap tool in the derived chain, two per expensive one, plus
+    the model's own time per iteration. Order-of-magnitude by construction: the
+    workload a run hands a simulator sets the real cost and nothing here knows
+    it. Useful for "this budget is not in the right range", not for planning.
+    """
+    total = 0
+    for tool in chain_for(required):
+        entry = _BY_TOOL.get(tool)
+        if not entry:
+            continue
+        cost = int(entry.typical_seconds or 0)
+        if cost >= EXPENSIVE_SECONDS:
+            cost *= EXPENSIVE_TOOL_ATTEMPTS
+        total += cost
+    return total + int(iterations or 0) * ITERATION_OVERHEAD_SECONDS
+
+
+def check_runtime_budget(
+    required: Iterable[str],
+    max_runtime_minutes: int,
+    max_iterations: int = 0,
+) -> Dict[str, object]:
+    """Whether this job can finish the chain its contract demands.
+
+    The default budget is 60 minutes and a single counter-sampling call has
+    been observed at 105. A job like that does not fail: it runs, produces some
+    of its evidence, and stops with its contract unmet, which reads as an agent
+    that gave up rather than a budget that expired. Saying so at launch costs
+    nothing; discovering it costs the whole run.
+    """
+    required = [str(x).strip() for x in required if str(x).strip()]
+    floor = estimate_chain_seconds(required, max_iterations)
+    budget = int(max_runtime_minutes or 0) * 60
+    feasible = budget <= 0 or floor <= budget
+
+    breakdown = [
+        {"tool": tool, "floor_seconds": int(_BY_TOOL[tool].typical_seconds or 0)}
+        for tool in chain_for(required)
+        if tool in _BY_TOOL and _BY_TOOL[tool].typical_seconds
+    ]
+    message = ""
+    if not feasible:
+        slowest = ", ".join(
+            f"{row['tool']} (>={row['floor_seconds'] // 60} min)"
+            for row in sorted(breakdown, key=lambda r: -r["floor_seconds"])[:3]
+        )
+        message = (
+            f"This contract needs {', '.join(required[:6])}. Obtaining it has "
+            f"taken about {floor // 60} minutes in runs recorded here -- "
+            f"{slowest}, counted twice each because a run refines an expensive "
+            f"call after seeing its output -- and the job is allowed "
+            f"{max_runtime_minutes}. The figures are order-of-magnitude and "
+            "the workload usually makes them larger, so treat this as the "
+            "wrong range rather than a precise shortfall. Raise "
+            "max_runtime_minutes, or require less evidence. A job that runs "
+            "out does not fail: it stops with its contract unmet, which reads "
+            "as an agent that gave up."
+        )
+    return {
+        "feasible": feasible,
+        "floor_seconds": floor,
+        "budget_seconds": budget,
+        "breakdown": breakdown,
+        "message": message,
+    }
 
 
 def unobtainable(required: Iterable[str]) -> List[str]:

@@ -253,3 +253,105 @@ def test_a_contract_wanting_none_of_this_carries_none_of_it():
     prompt = AutonomousAgentExecutor()._build_thinking_prompt_stable(job, None, {})
 
     assert "WHAT MAKES THIS EVIDENCE WORTH HAVING" not in prompt
+
+
+# --- can this job afford its own contract ----------------------------------
+
+
+GEM5_CONTRACT = ["counter_trace", "predictability_ceiling", "counter_tap_selection"]
+
+
+def test_the_default_budget_cannot_afford_a_simulation_contract():
+    """max_runtime_minutes defaults to 60 and one counter-sampling call has
+    been observed at 105. Such a job does not fail -- it stops with its
+    contract unmet, which reads as an agent that gave up rather than a budget
+    that expired."""
+    result = evidence.check_runtime_budget(GEM5_CONTRACT, 60, max_iterations=12)
+
+    assert result["feasible"] is False
+    assert "sample_hardware_counters" in result["message"]
+    assert "Raise max_runtime_minutes" in result["message"]
+
+
+def test_a_budget_in_the_right_range_passes():
+    result = evidence.check_runtime_budget(GEM5_CONTRACT, 240, max_iterations=12)
+
+    assert result["feasible"] is True
+
+
+def test_a_contract_needing_no_simulator_fits_the_default():
+    """The default is right for most work and must not be condemned for it."""
+    result = evidence.check_runtime_budget(
+        ["prediction_settled", "method_recorded"], 60, max_iterations=12
+    )
+
+    assert result["feasible"] is True
+
+
+def test_an_expensive_tool_is_counted_more_than_once():
+    """The live run called the sampler twice, at 38 and 105 minutes, and
+    neither call was wasted -- an agent refines a workload after seeing its
+    output. Counting one call each pronounced a budget that had just expired
+    to be ample."""
+    once = sum(
+        row["floor_seconds"]
+        for row in evidence.check_runtime_budget(GEM5_CONTRACT, 0)["breakdown"]
+    )
+    estimated = evidence.estimate_chain_seconds(GEM5_CONTRACT)
+
+    assert estimated > once, "an expensive tool must be budgeted for a retry"
+
+
+def test_no_budget_declared_is_not_a_shortfall():
+    result = evidence.check_runtime_budget(GEM5_CONTRACT, 0)
+
+    assert result["feasible"] is True
+
+
+def test_the_estimate_is_presented_as_a_range_not_a_prediction():
+    """It is arithmetic over order-of-magnitude figures, and a reader who
+    treats it as planning data will be wrong by the size of their workload."""
+    message = evidence.check_runtime_budget(GEM5_CONTRACT, 60, 12)["message"]
+
+    assert "order-of-magnitude" in message
+
+
+def test_a_job_that_cannot_afford_its_contract_is_told_at_launch():
+    """Not after ninety minutes. The stable prompt is where it belongs: a run
+    that knows its budget is short can spend it on the evidence that matters."""
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = _Job(
+        {
+            "goal_contract": {
+                "enabled": True,
+                "required_finding_types": ["counter_trace", "predictability_ceiling"],
+            }
+        }
+    )
+    job.max_runtime_minutes = 60
+    job.max_iterations = 12
+
+    prompt = AutonomousAgentExecutor()._build_thinking_prompt_stable(job, None, {})
+
+    assert "BUDGET WARNING" in prompt
+    assert "sample_hardware_counters" in prompt
+
+
+def test_an_affordable_job_is_not_warned():
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = _Job(
+        {
+            "goal_contract": {
+                "enabled": True,
+                "required_finding_types": ["counter_trace", "predictability_ceiling"],
+            }
+        }
+    )
+    job.max_runtime_minutes = 480
+    job.max_iterations = 12
+
+    prompt = AutonomousAgentExecutor()._build_thinking_prompt_stable(job, None, {})
+
+    assert "BUDGET WARNING" not in prompt

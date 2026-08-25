@@ -7344,6 +7344,23 @@ GOAL:
                 + ", which this run's contract nonetheless requires.\n\n"
             )
 
+        # Can this job afford the evidence it is being asked for? Checked here
+        # because the contract and the budget are both in hand, and stated in
+        # the prompt because a run that knows its budget is short can spend it
+        # on the evidence that matters rather than discovering the shortfall
+        # by running out.
+        budget = agent_evidence_map.check_runtime_budget(
+            required_types,
+            int(getattr(job, "max_runtime_minutes", 0) or 0),
+            int(getattr(job, "max_iterations", 0) or 0),
+        )
+        if not budget["feasible"]:
+            base_prompt += "BUDGET WARNING: " + str(budget["message"]) + "\n\n"
+            logger.warning(
+                f"Job {getattr(job, 'id', '?')} budget shortfall: "
+                f"{budget['message']}"
+            )
+
         validity_lines = agent_measurement_validity.describe(
             contract_config.get("validity")
         )

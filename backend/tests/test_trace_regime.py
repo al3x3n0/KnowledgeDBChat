@@ -181,3 +181,63 @@ def test_a_spliced_trace_inflates_persistence_which_is_the_whole_point():
 
     assert across["persistence_information_bits"] > 0.8, "the splice reads as structure"
     assert after["persistence_information_bits"] < 0.1, "neither regime alone has any"
+
+
+# --- reaching a live run ---------------------------------------------------
+
+
+class _Job:
+    def __init__(self, config):
+        self.config = config
+
+    def __getattr__(self, name):
+        return None
+
+
+def test_the_predicate_survives_job_config_normalisation():
+    """The check this needed and did not have. Every test above calls
+    evaluate() directly, which is around the normaliser rather than through it
+    -- and the normaliser drops any predicate it does not recognise. This one
+    shipped dead for a week behind a passing suite for exactly that reason.
+    """
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = _Job(
+        {"goal_contract": {"enabled": True, "validity": {"traces_one_regime": True}}}
+    )
+
+    config = AutonomousAgentExecutor()._get_goal_contract_config(job)
+
+    assert config["validity"].get("traces_one_regime") is True
+
+
+def test_a_contract_declaring_it_holds_a_straddling_run_back_end_to_end():
+    """Normalised config into the evaluator, the way a live run does it."""
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    job = _Job(
+        {"goal_contract": {"enabled": True, "validity": {"traces_one_regime": True}}}
+    )
+    config = AutonomousAgentExecutor()._get_goal_contract_config(job)
+
+    result = validity.evaluate(config, {"findings": [_finding()]})
+
+    assert "validity:traces_one_regime" in result["missing"]
+
+
+def test_the_evaluator_and_the_registration_point_cannot_drift():
+    """They were two lists, and the second one was forgotten twice. A
+    predicate the evaluator handles but the normaliser drops is silently
+    inert; one the normaliser passes but the evaluator ignores is a contract
+    that advertises a check that never fires."""
+    import inspect
+
+    source = inspect.getsource(validity.evaluate)
+    handled = {
+        name for name in validity.BOOLEAN_PREDICATES if f'spec.get("{name}")' in source
+    }
+
+    assert handled == set(validity.BOOLEAN_PREDICATES), (
+        "every registered predicate must be read by evaluate(): "
+        f"{set(validity.BOOLEAN_PREDICATES) - handled} are not"
+    )

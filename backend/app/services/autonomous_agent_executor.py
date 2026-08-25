@@ -7721,6 +7721,8 @@ RESPONSE FORMAT:
 
     def _get_goal_contract_config(self, job: AgentJob) -> Dict[str, Any]:
         """Get normalized deterministic completion contract config."""
+        from app.services import agent_measurement_validity
+
         cfg = job.config if isinstance(job.config, dict) else {}
         raw = cfg.get("goal_contract")
         raw = raw if isinstance(raw, dict) else {}
@@ -7773,18 +7775,13 @@ RESPONSE FORMAT:
             if not isinstance(value, dict):
                 return {}
             spec: Dict[str, Any] = {}
-            # Every boolean predicate has to be named here or it is dropped
-            # silently and the contract reads as declaring nothing. That is the
-            # right default for a malformed rule and a trap for a new one:
-            # three predicates were added and none reached a live run, because
-            # this allowlist is a registration point and was not updated.
-            for flag in (
-                "predictions_measured",
-                "records_method",
-                "instruments_verified",
-                "measurements_reproduce",
-                "measures_what_it_names",
-            ):
+            # An unrecognised predicate is dropped silently, which is the
+            # right default for a malformed rule and was a trap for every new
+            # one: this list was a second registration point, and three
+            # predicates reached no live run because it was not updated --
+            # then a fourth did the same. It is no longer a list here; the
+            # module that implements the checks owns the names.
+            for flag in agent_measurement_validity.BOOLEAN_PREDICATES:
                 if self._coerce_bool(value.get(flag), default=False):
                     spec[flag] = True
             uncertainty = _as_str_list(value.get("require_uncertainty"))

@@ -36,6 +36,21 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
 
+#: Every boolean predicate a contract may declare. This is the ONE place they
+#: are registered: the job-config normaliser imports it rather than keeping its
+#: own list, because that list was a second registration point and behaved like
+#: one -- three predicates were added and reached no live run, and a fourth,
+#: traces_one_regime, shipped dead for the same reason a week later. A test
+#: below asserts the evaluator handles exactly these.
+BOOLEAN_PREDICATES = (
+    "predictions_measured",
+    "records_method",
+    "instruments_verified",
+    "measurements_reproduce",
+    "measures_what_it_names",
+    "traces_one_regime",
+)
+
 # Fields a finding may use to express how uncertain a measurement is. Any one
 # of them satisfies `require_uncertainty`: the point is that the run reports
 # its own dispersion somehow, not that it picks a particular spelling.

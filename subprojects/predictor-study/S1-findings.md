@@ -249,12 +249,18 @@ exists — `sample_hardware_counters` takes `language`, `extra_files` and
 no C++ compiler and no static libstdc++.** Only `gcc` is installed;
 `profile_c_workload` runs C++ because it uses a different image.
 
-The blocker is now only the image. The tool no longer asserts that the image
-cannot build C++ — it asks, by compiling a trivial static C++ program in the
-image on first use, and caches the answer. So adding `g++` to the image lifts
-the refusal with no code change, and the refusal reports what the probe found,
-which distinguishes a missing compiler from a missing static archive. Those
-need different fixes and the earlier message conflated them.
+**This is now fixed.** The image carries `g++` and `libstdc++-12-dev`, and the
+tool's own probe reports `supported: true`, so the refusal lifted with no code
+change — it asks the image by compiling a trivial static C++ program there,
+rather than asserting. Verified end to end: a C++ workload using `std::vector`
+and `std::string` was counter-sampled successfully, 9 intervals and 60 varying
+counters, with the program's output (`cpp-corpus s=84`) proving libstdc++ was
+genuinely linked and executing under gem5.
+
+So a C++ corpus can now be counter-sampled. What that does *not* do by itself
+is make the results above statements about real programs: the Godot math
+corpus still has to be staged and run, and until it is, every number here comes
+from workloads written for the study.
 
 Until then nothing here is a statement about real programs, and a C workload
 must not be read as standing in for the C++ corpus.

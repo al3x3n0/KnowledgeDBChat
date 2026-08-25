@@ -18,9 +18,13 @@
 # Building this for x86_64 produces an image where every simulation fails on a
 # binary gem5 cannot execute, and the error will be about the ELF rather than
 # about the platform. Build it as:
+# Nothing is COPYed from the build context -- gem5 comes from a clone inside
+# the build stage -- so the context is this directory, not the repository root.
+# Pointing it at the root would ship 2.3 GB of bundles and traces to the daemon
+# to be ignored.
 #   docker build --platform linux/arm64 \
-#     -f deploy/sandbox-images/gem5-research/Dockerfile \
-#     -t ghcr.io/al3x3n0/kdbc-gem5-research:latest .
+#     -t ghcr.io/al3x3n0/kdbc-gem5-research:latest \
+#     deploy/sandbox-images/gem5-research
 #
 # NOT built on kdbc-sandbox-base. That base carries clang and lld, which this
 # image never uses, and gem5's own runtime closure has almost nothing in common
@@ -133,9 +137,10 @@ COPY --from=build /opt/gem5/configs /opt/gem5/configs
 # agent's run three layers up. This file's own README records an image that was
 # committed empty because an apt failure was hidden by a redirect, and every
 # tool in it reported "not found" only when someone tried to use it.
-RUN set -eux; \
-    /opt/gem5/build/ARM/gem5.opt --version; \
-    test -f /opt/gem5/configs/deprecated/example/se.py
+# Not `gem5.opt --version`: this build has no such option -- checked against
+# the real binary, which rejected it -- and a binary that starts is not the
+# claim worth asserting anyway. The SE-mode run below is.
+RUN test -f /opt/gem5/configs/deprecated/example/se.py
 
 # The two compilers, as the tool actually invokes them: statically, because
 # syscall-emulation mode has no dynamic loader. The C++ probe is the same one

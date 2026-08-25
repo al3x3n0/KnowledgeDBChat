@@ -95,8 +95,8 @@ in it inherits that.
 
 ```bash
 docker build --platform linux/arm64 \
-  -f deploy/sandbox-images/gem5-research/Dockerfile \
-  -t ghcr.io/al3x3n0/kdbc-gem5-research:latest .
+  -t ghcr.io/al3x3n0/kdbc-gem5-research:latest \
+  deploy/sandbox-images/gem5-research
 ```
 
 **`--platform linux/arm64` is not optional.** gem5 is built for the ARM ISA and
@@ -135,6 +135,46 @@ must contain `simInsts`. That last one matters because a gem5 that starts and a
 gem5 that can run a workload are different claims. The C++ probe is the same
 one `agent_gem5_sandbox.cpp_support()` runs against the finished image, so an
 image that passes here cannot refuse C++ there.
+
+### gem5-research: adding C++ without rebuilding gem5
+
+`Dockerfile.add-cpp` derives from the existing image and installs a C++
+toolchain. It is a bridge: the from-source `Dockerfile` above is what the image
+should eventually be, but that build needs ~20 GB and several hours, and the
+thing blocking the study was one missing package.
+
+```bash
+sh deploy/sandbox-images/gem5-research/fetch-cpp-debs.sh
+docker build --platform linux/arm64 --network none \
+  -f deploy/sandbox-images/gem5-research/Dockerfile.add-cpp \
+  -t ghcr.io/al3x3n0/kdbc-gem5-research:latest \
+  deploy/sandbox-images/gem5-research
+```
+
+**The packages are fetched on the host, and the build runs with
+`--network none`.** That is not fastidiousness. On this network
+`deb.debian.org` resolves inside the VM to `198.18.0.71` — RFC 2544
+benchmarking space, the synthetic address a VPN or intercept layer hands out —
+and apt there managed **1416 B/s**, fetching 581 kB in 6m51s before the 9 MB
+`bookworm/main` Packages index failed with `Connection failed`. `g++` lives in
+that index. The host reaches the same mirror at ~62 kB/s: poor, but forty times
+better and enough. `--network none` then makes "this build needs no network" a
+thing the build proves rather than a thing the comment claims.
+
+A side effect worth keeping even on a good link: `fetch-cpp-debs.sh` pins exact
+versions, and `g++-12` must match the image's installed `gcc-12` or dpkg
+refuses it. That is more reproducible than `apt-get install g++`, not less.
+
+**Before any of this, check the VM's disk.** `apt-get update` failing with
+"At least one invalid signature was encountered" on every repository looks
+exactly like the TLS interception described above, and is not: it is what apt
+reports when it cannot write, and this VM was at 0 bytes free. The clock was
+right, and the InRelease file downloaded byte-identical to the host.
+`docker run --rm busybox df -h /` answers in a second what the GPG error
+obscures. Note also that the fallback below — assembling by hand with
+`docker run` — does **not** work around this: it fails the same way, because
+the cause was never BuildKit's network.
+
 
 ## When apt fails inside `docker build`
 

@@ -92,7 +92,7 @@ IMAGE_ORIGINS = {
         # compiled by the plain gcc inside the image, so the two agree only on
         # arm64. Rebuilding this on x86_64 yields an image whose every
         # simulation fails on a binary gem5 cannot execute.
-        "context": "the repository root, built --platform linux/arm64",
+        "context": "that directory, built --platform linux/arm64",
     },
 }
 

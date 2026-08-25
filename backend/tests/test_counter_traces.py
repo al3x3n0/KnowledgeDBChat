@@ -7,6 +7,8 @@ and only the second has a time axis.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 from app.services import agent_gem5_sandbox as gem5
@@ -237,9 +239,21 @@ def test_smt_carries_the_register_overrides_a_run_needs_to_start():
 
 
 @pytest.mark.asyncio
-async def test_a_co_runner_that_fails_to_compile_says_which_program():
+async def test_a_co_runner_that_fails_to_compile_says_which_program(monkeypatch):
     """Two programs are compiled; "compilation failed" without saying which
-    sends the caller to the wrong source."""
+    sends the caller to the wrong source.
+
+    A compile failure can only be observed by compiling, so this needs the
+    sandbox seam its siblings use. Without it the test asserted a runtime
+    refusal against a server with execution disabled, and could never pass.
+    """
+    monkeypatch.setattr(gem5.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        gem5.agent_sandbox_runtime, "allowed_images", lambda: [gem5.DEFAULT_IMAGE]
+    )
+    # 93 is the exit status the staged script uses for the co-runner's compile.
+    _probe(monkeypatch, returncode=93, stdout="", stderr="co_runner.c:1: error")
+
     result = await gem5.sample_counters(
         code="int main(void){ M5_SAMPLE(); return 0; }",
         co_runner="this is not C at all {{{",
@@ -434,3 +448,50 @@ def test_the_schema_offers_nothing_the_service_cannot_take():
     accepted = set(inspect.signature(gem5.sample_counters).parameters)
 
     assert not (offered - accepted), f"schema offers {offered - accepted}"
+
+
+def test_every_refusal_carries_the_field_callers_check():
+    """One module, one refusal shape.
+
+    These tools return ``success: True`` when they work, so a refusal without
+    ``success`` is not merely inconsistent: anything reading
+    ``result.get("success", True)`` -- or ``result["success"]``, as eight tests
+    here do -- reads the refusal as a success. Eighteen returns were missing
+    it, six of these tests died on the KeyError, and the tools that lost the
+    field were the ones a run reaches first: every argument the caller got
+    wrong.
+    """
+    import ast
+
+    source = Path(gem5.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    # Helpers whose refusal dicts are returned verbatim by the tools below, so
+    # they carry the tools' contract rather than one of their own.
+    carriers = {
+        "_check_arguments",
+        "_check_environment",
+        "_check_staged_paths",
+        "describe_model_parameters",
+        "simulate_c_workload",
+        "sample_counters",
+    }
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in carriers:
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Return) or not isinstance(
+                inner.value, ast.Dict
+            ):
+                continue
+            keys = [k.value for k in inner.value.keys if isinstance(k, ast.Constant)]
+            if "error" in keys and "success" not in keys:
+                offenders.append(f"{node.name}: line {inner.lineno}")
+
+    assert not offenders, (
+        "These refusals omit `success`, so a caller checking it reads them as "
+        "successes:\n" + "\n".join(f"  - {o}" for o in offenders)
+    )

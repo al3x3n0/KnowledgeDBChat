@@ -14,6 +14,7 @@ pay. The tool says that rather than letting it be discovered as a timeout.
 
 from __future__ import annotations
 
+import posixpath
 import re
 
 import tempfile
@@ -273,24 +274,71 @@ def forget_cpp_support(image: str = "") -> None:
         _CPP_SUPPORT.clear()
 
 
-def _preflight(code: str, image: str) -> Optional[Dict[str, Any]]:
+def _check_arguments(code: str) -> Optional[Dict[str, Any]]:
+    """What is wrong with the call, decidable without a sandbox."""
     if not (code or "").strip():
-        return {"error": "code is required"}
+        return {"success": False, "error": "code is required"}
     if len(code) > MAX_CODE_CHARS:
-        return {"error": f"code exceeds {MAX_CODE_CHARS} characters"}
+        return {"success": False, "error": f"code exceeds {MAX_CODE_CHARS} characters"}
+    return None
+
+
+def _check_staged_paths(
+    extra_files: Optional[Dict[str, str]],
+    include_dirs: Optional[Sequence[str]],
+) -> Optional[Dict[str, Any]]:
+    """Whether the staged names stay inside the workspace, decided lexically.
+
+    The same property is checked again during staging, against the real
+    directory, and that check is the one that guards the write -- this one
+    exists so the refusal does not need a sandbox to be reached. A caller who
+    passes ``../../etc/passwd`` is told so on a server with execution disabled,
+    instead of being told about ENABLE_UNSAFE_CODE_EXECUTION and left to
+    discover the path problem later.
+    """
+    root = "/workspace"
+    for name in extra_files or {}:
+        candidate = posixpath.normpath(posixpath.join(root, str(name)))
+        if not candidate.startswith(root + "/"):
+            return {
+                "success": False,
+                "error": f"extra_files path escapes the workspace: {name!r}",
+            }
+    for directory in include_dirs or []:
+        resolved = posixpath.normpath(posixpath.join(root, str(directory)))
+        if not resolved.startswith(root):
+            return {
+                "success": False,
+                "error": f"include_dirs path escapes the workspace: {directory!r}",
+            }
+    return None
+
+
+def _check_environment(image: str) -> Optional[Dict[str, Any]]:
+    """Whether this server can run a sandbox at all.
+
+    Checked after every argument, never before one. These two were a single
+    preflight that ran first, so a caller who mistyped a language or a cpu_type
+    was told the sandbox was disabled -- an accurate statement about the server
+    and the wrong thing to fix, which sends a run off configuring a host when
+    the defect is in its own call. The module said as much further down ("after
+    argument validation, never before it") while opening with the violation.
+    """
     if not agent_sandbox_runtime.execution_enabled():
         return {
+            "success": False,
             "error": (
                 "Sandboxed execution is disabled on this server "
                 "(ENABLE_UNSAFE_CODE_EXECUTION is false)."
-            )
+            ),
         }
     if image not in agent_sandbox_runtime.allowed_images():
         return {
+            "success": False,
             "error": (
                 f"Image {image} is not allowlisted. Allowed: "
                 f"{', '.join(agent_sandbox_runtime.allowed_images()) or 'none'}"
-            )
+            ),
         }
     return None
 
@@ -442,18 +490,19 @@ async def describe_model_parameters(
     are not the paths that can be assigned to. This runs the model once on a
     trivial program and reports what it found.
     """
-    blocked = _preflight("int main(void){return 0;}", image)
-    if blocked:
-        return blocked
-
     model = str(cpu_type or DEFAULT_CPU).strip()
     if model not in CPU_TYPES:
         return {
+            "success": False,
             "error": (
                 f"Unknown cpu_type {cpu_type!r}. Available: "
                 + ", ".join(f"{name} ({why})" for name, why in CPU_TYPES.items())
-            )
+            ),
         }
+
+    blocked = _check_environment(image)
+    if blocked:
+        return blocked
 
     with tempfile.TemporaryDirectory(prefix="gem5_params_") as workdir:
         Path(workdir, "workload.c").write_text(
@@ -477,13 +526,20 @@ async def describe_model_parameters(
             )
         except TimeoutError:
             return {
-                "error": f"Reading the model's configuration timed out after {timeout_seconds}s"
+                "success": False,
+                "error": f"Reading the model's configuration timed out after {timeout_seconds}s",
             }
         except FileNotFoundError:
-            return {"error": "Docker is not available to this process"}
+            return {
+                "success": False,
+                "error": "Docker is not available to this process",
+            }
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"describe_model_parameters failed: {exc}")
-            return {"error": f"Could not read the model configuration: {exc}"}
+            return {
+                "success": False,
+                "error": f"Could not read the model configuration: {exc}",
+            }
 
         if returncode != 0:
             return {
@@ -545,39 +601,45 @@ async def simulate_c_workload(
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
     """Compile a self-contained C program and run it in a simulated core."""
-    blocked = _preflight(code, image)
+    blocked = _check_arguments(code)
     if blocked:
         return blocked
 
     model = str(cpu_type or DEFAULT_CPU).strip()
     if model not in CPU_TYPES:
         return {
+            "success": False,
             "error": (
                 f"Unknown cpu_type {cpu_type!r}. Available: "
                 + ", ".join(f"{name} ({why})" for name, why in CPU_TYPES.items())
-            )
+            ),
         }
     overrides = [str(p).strip() for p in (param_overrides or []) if str(p).strip()]
     if len(overrides) > MAX_PARAM_OVERRIDES:
         return {
+            "success": False,
             "error": (
                 f"{len(overrides)} parameter overrides exceeds the limit of "
                 f"{MAX_PARAM_OVERRIDES}"
-            )
+            ),
         }
     for override in overrides:
         if not SAFE_PARAM.match(override):
             return {
+                "success": False,
                 "error": (
                     f"parameter override {override!r} is not of the form "
                     "system.<path>=<value>. The path must start at `system`, "
                     "index vector members as FUList[3].opList[4], and contain "
                     "no shell metacharacters."
-                )
+                ),
             }
     safe_flags = (flags or DEFAULT_FLAGS).strip()
     if not SAFE_FLAGS.match(safe_flags):
-        return {"error": f"flags contain unsupported characters: {flags!r}"}
+        return {
+            "success": False,
+            "error": f"flags contain unsupported characters: {flags!r}",
+        }
     if "-static" not in safe_flags.split():
         # Syscall-emulation mode has no dynamic loader; a dynamically linked
         # binary fails inside the simulator with an error about the interpreter
@@ -585,7 +647,14 @@ async def simulate_c_workload(
         safe_flags = f"{safe_flags} -static"
     arguments = (run_args or "").strip()
     if not SAFE_RUN_ARGS.match(arguments):
-        return {"error": f"run_args contain unsupported characters: {run_args!r}"}
+        return {
+            "success": False,
+            "error": f"run_args contain unsupported characters: {run_args!r}",
+        }
+
+    blocked = _check_environment(image)
+    if blocked:
+        return blocked
 
     with tempfile.TemporaryDirectory(prefix="gem5_workload_") as workdir:
         Path(workdir, "workload.c").write_text(code, encoding="utf-8")
@@ -616,17 +685,21 @@ async def simulate_c_workload(
             )
         except TimeoutError:
             return {
+                "success": False,
                 "error": (
                     f"Simulation timed out after {timeout_seconds}s. An "
                     "out-of-order model runs on the order of 100k instructions "
                     "a second; shrink the workload's input."
-                )
+                ),
             }
         except FileNotFoundError:
-            return {"error": "Docker is not available to this process"}
+            return {
+                "success": False,
+                "error": "Docker is not available to this process",
+            }
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"simulate_c_workload failed: {exc}")
-            return {"error": f"Simulation failed: {exc}"}
+            return {"success": False, "error": f"Simulation failed: {exc}"}
 
         if returncode == 92:
             return {
@@ -858,7 +931,7 @@ async def sample_counters(
     pointed at workloads written for it. A study run entirely on workloads
     written for the study is a study about the study.
     """
-    blocked = _preflight(code, image)
+    blocked = _check_arguments(code)
     if blocked:
         return blocked
     if "M5_SAMPLE" not in code:
@@ -955,6 +1028,14 @@ async def sample_counters(
             "success": False,
             "error": f"run_args contain unsupported characters: {run_args!r}",
         }
+
+    blocked = _check_staged_paths(extra_files, include_dirs)
+    if blocked:
+        return blocked
+
+    blocked = _check_environment(image)
+    if blocked:
+        return blocked
 
     # Measure the design in the cheap model before paying for the real one.
     # After argument validation, never before it: rejecting an unknown
@@ -1060,15 +1141,16 @@ async def sample_counters(
             )
         except TimeoutError:
             return {
+                "success": False,
                 "error": (
                     f"Sampling timed out after {timeout_seconds}s. An "
                     "out-of-order model runs on the order of 100k instructions "
                     "a second; shrink the workload or take fewer samples."
-                )
+                ),
             }
         except Exception as exc:  # pragma: no cover - defensive
             logger.warning(f"sample_counters failed: {exc}")
-            return {"error": f"Counter sampling failed: {exc}"}
+            return {"success": False, "error": f"Counter sampling failed: {exc}"}
 
         if returncode == 90:
             return {"success": False, "error": f"Compilation failed: {stderr[:800]}"}

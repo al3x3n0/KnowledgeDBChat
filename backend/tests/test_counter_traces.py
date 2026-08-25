@@ -133,6 +133,23 @@ def test_the_sample_macro_is_the_verified_encoding():
     assert 0xFF000110 | (0x42 << 16) == 0xFF420110
 
 
+def _probe(monkeypatch, returncode=0, stdout="CPP_STATIC_OK\n", stderr="", raises=None):
+    """Seam the sandbox runtime, recording what was asked of the image."""
+    from app.services import agent_sandbox_runtime
+
+    calls = []
+
+    async def _fake(script, workdir, **kwargs):
+        calls.append({"script": script, **kwargs})
+        if raises is not None:
+            raise raises
+        return returncode, stdout, stderr
+
+    monkeypatch.setattr(agent_sandbox_runtime, "run_in_sandbox", _fake)
+    gem5.forget_cpp_support()
+    return calls
+
+
 @pytest.mark.asyncio
 async def test_a_workload_that_never_samples_is_refused():
     """Without a single M5_SAMPLE() this returns one total and would be read
@@ -179,16 +196,22 @@ async def test_an_include_dir_may_not_escape_the_workspace():
 
 
 @pytest.mark.asyncio
-async def test_cpp_is_refused_with_the_real_reason():
-    """The gem5 image has no C++ compiler and no static libstdc++. Left to the
-    compiler this surfaces as 'g++: not found', an error about a missing binary
-    when the situation is that this image cannot build C++ at all."""
+async def test_cpp_refusal_names_the_tool_that_can_and_the_trap(monkeypatch):
+    """Left to the compiler this surfaces as 'g++: not found', an error about a
+    missing binary when the situation may be that this image cannot build C++
+    at all. What the refusal must not do is let a C result quietly stand in."""
+    monkeypatch.setattr(gem5.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        gem5.agent_sandbox_runtime, "allowed_images", lambda: [gem5.DEFAULT_IMAGE]
+    )
+    _probe(monkeypatch, returncode=1, stdout="", stderr="g++: not found")
+
     result = await gem5.sample_counters(
         code="int main(void){ M5_SAMPLE(); return 0; }", language="c++"
     )
 
     assert result["success"] is False
-    assert "no C++ compiler" in result["error"]
+    assert "cannot build a static C++ binary" in result["error"]
     assert "profile_c_workload" in result["error"], "name the tool that can"
     assert "do not read a C result as standing in" in result["error"]
 
@@ -272,3 +295,102 @@ def test_a_trace_too_short_to_have_two_sides_is_not_judged():
     """Below a floor per side every trace has a regime change at its second
     sample, which is a statement about the floor and not about the trace."""
     assert gem5.find_regime_change([1.0] * 10 + [900.0] * 10) is None
+
+
+# --- whether this image can build C++ --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_image_is_asked_whether_it_can_build_cpp(monkeypatch):
+    """It used to be asserted. The refusal named its own fix -- add g++ and
+    libstdc++-static -- and would then have gone on refusing a caller who
+    applied it, because nothing in the code could notice."""
+    calls = _probe(monkeypatch)
+
+    support = await gem5.cpp_support("img")
+
+    assert support["supported"] is True
+    assert "g++" in calls[0]["script"]
+    assert "-static" in calls[0]["script"], (
+        "a compiler without a static libstdc++ fails differently and needs a "
+        "different fix, so the probe must compile rather than look for g++"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_image_without_a_cpp_toolchain_says_which_part_is_missing(
+    monkeypatch,
+):
+    _probe(monkeypatch, returncode=1, stdout="", stderr="g++: not found")
+
+    support = await gem5.cpp_support("img")
+
+    assert support["supported"] is False
+    assert "g++: not found" in support["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_definite_answer_is_asked_once(monkeypatch):
+    """It changes only when the image is rebuilt, and the probe is a container
+    start -- paying that per C++ call would be a tax on the fixed case."""
+    calls = _probe(monkeypatch)
+
+    await gem5.cpp_support("img")
+    await gem5.cpp_support("img")
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_could_not_run_is_not_remembered(monkeypatch):
+    """A docker hiccup must not disable C++ for the life of the process. That
+    is the difference between 'this image cannot' and 'we could not ask'."""
+    calls = _probe(monkeypatch, raises=TimeoutError("docker did not answer"))
+
+    first = await gem5.cpp_support("img")
+    await gem5.cpp_support("img")
+
+    assert first["supported"] is False
+    assert first["probed"] is False
+    assert len(calls) == 2, "an unanswered question is asked again"
+
+
+@pytest.mark.asyncio
+async def test_cpp_is_refused_with_what_the_probe_found(monkeypatch):
+    monkeypatch.setattr(gem5.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        gem5.agent_sandbox_runtime, "allowed_images", lambda: [gem5.DEFAULT_IMAGE]
+    )
+    _probe(monkeypatch, returncode=1, stdout="", stderr="g++: not found")
+
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", language="c++"
+    )
+
+    assert result["success"] is False
+    assert "g++: not found" in result["error"]
+    assert "lifts on its own" in result["error"], (
+        "the refusal must say that fixing the image is enough, because the "
+        "previous one required a code change nobody would remember to make"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cpp_is_accepted_once_the_image_can_build_it(monkeypatch):
+    """The point of the change: no code edit is needed to lift the refusal."""
+    monkeypatch.setattr(gem5.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        gem5.agent_sandbox_runtime, "allowed_images", lambda: [gem5.DEFAULT_IMAGE]
+    )
+    # The probe passes; the gem5 run that follows fails, which is fine -- what
+    # matters is that the C++ refusal is no longer what stops it.
+    calls = _probe(monkeypatch, returncode=0, stdout="CPP_STATIC_OK\n")
+
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", language="c++"
+    )
+
+    assert "cannot build a static C++ binary" not in str(result.get("error") or "")
+    compiles = [c for c in calls if "workload.cc" in c["script"]]
+    assert compiles, "the workload must be compiled as C++, with g++"
+    assert "g++ " in compiles[0]["script"]

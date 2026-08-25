@@ -207,6 +207,72 @@ def find_regime_change(cycles: Sequence[float]) -> Optional[Dict[str, Any]]:
     }
 
 
+#: Whether an image can build a static C++ binary. Asked of the image once and
+#: remembered, because the answer changes only when the image is rebuilt.
+_CPP_SUPPORT: Dict[str, Dict[str, Any]] = {}
+
+#: A trivial compile has no reason to take longer than this, and a probe that
+#: hangs must not spend a simulation-sized timeout finding out.
+CPP_PROBE_TIMEOUT_SECONDS = 120
+
+
+async def cpp_support(image: str) -> Dict[str, Any]:
+    """Whether this image can build C++, asked rather than assumed.
+
+    This used to be a constant: C++ was refused with a message asserting that
+    the gem5 image has no C++ compiler, which was true, and which would have
+    stayed true in the code long after it stopped being true of the image. The
+    message even named the fix -- add g++ and libstdc++-static -- and would
+    then have gone on refusing a caller who applied it. Two halves built apart.
+
+    So the question goes to the image. The probe is a real static C++ compile
+    rather than `command -v g++`, because the requirement is a compiler AND a
+    static libstdc++, those fail differently, and they need different fixes.
+
+    A definite answer is cached; a probe that could not run is not, so a docker
+    hiccup does not disable C++ for the life of the process.
+    """
+    cached = _CPP_SUPPORT.get(image)
+    if cached is not None:
+        return cached
+
+    script = (
+        "printf 'int main(){return 0;}\n' > probe.cc && "
+        "g++ -O0 -static -o probe probe.cc 2> probe_err.txt "
+        "&& echo CPP_STATIC_OK || { tail -5 probe_err.txt >&2; exit 1; }"
+    )
+    with tempfile.TemporaryDirectory(prefix="gem5_cpp_probe_") as workdir:
+        try:
+            returncode, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
+                script,
+                workdir,
+                image=image,
+                timeout_seconds=CPP_PROBE_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:  # timeout, missing daemon, image not pulled
+            return {
+                "supported": False,
+                "probed": False,
+                "detail": f"the C++ probe could not run: {exc}",
+            }
+
+    result = {
+        "supported": returncode == 0 and "CPP_STATIC_OK" in str(stdout),
+        "probed": True,
+        "detail": str(stderr or "").strip()[:400],
+    }
+    _CPP_SUPPORT[image] = result
+    return result
+
+
+def forget_cpp_support(image: str = "") -> None:
+    """Drop what was learned about an image, for a rebuild or for a test."""
+    if image:
+        _CPP_SUPPORT.pop(image, None)
+    else:
+        _CPP_SUPPORT.clear()
+
+
 def _preflight(code: str, image: str) -> Optional[Dict[str, Any]]:
     if not (code or "").strip():
         return {"error": "code is required"}
@@ -756,25 +822,34 @@ async def sample_counters(
             "error": f"language must be 'c' or 'c++', got {language!r}",
         }
     is_cpp = language != "c"
+    compiler, source_name = "gcc", "workload.c"
     if is_cpp:
-        # Checked here rather than left to the compiler, which reports
-        # "g++: not found" -- an error about a missing binary, when the real
-        # situation is that this image cannot build C++ at all and no wording
-        # of the request will change that.
-        return {
-            "success": False,
-            "error": (
-                f"The gem5 image ({image}) has no C++ compiler and no static "
-                "libstdc++, so a C++ corpus cannot be counter-sampled yet. "
-                "gcc is present and C works. profile_c_workload runs C++ "
-                "because it uses a different image. Fixing this means adding "
-                "g++ and libstdc++-static to the gem5 image; until then, "
-                "sample counters on a C workload, and do not read a C result "
-                "as standing in for the C++ corpus."
-            ),
-        }
-    compiler = "gcc"
-    source_name = "workload.c"
+        # Asked of the image, not asserted about it. Checked before the real
+        # compile because the bare failure reports "g++: not found" -- an error
+        # about a missing binary, when the situation may be that this image
+        # cannot build C++ at all and no wording of the request will change it.
+        support = await cpp_support(image)
+        if not support["supported"]:
+            return {
+                "success": False,
+                "error": (
+                    f"The gem5 image ({image}) cannot build a static C++ "
+                    "binary, so a C++ corpus cannot be counter-sampled on it. "
+                    + (
+                        f"The probe reported: {support['detail']} "
+                        if support.get("detail")
+                        else ""
+                    )
+                    + "gcc is present and C works. profile_c_workload runs C++ "
+                    "because it uses a different image. Fixing this means "
+                    "adding g++ and libstdc++-static to the gem5 image -- and "
+                    "this refusal lifts on its own once they are there. Until "
+                    "then, sample counters on a C workload, and do not read a "
+                    "C result as standing in for the C++ corpus."
+                ),
+                "cpp_probe": support,
+            }
+        compiler, source_name = "g++", "workload.cc"
 
     model = str(cpu_type or DEFAULT_CPU)
     if model not in CPU_TYPES:

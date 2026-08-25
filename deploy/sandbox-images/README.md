@@ -101,6 +101,39 @@ git clone --depth 1 https://github.com/gem5/gem5.git
 scons build/ARM/gem5.opt -j2
 ```
 
+### gem5-research needs g++, and does not have it
+
+`sample_counters` can compile a C++ corpus, and the image cannot: the study
+that needed it found only `gcc`, no `g++`, and no static libstdc++. That is
+worth stating precisely because the dependency list above includes
+`build-essential`, which carries `g++` -- so the image in use was almost
+certainly assembled by the hand-staging path at the end of this file with a
+narrower package set, rather than from that list.
+
+Add it on the next rebuild:
+
+```bash
+apt-get install -y --no-install-recommends g++
+```
+
+On bookworm that pulls `libstdc++-12-dev`, which is where the static
+`libstdc++.a` lives; `-static` needs the archive, not just the compiler.
+
+**Verify inside the committed image, not in the build log.** `g++ --version`
+succeeding proves the compiler is there and says nothing about the static
+archive, and those are different fixes. The probe the tool runs is the honest
+check, and can be run by hand:
+
+```bash
+docker run --rm ghcr.io/al3x3n0/kdbc-gem5-research:latest /bin/sh -lc \
+  "printf 'int main(){return 0;}\n' > /tmp/p.cc && g++ -O0 -static -o /tmp/p /tmp/p.cc && echo OK"
+```
+
+No code change is needed once this passes. `agent_gem5_sandbox.cpp_support()`
+asks the image on first use and caches the answer, so the C++ refusal lifts by
+itself -- the previous refusal asserted the image's shortcoming as a constant
+and would have gone on refusing a caller who fixed it.
+
 **Use `-j2`, and stop the application stack while it runs.** Building at `-j4`
 alongside the compose stack wedged an 8-core / 16 GB-VM machine badly enough
 that the Docker daemon stopped answering its own socket and had to be

@@ -55,3 +55,41 @@ answer in the wrong shape must not cost another call.
 And an absent `severity` is now `unrated` rather than defaulted to `serious`.
 All four live concerns arrived unrated; defaulting them made "0 blocking" read
 as a reviewer declining to escalate when it had never rated anything.
+
+## And what a deterministic pass measured, without reading it
+
+The critic reasons about an artifact and can be wrong. A second check runs the
+workload in gem5's cheapest model -- `AtomicSimpleCPU`, no timing at all, so
+its cycles are meaningless and its instruction counts are exact -- and compares
+what comes out against what the estimator downstream needs. It therefore
+refuses rather than advises.
+
+Against this same file, in **116 seconds**:
+
+```
+202 intervals, 180,234,817 instructions
+projected 1802s of out-of-order simulation, past the 1800s timeout
+work changes level 17.33x at interval 101
+```
+
+Both refusals are correct. The blocked-phase boundary is at interval 101,
+exactly where the hundred cache phases end. The cost projection is marginal --
+1802 against 1800 is 0.1% over, and the figure is order-of-magnitude rather
+than a measurement -- but the run it predicted was indeed still going after
+fifteen minutes when it was checked.
+
+The two checks corroborate from independent directions and neither found
+everything. The critic *reasoned* that `mem_phase` stops being memory-heavy
+after its first call; the preflight *measured* that the memory phase executes
+17x fewer instructions than the cache phase. One by reading, one by counting.
+
+Every check in the deterministic pass is a property of the trace the design
+will produce -- interval count, variation, regime structure, cost -- rather
+than a rule about how the workload was written. That is why it catches traps
+nobody enumerated: the four this study lost time to were a trace too short, two
+regimes spliced, a target too flat to bin, and phases blocked instead of
+interleaved, and all four are numbers here.
+
+It does not close the gap. A design whose *cycles* vary while its instruction
+counts do not will pass and may still be flat, because the cheap model has no
+timing. It narrows it.

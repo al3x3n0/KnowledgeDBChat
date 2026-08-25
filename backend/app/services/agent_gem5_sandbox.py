@@ -758,6 +758,62 @@ SMT_REGISTER_OVERRIDES = (
 MIN_USEFUL_INTERVALS = 4
 
 
+#: The cheap model. No timing at all, so its cycles are meaningless and its
+#: instruction counts are exact -- which is the half a structural check needs.
+PREFLIGHT_CPU = "AtomicSimpleCPU"
+
+#: A design that cannot finish here has no prospect under an out-of-order
+#: model, which is roughly two orders of magnitude slower. Timing out is
+#: therefore an answer rather than an accident.
+PREFLIGHT_TIMEOUT_SECONDS = 420
+
+
+async def measure_structure(
+    code: str,
+    *,
+    flags: str = DEFAULT_FLAGS,
+    language: str = "c",
+    extra_files: Optional[Dict[str, str]] = None,
+    include_dirs: Optional[Sequence[str]] = None,
+    image: str = DEFAULT_IMAGE,
+) -> Dict[str, Any]:
+    """Instructions per interval, taken in the cheapest model there is.
+
+    The point is not to measure the workload but to find out whether it will
+    support the measurement -- how many intervals it yields, whether the work
+    is constant, whether it splits into regimes, and what the real run will
+    cost. All of that is in the instruction counts, and instruction counts do
+    not need a timing model.
+    """
+    result = await sample_counters(
+        code=code,
+        flags=flags,
+        cpu_type=PREFLIGHT_CPU,
+        language=language,
+        extra_files=extra_files,
+        include_dirs=include_dirs,
+        image=image,
+        max_counters=8,
+        timeout_seconds=PREFLIGHT_TIMEOUT_SECONDS,
+        preflight=False,
+    )
+    if not result.get("success"):
+        return {"measured": False, "error": result.get("error")}
+
+    series = (result.get("data") or {}).get("series") or {}
+    for name in ("simInsts", "system.cpu.commitStats0.numInsts"):
+        counts = series.get(name)
+        if isinstance(counts, list) and counts:
+            return {"measured": True, "counter": name, "instructions": counts}
+    return {
+        "measured": False,
+        "error": (
+            "the cheap run produced no instruction counter, so the design "
+            "could not be checked before the expensive run"
+        ),
+    }
+
+
 async def sample_counters(
     *,
     code: str,
@@ -772,6 +828,8 @@ async def sample_counters(
     include_dirs: Optional[Sequence[str]] = None,
     co_runner: str = "",
     image: str = DEFAULT_IMAGE,
+    preflight: bool = True,
+    intends_alternating_phases: bool = False,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
     """Run a workload and return its hardware counters sampled over time.
@@ -897,6 +955,45 @@ async def sample_counters(
             "success": False,
             "error": f"run_args contain unsupported characters: {run_args!r}",
         }
+
+    # Measure the design in the cheap model before paying for the real one.
+    # After argument validation, never before it: rejecting an unknown
+    # cpu_type is free, and a caller who mistyped one should be told that
+    # rather than told about their workload after a simulation.
+    # Deliberately default-on and not a separate tool: a run does not know its
+    # design is unfit, so it will not think to ask. Skipped when this IS the
+    # cheap pass, and when a co-runner makes the structure a property of two
+    # programs interleaving rather than of this one.
+    if preflight and str(cpu_type or DEFAULT_CPU) != PREFLIGHT_CPU and not co_runner:
+        from app.services import agent_experiment_preflight
+
+        structure = await measure_structure(
+            code,
+            flags=flags,
+            language=language,
+            extra_files=extra_files,
+            include_dirs=include_dirs,
+            image=image,
+        )
+        if structure.get("measured"):
+            verdict = agent_experiment_preflight.judge(
+                structure["instructions"],
+                timeout_seconds=timeout_seconds,
+                intends_alternating_phases=intends_alternating_phases,
+            )
+            if not verdict["fit"]:
+                return {
+                    "success": False,
+                    "error": agent_experiment_preflight.refusal(verdict),
+                    "preflight": verdict,
+                }
+            preflight_verdict = verdict
+        else:
+            # Could not check is not the same as checked and sound, and it is
+            # not a reason to refuse either: the expensive run may still work.
+            preflight_verdict = {"measured": False, "why": structure.get("error")}
+    else:
+        preflight_verdict = None
 
     source = M5_SAMPLE_MACRO + str(code)
 
@@ -1058,6 +1155,7 @@ async def sample_counters(
             "smt": smt,
             "co_runner_active_intervals": co_active if smt else None,
             "regime_change": regime,
+            "preflight": preflight_verdict,
             "intervals": len(intervals),
             "counters_varying": len(names),
             "counters": names,

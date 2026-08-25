@@ -21,6 +21,25 @@ def _default_metadata(
     *, name: str, description: str, input_schema: Dict[str, Any]
 ) -> ToolMetadata:
     base = name.split("mcp:", 1)[1] if name.startswith("mcp:") else name
+
+    # A tool that declares its own governance is believed. The name lists
+    # below are the older form: a tool is classified by whether someone
+    # remembered to add it, which is how 25 mutating tools came to be
+    # classified read-safe by omission.
+    from app.agent_core.tool_specs import spec_for
+
+    spec = spec_for(base)
+    if spec is not None:
+        return ToolMetadata(
+            name=name,
+            description=description or spec.description,
+            input_schema=input_schema or spec.parameters,
+            effects=spec.effects,
+            network=spec.network,
+            cost_tier=spec.cost_tier,
+            pii_risk=spec.pii_risk,
+        )
+
     write_tools = {
         "delete_document",
         "batch_delete_documents",

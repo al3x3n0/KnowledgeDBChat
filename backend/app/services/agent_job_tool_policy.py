@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from app.agent_core import tool_specs
 from app.models.agent_job import AgentJob
 from app.services.data_analysis_tools import exposed_data_analysis_tools
 
@@ -42,31 +43,12 @@ def get_tools_for_job_type(
         "request_review",
         # Code execution
         "execute_python",
-        "compile_c_snippet",
-        "analyze_snippet_cycles",
-        "profile_c_workload",
-        "simulate_c_workload",
-        "sample_hardware_counters",
-        "measure_predictability",
-        "select_counter_taps",
-        "evaluate_predictor_design",
-        "describe_model_parameters",
-        "find_fusion_candidates",
-        "cost_fusion_candidate",
-        "verify_run_bundle",
-        "record_prediction",
-        "record_measurement",
-        "axis_check",
-        "axis_emit",
-        "axis_prove",
-        "benchmark_c_snippet",
         # Custom tools: create one, then call it in this run or a later one
         "create_custom_tool",
         "run_custom_tool",
         "list_custom_tools",
         # Memory (available to all job types)
         "create_memory",
-        "record_method",
         "search_memories",
         "recall_memories",
         "get_memory_stats",
@@ -373,24 +355,6 @@ def get_tools_for_job_type(
         "request_review",
         # Code execution tools
         "execute_python",
-        "compile_c_snippet",
-        "analyze_snippet_cycles",
-        "profile_c_workload",
-        "simulate_c_workload",
-        "sample_hardware_counters",
-        "measure_predictability",
-        "select_counter_taps",
-        "evaluate_predictor_design",
-        "describe_model_parameters",
-        "find_fusion_candidates",
-        "cost_fusion_candidate",
-        "verify_run_bundle",
-        "record_prediction",
-        "record_measurement",
-        "axis_check",
-        "axis_emit",
-        "axis_prove",
-        "benchmark_c_snippet",
         "execute_data_pipeline",
         "write_and_run_script",
         # Coding workspace tools
@@ -420,7 +384,6 @@ def get_tools_for_job_type(
         "get_workspace_artifact_url",
         # Memory tools
         "create_memory",
-        "record_method",
         "search_memories",
         "recall_memories",
         "get_memory_stats",
@@ -498,8 +461,16 @@ def get_tools_for_job_type(
     # so filtering against the raw keys silently dropped the renamed tool from
     # every proposal that asked for it.
     supported_tools.update(exposed_data_analysis_tools().keys())
+    # The measurement family declares its own availability in
+    # agent_core.tool_specs; listing it here as well was a second place to
+    # forget it.
+    supported_tools.update(tool_specs.spec_names())
 
-    proposed = sorted(list(set(base_tools + type_tools.get(job_type, []))))
+    proposed = sorted(
+        set(base_tools)
+        | set(type_tools.get(job_type, []))
+        | set(tool_specs.tools_for_job_type(job_type))
+    )
     proposed = [t for t in proposed if t in supported_tools]
 
     cfg = config if isinstance(config, dict) else {}

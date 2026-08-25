@@ -25,6 +25,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Dict, Iterable, List, Sequence, Tuple
 
+from app.agent_core import tool_specs
+
 
 @dataclass(frozen=True)
 class ToolEvidence:
@@ -46,135 +48,21 @@ class ToolEvidence:
     consumes: str = ""
 
 
-EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = (
+# Derived from the tool specs rather than restated here. This list and the
+# tools it describes were maintained separately, and drifted the way separate
+# lists do: four counter tools existed and were absent from it, so a contract
+# asking for their findings was told that no tool produced them. A tool that
+# declares what it produces cannot go missing from its own map.
+EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = tuple(
     ToolEvidence(
-        tool="compile_c_snippet",
-        typical_seconds=10,  # a compile in a container that must start first
-        produces=("codegen_measurement",),
-        consumes="C source; returns the assembly the compiler really emitted.",
-    ),
-    ToolEvidence(
-        tool="profile_c_workload",
-        typical_seconds=60,  # instrumented execution, minutes on real code
-        produces=("dynamic_profile",),
-        consumes="a self-contained program; runs it and counts what executed.",
-    ),
-    ToolEvidence(
-        tool="find_fusion_candidates",
-        produces=("fusion_candidate",),
-        requires=("profile_c_workload",),
-        consumes=(
-            "the hot blocks of a profile taken in this run -- leave `blocks` "
-            "out and the most recent profile is used."
-        ),
-    ),
-    ToolEvidence(
-        tool="cost_fusion_candidate",
-        produces=("fusion_cost_bound",),
-        requires=("find_fusion_candidates",),
-        consumes=(
-            "the `pattern` string of a candidate, e.g. 'fsqrt fdiv | 0>1' -- "
-            "the shape, not the instructions it was found in."
-        ),
-    ),
-    ToolEvidence(
-        tool="analyze_snippet_cycles",
-        typical_seconds=10,  # llvm-mca is fast; the container is not
-        produces=("cycle_model_measurement",),
-        consumes="assembly fenced with # LLVM-MCA-BEGIN / # LLVM-MCA-END.",
-    ),
-    ToolEvidence(
-        tool="benchmark_c_snippet",
-        typical_seconds=30,  # repeated trials on the host
-        produces=("benchmark_measurement",),
-        consumes="a program that times itself; runs it on the real host.",
-    ),
-    ToolEvidence(
-        tool="simulate_c_workload",
-        typical_seconds=60,  # observed 60-190s across recorded bundles
-        produces=("simulated_measurement",),
-        consumes="a self-contained program; runs it in a modelled core.",
-    ),
-    ToolEvidence(
-        tool="describe_model_parameters",
-        produces=("model_parameters",),
-        consumes="a core model name; returns its tunable parameters and paths.",
-    ),
-    ToolEvidence(
-        tool="sample_hardware_counters",
-        # 38 and 105 minutes, the only two traces this project has taken that
-        # were long enough to estimate on. A trace cheap enough to sample in
-        # ten minutes is too short for the estimator downstream, so the cheap
-        # case is not the relevant one.
-        typical_seconds=2400,
-        produces=("counter_trace",),
-        consumes=(
-            "a self-contained program that calls M5_SAMPLE() wherever a sample "
-            "should be taken. Without those calls it returns one total, which "
-            "is not a trace: predictability is a property of counters over "
-            "time and cannot be read from a run's totals."
-        ),
-    ),
-    ToolEvidence(
-        tool="measure_predictability",
-        produces=("predictability_ceiling",),
-        requires=("sample_hardware_counters",),
-        consumes=(
-            "the name of the counter to predict. The trace this run already "
-            "sampled is read from the run -- do not paste it back."
-        ),
-    ),
-    ToolEvidence(
-        tool="select_counter_taps",
-        produces=("counter_tap_selection",),
-        # Not a hard refusal, a method: which counters to tap TOGETHER is worth
-        # asking only once one has shown signal on its own, because the joint
-        # estimate costs samples exponentially and a trace is finite.
-        requires=("measure_predictability",),
-        consumes="the counter to predict; returns which taps survive their own null.",
-    ),
-    ToolEvidence(
-        tool="evaluate_predictor_design",
-        produces=("predictor_design_result",),
-        requires=("select_counter_taps",),
-        consumes=(
-            "the counter to predict and the tap to read alongside its own last "
-            "value -- normally the one select_counter_taps recommended. An "
-            "information ceiling says what is available; this says what a "
-            "table of counters reaches."
-        ),
-    ),
-    ToolEvidence(
-        tool="record_prediction",
-        produces=("prediction_recorded",),
-        consumes=(
-            "a number, and `derived_from` naming finding types this run has "
-            "already produced."
-        ),
-    ),
-    ToolEvidence(
-        tool="record_measurement",
-        produces=("prediction_settled",),
-        requires=("record_prediction",),
-        consumes="the prediction_id returned by record_prediction, and the measured value.",
-    ),
-    ToolEvidence(
-        tool="record_method",
-        produces=("method_recorded",),
-        consumes="the procedure, what it prevents, and the findings establishing it.",
-    ),
-    ToolEvidence(
-        tool="axis_check",
-        produces=("axis_description",),
-        consumes="an .axisl description of an instruction.",
-    ),
-    ToolEvidence(
-        tool="axis_prove",
-        typical_seconds=30,  # an SMT solver, unbounded above
-        produces=("equivalence_proof",),
-        requires=("axis_check",),
-        consumes="an .axisl description and the sequence it should be equivalent to.",
-    ),
+        tool=spec.name,
+        produces=spec.produces,
+        requires=spec.requires,
+        typical_seconds=spec.typical_seconds,
+        consumes=spec.consumes,
+    )
+    for spec in tool_specs.all_specs()
+    if spec.produces
 )
 
 _BY_TOOL: Dict[str, ToolEvidence] = {entry.tool: entry for entry in EVIDENCE_TOOLS}

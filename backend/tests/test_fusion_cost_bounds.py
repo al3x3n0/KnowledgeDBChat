@@ -104,8 +104,14 @@ def test_the_tool_is_declared_everywhere_it_must_be():
     # The reason for a range rather than a number belongs where it is chosen.
     assert "stand-in" in tool["description"]
 
-    assert "cost_fusion_candidate" in open(tool_catalog.__file__).read()
-    assert "cost_fusion_candidate" in open(agent_job_tool_policy.__file__).read()
+    # Asserted as behaviour, not as text in a particular file. The declaration
+    # now lives in agent_core.tool_specs and these registries derive from it,
+    # so the file the name appears in is no longer the point -- and a grep
+    # would have been satisfied by the name in a comment either way.
+    assert tool_catalog.get_tool_metadata("cost_fusion_candidate") is not None
+    assert "cost_fusion_candidate" in agent_job_tool_policy.get_tools_for_job_type(
+        "research", {}
+    )
 
 
 async def test_dispatch_reaches_the_sandbox_function(monkeypatch):

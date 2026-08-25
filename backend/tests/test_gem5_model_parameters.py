@@ -145,19 +145,21 @@ def test_failures_without_overrides_are_not_blamed_on_overrides():
 def test_the_tool_is_reachable_and_declared_everywhere():
     """A tool wired in one place and missing from another is invisible.
 
-    Registration is spread across the schema list, the dispatch map, the
-    catalog and the per-job policy; an agent can only call a tool that appears
-    in all of them.
+    Registration used to be spread across the schema list, the dispatch map,
+    the catalog and the per-job policy, and an agent could only call a tool
+    that appeared in all of them. This one now declares itself once in
+    agent_core.tool_specs and the registries derive from it, so what is checked
+    here is what each registry answers -- not which file the name appears in,
+    which a comment would have satisfied.
     """
     from app.agent_core import tool_catalog
     from app.services import agent_job_tool_policy, agent_tools
 
     assert agent_tools.get_tool_by_name("describe_model_parameters") is not None
-
-    catalog_text = open(tool_catalog.__file__).read()
-    policy_text = open(agent_job_tool_policy.__file__).read()
-    assert "describe_model_parameters" in catalog_text
-    assert "describe_model_parameters" in policy_text
+    assert tool_catalog.get_tool_metadata("describe_model_parameters") is not None
+    assert "describe_model_parameters" in agent_job_tool_policy.get_tools_for_job_type(
+        "research", {}
+    )
 
 
 def test_the_simulator_advertises_tuning_and_the_named_cores():

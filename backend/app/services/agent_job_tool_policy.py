@@ -10,7 +10,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.models.agent_job import AgentJob
-from app.services.data_analysis_tools import DATA_ANALYSIS_TOOL_DEFINITIONS
+from app.services.data_analysis_tools import exposed_data_analysis_tools
 
 
 def get_tools_for_job_type(
@@ -301,6 +301,10 @@ def get_tools_for_job_type(
             "detect_anomalies",
             "calculate_correlations",
             "create_chart",
+            # The dataset-backed charting tool, under the name dispatch routes
+            # on. Absent from this list it was unreachable on the only job type
+            # that can produce a dataset to chart.
+            "create_chart_from_dataset",
             "create_correlation_heatmap",
             "create_flowchart",
             "create_sequence_diagram",
@@ -489,7 +493,10 @@ def get_tools_for_job_type(
         "compare_snapshots",
         "detect_drift",
     }
-    supported_tools.update(set(DATA_ANALYSIS_TOOL_DEFINITIONS.keys()))
+    # Exposed names, not definition keys: dispatch routes on the exposed name,
+    # so filtering against the raw keys silently dropped the renamed tool from
+    # every proposal that asked for it.
+    supported_tools.update(exposed_data_analysis_tools().keys())
 
     proposed = sorted(list(set(base_tools + type_tools.get(job_type, []))))
     proposed = [t for t in proposed if t in supported_tools]

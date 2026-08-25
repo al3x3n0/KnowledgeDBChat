@@ -758,6 +758,25 @@ class DataAnalysisTools:
 
 
 # Tool definitions for the autonomous agent executor
+# Two different charting tools were both called ``create_chart``: the one the
+# builtin catalog advertises takes inline ``data`` and is served by the
+# visualization provider, while this dataset-backed one takes a ``dataset_id``.
+# Provider resolution is first-wins and the data-analysis provider is
+# registered earlier, so it answered every catalog-conformant call with
+# "Dataset 'None' not found" -- the advertised tool could not work at all.
+# Exposing it under a name that says which contract it takes leaves
+# ``create_chart`` to the tool the catalog describes.
+#
+# This lives beside the definitions rather than in the dispatcher because it is
+# part of the tool's public name: every surface that advertises these tools,
+# governs them or dispatches them has to agree on it. Kept in the dispatcher,
+# it was a second registration point and behaved like one -- dispatch renamed
+# the handler and the prompt builder went on advertising the dataset contract
+# under the old name, so a data_analysis run was shown one tool and given
+# another.
+DATA_ANALYSIS_EXPOSED_NAMES = {"create_chart": "create_chart_from_dataset"}
+
+
 DATA_ANALYSIS_TOOL_DEFINITIONS = {
     # Data Loading
     "load_csv_data": {
@@ -957,3 +976,15 @@ DATA_ANALYSIS_TOOL_DEFINITIONS = {
         },
     },
 }
+
+
+def exposed_data_analysis_tools() -> Dict[str, Dict[str, Any]]:
+    """These tools under the names a run actually calls them by.
+
+    Every surface that advertises, governs or dispatches a data-analysis tool
+    reads this, so a rename reaches all three at once.
+    """
+    return {
+        DATA_ANALYSIS_EXPOSED_NAMES.get(name, name): definition
+        for name, definition in DATA_ANALYSIS_TOOL_DEFINITIONS.items()
+    }

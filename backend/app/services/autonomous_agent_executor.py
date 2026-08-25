@@ -120,8 +120,8 @@ from app.services.agent_tool_dispatch import (
 from app.services.agent_tools import AGENT_TOOLS, AUTONOMOUS_AGENT_TOOLS
 from app.services.arxiv_search_service import ArxivSearchService
 from app.services.data_analysis_tools import (
-    DATA_ANALYSIS_TOOL_DEFINITIONS,
     DataAnalysisTools,
+    exposed_data_analysis_tools,
 )
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.project_profile_service import (
@@ -7684,9 +7684,15 @@ RESPONSE FORMAT:
                     f"- {tool_def['name']}{param_str}{role_marker}: {tool_def['description'][:200]}"
                 )
 
-        # Add data analysis tools for data_analysis job type
+        # Add data analysis tools for data_analysis job type.
+        # Under the exposed names, which is what dispatch routes on: the
+        # dataset-backed charting tool was advertised here as ``create_chart``
+        # after dispatch had renamed it, so a run was shown the dataset
+        # contract and its call was answered by the inline-``data`` tool of the
+        # same name, which drops ``dataset_id`` and requires a field the run
+        # was never asked for.
         if job_type == "data_analysis":
-            for tool_name, tool_def in DATA_ANALYSIS_TOOL_DEFINITIONS.items():
+            for tool_name, tool_def in exposed_data_analysis_tools().items():
                 if tool_name in tools and tool_name not in seen:
                     seen.add(tool_name)
                     params = tool_def.get("parameters", {})

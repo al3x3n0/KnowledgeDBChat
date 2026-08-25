@@ -18,7 +18,7 @@ classification stays deliberate.
 
 import pytest
 
-from app.agent_core.tool_catalog import iter_mcp_tools
+from app.agent_core.tool_catalog import iter_builtin_tools, iter_mcp_tools
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.tool_registry import get_tool_metadata
 
@@ -62,15 +62,36 @@ READ_ONLY_DESPITE_NAME: dict[str, str] = {
     "set_focus_directive": "sets a directive for this run only",
     "set_output_schema": "sets an output shape for this run only",
     "create_workspace_checkpoint": "snapshots in-run workspace state",
+    # The data-analysis tools. Every one was read at its implementation before
+    # being listed here: the datasets live in an in-memory sandbox keyed by job
+    # id, and the diagram and export tools return their product in the response
+    # body -- base64, mermaid or JSON -- rather than persisting it. Nothing
+    # here reaches a database, a file or the network, so a read-only policy has
+    # no side effect on the world to stop.
+    "create_dataset": "builds a dataset in the run's in-memory sandbox",
+    "create_chart_from_dataset": "returns the chart as base64 in the response",
+    "create_correlation_heatmap": "returns the heatmap as base64 in the response",
+    "create_flowchart": "returns mermaid source in the response",
+    "create_sequence_diagram": "returns mermaid source in the response",
+    "create_er_diagram": "returns mermaid source in the response",
+    "create_architecture_diagram": "returns mermaid source in the response",
+    "create_gantt_chart": "returns mermaid source in the response",
+    "create_drawio_diagram": "returns drawio XML in the response",
+    "export_dataset_csv": "returns base64 CSV in the response; writes no file",
+    "export_dataset_json": "returns JSON in the response; writes no file",
 }
 
 
 def _tool_names() -> list[str]:
-    return sorted(
-        str(tool.get("name") or "").strip()
-        for tool in AGENT_TOOLS
-        if str(tool.get("name") or "").strip()
-    )
+    """Every executable builtin tool, from the catalog rather than one registry.
+
+    This read AGENT_TOOLS directly, which is the registry the data-analysis
+    tools are not in -- so 21 executable tools escaped every guard in this
+    file, including the one written to catch tools with no metadata. A guard
+    that derives its own universe from a partial list inherits the omission it
+    was written to detect.
+    """
+    return sorted(meta.name for meta in iter_builtin_tools() if meta.name)
 
 
 def test_every_mutating_looking_tool_is_classified_deliberately():

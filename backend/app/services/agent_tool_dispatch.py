@@ -9,7 +9,10 @@ from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional, Pro
 from sqlalchemy import select
 
 from app.services import llm_structured
-from app.services.data_analysis_tools import DATA_ANALYSIS_TOOL_DEFINITIONS
+from app.services.data_analysis_tools import (
+    DATA_ANALYSIS_EXPOSED_NAMES,
+    DATA_ANALYSIS_TOOL_DEFINITIONS,
+)
 
 
 def _unimplemented_tool(tool_name: str) -> Dict[str, Any]:
@@ -282,7 +285,6 @@ class AgentToolRegistry:
         from loguru import logger
 
         from app.services import agent_measurement_replication as replication
-
         from app.services import agent_tool_controls as controls
 
         if not replication.is_replicated(tool_name):
@@ -1858,15 +1860,9 @@ Suggest the single best next action and explain why."""
     )
 
 
-# Two different charting tools were both called ``create_chart``: the one the
-# builtin catalog advertises takes inline ``data`` and is served by the
-# visualization provider, while this dataset-backed one takes a ``dataset_id``.
-# Provider resolution is first-wins and this provider is registered earlier, so
-# it answered every catalog-conformant call with "Dataset 'None' not found" —
-# the advertised tool could not work at all. Expose it under a name that says
-# which contract it takes, and leave ``create_chart`` to the tool the catalog
-# describes.
-DATA_ANALYSIS_EXPOSED_NAMES = {"create_chart": "create_chart_from_dataset"}
+# The exposed names live with the definitions, in data_analysis_tools: the
+# rename below is part of each tool's public name, and every surface that
+# advertises or governs these tools has to agree with dispatch about it.
 
 
 def build_autonomous_data_analysis_provider(executor: Any) -> FunctionToolProvider:

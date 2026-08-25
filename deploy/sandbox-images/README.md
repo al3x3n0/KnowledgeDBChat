@@ -24,7 +24,7 @@ An image must also be listed in `SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES`
 | `microarch-research` | scientific-validation runs | base + linux-perf, pytest |
 | `profiling-research` | `profile_c_workload` | base + valgrind (callgrind) |
 | `axis-research` | `axis_check`, `axis_emit`, `axis_prove` | the AXIS binary, z3, python3 |
-| `gem5-research` | `simulate_c_workload` | gem5 `build/ARM/gem5.opt` and `configs/`, gcc |
+| `gem5-research` | `simulate_c_workload`, `sample_hardware_counters` | gem5 `build/ARM/gem5.opt` and `configs/`, gcc, g++, python3 |
 
 ## One base, several images
 
@@ -85,61 +85,56 @@ docker build -f deploy/sandbox-images/axis-research/Dockerfile \
   -t ghcr.io/al3x3n0/kdbc-axis-research:latest /path/to/KevinAI/axis
 ```
 
-### gem5-research: build gem5 from source, not from the published image
+### gem5-research: built from source, in a Dockerfile
 
-The obvious route — pulling `ghcr.io/gem5/devcontainer` — is a 2.19 GB image,
-and on a link that intercepts TLS it fails repeatedly part-way through with
-`tls: bad record MAC` or `record with version 300 when expecting 303`. A
-shallow **source clone is 155 MB** and transfers fine on the same link, so
-build it:
-
-```bash
-git clone --depth 1 https://github.com/gem5/gem5.git
-# deps: build-essential scons python3-dev protobuf-compiler libprotobuf-dev
-#       libgoogle-perftools-dev libboost-dev zlib1g-dev m4 libpng-dev
-#       libelf-dev pkg-config libcapstone-dev libhdf5-serial-dev
-scons build/ARM/gem5.opt -j2
-```
-
-### gem5-research needs g++, and does not have it
-
-`sample_counters` can compile a C++ corpus, and the image cannot: the study
-that needed it found only `gcc`, no `g++`, and no static libstdc++. That is
-worth stating precisely because the dependency list above includes
-`build-essential`, which carries `g++` -- so the image in use was almost
-certainly assembled by the hand-staging path at the end of this file with a
-narrower package set, rather than from that list.
-
-Add it on the next rebuild:
+This image had no Dockerfile until recently. It was assembled by hand, which is
+why nobody could say what was in it — and why a C++ corpus was blocked for
+weeks by a missing `g++` that the dependency list below would have installed.
+An image whose contents are a memory cannot be audited, and a study that runs
+in it inherits that.
 
 ```bash
-apt-get install -y --no-install-recommends g++
+docker build --platform linux/arm64 \
+  -f deploy/sandbox-images/gem5-research/Dockerfile \
+  -t ghcr.io/al3x3n0/kdbc-gem5-research:latest .
 ```
 
-On bookworm that pulls `libstdc++-12-dev`, which is where the static
-`libstdc++.a` lives; `-static` needs the archive, not just the compiler.
+**`--platform linux/arm64` is not optional.** gem5 is built for the ARM ISA and
+the workload is compiled by the plain `gcc` inside the image, with no
+cross-compiler in the command. Those agree only on arm64. Build it for x86_64
+and every simulation fails on a binary gem5 cannot execute, with an error about
+the ELF rather than about the platform.
 
-**Verify inside the committed image, not in the build log.** `g++ --version`
-succeeding proves the compiler is there and says nothing about the static
-archive, and those are different fixes. The probe the tool runs is the honest
-check, and can be run by hand:
+Three things the Dockerfile encodes, all learned the hard way:
 
-```bash
-docker run --rm ghcr.io/al3x3n0/kdbc-gem5-research:latest /bin/sh -lc \
-  "printf 'int main(){return 0;}\n' > /tmp/p.cc && g++ -O0 -static -o /tmp/p /tmp/p.cc && echo OK"
-```
+**Build from source, not from `ghcr.io/gem5/devcontainer`.** That image is
+2.19 GB and, on a link that intercepts TLS, fails part-way through with `tls:
+bad record MAC` or `record with version 300 when expecting 303`. A shallow
+source clone is 155 MB and transfers fine on the same link.
 
-No code change is needed once this passes. `agent_gem5_sandbox.cpp_support()`
-asks the image on first use and caches the answer, so the C++ refusal lifts by
-itself -- the previous refusal asserted the image's shortcoming as a constant
-and would have gone on refusing a caller who fixed it.
+**`BUILD_JOBS` defaults to 2, and the stack should be stopped while it runs.**
+Building at `-j4` alongside the compose stack wedged an 8-core / 16 GB-VM
+machine badly enough that the Docker daemon stopped answering its own socket
+and had to be restarted. Expect hours, not minutes: the ARM target is a few
+thousand translation units. The build stage's object tree is never copied into
+the final image.
 
-**Use `-j2`, and stop the application stack while it runs.** Building at `-j4`
-alongside the compose stack wedged an 8-core / 16 GB-VM machine badly enough
-that the Docker daemon stopped answering its own socket and had to be
-restarted. The build itself survives that: the container's filesystem keeps its
-object files and scons resumes incrementally. Expect hours, not minutes — the
-ARM target is a few thousand translation units.
+**The runtime library list is derived, not written down.** Naming the runtime
+packages by hand means writing `libprotobuf32`, `libhdf5-103`, `libcapstone4` —
+soname versions that are release-specific and go stale silently, leaving an
+image that builds and then cannot start gem5. The build stage asks `ldd` which
+libraries the binary loads and `dpkg` which packages own them.
+
+`gem5.opt` is deliberately **not stripped**: its symbols are what turn a panic
+into a diagnosis. Running two threads on O3CPU panics with "Not enough physical
+registers", one register class at a time, and reading that took the backtrace.
+
+Everything is asserted at build time — `gem5.opt --version`, a static C
+compile, a static C++ compile, and a real SE-mode simulation whose `stats.txt`
+must contain `simInsts`. That last one matters because a gem5 that starts and a
+gem5 that can run a workload are different claims. The C++ probe is the same
+one `agent_gem5_sandbox.cpp_support()` runs against the finished image, so an
+image that passes here cannot refuse C++ there.
 
 ## When apt fails inside `docker build`
 

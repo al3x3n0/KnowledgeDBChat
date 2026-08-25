@@ -86,8 +86,13 @@ IMAGE_ORIGINS = {
         "context": "the AXIS repository, not this one",
     },
     "kdbc-gem5-research": {
-        "dockerfile": "deploy/sandbox-images/README.md (built from gem5 source)",
-        "context": "see the README: the published gem5 image is not used",
+        "dockerfile": "deploy/sandbox-images/gem5-research/Dockerfile",
+        # The repository root, not that directory, and the platform is not
+        # incidental: gem5 is built for the ARM ISA and the workload is
+        # compiled by the plain gcc inside the image, so the two agree only on
+        # arm64. Rebuilding this on x86_64 yields an image whose every
+        # simulation fails on a binary gem5 cannot execute.
+        "context": "the repository root, built --platform linux/arm64",
     },
 }
 

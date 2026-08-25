@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import hashlib
 import json
 import math
@@ -18,8 +19,21 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.user import User
+from app.services import agent_domain_research_scoring as domain_research_scoring
 from app.services import llm_json, llm_structured
 from app.services.agent_artifact_paths import insert_before_end_document
+
+# Bound to the private names the orchestrators already call them by. Aliasing
+# rather than renaming keeps ~70 call sites untouched, so the diff that moved
+# these out of a 2176-line function shows the move and nothing else.
+from app.services.agent_domain_research_scoring import normalize_key as _normalize_key
+from app.services.agent_domain_research_scoring import safe_float as _safe_float
+from app.services.agent_domain_research_scoring import (
+    signal_clusters_from_ideas as _signal_clusters_from_ideas,
+)
+from app.services.agent_domain_research_scoring import (
+    track_keyword_sets as _track_keyword_sets,
+)
 from app.services.ai_hub_dataset_preset_service import ai_hub_dataset_preset_service
 from app.services.ai_hub_eval_service import ai_hub_eval_service
 from app.services.autonomy_service import (
@@ -2008,113 +2022,6 @@ class AgentResearchRunnerService:
                 }
             )
 
-        def _safe_float(value: Any, default: float = 0.0) -> float:
-            try:
-                return float(value)
-            except Exception:
-                return default
-
-        def _normalize_key(value: Any) -> str:
-            return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip(
-                "_"
-            )
-
-        def _signal_clusters_from_ideas(
-            signals: list[str], ranked_ideas: list[dict[str, Any]]
-        ) -> list[dict[str, Any]]:
-            buckets: list[dict[str, Any]] = []
-            seen: set[str] = set()
-            for raw in list(signals or []) + [
-                str(idea.get("title") or "") for idea in ranked_ideas[:6]
-            ]:
-                text = str(raw or "").strip()
-                if not text:
-                    continue
-                key = _normalize_key(text)[:64] or f"cluster_{len(buckets) + 1}"
-                if key in seen:
-                    continue
-                seen.add(key)
-                buckets.append(
-                    {
-                        "id": key,
-                        "label": text[:180],
-                        "source_count": 1,
-                    }
-                )
-                if len(buckets) >= 8:
-                    break
-            return buckets
-
-        def _track_keyword_sets(track: str) -> tuple[set[str], str]:
-            if track == "compiler":
-                return (
-                    {
-                        "llvm",
-                        "mlir",
-                        "pass",
-                        "passes",
-                        "ir",
-                        "vectorization",
-                        "vectorizer",
-                        "codegen",
-                        "scheduling",
-                        "fusion",
-                        "tiling",
-                        "register",
-                        "allocation",
-                        "pipeline",
-                        "kernel",
-                    },
-                    "Prioritize IR, passes, vectorization, codegen, kernels, compiler regressions, and optimization pipelines.",
-                )
-            if track == "microarchitecture":
-                return (
-                    {
-                        "cache",
-                        "ipc",
-                        "branch",
-                        "predictor",
-                        "latency",
-                        "bandwidth",
-                        "simd",
-                        "avx",
-                        "sve",
-                        "stall",
-                        "pipeline",
-                        "frontend",
-                        "backend",
-                        "throughput",
-                        "memory",
-                    },
-                    "Prioritize cache behavior, branch behavior, SIMD/ISA usage, stalls, bandwidth, and pipeline efficiency.",
-                )
-            return (
-                {
-                    "benchmark",
-                    "performance",
-                    "compiler",
-                    "kernel",
-                    "cache",
-                    "vectorization",
-                    "latency",
-                    "throughput",
-                },
-                "Optimize for novel, evidence-backed, testable ideas across the available technical evidence.",
-            )
-
-        def _track_fit_score(track: str, fields: list[str]) -> float:
-            keywords, _track_prompt = _track_keyword_sets(track)
-            text = " ".join(
-                str(value or "").strip().lower()
-                for value in fields
-                if str(value or "").strip()
-            )
-            if not text:
-                return 0.5 if track == "generic" else 0.35
-            hits = sum(1 for keyword in keywords if keyword in text)
-            base = 0.45 if track == "generic" else 0.35
-            return round(min(1.0, base + (0.08 * hits)), 4)
-
         config = job.config if isinstance(job.config, dict) else {}
         profile_id_raw = str(config.get("profile_id") or "").strip()
         profile: Optional[DomainResearchProfile] = None
@@ -2667,198 +2574,25 @@ class AgentResearchRunnerService:
                 }
             )
 
-        def _match_evidence_sources(
-            evidence_list: list[str], title: str, hypothesis: str
-        ) -> list[dict[str, Any]]:
-            haystacks = [str(title or "").strip(), str(hypothesis or "").strip()]
-            haystacks.extend(
-                [
-                    str(item or "").strip()
-                    for item in evidence_list
-                    if str(item or "").strip()
-                ]
-            )
-            refs: list[dict[str, Any]] = []
-            seen_refs: set[str] = set()
-            for source in source_rows:
-                source_title = str(source.get("title") or "").strip()
-                source_path = str(source.get("file_path") or "").strip()
-                source_key = _normalize_key(source_title)
-                if not source_key:
-                    source_key = _normalize_key(source_path)
-                if not source_key:
-                    continue
-                matched = False
-                for text in haystacks:
-                    lowered = str(text or "").strip().lower()
-                    if not lowered:
-                        continue
-                    if source_title and (
-                        source_title.lower() in lowered
-                        or lowered in source_title.lower()
-                    ):
-                        matched = True
-                        break
-                    if source_path and (
-                        source_path.lower() in lowered or lowered in source_path.lower()
-                    ):
-                        matched = True
-                        break
-                    overlap = set(source_key.split("_")) & set(
-                        _normalize_key(lowered).split("_")
-                    )
-                    if len([token for token in overlap if token]) >= 3:
-                        matched = True
-                        break
-                if not matched:
-                    continue
-                ref_key = (
-                    f"{source.get('source_type')}:{source.get('id') or source_title}"
-                )
-                if ref_key in seen_refs:
-                    continue
-                seen_refs.add(ref_key)
-                refs.append(
-                    {
-                        "source_type": source.get("source_type"),
-                        "id": source.get("id"),
-                        "title": source_title,
-                        "url": source.get("url"),
-                        "published": source.get("published"),
-                        "file_path": source.get("file_path"),
-                        "source_name": source.get("source_name"),
-                    }
-                )
-                if len(refs) >= 6:
-                    break
-            if len(refs) < scoring_policy["minimum_supporting_sources"]:
-                for source in source_rows:
-                    ref_key = f"{source.get('source_type')}:{source.get('id') or source.get('title')}"
-                    if ref_key in seen_refs:
-                        continue
-                    refs.append(
-                        {
-                            "source_type": source.get("source_type"),
-                            "id": source.get("id"),
-                            "title": source.get("title"),
-                            "url": source.get("url"),
-                            "published": source.get("published"),
-                        }
-                    )
-                    seen_refs.add(ref_key)
-                    if len(refs) >= scoring_policy["minimum_supporting_sources"]:
-                        break
-            return refs[:6]
-
-        def _build_candidate(
-            item: dict[str, Any], idx: int
-        ) -> Optional[dict[str, Any]]:
-            if not isinstance(item, dict):
-                return None
-            title = str(item.get("title") or "").strip()
-            hypothesis = str(item.get("hypothesis") or "").strip()
-            opportunity = str(item.get("opportunity") or "").strip()
-            if not title and not hypothesis and not opportunity:
-                return None
-            evidence = item.get("supporting_evidence")
-            if isinstance(evidence, list):
-                evidence_list = [str(x).strip() for x in evidence if str(x).strip()][:6]
-            else:
-                evidence_list = (
-                    [str(evidence).strip()] if str(evidence or "").strip() else []
-                )
-            next_steps = [
-                str(x).strip()
-                for x in (
-                    item.get("next_steps")
-                    if isinstance(item.get("next_steps"), list)
-                    else []
-                )
-                if str(x).strip()
-            ][:5]
-            counterarguments = [
-                str(x).strip()
-                for x in (
-                    item.get("counterarguments")
-                    if isinstance(item.get("counterarguments"), list)
-                    else []
-                )
-                if str(x).strip()
-            ][:4]
-            normalized_title = (
-                title or hypothesis[:180] or f"{domain} hypothesis {idx + 1}"
-            )
-            matched_sources = _match_evidence_sources(
-                evidence_list, normalized_title, hypothesis
-            )
-            evidence_count = len(matched_sources)
-            is_new = _normalize_key(normalized_title) not in previous_idea_titles
-            novelty_score = 0.9 if is_new else 0.35
-            evidence_score = min(1.0, 0.35 + 0.2 * min(evidence_count, 3))
-            testability_score = 0.45
-            if next_steps:
-                testability_score += 0.1 * min(len(next_steps), 3)
-            if hypothesis:
-                testability_score += 0.1
-            testability_score = min(1.0, testability_score)
-            llm_confidence = max(
-                0.0, min(_safe_float(item.get("confidence"), 0.55), 1.0)
-            )
-            track_fit_score = _track_fit_score(
-                track_type,
-                [
-                    normalized_title,
-                    hypothesis,
-                    opportunity,
-                    *evidence_list,
-                    *[str(source.get("title") or "") for source in matched_sources],
-                    *[str(source.get("file_path") or "") for source in matched_sources],
-                ],
-            )
-            weighted = (
-                novelty_score * scoring_policy["weights"]["novelty"]
-                + evidence_score * scoring_policy["weights"]["evidence"]
-                + testability_score * scoring_policy["weights"]["testability"]
-            )
-            overall_score = round(
-                min(
-                    1.0,
-                    (weighted * 0.75)
-                    + (llm_confidence * 0.15)
-                    + (track_fit_score * 0.10),
-                ),
-                4,
-            )
-            return {
-                "id": f"idea_{idx + 1}",
-                "title": normalized_title,
-                "hypothesis": hypothesis or opportunity,
-                "opportunity": opportunity,
-                "supporting_evidence": evidence_list,
-                "supporting_sources": matched_sources,
-                "counterarguments": counterarguments,
-                "confidence": llm_confidence,
-                "novelty_score": round(novelty_score, 4),
-                "evidence_score": round(evidence_score, 4),
-                "testability_score": round(testability_score, 4),
-                "track_fit_score": round(track_fit_score, 4),
-                "overall_score": overall_score,
-                "passes_threshold": (
-                    overall_score >= confidence_threshold
-                    and novelty_score >= scoring_policy["minimum_subscore"]
-                    and evidence_score >= scoring_policy["minimum_subscore"]
-                    and testability_score >= scoring_policy["minimum_subscore"]
-                    and evidence_count >= scoring_policy["minimum_supporting_sources"]
-                ),
-                "is_new": is_new,
-                "next_steps": next_steps or ["Validate on a bounded benchmark slice"],
-            }
-
         raw_ideas = (
             payload.get("proposed_ideas")
             if isinstance(payload.get("proposed_ideas"), list)
             else []
         )
+        # The scoring itself lives in agent_domain_research_scoring, where it
+        # can be read and tested on its own. Everything this run decided that
+        # the scoring depends on is bound here, once, so the two call sites
+        # below stay (item, idx) as they were.
+        _build_candidate = functools.partial(
+            domain_research_scoring.build_candidate,
+            domain=domain,
+            track_type=track_type,
+            previous_idea_titles=previous_idea_titles,
+            scoring_policy=scoring_policy,
+            confidence_threshold=confidence_threshold,
+            source_rows=source_rows,
+        )
+
         ideas: list[dict[str, Any]] = []
         for idx, item in enumerate(raw_ideas[: selection_policy["max_candidates"]]):
             candidate = _build_candidate(item, idx)
@@ -4184,17 +3918,6 @@ class AgentResearchRunnerService:
                     "result": details,
                 }
             )
-
-        def _normalize_key(value: Any) -> str:
-            return re.sub(r"[^a-z0-9]+", "_", str(value or "").strip().lower()).strip(
-                "_"
-            )
-
-        def _safe_float(value: Any, default: float = 0.0) -> float:
-            try:
-                return float(value)
-            except Exception:
-                return default
 
         def _policy(raw: Any) -> dict[str, Any]:
             from app.services.scientific_validation_service import (

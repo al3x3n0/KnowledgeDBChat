@@ -26,6 +26,10 @@ The vocabulary a contract may use, under `contract["validity"]`:
                             rather than merely surprising
     records_method          the run must record at least one method, so what
                             it learned about *how* to investigate outlives it
+    traces_one_regime       no finding may be measured across a break in the
+                            counter trace it came from -- the intervals before
+                            a co-runner finished initialising describe a
+                            machine that does not recur
 """
 
 from __future__ import annotations
@@ -206,6 +210,18 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
             missing.append("validity:measures_what_it_names")
             details["unsound_measurements"] = unsound[:5]
 
+    if bool(spec.get("traces_one_regime")):
+        # The only check here that judges the INPUT rather than the output. A
+        # measurement can be verified, reproduced, bounded and about the right
+        # thing, and still be taken across two experiments spliced together --
+        # every other predicate in this module passes such a number.
+        from app.services import agent_trace_regime
+
+        straddling = agent_trace_regime.findings_across_regime_change(state)
+        if straddling:
+            missing.append("validity:traces_one_regime")
+            details["across_regime_change"] = straddling[:5]
+
     if bool(spec.get("records_method")):
         recorded = [
             f for f in findings if str(f.get("type") or "").strip() == "method_recorded"
@@ -311,6 +327,12 @@ def explain(missing: Sequence[str], details: Mapping[str, Any]) -> List[str]:
                 + ". Run the referee and call record_measurement with each "
                 "prediction_id; an unsettled prediction scores nothing."
             )
+        elif text == "validity:traces_one_regime":
+            from app.services import agent_trace_regime
+
+            lines.extend(
+                agent_trace_regime.explain(details.get("across_regime_change") or [])
+            )
         elif text == "validity:records_method":
             lines.append(
                 "This run has not recorded a method. Call record_method with "
@@ -355,6 +377,10 @@ def describe(spec: Any) -> Sequence[str]:
         from app.services import agent_measurement_replication
 
         lines.extend(agent_measurement_replication.describe())
+    if bool(spec.get("traces_one_regime")):
+        from app.services import agent_trace_regime
+
+        lines.extend(agent_trace_regime.describe())
     if bool(spec.get("measures_what_it_names")):
         from app.services import agent_measurement_sanity
 

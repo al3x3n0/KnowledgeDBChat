@@ -4228,8 +4228,13 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             top_blocks=min(int(params.get("top_blocks", 5) or 5), 15),
         )
 
-    def _recent_counter_trace(state: Any) -> Any:
-        """The series from the most recent successful counter sampling.
+    def _recent_counter_sample(state: Any) -> Any:
+        """The most recent successful counter sampling, series and all.
+
+        The whole result rather than the series alone, because whether the
+        trace changes regime part way through belongs to the trace and has to
+        travel with it -- a window is only sound relative to the break it was
+        or was not taken across.
 
         Read from the run rather than retyped by the model, for the reason
         _recent_hot_blocks exists: a trace is tens of counters by tens of
@@ -4257,15 +4262,22 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             data = result.get("data") if isinstance(result.get("data"), dict) else {}
             series = data.get("series")
             if isinstance(series, dict) and series:
-                return series
+                return data
         return None
+
+    def _counter_window(data: Any, params: Dict[str, Any]) -> Any:
+        """The slice of a trace a caller asked for, and what it straddles."""
+        from app.services import agent_trace_regime
+
+        return agent_trace_regime.window(data, params.get("from_interval"))
 
     async def _measure_predictability(
         params: Dict[str, Any], context: AgentToolExecutionContext
     ) -> Dict[str, Any]:
         from app.services import agent_predictability
 
-        series = _recent_counter_trace(getattr(context, "state", None))
+        sample = _recent_counter_sample(getattr(context, "state", None))
+        series, window = _counter_window(sample, params) if sample else (None, {})
         if not series:
             return {
                 "success": False,
@@ -4305,6 +4317,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     "best_counter_beyond_persistence_bits": result[
                         "best_counter_beyond_persistence_bits"
                     ],
+                    **window,
                     "verdict": result["verdict"],
                 }
             ],
@@ -4315,7 +4328,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Dict[str, Any]:
         from app.services import agent_predictability
 
-        series = _recent_counter_trace(getattr(context, "state", None))
+        sample = _recent_counter_sample(getattr(context, "state", None))
+        series, window = _counter_window(sample, params) if sample else (None, {})
         if not series:
             return {
                 "success": False,
@@ -4355,6 +4369,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     "total_beyond_persistence_bits": result["total_beyond_persistence"],
                     "total_at_full_depth_bits": result["total_at_full_depth"],
                     "selection": result["selection"],
+                    **window,
                     "verdict": result["verdict"],
                 }
             ],
@@ -4365,7 +4380,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Dict[str, Any]:
         from app.services import agent_predictor_design
 
-        series = _recent_counter_trace(getattr(context, "state", None))
+        sample = _recent_counter_sample(getattr(context, "state", None))
+        series, window = _counter_window(sample, params) if sample else (None, {})
         if not series:
             return {
                 "success": False,
@@ -4410,6 +4426,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     "survives_null": result["survives_null"],
                     "ceiling_exceeded": result["ceiling_exceeded"],
                     "designs": result["designs"],
+                    **window,
                     "verdict": result["verdict"],
                 }
             ],

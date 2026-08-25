@@ -3408,6 +3408,19 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                     "type": "integer",
                     "description": "Discretisation levels, default 3. More bins need a longer trace",
                 },
+                "from_interval": {
+                    "type": "integer",
+                    "description": (
+                        "Ignore intervals before this one. Use it when "
+                        "sample_hardware_counters warned that the trace "
+                        "changes regime -- the intervals before the break "
+                        "describe a machine that does not recur (a co-runner "
+                        "still initialising, a cache still cold), and a number "
+                        "taken across it largely measures the break rather "
+                        "than the workload. Pass the interval the warning "
+                        "names to study the steady side."
+                    ),
+                },
             },
             "required": ["target"],
         },
@@ -3446,6 +3459,19 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                         "Discretisation levels, default 3. More bins cost "
                         "supported taps: the depth this trace allows falls as "
                         "the bin count rises."
+                    ),
+                },
+                "from_interval": {
+                    "type": "integer",
+                    "description": (
+                        "Ignore intervals before this one. Use it when "
+                        "sample_hardware_counters warned that the trace "
+                        "changes regime -- the intervals before the break "
+                        "describe a machine that does not recur (a co-runner "
+                        "still initialising, a cache still cold), and a number "
+                        "taken across it largely measures the break rather "
+                        "than the workload. Pass the interval the warning "
+                        "names to study the steady side."
                     ),
                 },
             },
@@ -3494,6 +3520,19 @@ AUTONOMOUS_AGENT_TOOLS: List[Dict[str, Any]] = [
                     "description": (
                         "Fraction of the trace that warms the tables, default "
                         "0.5. The rest is scored and never trained on."
+                    ),
+                },
+                "from_interval": {
+                    "type": "integer",
+                    "description": (
+                        "Ignore intervals before this one. Use it when "
+                        "sample_hardware_counters warned that the trace "
+                        "changes regime -- the intervals before the break "
+                        "describe a machine that does not recur (a co-runner "
+                        "still initialising, a cache still cold), and a number "
+                        "taken across it largely measures the break rather "
+                        "than the workload. Pass the interval the warning "
+                        "names to study the steady side."
                     ),
                 },
             },

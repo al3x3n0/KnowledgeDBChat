@@ -1412,6 +1412,19 @@ Citation format:
             # of a run parse, later ones do not.
             if not (content or "").strip():
                 usage = data.get("usage") or {}
+                # Name the value that actually bound, not a plausible one. The
+                # budget is max(caller_asked, DEEPSEEK_MIN_COMPLETION_TOKENS),
+                # so when the floor wins it is the floor to raise -- this said
+                # DEEPSEEK_MAX_RESPONSE_TOKENS, which is a ceiling applied
+                # elsewhere and never the constraint here. Following that
+                # advice changes nothing and reads as though the fix was tried.
+                floor = int(settings.DEEPSEEK_MIN_COMPLETION_TOKENS or 0)
+                remedy = (
+                    f"Raise DEEPSEEK_MIN_COMPLETION_TOKENS (currently {floor}), "
+                    "which is what set this budget."
+                    if effective_max_tokens == floor and floor > int(max_tokens or 0)
+                    else f"Ask for more than {max_tokens} tokens at the call site."
+                )
                 raise LLMServiceError(
                     f"{model} returned no content "
                     f"(finish_reason={choice.get('finish_reason')!r}, "
@@ -1419,8 +1432,8 @@ Citation format:
                     f"(caller asked {max_tokens}), "
                     f"completion_tokens={usage.get('completion_tokens')}). "
                     "These models spend max_tokens on reasoning before "
-                    "answering, so a budget that fits the answer may not fit "
-                    "the thinking. Raise DEEPSEEK_MAX_RESPONSE_TOKENS."
+                    f"answering, so a budget that fits the answer may not fit "
+                    f"the thinking. {remedy}"
                 )
             return (content or "").strip(), meta
         except httpx.HTTPStatusError as e:

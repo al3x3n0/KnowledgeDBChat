@@ -20,13 +20,29 @@ from app.services.operator_interventions import (
     derive_operator_interventions_with_outcomes,
 )
 from app.services.pdf_builder import PDFBuilder
-from app.services.pptx_builder import PPTXBuilder
 
 if TYPE_CHECKING:
     from app.services.llm_service import UserLLMSettings
 
 
 ExportFormat = Literal["docx", "pdf", "pptx"]
+
+
+def _used_of(used: Any, limit: Any) -> str:
+    """A count against its limit, without printing Python's None into a report.
+
+    A budget is optional: a job may run with no iteration cap at all, and the
+    exporter rendered that as "11/None" -- the repr of a missing value, in a
+    document handed to somebody. An absent limit means the count stands alone;
+    an absent count is genuinely unknown and says so, the way the timestamps
+    beside it already do.
+    """
+    if used is None:
+        return "N/A"
+    if limit is None:
+        return str(used)
+    return f"{used}/{limit}"
+
 
 # A long run can take hundreds of tool calls. Cap the chronological table, and
 # say how many were left out — a table that stops without saying so reads as
@@ -294,6 +310,12 @@ class JobResultsExporter:
             "key_insights": None,
             "recommendations": None,
             "enhanced_findings": [],
+            # Sections the model failed to produce. A report that drops one
+            # silently looks finished, and the reader has no way to tell the
+            # difference between "nothing to say" and "the call came back
+            # empty" -- which is what a token budget too small for a reasoning
+            # model does.
+            "failed_sections": [],
         }
 
         # Prepare context from job results
@@ -326,6 +348,7 @@ class JobResultsExporter:
         except Exception as e:
             logger.warning(f"Failed to generate executive summary: {e}")
             enhanced["executive_summary"] = None
+            enhanced["failed_sections"].append(("Executive Summary", str(e)[:200]))
 
         try:
             # Generate key insights
@@ -347,6 +370,7 @@ class JobResultsExporter:
         except Exception as e:
             logger.warning(f"Failed to generate key insights: {e}")
             enhanced["key_insights"] = None
+            enhanced["failed_sections"].append(("Key Insights", str(e)[:200]))
 
         try:
             # Generate recommendations
@@ -369,6 +393,7 @@ class JobResultsExporter:
         except Exception as e:
             logger.warning(f"Failed to generate recommendations: {e}")
             enhanced["recommendations"] = None
+            enhanced["failed_sections"].append(("Recommendations", str(e)[:200]))
 
         return enhanced
 
@@ -521,6 +546,12 @@ class JobResultsExporter:
         tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PPTX format."""
+        # Imported here rather than at module scope: pptx_builder needs
+        # python-pptx, and importing it up top made a missing PowerPoint
+        # library break PDF and DOCX export too -- three formats sharing one
+        # optional dependency none of the other two use.
+        from app.services.pptx_builder import PPTXBuilder
+
         builder = PPTXBuilder(style=self.style)
         outline = self._build_presentation_outline(
             job, include_log, include_metadata, tool_log
@@ -537,6 +568,12 @@ class JobResultsExporter:
         tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PPTX format with LLM-enhanced content."""
+        # Imported here rather than at module scope: pptx_builder needs
+        # python-pptx, and importing it up top made a missing PowerPoint
+        # library break PDF and DOCX export too -- three formats sharing one
+        # optional dependency none of the other two use.
+        from app.services.pptx_builder import PPTXBuilder
+
         builder = PPTXBuilder(style=self.style)
         outline = self._build_presentation_outline_enhanced(
             job, enhanced_content, include_log, include_metadata, tool_log
@@ -556,6 +593,24 @@ class JobResultsExporter:
         Build content items for DOCX/PDF export with LLM enhancement.
         """
         content: List[Dict[str, Any]] = []
+
+        # Say what is missing, in the document rather than only in a log. A
+        # report whose insights section is absent because a call returned
+        # nothing is indistinguishable, to its reader, from one that had no
+        # insights to offer.
+        failed = enhanced.get("failed_sections") or []
+        if failed:
+            content.append({"type": "heading", "level": 1, "text": "Incomplete Report"})
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": (
+                        "The following section(s) could not be generated and are "
+                        "missing from this report: "
+                        + "; ".join(f"{name} ({why})" for name, why in failed)
+                    ),
+                }
+            )
 
         # Executive Summary (LLM-generated)
         content.append({"type": "heading", "level": 1, "text": "Executive Summary"})
@@ -602,9 +657,9 @@ class JobResultsExporter:
                 ["Job Type", job.job_type],
                 ["Status", job.status],
                 ["Progress", f"{job.progress}%"],
-                ["Iterations", f"{job.iteration}/{job.max_iterations}"],
-                ["Tool Calls", f"{job.tool_calls_used}/{job.max_tool_calls}"],
-                ["LLM Calls", f"{job.llm_calls_used}/{job.max_llm_calls}"],
+                ["Iterations", _used_of(job.iteration, job.max_iterations)],
+                ["Tool Calls", _used_of(job.tool_calls_used, job.max_tool_calls)],
+                ["LLM Calls", _used_of(job.llm_calls_used, job.max_llm_calls)],
                 [
                     "Created",
                     job.created_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -1015,9 +1070,9 @@ class JobResultsExporter:
             interventions = self._get_operator_intervention_summary(job)
             stat_content = [
                 f"Job Type: {job.job_type}",
-                f"Iterations: {job.iteration}/{job.max_iterations}",
-                f"Tool Calls: {job.tool_calls_used}/{job.max_tool_calls}",
-                f"LLM Calls: {job.llm_calls_used}/{job.max_llm_calls}",
+                f"Iterations: {_used_of(job.iteration, job.max_iterations)}",
+                f"Tool Calls: {_used_of(job.tool_calls_used, job.max_tool_calls)}",
+                f"LLM Calls: {_used_of(job.llm_calls_used, job.max_llm_calls)}",
                 f"Duration: {self._calculate_duration(job)}",
             ]
             if extraction.get("status"):
@@ -1621,9 +1676,9 @@ class JobResultsExporter:
                 ["Job Type", job.job_type],
                 ["Status", job.status],
                 ["Progress", f"{job.progress}%"],
-                ["Iterations", f"{job.iteration}/{job.max_iterations}"],
-                ["Tool Calls", f"{job.tool_calls_used}/{job.max_tool_calls}"],
-                ["LLM Calls", f"{job.llm_calls_used}/{job.max_llm_calls}"],
+                ["Iterations", _used_of(job.iteration, job.max_iterations)],
+                ["Tool Calls", _used_of(job.tool_calls_used, job.max_tool_calls)],
+                ["LLM Calls", _used_of(job.llm_calls_used, job.max_llm_calls)],
                 [
                     "Created",
                     job.created_at.strftime("%Y-%m-%d %H:%M:%S")
@@ -1977,8 +2032,8 @@ class JobResultsExporter:
             interventions = self._get_operator_intervention_summary(job)
             stat_content = [
                 f"Job Type: {job.job_type}",
-                f"Iterations: {job.iteration}/{job.max_iterations}",
-                f"Tool Calls: {job.tool_calls_used}/{job.max_tool_calls}",
+                f"Iterations: {_used_of(job.iteration, job.max_iterations)}",
+                f"Tool Calls: {_used_of(job.tool_calls_used, job.max_tool_calls)}",
                 f"Duration: {self._calculate_duration(job)}",
             ]
             if extraction.get("status"):

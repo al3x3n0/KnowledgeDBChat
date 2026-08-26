@@ -291,12 +291,9 @@ def _preflight(code: str, image: str) -> Optional[Dict[str, Any]]:
             )
         }
     if image not in _allowed_images():
-        return {
-            "error": (
-                f"Image {image} is not allowlisted. Allowed: "
-                f"{', '.join(_allowed_images()) or 'none'}"
-            )
-        }
+        from app.services import agent_sandbox_runtime
+
+        return {"error": agent_sandbox_runtime.image_not_allowlisted(image)}
     return None
 
 

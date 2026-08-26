@@ -18,7 +18,7 @@ import random
 import re
 from copy import deepcopy
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple
 from uuid import UUID
 
 from loguru import logger
@@ -1342,6 +1342,31 @@ class _AutonomousRuntimeAdapter:
 
     async def build_run_result(self) -> Dict[str, Any]:
         return await self.executor._finalize_job(self.job, self.state, self.db)
+
+
+def _tools_with_params(tool_names: Sequence[str], limit: int = 6000) -> str:
+    """Render each tool as ``name(param, param)`` for the critic.
+
+    Names alone let a critic propose an argument the tool has no way to take.
+    That is not a hypothetical: it advised retrying a compile "with the
+    allowlisted image explicitly set", the agent read the schema, found no such
+    parameter, tried anyway and lost two iterations to it. Parameters cost a
+    few hundred tokens and remove the whole class.
+    """
+    from app.agent_core import tool_specs
+
+    rendered: List[str] = []
+    used = 0
+    for name in tool_names:
+        spec = tool_specs.spec_for(name)
+        params = sorted((spec.parameters or {}).get("properties") or {}) if spec else []
+        entry = f"{name}({', '.join(params)})" if params else f"{name}()"
+        if used + len(entry) > limit:
+            rendered.append(f"... and {len(tool_names) - len(rendered)} more")
+            break
+        rendered.append(entry)
+        used += len(entry) + 2
+    return ", ".join(rendered)
 
 
 class AutonomousAgentExecutor:
@@ -4869,7 +4894,8 @@ class AutonomousAgentExecutor:
             f"Stalled iterations: {state.get('stalled_iterations', 0)}\n"
             f"Recent actions: {json.dumps(recent, default=str)[:5000]}\n"
             f"Current observation: {json.dumps(observation, default=str)[:2500]}\n"
-            f"Available tools: {', '.join(available_tools)}\n"
+            f"Available tools (with their parameters): "
+            f"{_tools_with_params(available_tools)}\n"
             "Return JSON schema:\n"
             "{\n"
             '  "trajectory_assessment": "short assessment",\n'
@@ -4879,7 +4905,11 @@ class AutonomousAgentExecutor:
             '  "confidence": 0.0,\n'
             '  "severity": "low|medium|high"\n'
             "}\n"
-            "Rules: keep concise and actionable."
+            "Rules: keep concise and actionable. A pivot must be achievable "
+            "with the tools and parameters listed above -- do not advise "
+            "setting a parameter a tool does not have. A run once spent two of "
+            "its five iterations trying to follow advice to pass an argument "
+            "that did not exist."
         )
 
         try:

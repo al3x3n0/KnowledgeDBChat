@@ -34,6 +34,32 @@ def execution_enabled() -> bool:
     return bool(getattr(settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
 
 
+def image_not_allowlisted(image: str) -> str:
+    """Why this call cannot run, and why retrying it differently will not help.
+
+    The old wording -- "Image X is not allowlisted. Allowed: Y" -- reads as an
+    instruction to use Y, and a caller that cannot choose an image reads it as
+    one anyway. In a live run the critic advised retrying "with the allowlisted
+    image explicitly set", the agent worked out from the tool schema that there
+    was no such parameter, tried regardless, failed again, and spent two of its
+    five iterations on it. The image is a server setting; say so, so the only
+    remaining move is the right one.
+    """
+    allowed = allowed_images()
+    return (
+        f"Image {image} is not allowlisted on this server, so this tool cannot "
+        "run. The image is chosen by the server, not by the caller: there is no "
+        "parameter to change and retrying will fail the same way. "
+        + (
+            f"Allowlisted images: {', '.join(allowed)}. "
+            "Use a tool that runs in one of those, or ask an operator to "
+            "allowlist this one."
+            if allowed
+            else "No images are allowlisted at all; ask an operator."
+        )
+    )
+
+
 def docker_command(
     *,
     image: str,

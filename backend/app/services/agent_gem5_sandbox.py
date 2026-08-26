@@ -335,10 +335,7 @@ def _check_environment(image: str) -> Optional[Dict[str, Any]]:
     if image not in agent_sandbox_runtime.allowed_images():
         return {
             "success": False,
-            "error": (
-                f"Image {image} is not allowlisted. Allowed: "
-                f"{', '.join(agent_sandbox_runtime.allowed_images()) or 'none'}"
-            ),
+            "error": agent_sandbox_runtime.image_not_allowlisted(image),
         }
     return None
 

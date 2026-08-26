@@ -18,7 +18,7 @@ import random
 import re
 from copy import deepcopy
 from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional, Sequence, Tuple
+from typing import Any, Dict, List, Mapping, Optional, Sequence, Tuple
 from uuid import UUID
 
 from loguru import logger
@@ -1342,6 +1342,49 @@ class _AutonomousRuntimeAdapter:
 
     async def build_run_result(self) -> Dict[str, Any]:
         return await self.executor._finalize_job(self.job, self.state, self.db)
+
+
+def _how_to_record_bounded_findings(validity: Any) -> str:
+    """Tell a run how to produce the findings its bounds are written against.
+
+    A bound names a finding type and a numeric field. When a tool emits that
+    type the run gets there by calling the tool. When nothing does -- which is
+    the case for every conclusion a run draws rather than measures -- the
+    requirement is stated and unactionable, and the run satisfies the counting
+    half of its contract while the claim itself goes unchecked. That is how a
+    latency of 13.517 cycles per multiply, four times the real figure, was
+    reported with nothing able to object.
+
+    So the prompt names the mechanism: the finding type and metric to record,
+    and the tool that carries them.
+    """
+    from app.services import agent_evidence_map
+
+    if not isinstance(validity, Mapping):
+        return ""
+    bounds = validity.get("bounds")
+    if not isinstance(bounds, Mapping):
+        return ""
+
+    lines: List[str] = []
+    for type_name, rule in bounds.items():
+        if not isinstance(rule, Mapping):
+            continue
+        field = str(rule.get("field") or "").strip()
+        if not field:
+            continue
+        if agent_evidence_map.producer_of(str(type_name)):
+            continue  # a tool emits it; calling the tool is the mechanism
+        lines.append(
+            f"- {type_name}: no tool produces this, so record it yourself once "
+            f"you have the number, with save_research_finding("
+            f"finding_type='{type_name}', metrics={{'{field}': <value>}}). "
+            "State the number in metrics as well as in the text: the check "
+            "reads metrics, and prose is not readable to it."
+        )
+    if not lines:
+        return ""
+    return "HOW TO RECORD THE BOUNDED RESULTS:\n" + "\n".join(lines)
 
 
 def _tools_with_params(tool_names: Sequence[str], limit: int = 6000) -> str:
@@ -7359,6 +7402,9 @@ GOAL:
                 "past. Plan the work so they hold, rather than discovering "
                 "them when the job tries to finish.\n\n"
             )
+            how = _how_to_record_bounded_findings(contract_config.get("validity"))
+            if how:
+                base_prompt += how + "\n\n"
         inherited_data = (
             (job.config or {}).get("inherited_data")
             if isinstance(job.config, dict)

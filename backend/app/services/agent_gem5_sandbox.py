@@ -266,6 +266,118 @@ async def cpp_support(image: str) -> Dict[str, Any]:
     return result
 
 
+#: What this image's gem5 can actually run, keyed by (image, cpu_type).
+_MODEL_SUPPORT: Dict[str, Dict[str, Any]] = {}
+
+#: Op classes without which any glibc binary deadlocks. gem5 issues an
+#: instruction only when a functional unit for its class exists; when none
+#: does, the instruction waits forever and the simulation neither finishes nor
+#: fails.
+#:
+#: FloatMisc, established by elimination rather than assumed. The first guess
+#: was FloatMemRead/FloatMemWrite, on the strength of three models: the two
+#: that ran declared them and the one that hung did not. NeoverseV2 refutes
+#: that -- it declares neither and runs glibc binaries perfectly, sixteen of
+#: them in one afternoon. Diffing its pool against ex5_big's leaves exactly one
+#: class, and it holds across every model in this image: ex5_LITTLE,
+#: NeoverseV2, O3CPU and MinorCPU all declare FloatMisc and all run; ex5_big
+#: does not, and is the only one that hangs.
+REQUIRED_OP_CLASSES = ("FloatMisc",)
+
+MODEL_PROBE_TIMEOUT_SECONDS = 120
+
+
+async def model_support(image: str, cpu_type: str) -> Dict[str, Any]:
+    """Whether this image's gem5 can run this core model, asked not assumed.
+
+    CPU_TYPES lists five named ARM cores. In the image this project uses, two
+    of them are not compiled in and one deadlocks on every glibc binary -- and
+    the deadlock is the expensive kind, because a run that hangs consumes its
+    whole timeout and then reports a timeout, which reads as "the workload was
+    too big" and sends the caller to shrink a workload that was never the
+    problem.
+
+    The probe runs a thousand instructions and reads the configuration gem5
+    dumps at startup. That is enough: an unavailable model says so immediately,
+    and a model whose functional-unit pool omits a class glibc needs can be
+    identified from the pool rather than by waiting for the hang.
+    """
+    key = f"{image}::{cpu_type}"
+    cached = _MODEL_SUPPORT.get(key)
+    if cached is not None:
+        return cached
+
+    script = (
+        "printf 'int main(void){return 0;}\n' > probe.c && "
+        "gcc -O0 -static -o probe probe.c && "
+        f"{GEM5_BINARY} --outdir=probe_out {GEM5_SE_CONFIG} "
+        f"--cmd=./probe --cpu-type={cpu_type} --caches -I 1000 > probe.log 2>&1; "
+        "grep -h '^opClass=' probe_out/config.ini 2>/dev/null | sort -u; "
+        "echo ---; tail -3 probe.log"
+    )
+    with tempfile.TemporaryDirectory(prefix="gem5_model_probe_") as workdir:
+        try:
+            _rc, stdout, _stderr = await agent_sandbox_runtime.run_in_sandbox(
+                script,
+                workdir,
+                image=image,
+                timeout_seconds=MODEL_PROBE_TIMEOUT_SECONDS,
+            )
+        except Exception as exc:
+            # Not cached: a docker hiccup must not disable a model for the life
+            # of the process.
+            return {"usable": True, "probed": False, "detail": str(exc)[:200]}
+
+    text = str(stdout or "")
+    pool, _, log = text.partition("---")
+    op_classes = {
+        line.split("=", 1)[1].strip()
+        for line in pool.splitlines()
+        if line.startswith("opClass=")
+    }
+
+    if "is unavailable" in log or (not op_classes and "unavailable" in log.lower()):
+        result = {
+            "usable": False,
+            "probed": True,
+            "reason": (
+                f"{cpu_type} is not compiled into the gem5 build in {image}. "
+                "It is named in this tool's model list but this image cannot "
+                "run it; choose another model."
+            ),
+        }
+    else:
+        missing = [c for c in REQUIRED_OP_CLASSES if op_classes and c not in op_classes]
+        if missing:
+            result = {
+                "usable": False,
+                "probed": True,
+                "reason": (
+                    f"{cpu_type} in this gem5 build has no functional unit for "
+                    f"{', '.join(missing)}, so any program linked against glibc "
+                    "deadlocks before main: the instruction waits for a unit "
+                    "that does not exist and the simulation neither finishes "
+                    "nor fails. This is a property of the model in this image, "
+                    "not of the workload -- a smaller workload hangs too. "
+                    "Choose another model."
+                ),
+            }
+        else:
+            result = {"usable": True, "probed": True, "op_classes": sorted(op_classes)}
+
+    _MODEL_SUPPORT[key] = result
+    return result
+
+
+def forget_model_support(image: str = "") -> None:
+    """Drop what was learned about an image's models, for a rebuild or a test."""
+    if image:
+        for key in [k for k in _MODEL_SUPPORT if k.startswith(f"{image}::")]:
+            _MODEL_SUPPORT.pop(key, None)
+    else:
+        _MODEL_SUPPORT.clear()
+
+
 def forget_cpp_support(image: str = "") -> None:
     """Drop what was learned about an image, for a rebuild or for a test."""
     if image:
@@ -653,6 +765,10 @@ async def simulate_c_workload(
     if blocked:
         return blocked
 
+    support = await model_support(image, model)
+    if not support.get("usable", True):
+        return {"success": False, "error": support.get("reason", "")}
+
     with tempfile.TemporaryDirectory(prefix="gem5_workload_") as workdir:
         Path(workdir, "workload.c").write_text(code, encoding="utf-8")
         options = f" --options='{arguments}'" if arguments else ""
@@ -1033,6 +1149,10 @@ async def sample_counters(
     blocked = _check_environment(image)
     if blocked:
         return blocked
+
+    support = await model_support(image, str(cpu_type or DEFAULT_CPU))
+    if not support.get("usable", True):
+        return {"success": False, "error": support.get("reason", "")}
 
     # Measure the design in the cheap model before paying for the real one.
     # After argument validation, never before it: rejecting an unknown

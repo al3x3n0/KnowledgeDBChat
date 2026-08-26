@@ -71,3 +71,50 @@ class TestTheCriticSeesWhatToolsAccept:
         source = inspect.getsource(mod)
         assert "do not advise " in source
         assert "setting a parameter a tool does not have" in source
+
+
+class TestBoundedConclusionsAreActionable:
+    """A bound the run has no way to satisfy is worse than no bound.
+
+    Validity bounds name a finding type and a numeric field. For a type a tool
+    emits, calling the tool is the mechanism. For a conclusion the run draws
+    itself, nothing emitted it and nothing said how -- so the counting half of
+    the contract passed while the claim went unchecked, which is how a latency
+    four times the real figure was reported with nothing able to object.
+    """
+
+    def _how(self, validity):
+        from app.services.autonomous_agent_executor import (
+            _how_to_record_bounded_findings,
+        )
+
+        return _how_to_record_bounded_findings(validity)
+
+    def test_a_type_no_tool_emits_gets_the_mechanism(self):
+        text = self._how(
+            {"bounds": {"latency_measurement": {"field": "cycles_per_multiply"}}}
+        )
+        assert "save_research_finding(" in text
+        assert "finding_type='latency_measurement'" in text
+        assert "'cycles_per_multiply'" in text
+
+    def test_a_type_a_tool_emits_is_left_alone(self):
+        """simulate_c_workload produces simulated_measurement; calling it is
+        the mechanism and repeating that would be noise."""
+        assert (
+            self._how({"bounds": {"simulated_measurement": {"field": "instructions"}}})
+            == ""
+        )
+
+    def test_it_says_the_number_must_be_in_metrics(self):
+        text = self._how({"bounds": {"x_measurement": {"field": "y"}}})
+        assert "prose is not readable" in text
+
+    def test_a_contract_without_bounds_says_nothing(self):
+        assert self._how({}) == ""
+        assert self._how({"bounds": {}}) == ""
+        assert self._how(None) == ""
+
+    def test_a_malformed_bound_is_skipped_rather_than_crashing(self):
+        assert self._how({"bounds": {"t": "not-a-mapping"}}) == ""
+        assert self._how({"bounds": {"t": {"min": 1}}}) == ""  # no field named

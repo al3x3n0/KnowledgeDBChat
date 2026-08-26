@@ -58,6 +58,10 @@ class ChainTriggerCondition(str, enum.Enum):
     ON_ANY_END = "on_any_end"  # Trigger on any completion (success or failure)
     ON_PROGRESS = "on_progress"  # Trigger when parent reaches progress threshold
     ON_FINDINGS = "on_findings"  # Trigger when parent finds certain number of findings
+    # Trigger only when a person says so. Every condition above fires on its
+    # own, which means a chain could not be gated on human judgement at all:
+    # a pipeline stage that should stop for review had no way to say it.
+    ON_APPROVAL = "on_approval"
 
 
 class AgentJob(Base):
@@ -324,6 +328,12 @@ class AgentJob(Base):
         if event == "findings" and condition == ChainTriggerCondition.ON_FINDINGS:
             threshold = config.get("findings_threshold", 10)
             return value >= threshold
+
+        # An approval-gated chain fires on the approval and on nothing else.
+        # Completing is what makes it *ready* to be approved, not what starts
+        # the next stage.
+        if event == "approval" and condition == ChainTriggerCondition.ON_APPROVAL:
+            return True
 
         return False
 

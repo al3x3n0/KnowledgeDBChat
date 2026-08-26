@@ -212,39 +212,15 @@ class TestRefusals:
 
 
 class TestCheckpoints:
-    def test_a_checkpoint_stage_does_not_chain_what_follows_it(self):
-        pipeline = ps.normalize(
-            {
-                "stages": [
-                    _stage("measure", ["counter_trace"], checkpoint=True),
-                    _stage("after", ["predictability_ceiling"], depends_on=["measure"]),
-                ]
-            }
-        )
-        bound = pb.bind(pipeline)
-        assert "chain_config" not in bound.roots[0]
-        assert bound.stage_ids() == ["measure"]
+    """A checkpoint stage is chained, but on approval rather than completion.
 
-    def test_the_held_edge_is_reported_rather_than_approximated(self):
-        """None of on_complete, on_fail, on_any_end, on_progress or
-        on_findings asks anybody. Picking the nearest one would call a stage
-        gated when it is not."""
-        pipeline = ps.normalize(
-            {
-                "stages": [
-                    _stage("measure", ["counter_trace"], checkpoint=True),
-                    _stage("after", ["predictability_ceiling"], depends_on=["measure"]),
-                ]
-            }
-        )
-        bound = pb.bind(pipeline)
-        assert len(bound.deferred) == 1
-        edge = bound.deferred[0]
-        assert (edge.after, edge.launch) == ("measure", "after")
-        assert "approval-gated" in edge.reason
+    Before ``on_approval`` existed these edges could not be expressed at all
+    and were reported as held. They are real edges now; what makes them a gate
+    is the condition, not their absence.
+    """
 
-    def test_the_description_says_what_is_being_held(self):
-        pipeline = ps.normalize(
+    def _gated(self):
+        return ps.normalize(
             {
                 "name": "gated",
                 "stages": [
@@ -253,5 +229,46 @@ class TestCheckpoints:
                 ],
             }
         )
-        text = "\n".join(pb.describe(pipeline))
-        assert "held: after waits on measure" in text
+
+    def test_the_next_stage_is_chained_behind_an_approval(self):
+        root = pb.bind(self._gated()).roots[0]
+        assert root["chain_config"]["trigger_condition"] == "on_approval"
+        assert _child_named(root, "after")
+
+    def test_an_ordinary_stage_still_chains_on_completion(self):
+        pipeline = ps.normalize(
+            {
+                "stages": [
+                    _stage("a", ["counter_trace"]),
+                    _stage("b", ["predictability_ceiling"], depends_on=["a"]),
+                ]
+            }
+        )
+        root = pb.bind(pipeline).roots[0]
+        assert root["chain_config"]["trigger_condition"] == "on_complete"
+
+    def test_nothing_is_deferred_now_that_the_condition_exists(self):
+        assert pb.bind(self._gated()).deferred == []
+
+    def test_every_stage_still_reaches_the_binding(self):
+        assert pb.bind(self._gated()).stage_ids() == ["measure", "after"]
+
+    def test_a_checkpoint_deeper_in_the_pipeline_gates_only_its_own_edge(self):
+        pipeline = ps.normalize(
+            {
+                "stages": [
+                    _stage("first", ["counter_trace"]),
+                    _stage(
+                        "gate",
+                        ["predictability_ceiling"],
+                        depends_on=["first"],
+                        checkpoint=True,
+                    ),
+                    _stage("last", ["counter_tap_selection"], depends_on=["gate"]),
+                ]
+            }
+        )
+        root = pb.bind(pipeline).roots[0]
+        assert root["chain_config"]["trigger_condition"] == "on_complete"
+        gate = _child_named(root, "gate")
+        assert gate["chain_config"]["trigger_condition"] == "on_approval"

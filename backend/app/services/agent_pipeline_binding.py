@@ -36,13 +36,13 @@ FAN_IN_ORIGIN = "swarm_fan_in_aggregator"
 
 @dataclass
 class DeferredEdge:
-    """A stage the chain will not start on its own, and why.
+    """An edge the chain cannot start on its own, and why.
 
-    A checkpoint stage is meant to stop until a human agrees. The chain has no
-    approval-gated trigger -- its conditions are on_complete, on_fail,
-    on_any_end, on_progress and on_findings, all of which fire without asking.
-    Rather than pick the nearest one and call a stage gated when it is not,
-    the edge is left out of the chain and reported here for a launcher to hold.
+    Checkpoints used to land here: the chain had no approval-gated trigger, so
+    a gated stage could not be an edge at all and was reported instead of
+    approximated. ``on_approval`` exists now and carries them, so this is empty
+    in ordinary use -- kept because the next shape the runner cannot express
+    should be reported the same way rather than faked.
     """
 
     after: str
@@ -190,20 +190,6 @@ def bind(pipeline: Pipeline) -> BoundPipeline:
         child_jobs: List[Dict[str, Any]] = []
         chain_data: Dict[str, Any] = {}
 
-        if stage.checkpoint:
-            # Everything downstream waits for a person, so none of it goes in
-            # the chain. The edges are reported instead of approximated.
-            for child in direct + converging:
-                deferred.append(
-                    DeferredEdge(
-                        after=stage_id,
-                        launch=child,
-                        reason="stage is a checkpoint and the chain has no "
-                        "approval-gated trigger",
-                    )
-                )
-            return job
-
         for child in direct:
             if child in seen:
                 continue
@@ -224,8 +210,13 @@ def bind(pipeline: Pipeline) -> BoundPipeline:
             )
 
         if child_jobs:
+            # A checkpoint stage's chain waits for a person. Completing is what
+            # makes it ready to be approved; approving is what starts the next
+            # stage. Every other condition fires on its own.
             chain: Dict[str, Any] = {
-                "trigger_condition": "on_complete",
+                "trigger_condition": "on_approval"
+                if stage.checkpoint
+                else "on_complete",
                 "inherit_results": True,
                 "child_jobs": child_jobs,
             }

@@ -11,6 +11,7 @@ from app.modules.autonomy.application.job_action_contracts import (
     JobActionError,
 )
 from app.schemas.agent_job import AgentJobActionRequest
+from app.services.agent_runtime_finalizer import CHAIN_GATE_CHECKPOINT
 
 CHECKPOINT_DECISION_ACTIONS = frozenset({"approve", "edit", "skip", "reject"})
 
@@ -81,6 +82,21 @@ async def perform_checkpoint_decision(
         except ValueError as exc:
             raise JobActionError(status_code=400, detail=str(exc))
 
+    if pending_checkpoint.get("checkpoint_type") == CHAIN_GATE_CHECKPOINT:
+        return await _decide_chain_gate(
+            job,
+            action,
+            pending_checkpoint,
+            checkpoint_note,
+            results_payload,
+            approval_payload,
+            state,
+            checkpoint_row,
+            deps=deps,
+            db=db,
+            current_user=current_user,
+        )
+
     if action == "edit":
         _perform_edit(
             job,
@@ -123,6 +139,69 @@ async def perform_checkpoint_decision(
         db.add(checkpoint_row)
     if action != "reject":
         deps.execute_agent_job_task.delay(str(job.id), str(current_user.id))
+    return job
+
+
+async def _decide_chain_gate(
+    job: AgentJob,
+    action: str,
+    pending_checkpoint: dict,
+    checkpoint_note: str | None,
+    results_payload: dict,
+    approval_payload: dict,
+    state: dict,
+    checkpoint_row: Any,
+    *,
+    deps: JobActionDependencies,
+    db: AsyncSession,
+    current_user: User,
+) -> AgentJob:
+    """Decide a gate that holds a pipeline's next stage.
+
+    This job has already done its work; it paused because what comes next
+    needed a person. So approval starts the chain, and every other decision
+    ends the pipeline here. In neither case is the job re-queued -- the
+    ordinary checkpoint path re-runs the job to carry out the action that was
+    approved, and there is no action here to carry out.
+    """
+    _clear_pending_checkpoint(results_payload, approval_payload, state, deps=deps)
+    deps.append_approval_event(
+        approval_payload,
+        state,
+        {
+            "action": action,
+            "checkpoint_type": CHAIN_GATE_CHECKPOINT,
+            "note": checkpoint_note,
+            "decided_by": str(getattr(current_user, "id", "") or ""),
+        },
+    )
+    job.results = results_payload
+    job.status = AgentJobStatus.COMPLETED.value
+    job.current_phase = "completed"
+
+    if action == "approve":
+        from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+        executor = AutonomousAgentExecutor()
+        triggered = await executor._trigger_chained_jobs(job, "approval", db)
+        job.phase_details = (
+            f"Approved; started {len(triggered)} next stage(s)."
+            if triggered
+            else "Approved, but no next stage started."
+        )
+    else:
+        # Rejected or skipped: the chain is marked as dealt with so nothing
+        # starts it later, and the pipeline stops at this stage.
+        job.chain_triggered = True
+        job.phase_details = f"Pipeline stopped at this stage ({action})."
+
+    job.add_log_entry(
+        {"phase": "chain_gate_decision", "action": action, "note": checkpoint_note}
+    )
+    if checkpoint_row:
+        checkpoint_row.state = state
+        db.add(checkpoint_row)
+    await db.commit()
     return job
 
 

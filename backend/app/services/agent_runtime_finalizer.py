@@ -12,12 +12,68 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent_job import AgentJob, AgentJobStatus
+from app.models.agent_job import AgentJob, AgentJobStatus, ChainTriggerCondition
 from app.services.agent_job_memory_service import agent_job_memory_service
 from app.services.agent_run_synthesis_service import synthesize_conclusion
 from app.services.autonomous_rnd_trajectory_service import (
     autonomous_rnd_trajectory_adapter,
 )
+
+
+#: Marks the approval payload written when a chain waits on a person, so the
+#: approve handler can tell it from a mid-run checkpoint and start the chain
+#: instead of re-running a job that has already done its work.
+CHAIN_GATE_CHECKPOINT = "chain_gate"
+
+
+def _hold_for_chain_approval(job: AgentJob) -> None:
+    """Pause a completed job whose chain waits on a person.
+
+    Writes the payload ``extract_approval_checkpoint`` reads, so the job
+    appears in the approval queue exactly as a mid-run checkpoint does. The
+    ``checkpoint_type`` is what tells the approve handler to start the chain
+    rather than re-run this job, whose work is already done.
+    """
+    # Read defensively: finalize_job is exercised with stand-in jobs that carry
+    # only the fields a test needs, and a gate that has nothing to hold should
+    # not be the thing that breaks them.
+    if getattr(job, "status", None) != AgentJobStatus.COMPLETED.value:
+        return
+    raw_chain = getattr(job, "chain_config", None)
+    chain_config = raw_chain if isinstance(raw_chain, dict) else {}
+    if not chain_config.get("child_jobs"):
+        return
+    if str(chain_config.get("trigger_condition") or "") != (
+        ChainTriggerCondition.ON_APPROVAL.value
+    ):
+        return
+    if getattr(job, "chain_triggered", False):
+        return
+
+    raw_results = getattr(job, "results", None)
+    results = raw_results if isinstance(raw_results, dict) else {}
+    waiting = [
+        str(
+            (child.get("config") or {}).get("pipeline_stage") or child.get("name") or ""
+        )
+        for child in chain_config.get("child_jobs") or []
+    ]
+    results["approval_checkpoint"] = {
+        "checkpoint_type": CHAIN_GATE_CHECKPOINT,
+        "message": (
+            "This stage is finished and the next one waits for approval: "
+            + ", ".join(name for name in waiting if name)
+        )[:300],
+        "iteration": int(getattr(job, "iteration", 0) or 0),
+        "waiting_stages": [name for name in waiting if name],
+    }
+    job.results = results
+    job.status = AgentJobStatus.PAUSED.value
+    job.current_phase = "awaiting_approval"
+    job.phase_details = "Approval required before the next stage starts."
+    log = getattr(job, "add_log_entry", None)
+    if callable(log):
+        log({"phase": "chain_gate", "waiting_stages": [n for n in waiting if n]})
 
 
 async def finalize_job(
@@ -1371,6 +1427,14 @@ async def finalize_job(
                     f"Job {job.id} is unusable after memory extraction; "
                     f"chained jobs may not be triggered: {reload_error}"
                 )
+
+    # A stage whose chain is gated on approval stops here rather than starting
+    # what comes next. Completing is what makes it ready to be approved; the
+    # approval is what starts the next stage. The job pauses instead of
+    # completing so the existing checkpoint machinery -- the queue item, the
+    # approve/reject actions, the resume path -- applies unchanged, and the
+    # early return below carries it out.
+    _hold_for_chain_approval(job)
 
     if job.status == AgentJobStatus.PAUSED.value:
         return {

@@ -65,6 +65,28 @@ LLM_TASK_TYPES = [
 ]
 
 
+def _usage_user_id(value: Any) -> Optional[UUID]:
+    """The user id as the usage column actually types it.
+
+    Callers hand this in as a string -- the agent loop passes
+    ``str(job.user_id)`` -- while ``LLMUsageEvent.user_id`` is
+    ``UUID(as_uuid=True)``. PostgreSQL tolerates the string, so this ran for a
+    long time without complaint; SQLAlchemy's non-native-UUID path calls
+    ``value.hex`` and raises AttributeError, which is what an agent loop
+    running against SQLite hits on its first real LLM call. The suite never saw
+    it because it never makes one.
+    """
+    if isinstance(value, UUID):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return UUID(text)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 @dataclass
 class UserLLMSettings:
     """User-specific LLM settings that override system defaults."""
@@ -658,7 +680,7 @@ class LLMService:
                             (asyncio.get_event_loop().time() - start_time) * 1000
                         )
                         event = LLMUsageEvent(
-                            user_id=user_id,
+                            user_id=_usage_user_id(user_id),
                             provider=(
                                 completion.provider
                                 if completion
@@ -1107,7 +1129,7 @@ class LLMService:
                         event_extra["routing"] = routing_meta
 
                     event = LLMUsageEvent(
-                        user_id=user_id,
+                        user_id=_usage_user_id(user_id),
                         provider=provider_used,
                         model=model_used,
                         task_type=task_type,

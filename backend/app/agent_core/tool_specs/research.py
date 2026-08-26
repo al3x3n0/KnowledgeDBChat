@@ -45,7 +45,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["query"],
         },
         network="egress",
-        job_types=('research', 'monitor', 'knowledge_expansion', 'custom'),
+        job_types=("research", "monitor", "knowledge_expansion", "custom"),
     ),
     ToolSpec(
         name="ingest_arxiv_papers",
@@ -236,7 +236,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["list_name", "items"],
         },
         effects="write",
-        job_types=('research', 'monitor', 'custom'),
+        job_types=("research", "monitor", "custom"),
     ),
     ToolSpec(
         name="get_reading_lists",
@@ -256,7 +256,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('research', 'monitor'),
+        job_types=("research", "monitor"),
     ),
     ToolSpec(
         name="save_research_finding",
@@ -299,6 +299,25 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "array",
                     "items": {"type": "string"},
                     "description": "Tags for categorization",
+                },
+                "finding_type": {
+                    "type": "string",
+                    "description": (
+                        "What kind of finding this is, e.g. "
+                        "'latency_measurement'. A goal contract can require "
+                        "findings of a named type and can bound the numbers "
+                        "they carry, so a conclusion recorded without a type "
+                        "cannot be checked against either."
+                    ),
+                },
+                "metrics": {
+                    "type": "object",
+                    "description": (
+                        "The numbers this finding asserts, as name to value, "
+                        'e.g. {"cycles_per_multiply": 6.0}. State them here '
+                        "as well as in the text: a contract can only check a "
+                        "number it can read, and prose is not readable."
+                    ),
                 },
             },
             "required": ["title", "content", "category"],
@@ -368,7 +387,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["title", "topic"],
         },
         effects="write",
-        job_types=('research', 'analysis', 'synthesis', 'custom'),
+        job_types=("research", "analysis", "synthesis", "custom"),
     ),
     ToolSpec(
         name="extract_paper_insights",
@@ -405,7 +424,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["document_id"],
         },
-        job_types=('research', 'analysis', 'custom'),
+        job_types=("research", "analysis", "custom"),
     ),
     ToolSpec(
         name="find_related_papers",
@@ -446,7 +465,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('research', 'knowledge_expansion'),
+        job_types=("research", "knowledge_expansion"),
     ),
     ToolSpec(
         name="build_research_graph",
@@ -487,7 +506,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": [],
         },
         effects="write",
-        job_types=('research', 'analysis', 'knowledge_expansion'),
+        job_types=("research", "analysis", "knowledge_expansion"),
     ),
     ToolSpec(
         name="compare_methodologies",
@@ -524,7 +543,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["document_ids"],
         },
-        job_types=('research', 'analysis'),
+        job_types=("research", "analysis"),
     ),
     ToolSpec(
         name="identify_research_gaps",
@@ -563,7 +582,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('research', 'analysis'),
+        job_types=("research", "analysis"),
     ),
     ToolSpec(
         name="generate_research_presentation",
@@ -598,7 +617,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["title", "topic"],
         },
         effects="write",
-        job_types=('research', 'synthesis'),
+        job_types=("research", "synthesis"),
     ),
     ToolSpec(
         name="monitor_arxiv_topic",
@@ -626,7 +645,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["topic"],
         },
-        job_types=('monitor',),
+        job_types=("monitor",),
     ),
     ToolSpec(
         name="ingest_paper_by_id",
@@ -651,7 +670,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["arxiv_id"],
         },
         effects="write",
-        job_types=('research', 'monitor', 'knowledge_expansion'),
+        job_types=("research", "monitor", "knowledge_expansion"),
     ),
     ToolSpec(
         name="analyze_document_cluster",
@@ -678,7 +697,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["document_ids"],
         },
-        job_types=('research', 'analysis'),
+        job_types=("research", "analysis"),
     ),
     ToolSpec(
         name="create_knowledge_base_entry",
@@ -727,7 +746,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["title", "content", "entry_type"],
         },
         effects="write",
-        job_types=('research', 'synthesis', 'knowledge_expansion'),
+        job_types=("research", "synthesis", "knowledge_expansion"),
     ),
     ToolSpec(
         name="batch_ingest_papers",
@@ -751,7 +770,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["arxiv_ids"],
         },
-        job_types=('research', 'knowledge_expansion'),
+        job_types=("research", "knowledge_expansion"),
     ),
     ToolSpec(
         name="search_web",
@@ -786,7 +805,7 @@ SPECS: tuple[ToolSpec, ...] = (
         },
         network="egress",
         cost_tier="medium",
-        job_types=('research', 'analysis'),
+        job_types=("research", "analysis"),
     ),
     ToolSpec(
         name="fetch_url_content",

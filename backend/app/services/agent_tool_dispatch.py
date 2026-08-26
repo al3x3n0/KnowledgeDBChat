@@ -991,13 +991,20 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
         from datetime import datetime
 
         job = ctx.job
-        state = ctx.state if isinstance(ctx.state, dict) else {}
         source_scope_id = str(params.get("source_id") or "").strip() or None
+        metrics = params.get("metrics")
         finding = {
             "id": str(uuid.uuid4()),
             "title": params.get("title"),
             "content": params.get("content"),
             "category": params.get("category"),
+            # A conclusion with no type and no readable number is a conclusion
+            # no contract can check. The validity predicates bound fields on
+            # typed findings, and until this tool could carry either, the only
+            # findings they could police were the ones tools emitted -- never
+            # the claim a run actually drew from them.
+            "type": str(params.get("finding_type") or "").strip() or None,
+            "metrics": dict(metrics) if isinstance(metrics, dict) else {},
             "source_document_ids": params.get("source_document_ids", []),
             "source_id": source_scope_id,
             "confidence": params.get("confidence", 0.8),
@@ -1010,12 +1017,11 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             executor._job_findings[job_id_str] = []
         executor._job_findings[job_id_str].append(finding)
 
-        findings = state.get("findings")
-        if not isinstance(findings, list):
-            findings = []
-            state["findings"] = findings
-        findings.append(finding)
-
+        # Deliberately not appended to state["findings"] here. The executor
+        # extends that from the "findings" this returns, as it does for every
+        # other tool that produces them -- doing both recorded each finding
+        # twice, which is why every derived result in a run appeared as an
+        # identical pair.
         return {
             "success": True,
             "data": {"finding_id": finding["id"]},

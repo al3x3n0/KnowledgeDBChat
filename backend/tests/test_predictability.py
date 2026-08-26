@@ -131,23 +131,22 @@ def test_counters_are_ranked_by_what_they_add_not_what_they_know():
 def test_every_counter_tool_is_registered_everywhere():
     """A tool missing from any one of these is invisible to agents, and three
     validity predicates were dead on arrival earlier today for exactly that."""
-    from app.agent_core import tool_catalog
+    from app.agent_core.tool_catalog import get_tool_metadata
     from app.services import agent_job_tool_policy, agent_tools
 
-    source = "".join(
-        open(f).read()
-        for f in (
-            tool_catalog.__file__,
-            agent_job_tool_policy.__file__,
-            agent_tools.__file__,
-        )
-    )
     for tool in (
         "sample_hardware_counters",
         "measure_predictability",
         "select_counter_taps",
     ):
-        assert source.count(tool) >= 3, f"{tool} is not registered everywhere"
+        # Asked of each registry rather than counted in their source text. The
+        # text form passed as long as the name appeared three times anywhere in
+        # three files -- and it kept passing on dead entries in a
+        # classification list that had stopped deciding anything.
+        assert get_tool_metadata(tool) is not None, f"{tool} has no metadata"
+        assert tool in agent_job_tool_policy.get_tools_for_job_type(
+            "research", {}
+        ), f"{tool} is offered to no job type"
 
     names = (
         {t["name"] for t in agent_tools.AGENT_TOOLS}

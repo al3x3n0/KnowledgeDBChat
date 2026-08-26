@@ -22,10 +22,7 @@ def _default_metadata(
 ) -> ToolMetadata:
     base = name.split("mcp:", 1)[1] if name.startswith("mcp:") else name
 
-    # A tool that declares its own governance is believed. The name lists
-    # below are the older form: a tool is classified by whether someone
-    # remembered to add it, which is how 25 mutating tools came to be
-    # classified read-safe by omission.
+    # Every builtin tool declares its own governance, and is believed.
     from app.agent_core.tool_specs import spec_for
 
     spec = spec_for(base)
@@ -40,195 +37,34 @@ def _default_metadata(
             pii_risk=spec.pii_risk,
         )
 
+    # Below here is the MCP surface only, which has no specs. This is the older
+    # form of classification -- a tool is whatever these lists remember to say
+    # it is, so omitting one silently classifies it read-safe, cheap and
+    # private. That is how 25 mutating tools were once classified read.
+    #
+    # These lists held 158 names until the builtin tools moved to specs. The
+    # other 149 named tools that now carry their own classification, so editing
+    # one here would have changed nothing while looking like a fix. Only the
+    # names that still decide something are left.
     write_tools = {
-        "delete_document",
-        "batch_delete_documents",
-        "update_document_tags",
-        "create_document_from_text",
-        "ingest_url",
-        "merge_entities",
-        "delete_entity",
-        "rebuild_document_knowledge_graph",
-        # Deletes a document's mentions and relationships before re-extracting.
-        "build_research_graph",
-        "run_custom_tool",
-        # Creates a persistent, executable capability for this user.
-        "create_custom_tool",
-        "run_workflow",
-        "docker_execute",
-        "delegate_subtask",
-        "share_findings",
-        "request_review",
-        "execute_data_pipeline",
-        # Compile and run submitted code inside a Docker sandbox.
-        "compile_c_snippet",
-        "analyze_snippet_cycles",
-        "profile_c_workload",
-        "simulate_c_workload",
-        "sample_hardware_counters",
-        "measure_predictability",
-        "select_counter_taps",
-        "evaluate_predictor_design",
-        "describe_model_parameters",
-        "find_fusion_candidates",
-        "cost_fusion_candidate",
-        "verify_run_bundle",
-        "record_prediction",
-        "record_measurement",
-        "axis_check",
-        "axis_emit",
-        "axis_prove",
-        "benchmark_c_snippet",
-        "write_and_run_script",
-        "write_file",
-        "apply_patch",
-        "run_command",
-        "export_document",
-        "create_memory",
-        "record_method",
-        "execute_workflow",
-        "send_message_to_agent",
-        "send_notification",
-        "send_email_alert",
-        "create_chart",
-        "render_diagram",
-        "create_kg_entity",
-        "create_kg_relationship",
-        "schedule_job",
-        "cancel_scheduled_job",
-        "merge_documents",
-        "create_handoff",
-        "broadcast_to_siblings",
-        "transcribe_document",
-        # Added after an audit found 25 tools whose names imply mutation
-        # classified read-safe by omission. The rule applied here is
-        # fail-closed: a tool goes on this list unless it is demonstrably pure
-        # computation, because under-classifying is the dangerous direction —
-        # an enforced read-only policy would otherwise permit them.
-        #
-        # execute_python runs arbitrary code. It was classified read while its
-        # sibling write_and_run_script was classified write, which is the exact
-        # false assurance an allowed_effects gate would have inherited.
-        "execute_python",
-        # The rule: "write" means an effect outside the agent's own run — a
-        # database row, a file, a network call, a queued job. Tools that only
-        # mutate in-run state (set_focus_directive, save_research_finding,
-        # write_section) stay read: an operator setting a read-only policy wants
-        # to stop side effects on the world, not stop the agent steering itself.
-        # Verified to reach outside the run:
-        "create_synthesis_document",
-        "create_knowledge_base_entry",
-        "create_workflow_from_description",
-        "add_to_reading_list",
-        "link_entities",
-        "export_data",
-        "ingest_arxiv_papers",
-        "ingest_paper_by_id",
-        # Generation tools that persist an artifact rather than only returning
-        # text. Classified write pending per-tool review; see the guard test.
-        "generate_report",
-        "generate_diagram",
-        "generate_documentation",
-        "generate_executive_summary",
-        "generate_gitlab_architecture",
-        "generate_literature_review_for_source",
-        "generate_meeting_notes",
-        "generate_research_presentation",
-        "generate_slides_for_source",
-        "generate_chart_data",
-        # MCP-exposed tools that create persistent jobs. Classified read-safe by
-        # the same omission that hid execute_python; this surface sat outside
-        # the guard test until iter_mcp_tools was lifted to module level.
         "create_presentation",
         "create_repo_report",
+        "docker_execute",
     }
     network_tools = {
-        "web_scrape",
-        "ingest_url",
-        "search_arxiv",
-        "ingest_arxiv_papers",
-        "literature_review_arxiv",
         "create_repo_report",
         "docker_execute",
-        "clone_and_index_repo",
-        "search_web",
-        "fetch_url_content",
-        "summarize_url",
-        "render_diagram",
     }
-    high_pii = {"docker_execute", "write_and_run_script"}
-    medium_pii = {
-        "web_scrape",
-        "ingest_url",
-        "run_custom_tool",
-        "create_custom_tool",
-        "execute_python",
-        "execute_data_pipeline",
-        "compile_c_snippet",
-        "analyze_snippet_cycles",
-        "profile_c_workload",
-        "simulate_c_workload",
-        "sample_hardware_counters",
-        "measure_predictability",
-        "select_counter_taps",
-        "evaluate_predictor_design",
-        "describe_model_parameters",
-        "find_fusion_candidates",
-        "cost_fusion_candidate",
-        "verify_run_bundle",
-        "record_prediction",
-        "record_measurement",
-        "axis_check",
-        "axis_emit",
-        "axis_prove",
-        "benchmark_c_snippet",
-        "run_command",
-        "search_code",
+    high_pii = {
+        "docker_execute",
     }
+    medium_pii: set[str] = set()
     high_cost = {
         "docker_execute",
-        "execute_data_pipeline",
-        "compile_c_snippet",
-        "analyze_snippet_cycles",
-        "profile_c_workload",
-        "simulate_c_workload",
-        "sample_hardware_counters",
-        "measure_predictability",
-        "select_counter_taps",
-        "evaluate_predictor_design",
-        "describe_model_parameters",
-        "find_fusion_candidates",
-        "cost_fusion_candidate",
-        "verify_run_bundle",
-        "record_prediction",
-        "record_measurement",
-        "axis_check",
-        "axis_emit",
-        "axis_prove",
-        "benchmark_c_snippet",
-        "write_and_run_script",
-        "run_command",
     }
     medium_cost = {
-        "generate_report",
-        "create_repo_report",
         "create_presentation",
-        "delegate_subtask",
-        "request_review",
-        "execute_python",
-        "clone_and_index_repo",
-        "export_document",
-        "execute_workflow",
-        "search_web",
-        "summarize_url",
-        "create_chart",
-        "batch_search",
-        "batch_summarize",
-        "compress_history",
-        "summarize_findings",
-        "create_handoff",
-        "transcribe_document",
-        "analyze_image",
+        "create_repo_report",
     }
     return ToolMetadata(
         name=name,

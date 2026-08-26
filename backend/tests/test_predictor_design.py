@@ -182,18 +182,14 @@ def test_beating_the_ceiling_is_reported_as_a_short_trace_not_a_result():
 
 def test_the_tool_is_registered_everywhere():
     """A tool missing from any one of these is invisible to agents."""
-    from app.agent_core import tool_catalog
+    from app.agent_core.tool_catalog import get_tool_metadata
     from app.services import agent_job_tool_policy, agent_tools
 
-    source = "".join(
-        open(f).read()
-        for f in (
-            tool_catalog.__file__,
-            agent_job_tool_policy.__file__,
-            agent_tools.__file__,
-        )
+    # Asked of each registry rather than counted in their source text.
+    assert get_tool_metadata("evaluate_predictor_design") is not None
+    assert "evaluate_predictor_design" in agent_job_tool_policy.get_tools_for_job_type(
+        "research", {}
     )
-    assert source.count("evaluate_predictor_design") >= 3
 
     names = {t["name"] for t in agent_tools.AGENT_TOOLS}
     assert "evaluate_predictor_design" in names

@@ -23,7 +23,7 @@ guessed and corrected one refusal at a time.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import Dict, Iterable, List, Sequence, Tuple
+from typing import Dict, Iterable, List, Optional, Sequence, Tuple
 
 from app.agent_core import tool_specs
 
@@ -69,6 +69,11 @@ _BY_TOOL: Dict[str, ToolEvidence] = {entry.tool: entry for entry in EVIDENCE_TOO
 _BY_EVIDENCE: Dict[str, ToolEvidence] = {
     produced: entry for entry in EVIDENCE_TOOLS for produced in entry.produces
 }
+
+
+def entry_for(tool: str) -> Optional[ToolEvidence]:
+    """What this tool costs and produces, or None if it is not an evidence tool."""
+    return _BY_TOOL.get(str(tool or "").strip())
 
 
 def producer_of(finding_type: str) -> str:

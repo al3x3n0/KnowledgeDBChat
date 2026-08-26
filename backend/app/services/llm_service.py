@@ -17,8 +17,9 @@ Two generation paths:
 """
 
 import asyncio
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 import httpx
@@ -41,6 +42,17 @@ from app.services.llm_routing import (
 from app.utils.exceptions import LLMServiceError
 
 _LLM_SEMAPHORE = asyncio.Semaphore(settings.LLM_MAX_CONCURRENCY)
+
+#: The last completion's reasoning, per asyncio task.
+#:
+#: The text is wanted by the snapshot recorder, which sits several frames above
+#: the client that receives it, and _generate_response_once returns only a
+#: string. A ContextVar carries it without threading a new return type through
+#: every provider path, and without the cross-talk an instance attribute would
+#: have under LLM_MAX_CONCURRENCY: each task gets its own copy.
+_LAST_REASONING: ContextVar[Optional[Tuple[str, Optional[int]]]] = ContextVar(
+    "llm_last_reasoning", default=None
+)
 
 
 # Supported task types for per-task model configuration.
@@ -66,15 +78,19 @@ LLM_TASK_TYPES = [
 
 
 def _usage_user_id(value: Any) -> Optional[UUID]:
-    """The user id as the usage column actually types it.
+    """A user id as the UUID columns in this module actually type it.
 
     Callers hand this in as a string -- the agent loop passes
-    ``str(job.user_id)`` -- while ``LLMUsageEvent.user_id`` is
-    ``UUID(as_uuid=True)``. PostgreSQL tolerates the string, so this ran for a
-    long time without complaint; SQLAlchemy's non-native-UUID path calls
-    ``value.hex`` and raises AttributeError, which is what an agent loop
-    running against SQLite hits on its first real LLM call. The suite never saw
-    it because it never makes one.
+    ``str(job.user_id)`` -- while ``LLMUsageEvent.user_id`` and
+    ``LLMCallSnapshot.user_id`` are both ``UUID(as_uuid=True)``. PostgreSQL
+    tolerates the string, so this ran for a long time without complaint;
+    SQLAlchemy's non-native-UUID path calls ``value.hex`` and raises
+    AttributeError, which is what an agent loop running against SQLite hits on
+    its first real LLM call. The suite never saw it because it never makes one.
+
+    Used by both writers. Fixing only the usage event left the snapshot to fail
+    the same way the moment snapshots were switched on -- the same defect twice,
+    found the second time by turning on a feature rather than by reading.
     """
     if isinstance(value, UUID):
         return value
@@ -152,6 +168,40 @@ class UserLLMSettings:
         if self.task_providers and task_type in self.task_providers:
             return self.task_providers[task_type]
         return self.provider
+
+
+def _meta_from_completion(
+    data: Dict[str, Any], fallback_model: Optional[str] = None
+) -> Dict[str, Any]:
+    """Response metadata, with the reasoning set aside where it belongs.
+
+    These models return the chain of thought apart from the answer and charge
+    it against max_tokens, so it is paid for whether or not anything reads it.
+    Dropping it left an agent's decisions replayable while the thinking behind
+    them was not, and made a call that spent its whole budget reasoning look
+    simply empty.
+
+    The text goes to a context variable for the snapshot recorder; only its
+    size goes into the returned meta, which is written to a usage row on every
+    call and would otherwise be dwarfed by it.
+    """
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    usage = data.get("usage") or {}
+    details = usage.get("completion_tokens_details")
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
+    reasoning_tokens = (
+        details.get("reasoning_tokens") if isinstance(details, dict) else None
+    )
+    _LAST_REASONING.set((reasoning, reasoning_tokens) if reasoning else None)
+    return {
+        "id": data.get("id"),
+        "model": data.get("model") or fallback_model,
+        "usage": data.get("usage"),
+        "finish_reason": choice.get("finish_reason"),
+        "reasoning_tokens": reasoning_tokens,
+        "reasoning_chars": len(reasoning) if reasoning else 0,
+    }
 
 
 class LLMService:
@@ -236,13 +286,25 @@ class LLMService:
         prompt_tokens: Optional[int] = None,
         completion_tokens: Optional[int] = None,
         snapshot_context: Optional[Dict[str, Any]] = None,
+        reasoning_text: Optional[str] = None,
+        reasoning_tokens: Optional[int] = None,
     ) -> None:
         """Persist a full request/response snapshot for replay debugging.
 
         Best-effort and opt-in (LLM_CALL_SNAPSHOT_ENABLED); never raises.
+
+        The reasoning defaults to whatever the call just produced rather than
+        to nothing. Passing it in was tried first and three call sites became
+        two that remembered and one that did not -- and the one that did not
+        was the structured path, which is where the agent's decisions are made.
+        Reading it here means a new call site cannot forget.
         """
         if db is None or not getattr(settings, "LLM_CALL_SNAPSHOT_ENABLED", False):
             return
+        if reasoning_text is None:
+            carried = _LAST_REASONING.get()
+            if carried:
+                reasoning_text, reasoning_tokens = carried
         try:
             from uuid import UUID as _UUID
 
@@ -257,7 +319,7 @@ class LLMService:
                     job_id = None
             iteration = ctx.get("iteration")
             snapshot = LLMCallSnapshot(
-                user_id=user_id,
+                user_id=_usage_user_id(user_id),
                 job_id=job_id,
                 iteration=int(iteration) if isinstance(iteration, int) else None,
                 phase=(str(ctx.get("phase"))[:50] if ctx.get("phase") else None),
@@ -268,6 +330,12 @@ class LLMService:
                 response_text=self._clip_snapshot(response_text),
                 tool_calls=tool_calls,
                 structured=structured,
+                reasoning_text=self._clip_snapshot(reasoning_text)
+                if reasoning_text
+                else None,
+                reasoning_tokens=(
+                    int(reasoning_tokens) if isinstance(reasoning_tokens, int) else None
+                ),
                 error=(str(error)[:2000] if error else None),
                 latency_ms=latency_ms,
                 prompt_tokens=prompt_tokens,
@@ -476,6 +544,8 @@ class LLMService:
                         (asyncio.get_event_loop().time() - attempt_started) * 1000
                     ),
                     snapshot_context=snapshot_context,
+                    reasoning_text=(_LAST_REASONING.get() or (None, None))[0],
+                    reasoning_tokens=(_LAST_REASONING.get() or (None, None))[1],
                 )
                 return result_text
             except LLMServiceError as e:
@@ -1393,13 +1463,8 @@ Citation format:
             data = response.json()
             # OpenAI-compatible shape: choices[0].message.content
             choice = (data.get("choices") or [{}])[0]
-            content = (choice.get("message") or {}).get("content", "")
-            meta: Dict[str, Any] = {
-                "id": data.get("id"),
-                "model": data.get("model") or model,
-                "usage": data.get("usage"),
-                "finish_reason": choice.get("finish_reason"),
-            }
+            content = ((choice.get("message") or {}).get("content")) or ""
+            meta = _meta_from_completion(data, fallback_model=model)
 
             # DeepSeek's current models reason before they answer, and the
             # reasoning is charged against max_tokens. Ask for too few and the

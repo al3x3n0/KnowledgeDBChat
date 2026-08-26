@@ -53,6 +53,15 @@ class LLMCallSnapshot(Base):
     tool_calls = Column(JSON, nullable=True)
     structured = Column(JSON, nullable=True)
 
+    # What the model thought before it answered. Reasoning models return this
+    # separately from the answer and charge it against max_tokens, so a run can
+    # spend most of its budget here and show nothing for it -- which is exactly
+    # how an empty completion happens. Recorded so a decision can be audited
+    # against the thinking that produced it, rather than only the model's own
+    # summary of that thinking.
+    reasoning_text = Column(Text, nullable=True)
+    reasoning_tokens = Column(Integer, nullable=True)
+
     error = Column(Text, nullable=True)
     latency_ms = Column(Integer, nullable=True)
     prompt_tokens = Column(Integer, nullable=True)

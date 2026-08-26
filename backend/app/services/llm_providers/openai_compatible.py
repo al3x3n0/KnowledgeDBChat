@@ -199,7 +199,24 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 )
             )
 
+        # The chain of thought, on the path the agent's decisions actually take.
+        # The prompted-text client already records this; the structured client
+        # did not, so the thinking phase -- the one call whose reasoning is
+        # worth having -- was the only one still discarding it.
+        reasoning = getattr(message, "reasoning_content", None) or getattr(
+            message, "reasoning", None
+        )
         usage = getattr(response, "usage", None)
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+        if reasoning:
+            try:
+                from app.services.llm_service import _LAST_REASONING
+
+                _LAST_REASONING.set((str(reasoning), reasoning_tokens))
+            except Exception:  # pragma: no cover - capture must never break a call
+                pass
+
         return LLMCompletion(
             text=text,
             tool_calls=tool_calls,
@@ -210,5 +227,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
             total_tokens=getattr(usage, "total_tokens", None),
-            raw={"id": getattr(response, "id", None)},
+            raw={
+                "id": getattr(response, "id", None),
+                "reasoning_tokens": reasoning_tokens,
+                "reasoning_chars": len(str(reasoning)) if reasoning else 0,
+            },
         )

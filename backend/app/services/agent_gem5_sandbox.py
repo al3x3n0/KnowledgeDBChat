@@ -63,6 +63,14 @@ CPU_TYPES = {
 #: gem5's own ObjectList offers -- and was refused as unknown. Being stricter
 #: than the simulator costs an iteration and teaches nothing.
 CPU_TYPE_ALIASES = {
+    # Short forms a caller reaches for when the full name is a mouthful. A
+    # live run asked for "O3" and was refused with a list that contains
+    # "O3CPU" three characters away.
+    "O3": "O3CPU",
+    "o3": "O3CPU",
+    "Minor": "MinorCPU",
+    "Atomic": "AtomicSimpleCPU",
+    "Timing": "TimingSimpleCPU",
     "DerivO3CPU": "O3CPU",
     "BaseO3CPU": "O3CPU",
     "ArmO3CPU": "O3CPU",

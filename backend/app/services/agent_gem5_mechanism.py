@@ -693,6 +693,80 @@ def check_plugin_source(source: str) -> Optional[str]:
     return None
 
 
+#: What a configuration may contain. Anything else is a guess, and a guess
+#: must be refused as one.
+CONFIG_KEYS = (
+    "cpu_type",
+    "clock",
+    "mem_size",
+    "cache_line_size",
+    "cpu_params",
+    "caches",
+    "branch_pred",
+)
+CACHE_KEYS = (
+    "size",
+    "assoc",
+    "tag_latency",
+    "data_latency",
+    "response_latency",
+    "mshrs",
+    "tgts_per_mshr",
+    "replacement_policy",
+    "prefetcher",
+)
+CACHE_LEVELS = ("l1i", "l1d", "l2")
+
+EXAMPLE_CONFIG = '{"caches": {"l2": {"prefetcher": "StridePrefetcher"}}}'
+
+
+def check_config_shape(config: Dict[str, Any], which: str) -> Optional[str]:
+    """Why this is not a configuration, said before anything else reads it.
+
+    An unrecognised key used to fall through to the confound rule, which then
+    reported an invented `name` field as a difference between the arms and
+    lectured the caller about MSHRs. A live run spent two attempts on that:
+    the mistake was the shape, and the diagnosis was about attribution.
+    """
+    if not isinstance(config, dict):
+        return (
+            f"{which} must be a configuration object, not "
+            f"{type(config).__name__}. The mechanism goes inside it: "
+            f"{EXAMPLE_CONFIG}"
+        )
+    stray = [k for k in config if k not in CONFIG_KEYS]
+    if stray:
+        return (
+            f"{which} has key(s) {', '.join(sorted(stray))}, which are not "
+            "part of a configuration. It takes: "
+            + ", ".join(CONFIG_KEYS)
+            + f". A mechanism is named inside `caches`, like {EXAMPLE_CONFIG}"
+            + ". Use `label` on the call itself to name the comparison."
+        )
+    caches = config.get("caches")
+    if caches is not None:
+        if not isinstance(caches, dict):
+            return f"{which}.caches must be an object keyed by cache level."
+        bad_levels = [k for k in caches if k not in CACHE_LEVELS]
+        if bad_levels:
+            return (
+                f"{which}.caches has level(s) {', '.join(sorted(bad_levels))}; "
+                "this model has " + ", ".join(CACHE_LEVELS) + "."
+            )
+        for level, spec in caches.items():
+            if not isinstance(spec, dict):
+                return f"{which}.caches.{level} must be an object."
+            stray = [k for k in spec if k not in CACHE_KEYS]
+            if stray:
+                return (
+                    f"{which}.caches.{level} has key(s) "
+                    f"{', '.join(sorted(stray))}. A cache level takes: "
+                    + ", ".join(CACHE_KEYS)
+                    + "."
+                )
+    return None
+
+
 async def run_configs(
     *,
     code: str,
@@ -758,6 +832,11 @@ async def run_configs(
                     "error": f"configuration name {name!r} is not a plain identifier",
                 }
             )
+
+    for name, config in configs.items():
+        wrong = check_config_shape(config, name)
+        if wrong:
+            raise SandboxRunFailed({"success": False, "error": wrong})
 
     if plugin_source.strip():
         wrong = check_plugin_source(plugin_source)

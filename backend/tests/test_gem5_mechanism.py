@@ -443,3 +443,65 @@ class CustomNextLine : public Queued { void calculatePrefetch(); };"""
             assert 'extern "C"' in spec["skeleton"], kind
             assert spec["entry"] in spec["skeleton"], kind
             assert f"#include <{spec['header']}>" in spec["skeleton"], kind
+
+
+class TestRefusingAConfigurationThatIsAGuess:
+    """An unrecognised key used to fall through to the confound rule, which
+    reported an invented `name` field as a difference between the arms and
+    lectured the caller about MSHRs. A live run spent two attempts on that:
+    the mistake was the shape, and the diagnosis was about attribution."""
+
+    def test_an_invented_key_is_named_as_such(self):
+        message = mech.check_config_shape({"name": "stride"}, "variant")
+
+        assert message is not None
+        assert "not part of a configuration" in message
+        assert "caches" in message
+
+    def test_the_refusal_shows_a_configuration_that_works(self):
+        message = mech.check_config_shape({"name": "stride"}, "variant")
+
+        assert "StridePrefetcher" in message
+
+    def test_it_says_where_a_name_actually_goes(self):
+        """`name` is a reasonable thing to want; `label` is where it lives."""
+        assert "label" in mech.check_config_shape({"name": "x"}, "variant")
+
+    def test_a_cache_level_this_model_lacks_is_refused(self):
+        message = mech.check_config_shape({"caches": {"l3": {}}}, "variant")
+
+        assert "l3" in message and "l1i, l1d, l2" in message
+
+    def test_a_misspelled_cache_field_is_refused(self):
+        message = mech.check_config_shape(
+            {"caches": {"l2": {"policy": "LRURP"}}}, "variant"
+        )
+
+        assert "policy" in message and "replacement_policy" in message
+
+    def test_a_string_where_a_configuration_belongs_is_refused(self):
+        assert "not str" in mech.check_config_shape("stride", "variant").replace(
+            ", not str", ", not str"
+        )
+
+    def test_every_shape_the_tools_document_is_accepted(self):
+        """The refusal must not reject what the descriptions tell callers to
+        write, which is how a guard becomes the obstacle."""
+        for config in (
+            {},
+            {"caches": {"l2": {"prefetcher": "StridePrefetcher"}}},
+            {
+                "caches": {
+                    "l2": {
+                        "prefetcher": {
+                            "class": "PluginPrefetcher",
+                            "params": {"library": "/work/plugin.so"},
+                        }
+                    }
+                }
+            },
+            {"caches": {"l1d": {"mshrs": 32, "replacement_policy": "BRRIPRP"}}},
+            {"cpu_type": "O3CPU", "cpu_params": {"instQueues[*].numEntries": 512}},
+            {"branch_pred": {"conditional": "LTAGE"}},
+        ):
+            assert mech.check_config_shape(config, "variant") is None, config

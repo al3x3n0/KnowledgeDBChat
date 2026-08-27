@@ -10,12 +10,27 @@ These four files add one SimObject to gem5, once, and turn every later
 mechanism into a `g++ -shared`. Measured: **941 ms**, no link step, and
 therefore no memory wall — mechanisms can be built while the stack runs.
 
+Two extension points are covered. Each is one SimObject compiled into gem5
+once, and one header a plugin includes.
+
 | file | what it is |
 |---|---|
-| `gem5_rp_plugin_abi.h` | the contract. Mentions no gem5 type, so a plugin needs this header and nothing else |
-| `plugin_rp.hh` / `.cc` | `PluginRP`, compiled into gem5 once. dlopens a library and forwards the five virtual calls |
-| `reuse_protected_plugin.cc` | a worked example: reuse-protected LRU, ~110 lines |
+| `gem5_rp_plugin_abi.h` | the replacement-policy contract. Mentions no gem5 type, so a plugin needs this header and nothing else |
+| `plugin_rp.hh` / `.cc` | `PluginRP`, compiled in once. dlopens a library and forwards the five virtual calls |
+| `reuse_protected_plugin.cc` | worked example: reuse-protected LRU, ~110 lines |
 | `apply.py` | registers `PluginRP` in `ReplacementPolicies.py` and `SConscript` |
+| `gem5_pf_plugin_abi.h` | the prefetcher contract |
+| `plugin_prefetcher.hh` / `.cc` | `PluginPrefetcher`, deriving from `Queued` |
+| `tagged_plugin.cc` | worked example: next-N-lines, a deliberate reimplementation of gem5's own `TaggedPrefetcher` |
+| `apply_prefetcher.py` | registers `PluginPrefetcher` in `Prefetcher.py` and `SConscript` |
+
+**The prefetcher shim derives from `Queued`, not from `Base`.** The queue, the
+throttling and the page-crossing checks stay gem5's, and the plugin is asked
+only the question that is actually the algorithm: given this access, which
+addresses would you fetch? A prefetcher that reimplements the queue measures
+the harness — at gem5's default L1 `mshrs=4` a stride prefetcher issues 35 of
+503,959 identified candidates and reads as no prefetcher at all, which is a
+property of the queue and of no algorithm.
 
 ## Why it works
 
@@ -67,8 +82,16 @@ bad one can corrupt or crash the simulation. That is acceptable where gem5
 already runs inside the sandbox container; it is not a boundary to trust with
 anything else.
 
-**The null control to run after any change here:** the same algorithm
-compiled in and loaded as a plugin must produce byte-identical statistics.
-Verified for the worked example — 11,081,822 cycles, 301,786 L2 misses and 56
-hits both ways, against LRU's 11,082,471 / 301,803 / 39, so the policy acts
-and the boundary changes nothing.
+**The null control to run after any change here:** a plugin must reproduce
+the mechanism it mirrors, byte for byte.
+
+- *Replacement policy* — the same algorithm compiled in and loaded gave
+  11,081,822 cycles, 301,786 L2 misses and 56 hits both ways, against LRU's
+  11,082,471 / 301,803 / 39. The policy acts; the boundary changes nothing.
+- *Prefetcher* — `tagged_plugin.cc` against gem5's own `TaggedPrefetcher` at
+  degree 4: **byte-identical statistics**, 856,605 cycles and 128,707 issued
+  both ways, against 1,460,876 with no prefetcher. Worth 1.7054x, and the
+  plugin earns exactly what the shipped one earns.
+
+Writing a novel algorithm first leaves nothing to check the boundary against
+but an opinion. Mirror something shipped, prove they agree, then innovate.

@@ -89,8 +89,11 @@ WORKDIR /opt/gem5
 # a second. See plugin/README.md for the ABI and why it mentions no gem5 type.
 COPY plugin/gem5_rp_plugin_abi.h plugin/plugin_rp.hh plugin/plugin_rp.cc \
      src/mem/cache/replacement_policies/
-COPY plugin/apply.py /tmp/apply.py
-RUN python3 /tmp/apply.py && rm -f /tmp/apply.py
+COPY plugin/gem5_pf_plugin_abi.h plugin/plugin_prefetcher.hh \
+     plugin/plugin_prefetcher.cc src/mem/cache/prefetch/
+COPY plugin/apply.py plugin/apply_prefetcher.py /tmp/
+RUN python3 /tmp/apply.py && python3 /tmp/apply_prefetcher.py \
+    && rm -f /tmp/apply.py /tmp/apply_prefetcher.py
 
 RUN scons build/ARM/gem5.opt -j"${BUILD_JOBS}" --ignore-style
 
@@ -173,6 +176,7 @@ RUN set -eux; \
 # support was blocked for weeks; the same must not happen to the thing that
 # makes a mechanism cost a second instead of eight minutes.
 COPY plugin/gem5_rp_plugin_abi.h /usr/local/include/gem5_rp_plugin_abi.h
+COPY plugin/gem5_pf_plugin_abi.h /usr/local/include/gem5_pf_plugin_abi.h
 RUN set -eux; \
     cd /tmp; \
     printf '#include <gem5_rp_plugin_abi.h>\n' > p.cc; \

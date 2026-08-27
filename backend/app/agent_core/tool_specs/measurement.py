@@ -573,21 +573,34 @@ SPECS: tuple[ToolSpec, ...] = (
                 "plugin_source": {
                     "type": "string",
                     "description": (
-                        "C++ for a replacement policy the simulator does NOT "
-                        "ship -- this is how a mechanism gets invented rather "
-                        "than chosen. It is compiled to /work/plugin.so before "
-                        "the runs and loaded by naming it: "
+                        "C++ for a mechanism the simulator does NOT ship -- "
+                        "this is how one gets invented rather than chosen. It "
+                        "is compiled to /work/plugin.so before the runs and "
+                        "loaded by naming that path. Two kinds are supported, "
+                        "each with its own header, already on the include "
+                        "path. Include one and nothing else: no gem5 headers "
+                        "exist here and none are needed. "
+                        "A CACHE REPLACEMENT POLICY: include "
+                        '<gem5_rp_plugin_abi.h>, export `extern "C" const '
+                        "Gem5RpApiV1 *gem5_rp_api_v1(void)`, select it with "
                         '{"class": "PluginRP", "params": {"library": '
-                        '"/work/plugin.so", "config": "your=params"}}. '
-                        "Include <gem5_rp_plugin_abi.h> and nothing else: it "
-                        "is on the include path and declares the whole "
-                        "contract -- a Gem5RpEntry per cache line "
-                        "(last_touch_tick, touches, scratch[4]) and a table of "
-                        "create/destroy/invalidate/touch/reset/get_victim. "
-                        'Export one function, `extern "C" const Gem5RpApiV1 '
-                        "*gem5_rp_api_v1(void)`. get_victim returns the INDEX "
-                        "of the entry to evict. No gem5 headers exist here and "
-                        "none are needed."
+                        '"/work/plugin.so", "config": "your=params"}}. You get '
+                        "a Gem5RpEntry per cache line (last_touch_tick, "
+                        "touches, scratch[4]); get_victim returns the INDEX of "
+                        "the entry to evict. "
+                        "A PREFETCHER: include <gem5_pf_plugin_abi.h>, export "
+                        '`extern "C" const Gem5PfApiV1 '
+                        "*gem5_pf_api_v1(void)`, select it with "
+                        '{"class": "PluginPrefetcher", "params": {"library": '
+                        '"/work/plugin.so", "config": "your=params"}}. You are '
+                        "asked only the algorithm -- given one access, which "
+                        "addresses would you fetch -- because gem5 keeps the "
+                        "queue, the throttling and the page-crossing checks; a "
+                        "prefetcher that reimplements those measures the "
+                        "harness rather than the idea. "
+                        "Mirror a shipped mechanism first and check the two "
+                        "agree: a novel algorithm as the first plugin leaves "
+                        "nothing to check the boundary against but an opinion."
                     ),
                 },
             },

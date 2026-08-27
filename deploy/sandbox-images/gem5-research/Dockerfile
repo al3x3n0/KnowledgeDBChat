@@ -18,13 +18,15 @@
 # Building this for x86_64 produces an image where every simulation fails on a
 # binary gem5 cannot execute, and the error will be about the ELF rather than
 # about the platform. Build it as:
+#
+#   docker build --platform linux/arm64 \
+#     -t ghcr.io/al3x3n0/kdbc-gem5-research:latest \
+#     deploy/sandbox-images/gem5-research
+#
 # The context is this directory, not the repository root: gem5 itself comes
 # from a clone inside the build stage, and the only thing COPYed in is the
 # small plugin/ directory. Pointing it at the root would ship 2.3 GB of
 # bundles and traces to the daemon to be ignored.
-#   docker build --platform linux/arm64 \
-#     -t ghcr.io/al3x3n0/kdbc-gem5-research:latest \
-#     deploy/sandbox-images/gem5-research
 #
 # NOT built on kdbc-sandbox-base. That base carries clang and lld, which this
 # image never uses, and gem5's own runtime closure has almost nothing in common

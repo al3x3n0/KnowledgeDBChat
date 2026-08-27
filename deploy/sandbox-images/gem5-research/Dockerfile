@@ -18,10 +18,10 @@
 # Building this for x86_64 produces an image where every simulation fails on a
 # binary gem5 cannot execute, and the error will be about the ELF rather than
 # about the platform. Build it as:
-# Nothing is COPYed from the build context -- gem5 comes from a clone inside
-# the build stage -- so the context is this directory, not the repository root.
-# Pointing it at the root would ship 2.3 GB of bundles and traces to the daemon
-# to be ignored.
+# The context is this directory, not the repository root: gem5 itself comes
+# from a clone inside the build stage, and the only thing COPYed in is the
+# small plugin/ directory. Pointing it at the root would ship 2.3 GB of
+# bundles and traces to the daemon to be ignored.
 #   docker build --platform linux/arm64 \
 #     -t ghcr.io/al3x3n0/kdbc-gem5-research:latest \
 #     deploy/sandbox-images/gem5-research
@@ -79,6 +79,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 RUN git clone --depth 1 --branch "${GEM5_REF}" https://github.com/gem5/gem5.git /opt/gem5
 
 WORKDIR /opt/gem5
+
+# Teach this gem5 to load a mechanism from a shared object before building it.
+# Without this, adding a replacement policy costs a full relink -- 7m49s here,
+# and impossible while the application stack runs, because the link needs more
+# memory than the VM has left. With it a mechanism is a `g++ -shared` of under
+# a second. See plugin/README.md for the ABI and why it mentions no gem5 type.
+COPY plugin/gem5_rp_plugin_abi.h plugin/plugin_rp.hh plugin/plugin_rp.cc \
+     src/mem/cache/replacement_policies/
+COPY plugin/apply.py /tmp/apply.py
+RUN python3 /tmp/apply.py && rm -f /tmp/apply.py
+
 RUN scons build/ARM/gem5.opt -j"${BUILD_JOBS}" --ignore-style
 
 # The runtime closure, derived rather than listed. Naming the runtime packages
@@ -154,6 +165,26 @@ RUN set -eux; \
     g++ -O2 -static -std=c++17 -o probe_cc probe.cc; \
     ./probe_c; \
     ./probe_cc
+
+# The plugin header, and proof a plugin compiles against it with no gem5
+# source present. A toolchain installed but unusable is how this image's C++
+# support was blocked for weeks; the same must not happen to the thing that
+# makes a mechanism cost a second instead of eight minutes.
+COPY plugin/gem5_rp_plugin_abi.h /usr/local/include/gem5_rp_plugin_abi.h
+RUN set -eux; \
+    cd /tmp; \
+    printf '#include <gem5_rp_plugin_abi.h>\n' > p.cc; \
+    printf 'static Gem5RpPolicy *c(const char *x){(void)x;return (Gem5RpPolicy*)1;}\n' >> p.cc; \
+    printf 'static void d(Gem5RpPolicy *s){(void)s;}\n' >> p.cc; \
+    printf 'static void iv(Gem5RpPolicy *s,Gem5RpEntry *e){(void)s;e->touches=0;}\n' >> p.cc; \
+    printf 'static void t(Gem5RpPolicy *s,Gem5RpEntry *e,uint64_t k){(void)s;e->last_touch_tick=k;}\n' >> p.cc; \
+    printf 'static void r(Gem5RpPolicy *s,Gem5RpEntry *e,uint64_t k){(void)s;e->last_touch_tick=k;}\n' >> p.cc; \
+    printf 'static size_t g(Gem5RpPolicy *s,Gem5RpEntry *const *e,size_t n){(void)s;(void)e;(void)n;return 0;}\n' >> p.cc; \
+    printf 'static const Gem5RpApiV1 A={GEM5_RP_ABI_VERSION,c,d,iv,t,r,g};\n' >> p.cc; \
+    printf 'extern "C" const Gem5RpApiV1 *gem5_rp_api_v1(void){return &A;}\n' >> p.cc; \
+    g++ -shared -fPIC -O2 -std=c++17 -o /tmp/p.so p.cc; \
+    test -s /tmp/p.so; \
+    rm -f /tmp/p.cc /tmp/p.so
 
 # End to end: a real simulation of a real binary in the configuration the tool
 # uses. A gem5 that starts and a gem5 that can run a workload are different

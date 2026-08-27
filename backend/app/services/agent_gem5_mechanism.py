@@ -538,6 +538,7 @@ async def run_configs(
     configs: Dict[str, Dict[str, Any]],
     flags: str = DEFAULT_FLAGS,
     run_args: str = "",
+    plugin_source: str = "",
     image: str = DEFAULT_IMAGE,
     timeout_seconds: Optional[int] = None,
 ) -> Dict[str, Dict[str, Any]]:
@@ -601,13 +602,26 @@ async def run_configs(
     with tempfile.TemporaryDirectory(prefix="gem5_study_") as workdir:
         Path(workdir, "workload.c").write_text(code, encoding="utf-8")
         Path(workdir, "mech_se.py").write_text(MECH_CONFIG_SCRIPT, encoding="utf-8")
+        if plugin_source.strip():
+            Path(workdir, "plugin.cc").write_text(plugin_source, encoding="utf-8")
         for name, spec in configs.items():
             Path(workdir, f"{name}.json").write_text(
                 json.dumps(_spec_for(spec, "workload", args)), encoding="utf-8"
             )
 
+        # The plugin is built first and separately, so a mistake in it is
+        # reported as a mistake in it. Compiled in the same container as the
+        # simulation that dlopens it, which is the only way the two agree
+        # about libstdc++.
+        build_plugin = (
+            "g++ -shared -fPIC -O2 -std=c++17 -o /work/plugin.so plugin.cc "
+            "2>plugin_err.txt || { cat plugin_err.txt >&2; exit 89; }; "
+            if plugin_source.strip()
+            else ""
+        )
         script = (
-            f"gcc {safe_flags} -o workload workload.c -lm 2>compile_err.txt || "
+            build_plugin
+            + f"gcc {safe_flags} -o workload workload.c -lm 2>compile_err.txt || "
             "{ cat compile_err.txt >&2; exit 90; }; "
             f"for arm in {' '.join(configs)}; do "
             "  cp $arm.json spec.json; "
@@ -651,6 +665,20 @@ async def run_configs(
                 {"success": False, "error": f"Simulation failed: {exc}"}
             )
 
+        if returncode == 89:
+            raise SandboxRunFailed(
+                {
+                    "success": False,
+                    "error": (
+                        "The plugin did not compile. It is built against "
+                        "gem5_rp_plugin_abi.h alone -- no gem5 headers are "
+                        "available and none are needed. The header is on the "
+                        "include path, so `#include <gem5_rp_plugin_abi.h>` "
+                        "is the whole of it."
+                    ),
+                    "plugin_stderr": stderr[:MAX_OUTPUT_CHARS],
+                }
+            )
         if returncode == 90:
             from app.services.agent_compiler_sandbox import explain_compiler_failure
 
@@ -702,6 +730,7 @@ async def simulate_mechanism(
     flags: str = DEFAULT_FLAGS,
     run_args: str = "",
     label: str = "",
+    plugin_source: str = "",
     image: str = DEFAULT_IMAGE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
@@ -752,6 +781,7 @@ async def simulate_mechanism(
             configs={"baseline": baseline, "variant": variant},
             flags=flags,
             run_args=run_args,
+            plugin_source=plugin_source,
             image=image,
             timeout_seconds=timeout_seconds,
         )

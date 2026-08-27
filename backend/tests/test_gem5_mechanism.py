@@ -287,3 +287,36 @@ class TestAnUnknownKindStillAnswers:
 
     def test_an_unrecognised_kind_is_not_a_class_this_build_has(self):
         assert mech.resolve_kind("cache", {"prefetcher": [], "cpu_type": []}) is None
+
+
+class TestCarryingAPlugin:
+    """A mechanism the simulator does not ship is compiled in the same
+    container that will dlopen it -- the only way the two agree about
+    libstdc++ -- and built separately from the workload so a mistake in one is
+    not reported as a mistake in the other."""
+
+    def test_a_study_without_a_plugin_builds_nothing_extra(self):
+        import inspect
+
+        source = inspect.getsource(mech.run_configs)
+
+        assert "if plugin_source.strip()" in source
+        assert "exit 89" in source
+
+    def test_the_plugin_and_the_workload_have_separate_exit_codes(self):
+        """89 and 90. One error message telling a caller to check their C
+        kernel when the fault is in their policy costs an iteration."""
+        import inspect
+
+        source = inspect.getsource(mech.run_configs)
+
+        assert source.count("exit 89") == 1
+        assert source.count("exit 90") == 1
+
+    def test_simulate_mechanism_passes_the_plugin_through(self):
+        import inspect
+
+        signature = inspect.signature(mech.simulate_mechanism)
+
+        assert "plugin_source" in signature.parameters
+        assert signature.parameters["plugin_source"].default == ""

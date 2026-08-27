@@ -4774,6 +4774,7 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             flags=str(params.get("flags") or agent_gem5_mechanism.DEFAULT_FLAGS),
             run_args=str(params.get("run_args") or ""),
             label=str(params.get("label") or ""),
+            plugin_source=str(params.get("plugin_source") or ""),
         )
 
     async def _verify_run_bundle(

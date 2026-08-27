@@ -570,6 +570,26 @@ SPECS: tuple[ToolSpec, ...] = (
                         "result so several comparisons can be told apart."
                     ),
                 },
+                "plugin_source": {
+                    "type": "string",
+                    "description": (
+                        "C++ for a replacement policy the simulator does NOT "
+                        "ship -- this is how a mechanism gets invented rather "
+                        "than chosen. It is compiled to /work/plugin.so before "
+                        "the runs and loaded by naming it: "
+                        '{"class": "PluginRP", "params": {"library": '
+                        '"/work/plugin.so", "config": "your=params"}}. '
+                        "Include <gem5_rp_plugin_abi.h> and nothing else: it "
+                        "is on the include path and declares the whole "
+                        "contract -- a Gem5RpEntry per cache line "
+                        "(last_touch_tick, touches, scratch[4]) and a table of "
+                        "create/destroy/invalidate/touch/reset/get_victim. "
+                        'Export one function, `extern "C" const Gem5RpApiV1 '
+                        "*gem5_rp_api_v1(void)`. get_victim returns the INDEX "
+                        "of the entry to evict. No gem5 headers exist here and "
+                        "none are needed."
+                    ),
+                },
             },
             "required": ["code", "variant"],
         },

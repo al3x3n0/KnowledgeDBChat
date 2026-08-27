@@ -21,6 +21,8 @@ from sqlalchemy.orm import selectinload
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
+from celery.exceptions import SoftTimeLimitExceeded
+
 from app.services.agent_execution_lease_service import (
     ExecutionLeaseLostError,
     agent_execution_lease_service,
@@ -304,12 +306,38 @@ async def _execute_agent_job_async(
                     ),
                 )
 
-            # Execute the job
-            result = await executor.execute_job(
-                job_id=job_uuid,
-                db=db,
-                progress_callback=progress_callback,
+            # Execute the job as a task, so losing the lease can stop it
+            # rather than wait to be noticed. Detection used to live only in
+            # progress_callback, and a run that lost its lease at 17:15 kept
+            # working until 19:47 before anything checked -- two and a half
+            # hours of simulations and LLM calls, all of it discarded, with
+            # every action in the transcript recorded as successful.
+            execution_task = asyncio.ensure_future(
+                executor.execute_job(
+                    job_id=job_uuid,
+                    db=db,
+                    progress_callback=progress_callback,
+                )
             )
+            lease_watch = asyncio.ensure_future(lease_lost.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {execution_task, lease_watch},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                lease_watch.cancel()
+
+            if execution_task not in done:
+                execution_task.cancel()
+                try:
+                    await execution_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                raise ExecutionLeaseLostError(
+                    f"Execution lease lost for job {job_id} at fence " f"{lease.fence}"
+                )
+            result = execution_task.result()
 
             # Publish completion
             await agent_execution_lease_service.assert_owned(db=db, lease=lease)
@@ -377,6 +405,27 @@ async def _execute_agent_job_async(
                     f"Failed releasing execution lease for job {job_id}: "
                     f"{release_error}"
                 )
+
+
+#: Failures a retry cannot fix, so retrying only repeats the cost.
+#: SoftTimeLimitExceeded means the job exhausted its wall clock; the same work
+#: takes the same time. ExecutionLeaseLostError means another owner holds the
+#: job. CancelledError means someone asked for it to stop.
+TERMINAL_TASK_ERRORS = (
+    SoftTimeLimitExceeded,
+    ExecutionLeaseLostError,
+    asyncio.CancelledError,
+)
+
+
+def is_terminal_task_error(exc: BaseException) -> bool:
+    """Whether re-running this job could plausibly go differently.
+
+    A named predicate rather than an inline isinstance because this is the
+    decision that turned one timed-out job into three failed ones, and it
+    should be testable without a Celery worker.
+    """
+    return isinstance(exc, TERMINAL_TASK_ERRORS)
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=120)
@@ -466,7 +515,23 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
         except Exception:
             logger.warning("Failed to persist agent job task failure status")
 
-        # Retry on transient errors
+        # Retry only what a retry could actually fix.
+        #
+        # This used to retry every exception, having just written the job to
+        # FAILED. Three things went wrong at once: a 16-iteration job that ran
+        # out of wall clock was re-run from scratch, against a job already
+        # marked failed; the retry held the only worker slot (prefetch
+        # multiplier 1); and the NEXT job's heartbeat could not run while it
+        # did, so that job lost its lease and failed too. One timeout poisoned
+        # two later runs. A soft time limit is not transient -- re-running the
+        # same work takes the same time and hits the same wall -- and a lost
+        # lease means another owner has it, so retrying only contends again.
+        if is_terminal_task_error(e):
+            logger.info(
+                f"Not retrying agent job {job_id}: {type(e).__name__} is "
+                "terminal, and a retry would repeat the work that failed."
+            )
+            return
         if self.request.retries < self.max_retries:
             raise self.retry(exc=e)
 

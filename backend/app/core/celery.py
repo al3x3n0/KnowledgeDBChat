@@ -63,6 +63,18 @@ celery_app.conf.update(
             "soft_time_limit": 5 * 60 * 60,  # 5 hours
             "time_limit": 6 * 60 * 60,  # 6 hours
         },
+        # An agent job is the longest-running task here and the only one whose
+        # own limits promise more than the global one allows. max_runtime_minutes
+        # accepts up to 480 and defaults to 60, and the execution lease runs to
+        # 30 -- while the global soft limit killed the task at 25, so no job
+        # could ever reach the budget it was configured with. A chained
+        # simulation study died at 13 iterations with three ceilings disagreeing
+        # and only the invisible one binding. Sized to the 480-minute maximum
+        # the schema permits, so the job's own limit is what stops it.
+        "app.tasks.agent_job_tasks.execute_agent_job_task": {
+            "soft_time_limit": 8 * 60 * 60 + 10 * 60,  # 8h10m
+            "time_limit": 8 * 60 * 60 + 20 * 60,  # 8h20m
+        },
     },
     task_time_limit=30 * 60,  # 30 minutes
     task_soft_time_limit=25 * 60,  # 25 minutes

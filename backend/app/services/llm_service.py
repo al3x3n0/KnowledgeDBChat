@@ -1589,47 +1589,6 @@ Citation format:
             logger.error(f"OpenAI-compatible API request error: {e}")
             raise LLMServiceError(f"Request error: {str(e)}")
 
-    async def check_model_availability(self, model: Optional[str] = None) -> bool:
-        """
-        Check if a model is available in Ollama.
-
-        Args:
-            model: Model name to check (uses default if not provided)
-
-        Returns:
-            True if model is available, False otherwise
-        """
-        try:
-            model = model or self.default_model
-
-            response = await self.client.get(f"{self.base_url}/api/tags")
-
-            if response.status_code == 200:
-                models = response.json()
-                available_models = [m["name"] for m in models.get("models", [])]
-
-                # Check for exact match or partial match (e.g., "llama2" in "llama2:latest")
-                is_available = any(
-                    model in available_model or available_model.startswith(model)
-                    for available_model in available_models
-                )
-
-                if not is_available:
-                    logger.warning(
-                        f"Model {model} not found. Available models: {available_models}"
-                    )
-
-                return is_available
-            else:
-                logger.error(
-                    f"Failed to check model availability: {response.status_code}"
-                )
-                return False
-
-        except Exception as e:
-            logger.error(f"Error checking model availability: {e}")
-            return False
-
     async def list_available_models(
         self, base_url_override: Optional[str] = None
     ) -> List[Dict[str, Any]]:

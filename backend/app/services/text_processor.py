@@ -764,44 +764,6 @@ class TextProcessor:
 
         return text.strip()
 
-    async def extract_metadata(self, file_path: str) -> Dict[str, Any]:
-        """
-        Extract metadata from a file.
-
-        Args:
-            file_path: Path to the file
-
-        Returns:
-            Dictionary containing file metadata:
-            - file_path: Full path to the file
-            - file_name: Base name of the file
-            - file_extension: File extension (lowercase)
-            - file_size: File size in bytes
-            - created_time: File creation timestamp (if available)
-            - modified_time: File modification timestamp (if available)
-        """
-        metadata = {
-            "file_path": file_path,
-            "file_name": os.path.basename(file_path),
-            "file_extension": os.path.splitext(file_path)[1].lower(),
-            "file_size": 0,
-        }
-
-        try:
-            if os.path.exists(file_path):
-                stat = os.stat(file_path)
-                metadata.update(
-                    {
-                        "file_size": stat.st_size,
-                        "created_time": stat.st_ctime,
-                        "modified_time": stat.st_mtime,
-                    }
-                )
-        except Exception as e:
-            logger.error(f"Error extracting metadata from {file_path}: {e}")
-
-        return metadata
-
     def get_supported_formats(self) -> List[str]:
         """Get list of supported file formats."""
         return [

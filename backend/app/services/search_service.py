@@ -612,53 +612,6 @@ class SearchService:
 
         return related
 
-    async def get_search_history_suggestions(
-        self,
-        user_id: Optional[UUID],
-        db: AsyncSession,
-        limit: int = 5,
-    ) -> List[Dict[str, Any]]:
-        """
-        Get search suggestions based on user's search history.
-
-        Args:
-            user_id: User ID for personalized suggestions
-            db: Database session
-            limit: Maximum suggestions
-
-        Returns:
-            List of recent/popular searches
-        """
-        # For now, return popular document topics as suggestions
-        # This could be extended to track actual search history
-
-        from app.models.document import DocumentSource
-
-        # Get popular sources
-        source_query = (
-            select(DocumentSource.name, func.count(Document.id).label("doc_count"))
-            .join(Document)
-            .where(Document.is_processed.is_(True))
-            .group_by(DocumentSource.name)
-            .order_by(desc(func.count(Document.id)))
-            .limit(limit)
-        )
-
-        source_result = await db.execute(source_query)
-        sources = source_result.fetchall()
-
-        suggestions = []
-        for source_name, count in sources:
-            suggestions.append(
-                {
-                    "type": "popular_source",
-                    "text": f"source:{source_name}",
-                    "display": f"📁 {source_name} ({count} docs)",
-                }
-            )
-
-        return suggestions
-
 
 # Singleton instance
 search_service = SearchService()

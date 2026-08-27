@@ -13,7 +13,7 @@ from typing import Any, Dict, List, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import desc, select
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_definition import AgentMemoryInjection
@@ -295,49 +295,6 @@ class AgentMemoryIntegration:
 
         except Exception as e:
             logger.error(f"Error updating memory access: {e}")
-
-    async def get_conversation_memory_injections(
-        self, conversation_id: UUID, db: AsyncSession
-    ) -> List[Dict[str, Any]]:
-        """
-        Get all memory injections for a conversation.
-
-        Returns list of injections with memory details.
-        """
-        try:
-            result = await db.execute(
-                select(AgentMemoryInjection, ConversationMemory)
-                .join(
-                    ConversationMemory,
-                    AgentMemoryInjection.memory_id == ConversationMemory.id,
-                )
-                .where(AgentMemoryInjection.conversation_id == conversation_id)
-                .order_by(
-                    AgentMemoryInjection.turn_number,
-                    desc(AgentMemoryInjection.relevance_score),
-                )
-            )
-
-            injections = []
-            for injection, memory in result.all():
-                injections.append(
-                    {
-                        "injection_id": str(injection.id),
-                        "memory_id": str(memory.id),
-                        "turn_number": injection.turn_number,
-                        "relevance_score": injection.relevance_score,
-                        "injection_type": injection.injection_type,
-                        "memory_type": memory.memory_type,
-                        "memory_content": memory.content,
-                        "created_at": injection.created_at.isoformat(),
-                    }
-                )
-
-            return injections
-
-        except Exception as e:
-            logger.error(f"Error getting memory injections: {e}")
-            return []
 
     async def manually_inject_memory(
         self, conversation_id: UUID, memory_id: UUID, turn_number: int, db: AsyncSession

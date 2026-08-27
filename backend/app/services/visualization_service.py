@@ -575,54 +575,6 @@ class VisualizationService:
             patch.set_facecolor(color)
             patch.set_alpha(0.7)
 
-    def get_chart_data_for_frontend(
-        self,
-        chart_type: str,
-        data: Union[pd.DataFrame, Dict[str, Any]],
-        config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Generate chart configuration for frontend rendering (Chart.js/Plotly compatible).
-
-        Returns data structure that can be used directly by frontend charting libraries.
-        """
-        config = config or {}
-
-        if isinstance(data, dict):
-            data = pd.DataFrame(data)
-
-        x_column = config.get("x_column") or data.columns[0]
-        y_columns = config.get("y_columns") or list(data.columns[1:])
-        palette = self.PALETTES.get(
-            config.get("palette", "default"), self.PALETTES["default"]
-        )
-
-        labels = (
-            data[x_column].tolist() if x_column in data.columns else data.index.tolist()
-        )
-
-        datasets = []
-        for i, col in enumerate(y_columns):
-            datasets.append(
-                {
-                    "label": col,
-                    "data": data[col].tolist(),
-                    "backgroundColor": palette[i % len(palette)],
-                    "borderColor": palette[i % len(palette)],
-                }
-            )
-
-        return {
-            "type": chart_type,
-            "labels": labels,
-            "datasets": datasets,
-            "options": {
-                "title": config.get("title", ""),
-                "xLabel": config.get("x_label", ""),
-                "yLabel": config.get("y_label", ""),
-            },
-        }
-
     def save_chart_to_file(
         self,
         chart_data: Dict[str, Any],

@@ -834,61 +834,6 @@ class DiagramService:
         else:
             return self.create_mermaid_diagram("flowchart", data, config)
 
-    def create_data_flow_diagram(
-        self,
-        processes: List[Dict],
-        data_stores: List[Dict],
-        external_entities: List[Dict],
-        flows: List[Dict],
-        config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """Create a data flow diagram."""
-        config = config or {}
-
-        nodes = []
-
-        # Add processes (circles)
-        for p in processes:
-            nodes.append(
-                {
-                    "id": p.get("id"),
-                    "label": p.get("label"),
-                    "shape": "circle",
-                    "fillColor": "#3B82F6",
-                }
-            )
-
-        # Add data stores (rectangles with open sides)
-        for ds in data_stores:
-            nodes.append(
-                {
-                    "id": ds.get("id"),
-                    "label": ds.get("label"),
-                    "shape": "cylinder",
-                    "fillColor": "#10B981",
-                }
-            )
-
-        # Add external entities (rectangles)
-        for ee in external_entities:
-            nodes.append(
-                {
-                    "id": ee.get("id"),
-                    "label": ee.get("label"),
-                    "shape": "rectangle",
-                    "fillColor": "#F59E0B",
-                }
-            )
-
-        return self.create_mermaid_diagram(
-            "flowchart",
-            {
-                "nodes": nodes,
-                "edges": flows,
-            },
-            config,
-        )
-
 
 # Singleton instance
 diagram_service = DiagramService()

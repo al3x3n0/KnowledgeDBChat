@@ -809,56 +809,6 @@ class KnowledgeGraphService:
 
         return {"entities": entities, "relationships": relationships}
 
-    async def extract_entity_names_from_text(
-        self, text: str, db: AsyncSession, limit: int = 10
-    ) -> List[str]:
-        """Extract potential entity names from text by matching against known entities.
-
-        Uses simple word/phrase matching against existing entity names.
-        Useful for quick entity lookup from user queries.
-
-        Args:
-            text: Text to extract entity names from
-            db: Database session
-            limit: Maximum entity names to return
-
-        Returns:
-            List of entity names found in the text
-        """
-        if not text or len(text) < 3:
-            return []
-
-        # Get candidate phrases (2-4 word sequences that might be entity names)
-        import re
-
-        words = re.findall(r"\b[A-Z][a-zA-Z]*(?:\s+[A-Z][a-zA-Z]*)*\b", text)
-
-        # Also get any quoted strings
-        quoted = re.findall(r'"([^"]+)"', text)
-        candidates = list(set(words + quoted))
-
-        if not candidates:
-            return []
-
-        # Find matching entities
-        found_names = []
-        for candidate in candidates[:20]:  # Limit candidates to check
-            if len(candidate) < 2:
-                continue
-            stmt = (
-                select(Entity.canonical_name)
-                .where(Entity.canonical_name.ilike(f"%{candidate}%"))
-                .limit(3)
-            )
-            result = await db.execute(stmt)
-            for name in result.scalars().all():
-                if name not in found_names:
-                    found_names.append(name)
-                    if len(found_names) >= limit:
-                        return found_names
-
-        return found_names
-
     # ==================== Global Graph Methods ====================
 
     async def global_graph(

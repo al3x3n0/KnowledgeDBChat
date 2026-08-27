@@ -589,67 +589,6 @@ class AnalyticsService:
         logger.info(f"Exported {len(export_rows)} documents to {format}")
         return content, filename, content_type
 
-    async def get_search_analytics(
-        self,
-        db: AsyncSession,
-        query: str,
-        results: List[Dict[str, Any]],
-    ) -> Dict[str, Any]:
-        """
-        Generate analytics about search results.
-
-        Args:
-            db: Database session
-            query: Search query
-            results: Search results
-
-        Returns:
-            Search analytics
-        """
-        if not results:
-            return {
-                "query": query,
-                "total_results": 0,
-                "relevance_distribution": {},
-                "source_distribution": {},
-                "suggestions": [],
-            }
-
-        # Relevance score distribution
-        scores = [r.get("relevance_score", 0) for r in results]
-        score_buckets = {
-            "high (0.8-1.0)": sum(1 for s in scores if s >= 0.8),
-            "medium (0.5-0.8)": sum(1 for s in scores if 0.5 <= s < 0.8),
-            "low (0-0.5)": sum(1 for s in scores if s < 0.5),
-        }
-
-        # Source distribution
-        sources = Counter(r.get("source_type", "unknown") for r in results)
-
-        # File type distribution
-        file_types = Counter(r.get("file_type", "unknown") for r in results)
-
-        # Related queries suggestion (based on result titles)
-        title_words = []
-        for r in results[:10]:
-            title = r.get("title", "")
-            words = title.lower().split()
-            title_words.extend(
-                [w for w in words if len(w) > 3 and w not in query.lower()]
-            )
-
-        suggested_terms = [term for term, _ in Counter(title_words).most_common(5)]
-
-        return {
-            "query": query,
-            "total_results": len(results),
-            "avg_relevance_score": round(sum(scores) / len(scores), 3) if scores else 0,
-            "relevance_distribution": score_buckets,
-            "source_distribution": dict(sources),
-            "file_type_distribution": dict(file_types),
-            "suggested_related_terms": suggested_terms,
-        }
-
 
 # Singleton instance
 analytics_service = AnalyticsService()

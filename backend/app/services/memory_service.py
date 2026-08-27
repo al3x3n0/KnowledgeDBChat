@@ -11,7 +11,7 @@ from sqlalchemy import and_, desc, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.chat import ChatMessage
-from app.models.memory import ConversationMemory, MemoryInteraction, UserPreferences
+from app.models.memory import ConversationMemory, UserPreferences
 from app.schemas.memory import (
     MemoryCreate,
     MemoryResponse,
@@ -330,35 +330,6 @@ class MemoryService:
 
         except Exception as e:
             logger.error(f"Error deleting memory: {e}")
-            await db.rollback()
-            raise
-
-    async def create_memory_interaction(
-        self,
-        memory_id: UUID,
-        session_id: UUID,
-        interaction_type: str,
-        relevance_score: Optional[float] = None,
-        usage_context: Optional[Dict[str, Any]] = None,
-        message_id: Optional[UUID] = None,
-        db: AsyncSession = None,
-    ) -> None:
-        """Record a memory interaction."""
-        try:
-            interaction = MemoryInteraction(
-                memory_id=memory_id,
-                session_id=session_id,
-                message_id=message_id,
-                interaction_type=interaction_type,
-                relevance_score=relevance_score,
-                usage_context=usage_context,
-            )
-
-            db.add(interaction)
-            await db.commit()
-
-        except Exception as e:
-            logger.error(f"Error creating memory interaction: {e}")
             await db.rollback()
             raise
 

@@ -144,37 +144,3 @@ def configure_ssl_for_self_signed():
         return True
 
     return False
-
-
-def get_ssl_instructions():
-    """Get instructions for handling SSL certificate issues"""
-    return """
-If you're experiencing SSL certificate errors, you have several options:
-
-1. **Temporary workaround (not recommended for production):**
-   Set environment variable before running:
-   ```bash
-   export SKIP_SSL_VERIFY=1
-   python download_models.py
-   ```
-
-2. **Command line flag:**
-   ```bash
-   python download_models.py --skip-ssl-verify
-   ```
-
-3. **Permanent environment variable:**
-   Add to your shell profile (~/.bashrc or ~/.zshrc):
-   ```bash
-   export SKIP_SSL_VERIFY=1
-   ```
-
-4. **For specific proxy/firewall issues:**
-   ```bash
-   export HTTP_PROXY=http://your-proxy:port
-   export HTTPS_PROXY=http://your-proxy:port
-   ```
-
-⚠️  WARNING: Disabling SSL verification can expose you to security risks.
-Only use in trusted environments or when downloading from known sources.
-"""

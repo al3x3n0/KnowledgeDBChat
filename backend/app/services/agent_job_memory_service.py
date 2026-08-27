@@ -1428,37 +1428,6 @@ class AgentJobMemoryService:
         result = await db.execute(query)
         return list(result.scalars().all())
 
-    async def get_memories_by_type(
-        self, user_id: str, memory_type: str, db: AsyncSession, limit: int = 20
-    ) -> List[ConversationMemory]:
-        """
-        Get memories of a specific type.
-
-        Args:
-            user_id: User ID string
-            memory_type: Memory type to filter by
-            db: Database session
-            limit: Max memories to return
-
-        Returns:
-            List of ConversationMemory objects
-        """
-        query = (
-            select(ConversationMemory)
-            .where(
-                and_(
-                    ConversationMemory.user_id == UUID(user_id),
-                    ConversationMemory.memory_type == memory_type,
-                    ConversationMemory.is_active.is_(True),
-                )
-            )
-            .order_by(desc(ConversationMemory.importance_score))
-            .limit(limit)
-        )
-
-        result = await db.execute(query)
-        return list(result.scalars().all())
-
     async def create_memory_from_job(
         self,
         job: AgentJob,

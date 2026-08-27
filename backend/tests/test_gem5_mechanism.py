@@ -378,3 +378,68 @@ system.cpu.ftq.occupancy::mean                    nan
 
         assert result["identical_stats"] is True
         assert "deterministic" in result["note"]
+
+
+class TestRefusingSourceThatIsNotAPlugin:
+    """A live run wrote gem5-style C++ three times running -- `#include
+    "mem/cache/prefetch/queued.hh"`, a class deriving from Queued, no extern
+    "C" -- because that is what a gem5 prefetcher looks like everywhere except
+    here. The description said the right thing and lost to a stronger prior.
+    The compiler's answer to that source is a wall of C++ whose implied
+    correction, find the gem5 headers, is the opposite of the truth."""
+
+    GEM5_STYLE = """#include "mem/cache/prefetch/queued.hh"
+#include "params/CustomNextLinePrefetcher.hh"
+class CustomNextLine : public Queued { void calculatePrefetch(); };"""
+
+    def test_gem5_internals_are_caught_before_the_compiler(self):
+        message = mech.check_plugin_source(self.GEM5_STYLE)
+
+        assert message is not None
+        assert "no gem5 headers exist" in message.lower()
+
+    def test_the_refusal_carries_a_whole_working_example(self):
+        """Describing a contract nobody has seen does not teach it. The same
+        gap left the AXIS tools unusable: the grammar was never shown."""
+        message = mech.check_plugin_source(self.GEM5_STYLE)
+
+        assert "gem5_pf_api_v1" in message
+        assert "extern" in message and "GEM5_PF_ABI_VERSION" in message
+
+    def test_it_names_the_header_for_what_was_being_written(self):
+        """The first version of this message named the replacement-policy
+        header for every plugin, including prefetchers -- so it corrected a
+        wrong include with another wrong include."""
+        assert "gem5_pf_plugin_abi.h" in mech.check_plugin_source(self.GEM5_STYLE)
+        assert "gem5_rp_plugin_abi.h" in mech.check_plugin_source(
+            '#include "mem/cache/replacement_policies/base.hh"\nclass X {};'
+        )
+
+    def test_a_missing_entry_symbol_is_caught(self):
+        source = "#include <gem5_pf_plugin_abi.h>\nstatic int nothing;"
+
+        assert "gem5_pf_api_v1" in mech.check_plugin_source(source)
+
+    def test_a_mangled_entry_symbol_is_caught(self):
+        source = (
+            "#include <gem5_pf_plugin_abi.h>\n"
+            "const Gem5PfApiV1 *gem5_pf_api_v1(void) { return 0; }"
+        )
+        message = mech.check_plugin_source(source)
+
+        assert message is not None and "mangle" in message
+
+    def test_source_naming_neither_abi_is_caught(self):
+        assert "one of them" in mech.check_plugin_source("int main(void){return 0;}")
+
+    def test_every_skeleton_passes_its_own_check(self):
+        """A skeleton the checker would reject is advice that cannot be taken.
+        Both are also verified to compile, load and run in the sandbox."""
+        for kind, spec in mech.PLUGIN_KINDS.items():
+            assert mech.check_plugin_source(spec["skeleton"]) is None, kind
+
+    def test_every_skeleton_exports_what_the_shim_looks_for(self):
+        for kind, spec in mech.PLUGIN_KINDS.items():
+            assert 'extern "C"' in spec["skeleton"], kind
+            assert spec["entry"] in spec["skeleton"], kind
+            assert f"#include <{spec['header']}>" in spec["skeleton"], kind

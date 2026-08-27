@@ -135,6 +135,13 @@ def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List
         ):
             params[name] = value[0]
             repaired.append(name)
+        # And the empty list, which is the same claim as the empty string:
+        # nothing. Three attempts across two live runs were refused for
+        # `run_args = []` -- a call that wanted no arguments, said so, and was
+        # told its way of saying so was the wrong type.
+        elif expected == "string" and isinstance(value, list) and not value:
+            params[name] = ""
+            repaired.append(name)
     return repaired
 
 

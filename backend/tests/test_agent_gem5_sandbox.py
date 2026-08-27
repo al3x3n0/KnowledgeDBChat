@@ -140,3 +140,28 @@ class TestGem5sOwnCpuNames:
 
         for name in CPU_TYPES:
             assert resolve_cpu_type(name) == name
+
+
+class TestTheAliasReachesEveryEntryPoint:
+    """The alias was added and applied to the first call site the pattern
+    matched -- describe_model_parameters -- while the tool a live run actually
+    called, simulate_c_workload, kept refusing DerivO3CPU. The unit test passed
+    because it tested the helper rather than the path."""
+
+    def test_no_entry_point_bypasses_it(self):
+        import ast
+        import inspect
+
+        from app.services import agent_gem5_sandbox as gem5
+
+        source = inspect.getsource(gem5)
+        tree = ast.parse(source)
+        offenders = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                continue
+            body = ast.get_source_segment(source, node) or ""
+            if "not in CPU_TYPES" in body and "resolve_cpu_type(" not in body:
+                offenders.append(node.name)
+
+        assert offenders == [], f"these check CPU_TYPES without the alias: {offenders}"

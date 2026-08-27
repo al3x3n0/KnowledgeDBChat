@@ -737,7 +737,7 @@ async def simulate_c_workload(
     if blocked:
         return blocked
 
-    model = str(cpu_type or DEFAULT_CPU).strip()
+    model = resolve_cpu_type(cpu_type or DEFAULT_CPU)
     if model not in CPU_TYPES:
         return {
             "success": False,
@@ -1118,7 +1118,7 @@ async def sample_counters(
             }
         compiler, source_name = "g++", "workload.cc"
 
-    model = str(cpu_type or DEFAULT_CPU)
+    model = resolve_cpu_type(cpu_type or DEFAULT_CPU)
     if model not in CPU_TYPES:
         return {
             "success": False,

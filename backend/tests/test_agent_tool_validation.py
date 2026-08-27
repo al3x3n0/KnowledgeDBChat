@@ -103,3 +103,16 @@ def test_a_field_that_promises_no_uuid_is_left_alone():
     message = validate_tool_params("search_web", {"query": "not-a-uuid"})
 
     assert message is None
+
+
+def test_an_empty_list_where_a_string_is_wanted_means_nothing():
+    """Three attempts across two live runs were refused for `run_args = []` --
+    a call that wanted no arguments, said so, and was told its way of saying so
+    was the wrong type. The one-item repair beside this did not cover it."""
+    from app.services.agent_tool_validation import coerce_tool_params
+
+    params = {"code": "int main(void){return 0;}", "run_args": []}
+    repaired = coerce_tool_params("simulate_c_workload", params)
+
+    assert params["run_args"] == ""
+    assert "run_args" in repaired

@@ -558,6 +558,141 @@ class SandboxRunFailed(Exception):
         self.detail = detail
 
 
+#: What a plugin of each kind must include and export, and a skeleton of one.
+#:
+#: A live run wrote gem5-style C++ three times running -- `#include
+#: "mem/cache/prefetch/queued.hh"`, a class deriving from Queued, no extern
+#: "C" -- because that is what a gem5 prefetcher looks like everywhere except
+#: here. The tool description said the right thing and lost to a stronger
+#: prior. So the correction carries a whole working skeleton rather than a
+#: rule, which is the same fix the AXIS tools needed: describing a grammar
+#: nobody has seen does not teach it.
+PLUGIN_KINDS = {
+    "replacement policy": {
+        "header": "gem5_rp_plugin_abi.h",
+        "entry": "gem5_rp_api_v1",
+        "api": "Gem5RpApiV1",
+        "select": '{"class": "PluginRP", "params": {"library": '
+        '"/work/plugin.so", "config": "..."}}',
+        "skeleton": """#include <gem5_rp_plugin_abi.h>
+#include <new>
+namespace {
+struct P { uint64_t threshold; };
+Gem5RpPolicy *create(const char *config) {
+    P *p = new (std::nothrow) P(); if (!p) return nullptr;
+    p->threshold = 2;              /* parse `config` yourself if you need it */
+    return reinterpret_cast<Gem5RpPolicy *>(p);
+}
+void destroy(Gem5RpPolicy *s) { delete reinterpret_cast<P *>(s); }
+void invalidate(Gem5RpPolicy *, Gem5RpEntry *e) { e->last_touch_tick = 0; e->touches = 0; }
+void touch(Gem5RpPolicy *, Gem5RpEntry *e, uint64_t t) { e->last_touch_tick = t; e->touches++; }
+void reset(Gem5RpPolicy *, Gem5RpEntry *e, uint64_t t) { e->last_touch_tick = t; e->touches = 1; }
+size_t get_victim(Gem5RpPolicy *, Gem5RpEntry *const *e, size_t n) {
+    size_t oldest = 0;                       /* return an INDEX, not a pointer */
+    for (size_t i = 0; i < n; ++i)
+        if (e[i]->last_touch_tick < e[oldest]->last_touch_tick) oldest = i;
+    return oldest;
+}
+const Gem5RpApiV1 API = {GEM5_RP_ABI_VERSION, create, destroy, invalidate, touch, reset, get_victim};
+}
+extern "C" const Gem5RpApiV1 *gem5_rp_api_v1(void) { return &API; }""",
+    },
+    "prefetcher": {
+        "header": "gem5_pf_plugin_abi.h",
+        "entry": "gem5_pf_api_v1",
+        "api": "Gem5PfApiV1",
+        "select": '{"class": "PluginPrefetcher", "params": {"library": '
+        '"/work/plugin.so", "config": "..."}}',
+        "skeleton": """#include <gem5_pf_plugin_abi.h>
+#include <new>
+namespace {
+struct P { uint32_t block_size; uint32_t degree; };
+Gem5PfPrefetcher *create(const char *config, uint32_t block_size) {
+    P *p = new (std::nothrow) P(); if (!p) return nullptr;
+    p->block_size = block_size ? block_size : 64;
+    p->degree = 2;                 /* parse `config` yourself if you need it */
+    return reinterpret_cast<Gem5PfPrefetcher *>(p);
+}
+void destroy(Gem5PfPrefetcher *s) { delete reinterpret_cast<P *>(s); }
+size_t calculate(Gem5PfPrefetcher *s, const Gem5PfAccess *a,
+                 Gem5PfRequest *out, size_t max_out) {
+    const P *p = reinterpret_cast<const P *>(s);
+    uint64_t block = a->address & ~(uint64_t)(p->block_size - 1);
+    size_t n = 0;                     /* next-N-lines; put your idea here */
+    for (uint32_t i = 1; i <= p->degree && n < max_out; ++i, ++n) {
+        out[n].address = block + (uint64_t)i * p->block_size;
+        out[n].priority = 0;
+    }
+    return n;                                  /* how many you wrote to `out` */
+}
+const Gem5PfApiV1 API = {GEM5_PF_ABI_VERSION, create, destroy, calculate};
+}
+extern "C" const Gem5PfApiV1 *gem5_pf_api_v1(void) { return &API; }""",
+    },
+}
+
+
+def check_plugin_source(source: str) -> Optional[str]:
+    """Why this will not build as a plugin, before a compiler says it in C++.
+
+    The compiler's answer to gem5-style source is a hundred lines about a
+    missing header, and the correction it implies -- find the gem5 headers --
+    is the opposite of the truth. There are none, and none are needed.
+    """
+    text = source or ""
+    kind = "prefetcher" if "gem5_pf" in text or "Gem5Pf" in text else None
+    if kind is None and ("gem5_rp" in text or "Gem5Rp" in text):
+        kind = "replacement policy"
+
+    gem5_includes = [
+        line.strip()
+        for line in text.splitlines()
+        if line.strip().startswith("#include")
+        and (
+            '"mem/' in line
+            or '"params/' in line
+            or '"base/' in line
+            or '"sim/' in line
+            or '"cpu/' in line
+        )
+    ]
+    if gem5_includes:
+        guess = kind or ("prefetcher" if "refetch" in text else "replacement policy")
+        spec = PLUGIN_KINDS[guess]
+        return (
+            "This is gem5's own source layout, not a plugin: "
+            + ", ".join(gem5_includes[:3])
+            + ". No gem5 headers exist in this sandbox and none are needed -- "
+            "a plugin talks to gem5 across a C ABI and derives from nothing. "
+            f"For a {guess}, include <{spec['header']}> alone and export "
+            f"`extern \"C\" const {spec['api']} *{spec['entry']}(void)`. "
+            f"Select it with {spec['select']}. Here is a complete one that "
+            f"compiles:\n\n{spec['skeleton']}"
+        )
+
+    if kind is None:
+        return (
+            "This names neither plugin ABI. Include <gem5_rp_plugin_abi.h> for "
+            "a cache replacement policy or <gem5_pf_plugin_abi.h> for a "
+            "prefetcher -- one of them, and nothing else."
+        )
+
+    spec = PLUGIN_KINDS[kind]
+    if spec["entry"] not in text:
+        return (
+            f"A {kind} plugin must export `{spec['entry']}`; this source never "
+            f"defines it, so dlsym would find nothing. Here is a complete one "
+            f"that compiles:\n\n{spec['skeleton']}"
+        )
+    if 'extern "C"' not in text:
+        return (
+            f"`{spec['entry']}` is defined but not `extern \"C\"`, so C++ "
+            "will mangle its name and dlsym will not find it. The declaration "
+            f"must read: extern \"C\" const {spec['api']} *{spec['entry']}(void)"
+        )
+    return None
+
+
 async def run_configs(
     *,
     code: str,
@@ -623,6 +758,11 @@ async def run_configs(
                     "error": f"configuration name {name!r} is not a plain identifier",
                 }
             )
+
+    if plugin_source.strip():
+        wrong = check_plugin_source(plugin_source)
+        if wrong:
+            raise SandboxRunFailed({"success": False, "error": wrong})
 
     args = [a for a in (run_args or "").split() if a]
     with tempfile.TemporaryDirectory(prefix="gem5_study_") as workdir:
@@ -696,11 +836,13 @@ async def run_configs(
                 {
                     "success": False,
                     "error": (
-                        "The plugin did not compile. It is built against "
-                        "gem5_rp_plugin_abi.h alone -- no gem5 headers are "
-                        "available and none are needed. The header is on the "
-                        "include path, so `#include <gem5_rp_plugin_abi.h>` "
-                        "is the whole of it."
+                        "The plugin did not compile. It is built against one "
+                        "ABI header alone -- <gem5_rp_plugin_abi.h> for a "
+                        "replacement policy, <gem5_pf_plugin_abi.h> for a "
+                        "prefetcher -- and no gem5 headers are available or "
+                        "needed. The compiler output below is the whole story; "
+                        "a missing gem5 header in it means the source is "
+                        "written against gem5's internals rather than the ABI."
                     ),
                     "plugin_stderr": stderr[:MAX_OUTPUT_CHARS],
                 }

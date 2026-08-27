@@ -5840,6 +5840,12 @@ class AutonomousAgentExecutor:
 
         return {
             "enabled": bool(cfg.get("tool_selection_forced_exploration_enabled", True)),
+            # Whether the list above is this job's choice or merely the
+            # default. A job that named its exploration tools means them; a
+            # job that said nothing gets a list aimed at what it is doing.
+            "tools_are_default": not bool(
+                cfg.get("tool_selection_forced_exploration_tools")
+            ),
             "every_n_stalled_iterations": _as_int(
                 "tool_selection_forced_exploration_every_n", 2, 1, 20
             ),
@@ -6068,6 +6074,47 @@ class AutonomousAgentExecutor:
             return None
         return {"tool": t, "params": {}, "purpose": purpose}
 
+    def _domain_aligned_exploration_tools(
+        self,
+        combined_stats: Dict[str, Any],
+        available_tools: Any,
+    ) -> List[str]:
+        """Under-sampled tools from the domain this run is already working in.
+
+        Forced exploration defaults to six tools, five of which search
+        documents. On a goal that is entirely simulation that is not
+        exploration, it is a detour: three live runs of a microarchitecture
+        study spent iterations on `search_documents`, `search_arxiv` and
+        `get_research_findings` in a job with no document scope at all -- and
+        the iteration budget, not wall clock, is what those runs ran out of.
+
+        Exploring near the work still explores. On that study this surfaces
+        `sweep_mechanism` and `evaluate_across_kernels`, tools the run had not
+        tried and that could advance the goal, rather than a literature search
+        that could not.
+
+        Returns [] when there is no history to aim at, which is the honest
+        answer in the first iterations and leaves the existing default alone.
+        """
+        from app.agent_core.tool_specs import tool_domain
+
+        if not isinstance(combined_stats, dict):
+            return []
+        successes: Dict[str, int] = {}
+        for tool, stat in combined_stats.items():
+            if not isinstance(stat, dict):
+                continue
+            count = int(stat.get("success", 0) or 0)
+            domain = tool_domain(tool)
+            if count > 0 and domain:
+                successes[domain] = successes.get(domain, 0) + count
+        if not successes:
+            return []
+        dominant = max(successes, key=lambda name: successes[name])
+        return sorted(
+            tool for tool in (available_tools or []) if tool_domain(tool) == dominant
+        )
+
     def _build_forced_exploration_action(
         self,
         job: AgentJob,
@@ -6082,6 +6129,12 @@ class AutonomousAgentExecutor:
         """Select a deliberate exploration action from under-sampled tools."""
         cfg = self._get_forced_exploration_config(job)
         configured = [t for t in cfg.get("tools", []) if t in available_tools]
+        if cfg.get("tools_are_default"):
+            aligned = self._domain_aligned_exploration_tools(
+                combined_stats, available_tools
+            )
+            if aligned:
+                configured = aligned
         candidate_tools = configured if configured else sorted(list(available_tools))
         if exclude_tool:
             candidate_tools = [t for t in candidate_tools if t != exclude_tool]
@@ -7593,6 +7646,40 @@ RESPONSE FORMAT:
 """
         return base_prompt
 
+    def _outstanding_contract_evidence(
+        self, job: AgentJob, counts: Dict[str, int]
+    ) -> str:
+        """What the goal contract still needs, as a line for the prompt.
+
+        Returns "" when the contract is satisfied or asks for nothing, so a run
+        that is done is not nagged about work it has already finished.
+        """
+        cfg = job.config if isinstance(job.config, dict) else {}
+        contract = cfg.get("goal_contract")
+        if not isinstance(contract, dict):
+            return ""
+        required = contract.get("required_finding_types")
+        if isinstance(required, list):
+            required = {str(name): 1 for name in required}
+        if not isinstance(required, dict) or not required:
+            return ""
+
+        missing = []
+        for name, wanted in sorted(required.items()):
+            try:
+                need = int(wanted)
+            except (TypeError, ValueError):
+                need = 1
+            have = int(counts.get(str(name), 0))
+            if have < need:
+                short = need - have
+                missing.append(
+                    f"{name} ({short} more; {have} of {need})"
+                    if have
+                    else f"{name} ({need})"
+                )
+        return ", ".join(missing)
+
     def _build_thinking_prompt_volatile(
         self,
         job: AgentJob,
@@ -7623,19 +7710,31 @@ RESPONSE FORMAT:
         # the evidence itself was sitting in the run.
         recorded = state.get("findings")
         if isinstance(recorded, list):
-            types: List[str] = []
+            counts: Dict[str, int] = {}
             for finding in recorded:
                 if not isinstance(finding, dict):
                     continue
                 name = str(finding.get("type") or "").strip()
-                if name and name not in types:
-                    types.append(name)
-            if types:
+                if name:
+                    counts[name] = counts.get(name, 0) + 1
+            if counts:
                 parts.append(
                     "EVIDENCE RECORDED SO FAR (cite these exact type names in "
                     "derived_from, not a description of them):\n"
-                    + ", ".join(sorted(types)[:24])
+                    + ", ".join(
+                        f"{name} x{counts[name]}" for name in sorted(counts)[:24]
+                    )
                 )
+            # And what the contract still wants. Counts alone do not answer it:
+            # a run needing two headroom_bound findings and holding one sees
+            # the type present and cannot tell it is short. A live run called
+            # get_research_findings FIVE times in sixteen iterations asking
+            # exactly this, in a study that then ran out of iterations before
+            # reaching the tools it was created to exercise. The answer is
+            # cheap and already here.
+            outstanding = self._outstanding_contract_evidence(job, counts)
+            if outstanding:
+                parts.append("STILL REQUIRED BY THE GOAL CONTRACT:\n" + outstanding)
 
         for formatter in (
             self._format_causal_experiment_plan_for_prompt,

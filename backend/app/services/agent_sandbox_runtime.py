@@ -14,11 +14,20 @@ SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES.
 from __future__ import annotations
 
 import asyncio
+import logging
+import uuid
 from typing import List, Tuple
+
+logger = logging.getLogger(__name__)
 
 DEFAULT_MEMORY = "2048m"
 DEFAULT_CPUS = "2"
 DEFAULT_PIDS_LIMIT = "256"
+
+#: How long to wait for the daemon to remove a container we have abandoned.
+#: Short on purpose: the caller is already reporting a timeout, and a cleanup
+#: that hangs would turn one stuck run into a stuck request.
+REMOVE_TIMEOUT_SECONDS = 20
 
 
 def allowed_images() -> List[str]:
@@ -68,12 +77,19 @@ def docker_command(
     timeout_seconds: int,
     memory: str = DEFAULT_MEMORY,
     cpus: str = DEFAULT_CPUS,
+    name: str = "",
 ) -> List[str]:
-    """Build the confined `docker run` invocation for one sandboxed script."""
+    """Build the confined `docker run` invocation for one sandboxed script.
+
+    ``name`` is what makes an abandoned run recoverable. Without it the only
+    handle on a container is the client process, and killing that leaves the
+    container running: the daemon owns it, not us.
+    """
     return [
         "docker",
         "run",
         "--rm",
+        *(("--name", name) if name else ()),
         "--network",
         "none",
         "--cap-drop",
@@ -99,6 +115,32 @@ def docker_command(
     ]
 
 
+async def remove_container(name: str) -> bool:
+    """Force-remove a container we have stopped waiting for.
+
+    Best effort by construction: the container may already be gone (every run
+    carries --rm), the daemon may be busy, and either way the caller is on its
+    way to reporting a failure. What it must not do is raise into that path and
+    replace a truthful timeout with a confusing cleanup error.
+    """
+    if not name:
+        return False
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "rm",
+            "--force",
+            name,
+            stdout=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(process.wait(), timeout=REMOVE_TIMEOUT_SECONDS)
+        return process.returncode == 0
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not remove sandbox container {name}: {exc}")
+        return False
+
+
 async def run_in_sandbox(
     script: str,
     workdir: str,
@@ -108,7 +150,20 @@ async def run_in_sandbox(
     memory: str = DEFAULT_MEMORY,
     cpus: str = DEFAULT_CPUS,
 ) -> Tuple[int, str, str]:
-    """Run one script in the sandbox, returning (returncode, stdout, stderr)."""
+    """Run one script in the sandbox, returning (returncode, stdout, stderr).
+
+    A run that outlives its timeout is torn down here rather than left to the
+    caller. `process.kill()` alone -- what this did before -- kills the `docker
+    run` client and not the container behind it, and the container goes on
+    holding its --cpus share indefinitely. One orphaned gem5 burned 150% CPU
+    for an hour on this machine and corrupted every wall-clock measurement
+    taken while it ran, which is the expensive part: the leak is silent, and it
+    lands in the numbers rather than in an error.
+
+    Cancellation gets the same treatment as a timeout. A job cancelled mid-run
+    abandons its container exactly as thoroughly.
+    """
+    name = f"kdbc-sandbox-{uuid.uuid4().hex[:16]}"
     process = await asyncio.create_subprocess_exec(
         *docker_command(
             image=image,
@@ -117,6 +172,7 @@ async def run_in_sandbox(
             timeout_seconds=timeout_seconds,
             memory=memory,
             cpus=cpus,
+            name=name,
         ),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
@@ -125,8 +181,17 @@ async def run_in_sandbox(
         stdout, stderr = await asyncio.wait_for(
             process.communicate(), timeout=timeout_seconds
         )
-    except asyncio.TimeoutError:
+    except (asyncio.TimeoutError, asyncio.CancelledError):
         process.kill()
+        try:
+            # Shielded, because the cancellation path is where this matters
+            # most and awaiting plainly inside a cancelled task can be
+            # interrupted before the removal is even sent. Shield runs it as
+            # its own task, so a second cancellation abandons the wait rather
+            # than the cleanup.
+            await asyncio.shield(remove_container(name))
+        except asyncio.CancelledError:
+            pass
         raise
     return (
         process.returncode,

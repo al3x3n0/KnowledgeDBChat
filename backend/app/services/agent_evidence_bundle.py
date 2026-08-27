@@ -50,6 +50,18 @@ EVIDENCE_TOOLS = {
     "analyze_snippet_cycles",
     "profile_c_workload",
     "simulate_c_workload",
+    # A mechanism comparison is two simulations and a refusal rule; the
+    # bundle has to carry both arms, or a reviewer sees a ratio with
+    # nothing to check it against.
+    "simulate_mechanism",
+    "describe_gem5_mechanisms",
+    # A study is several simulations and a rule for reading them; the
+    # bundle carries every arm, or a reviewer sees a ratio and a curve
+    # with nothing behind them.
+    "explain_bottleneck",
+    "measure_headroom",
+    "sweep_mechanism",
+    "evaluate_across_kernels",
     "sample_hardware_counters",
     # The baseline a tuning claim is measured against. A bundle that records
     # the tuned run but not the model it started from cannot show what the

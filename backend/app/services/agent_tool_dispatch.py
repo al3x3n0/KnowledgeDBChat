@@ -4652,6 +4652,130 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             else None,
         )
 
+    def _study_config(params: Dict[str, Any], key: str) -> Optional[Dict[str, Any]]:
+        """A configuration object, however the model spelled it."""
+        value = params.get(key)
+        if isinstance(value, str) and value.strip():
+            try:
+                value = json.loads(value)
+            except json.JSONDecodeError:
+                return None
+        return value if isinstance(value, dict) else None
+
+    async def _explain_bottleneck(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_studies
+
+        return await agent_gem5_studies.explain_bottleneck(
+            code=str(params.get("code") or ""),
+            config=_study_config(params, "config"),
+            flags=str(params.get("flags") or agent_gem5_studies.DEFAULT_FLAGS),
+            run_args=str(params.get("run_args") or ""),
+            label=str(params.get("label") or ""),
+        )
+
+    async def _measure_headroom(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_studies
+
+        targets = params.get("targets")
+        if isinstance(targets, str):
+            targets = [t.strip() for t in targets.split(",") if t.strip()]
+
+        return await agent_gem5_studies.measure_headroom(
+            code=str(params.get("code") or ""),
+            targets=[str(t) for t in targets] if isinstance(targets, list) else [],
+            config=_study_config(params, "config"),
+            flags=str(params.get("flags") or agent_gem5_studies.DEFAULT_FLAGS),
+            run_args=str(params.get("run_args") or ""),
+            label=str(params.get("label") or ""),
+        )
+
+    async def _sweep_mechanism(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_studies
+
+        values = params.get("values")
+        if isinstance(values, str):
+            try:
+                values = json.loads(values)
+            except json.JSONDecodeError:
+                values = [v.strip() for v in values.split(",") if v.strip()]
+
+        return await agent_gem5_studies.sweep_mechanism(
+            code=str(params.get("code") or ""),
+            variant=_study_config(params, "variant") or {},
+            vary=str(params.get("vary") or ""),
+            values=values if isinstance(values, list) else [],
+            baseline=_study_config(params, "baseline"),
+            flags=str(params.get("flags") or agent_gem5_studies.DEFAULT_FLAGS),
+            run_args=str(params.get("run_args") or ""),
+            label=str(params.get("label") or ""),
+        )
+
+    async def _evaluate_across_kernels(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_studies
+
+        kernels = params.get("kernels")
+        if isinstance(kernels, str):
+            try:
+                kernels = json.loads(kernels)
+            except json.JSONDecodeError:
+                kernels = []
+
+        return await agent_gem5_studies.evaluate_across_kernels(
+            kernels=[k for k in kernels if isinstance(k, dict)]
+            if isinstance(kernels, list)
+            else [],
+            variant=_study_config(params, "variant") or {},
+            baseline=_study_config(params, "baseline"),
+            flags=str(params.get("flags") or agent_gem5_studies.DEFAULT_FLAGS),
+            label=str(params.get("label") or ""),
+        )
+
+    async def _describe_gem5_mechanisms(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_mechanism
+
+        return await agent_gem5_mechanism.describe_gem5_mechanisms(
+            kind=str(params.get("kind") or ""),
+        )
+
+    async def _simulate_mechanism(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_gem5_mechanism
+
+        def _config(key: str) -> Optional[Dict[str, Any]]:
+            """A configuration, however the model spelled it.
+
+            Nested objects arrive as JSON strings often enough that refusing
+            one costs an iteration to learn nothing: the tool wanted the object
+            it was already given.
+            """
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                try:
+                    value = json.loads(value)
+                except json.JSONDecodeError:
+                    return None
+            return value if isinstance(value, dict) else None
+
+        return await agent_gem5_mechanism.simulate_mechanism(
+            code=str(params.get("code") or ""),
+            variant=_config("variant") or {},
+            baseline=_config("baseline"),
+            flags=str(params.get("flags") or agent_gem5_mechanism.DEFAULT_FLAGS),
+            run_args=str(params.get("run_args") or ""),
+            label=str(params.get("label") or ""),
+        )
+
     async def _verify_run_bundle(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -5146,6 +5270,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "profile_c_workload": _profile_c_workload,
             "simulate_c_workload": _simulate_c_workload,
             "describe_model_parameters": _describe_model_parameters,
+            "describe_gem5_mechanisms": _describe_gem5_mechanisms,
+            "simulate_mechanism": _simulate_mechanism,
+            "explain_bottleneck": _explain_bottleneck,
+            "measure_headroom": _measure_headroom,
+            "sweep_mechanism": _sweep_mechanism,
+            "evaluate_across_kernels": _evaluate_across_kernels,
             "find_fusion_candidates": _find_fusion_candidates,
             "cost_fusion_candidate": _cost_fusion_candidate,
             "verify_run_bundle": _verify_run_bundle,

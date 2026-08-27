@@ -58,6 +58,29 @@ CPU_TYPES = {
     "ex5_LITTLE": "ARM big.LITTLE little core (Cortex-A7 class)",
 }
 
+#: Names gem5 itself answers to that this list spells differently. A live run
+#: asked for DerivO3CPU -- the class O3CPU actually resolves to, and a name
+#: gem5's own ObjectList offers -- and was refused as unknown. Being stricter
+#: than the simulator costs an iteration and teaches nothing.
+CPU_TYPE_ALIASES = {
+    "DerivO3CPU": "O3CPU",
+    "BaseO3CPU": "O3CPU",
+    "ArmO3CPU": "O3CPU",
+    "BaseMinorCPU": "MinorCPU",
+    "ArmMinorCPU": "MinorCPU",
+    "BaseTimingSimpleCPU": "TimingSimpleCPU",
+    "ArmTimingSimpleCPU": "TimingSimpleCPU",
+    "BaseAtomicSimpleCPU": "AtomicSimpleCPU",
+    "ArmAtomicSimpleCPU": "AtomicSimpleCPU",
+}
+
+
+def resolve_cpu_type(name: str) -> str:
+    """The model this name means, or the name unchanged if it means nothing."""
+    cleaned = str(name or "").strip()
+    return CPU_TYPE_ALIASES.get(cleaned, cleaned)
+
+
 # Parameter overrides are how a core model gets tuned: each entry is a full
 # `system....=<value>` assignment applied after the config is built, so a
 # candidate model is a list of these rather than a forked config file.
@@ -599,7 +622,7 @@ async def describe_model_parameters(
     are not the paths that can be assigned to. This runs the model once on a
     trivial program and reports what it found.
     """
-    model = str(cpu_type or DEFAULT_CPU).strip()
+    model = resolve_cpu_type(cpu_type or DEFAULT_CPU)
     if model not in CPU_TYPES:
         return {
             "success": False,

@@ -116,3 +116,27 @@ async def test_parameter_overrides_reject_shell_syntax(enabled):
     )
 
     assert "not of the form" in result["error"]
+
+
+class TestGem5sOwnCpuNames:
+    """A live run asked for DerivO3CPU -- the class O3CPU resolves to, offered
+    by gem5's own ObjectList -- and was refused as unknown. Being stricter
+    than the simulator costs an iteration and teaches nothing."""
+
+    def test_the_class_o3cpu_resolves_to_is_accepted(self):
+        from app.services.agent_gem5_sandbox import resolve_cpu_type
+
+        assert resolve_cpu_type("DerivO3CPU") == "O3CPU"
+        assert resolve_cpu_type("ArmMinorCPU") == "MinorCPU"
+
+    def test_a_name_that_means_nothing_is_left_alone_to_be_refused(self):
+        from app.services.agent_gem5_sandbox import CPU_TYPES, resolve_cpu_type
+
+        assert resolve_cpu_type("MagicCPU") == "MagicCPU"
+        assert "MagicCPU" not in CPU_TYPES
+
+    def test_the_documented_names_still_mean_themselves(self):
+        from app.services.agent_gem5_sandbox import CPU_TYPES, resolve_cpu_type
+
+        for name in CPU_TYPES:
+            assert resolve_cpu_type(name) == name

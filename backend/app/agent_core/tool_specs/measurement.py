@@ -473,6 +473,326 @@ SPECS: tuple[ToolSpec, ...] = (
         consumes="a core model name; returns its tunable parameters and paths.",
     ),
     ToolSpec(
+        name="describe_gem5_mechanisms",
+        description="List the microarchitectural mechanisms this gem5 build carries -- "
+        "prefetchers, cache replacement policies, branch direction "
+        "predictors -- asked of the build rather than remembered. These "
+        "move between gem5 releases: on this build every direction "
+        "predictor was moved under a new base class, so gem5's own "
+        "--bp-type flag offers one of the dozen that are installed. Feed a "
+        "class name to simulate_mechanism. Call it once per study.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "kind": {
+                    "type": "string",
+                    "description": (
+                        "Optional filter: prefetcher, replacement_policy, "
+                        "conditional_predictor or cpu_type. Omit for all."
+                    ),
+                },
+            },
+            "required": [],
+        },
+        effects="write",
+        cost_tier="low",
+        pii_risk="medium",
+        produces=("mechanism_catalog",),
+        typical_seconds=15,
+        consumes="nothing; reports what the simulator can be asked for.",
+    ),
+    ToolSpec(
+        name="simulate_mechanism",
+        description="Measure what one microarchitectural mechanism is worth. Runs the "
+        "workload TWICE in the simulated core -- once with the mechanism, "
+        "once without -- and reports the cycle ratio between them. This is "
+        "the tool for a prefetcher, a cache replacement policy or a branch "
+        "predictor; simulate_c_workload tunes the values on a model and "
+        "cannot install one of these at all. The pair is the unit on "
+        "purpose: a prefetcher added alongside a wider MSHR file measured "
+        "2.59x here, and the MSHRs alone measured the same 2.59x, so a "
+        "single run cannot say which change it is reporting. Arms that "
+        "differ in anything but the mechanism are refused, and a mechanism "
+        "that never fires is reported as a failure rather than as no "
+        "benefit.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Self-contained C program including main(). Give it a "
+                        "bounded input: two full simulations run, at roughly "
+                        "100k instructions a second each."
+                    ),
+                },
+                "variant": {
+                    "type": "object",
+                    "description": (
+                        "The configuration carrying the mechanism, e.g. "
+                        '{"caches": {"l2": {"prefetcher": "StridePrefetcher"}}} '
+                        'or with parameters {"caches": {"l2": {"prefetcher": '
+                        '{"class": "StridePrefetcher", "params": {"degree": 8}}}}}. '
+                        'Also takes "cpu_type", cache geometry (size, assoc, '
+                        'mshrs) per level, "replacement_policy", and '
+                        '"branch_pred": {"conditional": "LTAGE"}. Attach a '
+                        "prefetcher to L2 first: at gem5's default L1 mshrs=4 "
+                        "one has no spare capacity to issue into and measures "
+                        "as nothing at all."
+                    ),
+                },
+                "baseline": {
+                    "type": "object",
+                    "description": (
+                        "The configuration to compare against. Omit it and the "
+                        "variant with its mechanisms stripped out is used, "
+                        "which is the safe default -- a hand-written baseline "
+                        "is where the geometry silently drifts apart."
+                    ),
+                },
+                "flags": {
+                    "type": "string",
+                    "description": (
+                        "Compiler flags (default '-O2 -static'). Static linking "
+                        "is added if absent; syscall-emulation mode has no "
+                        "dynamic loader. Both arms run the same binary."
+                    ),
+                },
+                "run_args": {
+                    "type": "string",
+                    "description": "Arguments passed to the program (optional)",
+                },
+                "label": {
+                    "type": "string",
+                    "description": (
+                        "Short name for what this comparison is, e.g. 'L2 "
+                        "stride prefetch on strided scan'. Recorded with the "
+                        "result so several comparisons can be told apart."
+                    ),
+                },
+            },
+            "required": ["code", "variant"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("mechanism_comparison",),
+        typical_seconds=180,
+        consumes="a program and a mechanism; runs both arms in one model.",
+    ),
+    ToolSpec(
+        name="explain_bottleneck",
+        description="Run a C kernel in the simulated core once and say what its cycles "
+        "were spent waiting on: which structure backpressures the pipeline, "
+        "how much miss latency it paid for, how often it mispredicted. A "
+        "cycle count says how slow a kernel is and nothing about why, so "
+        "this is what turns a measurement into a next step. It ranks "
+        "suspects and names the limit studies that would settle them -- it "
+        "does not conclude, because the signals overlap and the ranking has "
+        "already been wrong once. Call measure_headroom on the targets it "
+        "names, and take more than the first.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Self-contained C program including main(), with a bounded input",
+                },
+                "config": {
+                    "type": "object",
+                    "description": (
+                        "Optional core configuration, same shape as "
+                        "simulate_mechanism's variant. Omit for the default "
+                        "out-of-order core."
+                    ),
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "Compiler flags (default '-O2 -static')",
+                },
+                "run_args": {
+                    "type": "string",
+                    "description": "Arguments passed to the program (optional)",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Short name for the kernel, recorded with the attribution",
+                },
+            },
+            "required": ["code"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("bottleneck_attribution",),
+        typical_seconds=90,
+        consumes="a program; reports what limited it.",
+    ),
+    ToolSpec(
+        name="measure_headroom",
+        description="Bound what a microarchitectural idea could be worth BEFORE designing "
+        "one. Makes a named structure effectively infinite -- the issue "
+        "queue, the reorder buffer, a cache -- and reports the cycles that "
+        "recovers, plus what becomes the limit once it is removed. An "
+        "idealised structure is not buildable, so each number is a ceiling "
+        "on any mechanism aimed there: a target with near-zero headroom "
+        "cannot pay however it is implemented. Measured on one kernel: "
+        "idealising the L1 recovered 84% and the issue queue 3.4%, and on "
+        "another 29% and 12% -- neither is guessable from the cycle count. "
+        "Targets: issue_queue, reorder_buffer, load_queue, store_queue, "
+        "physical_registers, pipeline_width, l1d_capacity, l1i_capacity, "
+        "l2_capacity, branch_prediction.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Self-contained C program including main()",
+                },
+                "targets": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Which structures to idealise, one simulation each. "
+                        "explain_bottleneck names the ones worth trying; take "
+                        "two or three, since the strongest signal is not "
+                        "reliably the one worth the most."
+                    ),
+                },
+                "config": {
+                    "type": "object",
+                    "description": "Optional core configuration to idealise against",
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "Compiler flags (default '-O2 -static')",
+                },
+                "run_args": {
+                    "type": "string",
+                    "description": "Arguments passed to the program (optional)",
+                },
+                "label": {"type": "string", "description": "Short name for the kernel"},
+            },
+            "required": ["code", "targets"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("headroom_bound",),
+        typical_seconds=240,
+        consumes="a program and a list of structures; bounds each one's payoff.",
+    ),
+    ToolSpec(
+        name="sweep_mechanism",
+        description="Measure a mechanism at several settings and return the curve, not two "
+        "points. Says where a setting stops paying and whether it ever "
+        "turns around -- a mechanism reported at its best setting alone is "
+        "a best case, not a result. All points share one baseline, so the "
+        "sweep costs one simulation per value plus one.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": "Self-contained C program including main()",
+                },
+                "variant": {
+                    "type": "object",
+                    "description": (
+                        "The configuration carrying the mechanism, e.g. "
+                        '{"caches": {"l2": {"prefetcher": "StridePrefetcher"}}}'
+                    ),
+                },
+                "vary": {
+                    "type": "string",
+                    "description": (
+                        "Dotted path to sweep within the variant, e.g. "
+                        "'caches.l2.prefetcher.params.degree' or "
+                        "'caches.l2.size'. Intermediate levels are created as "
+                        "needed, so a prefetcher named as a bare string works."
+                    ),
+                },
+                "values": {
+                    "type": "array",
+                    "description": "The settings to try, 2 to 8 of them, in order",
+                },
+                "baseline": {
+                    "type": "object",
+                    "description": (
+                        "What every point is measured against. Omit for the "
+                        "default core with no mechanism."
+                    ),
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "Compiler flags (default '-O2 -static')",
+                },
+                "run_args": {
+                    "type": "string",
+                    "description": "Arguments passed to the program (optional)",
+                },
+                "label": {"type": "string", "description": "Short name for the sweep"},
+            },
+            "required": ["code", "variant", "vary", "values"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("mechanism_sweep",),
+        typical_seconds=300,
+        consumes="a mechanism and a range; returns its curve.",
+    ),
+    ToolSpec(
+        name="evaluate_across_kernels",
+        description="Measure one mechanism on several kernels and report the distribution: "
+        "geometric mean, worst case, and which kernels regressed. A "
+        "single-workload result is the one that gets overturned, and the "
+        "worst case is what decides whether a mechanism ships. Each kernel "
+        "is measured against its own baseline with the same arms, and arms "
+        "differing in anything but the mechanism are refused.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "kernels": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                    "description": (
+                        'Two to six kernels, each {"name": "...", "code": '
+                        '"...", "run_args": "..."}. Give them different '
+                        "access and control-flow shapes -- three variations "
+                        "of one loop measure one workload three times."
+                    ),
+                },
+                "variant": {
+                    "type": "object",
+                    "description": "The configuration carrying the mechanism",
+                },
+                "baseline": {
+                    "type": "object",
+                    "description": (
+                        "What to compare against. Omit and the variant with "
+                        "its mechanisms stripped out is used."
+                    ),
+                },
+                "flags": {
+                    "type": "string",
+                    "description": "Compiler flags (default '-O2 -static')",
+                },
+                "label": {
+                    "type": "string",
+                    "description": "Short name for the evaluation",
+                },
+            },
+            "required": ["kernels", "variant"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("mechanism_evaluation",),
+        typical_seconds=600,
+        consumes="a mechanism and several kernels; returns its distribution.",
+    ),
+    ToolSpec(
         name="sample_hardware_counters",
         description="Run a C workload in a simulated core and return its hardware "
         "counters SAMPLED OVER TIME, rather than as run totals. Call "

@@ -7,6 +7,8 @@ recovered 3.4% -- because it compared a share of *events* against a share of
 *cycles*, and the queue fills precisely because the loads are missing.
 """
 
+import pytest
+
 from app.services import gem5_bottleneck as bn
 
 # The strided read-modify-write kernel, at the numbers it actually produced.
@@ -112,3 +114,44 @@ class TestWhatToDoNext:
 
         assert "sums are not" in caveat
         assert "between runs" in caveat
+
+
+# PCE INT8 multi-head attention, at the numbers it actually produced. Rename
+# barely blocks here; decode does. Scaling the backpressure signal by rename's
+# own share ranked the load queue LAST, and idealising it recovered 4.68% --
+# more than every other structure combined, and more than the three targets
+# the ranking did recommend, which were worth 0.00%, 0.00% and 0.40%.
+DECODE_BOUND = {
+    "system.cpu.numCycles": 12867523.0,
+    "simTicks": 6433761500.0,
+    "system.cpu.ipc": 1.270732,
+    "system.cpu.rename.IQFullEvents": 351136.0,
+    "system.cpu.rename.ROBFullEvents": 9145.0,
+    "system.cpu.rename.LQFullEvents": 9342457.0,
+    "system.cpu.rename.SQFullEvents": 47124.0,
+    "system.cpu.rename.status::Blocked": 74631.0,
+    "system.cpu.decode.status::Blocked": 9658370.0,
+    "system.cpu.dcache.demandMshrMisses::total": 1500.0,
+    "system.cpu.dcache.demandAvgMissLatency::total": 90000.0,
+    "system.cpu.fetchStats0.icacheStallCycles": 274078.0,
+}
+
+
+class TestBackpressureIsScaledByTheWorstBlockedStage:
+    """Backpressure propagates backwards: a full structure blocks rename,
+    which blocks decode, which blocks fetch. Which stage records the stall
+    depends on the model, so rename's own share is not the measure."""
+
+    def test_the_binding_structure_ranks_first(self):
+        signals = bn.rank_signals(DECODE_BOUND)
+
+        assert signals[0]["headroom_target"] == "load_queue"
+
+    def test_it_is_scaled_by_decode_not_rename(self):
+        signals = bn.rank_signals(DECODE_BOUND)
+        queue = next(s for s in signals if s["headroom_target"] == "load_queue")
+
+        assert queue["strength"] == pytest.approx(9658370.0 / 12867523.0, rel=1e-3)
+
+    def test_the_recommendation_leads_with_it(self):
+        assert "'load_queue'" in bn.attribute(DECODE_BOUND)["next_study"]

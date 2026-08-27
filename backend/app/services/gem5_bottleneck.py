@@ -237,7 +237,23 @@ def rank_signals(stats: Dict[str, float]) -> List[Dict[str, Any]]:
     occupancy = stage_occupancy(stats)
     if press["dominant"]:
         events = press["events"][press["dominant"]]
-        blocked = (occupancy.get("rename") or {}).get("blocked_share", 0.0)
+        # The WORST-blocked stage, not rename's own. Backpressure propagates
+        # backwards: a full structure blocks rename, which blocks decode,
+        # which blocks fetch, and which of them records the stall depends on
+        # the model. Scaling by rename ranked a load queue LAST on the PCE
+        # INT8 attention kernel -- 9,342,457 LQ-full events against the issue
+        # queue's 351,136 -- because rename there blocked 0.58% of cycles
+        # while decode blocked 75.1%. Idealising that load queue recovered
+        # 4.68%, more than every other structure combined, and the study that
+        # followed the ranking measured three targets worth 0.00%.
+        blocked = max(
+            (
+                float(stage.get("blocked_share", 0.0) or 0.0)
+                for stage in occupancy.values()
+                if isinstance(stage, dict)
+            ),
+            default=0.0,
+        )
         signals.append(
             _signal(
                 f"rename blocked by {press['dominant']} full",

@@ -44,6 +44,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import re
 import tempfile
 from pathlib import Path
@@ -465,6 +466,31 @@ def _read(workdir: str, name: str) -> str:
     return path.read_text(encoding="utf-8", errors="replace") if path.exists() else ""
 
 
+def stats_identical(left: Dict[str, float], right: Dict[str, float]) -> bool:
+    """Whether two runs produced the same statistics, NaN included.
+
+    gem5 prints `nan` for every averaged statistic whose denominator was zero
+    -- `avgBlocked::no_mshrs`, `ftq.occupancy::mean` and a dozen more appear in
+    essentially every run. NaN is not equal to itself, so comparing the two
+    dictionaries with `==` reports two byte-identical runs as different, and
+    the check that exists to say "the variant changed nothing" instead said
+    nothing at all. It never once fired on real output; the tests that passed
+    used hand-written statistics with no NaN in them.
+
+    Two NaNs in the same statistic are the same result. That is the whole fix.
+    """
+    if set(left) != set(right):
+        return False
+    for name, value in left.items():
+        other = right[name]
+        if value == other:
+            continue
+        if math.isnan(value) and math.isnan(other):
+            continue
+        return False
+    return True
+
+
 def compare_arms(
     baseline_stats: Dict[str, float],
     variant_stats: Dict[str, float],
@@ -480,7 +506,7 @@ def compare_arms(
     """
     base_cycles = baseline_stats.get("system.cpu.numCycles", 0.0)
     var_cycles = variant_stats.get("system.cpu.numCycles", 0.0)
-    identical = baseline_stats == variant_stats
+    identical = stats_identical(baseline_stats, variant_stats)
     result: Dict[str, Any] = {
         "baseline_cycles": base_cycles,
         "variant_cycles": var_cycles,

@@ -33,6 +33,7 @@ from app.services.agent_gem5_mechanism import (
     DEFAULT_IMAGE,
     SandboxRunFailed,
     run_configs,
+    stats_identical,
 )
 
 logger = logging.getLogger(__name__)
@@ -613,8 +614,9 @@ async def evaluate_across_kernels(
                 "baseline_cycles": base_cycles,
                 "variant_cycles": var_cycles,
                 "speedup": _speedup(base_cycles, var_cycles),
-                "identical_stats": runs["baseline"]["stats"]
-                == runs["variant"]["stats"],
+                "identical_stats": stats_identical(
+                    runs["baseline"]["stats"], runs["variant"]["stats"]
+                ),
             }
         )
 

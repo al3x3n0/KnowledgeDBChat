@@ -320,3 +320,61 @@ class TestCarryingAPlugin:
 
         assert "plugin_source" in signature.parameters
         assert signature.parameters["plugin_source"].default == ""
+
+
+class TestTheNullControlSurvivesNaN:
+    """gem5 prints `nan` for every averaged statistic whose denominator was
+    zero -- avgBlocked::no_mshrs, ftq.occupancy::mean and a dozen more, in
+    essentially every run. NaN is not equal to itself, so comparing the two
+    dictionaries with == reported byte-identical runs as different. The check
+    that exists to say "the variant changed nothing" never once fired on real
+    output, and the tests that passed used statistics with no NaN in them.
+
+    These parse from text rather than copying a dict. Two runs produce two
+    files and therefore two distinct NaN objects, and dict equality
+    short-circuits on identity -- a test that shared one NaN object would pass
+    against the broken code too, which is how the gap survived in the first
+    place.
+    """
+
+    TEXT = """
+---------- Begin Simulation Statistics ----------
+system.cpu.numCycles                           466578
+system.l2cache.avgBlocked::no_mshrs               nan
+system.cpu.ftq.occupancy::mean                    nan
+---------- End Simulation Statistics   ----------
+"""
+
+    def parsed(self, cycles="466578"):
+        return mech.parse_stats(self.TEXT.replace("466578", cycles))
+
+    def test_two_identical_runs_with_nan_are_identical(self):
+        assert mech.stats_identical(self.parsed(), self.parsed()) is True
+
+    def test_plain_equality_would_have_missed_it(self):
+        """The bug, pinned: this is what the code used to do, against two
+        separately parsed files."""
+        assert (self.parsed() == self.parsed()) is False
+
+    def test_a_real_difference_is_still_a_difference(self):
+        assert mech.stats_identical(self.parsed(), self.parsed("466579")) is False
+
+    def test_a_nan_where_the_other_run_had_a_number_is_a_difference(self):
+        numeric = self.parsed()
+        numeric["system.cpu.ftq.occupancy::mean"] = 1.0
+
+        assert mech.stats_identical(self.parsed(), numeric) is False
+
+    def test_a_missing_statistic_is_a_difference(self):
+        fewer = self.parsed()
+        del fewer["system.cpu.numCycles"]
+
+        assert mech.stats_identical(self.parsed(), fewer) is False
+
+    def test_an_inert_variant_is_reported_as_identical(self):
+        """End of the chain: what a caller sees when a mechanism was accepted,
+        recorded as configured, and changed nothing."""
+        result = mech.compare_arms(self.parsed(), self.parsed())
+
+        assert result["identical_stats"] is True
+        assert "deterministic" in result["note"]

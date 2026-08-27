@@ -116,3 +116,37 @@ def test_an_empty_list_where_a_string_is_wanted_means_nothing():
 
     assert params["run_args"] == ""
     assert "run_args" in repaired
+
+
+class TestATypeErrorSaysWhatTheFieldWants:
+    """ "field variant should be object, got str" is accurate and leaves a
+    caller exactly where it found them. Three live runs passed variant as the
+    bare string "StridePrefetcher", each time meaning something the schema
+    could have shown them; the description was already written and the error
+    simply was not carrying it."""
+
+    def test_the_error_carries_the_field_description(self):
+        from app.services.agent_tool_validation import validate_tool_params
+
+        message = validate_tool_params(
+            "simulate_mechanism",
+            {"code": "int main(void){return 0;}", "variant": "StridePrefetcher"},
+        )
+
+        assert "should be object, got str" in message
+        assert '{"caches": {"l2": {"prefetcher"' in message
+
+    def test_a_field_with_no_description_adds_nothing(self):
+        from app.services.agent_tool_validation import _shape_hint
+
+        assert _shape_hint({"type": "object"}) == ""
+
+    def test_a_long_description_is_trimmed(self):
+        """A long description repeated inside an error buries the other
+        problems listed beside it."""
+        from app.services.agent_tool_validation import _shape_hint
+
+        hint = _shape_hint({"description": "Sentence one. " + "x" * 600})
+
+        assert len(hint) < 450
+        assert "[...]" in hint

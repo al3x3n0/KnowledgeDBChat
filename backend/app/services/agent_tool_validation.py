@@ -59,6 +59,28 @@ def _is_uuid(value: str) -> bool:
     return True
 
 
+def _shape_hint(spec: Dict[str, Any]) -> str:
+    """The field's own description, when the type alone will not get there.
+
+    "field variant should be object, got str" is accurate and leaves a caller
+    exactly where it found them: three live runs passed `variant` as the bare
+    string "StridePrefetcher", each time meaning something the schema could
+    have shown them. The description is already written and already says what
+    the object looks like; the error simply was not carrying it.
+
+    Trimmed to the first sentences, because a long description repeated inside
+    an error buries the other problems listed beside it.
+    """
+    text = str(spec.get("description") or "").strip()
+    if not text:
+        return ""
+    clipped = text[:400]
+    if len(text) > 400:
+        cut = clipped.rfind(". ")
+        clipped = (clipped[: cut + 1] if cut > 120 else clipped) + " [...]"
+    return f" -- {clipped}"
+
+
 def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List[str]:
     """Repair unambiguous shape mistakes in place, returning what was changed.
 
@@ -187,6 +209,7 @@ def validate_tool_params(
         if check and value is not None and not check(value):
             problems.append(
                 f"field {name} should be {expected}, got {_describe(value)}"
+                + _shape_hint(spec)
             )
         choices = spec.get("enum")
         if isinstance(choices, list) and choices and value not in choices:

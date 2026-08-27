@@ -505,3 +505,41 @@ class TestRefusingAConfigurationThatIsAGuess:
             {"branch_pred": {"conditional": "LTAGE"}},
         ):
             assert mech.check_config_shape(config, "variant") is None, config
+
+
+class TestWhenTheProbeItselfFails:
+    """ "gem5 did not report its mechanism classes" is true and useless. The
+    one time it fired in a live run the cause was a full disk -- printed on
+    stderr and thrown away by a 2>/dev/null in the probe itself, so the tool
+    blamed the simulator for a problem with the machine."""
+
+    def test_a_full_disk_is_named_as_a_full_disk(self):
+        message = mech.explain_probe_failure(
+            "OSError: [Errno 28] No space left on device: '/tmp/out'"
+        )
+
+        assert "disk space" in message
+        assert "not a problem with the simulator" in message
+
+    def test_it_says_retrying_will_not_help(self):
+        message = mech.explain_probe_failure("[Errno 28] No space left on device")
+
+        assert "retrying will fail the same way" in message
+
+    def test_silence_is_reported_as_silence(self):
+        assert "no output at all" in mech.explain_probe_failure("")
+
+    def test_an_unrecognised_failure_points_at_the_output(self):
+        message = mech.explain_probe_failure("panic: something novel")
+
+        assert "stderr" in message
+
+    def test_the_probe_no_longer_discards_its_own_diagnosis(self):
+        """The command, not the prose: the comment above it says the words
+        "2>/dev/null" while explaining why they are gone."""
+        import inspect
+
+        source = inspect.getsource(mech.describe_gem5_mechanisms)
+
+        assert "catalog.py 2>/dev/null" not in source
+        assert "catalog.py" in source

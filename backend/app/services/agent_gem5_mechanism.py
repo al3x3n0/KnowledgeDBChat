@@ -1202,6 +1202,37 @@ def resolve_kind(kind: str, catalog: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+def explain_probe_failure(stderr: str) -> str:
+    """Name the cause when it is in the output, rather than blaming gem5.
+
+    "gem5 did not report its mechanism classes" is true and useless. The one
+    time it fired in a live run the cause was a full disk, which is nobody's
+    idea of a simulator problem and which no amount of retrying fixes.
+    """
+    text = stderr or ""
+    if "No space left on device" in text:
+        return (
+            "The host has no disk space left, so gem5 could not create its "
+            "output directory. This is not a problem with the simulator or "
+            "with the request, and retrying will fail the same way until "
+            "space is freed on the machine running the sandbox."
+        )
+    if "cannot execute" in text or "Exec format error" in text:
+        return (
+            "The gem5 binary in this image will not execute here, which "
+            "usually means the image was built for another architecture."
+        )
+    if not text.strip():
+        return (
+            "gem5 produced no output at all when asked for its mechanism "
+            "classes, and no error either."
+        )
+    return (
+        "gem5 did not report its mechanism classes. Its own output is in "
+        "`stderr` and is the place to look."
+    )
+
+
 async def describe_gem5_mechanisms(
     *,
     kind: str = "",
@@ -1232,8 +1263,15 @@ async def describe_gem5_mechanisms(
         with tempfile.TemporaryDirectory(prefix="gem5_catalog_") as workdir:
             Path(workdir, "catalog.py").write_text(CATALOG_SCRIPT, encoding="utf-8")
             try:
+                # Not 2>/dev/null. gem5's banner is noise, but discarding
+                # the whole stream discards the diagnosis with it: this probe
+                # failed a live run with "gem5 did not report its mechanism
+                # classes" and nothing else, while the real cause -- printed
+                # on stderr and thrown away -- was `OSError: [Errno 28] No
+                # space left on device`. The tool blamed the simulator for a
+                # full disk.
                 _, stdout, stderr = await agent_sandbox_runtime.run_in_sandbox(
-                    f"{GEM5_BINARY} --outdir=/tmp/out catalog.py 2>/dev/null",
+                    f"{GEM5_BINARY} --outdir=/tmp/out catalog.py",
                     workdir,
                     image=image,
                     timeout_seconds=timeout_seconds,
@@ -1247,7 +1285,7 @@ async def describe_gem5_mechanisms(
         if not line:
             return {
                 "success": False,
-                "error": "gem5 did not report its mechanism classes.",
+                "error": explain_probe_failure(stderr),
                 "stderr": stderr[-MAX_OUTPUT_CHARS:],
             }
         catalog = json.loads(line[len("CATALOG ") :])

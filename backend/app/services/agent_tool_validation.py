@@ -164,6 +164,32 @@ def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List
         elif expected == "string" and isinstance(value, list) and not value:
             params[name] = ""
             repaired.append(name)
+        # The same mistake against a number. `top_functions: [8]` was refused
+        # in a live run; one item in a list where one number is wanted cannot
+        # mean anything else. A longer list can -- which of them? -- so it is
+        # still refused, and so is an empty one, because there is no number
+        # that means "none".
+        elif (
+            expected in ("integer", "number")
+            and isinstance(value, list)
+            and len(value) == 1
+        ):
+            only = value[0]
+            if isinstance(only, bool):
+                pass
+            elif isinstance(only, (int, float)):
+                params[name] = int(only) if expected == "integer" else float(only)
+                repaired.append(name)
+            elif isinstance(only, str):
+                try:
+                    params[name] = (
+                        int(only.strip())
+                        if expected == "integer"
+                        else float(only.strip())
+                    )
+                    repaired.append(name)
+                except ValueError:
+                    pass
     return repaired
 
 

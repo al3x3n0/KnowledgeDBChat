@@ -150,3 +150,38 @@ class TestATypeErrorSaysWhatTheFieldWants:
 
         assert len(hint) < 450
         assert "[...]" in hint
+
+
+class TestOneItemListWhereANumberIsWanted:
+    """`top_functions: [8]` was refused in a live run. One item in a list
+    where one number is wanted cannot mean anything else."""
+
+    def _coerced(self, value):
+        from app.services.agent_tool_validation import coerce_tool_params
+
+        params = {"code": "int main(void){return 0;}", "top_functions": value}
+        coerce_tool_params("profile_c_workload", params)
+        return params["top_functions"]
+
+    def test_a_single_number_in_a_list_is_that_number(self):
+        assert self._coerced([8]) == 8
+
+    def test_a_single_numeric_string_in_a_list_works_too(self):
+        assert self._coerced(["8"]) == 8
+
+    def test_several_numbers_stay_refused(self):
+        """Which of them? Guessing would silently profile something the
+        caller did not ask for."""
+        assert self._coerced([8, 5]) == [8, 5]
+
+    def test_an_empty_list_stays_refused(self):
+        """Unlike a string, there is no number that means "none"."""
+        assert self._coerced([]) == []
+
+    def test_a_non_numeric_string_stays_refused(self):
+        assert self._coerced(["x"]) == ["x"]
+
+    def test_a_boolean_is_not_silently_a_number(self):
+        """bool is an int in Python; [True] meaning 1 top function is not a
+        reading anyone intended."""
+        assert self._coerced([True]) == [True]

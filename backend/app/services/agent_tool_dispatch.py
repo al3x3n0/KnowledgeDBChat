@@ -6465,7 +6465,6 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
-        job = ctx.job
         try:
             actions = state.get("actions_taken", [])
             keep_last = min(int(params.get("keep_last", 5) or 5), 20)
@@ -6510,7 +6509,10 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                     f"Previous compressed history:\n{existing_compressed}\n\n"
                 )
             compress_prompt += f"New actions to compress:\n{actions_text}\n\nWrite a concise summary in past tense."
-            user_settings = await executor._get_user_settings(job.user_id, ctx.db)
+            # The executor holds these as an attribute; there is no
+            # _get_user_settings method and never was, so this raised
+            # AttributeError and took the tool down with it.
+            user_settings = getattr(executor, "user_settings", None)
             summary_resp = await executor.llm_service.generate_response(
                 system_prompt="You are a concise summarizer. Output only the summary, no preamble.",
                 user_message=compress_prompt,
@@ -6562,7 +6564,10 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
                 "Group related findings, identify themes, note contradictions, and highlight the most important insights.\n\n"
                 f"Findings:\n{findings_text}\n\nWrite a structured synthesis."
             )
-            user_settings = await executor._get_user_settings(job.user_id, ctx.db)
+            # The executor holds these as an attribute; there is no
+            # _get_user_settings method and never was, so this raised
+            # AttributeError and took the tool down with it.
+            user_settings = getattr(executor, "user_settings", None)
             synthesis_resp = await executor.llm_service.generate_response(
                 system_prompt="You are a research synthesizer. Output only the synthesis, no preamble.",
                 user_message=synth_prompt,

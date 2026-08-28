@@ -22,8 +22,29 @@ class MemoryBase(BaseModel):
     context: Optional[Dict[str, Any]] = Field(None, description="Additional context")
     tags: Optional[List[str]] = Field(None, description="Memory tags")
 
+
+class MemoryCreate(MemoryBase):
+    """Schema for creating a new memory."""
+
+    session_id: Optional[UUID] = Field(None, description="Associated chat session")
+    source_message_id: Optional[UUID] = Field(None, description="Source message ID")
+
     @validator("memory_type")
     def validate_memory_type(cls, v):
+        """Which types this endpoint will accept from a caller.
+
+        Deliberately narrower than what the table holds. The agent runtime
+        writes `finding`, `insight`, `lesson` and `pattern` by constructing
+        ConversationMemory directly, on purpose -- CLAUDE.md documents that
+        MemoryCreate refuses `pattern` -- so this list guards the API surface
+        and not the database.
+
+        It used to live on MemoryBase, which MemoryResponse also inherits, and
+        a response schema cannot be narrower than the rows it must return:
+        every read of the 1,352 agent memories in this database failed with
+        "memory_type must be one of [...]", taking search_memories and
+        recall_memories down with it. Validation belongs on the way in.
+        """
         allowed_types = [
             "fact",
             "preference",
@@ -35,13 +56,6 @@ class MemoryBase(BaseModel):
         if v not in allowed_types:
             raise ValueError(f"memory_type must be one of {allowed_types}")
         return v
-
-
-class MemoryCreate(MemoryBase):
-    """Schema for creating a new memory."""
-
-    session_id: Optional[UUID] = Field(None, description="Associated chat session")
-    source_message_id: Optional[UUID] = Field(None, description="Source message ID")
 
 
 class MemoryUpdate(BaseModel):

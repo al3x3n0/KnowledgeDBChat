@@ -194,10 +194,11 @@ class AgentContextCompactionService:
         )
 
         try:
-            user_settings = None
-            get_settings = getattr(executor, "_get_user_settings", None)
-            if callable(get_settings):
-                user_settings = await get_settings(job.user_id, db)
+            # Guarded against a method that does not exist, so this always
+            # resolved to None and compaction ran without the user's LLM
+            # settings -- silently, for every compaction. The executor holds
+            # them as an attribute.
+            user_settings = getattr(executor, "user_settings", None)
 
             routing: Optional[Dict[str, Any]] = None
             get_routing = getattr(executor, "_llm_routing_from_job_config", None)

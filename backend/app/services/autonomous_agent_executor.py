@@ -40,6 +40,7 @@ from app.services import (
     agent_decision_parser,
     agent_execution_graph,
     agent_failure_diagnosis,
+    agent_repeated_success,
     agent_method_record,
     agent_plan_normalization,
     agent_prompt_sections,
@@ -757,6 +758,24 @@ class _AutonomousRuntimeAdapter:
                         "tool": str(action.get("tool") or ""),
                         "attempt": diagnosis["attempt"],
                         "error_class": diagnosis["error_class"],
+                    }
+                )
+
+            # The same call SUCCEEDING repeatedly costs as much as failing
+            # repeatedly and is easier to miss, because nothing looks wrong. A
+            # run asked to build on earlier work spent eight of nine
+            # iterations alternating two tools, every call identical to one it
+            # had already made, every answer the same sixteen findings.
+            repetition = agent_repeated_success.analyze(
+                action, action_result, self.state
+            )
+            if repetition:
+                action_result = {**action_result, "repetition": repetition}
+                self.job.add_log_entry(
+                    {
+                        "phase": "repeated_tool_success",
+                        "tool": str(action.get("tool") or ""),
+                        "attempt": repetition["attempt"],
                     }
                 )
 

@@ -87,3 +87,53 @@ class TestItDoesNotServeACachedAnswer:
         assert repeated.analyze(CALL, OK, None) is None
         assert repeated.analyze(CALL, OK, {"actions_taken": "nonsense"}) is None
         assert repeated.analyze(None, OK, _state()) is None
+
+
+class TestJsonColumnsRejectNaN:
+    """A run died at iteration 10 of 14 with `invalid input syntax for type
+    json: Token "NaN" is invalid` while checkpointing. Postgres JSON has no
+    NaN and no Infinity; Python's json.dumps emits them happily, so the
+    mismatch surfaces at INSERT, after the work is done. A plain gem5 run
+    emits fourteen NaN statistics for averages whose denominator was zero, and
+    those reach state through tool results."""
+
+    def test_nan_becomes_null(self):
+        from app.services.agent_checkpoint_service import strip_non_finite as json_safe
+
+        assert json_safe(float("nan")) is None
+
+    def test_infinity_becomes_null_too(self):
+        from app.services.agent_checkpoint_service import strip_non_finite as json_safe
+
+        assert json_safe(float("inf")) is None
+        assert json_safe(float("-inf")) is None
+
+    def test_it_reaches_inside_findings(self):
+        from app.services.agent_checkpoint_service import strip_non_finite as json_safe
+
+        state = {"findings": [{"speedup": float("nan"), "cycles": 1.5}]}
+
+        assert json_safe(state) == {"findings": [{"speedup": None, "cycles": 1.5}]}
+
+    def test_the_key_survives_rather_than_being_dropped(self):
+        """A key vanishing changes the shape a resume reads back, and a
+        missing average and an unmeasurable one are the same claim."""
+        from app.services.agent_checkpoint_service import strip_non_finite as json_safe
+
+        assert "speedup" in json_safe({"speedup": float("nan")})
+
+    def test_the_result_is_what_postgres_will_take(self):
+        import json
+
+        from app.services.agent_checkpoint_service import strip_non_finite as json_safe
+
+        payload = json_safe({"a": float("nan"), "b": [float("inf"), 2], "c": "ok"})
+
+        assert json.dumps(payload, allow_nan=False)
+
+    def test_ordinary_values_are_untouched(self):
+        from app.services.agent_checkpoint_service import strip_non_finite as json_safe
+
+        payload = {"n": 1, "f": 1.5, "s": "x", "b": True, "none": None, "l": [1, 2]}
+
+        assert json_safe(payload) == payload

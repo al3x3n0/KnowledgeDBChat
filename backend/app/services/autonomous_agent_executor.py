@@ -50,7 +50,10 @@ from app.services.agent_action_service import AgentActionService
 from app.services.agent_chain_orchestration_service import (
     AgentChainOrchestrationService,
 )
-from app.services.agent_checkpoint_service import AgentCheckpointService
+from app.services.agent_checkpoint_service import (
+    AgentCheckpointService,
+    strip_non_finite,
+)
 from app.services.agent_coding_runner_service import AgentCodingRunnerService
 from app.services.agent_decision_parser import AgentDecisionParser
 from app.services.agent_deterministic_runner_registry import (
@@ -674,7 +677,7 @@ class _AutonomousRuntimeAdapter:
                 )[-200:]
                 exec_strategy["approval_checkpoints"] = approval_summary
                 results_payload["approval_checkpoint"] = checkpoint_payload
-                self.job.results = results_payload
+                self.job.results = strip_non_finite(results_payload)
                 self.executor._persist_runtime_execution_strategy(self.job, self.state)
                 self.job.status = AgentJobStatus.PAUSED.value
                 self.job.current_phase = "awaiting_approval"
@@ -3656,7 +3659,7 @@ class AutonomousAgentExecutor:
         rows.append(row)
         execution["step_events"] = rows[-max(50, min(max_events, 2000)) :]
         results["execution_strategy"] = execution
-        job.results = results
+        job.results = strip_non_finite(results)
 
     def _sync_runtime_execution_strategy(
         self,
@@ -3719,7 +3722,7 @@ class AutonomousAgentExecutor:
         results["execution_strategy"] = self._sync_runtime_execution_strategy(
             job, state, execution
         )
-        job.results = results
+        job.results = strip_non_finite(results)
 
     def _append_execution_graph_node(
         self, state: Dict[str, Any], node: Dict[str, Any], *, max_nodes: int = 500

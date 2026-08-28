@@ -1,0 +1,97 @@
+# Rebuild this image WITHOUT a source build, from a container that already
+# has one.
+#
+# The from-source Dockerfile beside this takes hours. When the image is lost
+# but a build tree survives -- and one did, in a stopped container Docker
+# reports as 8.7 GB of "reclaimable" space -- this assembles the runtime stage
+# alone and takes about two minutes.
+#
+# Prepare the context first, from the container holding the build tree:
+#
+#   B=$(mktemp -d)
+#   docker exec <ctr> sh -c 'ldd /src/gem5/build/ARM/gem5.opt \
+#       | awk "/=> \//{print \$3}" | while read -r lib; do \
+#           dpkg -S "$(readlink -f "$lib")" 2>/dev/null || true; done \
+#       | cut -d: -f1 | sort -u' > $B/runtime-packages.txt
+#   docker cp <ctr>:/src/gem5/build/ARM/gem5.opt $B/gem5.opt
+#   docker cp <ctr>:/src/gem5/configs $B/configs
+#   cp plugin/gem5_rp_plugin_abi.h plugin/gem5_pf_plugin_abi.h $B/
+#   cp Dockerfile.from-build-tree $B/Dockerfile
+#   docker build --platform linux/arm64 -t <image> $B
+#
+# The package list is derived rather than written down: naming the runtime
+# packages by hand means writing libprotobuf32, libhdf5-103-1, libcapstone4 --
+# soname versions that are release-specific and go stale silently, leaving an
+# image that builds and then cannot start gem5.
+#
+FROM debian:bookworm-slim
+
+ENV DEBIAN_FRONTEND=noninteractive
+
+COPY runtime-packages.txt /tmp/runtime-packages.txt
+
+# gcc compiles the workload; g++ compiles plugins and the C++ corpus. On
+# bookworm g++ pulls libstdc++-12-dev, which carries the static libstdc++.a
+# that -static needs -- the compiler alone is not enough and the two fail
+# differently.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        gcc g++ libc6-dev python3 binutils \
+        $(tr '\n' ' ' < /tmp/runtime-packages.txt) \
+    && rm -rf /var/lib/apt/lists/* /tmp/runtime-packages.txt
+
+COPY gem5.opt /opt/gem5/build/ARM/gem5.opt
+COPY configs /opt/gem5/configs
+
+# NOT stripped. The symbols are what turn a panic into a diagnosis, and this
+# gem5 loads agent-written C++ into its own address space, so panics are the
+# expected failure rather than a remote possibility.
+
+# Both plugin contracts, on the include path so a plugin compiles with no -I.
+COPY gem5_rp_plugin_abi.h /usr/local/include/gem5_rp_plugin_abi.h
+COPY gem5_pf_plugin_abi.h /usr/local/include/gem5_pf_plugin_abi.h
+
+# Asserted here rather than discovered in an agent's run three layers up.
+RUN test -f /opt/gem5/configs/deprecated/example/se.py
+
+RUN set -eux; \
+    cd /tmp; \
+    printf 'int main(void){return 0;}\n' > probe.c; \
+    gcc -O2 -static -o probe_c probe.c; \
+    printf '#include <string>\nint main(){ std::string s="x"; return (int)s.size()-1; }\n' > probe.cc; \
+    g++ -O2 -static -std=c++17 -o probe_cc probe.cc; \
+    ./probe_c; ./probe_cc
+
+# A real simulation of a real binary, in the configuration the tool uses.
+RUN set -eux; \
+    /opt/gem5/build/ARM/gem5.opt --outdir=/tmp/m5out \
+        /opt/gem5/configs/deprecated/example/se.py \
+        --cmd=/tmp/probe_c --cpu-type=O3CPU --caches --l2cache; \
+    grep -q 'simInsts' /tmp/m5out/stats.txt; \
+    rm -rf /tmp/m5out /tmp/probe*
+
+# And that a plugin of each kind compiles against its header with no gem5
+# source present. A toolchain installed but unusable is how this image's C++
+# support was blocked for weeks.
+RUN set -eux; \
+    cd /tmp; \
+    printf '#include <gem5_rp_plugin_abi.h>\n' > rp.cc; \
+    printf 'static Gem5RpPolicy *c(const char*x){(void)x;return (Gem5RpPolicy*)1;}\n' >> rp.cc; \
+    printf 'static void d(Gem5RpPolicy*s){(void)s;}\n' >> rp.cc; \
+    printf 'static void iv(Gem5RpPolicy*s,Gem5RpEntry*e){(void)s;e->touches=0;}\n' >> rp.cc; \
+    printf 'static void t(Gem5RpPolicy*s,Gem5RpEntry*e,uint64_t k){(void)s;e->last_touch_tick=k;}\n' >> rp.cc; \
+    printf 'static void r(Gem5RpPolicy*s,Gem5RpEntry*e,uint64_t k){(void)s;e->last_touch_tick=k;}\n' >> rp.cc; \
+    printf 'static size_t g(Gem5RpPolicy*s,Gem5RpEntry*const*e,size_t n){(void)s;(void)e;(void)n;return 0;}\n' >> rp.cc; \
+    printf 'static const Gem5RpApiV1 A={GEM5_RP_ABI_VERSION,c,d,iv,t,r,g};\n' >> rp.cc; \
+    printf 'extern "C" const Gem5RpApiV1 *gem5_rp_api_v1(void){return &A;}\n' >> rp.cc; \
+    g++ -shared -fPIC -O2 -std=c++17 -o rp.so rp.cc; test -s rp.so; \
+    printf '#include <gem5_pf_plugin_abi.h>\n' > pf.cc; \
+    printf 'static Gem5PfPrefetcher *c(const char*x,uint32_t b){(void)x;(void)b;return (Gem5PfPrefetcher*)1;}\n' >> pf.cc; \
+    printf 'static void d(Gem5PfPrefetcher*s){(void)s;}\n' >> pf.cc; \
+    printf 'static size_t k(Gem5PfPrefetcher*s,const Gem5PfAccess*a,Gem5PfRequest*o,size_t m){(void)s;(void)a;(void)o;(void)m;return 0;}\n' >> pf.cc; \
+    printf 'static const Gem5PfApiV1 B={GEM5_PF_ABI_VERSION,c,d,k};\n' >> pf.cc; \
+    printf 'extern "C" const Gem5PfApiV1 *gem5_pf_api_v1(void){return &B;}\n' >> pf.cc; \
+    g++ -shared -fPIC -O2 -std=c++17 -o pf.so pf.cc; test -s pf.so; \
+    rm -f /tmp/rp.* /tmp/pf.*
+
+ENV HOME=/work
+WORKDIR /work

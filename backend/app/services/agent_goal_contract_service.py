@@ -88,6 +88,12 @@ class AgentGoalContractService:
         for finding in findings:
             if not isinstance(finding, dict):
                 continue
+            # Findings recalled from an earlier run are citable evidence but
+            # not work this run did. Counting them would make the cheapest way
+            # to satisfy any contract a lookup, and a contract a lookup can
+            # satisfy has stopped asking for anything.
+            if finding.get("recalled"):
+                continue
             ftype = str(finding.get("type") or "").strip()
             if ftype:
                 finding_types[ftype] = int(finding_types.get(ftype, 0) or 0) + 1

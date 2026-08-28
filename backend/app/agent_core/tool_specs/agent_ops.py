@@ -291,9 +291,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="calibration_report",
         description="Read how past predictions held up, overall and grouped by "
-            "methodology tag. Use this before choosing an approach: it says "
-            "which methods have been predicting well and which have not, "
-            "including how many predictions were never checked.",
+        "methodology tag. Use this before choosing an approach: it says "
+        "which methods have been predicting well and which have not, "
+        "including how many predictions were never checked.",
         parameters={
             "type": "object",
             "properties": {
@@ -304,6 +304,57 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": [],
         },
         job_types=(),
+    ),
+    ToolSpec(
+        name="recall_prior_findings",
+        description="Read what EARLIER runs measured, with the numbers intact. Every "
+        "run's findings are stored -- the cycles, the speedup, the subject, "
+        "the measurement source -- and this is the only way to reach them; "
+        "get_research_findings returns this run's own findings and nothing "
+        "else. Use it before measuring something that may already have been "
+        "measured, and to get a baseline you would otherwise re-derive. What "
+        "comes back is citable in derived_from and each finding says which "
+        "job produced it. It does NOT count toward this run's goal contract: "
+        "recalling a number is not establishing one. Call with no filters to "
+        "see what kinds of evidence exist before asking for a kind.",
+        parameters={
+            "type": "object",
+            "properties": {
+                "finding_types": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": (
+                        "Which evidence types to return, e.g. "
+                        "['mechanism_comparison', 'headroom_bound']. Omit to "
+                        "see every type earlier runs produced, which is the "
+                        "way to learn the vocabulary -- the types are whatever "
+                        "the tools that ran chose to emit."
+                    ),
+                },
+                "subject": {
+                    "type": "string",
+                    "description": (
+                        "Substring matched against a finding's subject, title "
+                        "and measurement source, e.g. 'attention' or 'O3CPU'."
+                    ),
+                },
+                "job_type": {
+                    "type": "string",
+                    "description": "Only look at jobs of this type (optional)",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "How many findings to return, 1-25 (default 10)",
+                },
+            },
+            "required": [],
+        },
+        effects="read",
+        cost_tier="low",
+        pii_risk="low",
+        produces=(),
+        typical_seconds=2,
+        consumes="nothing; returns evidence earlier runs established.",
     ),
     ToolSpec(
         name="get_job_history",

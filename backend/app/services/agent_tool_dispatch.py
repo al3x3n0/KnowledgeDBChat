@@ -5871,6 +5871,61 @@ def build_autonomous_document_authoring_provider(executor: Any) -> FunctionToolP
 def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvider:
     """Observability, analytics, and conditional tools for AutonomousAgentExecutor."""
 
+    async def _recall_prior_findings(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        from app.services import agent_prior_findings
+
+        job = ctx.job
+        types = params.get("finding_types")
+        if isinstance(types, str):
+            types = [t.strip() for t in types.split(",") if t.strip()]
+
+        outcome = await agent_prior_findings.recall(
+            db=ctx.db,
+            user_id=job.user_id,
+            exclude_job_id=job.id,
+            finding_types=[str(t) for t in types] if isinstance(types, list) else None,
+            subject=str(params.get("subject") or ""),
+            job_type=str(params.get("job_type") or ""),
+            limit=int(params.get("limit", 10) or 10),
+        )
+
+        # Asked with no filter and nothing matched, the useful answer is the
+        # vocabulary rather than an empty list: a caller cannot guess type
+        # names that are whatever earlier tools happened to emit.
+        if not outcome["findings"]:
+            available = await agent_prior_findings.available_types(
+                db=ctx.db, user_id=job.user_id, exclude_job_id=job.id
+            )
+            return {
+                "success": True,
+                "data": {"findings": [], "count": 0, "available_types": available},
+                "message": (
+                    "No earlier finding matched. Evidence types this user's "
+                    "previous runs did produce: "
+                    + (
+                        ", ".join(f"{k} ({v})" for k, v in available.items())
+                        or "none yet"
+                    )
+                ),
+            }
+
+        # Returned under `findings` so they enter state the way every other
+        # tool's findings do -- that is what makes them citable in
+        # derived_from. Each carries recalled=True, which keeps them out of
+        # the goal contract's count.
+        return {
+            "success": True,
+            "data": {
+                "count": outcome["count"],
+                "types_found": outcome["types_found"],
+                "jobs_scanned": outcome["jobs_scanned"],
+                "note": outcome["note"],
+            },
+            "findings": outcome["findings"],
+        }
+
     async def _get_job_history(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -6612,6 +6667,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
         modes={"autonomous"},
         handlers={
             "get_job_history": _get_job_history,
+            "recall_prior_findings": _recall_prior_findings,
             "get_job_metrics": _get_job_metrics,
             "get_tool_usage_stats": _get_tool_usage_stats,
             "get_tool_failure_analysis": _get_tool_failure_analysis,

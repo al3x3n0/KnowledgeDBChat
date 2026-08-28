@@ -108,7 +108,7 @@ database that already has a revision recorded.
 ### Tech Stack
 - **Backend**: FastAPI + SQLAlchemy 2.0 (async) + PostgreSQL + Redis + Celery
 - **Frontend**: React 18 + TypeScript (CRA) + Tailwind CSS + React Router 6; Zustand (workflow editor state), React Query (server cache), ReactFlow + Dagre (graph/workflow canvases), Tiptap (rich text), react-hook-form, react-hot-toast
-- **Vector Store**: Qdrant (default, runs as a service) or ChromaDB (embedded), sentence-transformers embeddings
+- **Vector Store**: Qdrant (default, runs as a service); ChromaDB (embedded) is still supported by the code but is no longer installed by default — it brings 173 MB of transitive dependencies for a backend this project does not use, so `pip install chromadb==0.4.18` first. Embeddings via sentence-transformers
 - **LLM**: Ollama (local), DeepSeek, OpenAI, Anthropic, Qwen (DashScope), or Kimi (Moonshot), selected by `LLM_PROVIDER`; per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
 - **Storage**: MinIO (S3-compatible object storage)
 - **Transcription**: OpenAI Whisper (optional speaker diarization via pyannote)

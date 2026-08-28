@@ -112,7 +112,14 @@ class Settings(BaseSettings):
     CHROMA_COLLECTION_NAME: str = "knowledge_base"
 
     # Vector store provider
-    # Supported: "chroma" (embedded), "qdrant" (service)
+    # Supported: "qdrant" (service, the default) and "chroma" (embedded).
+    #
+    # chromadb is NOT installed by default. It brings 173 MB -- kubernetes,
+    # onnxruntime, pulsar-client and the rest -- for a backend this project
+    # does not use, so it was dropped from requirements.txt. The code still
+    # supports it: `pip install chromadb==0.4.18` and set this to "chroma".
+    # Selecting it without installing it raises with the import error rather
+    # than failing obscurely later.
     VECTOR_STORE_PROVIDER: str = "qdrant"
 
     # Qdrant (when VECTOR_STORE_PROVIDER="qdrant")

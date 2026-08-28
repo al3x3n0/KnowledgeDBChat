@@ -47,6 +47,21 @@ upgrades until the ABI version changes.
 
 ## Applying it
 
+**You almost certainly do not need this.** The plugin host is already built
+into `ghcr.io/al3x3n0/kdbc-gem5-research` -- `PluginRP` and `PluginPrefetcher`
+are SimObjects in the shipped `gem5.opt`, which links `dlopen`. Writing a new
+mechanism means compiling a `.so` against the ABI header (see *Writing a
+plugin* below) and pointing a config at it; that needs `g++` and the runtime
+image, and nothing here.
+
+This section is the one-time installation of the host into gem5's own source,
+needed only to put it into a *different* gem5 build -- an upgrade, or another
+architecture. It requires a container holding a gem5 build tree at
+`/src/gem5`, which the runtime image deliberately does not carry (no source,
+no scons, no object files -- that is most of why it is 2.9 GB rather than
+12 GB). Create one from the gem5 source Dockerfile first; the long-lived
+`gem5-build` container this was originally written against is gone.
+
 ```sh
 docker cp plugin/gem5_rp_plugin_abi.h  <ctr>:/src/gem5/src/mem/cache/replacement_policies/
 docker cp plugin/plugin_rp.hh          <ctr>:/src/gem5/src/mem/cache/replacement_policies/

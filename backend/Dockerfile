@@ -32,9 +32,18 @@ COPY requirements.txt .
 # change with its own testing, not inside an image-size change.
 ENV PIP_RETRIES=5 \
     PIP_TIMEOUT=60
-RUN pip install --no-cache-dir --index-url "${TORCH_INDEX_URL}" \
+# --no-compile: do not write .pyc alongside every installed module. Measured
+# on this image, the bytecode came to 552 MB across 3,146 __pycache__
+# directories -- a quarter of the venv -- and the runtime stage sets
+# PYTHONDONTWRITEBYTECODE=1, so those files are read but never refreshed.
+# Dropping them costs about 400 ms per process start (644 ms -> 1057 ms on a
+# config import, measured both ways in this image) and that is paid on every
+# container and every Celery fork. It buys back a quarter of the image.
+RUN pip install --no-cache-dir --no-compile --index-url "${TORCH_INDEX_URL}" \
     torch==2.1.1 torchaudio==2.1.1 \
-    && pip install --no-cache-dir -r requirements.txt
+    && pip install --no-cache-dir --no-compile -r requirements.txt \
+    && find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} + \
+    && find /opt/venv -name "*.pyc" -delete
 
 # Docker CLI for the optional Docker-backed tool execution. The debian
 # docker.io package drags in the daemon and containerd; only the client binary

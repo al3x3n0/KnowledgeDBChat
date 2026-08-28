@@ -334,6 +334,11 @@ class Settings(BaseSettings):
     KROKI_URL: str = "http://localhost:8001"  # Local Kroki Docker container
     KROKI_FALLBACK_URL: str = "https://kroki.io"  # External fallback
     KROKI_USE_FALLBACK: bool = True  # Fall back to external if local fails
+    # Whether KROKI_URL points at a Kroki *companion* (one renderer, raw POST
+    # to /svg) rather than the full gateway. The gateway bundles every diagram
+    # backend at 3.76 GB; the only caller here renders Mermaid, so the stack
+    # runs the companion alone. Set False when pointing at a real gateway.
+    KROKI_LOCAL_IS_COMPANION: bool = True
 
     # LaTeX Studio
     # Security note: compiling arbitrary TeX on the server can be dangerous (file reads, resource usage).

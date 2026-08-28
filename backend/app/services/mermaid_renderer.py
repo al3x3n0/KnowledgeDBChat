@@ -49,6 +49,16 @@ class MermaidRenderer:
             await self._client.aclose()
             self._client = None
 
+    def _is_companion(self, base_url: str) -> bool:
+        """Whether this endpoint is a Kroki companion rather than a gateway.
+
+        The two speak different shapes: a gateway takes
+        /mermaid/svg/<encoded>, a companion takes the raw source POSTed to
+        /svg. Configured rather than probed, because probing costs a failed
+        request on every render and the answer never changes at run time.
+        """
+        return bool(settings.KROKI_LOCAL_IS_COMPANION) and base_url == self._kroki_url
+
     def _encode_diagram(self, code: str) -> str:
         """
         Encode Mermaid code for Kroki API.
@@ -232,27 +242,39 @@ class MermaidRenderer:
         """
         client = await self._get_client()
         kroki_base = base_url or self._kroki_url
+        companion = self._is_companion(kroki_base)
 
-        # Method 1: GET with encoded URL (preferred for caching)
-        encoded = self._encode_diagram(code)
-        url = f"{kroki_base}/mermaid/{format}/{encoded}"
+        if not companion:
+            # A full Kroki gateway. Method 1: GET with the encoded diagram in
+            # the path, which is cacheable.
+            encoded = self._encode_diagram(code)
+            url = f"{kroki_base}/mermaid/{format}/{encoded}"
 
-        try:
-            response = await client.get(url)
+            try:
+                response = await client.get(url)
 
-            if response.status_code == 200:
-                return response.content
+                if response.status_code == 200:
+                    return response.content
 
-            # If GET fails, try POST
-            logger.warning(
-                f"Kroki GET failed with status {response.status_code}, trying POST"
-            )
+                # If GET fails, try POST
+                logger.warning(
+                    f"Kroki GET failed with status {response.status_code}, "
+                    "trying POST"
+                )
 
-        except httpx.TimeoutException:
-            logger.warning("Kroki GET timed out, trying POST")
+            except httpx.TimeoutException:
+                logger.warning("Kroki GET timed out, trying POST")
 
-        # Method 2: POST with raw code (fallback)
-        endpoint = f"{kroki_base}/mermaid/{format}"
+        # Method 2: POST the raw diagram.
+        #
+        # A Kroki companion renders one format and serves it at /svg and /png,
+        # with no `mermaid` segment and no encoded-URL form -- the gateway that
+        # provides those is 3.76 GB of diagram backends this project never
+        # asks for, since the only caller renders Mermaid. Talking to the
+        # companion directly drops it.
+        endpoint = (
+            f"{kroki_base}/{format}" if companion else f"{kroki_base}/mermaid/{format}"
+        )
         headers = {"Content-Type": "text/plain"}
 
         response = await client.post(endpoint, content=code, headers=headers)

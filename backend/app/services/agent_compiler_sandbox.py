@@ -504,8 +504,16 @@ async def benchmark_c_snippet(
             # and nothing else in this pipeline would ever notice. Measured
             # here: competing work pushed identical runs from 10s to over
             # 150s, and an orphaned container raised load for an hour.
-            'echo "__loadavg__ $(cut -d" " -f1 /proc/loadavg 2>/dev/null || echo 0)"; '
-            'echo "__cpus__ $(nproc 2>/dev/null || echo 1)"'
+            # `unknown`, not 0 and not 1. A fallback that yields a NUMBER
+            # turns "could not read the load" into "the load was zero", and
+            # zero classifies as quiet -- so an unreadable probe would bless a
+            # timing taken on a saturated host as taken on an idle one, which
+            # is the one thing this sampling exists to prevent. A non-numeric
+            # value fails the parse, leaves load_average unset, and the
+            # environment is simply not claimed.
+            'echo "__loadavg__ $(cut -d" " -f1 /proc/loadavg 2>/dev/null'
+            ' || echo unknown)"; '
+            'echo "__cpus__ $(nproc 2>/dev/null || echo unknown)"'
         )
         try:
             returncode, stdout, stderr = await _run(

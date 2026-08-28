@@ -377,8 +377,26 @@ async def model_support(image: str, cpu_type: str) -> Dict[str, Any]:
                 "run it; choose another model."
             ),
         }
+    elif not op_classes:
+        # The probe ran and told us nothing: no opClass lines, and the log did
+        # not say the model is unavailable either. `op_classes and ...` below
+        # was written to stop an empty set from looking like "every required
+        # class is missing", and it does -- but it also turns an unreadable
+        # config.ini into `usable: True, probed: True`, a check that could not
+        # tell recorded as a check that passed. Say what happened instead, and
+        # do not cache it: the next call may read the file fine.
+        return {
+            "usable": True,
+            "probed": False,
+            "detail": (
+                f"{cpu_type} could not be probed: the run produced no "
+                "opClass lines and no 'unavailable' message, so nothing was "
+                "learned about its functional units. Proceeding, but a model "
+                "missing a class glibc needs would hang rather than fail."
+            ),
+        }
     else:
-        missing = [c for c in REQUIRED_OP_CLASSES if op_classes and c not in op_classes]
+        missing = [c for c in REQUIRED_OP_CLASSES if c not in op_classes]
         if missing:
             result = {
                 "usable": False,

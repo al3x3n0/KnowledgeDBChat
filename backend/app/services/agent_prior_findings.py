@@ -22,6 +22,17 @@ predicting from an llvm-mca result it never obtained. Recalled findings enter
 the run's findings so that check keeps working unchanged, and each carries the
 job it came from, so the record says what it rests on.
 
+**A recall never reads another recall.** Recalled findings are written into
+the recalling job's own results, and that job is then in the window the next
+recall scans -- so without a guard a number is copied forward hop by hop, and
+`_provenance` rewrites `recalled_from_job` at every hop to name the previous
+*copier*. A live run recalled fifty findings all stamped as coming from one
+job, which had itself measured nothing and held thirty-two copies drawn from
+seven other jobs. The citation named a job that never ran the simulator. That
+is worse than losing the provenance, because the record still looks complete.
+Only first-hand findings are recalled; the job that measured a number is
+always still in the window, so nothing is lost by skipping the copies.
+
 **Recalled evidence never satisfies a contract.** A goal contract asking for
 two `mechanism_comparison` findings is the thing that makes a run do the work.
 If a recall could fill it, the cheapest way to satisfy any contract would be
@@ -60,6 +71,8 @@ def _matches(
     """Whether one stored finding answers the request."""
     if not isinstance(finding, dict):
         return False
+    if not _is_first_hand(finding):
+        return False
     ftype = str(finding.get("type") or "").strip()
     if not ftype:
         return False
@@ -76,6 +89,17 @@ def _matches(
         if not all(token in haystack for token in subject.lower().split()):
             return False
     return True
+
+
+def _is_first_hand(finding: Dict[str, Any]) -> bool:
+    """Whether this job measured the number, rather than recalling it.
+
+    A recall stores what it recalled into its own results, so the copies are
+    in the window the next recall scans. Following them builds a chain whose
+    every hop overwrites the source, until the record cites a job that never
+    took the measurement.
+    """
+    return not bool(finding.get("recalled"))
 
 
 def _searchable_text(finding: Dict[str, Any]) -> str:
@@ -210,7 +234,7 @@ async def available_types(
         if not isinstance(findings, list):
             continue
         for finding in findings:
-            if not isinstance(finding, dict):
+            if not isinstance(finding, dict) or not _is_first_hand(finding):
                 continue
             ftype = str(finding.get("type") or "").strip()
             if ftype:

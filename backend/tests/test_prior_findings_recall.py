@@ -226,3 +226,49 @@ class TestTheSubjectFilterSearchesTheWholeRecord:
     def test_booleans_are_not_searchable_text(self):
         """identical_stats=False must not make "false" a matching word."""
         assert prior._matches(self.REAL, [], "false") is False
+
+
+class TestARecallNeverReadsAnotherRecall:
+    """The chain a live run built, and why it is worse than losing provenance.
+
+    Recalled findings are stored in the recalling job's own results, and that
+    job is in the window the next recall scans. Run 3 came back with fifty
+    findings all stamped `recalled_from_job: a8507a15` -- a job that had
+    measured nothing and held thirty-two copies drawn from seven other jobs.
+    Every hop rewrites the source to name the previous copier, so the record
+    ends up citing a job that never ran the simulator, while still looking
+    complete.
+    """
+
+    COPY = dict(
+        MECHANISM,
+        recalled=True,
+        recalled_from_job="a8507a15-03bb-469b-ad80-ab655e0163a7",
+        recalled_from_goal="Subgoal: Extract and organize prior numeric results",
+    )
+
+    def test_a_recalled_copy_is_not_recalled_again(self):
+        assert prior._matches(self.COPY, [], "") is False
+
+    def test_the_first_hand_measurement_still_is(self):
+        """Nothing is lost by skipping copies: the job that measured the
+        number is in the same window."""
+        assert prior._matches(MECHANISM, [], "") is True
+
+    def test_a_copy_is_skipped_even_when_it_matches_the_query(self):
+        assert (
+            prior._matches(self.COPY, ["mechanism_comparison"], "TaggedPrefetcher")
+            is False
+        )
+
+    def test_copies_do_not_inflate_the_type_vocabulary(self):
+        assert prior._is_first_hand(self.COPY) is False
+        assert prior._is_first_hand(MECHANISM) is True
+
+    @pytest.mark.asyncio
+    async def test_available_types_counts_only_first_hand(self, db_session):
+        """available_types tells a caller what evidence exists. Counting
+        copies would report a corpus several times its real size."""
+        counts = await prior.available_types(db=db_session, user_id=uuid4())
+
+        assert counts == {}

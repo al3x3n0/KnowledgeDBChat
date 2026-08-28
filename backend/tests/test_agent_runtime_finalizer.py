@@ -354,3 +354,135 @@ async def test_a_failing_conclusion_does_not_cost_the_job_its_chain(monkeypatch)
     assert executor.trigger_calls == ["complete"], "the chain must still fire"
     assert job.results["conclusion"]["generated_by"] == "error"
     assert "synthesis blew up" in job.results["conclusion"]["gaps"][0]
+
+
+def _state_with(progress: int, findings=None):
+    """The minimum state finalize_job reads, at a chosen progress."""
+    return {
+        "goal_progress": progress,
+        "findings": findings if findings is not None else [],
+        "actions_taken": [],
+        "artifacts": [],
+        "execution_plan": [],
+        "step_events": [],
+        "tool_stats": {},
+        "tool_priors": {},
+        "execution_graph_nodes": [],
+        "execution_graph_edges": [],
+        "scope_events": [],
+        "scope_guard_events": [],
+        "skill_profile": {"role": "researcher"},
+        "skill_profile_metrics": {},
+        "memory_runtime": {},
+        "memory_extraction_policy": {"extract_on_statuses": []},
+        "memory_extraction": {},
+        "injected_memories": [],
+    }
+
+
+class _UnmetContractExecutor(_DummyExecutor):
+    """A contract that is enabled and not satisfied."""
+
+    def _evaluate_goal_contract(self, job, state):
+        return {
+            "enabled": True,
+            "satisfied": False,
+            "missing": ["finding_type:mechanism_comparison>=2"],
+            "contract": {},
+            "metrics": {},
+        }
+
+
+@pytest.mark.asyncio
+class TestAnUnmetContractIsNotAFinishedGoal:
+    """A live run measured nothing, recalled fifty numbers other runs had
+    measured, and was filed `completed` at 100% with its contract reporting
+    `mechanism_comparison>=2` still missing.
+
+    The contract already gates the two places a run declares victory --
+    `goal_achieved` and the autocomplete when satisfied. `goal_progress` was a
+    third road to the same verdict: the progress evaluator is an LLM judgement
+    free to return 100, and the finalizer read >= 100 as done without ever
+    consulting the contract it evaluates a few lines above.
+    """
+
+    async def _finalize(self, monkeypatch, executor, job, state):
+        monkeypatch.setattr(
+            agent_runtime_finalizer.agent_job_memory_service,
+            "extract_memories_from_job",
+            AsyncMock(return_value=[]),
+        )
+        return await finalize_job(executor, job, state, _DummyDb())
+
+    async def test_progress_100_does_not_finish_an_unmet_contract(self, monkeypatch):
+        job = _DummyJob(status="running")
+        await self._finalize(
+            monkeypatch, _UnmetContractExecutor(), job, _state_with(100)
+        )
+
+        assert job.progress != 100
+
+    async def test_the_missing_requirement_is_named_in_the_log(self, monkeypatch):
+        """Written into the results is where it already was, and where nothing
+        read it. It has to be in a field a reader sees."""
+        job = _DummyJob(status="running")
+        await self._finalize(
+            monkeypatch, _UnmetContractExecutor(), job, _state_with(100)
+        )
+
+        entries = [
+            e for e in job.log_entries if e.get("phase") == "completed_contract_unmet"
+        ]
+        assert entries, "an unmet contract must say so in the log"
+        assert "mechanism_comparison" in str(entries[0]["missing"])
+
+    async def test_a_satisfied_contract_still_completes_at_100(self, monkeypatch):
+        """The control. _DummyExecutor's contract is satisfied, so nothing
+        about this path changes."""
+        job = _DummyJob(status="running")
+        await self._finalize(monkeypatch, _DummyExecutor(), job, _state_with(100))
+
+        assert job.status == AgentJobStatus.COMPLETED.value
+        assert job.progress == 100
+        assert not [
+            e for e in job.log_entries if e.get("phase") == "completed_contract_unmet"
+        ]
+
+    async def test_an_errored_run_is_still_a_failure(self, monkeypatch):
+        """An unmet contract must not upgrade a failing run to completed."""
+        job = _DummyJob(status="running")
+        job.error_count = 6
+        await self._finalize(
+            monkeypatch, _UnmetContractExecutor(), job, _state_with(20)
+        )
+
+        assert job.status == AgentJobStatus.FAILED.value
+
+    async def test_a_paused_run_stays_paused(self, monkeypatch):
+        job = _DummyJob(status=AgentJobStatus.PAUSED.value)
+        await self._finalize(
+            monkeypatch, _UnmetContractExecutor(), job, _state_with(100)
+        )
+
+        assert job.status == AgentJobStatus.PAUSED.value
+
+    async def test_a_cancelled_run_stays_cancelled(self, monkeypatch):
+        job = _DummyJob(status=AgentJobStatus.CANCELLED.value)
+        await self._finalize(
+            monkeypatch, _UnmetContractExecutor(), job, _state_with(100)
+        )
+
+        assert job.status == AgentJobStatus.CANCELLED.value
+
+    async def test_a_disabled_contract_does_not_gate_anything(self, monkeypatch):
+        """Most jobs have no contract. They must finish exactly as before."""
+
+        class _NoContract(_DummyExecutor):
+            def _evaluate_goal_contract(self, job, state):
+                return {"enabled": False, "satisfied": True, "missing": []}
+
+        job = _DummyJob(status="running")
+        await self._finalize(monkeypatch, _NoContract(), job, _state_with(100))
+
+        assert job.status == AgentJobStatus.COMPLETED.value
+        assert job.progress == 100

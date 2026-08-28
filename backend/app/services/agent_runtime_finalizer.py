@@ -19,7 +19,6 @@ from app.services.autonomous_rnd_trajectory_service import (
     autonomous_rnd_trajectory_adapter,
 )
 
-
 #: Marks the approval payload written when a chain waits on a person, so the
 #: approve handler can tell it from a mid-run checkpoint and start the chain
 #: instead of re-running a job that has already done its work.
@@ -111,7 +110,51 @@ async def finalize_job(
         logger.warning(f"Failed to score methods for job {job.id}: {exc}")
     existing_status = str(job.status or "")
 
-    if existing_status == AgentJobStatus.PAUSED.value:
+    # An enabled contract that is not satisfied cannot be filed as a finished
+    # goal, whatever the run believes about itself. The contract already gates
+    # the two places a run declares victory -- `goal_achieved` and the
+    # autocomplete when it is satisfied -- but `goal_progress` is a third road
+    # to the same verdict: the progress evaluator is an LLM judgement, free to
+    # return 100, and this function used to read >= 100 as "done" without ever
+    # consulting the contract it evaluates immediately above. A live run
+    # measured nothing at all, recalled fifty numbers other runs had measured,
+    # and was recorded `completed` at 100% with `mechanism_comparison>=2` still
+    # missing. The unmet requirement was written into the results, correctly,
+    # where nothing read it.
+    #
+    # This is the same "completed with limits" the resource caps use: the run
+    # is over and it did work, so it is not a failure -- but the goal is not
+    # met, and the record has to say so in the field a reader actually sees.
+    contract_unmet = bool(contract_eval.get("enabled")) and not bool(
+        contract_eval.get("satisfied")
+    )
+    # A run that errored its way to a stop is still a failure; an unmet
+    # contract does not upgrade it to "completed with an unmet contract".
+    if (
+        contract_unmet
+        and existing_status
+        not in (
+            AgentJobStatus.PAUSED.value,
+            AgentJobStatus.CANCELLED.value,
+        )
+        and int(getattr(job, "error_count", 0) or 0) < 5
+    ):
+        missing = [str(x)[:80] for x in (contract_eval.get("missing") or [])[:6]]
+        job.status = AgentJobStatus.COMPLETED.value
+        job.add_log_entry(
+            {
+                "phase": "completed_contract_unmet",
+                "reason": (
+                    "The run ended with its goal contract unsatisfied: "
+                    + (", ".join(missing) or "requirements not met")
+                ),
+                "missing": missing,
+            }
+        )
+        # Not 100. The goal was not reached, and a progress bar that says it
+        # was is the part a reader believes without opening the results.
+        state["goal_progress"] = min(int(state.get("goal_progress", 0) or 0), 99)
+    elif existing_status == AgentJobStatus.PAUSED.value:
         job.status = AgentJobStatus.PAUSED.value
     elif existing_status == AgentJobStatus.CANCELLED.value:
         job.status = AgentJobStatus.CANCELLED.value

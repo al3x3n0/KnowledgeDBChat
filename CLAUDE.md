@@ -267,7 +267,7 @@ Main services in `docker-compose.yml`:
 - `kroki-mermaid` (8001) - Mermaid rendering
 - `video-streamer` - Go microservice for video streaming (in `video-streamer/`)
 
-Variants: `docker-compose.prod.yml` (gunicorn, healthchecks, adds `celery_beat` scheduler), `docker-compose.test.yml` (isolated test stack on shifted ports), `docker-compose.docker-tools.yml` (mounts Docker socket for Docker-based tool execution).
+Variants: `docker-compose.prod.yml` (gunicorn, healthchecks, adds `celery_beat` scheduler — note the dev stack has **no beat**, so nothing runs `check_stalled_agent_jobs`: a job whose worker died, typically from restarting the celery container, stays `running` for ever until you invoke that task by hand, which requeues it to resume from its last checkpoint rather than failing it), `docker-compose.test.yml` (isolated test stack on shifted ports), `docker-compose.docker-tools.yml` (mounts Docker socket for Docker-based tool execution).
 
 Access points:
 - Frontend: http://localhost:3000

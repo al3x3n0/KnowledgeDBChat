@@ -4786,12 +4786,56 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         if not job_id:
             return {"error": "No job in context; there is no bundle to verify"}
 
+        # An earlier run's bundle, when asked for. recall_prior_findings hands
+        # back the job that produced a number; without this, a run could reuse
+        # that number but not check the evidence under it, which is trust
+        # rather than verification -- in a project whose history includes a
+        # prediction cited from a tool result that had failed.
+        requested = str(params.get("job_id") or "").strip()
+        other_job = None
+        if requested and requested != str(job_id):
+            from uuid import UUID as _UUID
+
+            from app.models.agent_job import AgentJob as _AgentJob
+
+            try:
+                requested_uuid = _UUID(requested)
+            except (ValueError, AttributeError, TypeError):
+                return {
+                    "error": (
+                        f"job_id {requested!r} is not a job id. Use the "
+                        "`recalled_from_job` value that recall_prior_findings "
+                        "returns with each finding."
+                    )
+                }
+            found = await ctx.db.execute(
+                select(_AgentJob).where(
+                    _AgentJob.id == requested_uuid,
+                    # Scoped to the owner. A bundle holds whatever a run
+                    # measured, and jobs belong to users.
+                    _AgentJob.user_id == ctx.job.user_id,
+                )
+            )
+            other_job = found.scalar_one_or_none()
+            if other_job is None:
+                return {
+                    "error": (
+                        f"No job {requested} belonging to this user. A bundle "
+                        "can only be verified by the owner of the run that "
+                        "wrote it."
+                    )
+                }
+            job_id = other_job.id
+
         integrity = bundle.verify_integrity(str(job_id))
         if not integrity["entries"]:
             return {
                 "error": (
-                    "This run has recorded no evidence yet, so there is nothing "
-                    "to verify. Run the measurements first."
+                    f"Job {job_id} recorded no evidence, so there is nothing "
+                    "to verify."
+                    if other_job is not None
+                    else "This run has recorded no evidence yet, so there is "
+                    "nothing to verify. Run the measurements first."
                 )
             }
 
@@ -4810,6 +4854,14 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         verdict = replay.get("verdict") if replay else "not replayed"
         return {
             "success": True,
+            "verified_job_id": str(job_id),
+            "verified_own_run": other_job is None,
+            # Where the bundle actually is. A host path in a gitignored .env
+            # sent two days of bundles into the container's own filesystem, to
+            # be destroyed on the next recreate, while this tool read the same
+            # wrong path and reported success every time. The location is the
+            # one fact that would have made that visible.
+            "bundle_root": str(bundle.BUNDLE_ROOT),
             "data": {
                 "bundle": summary,
                 "integrity": integrity,

@@ -1383,7 +1383,7 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="verify_run_bundle",
-        description="Check this run's evidence bundle, which is written as the run "
+        description="Check an evidence bundle -- this run's by default, or an earlier run's by passing its job_id. Bundles are written as the run "
         "goes: every measurement call, its parameters, its result and the "
         "image it ran in. Without replay it confirms the artifacts are the "
         "ones this run produced. With replay=true it re-runs each recorded "
@@ -1394,6 +1394,16 @@ SPECS: tuple[ToolSpec, ...] = (
         parameters={
             "type": "object",
             "properties": {
+                "job_id": {
+                    "type": "string",
+                    "description": (
+                        "Verify an earlier run's bundle instead of this one's. "
+                        "Use the `recalled_from_job` value that "
+                        "recall_prior_findings returns with each finding, to "
+                        "check the evidence under a number before building on "
+                        "it. Only runs belonging to you can be verified."
+                    ),
+                },
                 "replay": {
                     "type": "boolean",
                     "description": (

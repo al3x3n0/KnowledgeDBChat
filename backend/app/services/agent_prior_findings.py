@@ -66,13 +66,39 @@ def _matches(
     if types and ftype not in types:
         return False
     if subject:
-        haystack = " ".join(
-            str(finding.get(key) or "")
-            for key in ("subject", "title", "measurement_source")
-        ).lower()
-        if subject.lower() not in haystack:
+        # Every word, anywhere in the record -- not the phrase, and not in
+        # three chosen fields. A live run asked for "L2 prefetcher" and got
+        # nothing while the database held `l2.prefetcher=StridePrefetcher`:
+        # the words were there, adjacent nowhere, and in a field the filter
+        # was not reading. A filter narrower than the record it searches
+        # returns an empty answer that looks like an absence of evidence.
+        haystack = _searchable_text(finding)
+        if not all(token in haystack for token in subject.lower().split()):
             return False
     return True
+
+
+def _searchable_text(finding: Dict[str, Any]) -> str:
+    """Every string in the record, lowercased, for matching against.
+
+    Numbers included, so a subject can name one: a caller looking for the run
+    that measured 1.7054 should be able to ask for it.
+    """
+    parts: List[str] = []
+
+    def walk(value: Any) -> None:
+        if isinstance(value, dict):
+            for key, item in value.items():
+                parts.append(str(key))
+                walk(item)
+        elif isinstance(value, (list, tuple)):
+            for item in value:
+                walk(item)
+        elif value is not None and not isinstance(value, bool):
+            parts.append(str(value))
+
+    walk(finding)
+    return " ".join(parts).lower()
 
 
 def _provenance(job: Any, finding: Dict[str, Any]) -> Dict[str, Any]:

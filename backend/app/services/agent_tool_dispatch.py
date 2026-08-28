@@ -5950,17 +5950,38 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             available = await agent_prior_findings.available_types(
                 db=ctx.db, user_id=job.user_id, exclude_job_id=job.id
             )
+            # Name the types that do not exist, rather than reporting a
+            # generic miss beside a list. A live run asked for 'measurement',
+            # then 'record_measurement', then 'benchmark' -- none of which is
+            # a type anything emits -- while the list of real ones was sitting
+            # in the reply each time. Saying "you asked for X and there is no
+            # X" is a different sentence from "nothing matched".
+            asked = [t for t in (types or []) if isinstance(t, str)]
+            unknown = [t for t in asked if t not in available]
+            catalogue = (
+                ", ".join(f"{k} ({v})" for k, v in available.items()) or "none yet"
+            )
+            if unknown:
+                message = (
+                    f"No such evidence type: {', '.join(unknown)}. Earlier runs "
+                    f"produced these and only these: {catalogue}. Ask again "
+                    "with one of those names."
+                )
+            elif asked:
+                message = (
+                    f"{', '.join(asked)} exist, but nothing matched the "
+                    "subject filter. Try fewer words, or drop `subject` to see "
+                    "everything of that type."
+                )
+            else:
+                message = (
+                    "No earlier finding matched. Evidence types this user's "
+                    f"previous runs did produce: {catalogue}"
+                )
             return {
                 "success": True,
                 "data": {"findings": [], "count": 0, "available_types": available},
-                "message": (
-                    "No earlier finding matched. Evidence types this user's "
-                    "previous runs did produce: "
-                    + (
-                        ", ".join(f"{k} ({v})" for k, v in available.items())
-                        or "none yet"
-                    )
-                ),
+                "message": message,
             }
 
         # Returned under `findings` so they enter state the way every other

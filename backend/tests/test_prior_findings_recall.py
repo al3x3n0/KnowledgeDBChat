@@ -184,3 +184,45 @@ class TestTheQuery:
         result = await prior.recall(db=db_session, user_id=uuid4())
 
         assert "NOT count toward" in result["note"]
+
+
+class TestTheSubjectFilterSearchesTheWholeRecord:
+    """A live run asked for "L2 prefetcher" and got nothing, while the
+    database held `l2.prefetcher=StridePrefetcher`: the words were there,
+    adjacent nowhere, and in a field the filter was not reading. A filter
+    narrower than the record it searches returns an empty answer that reads as
+    an absence of evidence."""
+
+    REAL = {
+        "type": "mechanism_comparison",
+        "subject": "shipped_stride_l2_control",
+        "title": "shipped_stride_l2_control: 1.5248x (644242 -> 422497 cycles)",
+        "mechanisms": ["l2.prefetcher=StridePrefetcher"],
+        "speedup": 1.5248,
+        "identical_stats": False,
+    }
+
+    def test_the_query_that_found_nothing_now_finds_it(self):
+        assert prior._matches(self.REAL, [], "L2 prefetcher") is True
+
+    def test_word_order_does_not_matter(self):
+        assert prior._matches(self.REAL, [], "prefetcher l2") is True
+
+    def test_a_word_only_in_a_nested_field_still_matches(self):
+        """StridePrefetcher appears only inside `mechanisms`."""
+        assert prior._matches(self.REAL, [], "StridePrefetcher") is True
+
+    def test_a_number_can_be_searched_for(self):
+        assert prior._matches(self.REAL, [], "1.5248") is True
+
+    def test_every_word_must_appear(self):
+        """Matching any word would return most of the corpus for most
+        queries, which is the same uselessness in the other direction."""
+        assert prior._matches(self.REAL, [], "l2 branch predictor") is False
+
+    def test_an_unrelated_query_still_misses(self):
+        assert prior._matches(self.REAL, [], "branch predictor") is False
+
+    def test_booleans_are_not_searchable_text(self):
+        """identical_stats=False must not make "false" a matching word."""
+        assert prior._matches(self.REAL, [], "false") is False

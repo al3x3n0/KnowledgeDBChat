@@ -35,15 +35,26 @@ class Settings(BaseSettings):
     CELERY_DB_POOL_TIMEOUT_SECONDS: int = 10
 
     # LLM Configuration
-    # Provider: 'ollama' (local), 'deepseek', 'openai', 'anthropic',
-    # 'qwen' (DashScope), or 'kimi' (Moonshot AI)
-    LLM_PROVIDER: str = "ollama"
+    # Provider: 'deepseek', 'openai', 'anthropic', 'qwen' (DashScope),
+    # 'kimi' (Moonshot AI), or 'ollama' (local).
+    #
+    # Defaults to deepseek because the stack no longer bundles Ollama. The
+    # previous default named a service nothing starts, so a stack brought up
+    # without a .env pointed at a dead host and failed with a connection
+    # refused that said nothing about configuration. Failing on a missing
+    # DEEPSEEK_API_KEY at least names what is missing.
+    LLM_PROVIDER: str = "deepseek"
+    # Only used when LLM_PROVIDER is 'ollama'. Point it at an instance you run
+    # yourself; nothing in the compose stacks serves this.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    DEFAULT_MODEL: str = (
-        "llama3.2:1b"  # Smallest model for Mac compatibility (~1GB, best for 8GB Mac)
-    )
-    # Alternative models: "llama3.2:3b" (~2GB), "phi3:mini" (~2GB), "gemma:2b" (~1.5GB)
-    # For more powerful systems: "llama2" (~4GB), "mistral:7b" (~4GB), "llama3.2" (~4GB)
+    # Must name a model the configured provider actually serves: it reaches
+    # the request as `model or settings.<PROVIDER>_MODEL`, so an Ollama model
+    # name under LLM_PROVIDER=deepseek is sent to DeepSeek and rejected with a
+    # 400 naming the three it accepts.
+    DEFAULT_MODEL: str = "deepseek-v4-pro"
+    # For Ollama, models sized for a Mac: "llama3.2:1b" (~1GB, best for 8GB),
+    # "llama3.2:3b" (~2GB), "phi3:mini" (~2GB), "gemma:2b" (~1.5GB); on more
+    # memory, "llama2" (~4GB), "mistral:7b" (~4GB), "llama3.2" (~4GB).
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     # Alternative embedding models: "all-mpnet-base-v2" (better quality), "multilingual-mpnet-base-v2" (multilingual)
     EMBEDDING_MODEL_OPTIONS: List[str] = [
@@ -159,6 +170,10 @@ class Settings(BaseSettings):
     CONFLUENCE_API_TOKEN: Optional[str] = None
 
     # Vision
+    #
+    # OLLAMA ONLY. The image-analysis tool posts Ollama's payload shape to
+    # {OLLAMA_BASE_URL}/api/generate, so this names an Ollama model whatever
+    # LLM_PROVIDER says, and the tool needs an Ollama instance to reach.
     VISION_MODEL: str = (
         "llava"  # Vision-capable model for image analysis (e.g. llava, llava:13b)
     )

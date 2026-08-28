@@ -109,7 +109,7 @@ database that already has a revision recorded.
 - **Backend**: FastAPI + SQLAlchemy 2.0 (async) + PostgreSQL + Redis + Celery
 - **Frontend**: React 18 + TypeScript (CRA) + Tailwind CSS + React Router 6; Zustand (workflow editor state), React Query (server cache), ReactFlow + Dagre (graph/workflow canvases), Tiptap (rich text), react-hook-form, react-hot-toast
 - **Vector Store**: Qdrant (default, runs as a service); ChromaDB (embedded) is still supported by the code but is no longer installed by default — it brings 173 MB of transitive dependencies for a backend this project does not use, so `pip install chromadb==0.4.18` first. Embeddings via sentence-transformers
-- **LLM**: DeepSeek, OpenAI, Anthropic, Qwen (DashScope), Kimi (Moonshot), or Ollama, selected by `LLM_PROVIDER`. The stack no longer bundles Ollama — the provider still works against an instance you run yourself via `OLLAMA_BASE_URL`, but note `LLM_PROVIDER` still *defaults* to `ollama`, so set it; per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
+- **LLM**: DeepSeek (default), OpenAI, Anthropic, Qwen (DashScope), Kimi (Moonshot), or Ollama, selected by `LLM_PROVIDER`. The stack no longer bundles Ollama — that provider still works against an instance you run yourself via `OLLAMA_BASE_URL`. `DEFAULT_MODEL` must name a model the chosen provider serves, since it reaches the request as `model or <PROVIDER>_MODEL`; per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
 - **Storage**: MinIO (S3-compatible object storage)
 - **Transcription**: OpenAI Whisper (optional speaker diarization via pyannote)
 - **Diagrams**: Mermaid, rendered by Kroki's mermaid companion container (the full Kroki gateway was 3.76 GB to proxy to it); falls back to kroki.io
@@ -243,7 +243,7 @@ Follow Conventional Commits as seen in history: `fix(ui): ...`, `feat(admin): ..
 
 Backend configuration is in `backend/.env` (copy from `env.example`). `core/config.py` has 150+ settings; major groups:
 - `DATABASE_URL`, `REDIS_URL`, `DB_*` - Database connections and pooling
-- `LLM_PROVIDER` - `ollama`, `deepseek`, `openai`, `anthropic`, `qwen`, or `kimi`; `OLLAMA_BASE_URL`, `DEFAULT_MODEL`, `DEEPSEEK_*`, `OPENAI_*`, `ANTHROPIC_*`, `QWEN_*`, `KIMI_*`
+- `LLM_PROVIDER` - `deepseek` (default), `openai`, `anthropic`, `qwen`, `kimi`, or `ollama`; `OLLAMA_BASE_URL`, `DEFAULT_MODEL`, `DEEPSEEK_*`, `OPENAI_*`, `ANTHROPIC_*`, `QWEN_*`, `KIMI_*`
 - `RAG_*` - RAG pipeline (hybrid search, reranking, MMR, dedup, KG context, chunking)
 - `VECTOR_STORE_PROVIDER` + `QDRANT_*` / `CHROMA_*`
 - `MINIO_*` - Object storage

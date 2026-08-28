@@ -151,7 +151,7 @@ def resolve_effective_provider_model(
     Mirrors `LLMService._generate_response_once` selection logic up to the point where
     it chooses which provider branch to call.
     """
-    effective_provider = (system_provider or "ollama").strip().lower()
+    effective_provider = (system_provider or "deepseek").strip().lower()
     effective_api_url: Optional[str] = None
     effective_api_key: Optional[str] = None
 

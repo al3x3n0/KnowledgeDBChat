@@ -208,7 +208,7 @@ class LLMService:
     """Service for interacting with configured LLM provider."""
 
     def __init__(self):
-        self.provider = (settings.LLM_PROVIDER or "ollama").lower()
+        self.provider = (settings.LLM_PROVIDER or "deepseek").lower()
         self.base_url = settings.OLLAMA_BASE_URL
         self.default_model = settings.DEFAULT_MODEL
         # A single client is enough; per-request overrides set timeouts/headers

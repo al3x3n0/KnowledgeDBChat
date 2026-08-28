@@ -105,10 +105,13 @@ test-frontend-watch: ## Run frontend tests (watch mode)
 
 test: test-backend test-frontend ## Run all tests
 
-pull-model: ## Pull default Ollama model
-	$(DC) exec ollama ollama pull $(MODEL)
+pull-model: ## Pull a model into an Ollama you run yourself
+	@echo "The stack no longer bundles Ollama; this project uses an external"
+	@echo "LLM API. Point OLLAMA_BASE_URL at your own instance and pull there:"
+	@echo "  ollama pull $(MODEL)"
+	@exit 1
 
-download-models: ## Download all necessary models (Ollama, embeddings, reranking)
+download-models: ## Download embedding and reranking models
 	python scripts/download_models.py
 
 validate-env: ## Validate backend environment variables
@@ -167,8 +170,6 @@ health: ## Check health of all services
 	@echo "Video streamer:"
 	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:8080/health || echo "❌ Video streamer not responding"
 	@echo ""
-	@echo "Ollama:"
-	@curl -s http://localhost:11434/api/tags > /dev/null && echo "✅ Ollama is running" || echo "❌ Ollama not responding"
 
 dev-backend: ## Start backend in development mode (manual setup)
 	cd backend && . venv/bin/activate && uvicorn main:app --reload

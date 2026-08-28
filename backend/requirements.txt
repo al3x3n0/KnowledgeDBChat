@@ -44,7 +44,6 @@ redis==5.0.1
 
 # Data Processing
 beautifulsoup4==4.12.2
-scrapy==2.11.0
 GitPython==3.1.40
 python-multipart==0.0.6
 aiofiles==23.2.1
@@ -58,7 +57,7 @@ python-pptx>=0.6.21
 python-docx>=0.8.11
 mammoth>=1.6.0
 markdown>=3.4.0
-reportlab>=4.0.0
+reportlab>=4.2,<5
 
 # Video/Audio Transcription
 openai-whisper>=20230918
@@ -83,16 +82,12 @@ croniter>=2.0.3
 python-jose[cryptography]==3.3.0
 cryptography>=43,<45
 passlib[bcrypt]==1.7.4
-python-multipart==0.0.6
 slowapi==0.1.9
-reportlab>=4.2,<5
 
 # Directory auth (LDAP)
 ldap3==2.9.1
 
 # Web Scraping
-beautifulsoup4==4.12.2
-scrapy==2.11.0
 
 # Development
 pytest==7.4.3

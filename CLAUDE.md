@@ -29,7 +29,7 @@ make health             # Check health of all services
 make fmt                # Format backend code (black + isort)
 make lint               # Lint backend code (flake8)
 make doctor             # Validate env + health checks
-make download-models    # Download Ollama + embedding + reranking models
+make download-models    # Download embedding + reranking models
 ```
 
 ### Kubernetes / Helm
@@ -109,10 +109,10 @@ database that already has a revision recorded.
 - **Backend**: FastAPI + SQLAlchemy 2.0 (async) + PostgreSQL + Redis + Celery
 - **Frontend**: React 18 + TypeScript (CRA) + Tailwind CSS + React Router 6; Zustand (workflow editor state), React Query (server cache), ReactFlow + Dagre (graph/workflow canvases), Tiptap (rich text), react-hook-form, react-hot-toast
 - **Vector Store**: Qdrant (default, runs as a service); ChromaDB (embedded) is still supported by the code but is no longer installed by default — it brings 173 MB of transitive dependencies for a backend this project does not use, so `pip install chromadb==0.4.18` first. Embeddings via sentence-transformers
-- **LLM**: Ollama (local), DeepSeek, OpenAI, Anthropic, Qwen (DashScope), or Kimi (Moonshot), selected by `LLM_PROVIDER`; per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
+- **LLM**: DeepSeek, OpenAI, Anthropic, Qwen (DashScope), Kimi (Moonshot), or Ollama, selected by `LLM_PROVIDER`. The stack no longer bundles Ollama — the provider still works against an instance you run yourself via `OLLAMA_BASE_URL`, but note `LLM_PROVIDER` still *defaults* to `ollama`, so set it; per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
 - **Storage**: MinIO (S3-compatible object storage)
 - **Transcription**: OpenAI Whisper (optional speaker diarization via pyannote)
-- **Diagrams**: Kroki service (Mermaid/PlantUML) with external fallback
+- **Diagrams**: Mermaid, rendered by Kroki's mermaid companion container (the full Kroki gateway was 3.76 GB to proxy to it); falls back to kroki.io
 
 ### Backend Structure (`backend/app/`)
 - `api/endpoints/` - ~57 FastAPI route modules; `api/routes.py` assembles them all
@@ -261,10 +261,10 @@ Security-sensitive features (code execution, LaTeX compilation, Docker custom to
 ## Docker Services
 
 Main services in `docker-compose.yml`:
-- `postgres` (5432), `redis` (6379), `qdrant` (6333), `minio` (9000/9001), `ollama` (11434)
+- `postgres` (5432), `redis` (6379), `qdrant` (6333), `minio` (9000/9001)
 - `backend` (8000), `frontend` via `nginx` (3000)
 - `celery` worker + `celery_latex` (dedicated LaTeX compilation queue)
-- `kroki` (8001) - diagram rendering
+- `kroki-mermaid` (8001) - Mermaid rendering
 - `video-streamer` - Go microservice for video streaming (in `video-streamer/`)
 
 Variants: `docker-compose.prod.yml` (gunicorn, healthchecks, adds `celery_beat` scheduler), `docker-compose.test.yml` (isolated test stack on shifted ports), `docker-compose.docker-tools.yml` (mounts Docker socket for Docker-based tool execution).

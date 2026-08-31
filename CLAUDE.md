@@ -111,7 +111,7 @@ database that already has a revision recorded.
 - **Vector Store**: Qdrant (default, runs as a service); ChromaDB (embedded) is still supported by the code but is no longer installed by default — it brings 173 MB of transitive dependencies for a backend this project does not use, so `pip install chromadb==0.4.18` first. Embeddings via sentence-transformers
 - **LLM**: DeepSeek (default), OpenAI, Anthropic, Qwen (DashScope), Kimi (Moonshot), or Ollama, selected by `LLM_PROVIDER`. The stack no longer bundles Ollama — that provider still works against an instance you run yourself via `OLLAMA_BASE_URL`. `DEFAULT_MODEL` must name a model the chosen provider serves, since it reaches the request as `model or <PROVIDER>_MODEL`; per-request routing via `services/llm_routing.py` (fast/balanced/deep tiers). Native tool calling and schema-constrained output live in `services/llm_providers/` (used by `LLMService.generate_structured()`); `generate_response()` is the legacy prompted-text path
 - **Storage**: MinIO (S3-compatible object storage)
-- **Transcription**: OpenAI Whisper (optional speaker diarization via pyannote)
+- **Transcription**: OpenAI Whisper, on a dedicated `celery_transcription` worker. Whisper, librosa, speechbrain and resemblyzer (and numba/llvmlite under them) live only in `Dockerfile.transcription-worker`, which builds FROM the backend image; the API, general worker and beat images do not carry them. `transcribe_document` is routed to the `transcription` queue (`TRANSCRIPTION_CELERY_QUEUE`), so with that worker stopped the task waits rather than fails. Speaker diarization (speechbrain first, then resemblyzer + KMeans) is optional and off by default
 - **Diagrams**: Mermaid, rendered by Kroki's mermaid companion container (the full Kroki gateway was 3.76 GB to proxy to it); falls back to kroki.io
 
 ### Backend Structure (`backend/app/`)
@@ -247,7 +247,7 @@ Backend configuration is in `backend/.env` (copy from `env.example`). `core/conf
 - `RAG_*` - RAG pipeline (hybrid search, reranking, MMR, dedup, KG context, chunking)
 - `VECTOR_STORE_PROVIDER` + `QDRANT_*` / `CHROMA_*`
 - `MINIO_*` - Object storage
-- `WHISPER_*`, `TRANSCRIPTION_*` - Transcription and diarization
+- `WHISPER_*`, `TRANSCRIPTION_*` - Transcription and diarization; `TRANSCRIPTION_CELERY_QUEUE` names the queue the dedicated worker consumes
 - `LDAP_*` - Optional LDAP/AD authentication
 - `LATEX_COMPILER_*` - LaTeX compilation (disabled/admin-only by default)
 - `UNSAFE_CODE_EXEC_*`, `SCIENTIFIC_VALIDATION_*` - Sandboxed code execution limits (subprocess or Docker)
@@ -263,11 +263,11 @@ Security-sensitive features (code execution, LaTeX compilation, Docker custom to
 Main services in `docker-compose.yml`:
 - `postgres` (5432), `redis` (6379), `qdrant` (6333), `minio` (9000/9001)
 - `backend` (8000), `frontend` via `nginx` (3000)
-- `celery` worker + `celery_latex` (dedicated LaTeX compilation queue)
+- `celery` worker + `celery_latex` (dedicated LaTeX compilation queue) + `celery_transcription` (dedicated Whisper queue; its image derives from the backend image, so `make build` builds the backend first — compose does not infer build order from a `FROM`)
 - `kroki-mermaid` (8001) - Mermaid rendering
 - `video-streamer` - Go microservice for video streaming (in `video-streamer/`)
 
-Variants: `docker-compose.prod.yml` (gunicorn, healthchecks, adds `celery_beat` scheduler — note the dev stack has **no beat**, so nothing runs `check_stalled_agent_jobs`: a job whose worker died, typically from restarting the celery container, stays `running` for ever until you invoke that task by hand, which requeues it to resume from its last checkpoint rather than failing it), `docker-compose.test.yml` (isolated test stack on shifted ports), `docker-compose.docker-tools.yml` (mounts Docker socket for Docker-based tool execution).
+Variants: `docker-compose.prod.yml` (gunicorn, healthchecks) — `celery_beat` runs in the dev stack too, and it is what makes `check_stalled_agent_jobs` fire there: with no beat, a job whose worker died (typically from restarting the celery container) stays `running` for ever until that task is invoked by hand, which requeues it to resume from its last checkpoint rather than failing it), `docker-compose.test.yml` (isolated test stack on shifted ports), `docker-compose.docker-tools.yml` (mounts Docker socket for Docker-based tool execution).
 
 Access points:
 - Frontend: http://localhost:3000

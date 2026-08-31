@@ -191,6 +191,14 @@ class Settings(BaseSettings):
     HUGGINGFACE_TOKEN: Optional[
         str
     ] = None  # HF token required to download some pyannote models
+    # Transcription runs on its own worker and its own queue. The audio stack
+    # (Whisper, librosa, speechbrain, resemblyzer, and the numba/llvmlite pair
+    # under them) is ~250 MB that every API and Celery container used to carry
+    # to run a feature one worker performs; it now lives only in
+    # Dockerfile.transcription-worker. Nothing consumes this queue unless that
+    # worker is running, so transcription jobs wait rather than fail -- the
+    # same contract the LaTeX queue has.
+    TRANSCRIPTION_CELERY_QUEUE: str = "transcription"
     TRANSCRIPTION_FILTER_INTRO_JUNK: bool = True
     TRANSCRIPTION_INTRO_MAX_SECONDS: float = 12.0
     TRANSCRIPTION_INTRO_NO_SPEECH_PROB: float = 0.30

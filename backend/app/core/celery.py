@@ -55,6 +55,16 @@ celery_app.conf.update(
             "queue": getattr(settings, "LATEX_COMPILER_CELERY_QUEUE", "latex")
             or "latex"
         },
+        # Transcription goes to the worker built from
+        # Dockerfile.transcription-worker, the only image carrying Whisper and
+        # the audio stack. This routing is why the general worker no longer
+        # needs them: it still imports the task module (which does not import
+        # Whisper at module scope) so the name resolves and the message is
+        # published, but it never runs the body.
+        "app.tasks.transcription_tasks.transcribe_document": {
+            "queue": getattr(settings, "TRANSCRIPTION_CELERY_QUEUE", "transcription")
+            or "transcription"
+        },
     },
     task_annotations={
         # Transcription may include model download/init + long media decode on CPU.

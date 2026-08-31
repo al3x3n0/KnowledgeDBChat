@@ -222,6 +222,7 @@ jobs:
         run: |
           helm template kdbc deploy/helm/knowledgedbchat \
             --set ollama.enabled=true --set celeryLatex.enabled=true \
+            --set celeryTranscription.enabled=true \
             --set networkPolicy.enabled=true --set ingress.enabled=true \
             --set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
             --set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \

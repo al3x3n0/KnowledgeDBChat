@@ -40,10 +40,25 @@ ENV PIP_RETRIES=5 \
 # config import, measured both ways in this image) and that is paid on every
 # container and every Celery fork. It buys back a quarter of the image.
 RUN pip install --no-cache-dir --no-compile --index-url "${TORCH_INDEX_URL}" \
-    torch==2.1.1 torchaudio==2.1.1 \
+    torch==2.1.1 \
     && pip install --no-cache-dir --no-compile -r requirements.txt \
     && find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} + \
     && find /opt/venv -name "*.pyc" -delete
+
+# numba and llvmlite, 185 MB of JIT, are removed after the fact rather than by
+# not asking for them: nothing here depends on them any more except
+# `unstructured`, which declares numba and imports it in exactly two modules --
+# `partition/pdf_image/analysis/bbox_visualisation.py` and
+# `partition/utils/xycut.py`, both in its PDF/image partitioner. This project
+# never sends a PDF through unstructured; PDFs go through PyPDFLoader, and
+# unstructured is used for .docx, .html, .md and the .pptx fallback.
+#
+# Verified rather than reasoned: with numba, llvmlite and the whole audio stack
+# physically removed from site-packages, TextProcessor extracted byte-identical
+# text from a .docx, .html, .md and .pptx through its own code path. Should a
+# PDF ever be routed to unstructured, this is where the ImportError comes from.
+RUN pip uninstall -y numba llvmlite \
+    && ! python -c "import numba" 2>/dev/null
 
 # Docker CLI for the optional Docker-backed tool execution. The debian
 # docker.io package drags in the daemon and containerd; only the client binary

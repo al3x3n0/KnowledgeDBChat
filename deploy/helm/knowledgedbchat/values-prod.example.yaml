@@ -81,6 +81,12 @@ celeryLatex:
   enabled: true
   replicaCount: 2
 
+celeryTranscription:
+  # One is usually enough: transcription is CPU-bound and serialized per file,
+  # and this is the only pod that pulls the Whisper image.
+  enabled: true
+  replicaCount: 1
+
 gateway:
   replicaCount: 3
 

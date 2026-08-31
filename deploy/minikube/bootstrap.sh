@@ -82,6 +82,16 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
     log "Building LaTeX worker image"
     docker build -t "knowledge_db_latex_worker:${IMAGE_TAG}" -f "${REPO_ROOT}/backend/Dockerfile.latex-worker" "${REPO_ROOT}/backend"
   fi
+
+  # The transcription worker carries Whisper and the audio stack, and derives
+  # FROM the backend image built above -- so it has to come after it, and only
+  # when transcription is wanted (celeryTranscription.enabled).
+  if [[ "${BUILD_TRANSCRIPTION:-0}" == "1" ]]; then
+    log "Building transcription worker image"
+    docker build -t "knowledge_db_transcription_worker:${IMAGE_TAG}" \
+      --build-arg "BASE_IMAGE=knowledge_db_backend:${IMAGE_TAG}" \
+      -f "${REPO_ROOT}/backend/Dockerfile.transcription-worker" "${REPO_ROOT}/backend"
+  fi
 fi
 
 # ---------------------------------------------------------------------------

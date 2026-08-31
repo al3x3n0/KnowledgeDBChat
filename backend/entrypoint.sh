@@ -42,7 +42,9 @@ elif [ "${MODE_ALEMBIC}" = "true" ]; then
   run_alembic || true &
 fi
 
-# Preload Whisper model.
+# Preload Whisper model. Only the transcription worker image has Whisper in it
+# (Dockerfile.transcription-worker); set this anywhere else and the preload
+# reports a failure it can do nothing about.
 # - "blocking": run before starting server
 # - "true": run in background
 # - "false": skip

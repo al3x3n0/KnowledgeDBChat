@@ -1,0 +1,27 @@
+# The audio stack, installed on top of the API image rather than beside it.
+#
+# These are the only packages transcription needs that nothing else in this
+# codebase does. They came out of requirements.txt because every API, Celery and
+# beat container was carrying them -- with numba and llvmlite pulled in
+# underneath -- to run a feature only this worker performs.
+#
+# Installed by Dockerfile.transcription-worker, which builds FROM the API image:
+# Whisper needs torch, torch is 340 MB, and the API image already has it for
+# sentence-transformers. Inheriting costs ~250 MB of new layers; a standalone
+# image would cost four times that in duplicated torch, scipy and numpy.
+#
+# torchaudio is NOT here. It must come from the CPU wheel index, the same way
+# torch does in the API image, or pip resolves it against PyPI and pulls the
+# CUDA build of torch in behind it -- roughly 2 GB this stack cannot use. The
+# Dockerfile installs it in its own step for that reason.
+
+openai-whisper>=20230918
+librosa>=0.10.0
+ffmpeg-python>=0.2.0
+
+# Speaker diarization, in the order the code tries them: speechbrain first,
+# then resemblyzer + KMeans as the token-free fallback. Both are optional at
+# run time (TRANSCRIPTION_SPEAKER_DIARIZATION), and transcribe_russian checks
+# for each before using it.
+speechbrain>=0.5.14
+resemblyzer>=0.1.1

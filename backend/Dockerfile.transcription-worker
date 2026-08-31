@@ -1,0 +1,99 @@
+# syntax=docker/dockerfile:1
+
+# The dedicated transcription worker: the API image plus the audio stack.
+#
+# Unlike Dockerfile.latex-worker, which builds from a bare Python base with a
+# deliberately tiny requirements set, this one derives from the API image.
+# Whisper needs torch and the API image already carries torch for
+# sentence-transformers, so inheriting adds ~250 MB of new layers while a
+# standalone image would duplicate torch, scipy, numpy and sklearn -- about a
+# gigabyte to avoid sharing layers that are already on the host.
+#
+# BUILD ORDER MATTERS. This needs the API image to exist first:
+#
+#   docker compose build backend celery_transcription
+#
+# or `make build`, which orders them. Compose does not infer build order from a
+# FROM, so a first-time `docker compose build celery_transcription` on a clean
+# machine fails with "pull access denied" -- which is what a missing base image
+# looks like, not a registry problem.
+ARG BASE_IMAGE=knowledge_db_backend:latest
+FROM ${BASE_IMAGE}
+
+# Torch's own index, for the same reason the API image uses it: the default
+# PyPI wheel of torchaudio resolves against a CUDA torch, ~2 GB no compose file
+# in this repo can use. Override for a GPU host.
+ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
+
+WORKDIR /app
+
+# torchaudio first and alone, from the CPU index, before anything that depends
+# on it -- speechbrain would otherwise resolve it from PyPI. PEP 440 treats
+# 2.1.1+cpu as satisfying ==2.1.1, so the install below sees it as present.
+#
+# --no-compile matches the API image: PYTHONDONTWRITEBYTECODE=1 is set at run
+# time, so .pyc files written at build time are read and never refreshed.
+#
+# numba and llvmlite come back here, as librosa's and Whisper's dependency.
+# The API image uninstalls them; this is the image that actually runs the code
+# that needs them.
+#
+# The compiler is installed and purged inside one RUN because one of these
+# builds from source: resemblyzer depends on webrtcvad, which publishes an
+# sdist and no aarch64 wheel, and the API image this derives from has no
+# compilers -- they live in its builder stage, which is not here. A layer
+# records the net effect of its command, so a compiler added and removed in the
+# same one costs nothing in the image while a second stage would cost a copy of
+# the whole 1 GB venv to move ~250 MB of packages.
+ENV PIP_RETRIES=5 \
+    PIP_TIMEOUT=60
+COPY requirements.transcription-worker.txt .
+RUN set -eux; \
+    apt-get update; \
+    # Freeze the base image's packages as manually installed. apt tracks
+    # packages, not files, so autoremove is otherwise free to take back
+    # anything it thinks became an orphan when the compiler goes.
+    auto="$(apt-mark showauto)"; \
+    [ -z "$auto" ] || apt-mark manual $auto > /dev/null; \
+    apt-get install -y --no-install-recommends build-essential; \
+    # libgomp1 needs holding by name. The API image's ffmpeg arrived as FILES,
+    # libgomp.so.1 among them, so apt has no record of it; installing gcc then
+    # installs the package over that same file, and purging gcc takes both the
+    # package and the file. Measured: without this hold, ffmpeg in the finished
+    # image reports "error while loading shared libraries: libgomp.so.1" -- the
+    # assertion at the end of this RUN is what caught it.
+    apt-mark manual libgomp1 > /dev/null; \
+    pip install --no-cache-dir --no-compile --index-url "${TORCH_INDEX_URL}" \
+        torchaudio==2.1.1; \
+    pip install --no-cache-dir --no-compile \
+        -r requirements.transcription-worker.txt; \
+    apt-get purge -y --auto-remove build-essential; \
+    rm -rf /var/lib/apt/lists/*; \
+    find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} +; \
+    find /opt/venv -name "*.pyc" -delete; \
+    ! command -v gcc; \
+    ffmpeg -version > /dev/null
+
+# The claim this image exists to make, asserted here rather than discovered by
+# a queued job: Whisper's decoder loads, and its own audio path -- which shells
+# out to the ffmpeg inherited from the API image -- returns the samples it
+# should. 2 seconds at 16 kHz is 32,000 samples.
+RUN set -eux; \
+    ffmpeg -loglevel error -f lavfi -i "sine=frequency=440:duration=2" \
+        -c:a aac /tmp/probe.m4a; \
+    python -c "\
+import whisper, librosa, numpy as np; \
+a = whisper.load_audio('/tmp/probe.m4a'); \
+assert 31000 < a.shape[0] < 33000, a.shape; \
+assert librosa.get_duration(path='/tmp/probe.m4a') > 1.9; \
+print('whisper+librosa ok:', a.shape[0], 'samples')"; \
+    rm -f /tmp/probe.m4a
+
+# The API image's ENTRYPOINT is inherited, so this worker runs Alembic on start
+# unless told not to. Set RUN_ALEMBIC_MIGRATIONS=false here as the other workers
+# do -- replicas racing the schema is what the migration Job in the chart exists
+# to prevent. The same entrypoint's PRELOAD_WHISPER_MODEL knob only works in
+# this image: it is the one with Whisper in it.
+
+CMD ["celery", "-A", "app.core.celery_transcription", "worker", \
+     "-Q", "transcription", "--loglevel=info", "--concurrency=1"]

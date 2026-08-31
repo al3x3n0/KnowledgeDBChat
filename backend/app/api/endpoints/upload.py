@@ -688,20 +688,19 @@ async def complete_upload(
                             )
                         except Exception:
                             pass
-                        # Estimate duration to set Celery timeouts dynamically
-                        soft_limit = 25 * 60
-                        hard_limit = 30 * 60
-                        try:
-                            import librosa  # type: ignore
-
-                            dur = librosa.get_duration(filename=str(temp_check_path))
-                            if dur and dur > 0:
-                                # Allow generous CPU time: 6x audio duration + 5 minutes, hard limit +10 minutes
-                                soft_limit = int(min(6 * dur + 300, 5 * 3600))
-                                hard_limit = int(min(soft_limit + 600, 6 * 3600))
-                        except Exception:
-                            pass
+                        # Estimate duration to set Celery timeouts dynamically.
+                        # ffprobe, not librosa: librosa decodes the stream to
+                        # count frames and lives in the transcription worker
+                        # image now, while this runs in the API.
+                        from app.services.media_probe import (
+                            probe_duration_seconds,
+                            transcription_time_limits,
+                        )
                         from app.tasks.transcription_tasks import transcribe_document
+
+                        soft_limit, hard_limit = transcription_time_limits(
+                            probe_duration_seconds(temp_check_path)
+                        )
 
                         transcribe_document.apply_async(
                             args=[str(document.id)],

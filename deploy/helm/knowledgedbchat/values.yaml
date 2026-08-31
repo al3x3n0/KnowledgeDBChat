@@ -43,6 +43,10 @@ image:
     repository: knowledge_db_latex_worker
     tag: latest
     pullPolicy: IfNotPresent
+  transcriptionWorker:
+    repository: knowledge_db_transcription_worker
+    tag: latest
+    pullPolicy: IfNotPresent
   frontend:
     repository: knowledge_db_frontend
     tag: latest
@@ -218,6 +222,31 @@ celeryLatex:
       memory: 512Mi
     limits:
       memory: 2Gi
+  nodeSelector: {}
+  tolerations: []
+  affinity: {}
+
+celeryTranscription:
+  # Dedicated worker for transcription. It is the only pod carrying Whisper,
+  # librosa, speechbrain and resemblyzer -- ~250 MB the backend and general
+  # worker pods no longer replicate across their replicas. Off by default: a
+  # cluster that never uploads media should not pull the image at all, and
+  # with it off, transcription requests wait on the queue rather than fail.
+  enabled: false
+  replicaCount: 1
+  concurrency: 1
+  resources:
+    requests:
+      cpu: 250m
+      memory: 2Gi
+    limits:
+      # Whisper "small" plus a long decode. Below ~4Gi the worker is OOMKilled
+      # mid-file and the document simply stays untranscribed.
+      memory: 6Gi
+  # Whisper weights land on the shared data volume, under whisper_models --
+  # the same subPath the backend and general worker already mount. Without a
+  # persistent one they are downloaded again on every restart (244 MB for
+  # "small"), so backend.persistence.enabled matters to this pod too.
   nodeSelector: {}
   tolerations: []
   affinity: {}

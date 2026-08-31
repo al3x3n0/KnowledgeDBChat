@@ -183,32 +183,14 @@ async def _async_transcode_to_mp4(task, document_id: str) -> Dict[str, Any]:
             )
 
             # Probe duration of the produced MP4 to set dynamic Celery timeouts
-            soft_limit = 25 * 60
-            hard_limit = 30 * 60
-            try:
-                import subprocess
+            from app.services.media_probe import (
+                probe_duration_seconds,
+                transcription_time_limits,
+            )
 
-                probe_cmd = [
-                    "ffprobe",
-                    "-v",
-                    "error",
-                    "-show_entries",
-                    "format=duration",
-                    "-of",
-                    "default=noprint_wrappers=1:nokey=1",
-                    str(temp_dst),
-                ]
-                out = (
-                    subprocess.check_output(probe_cmd, stderr=subprocess.STDOUT)
-                    .decode()
-                    .strip()
-                )
-                dur = float(out)
-                if dur and dur > 0:
-                    soft_limit = int(min(6 * dur + 300, 5 * 3600))
-                    hard_limit = int(min(soft_limit + 600, 6 * 3600))
-            except Exception:
-                pass
+            soft_limit, hard_limit = transcription_time_limits(
+                probe_duration_seconds(temp_dst)
+            )
 
             # Dispatch transcription task with dynamic time limits
             try:

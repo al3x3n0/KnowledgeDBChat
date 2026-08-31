@@ -212,14 +212,15 @@ class TranscriptionService:
         logger.info(f"Starting transcription of: {file_path}")
 
         try:
-            # Get audio duration for progress tracking
-            try:
-                import librosa
+            # Get audio duration for progress tracking. ffprobe reads the
+            # container header; librosa decoded the whole stream to answer the
+            # same question, which on a long recording is minutes of work
+            # before the transcription starts.
+            from app.services.media_probe import probe_duration_seconds
 
-                duration = librosa.get_duration(filename=str(file_path))
+            duration = probe_duration_seconds(file_path)
+            if duration is not None:
                 logger.info(f"Audio duration: {duration:.1f} seconds")
-            except Exception:
-                duration = None
 
             # Report initial progress
             if progress_callback:

@@ -30,6 +30,11 @@ setup: ## Initial setup - create directories and copy env files
 	@echo "✅ Setup complete!"
 
 build: ## Build Docker containers
+# The transcription worker builds FROM the backend image and compose does not
+# infer build order from a FROM, so the backend is built first by name. Without
+# this a clean machine fails on "pull access denied" for an image that is about
+# to be built two lines later.
+	$(DC) build backend
 	$(DC) build
 
 start: ## Start all services
@@ -201,6 +206,7 @@ helm-validate: helm-lint ## Render the chart and validate it against the Kuberne
 	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-minikube.yaml | kubeconform -strict -summary -kubernetes-version 1.31.0
 	@helm template $(K8S_RELEASE) $(CHART) \
 		--set ollama.enabled=true --set celeryLatex.enabled=true \
+		--set celeryTranscription.enabled=true \
 		--set networkPolicy.enabled=true --set ingress.enabled=true \
 		--set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
 		--set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \

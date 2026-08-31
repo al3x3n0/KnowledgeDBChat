@@ -398,6 +398,79 @@ services:
     cap_drop:
       - ALL
 
+  # Dedicated Celery worker for transcription.
+  #
+  # Whisper, librosa, speechbrain and resemblyzer -- and numba and llvmlite
+  # under them -- are ~250 MB that the API, the general worker and beat all
+  # carried to run something only this worker performs. They now live in one
+  # image, built FROM knowledge_db_backend:latest, so the shared layers are
+  # stored once and only this service adds to them.
+  #
+  # BUILD ORDER: this derives from the backend image, and compose does not
+  # infer build order from a FROM. `make build` orders them; a bare
+  # `docker compose build celery_transcription` on a clean machine fails
+  # looking for a base image that is not there yet.
+  #
+  # Stop this service and transcription requests queue rather than fail --
+  # the same contract the latex queue has.
+  celery_transcription:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.transcription-worker
+    image: knowledge_db_transcription_worker:latest
+    container_name: knowledge_db_celery_transcription
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET_NAME=documents
+      - MINIO_USE_SSL=false
+      - MINIO_PRESIGNED_URL_EXPIRY=3600
+      - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      # Transcription configuration. Kept identical to the general worker's so
+      # that moving the task between them cannot change a transcript.
+      - WHISPER_MODEL_SIZE=small
+      - WHISPER_DEVICE=auto
+      - TRANSCRIPTION_LANGUAGE=auto
+      - TRANSCRIPTION_SKIP_INITIAL_SECONDS=2.0
+      - TRANSCRIPTION_SPEAKER_DIARIZATION=false
+      - WHISPER_OFFLINE=1
+      # This is now the only image that can honour a preload: it is the one
+      # with Whisper in it. Set to "true" for warm first transcriptions.
+      - PRELOAD_WHISPER_MODEL=false
+      - RUN_ALEMBIC_MIGRATIONS=false
+      - OPENBLAS_MAIN_FREE=1
+      - GOTO_NUM_THREADS=4
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+    volumes:
+      - ./data:/app/data
+      - ./backend:/app
+      - ./data/whisper_models:/root/.cache/knowledge_db_transcriber
+      - ./data/hf_cache:/root/.cache/huggingface
+      - ./data/torch_cache:/root/.cache/torch
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    networks:
+      - knowledge_net
+    command: celery -A app.core.celery_transcription worker -Q transcription --loglevel=info --concurrency=1
+    # Whisper "small" plus a long decode; the general worker's 6g was sized for
+    # this workload when it still ran there.
+    mem_limit: 6g
+    shm_size: 2gb
+    healthcheck:
+      test: ["CMD", "celery", "-A", "app.core.celery_transcription", "inspect", "ping"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
 networks:
   knowledge_net:
     driver: bridge

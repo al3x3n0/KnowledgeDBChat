@@ -48,6 +48,7 @@ kubectl -n knowledgedbchat get pods -w
 | `backend` | Deployment | gunicorn + uvicorn workers, `/health` probes, optional HPA/PDB |
 | `celery` | Deployment | default queue; optional HPA; 120s graceful drain |
 | `celery-latex` | Deployment | off by default; read-only rootfs, all caps dropped |
+| `celery-transcription` | Deployment | off by default; the only pod carrying Whisper and the audio stack (~250 MB the backend and celery pods no longer replicate). Its image builds `FROM` the backend image, so build that first (`BUILD_TRANSCRIPTION=1 deploy/minikube/bootstrap.sh`) |
 | `celery-beat` | Deployment | pinned to 1 replica with `Recreate` — two schedulers double-fire tasks |
 | `frontend` | Deployment | static CRA build, SPA fallback |
 | `gateway` | Deployment | nginx: `/api` → backend, `/minio` → MinIO, `/video` → streamer, `/` → frontend |

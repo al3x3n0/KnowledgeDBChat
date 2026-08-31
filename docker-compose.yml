@@ -180,8 +180,17 @@ services:
       start_period: 10s
 
   # Kroki for local diagram rendering (Mermaid, PlantUML, etc.)
+  # Mermaid rendering. The service keeps its name because KROKI_URL and
+  # KROKI_LOCAL_IS_COMPANION still point at it and it still speaks the Kroki
+  # companion protocol -- POST the raw diagram to /svg or /png. What changed is
+  # what serves it: yuzutech/kroki-mermaid is 1.54 GB, this is 1.08 GB, and the
+  # difference is a JVM, npm, and ~190 MB of mesa and libLLVM that a headless
+  # Chromium rasterising an SVG never opens.
   kroki-mermaid:
-    image: yuzutech/kroki-mermaid:latest
+    build:
+      context: ./mermaid-renderer
+      dockerfile: Dockerfile
+    image: knowledge_db_mermaid_renderer:latest
     container_name: knowledge_db_kroki_mermaid
     ports:
       - "8001:8002"

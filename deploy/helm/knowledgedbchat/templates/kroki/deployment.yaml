@@ -22,10 +22,7 @@ spec:
           imagePullPolicy: {{ .Values.kroki.image.pullPolicy }}
           ports:
             - name: http
-              containerPort: 8000
-          env:
-            - name: KROKI_MAX_URI_LENGTH
-              value: "8000"
+              containerPort: {{ .Values.kroki.service.port }}
           readinessProbe:
             httpGet:
               path: /health

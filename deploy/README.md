@@ -54,7 +54,7 @@ kubectl -n knowledgedbchat get pods -w
 | `gateway` | Deployment | nginx: `/api` → backend, `/minio` → MinIO, `/video` → streamer, `/` → frontend |
 | `video-streamer` | Deployment | Go service, shares the backend's JWT secret |
 | `postgres` `redis` `qdrant` `minio` | StatefulSet | single replica, PVC-backed |
-| `ollama` `kroki` | StatefulSet / Deployment | Ollama off by default |
+| `ollama` `kroki` | StatefulSet / Deployment | Ollama off by default. `kroki` runs this repo's own Mermaid renderer (`mermaid-renderer/`, 1.08 GB) on the Kroki companion protocol — the chart used to deploy the 3.76 GB `yuzutech/kroki` gateway on port 8000 while the backend defaulted to POSTing companion-style, so it rendered nothing locally |
 | `<release>-migrate` | Job | Hook running `alembic upgrade head` — see below for the phase |
 | `<release>-minio-bucket` | Job | `post-install,post-upgrade` hook, `mc mb --ignore-existing` |
 

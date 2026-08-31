@@ -483,18 +483,29 @@ ollama:
     url: ""
 
 kroki:
+  # Mermaid rendering. Still called kroki because it still speaks the Kroki
+  # companion protocol and still feeds KROKI_URL; what serves it is this repo's
+  # own renderer (mermaid-renderer/), built into the cluster's daemon like the
+  # other first-party images.
+  #
+  # This chart was still deploying the full yuzutech/kroki gateway -- 3.76 GB
+  # of diagram backends to render Mermaid, which the compose stack stopped
+  # doing some time ago. The renderer here is 1.08 GB and renders the only
+  # format anything asks for.
   enabled: true
   image:
-    repository: yuzutech/kroki
-    tag: 0.26.0
+    repository: knowledge_db_mermaid_renderer
+    tag: latest
     pullPolicy: IfNotPresent
   service:
-    port: 8000
+    port: 8002
   resources:
     requests:
       cpu: 50m
       memory: 256Mi
     limits:
+      # A browser. Below ~1Gi Chromium is OOMKilled part-way through a diagram
+      # and the export it was for silently loses a figure.
       memory: 1Gi
   external:
     url: ""

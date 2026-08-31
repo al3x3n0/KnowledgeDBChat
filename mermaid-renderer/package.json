@@ -1,0 +1,12 @@
+{
+  "name": "kdbc-mermaid-renderer",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Renders Mermaid to SVG and PNG over the Kroki companion protocol.",
+  "main": "server.js",
+  "dependencies": {
+    "@mermaid-js/mermaid-cli": "10.9.1",
+    "puppeteer": "22.15.0"
+  }
+}

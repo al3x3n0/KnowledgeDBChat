@@ -77,6 +77,9 @@ if [[ "${SKIP_BUILD:-0}" != "1" ]]; then
   log "Building video-streamer image"
   docker build -t "knowledge_db_video_streamer:${IMAGE_TAG}" -f "${REPO_ROOT}/video-streamer/Dockerfile" "${REPO_ROOT}/video-streamer"
 
+  log "Building mermaid renderer image"
+  docker build -t "knowledge_db_mermaid_renderer:${IMAGE_TAG}" -f "${REPO_ROOT}/mermaid-renderer/Dockerfile" "${REPO_ROOT}/mermaid-renderer"
+
   # The TeX Live image is multi-GB; only built when the LaTeX worker is wanted.
   if [[ "${BUILD_LATEX:-0}" == "1" ]]; then
     log "Building LaTeX worker image"

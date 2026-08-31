@@ -125,9 +125,16 @@ soname versions that are release-specific and go stale silently, leaving an
 image that builds and then cannot start gem5. The build stage asks `ldd` which
 libraries the binary loads and `dpkg` which packages own them.
 
-`gem5.opt` is deliberately **not stripped**: its symbols are what turn a panic
-into a diagnosis. Running two threads on O3CPU panics with "Not enough physical
-registers", one register class at a time, and reading that took the backtrace.
+`gem5.opt` keeps **both its symbol tables and none of its DWARF**. The symbols
+are what turn a panic into a diagnosis: running two threads on O3CPU panics
+with "Not enough physical registers", one register class at a time, and reading
+that took the backtrace. But that backtrace comes from glibc's
+`backtrace_symbols`, which reads `.dynsym` and nothing else, so the debug info
+was paying for a debugger this image does not carry. Measured: 1.23 GB
+unstripped against 98 MB after `strip --strip-debug`, all 110,255 dynamic
+symbols and the `.symtab` still present, and a plugin made to fault inside
+gem5's address space printed the same backtrace, frame for frame, out of
+either binary. The image went **2.92 GB to 666 MB**.
 
 Everything is asserted at build time — `gem5.opt --version`, a static C
 compile, a static C++ compile, and a real SE-mode simulation whose `stats.txt`

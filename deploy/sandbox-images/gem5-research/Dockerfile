@@ -97,6 +97,10 @@ RUN python3 /tmp/apply.py && python3 /tmp/apply_prefetcher.py \
 
 RUN scons build/ARM/gem5.opt -j"${BUILD_JOBS}" --ignore-style
 
+# Drop DWARF, keep every symbol. The rationale, and the measurement behind it,
+# are beside the COPY in the runtime stage.
+RUN strip --strip-debug build/ARM/gem5.opt
+
 # The runtime closure, derived rather than listed. Naming the runtime packages
 # by hand means writing libprotobuf32, libhdf5-103, libcapstone4 -- soname
 # versions that are release-specific and go stale silently, leaving an image
@@ -144,10 +148,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=build /opt/gem5/build/ARM/gem5.opt /opt/gem5/build/ARM/gem5.opt
 COPY --from=build /opt/gem5/configs /opt/gem5/configs
 
-# gem5.opt is NOT stripped. Its symbols are what turn a panic into a diagnosis:
-# running two threads on O3CPU panics with "Not enough physical registers", one
-# register class at a time, and reading that took the backtrace. Stripping
-# would save a few hundred megabytes and cost the only signal those runs give.
+# gem5.opt keeps both its symbol tables and none of its DWARF.
+#
+# The symbols are what turn a panic into a diagnosis: running two threads on
+# O3CPU panics with "Not enough physical registers", one register class at a
+# time, and reading that took the backtrace. But that backtrace comes from
+# glibc's backtrace_symbols, which reads .dynsym and nothing else. Measured on
+# this binary: 1.23 GB unstripped, 98 MB after `strip --strip-debug`, with all
+# 110,255 dynamic symbols and the .symtab still present -- and a plugin made to
+# fault inside gem5's address space printed the same backtrace, frame for
+# frame, out of either binary. The 1.13 GB of DWARF that went is readable only
+# by a debugger, and this image ships none.
 
 # Everything below is asserted at build time rather than discovered in an
 # agent's run three layers up. This file's own README records an image that was

@@ -24,6 +24,18 @@
 # soname versions that are release-specific and go stale silently, leaving an
 # image that builds and then cannot start gem5.
 #
+# The binary arrives with its DWARF still attached -- 1.23 GB of it, against
+# 98 MB of program. Stripping here rather than in the preparation above keeps
+# the build right whichever binary the context holds, and `strip --strip-debug`
+# on an already-stripped one is a no-op.
+FROM debian:bookworm-slim AS strip
+
+RUN apt-get update && apt-get install -y --no-install-recommends binutils \
+    && rm -rf /var/lib/apt/lists/*
+COPY gem5.opt /tmp/gem5.opt
+RUN strip --strip-debug /tmp/gem5.opt
+
+
 FROM debian:bookworm-slim
 
 ENV DEBIAN_FRONTEND=noninteractive
@@ -39,12 +51,17 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         $(tr '\n' ' ' < /tmp/runtime-packages.txt) \
     && rm -rf /var/lib/apt/lists/* /tmp/runtime-packages.txt
 
-COPY gem5.opt /opt/gem5/build/ARM/gem5.opt
+COPY --from=strip /tmp/gem5.opt /opt/gem5/build/ARM/gem5.opt
 COPY configs /opt/gem5/configs
 
-# NOT stripped. The symbols are what turn a panic into a diagnosis, and this
-# gem5 loads agent-written C++ into its own address space, so panics are the
-# expected failure rather than a remote possibility.
+# Symbol tables kept, DWARF dropped. The symbols are what turn a panic into a
+# diagnosis, and this gem5 loads agent-written C++ into its own address space,
+# so panics are the expected failure rather than a remote possibility -- but
+# the backtrace gem5 prints comes from glibc's backtrace_symbols, which reads
+# .dynsym alone. Measured: a plugin that faults on its first eviction printed
+# the same backtrace, frame for frame, from the 1.23 GB binary and the 98 MB
+# one, and all 110,255 dynamic symbols survive the strip. The DWARF served a
+# debugger this image does not carry.
 
 # Both plugin contracts, on the include path so a plugin compiles with no -I.
 COPY gem5_rp_plugin_abi.h /usr/local/include/gem5_rp_plugin_abi.h

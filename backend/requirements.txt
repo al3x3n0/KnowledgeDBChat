@@ -11,9 +11,20 @@ alembic==1.12.1
 
 # Vector Database
 qdrant-client>=1.9.0
-sentence-transformers>=2.8.0
 rank-bm25==0.2.2
 huggingface_hub>=0.20.0
+# Embeddings and reranking run under ONNX Runtime, not torch. Every model this
+# project configures publishes onnx/model.onnx in its own Hugging Face repo, so
+# the weights are the ones sentence-transformers would have downloaded --
+# measured agreement with the torch pipeline is a per-vector cosine of
+# 1.000000 and identical top-5 rankings. It replaces torch, transformers,
+# sympy, networkx, scipy and scikit-learn: 578 MB against 53 MB, and it runs
+# the cross-encoder that torch fails on aarch64 with "could not create a
+# primitive descriptor for a matmul primitive".
+# sentence-transformers still works: `pip install sentence-transformers` and
+# set EMBEDDING_BACKEND=sentence-transformers.
+onnxruntime>=1.17
+tokenizers>=0.15
 
 # LLM and AI
 langchain==0.0.340
@@ -33,11 +44,10 @@ langchain-community==0.0.1
 ollama==0.1.7
 anthropic>=0.69.0
 openai>=1.60.0
-transformers==4.35.2
-torch==2.1.1
-# torchaudio moved with speechbrain, its only consumer, to the transcription
-# worker. It has to be installed from the CPU index there too, or pip resolves
-# it against PyPI and drags the CUDA build of torch in behind it.
+# transformers and torch moved to the transcription worker, their only
+# remaining consumer (Whisper, speechbrain and the Russian ASR pipeline).
+# `local_trainer` also wants them, and reports itself unavailable without them
+# exactly as it already did without PEFT.
 
 # Background Tasks
 celery==5.3.4
@@ -70,9 +80,9 @@ reportlab>=4.2,<5
 # yt-dlp stays: url_ingestion_service downloads media from URLs in the general
 # worker, before anything is transcribed.
 yt-dlp>=2024.8.6
-# scikit-learn stays: sentence-transformers requires it, so it is not the audio
-# stack's to take.
-scikit-learn>=1.3.2
+# scikit-learn went to the transcription worker after all: with
+# sentence-transformers gone, diarization's KMeans and AgglomerativeClustering
+# are its only callers left.
 
 # Utilities
 pydantic==2.5.0

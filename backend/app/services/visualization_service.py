@@ -31,6 +31,30 @@ except Exception as e:
     _IMPORT_ERROR = str(e)
 
 
+def _gaussian_kde(samples: "np.ndarray", grid: "np.ndarray") -> Optional["np.ndarray"]:
+    """A 1-D Gaussian KDE, evaluated on `grid`.
+
+    This is scipy's `stats.gaussian_kde` with its default Scott bandwidth --
+    `n ** (-1 / (d + 4))` scaled by the sample standard deviation -- written out
+    in numpy because it was the only call into scipy left in this codebase, and
+    scipy is 120 MB. Returns None when the sample cannot support a density
+    (fewer than two points, or no spread), which is what a caller must draw
+    nothing for rather than a flat line.
+    """
+    samples = np.asarray(samples, dtype=float)
+    samples = samples[np.isfinite(samples)]
+    if samples.size < 2:
+        return None
+    spread = float(np.std(samples, ddof=1))
+    if not spread or not np.isfinite(spread):
+        return None
+    bandwidth = spread * samples.size ** (-1.0 / 5.0)
+    z = (grid[:, None] - samples[None, :]) / bandwidth
+    return np.exp(-0.5 * z**2).sum(axis=1) / (
+        samples.size * bandwidth * np.sqrt(2.0 * np.pi)
+    )
+
+
 def normalize_chart_data(data: Dict[str, Any]) -> "pd.DataFrame":
     """Turn the documented chart-data shapes into a frame the charts can read.
 
@@ -512,13 +536,12 @@ class VisualizationService:
         )
 
         if config.get("show_kde", False):
-            from scipy import stats
-
             x = np.linspace(data[column].min(), data[column].max(), 100)
-            kde = stats.gaussian_kde(data[column].dropna())
-            ax2 = ax.twinx()
-            ax2.plot(x, kde(x), color=palette[1], linewidth=2, label="KDE")
-            ax2.set_ylabel("Density")
+            density = _gaussian_kde(data[column].dropna().to_numpy(), x)
+            if density is not None:
+                ax2 = ax.twinx()
+                ax2.plot(x, density, color=palette[1], linewidth=2, label="KDE")
+                ax2.set_ylabel("Density")
 
     def _create_heatmap(
         self,

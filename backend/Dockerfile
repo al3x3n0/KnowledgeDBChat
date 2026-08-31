@@ -3,12 +3,6 @@
 # Build stage: compilers and headers live here and never reach the final image.
 FROM python:3.11-slim-bookworm AS builder
 
-# Torch publishes CPU-only wheels on its own index. The default PyPI wheel
-# bundles CUDA and costs roughly 2 GB, which this stack cannot use: no compose
-# file requests the NVIDIA runtime. Override at build time for a GPU host:
-#   docker build --build-arg TORCH_INDEX_URL=https://pypi.org/simple ...
-ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
-
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     && rm -rf /var/lib/apt/lists/*
@@ -19,11 +13,12 @@ RUN python -m venv /opt/venv
 ENV PATH="/opt/venv/bin:$PATH"
 
 COPY requirements.txt .
-# Torch first, from its own index. It must be a separate step: passing that
-# index to the whole requirements file makes pip resolve every package against
-# it, and packages it does not host (langchain-core) then fail to resolve.
-# PEP 440 treats 2.1.1+cpu as satisfying ==2.1.1, so the requirements install
-# below sees torch as already present and does not pull the CUDA wheel.
+# There is no torch here any more. Embeddings and reranking run under ONNX
+# Runtime (53 MB against 578 MB of torch, transformers, scipy and
+# scikit-learn), and Whisper took the rest with it to
+# Dockerfile.transcription-worker, which installs torch from the CPU wheel
+# index the way this file used to.
+#
 # pip is deliberately NOT upgraded. requirements.txt pins langchain==0.0.340
 # against langgraph>=0.2.0, which needs langchain-core>=0.2.27 — a genuine
 # conflict that pip 24 (bundled with this base image) resolves and pip 25+
@@ -39,9 +34,7 @@ ENV PIP_RETRIES=5 \
 # Dropping them costs about 400 ms per process start (644 ms -> 1057 ms on a
 # config import, measured both ways in this image) and that is paid on every
 # container and every Celery fork. It buys back a quarter of the image.
-RUN pip install --no-cache-dir --no-compile --index-url "${TORCH_INDEX_URL}" \
-    torch==2.1.1 \
-    && pip install --no-cache-dir --no-compile -r requirements.txt \
+RUN pip install --no-cache-dir --no-compile -r requirements.txt \
     && find /opt/venv -name "__pycache__" -type d -prune -exec rm -rf {} + \
     && find /opt/venv -name "*.pyc" -delete
 

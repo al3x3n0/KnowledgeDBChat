@@ -65,9 +65,9 @@ jobs:
           cache-dependency-path: backend/requirements.txt
       - name: Install dependencies
         working-directory: backend
-        # The full requirements set includes torch and is slow to install even
-        # cached. Trimming this to a test-only subset is worth doing separately,
-        # once it is verified rather than guessed at.
+        # This used to install torch, and was slow even cached. Embeddings now
+        # run under ONNX Runtime and torch moved to the transcription worker's
+        # own requirements, so the set this job installs is ~600 MB smaller.
         run: |
           python -m pip install --upgrade pip
           pip install -r requirements.txt

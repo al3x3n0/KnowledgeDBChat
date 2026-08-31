@@ -3,11 +3,14 @@
 # The dedicated transcription worker: the API image plus the audio stack.
 #
 # Unlike Dockerfile.latex-worker, which builds from a bare Python base with a
-# deliberately tiny requirements set, this one derives from the API image.
-# Whisper needs torch and the API image already carries torch for
-# sentence-transformers, so inheriting adds ~250 MB of new layers while a
-# standalone image would duplicate torch, scipy, numpy and sklearn -- about a
-# gigabyte to avoid sharing layers that are already on the host.
+# deliberately tiny requirements set, this one derives from the API image: it
+# runs the same application code and needs the same database, storage and
+# object-store clients, the same ffmpeg, and numpy on top. Inheriting means all
+# of that is one set of layers on the host instead of two.
+#
+# torch is not among the inherited layers any more. When embeddings moved to
+# ONNX Runtime, torch left the API image, and this became the only image that
+# has one -- which is the point: the pods that scale do not carry it.
 #
 # BUILD ORDER MATTERS. This needs the API image to exist first:
 #
@@ -27,9 +30,12 @@ ARG TORCH_INDEX_URL=https://download.pytorch.org/whl/cpu
 
 WORKDIR /app
 
-# torchaudio first and alone, from the CPU index, before anything that depends
-# on it -- speechbrain would otherwise resolve it from PyPI. PEP 440 treats
-# 2.1.1+cpu as satisfying ==2.1.1, so the install below sees it as present.
+# torch and torchaudio first and alone, from the CPU index, before anything
+# that depends on them. The API image no longer carries torch -- embeddings
+# moved to ONNX Runtime -- so this image installs it, and it must come from
+# that index: resolved against PyPI, torch is the ~2 GB CUDA build no compose
+# file here can use. PEP 440 treats 2.1.1+cpu as satisfying ==2.1.1, so the
+# install below sees both as already present.
 #
 # --no-compile matches the API image: PYTHONDONTWRITEBYTECODE=1 is set at run
 # time, so .pyc files written at build time are read and never refreshed.
@@ -64,7 +70,7 @@ RUN set -eux; \
     # assertion at the end of this RUN is what caught it.
     apt-mark manual libgomp1 > /dev/null; \
     pip install --no-cache-dir --no-compile --index-url "${TORCH_INDEX_URL}" \
-        torchaudio==2.1.1; \
+        torch==2.1.1 torchaudio==2.1.1; \
     pip install --no-cache-dir --no-compile \
         -r requirements.transcription-worker.txt; \
     apt-get purge -y --auto-remove build-essential; \

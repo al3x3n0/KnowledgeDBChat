@@ -55,6 +55,18 @@ class Settings(BaseSettings):
     # For Ollama, models sized for a Mac: "llama3.2:1b" (~1GB, best for 8GB),
     # "llama3.2:3b" (~2GB), "phi3:mini" (~2GB), "gemma:2b" (~1.5GB); on more
     # memory, "llama2" (~4GB), "mistral:7b" (~4GB), "llama3.2" (~4GB).
+    # Which runtime executes the embedding and reranking models.
+    #
+    # "onnx" (default) runs them under ONNX Runtime, 53 MB, loading each
+    # model's own `onnx/model.onnx` from the same Hugging Face repo
+    # sentence-transformers would have used. It replaced 578 MB of torch,
+    # transformers, scipy and scikit-learn, and it runs the cross-encoder that
+    # torch cannot on this platform. Measured agreement with the torch
+    # pipeline: per-vector cosine 1.000000, identical top-5 rankings.
+    #
+    # "sentence-transformers" restores the old path for anyone who wants it:
+    # `pip install sentence-transformers` first, it is no longer installed.
+    EMBEDDING_BACKEND: str = "onnx"
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     # Alternative embedding models: "all-mpnet-base-v2" (better quality), "multilingual-mpnet-base-v2" (multilingual)
     EMBEDDING_MODEL_OPTIONS: List[str] = [

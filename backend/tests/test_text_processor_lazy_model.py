@@ -6,7 +6,7 @@ from app.services.text_processor import TextProcessor
 
 
 def test_text_processor_does_not_load_semantic_model_during_construction():
-    with patch("sentence_transformers.SentenceTransformer") as model_factory:
+    with patch("app.services.onnx_embeddings.load_text_embedder") as model_factory:
         processor = TextProcessor()
 
     model_factory.assert_not_called()
@@ -20,7 +20,7 @@ async def test_semantic_model_is_loaded_only_once():
     model = object()
 
     with patch(
-        "sentence_transformers.SentenceTransformer", return_value=model
+        "app.services.onnx_embeddings.load_text_embedder", return_value=model
     ) as model_factory:
         assert await processor._ensure_semantic_model() is True
         assert await processor._ensure_semantic_model() is True

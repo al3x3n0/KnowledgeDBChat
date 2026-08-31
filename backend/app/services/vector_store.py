@@ -202,9 +202,9 @@ class VectorStoreService:
         try:
 
             def _load_embedding():
-                from sentence_transformers import SentenceTransformer  # type: ignore
+                from app.services.onnx_embeddings import load_text_embedder
 
-                return SentenceTransformer(model_name)
+                return load_text_embedder(model_name)
 
             self.embedding_model = await asyncio.to_thread(_load_embedding)
             self.current_model_name = model_name
@@ -223,9 +223,9 @@ class VectorStoreService:
                 try:
 
                     def _load_reranker():
-                        from sentence_transformers import CrossEncoder  # type: ignore
+                        from app.services.onnx_embeddings import load_cross_encoder
 
-                        return CrossEncoder(settings.RAG_RERANKING_MODEL)
+                        return load_cross_encoder(settings.RAG_RERANKING_MODEL)
 
                     self.reranker = await asyncio.to_thread(_load_reranker)
                     await asyncio.to_thread(
@@ -447,9 +447,9 @@ class VectorStoreService:
         try:
 
             def _load_embedding():
-                from sentence_transformers import SentenceTransformer  # type: ignore
+                from app.services.onnx_embeddings import load_text_embedder
 
-                return SentenceTransformer(new_model)
+                return load_text_embedder(new_model)
 
             new_embedding_model = await asyncio.to_thread(_load_embedding)
 

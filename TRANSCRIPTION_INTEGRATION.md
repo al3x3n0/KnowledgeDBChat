@@ -43,10 +43,12 @@ The system now supports uploading and transcribing video and audio files. Transc
      LaTeX compilation does with its worker down. Check
      `docker compose ps celery_transcription` before concluding a file is at
      fault.
-   - The image builds `FROM knowledge_db_backend:latest` (Whisper needs torch,
-     which the API image already has). Build the backend first -- `make build`
-     does; a bare `docker compose build celery_transcription` on a clean
-     machine fails looking for a base image that does not exist yet.
+   - The image builds `FROM knowledge_db_backend:latest` for the application
+     code, database/storage clients and ffmpeg -- not for torch, which left the
+     API image when embeddings moved to ONNX Runtime. This is now the only
+     image in the stack with a torch in it. Build the backend first --
+     `make build` does; a bare `docker compose build celery_transcription` on a
+     clean machine fails looking for a base image that does not exist yet.
 
 ## Supported Formats
 
@@ -99,10 +101,10 @@ Required packages, in `requirements.transcription-worker.txt` -- **not** in
 - `librosa>=0.10.0`
 - `speechbrain>=0.5.14`, `resemblyzer>=0.1.1` (diarization)
 
-`torchaudio` is installed by `Dockerfile.transcription-worker` in its own step,
-from the CPU wheel index. Adding it to a requirements file installed against
-PyPI pulls the CUDA build of torch in behind it -- about 2 GB no compose file
-here can use.
+`torch` and `torchaudio` are installed by `Dockerfile.transcription-worker` in
+their own step, from the CPU wheel index. Put them in a requirements file
+installed against PyPI and pip resolves the CUDA build -- about 2 GB no compose
+file here can use.
 
 Running transcription outside Docker means installing these into the same
 environment as `requirements.txt`.

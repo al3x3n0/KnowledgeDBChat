@@ -1,5 +1,10 @@
 # syntax=docker/dockerfile:1
 
+# Declared here because a global ARG is only visible to a FROM if it precedes
+# the first one. What it selects, and why it is off, is at the docker-cli
+# stages below.
+ARG WITH_DOCKER_CLI=false
+
 # Build stage: compilers and headers live here and never reach the final image.
 FROM python:3.11-slim-bookworm AS builder
 
@@ -53,10 +58,32 @@ RUN pip install --no-cache-dir --no-compile -r requirements.txt \
 RUN pip uninstall -y numba llvmlite \
     && ! python -c "import numba" 2>/dev/null
 
-# Docker CLI for the optional Docker-backed tool execution. The debian
-# docker.io package drags in the daemon and containerd; only the client binary
-# is ever used from inside this container.
-FROM docker:27-cli AS docker-cli
+# Docker CLI for the optional Docker-backed tool execution -- off by default.
+#
+# The binary is 65 MB, and it is only usable when the host's Docker socket is
+# bind-mounted, which docker-compose.docker-tools.yml does and nothing else in
+# this repo does. That overlay grants the container control of the host daemon,
+# which is effectively root on the host, so this follows the same rule as every
+# other dangerous capability here: absent unless asked for. The overlay passes
+# the build arg.
+#
+# The "false" stage installs a stub at the same path rather than leaving none:
+# a `docker` that explains itself beats "command not found" three layers inside
+# an agent's tool call.
+FROM docker:27-cli AS docker-cli-true
+
+FROM busybox:stable AS docker-cli-false
+RUN mkdir -p /usr/local/bin \
+    && printf '%s\n' \
+        '#!/bin/sh' \
+        'echo "docker: this image was built without the Docker CLI." >&2' \
+        'echo "Rebuild with --build-arg WITH_DOCKER_CLI=true, or use" >&2' \
+        'echo "docker-compose.docker-tools.yml, which passes it." >&2' \
+        'exit 127' \
+        > /usr/local/bin/docker \
+    && chmod +x /usr/local/bin/docker
+
+FROM docker-cli-${WITH_DOCKER_CLI} AS docker-cli
 
 
 # ffmpeg, taken as files rather than as a package.

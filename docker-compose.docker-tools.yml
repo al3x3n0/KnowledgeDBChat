@@ -12,6 +12,12 @@
 # out, and TMPDIR points at it so tempfile lands there.
 services:
   backend:
+    # The Docker CLI is not in the default image -- 65 MB for a binary that
+    # only works when the socket below is mounted. This overlay is the one
+    # place that mounts it, so it is the one place that asks for it.
+    build:
+      args:
+        WITH_DOCKER_CLI: "true"
     environment:
       - CUSTOM_TOOL_DOCKER_ENABLED=true
       - TMPDIR=${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
@@ -20,6 +26,9 @@ services:
       - ${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}:${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}
 
   celery:
+    build:
+      args:
+        WITH_DOCKER_CLI: "true"
     environment:
       - CUSTOM_TOOL_DOCKER_ENABLED=true
       - TMPDIR=${SANDBOX_TMPDIR:-/tmp/kdbc-sandbox}

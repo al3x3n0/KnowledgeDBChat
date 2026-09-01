@@ -131,6 +131,7 @@ import {
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import RecoveryAuditPanel from '../components/agent/RecoveryAuditPanel';
+import TemplateCard from '../components/agent/TemplateCard';
 import AutonomousRndVerificationPanel from '../components/agent/AutonomousRndVerificationPanel';
 import {
   buildBugTriageSwarmQuickStartPayload,
@@ -12133,43 +12134,6 @@ const AutonomousAgentsPage: React.FC = () => {
   };
 
   // Render template card
-  const TemplateCard: React.FC<{ template: AgentJobTemplate }> = ({ template }) => {
-    const typeConfig = JOB_TYPE_CONFIG[template.job_type as AgentJobType] || JOB_TYPE_CONFIG.custom;
-    const TypeIcon = typeConfig.icon;
-
-    return (
-      <div
-        className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
-        onClick={() => setCreateFromTemplate(template)}
-      >
-        <div className="flex items-start gap-3 mb-3">
-          <div className={`p-2 rounded-lg ${typeConfig.color}`}>
-            <TypeIcon className="w-5 h-5" />
-          </div>
-          <div className="flex-1">
-            <h3 className="font-medium text-gray-900">{template.display_name}</h3>
-            <p className="text-sm text-gray-500">{template.category}</p>
-          </div>
-          {template.recommended && (
-            <span className="text-xs bg-emerald-100 text-emerald-700 px-2 py-1 rounded">
-              Recommended{typeof template.recommendation_score === 'number' ? ` (${template.recommendation_score})` : ''}
-            </span>
-          )}
-          {template.is_system && (
-            <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">System</span>
-          )}
-        </div>
-        <p className="text-sm text-gray-600 mb-3 line-clamp-2">{template.description}</p>
-        <div className="flex items-center gap-4 text-xs text-gray-500">
-          <span>Max {template.default_max_iterations} iterations</span>
-          <span>{template.default_max_runtime_minutes} min runtime</span>
-          {template.recommended && template.recommendation_reasons?.length ? (
-            <span className="truncate">why: {template.recommendation_reasons.slice(0, 2).join(', ')}</span>
-          ) : null}
-        </div>
-      </div>
-    );
-  };
 
   // Create job modal
   const CreateJobModal: React.FC = () => {
@@ -22787,7 +22751,15 @@ const AutonomousAgentsPage: React.FC = () => {
             ) : (
               <div className="grid grid-cols-3 gap-4">
                 {templatesData?.templates.map((template) => (
-                  <TemplateCard key={template.id} template={template} />
+                  <TemplateCard
+                    key={template.id}
+                    template={template}
+                    typeConfig={
+                      JOB_TYPE_CONFIG[template.job_type as AgentJobType] ||
+                      JOB_TYPE_CONFIG.custom
+                    }
+                    onSelect={setCreateFromTemplate}
+                  />
                 ))}
               </div>
             )}

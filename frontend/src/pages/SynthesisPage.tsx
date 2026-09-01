@@ -35,7 +35,7 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
-import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document } from '../types';
+import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document, AgentJob } from '../types';
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { useNotifications } from '../contexts/NotificationContext';
@@ -1209,6 +1209,7 @@ const SynthesisPage: React.FC = () => {
     const [step, setStep] = useState<'type' | 'documents' | 'config'>('type');
     const [selectedType, setSelectedType] = useState<SynthesisJobType>('multi_doc_summary');
     const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
+    const [selectedRuns, setSelectedRuns] = useState<string[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
     const [sourceSearchQuery, setSourceSearchQuery] = useState('');
     const [title, setTitle] = useState('');
@@ -1251,9 +1252,17 @@ const SynthesisPage: React.FC = () => {
       { enabled: step === 'documents' }
     );
 
+    // Completed runs only: a run still going has findings that will change,
+    // and a document citing a moving number is worse than one citing none.
+    const { data: runsData, isLoading: runsLoading } = useQuery(
+      ['agent-runs-for-synthesis'],
+      () => apiClient.listAgentJobs({ status: 'completed', page_size: 25, sort_by: 'recent' }),
+      { enabled: step === 'documents' }
+    );
+
     const handleSubmit = async () => {
-      if (selectedDocs.length === 0 && !sourceSearchQuery.trim()) {
-        toast.error('Select at least one document or provide a search query');
+      if (selectedDocs.length === 0 && selectedRuns.length === 0 && !sourceSearchQuery.trim()) {
+        toast.error('Select a document or a run, or provide a search query');
         return;
       }
       if (!title.trim()) {
@@ -1267,6 +1276,7 @@ const SynthesisPage: React.FC = () => {
           job_type: selectedType,
           title,
           document_ids: selectedDocs,
+          agent_job_ids: selectedRuns.length ? selectedRuns : undefined,
           search_query: sourceSearchQuery.trim() || undefined,
           topic: topic || undefined,
           output_format: outputFormat,
@@ -1380,6 +1390,57 @@ const SynthesisPage: React.FC = () => {
                 <p className="text-sm text-gray-500 mb-3">
                   Selected: {selectedDocs.length} documents
                 </p>
+
+                {/* Runs as sources. A run's findings reach the synthesis with
+                    their measurements attached, so a number in the document is
+                    the one the run recorded rather than one typed in again. */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Or build on what a run measured
+                  </label>
+                  {runsLoading ? (
+                    <div className="flex justify-center py-4">
+                      <LoadingSpinner />
+                    </div>
+                  ) : (runsData?.jobs || []).length === 0 ? (
+                    <p className="text-xs text-gray-500">
+                      No completed runs yet. A run's findings become citable here once it finishes.
+                    </p>
+                  ) : (
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {(runsData?.jobs || []).map((run: AgentJob) => (
+                        <label
+                          key={run.id}
+                          className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${
+                            selectedRuns.includes(run.id)
+                              ? 'border-primary-500 bg-primary-50'
+                              : 'border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedRuns.includes(run.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedRuns([...selectedRuns, run.id]);
+                              } else {
+                                setSelectedRuns(selectedRuns.filter((id) => id !== run.id));
+                              }
+                            }}
+                            className="rounded"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-gray-900 truncate">{run.name}</p>
+                            <p className="text-xs text-gray-500 truncate">
+                              {run.job_type}
+                              {typeof run.iteration === 'number' ? ` | ${run.iteration} iterations` : ''}
+                            </p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1592,6 +1653,9 @@ const SynthesisPage: React.FC = () => {
                   <div className="text-sm text-gray-600 space-y-1">
                     <p><span className="text-gray-500">Type:</span> {JOB_TYPE_CONFIG[selectedType].label}</p>
                     <p><span className="text-gray-500">Documents:</span> {selectedDocs.length}</p>
+                    {selectedRuns.length > 0 && (
+                      <p><span className="text-gray-500">Runs:</span> {selectedRuns.length}</p>
+                    )}
                     {sourceSearchQuery.trim() && (
                       <p><span className="text-gray-500">Search query:</span> {sourceSearchQuery.trim()}</p>
                     )}
@@ -1619,7 +1683,7 @@ const SynthesisPage: React.FC = () => {
               onClick={() => {
                 if (step === 'type') setStep('documents');
                 else if (step === 'documents') {
-                  if (selectedDocs.length === 0 && !sourceSearchQuery.trim()) {
+                  if (selectedDocs.length === 0 && selectedRuns.length === 0 && !sourceSearchQuery.trim()) {
                     toast.error('Select at least one document or provide a search query');
                     return;
                   }

@@ -75,6 +75,11 @@ class SynthesisJob(Base):
     document_ids = Column(JSON, nullable=False, default=list)
     # Optional extracted papers (list of research_paper IDs)
     paper_ids = Column(JSON, nullable=False, default=list)
+    # Optional autonomous runs whose findings are source material. A run
+    # measures something; a document is written from those measurements. With
+    # no link between them the numbers get retyped, and a retyped measurement
+    # is indistinguishable from a remembered one.
+    agent_job_ids = Column(JSON, nullable=False, default=list)
     # Optional originating research note
     research_note_id = Column(
         UUID(as_uuid=True),

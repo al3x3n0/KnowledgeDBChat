@@ -4656,6 +4656,8 @@ export interface SynthesisJob {
   description?: string;
   document_ids: string[];
   paper_ids?: string[];
+  /** Autonomous runs whose findings were used as source material. */
+  agent_job_ids?: string[];
   research_note_id?: string;
   source_id?: string;
   search_query?: string;

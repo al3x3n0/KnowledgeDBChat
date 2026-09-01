@@ -114,7 +114,16 @@ def summarize_finding_metrics(finding: Dict[str, Any]) -> str:
     for name, value in finding.items():
         if name in METRIC_CONTAINERS:
             continue
-        if isinstance(value, (int, float)) and not isinstance(value, bool):
+        # Lists count here too, not only inside a metric container. A
+        # benchmark_measurement records `all_ms: [54, 18, 16, 15, 30]` at the
+        # top level, and reading only the scalars beside it dropped the series
+        # — the same way this function's own reason for existing was findings
+        # whose numbers lived in a field rather than in the title. `_add`
+        # ignores a list with no numbers in it, so a list of strings still
+        # contributes nothing.
+        if isinstance(value, list):
+            _add(str(name), value)
+        elif isinstance(value, (int, float)) and not isinstance(value, bool):
             _add(str(name), value)
 
     return ", ".join(pairs)

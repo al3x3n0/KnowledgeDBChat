@@ -57,6 +57,14 @@ class SynthesisJobCreate(BaseModel):
         default_factory=list,
         description="List of extracted research paper IDs to synthesize",
     )
+    agent_job_ids: List[str] = Field(
+        default_factory=list,
+        description=(
+            "Autonomous run IDs whose recorded findings become source material. "
+            "Their measurements reach the synthesis with their numbers, so the "
+            "document can cite what a run measured instead of it being retyped."
+        ),
+    )
     research_note_id: Optional[str] = Field(
         None, description="Optional research note ID for note-backed synthesis"
     )
@@ -100,6 +108,7 @@ class SynthesisJobResponse(BaseModel):
     description: Optional[str]
     document_ids: List[str]
     paper_ids: List[str]
+    agent_job_ids: List[str] = []
     research_note_id: Optional[str]
     search_query: Optional[str]
     topic: Optional[str]
@@ -367,6 +376,7 @@ def _build_synthesis_job_response(
         description=job.description,
         document_ids=job.document_ids,
         paper_ids=job.paper_ids,
+        agent_job_ids=list(job.agent_job_ids or []),
         research_note_id=str(job.research_note_id) if job.research_note_id else None,
         search_query=job.search_query,
         topic=job.topic,
@@ -1040,6 +1050,7 @@ async def create_synthesis_job(
         title=request.title,
         document_ids=request.document_ids,
         paper_ids=request.paper_ids,
+        agent_job_ids=request.agent_job_ids,
         research_note_id=UUID(research_note_id) if research_note_id else None,
         description=request.description,
         search_query=search_query or None,

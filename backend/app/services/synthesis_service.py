@@ -33,6 +33,26 @@ from app.services.research_note_reevaluation_notification_service import (
 from app.services.search_service import search_service
 from app.services.vector_store import vector_store_service
 
+#: Finding types that record what a run *read*, not what it established. A
+#: retrieval hit is already a Library document and citable as one; passed to a
+#: synthesis as a run's finding it reads as evidence the run produced. One real
+#: run recorded twelve findings of which eleven were search results and one was
+#: the measurement -- which is the ratio a document would have been written
+#: from.
+RETRIEVAL_FINDING_TYPES = {"document", "paper"}
+
+
+def _findings_the_run_established(findings: Any) -> List[Dict[str, Any]]:
+    """The run's own contributions, in order, minus what it merely retrieved."""
+    if not isinstance(findings, list):
+        return []
+    return [
+        f
+        for f in findings
+        if isinstance(f, dict)
+        and str(f.get("type") or "").strip().lower() not in RETRIEVAL_FINDING_TYPES
+    ]
+
 
 class SynthesisService:
     """Service for multi-document synthesis and report generation."""
@@ -49,6 +69,7 @@ class SynthesisService:
         title: str,
         document_ids: List[str],
         paper_ids: Optional[List[str]] = None,
+        agent_job_ids: Optional[List[str]] = None,
         research_note_id: Optional[UUID] = None,
         description: Optional[str] = None,
         search_query: Optional[str] = None,
@@ -65,6 +86,7 @@ class SynthesisService:
             description=description,
             document_ids=document_ids,
             paper_ids=paper_ids or [],
+            agent_job_ids=agent_job_ids or [],
             research_note_id=research_note_id,
             search_query=search_query,
             topic=topic,
@@ -170,11 +192,22 @@ class SynthesisService:
                     db, job.document_ids, job.search_query
                 )
 
+            # A run's findings are source material alongside documents and
+            # papers, not instead of them: the point of citing a run is to
+            # write about its measurements next to the literature.
+            agent_runs = (
+                await self._load_agent_runs(db, job.agent_job_ids, job.user_id)
+                if job.agent_job_ids
+                else []
+            )
+
             sources = (
                 [note_context]
                 if note_context
                 else (
-                    [run_context] if run_context else (papers if papers else documents)
+                    [run_context]
+                    if run_context
+                    else (papers if papers else documents) + agent_runs
                 )
             )
             if not sources:
@@ -402,6 +435,88 @@ class SynthesisService:
                         push=True,
                     )
             raise
+
+    async def _load_agent_runs(
+        self,
+        db: AsyncSession,
+        agent_job_ids: List[str],
+        user_id: UUID,
+    ) -> List[Dict[str, Any]]:
+        """Render a run's findings as source material, with its numbers intact.
+
+        The formatting is `agent_run_synthesis_service`'s, not a second one
+        written here: it already renders a finding's metrics rather than only
+        its title, which is the difference between a document that can cite
+        "fastest_ms=15 (n=5)" and one that says the values were not recorded.
+
+        Every run is scoped to the requesting user, because a synthesis is not
+        a way to read someone else's runs.
+        """
+        from app.models.agent_job import AgentJob
+        from app.services.agent_run_synthesis_service import (
+            summarize_findings_for_prompt,
+        )
+
+        runs: List[Dict[str, Any]] = []
+        for raw_id in agent_job_ids or []:
+            try:
+                job_id = UUID(str(raw_id))
+            except (ValueError, TypeError):
+                logger.warning(f"Skipping malformed agent job id {raw_id!r}")
+                continue
+            try:
+                result = await db.execute(
+                    select(AgentJob).where(
+                        AgentJob.id == job_id, AgentJob.user_id == user_id
+                    )
+                )
+                job = result.scalar_one_or_none()
+                if not job:
+                    logger.warning(f"Agent job {job_id} not found for this user")
+                    continue
+
+                findings = (job.results or {}).get("findings")
+                established = _findings_the_run_established(findings)
+                lines = summarize_findings_for_prompt(established)
+                if not lines:
+                    # A run with nothing of its own contributes nothing to
+                    # write from, and an empty source in a prompt reads as
+                    # evidence that there was nothing to find.
+                    logger.info(
+                        f"Agent job {job_id} established no findings of its own; skipped"
+                    )
+                    continue
+
+                body = "\n".join(f"- {line}" for line in lines)
+                runs.append(
+                    {
+                        "id": str(job.id),
+                        "title": f"Run: {job.name}",
+                        "content": (
+                            f"Goal: {job.goal}\n\n"
+                            f"Findings recorded by this run:\n{body}"
+                        ),
+                        "summary": job.goal or "",
+                        "metadata": {
+                            "source_kind": "agent_run",
+                            "agent_job_id": str(job.id),
+                            "job_type": job.job_type,
+                            "status": job.status,
+                            "iterations": job.iteration,
+                            "finding_count": len(findings)
+                            if isinstance(findings, list)
+                            else 0,
+                            "cited_finding_count": len(established),
+                        },
+                        "created_at": job.created_at.isoformat()
+                        if job.created_at
+                        else None,
+                    }
+                )
+            except Exception as e:  # noqa: BLE001 - one bad run must not sink the job
+                logger.warning(f"Failed to load agent job {raw_id}: {e}")
+
+        return runs
 
     async def _load_documents(
         self,

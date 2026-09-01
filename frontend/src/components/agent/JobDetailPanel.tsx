@@ -68,6 +68,7 @@ import {
 import { copyText } from '../../utils/clipboard';
 import {
   buildDomainResearchPromotionDraft,
+  codePatchView,
   executionGraphView,
   humanizeSwarmOutcome,
   slugifyText,
@@ -176,6 +177,27 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     recentScopeEvents,
     scopeGuardBlocks,
   } = useMemo(() => executionGraphView(job), [job]);
+
+  // Sixteen code-patch values, previously four clusters and six separate
+  // useMemos over the same job.results.
+  const {
+    codePatchProposal,
+    codePatchExecution,
+    codePatchWorkspace,
+    codePatchVerificationPlan,
+    codePatchExecutionPlan,
+    codePatchRecovery,
+    codePatchDetectedStack,
+    codePatchVerificationCommands,
+    codePatchBootstrapCommands,
+    codePatchFallbackCommands,
+    codePatchFailedCommands,
+    codePatchSuggestedActions,
+    codingRecoveryState,
+    codePatchProposals,
+    codePatchApply,
+    codePatchKbApply,
+  } = useMemo(() => codePatchView(job), [job]);
     const lineageModeFromUrl = useMemo(() => {
       const raw = String(new URLSearchParams(location.search).get('lx') || '').trim().toLowerCase();
       return raw === 'full' ? 'full' : 'compact';
@@ -658,55 +680,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       return arts.some((a) => a?.type === 'arxiv_ingest_requested' && a?.source_id);
     }, [job.output_artifacts]);
 
-    const codePatchProposal = useMemo(() => {
-      const fromResults = (job.results as any)?.code_patch;
-      if (fromResults?.proposal_id) {
-        return {
-          proposal_id: String(fromResults.proposal_id),
-          title: String(fromResults.title || 'Code Patch Proposal'),
-          summary: fromResults.summary ? String(fromResults.summary) : '',
-        };
-      }
-      const arts = (job.output_artifacts as any[]) || [];
-      const art = arts.find((a) => a?.type === 'code_patch_proposal' && a?.id);
-      if (art?.id) {
-        return { proposal_id: String(art.id), title: String(art.title || 'Code Patch Proposal'), summary: '' };
-      }
-      return null;
-    }, [job.output_artifacts, job.results]);
-    const codePatchExecution = useMemo(() => {
-      const payload = (job.results as any)?.code_patch_execution;
-      if (!payload || typeof payload !== 'object') return null;
-      return payload as AgentJobCodePatchExecution;
-    }, [job.results]);
-    const codePatchWorkspace = codePatchExecution?.workspace || null;
-    const codePatchVerificationPlan = codePatchExecution?.verification_plan || null;
-    const codePatchExecutionPlan = Array.isArray(codePatchExecution?.execution_plan)
-      ? (codePatchExecution?.execution_plan || [])
-      : [];
-    const codePatchRecovery = (codePatchExecution?.recovery || null) as AgentJobCodePatchRecovery | null;
-    const codePatchDetectedStack = Array.isArray((codePatchExecution?.inferred_project_profile as any)?.detected_stack)
-      ? ((codePatchExecution?.inferred_project_profile as any)?.detected_stack as any[])
-          .map((item) => String(item || '').trim())
-          .filter(Boolean)
-      : [];
-    const codePatchVerificationCommands = Array.isArray(codePatchVerificationPlan?.commands)
-      ? (codePatchVerificationPlan?.commands || [])
-      : [];
-    const codePatchBootstrapCommands = Array.isArray(codePatchVerificationPlan?.bootstrap_commands)
-      ? (codePatchVerificationPlan?.bootstrap_commands || [])
-      : [];
-    const codePatchFallbackCommands = Array.isArray(codePatchVerificationPlan?.fallback_commands)
-      ? (codePatchVerificationPlan?.fallback_commands || [])
-      : [];
-    const codePatchFailedCommands = Array.isArray(codePatchRecovery?.last_failed_commands)
-      ? (codePatchRecovery?.last_failed_commands || [])
-      : [];
-    const codePatchSuggestedActions = Array.isArray(codePatchRecovery?.suggested_operator_actions)
-      ? (codePatchRecovery?.suggested_operator_actions || [])
-      : [];
     const isRepoBugTriageJob = launchMode === 'quick_start_repo_bug_triage';
-    const codingRecoveryState = String(codePatchRecovery?.recovery_state || '').trim().toLowerCase();
     const codingRecoveryDirectControls = Boolean(
       isRepoBugTriageJob && (
         codePatchRecovery?.can_retry_with_refined_plan
@@ -715,35 +689,6 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       )
     );
 
-    const codePatchProposals = useMemo(() => {
-      const seen = new Set<string>();
-      const out: Array<{ proposal_id: string; title: string; summary: string }> = [];
-      const hist = (job.results as any)?.code_patches;
-      if (Array.isArray(hist)) {
-        for (const p of hist) {
-          const id = String(p?.proposal_id || '').trim();
-          if (!id || seen.has(id)) continue;
-          seen.add(id);
-          out.push({
-            proposal_id: id,
-            title: String(p?.title || 'Code Patch Proposal'),
-            summary: p?.summary ? String(p.summary) : '',
-          });
-        }
-      }
-      const cur = (job.results as any)?.code_patch;
-      if (cur?.proposal_id) {
-        const id = String(cur.proposal_id).trim();
-        if (id && !seen.has(id)) {
-          out.push({
-            proposal_id: id,
-            title: String(cur?.title || 'Code Patch Proposal'),
-            summary: cur?.summary ? String(cur.summary) : '',
-          });
-        }
-      }
-      return out;
-    }, [job.results]);
 
     const experimentRuns = useMemo(() => {
       const out: AgentJobExperimentRun[] = [];
@@ -795,17 +740,6 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       navigate(buildAutonomousAgentsUrl(String(job.id)), { replace: true });
     };
 
-    const codePatchApply = useMemo(() => {
-      const v = (job.results as any)?.code_patch_apply;
-      if (v && typeof v === 'object') return v as any;
-      return null;
-    }, [job.results]);
-
-    const codePatchKbApply = useMemo(() => {
-      const v = (job.results as any)?.code_patch_kb_apply;
-      if (v && typeof v === 'object') return v as any;
-      return null;
-    }, [job.results]);
 
     const generatedProject = useMemo(() => {
       const fromResults = (job.results as any)?.generated_project;

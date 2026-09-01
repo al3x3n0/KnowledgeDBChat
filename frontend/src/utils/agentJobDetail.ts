@@ -8,7 +8,12 @@
  * 19,000-line page module.
  */
 
-import type { AgentJob, AgentJobExecutionGraph } from '../types';
+import type {
+  AgentJob,
+  AgentJobCodePatchExecution,
+  AgentJobCodePatchRecovery,
+  AgentJobExecutionGraph,
+} from '../types';
 
 export const formatSchedulerTimestamp = (value: unknown): string | null => {
   const text = String(value || '').trim();
@@ -193,5 +198,154 @@ export const executionGraphView = (job: AgentJob): ExecutionGraphView => {
     scopeGuardBlocks: scopeEvents.filter(
       (event) => String(event?.type || '').trim() === 'scope_guard_blocked'
     ).length,
+  };
+};
+
+
+/**
+ * Everything the code-patch views read off a job.
+ *
+ * Sixteen values, computed in four clusters spread over a hundred and fifty
+ * lines of JobDetailPanel, six of them as separate useMemos over the same
+ * `job.results`. They are the bulk of what makes the customer-research
+ * section look immovable: that section reads 44 values from the panel, and
+ * these are most of them.
+ *
+ * Pure, like the graph view: derived from a job and nothing else, so the
+ * panel can memoise the whole thing once instead of six times, and so the
+ * shapes can be checked without rendering a patch panel.
+ */
+export interface CodePatchProposalRef {
+  proposal_id: string;
+  title: string;
+  summary: string;
+}
+
+export interface CodePatchView {
+  codePatchProposal: CodePatchProposalRef | null;
+  codePatchExecution: AgentJobCodePatchExecution | null;
+  codePatchWorkspace: any;
+  codePatchVerificationPlan: any;
+  codePatchExecutionPlan: any[];
+  codePatchRecovery: AgentJobCodePatchRecovery | null;
+  codePatchDetectedStack: string[];
+  codePatchVerificationCommands: any[];
+  codePatchBootstrapCommands: any[];
+  codePatchFallbackCommands: any[];
+  codePatchFailedCommands: any[];
+  codePatchSuggestedActions: any[];
+  codingRecoveryState: string;
+  codePatchProposals: CodePatchProposalRef[];
+  codePatchApply: any;
+  codePatchKbApply: any;
+}
+
+export const codePatchView = (job: AgentJob): CodePatchView => {
+  const codePatchProposal = ((): any => {
+    const fromResults = (job.results as any)?.code_patch;
+    if (fromResults?.proposal_id) {
+      return {
+        proposal_id: String(fromResults.proposal_id),
+        title: String(fromResults.title || 'Code Patch Proposal'),
+        summary: fromResults.summary ? String(fromResults.summary) : '',
+      };
+    }
+    const arts = (job.output_artifacts as any[]) || [];
+    const art = arts.find((a) => a?.type === 'code_patch_proposal' && a?.id);
+    if (art?.id) {
+      return { proposal_id: String(art.id), title: String(art.title || 'Code Patch Proposal'), summary: '' };
+    }
+    return null;
+  })();
+  const codePatchExecution = ((): any => {
+    const payload = (job.results as any)?.code_patch_execution;
+    if (!payload || typeof payload !== 'object') return null;
+    return payload as AgentJobCodePatchExecution;
+  })();
+  const codePatchWorkspace = codePatchExecution?.workspace || null;
+  const codePatchVerificationPlan = codePatchExecution?.verification_plan || null;
+  const codePatchExecutionPlan = Array.isArray(codePatchExecution?.execution_plan)
+    ? (codePatchExecution?.execution_plan || [])
+    : [];
+  const codePatchRecovery = (codePatchExecution?.recovery || null) as AgentJobCodePatchRecovery | null;
+  const codePatchDetectedStack = Array.isArray((codePatchExecution?.inferred_project_profile as any)?.detected_stack)
+    ? ((codePatchExecution?.inferred_project_profile as any)?.detected_stack as any[])
+        .map((item) => String(item || '').trim())
+        .filter(Boolean)
+    : [];
+  const codePatchVerificationCommands = Array.isArray(codePatchVerificationPlan?.commands)
+    ? (codePatchVerificationPlan?.commands || [])
+    : [];
+  const codePatchBootstrapCommands = Array.isArray(codePatchVerificationPlan?.bootstrap_commands)
+    ? (codePatchVerificationPlan?.bootstrap_commands || [])
+    : [];
+  const codePatchFallbackCommands = Array.isArray(codePatchVerificationPlan?.fallback_commands)
+    ? (codePatchVerificationPlan?.fallback_commands || [])
+    : [];
+  const codePatchFailedCommands = Array.isArray(codePatchRecovery?.last_failed_commands)
+    ? (codePatchRecovery?.last_failed_commands || [])
+    : [];
+  const codePatchSuggestedActions = Array.isArray(codePatchRecovery?.suggested_operator_actions)
+    ? (codePatchRecovery?.suggested_operator_actions || [])
+    : [];
+  const codingRecoveryState = String(codePatchRecovery?.recovery_state || '').trim().toLowerCase();
+  const codePatchProposals = ((): any => {
+    const seen = new Set<string>();
+    const out: Array<{ proposal_id: string; title: string; summary: string }> = [];
+    const hist = (job.results as any)?.code_patches;
+    if (Array.isArray(hist)) {
+      for (const p of hist) {
+        const id = String(p?.proposal_id || '').trim();
+        if (!id || seen.has(id)) continue;
+        seen.add(id);
+        out.push({
+          proposal_id: id,
+          title: String(p?.title || 'Code Patch Proposal'),
+          summary: p?.summary ? String(p.summary) : '',
+        });
+      }
+    }
+    const cur = (job.results as any)?.code_patch;
+    if (cur?.proposal_id) {
+      const id = String(cur.proposal_id).trim();
+      if (id && !seen.has(id)) {
+        out.push({
+          proposal_id: id,
+          title: String(cur?.title || 'Code Patch Proposal'),
+          summary: cur?.summary ? String(cur.summary) : '',
+        });
+      }
+    }
+    return out;
+  })();
+  const codePatchApply = ((): any => {
+    const v = (job.results as any)?.code_patch_apply;
+    if (v && typeof v === 'object') return v as any;
+    return null;
+  })();
+
+  const codePatchKbApply = ((): any => {
+    const v = (job.results as any)?.code_patch_kb_apply;
+    if (v && typeof v === 'object') return v as any;
+    return null;
+  })();
+
+  return {
+    codePatchProposal,
+    codePatchExecution,
+    codePatchWorkspace,
+    codePatchVerificationPlan,
+    codePatchExecutionPlan,
+    codePatchRecovery,
+    codePatchDetectedStack,
+    codePatchVerificationCommands,
+    codePatchBootstrapCommands,
+    codePatchFallbackCommands,
+    codePatchFailedCommands,
+    codePatchSuggestedActions,
+    codingRecoveryState,
+    codePatchProposals,
+    codePatchApply,
+    codePatchKbApply,
   };
 };

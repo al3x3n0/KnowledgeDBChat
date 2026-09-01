@@ -7,7 +7,7 @@
  * rendered test would never set up, like a job whose results are absent.
  */
 
-import { executionGraphView } from '../agentJobDetail';
+import { codePatchView, executionGraphView } from '../agentJobDetail';
 import type { AgentJob } from '../../types';
 
 const jobWith = (results: any): AgentJob =>
@@ -89,5 +89,62 @@ describe('executionGraphView', () => {
     );
     expect(view.scopeEvents).toEqual([]);
     expect(view.recentScopeEvents).toEqual([]);
+  });
+});
+
+describe('codePatchView', () => {
+  it('prefers the proposal recorded in results over an output artifact', () => {
+    const view = codePatchView(
+      jobWith({ code_patch: { proposal_id: 'p-1', title: 'From results' } })
+    );
+    expect(view.codePatchProposal?.proposal_id).toBe('p-1');
+    expect(view.codePatchProposal?.title).toBe('From results');
+  });
+
+  it('falls back to a code_patch_proposal artifact when results carry none', () => {
+    const job = {
+      id: 'j-1',
+      name: 'run',
+      status: 'running',
+      results: {},
+      output_artifacts: [
+        { type: 'chart', id: 'a-0' },
+        { type: 'code_patch_proposal', id: 'a-1', title: 'From artifact' },
+      ],
+    } as unknown as AgentJob;
+    const view = codePatchView(job);
+    expect(view.codePatchProposal?.proposal_id).toBe('a-1');
+    expect(view.codePatchProposal?.title).toBe('From artifact');
+  });
+
+  it('deduplicates the proposal history by id', () => {
+    const view = codePatchView(
+      jobWith({
+        code_patches: [
+          { proposal_id: 'p-1', title: 'First' },
+          { proposal_id: 'p-1', title: 'Same id again' },
+          { proposal_id: '  ', title: 'Blank id' },
+          { proposal_id: 'p-2', title: 'Second' },
+        ],
+      })
+    );
+    expect(view.codePatchProposals.map((p) => p.proposal_id)).toEqual(['p-1', 'p-2']);
+  });
+
+  it('reads recovery state lowercased and trimmed', () => {
+    const view = codePatchView(
+      jobWith({ code_patch_execution: { recovery: { recovery_state: '  AWAITING_OPERATOR ' } } })
+    );
+    expect(view.codingRecoveryState).toBe('awaiting_operator');
+  });
+
+  it('returns empty collections rather than undefined for a bare job', () => {
+    const view = codePatchView(jobWith(undefined));
+    expect(view.codePatchProposal).toBeNull();
+    expect(view.codePatchExecution).toBeNull();
+    expect(view.codePatchProposals).toEqual([]);
+    expect(view.codePatchExecutionPlan).toEqual([]);
+    expect(view.codePatchDetectedStack).toEqual([]);
+    expect(view.codingRecoveryState).toBe('');
   });
 });

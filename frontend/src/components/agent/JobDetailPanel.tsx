@@ -48,9 +48,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { apiClient } from '../../services/api';
 import type {
   AgentJob,
-  AgentJobCodePatchExecution,
-  AgentJobCodePatchRecovery,
-  AgentJobExecutionGraph,
   AgentJobExperimentRun,
   AgentJobMemoryListResponse,
   AgentJobOperatorIntervention,
@@ -198,10 +195,14 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     codePatchApply,
     codePatchKbApply,
   } = useMemo(() => codePatchView(job), [job]);
+    // location.search belongs in the deps: while this panel was declared
+    // inside the page's render body it remounted constantly, so reading the
+    // URL once per mount happened to look live. As a stable component it would
+    // have kept the value from the first render for ever.
     const lineageModeFromUrl = useMemo(() => {
       const raw = String(new URLSearchParams(location.search).get('lx') || '').trim().toLowerCase();
       return raw === 'full' ? 'full' : 'compact';
-    }, []);
+    }, [location.search]);
     const [logData, setLogData] = useState<{ entries: Array<Record<string, any>>; total: number } | null>(null);
     const [loadingLog, setLoadingLog] = useState(false);
     const [stepEventsData, setStepEventsData] = useState<{
@@ -438,7 +439,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       } catch {
         toast.error('Failed to copy lineage link');
       }
-    }, [job.id, lineageExpanded]);
+    }, [job.id, lineageExpanded, location.pathname, location.search]);
     const lineagePathNodes = useMemo(() => {
       const path = [...lineageAllAncestors].reverse();
       path.push({
@@ -499,7 +500,17 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       };
       window.addEventListener('keydown', onKeyDown);
       return () => window.removeEventListener('keydown', onKeyDown);
-    }, [lineageParentJobId, lineageLatestChildJobId, job.id, copyLineageLink]);
+    }, [
+      lineageParentJobId,
+      lineageLatestChildJobId,
+      job.id,
+      copyLineageLink,
+      // Without these the 'x' shortcut navigates with whatever URL the panel
+      // first rendered against.
+      buildAutonomousAgentsUrl,
+      navigate,
+      setSelectedJob,
+    ]);
     const launchSearchQuery = String(((job.config as any)?.search_query || launchResult?.search_query || '')).trim();
     const launchCommands = Array.isArray((job.config as any)?.commands)
       ? ((job.config as any).commands as any[]).map((x) => String(x || '').trim()).filter(Boolean)
@@ -598,9 +609,11 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
         recommended_commands: Array.isArray(fanIn?.recommended_commands) ? fanIn.recommended_commands : [],
       } as any;
     }, [job]);
+    // The maps are rebuilt by the page when the outcomes query refreshes;
+    // keyed only on job.id this kept the outcome it saw first.
     const swarmOutcomeCase = useMemo(
       () => swarmOutcomeBySwarmJobId[String(job.id)] || swarmOutcomeByRepairJobId[String(job.id)] || null,
-      [job.id]
+      [job.id, swarmOutcomeBySwarmJobId, swarmOutcomeByRepairJobId]
     );
     const [feedbackReasons, setFeedbackReasons] = useState<Record<string, string>>({});
     const [bulkReason, setBulkReason] = useState('');

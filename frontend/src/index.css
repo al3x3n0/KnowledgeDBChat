@@ -14,16 +14,24 @@
   }
 }
 
-@import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-@import url('https://fonts.googleapis.com/css2?family=Fira+Code:wght@300;400;500&display=swap');
+/* IBM Plex, because the two faces are designed as one family: prose in the
+   sans, values in the mono, and the same skeleton under both so a page set in
+   a mix does not read as two designs. Inter is gone — it was imported and
+   never used, since the body was mono. */
+@import url('https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;450;500;600&family=IBM+Plex+Mono:wght@400;500;600&display=swap');
 
 @layer base {
   * {
     @apply border-gray-200;
   }
   
+  /* Prose is set in the sans; `font-mono` marks what is literally a value.
+     The app already made that distinction — 210 explicit `font-mono` usages
+     across 27 files — but the body font overrode it, so every label, heading
+     and paragraph came out monospaced too. Those 210 sites keep their mono;
+     everything else becomes readable at a glance. */
   body {
-    @apply bg-gray-50 text-gray-900 font-mono;
+    @apply bg-gray-50 text-gray-900 font-sans;
     font-feature-settings: "rlig" 1, "calt" 1;
   }
 

@@ -35,8 +35,12 @@ module.exports = {
         }
       },
       fontFamily: {
-        sans: ['Inter', 'system-ui', 'sans-serif'],
-        mono: ['Fira Code', 'Monaco', 'Consolas', 'monospace'],
+        // One family, two voices. `sans` carries prose and chrome; `mono` is
+        // reserved for things that are literally values — measurements, ids,
+        // timestamps, paths — so monospace means something instead of being
+        // the default everything inherited.
+        sans: ['IBM Plex Sans', 'system-ui', '-apple-system', 'sans-serif'],
+        mono: ['IBM Plex Mono', 'Monaco', 'Consolas', 'monospace'],
       },
       animation: {
         'fade-in': 'fadeIn 0.5s ease-in-out',

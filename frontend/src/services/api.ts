@@ -272,10 +272,22 @@ import {
   LatexCompileJobResponse,
 } from '../types';
 
-const runtimeEnv =
-  typeof globalThis !== 'undefined' && (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-    ? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process!.env!
-    : {};
+// CRA substitutes the *bare identifier* `process.env.REACT_APP_X` at build
+// time. Reading it through `globalThis.process` defeats that substitution:
+// webpack 5 ships no process shim, so the lookup was undefined in every
+// browser and every build silently fell back to the defaults below --
+// REACT_APP_API_URL, REACT_APP_VIDEO_STREAM_URL and the build args that set
+// them in frontend/Dockerfile did nothing at all. Symptom: an app served from
+// any origin still called http://localhost:8000, cross-origin, instead of the
+// same-origin path its reverse proxy provides.
+//
+// Each name has to be written out; `process.env[name]` is a dynamic lookup and
+// is not substituted either.
+const runtimeEnv: Record<string, string | undefined> = {
+  REACT_APP_API_URL: process.env.REACT_APP_API_URL,
+  REACT_APP_WS_URL: process.env.REACT_APP_WS_URL,
+  REACT_APP_VIDEO_STREAM_URL: process.env.REACT_APP_VIDEO_STREAM_URL,
+};
 
 const API_BASE_URL = runtimeEnv.REACT_APP_API_URL || 'http://localhost:8000';
 

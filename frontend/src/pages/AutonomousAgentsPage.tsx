@@ -132,6 +132,7 @@ import TemplateCard from '../components/agent/TemplateCard';
 import { JOB_TYPE_CONFIG, STATUS_CONFIG } from '../components/agent/jobConfig';
 import { getLatestExperimentRun } from '../components/agent/jobFields';
 import JobCard from '../components/agent/JobCard';
+import { swarmQuickStartPreset } from '../components/agent/swarmQuickStarts';
 import { copyText } from '../utils/clipboard';
 import AutonomousRndVerificationPanel from '../components/agent/AutonomousRndVerificationPanel';
 import {
@@ -6826,6 +6827,50 @@ const AutonomousAgentsPage: React.FC = () => {
     }
   );
 
+  /**
+   * Which coding-swarm quick start is open, if any.
+   *
+   * These were three components whose only difference was their text, colour
+   * and mutation. The differences live in SWARM_QUICK_START_PRESETS now; what
+   * is left here is the part that genuinely belongs to this component — which
+   * flag is set, which mutation to call, and how to close.
+   */
+  const activeSwarmQuickStart = useMemo(() => {
+    const open = showBugTriageSwarmQuickStartModal
+      ? {
+          presetKey: 'bug_triage_swarm',
+          mutation: quickStartBugTriageSwarmMutation,
+          buildPayload: buildBugTriageSwarmQuickStartPayload,
+          setOpen: setShowBugTriageSwarmQuickStartModal,
+        }
+      : showBuildBreakSwarmQuickStartModal
+        ? {
+            presetKey: 'build_break_swarm',
+            mutation: quickStartBuildBreakSwarmMutation,
+            buildPayload: buildBuildBreakSwarmQuickStartPayload,
+            setOpen: setShowBuildBreakSwarmQuickStartModal,
+          }
+        : showFrontendRegressionSwarmQuickStartModal
+          ? {
+              presetKey: 'frontend_regression_swarm',
+              mutation: quickStartFrontendRegressionSwarmMutation,
+              buildPayload: buildFrontendRegressionSwarmQuickStartPayload,
+              setOpen: setShowFrontendRegressionSwarmQuickStartModal,
+            }
+          : null;
+    if (!open) return null;
+    const preset = swarmQuickStartPreset(open.presetKey);
+    return preset ? { ...open, preset } : null;
+  }, [
+    showBugTriageSwarmQuickStartModal,
+    showBuildBreakSwarmQuickStartModal,
+    showFrontendRegressionSwarmQuickStartModal,
+    quickStartBugTriageSwarmMutation,
+    quickStartBuildBreakSwarmMutation,
+    quickStartFrontendRegressionSwarmMutation,
+  ]);
+
+
   const quickStartRoleWorkflowMutation = useMutation(
     (data: AgentJobQuickStartRoleWorkflowRequest) => apiClient.quickStartRoleWorkflowJob(data),
     {
@@ -13324,72 +13369,6 @@ const AutonomousAgentsPage: React.FC = () => {
       </div>
     );
   };
-
-  const QuickStartBugTriageSwarmModal: React.FC = () => (
-    <QuickStartCodingSwarmModal
-      presetKey="bug_triage_swarm"
-      title="Quick Start Bug Triage Swarm"
-      description="Launch a coding swarm with reproducer, root-cause, patcher, and verifier slices. High-confidence fan-in auto-launches the existing repair loop."
-      defaultName={`Bug Triage Swarm - ${new Date().toLocaleDateString()}`}
-      defaultFailureSymptom={templateRecommendGoal.trim() || 'Describe the observed bug or failing behavior'}
-      defaultGoal="Reproduce the failure, rank the best repair path, and auto-launch the repair loop when confidence is high"
-      defaultScope="auto"
-      accentClassName="border-rose-100 bg-rose-50 text-rose-800"
-      initialProfileId={codingSwarmLaunchSeed?.presetKey === 'bug_triage_swarm' ? codingSwarmLaunchSeed?.profileId : undefined}
-      initialSourceId={codingSwarmLaunchSeed?.presetKey === 'bug_triage_swarm' ? codingSwarmLaunchSeed?.sourceId : undefined}
-      onClose={() => {
-        setShowBugTriageSwarmQuickStartModal(false);
-        setCodingSwarmLaunchSeed(null);
-      }}
-      submitLabel="Start Swarm"
-      submitMutation={quickStartBugTriageSwarmMutation}
-      buildPayload={buildBugTriageSwarmQuickStartPayload}
-    />
-  );
-
-  const QuickStartBuildBreakSwarmModal: React.FC = () => (
-    <QuickStartCodingSwarmModal
-      presetKey="build_break_swarm"
-      title="Quick Start Build Break Swarm"
-      description="Launch a coding swarm tuned for compiler failures, broken imports, and build-step regressions. High-confidence fan-in still hands off into the repair chain."
-      defaultName={`Build Break Swarm - ${new Date().toLocaleDateString()}`}
-      defaultFailureSymptom={templateRecommendGoal.trim() || 'Describe the failing build, compile, or test command'}
-      defaultGoal="Identify the broken build step, isolate the minimal file cluster, and auto-launch repair when the swarm converges"
-      defaultScope="backend"
-      accentClassName="border-amber-100 bg-amber-50 text-amber-800"
-      initialProfileId={codingSwarmLaunchSeed?.presetKey === 'build_break_swarm' ? codingSwarmLaunchSeed?.profileId : undefined}
-      initialSourceId={codingSwarmLaunchSeed?.presetKey === 'build_break_swarm' ? codingSwarmLaunchSeed?.sourceId : undefined}
-      onClose={() => {
-        setShowBuildBreakSwarmQuickStartModal(false);
-        setCodingSwarmLaunchSeed(null);
-      }}
-      submitLabel="Start Build Swarm"
-      submitMutation={quickStartBuildBreakSwarmMutation}
-      buildPayload={buildBuildBreakSwarmQuickStartPayload}
-    />
-  );
-
-  const QuickStartFrontendRegressionSwarmModal: React.FC = () => (
-    <QuickStartCodingSwarmModal
-      presetKey="frontend_regression_swarm"
-      title="Quick Start Frontend Regression Swarm"
-      description="Launch a coding swarm tuned for UI regressions, state mismatches, and page-level breakage, while keeping the same fan-in and repair-chain handoff model."
-      defaultName={`Frontend Regression Swarm - ${new Date().toLocaleDateString()}`}
-      defaultFailureSymptom={templateRecommendGoal.trim() || 'Describe the broken page, interaction, or visible UI regression'}
-      defaultGoal="Reproduce the frontend regression, narrow the affected page/component cluster, and promote the winning path into repair when safe"
-      defaultScope="frontend"
-      accentClassName="border-cyan-100 bg-cyan-50 text-cyan-800"
-      initialProfileId={codingSwarmLaunchSeed?.presetKey === 'frontend_regression_swarm' ? codingSwarmLaunchSeed?.profileId : undefined}
-      initialSourceId={codingSwarmLaunchSeed?.presetKey === 'frontend_regression_swarm' ? codingSwarmLaunchSeed?.sourceId : undefined}
-      onClose={() => {
-        setShowFrontendRegressionSwarmQuickStartModal(false);
-        setCodingSwarmLaunchSeed(null);
-      }}
-      submitLabel="Start Frontend Swarm"
-      submitMutation={quickStartFrontendRegressionSwarmMutation}
-      buildPayload={buildFrontendRegressionSwarmQuickStartPayload}
-    />
-  );
 
   const QuickStartRepoBugTriageModal: React.FC = () => {
     const MAX_QS_COMMANDS = 6;
@@ -23206,9 +23185,38 @@ const AutonomousAgentsPage: React.FC = () => {
       {showCreateModal && <CreateJobModal />}
       {showClaudeQuickStartModal && <QuickStartClaudeBackendModal />}
       {showDomainResearchQuickStartModal && <QuickStartDomainResearchModal />}
-      {showBugTriageSwarmQuickStartModal && <QuickStartBugTriageSwarmModal />}
-      {showBuildBreakSwarmQuickStartModal && <QuickStartBuildBreakSwarmModal />}
-      {showFrontendRegressionSwarmQuickStartModal && <QuickStartFrontendRegressionSwarmModal />}
+      {activeSwarmQuickStart && (
+        <QuickStartCodingSwarmModal
+          presetKey={activeSwarmQuickStart.preset.presetKey}
+          title={activeSwarmQuickStart.preset.title}
+          description={activeSwarmQuickStart.preset.description}
+          defaultName={`${activeSwarmQuickStart.preset.namePrefix} - ${new Date().toLocaleDateString()}`}
+          defaultFailureSymptom={
+            templateRecommendGoal.trim() ||
+            activeSwarmQuickStart.preset.failureSymptomPlaceholder
+          }
+          defaultGoal={activeSwarmQuickStart.preset.defaultGoal}
+          defaultScope={activeSwarmQuickStart.preset.defaultScope}
+          accentClassName={activeSwarmQuickStart.preset.accentClassName}
+          initialProfileId={
+            codingSwarmLaunchSeed?.presetKey === activeSwarmQuickStart.preset.presetKey
+              ? codingSwarmLaunchSeed?.profileId
+              : undefined
+          }
+          initialSourceId={
+            codingSwarmLaunchSeed?.presetKey === activeSwarmQuickStart.preset.presetKey
+              ? codingSwarmLaunchSeed?.sourceId
+              : undefined
+          }
+          onClose={() => {
+            activeSwarmQuickStart.setOpen(false);
+            setCodingSwarmLaunchSeed(null);
+          }}
+          submitLabel={activeSwarmQuickStart.preset.submitLabel}
+          submitMutation={activeSwarmQuickStart.mutation}
+          buildPayload={activeSwarmQuickStart.buildPayload}
+        />
+      )}
       {showRepoBugTriageQuickStartModal && <QuickStartRepoBugTriageModal />}
       {showRoleWorkflowQuickStartModal && <QuickStartRoleWorkflowModal />}
       {createFromTemplate && <CreateFromTemplateModal template={createFromTemplate} />}

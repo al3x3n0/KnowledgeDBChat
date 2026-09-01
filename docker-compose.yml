@@ -307,17 +307,24 @@ services:
       - kroki-mermaid
     networks:
       - knowledge_net
-    command: celery -A app.core.celery worker --loglevel=info
-    # Increase container memory (compose-only) and shared memory to handle larger models
-    mem_limit: 6g
+    # --concurrency, explicitly. Without it celery sizes the pool from the
+    # host's cores, which on this machine meant ten worker processes at ~450 MB
+    # each -- 4.5 GB of a 7.7 GB Docker VM, on four CPUs. Ten CPU-bound workers
+    # on four cores is not throughput, and it starved everything else on the
+    # machine, the frontend dev server included. docker-compose.prod.yml has
+    # always passed 4; this brings dev in line.
+    command: celery -A app.core.celery worker --loglevel=info --concurrency=4
+    # 6g was sized when Whisper and torch lived in this image. They moved to
+    # celery_transcription, and this ceiling did not move with them.
+    mem_limit: 3g
     shm_size: 2gb
     # Optional Swarm-style limits (ignored by plain compose but useful if deployed via Swarm)
     deploy:
       resources:
         limits:
-          memory: 6G
+          memory: 3G
         reservations:
-          memory: 2G
+          memory: 1G
     healthcheck:
       # This worker, not whatever workers happen to be on the broker. A bare
       # `inspect ping` exits 0 if ANY node replies, so once a second worker

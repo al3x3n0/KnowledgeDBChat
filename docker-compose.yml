@@ -319,9 +319,17 @@ services:
         reservations:
           memory: 2G
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.core.celery", "inspect", "ping"]
+      # This worker, not whatever workers happen to be on the broker. A bare
+      # `inspect ping` exits 0 if ANY node replies, so once a second worker
+      # existed this container could report healthy on the strength of the
+      # transcription worker answering for it.
+      #
+      # The timeout is 30s because the probe is not the ping: `celery inspect`
+      # imports the whole application first, which is ~8s on this machine and
+      # more when the host is busy. At 10s it flapped under a concurrent build.
+      test: ["CMD-SHELL", "celery -A app.core.celery inspect ping -d celery@$$(hostname)"]
       interval: 30s
-      timeout: 10s
+      timeout: 30s
       retries: 3
       start_period: 40s
 
@@ -474,9 +482,11 @@ services:
     mem_limit: 6g
     shm_size: 2gb
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.core.celery_transcription", "inspect", "ping"]
+      # Self-targeted and generously timed, for the reasons on the general
+      # worker's probe above.
+      test: ["CMD-SHELL", "celery -A app.core.celery_transcription inspect ping -d celery@$$(hostname)"]
       interval: 30s
-      timeout: 10s
+      timeout: 30s
       retries: 3
       start_period: 40s
 

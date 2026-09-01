@@ -74,3 +74,30 @@ export const jobTypeConfig = (jobType: string): JobTypeConfig =>
 /** The badge for a job status, with the same fallback. */
 export const jobStatusConfig = (status: string): JobStatusConfig =>
   STATUS_CONFIG[status as AgentJobStatus] || STATUS_CONFIG.pending;
+
+
+/** The tabs AutonomousAgentsPage renders, shared so components lifted out of
+ *  it can ask to switch to one by name rather than by loose string. */
+export type AgentJobsTab =
+  | 'queue'
+  | 'trace'
+  | 'health'
+  | 'jobs'
+  | 'swarm'
+  | 'outcomes'
+  | 'profiles'
+  | 'templates'
+  | 'chains'
+  | 'inbox'
+  | 'backlog'
+  | 'domain'
+  | 'fleet'
+  | 'create';
+
+/** What the demo-check availability badge carries. */
+export interface UnsafeExecBadge {
+  status: 'ready' | 'blocked' | 'off';
+  label: string;
+  title: string;
+  color: string;
+}

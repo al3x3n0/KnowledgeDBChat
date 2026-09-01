@@ -68,6 +68,7 @@ import {
 import { copyText } from '../../utils/clipboard';
 import {
   buildDomainResearchPromotionDraft,
+  executionGraphView,
   humanizeSwarmOutcome,
   slugifyText,
   summarizeSchedulerState,
@@ -155,6 +156,26 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   const navigate = useNavigate();
   const location = useLocation();
   const queryClient = useQueryClient();
+
+  // Fourteen values the graph and scope views read off the job, derived once
+  // in a pure function so they can be tested without rendering, and shared
+  // rather than recomputed by each section that reads them.
+  const {
+    executionGraph,
+    scopeObservability,
+    graphHealth,
+    dagStats,
+    graphHealthStatus,
+    graphHealthBadgeClass,
+    graphRecommendedActions,
+    graphVerificationActions,
+    graphSummarizationActions,
+    scopeResolvedId,
+    scopeSource,
+    scopeEvents,
+    recentScopeEvents,
+    scopeGuardBlocks,
+  } = useMemo(() => executionGraphView(job), [job]);
     const lineageModeFromUrl = useMemo(() => {
       const raw = String(new URLSearchParams(location.search).get('lx') || '').trim().toLowerCase();
       return raw === 'full' ? 'full' : 'compact';
@@ -231,12 +252,6 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     );
     const planStepIndex = Number((job.results as any)?.execution_strategy?.plan_step_index || 0);
     const activePlanIndex = Math.max(0, Math.min(planStepIndex, Math.max(0, executionPlan.length - 1)));
-    const executionGraph = ((((job.results as any)?.execution_strategy?.execution_graph) && typeof ((job.results as any)?.execution_strategy?.execution_graph) === 'object')
-      ? ((job.results as any).execution_strategy.execution_graph as AgentJobExecutionGraph)
-      : null);
-    const scopeObservability = ((((job.results as any)?.execution_strategy?.scope_observability) && typeof ((job.results as any)?.execution_strategy?.scope_observability) === 'object')
-      ? ((job.results as any).execution_strategy.scope_observability as Record<string, any>)
-      : null);
     const operatorInterventions = (
       Array.isArray(job.operator_interventions)
         ? (job.operator_interventions as AgentJobOperatorIntervention[])
@@ -476,32 +491,12 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     const launchFilePathsCount = launchFilePaths.length > 0
       ? launchFilePaths.length
       : Math.max(0, Number(launchResult?.file_paths_count || 0));
-    const graphHealth = (executionGraph?.graph_health && typeof executionGraph.graph_health === 'object') ? executionGraph.graph_health : null;
-    const dagStats = (executionGraph?.dag_stats && typeof executionGraph.dag_stats === 'object') ? executionGraph.dag_stats : null;
-    const graphHealthStatus = String(graphHealth?.status || '').toLowerCase();
-    const graphHealthBadgeClass =
-      graphHealthStatus === 'critical'
-        ? 'bg-red-50 text-red-700 border-red-200'
-        : graphHealthStatus === 'warning'
-          ? 'bg-amber-50 text-amber-700 border-amber-200'
-          : graphHealthStatus === 'ok'
-            ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
-            : 'bg-gray-50 text-gray-700 border-gray-200';
     const graphHealthReasons = useMemo(
       () => Array.isArray(graphHealth?.reasons)
         ? (graphHealth?.reasons || []).filter((x: any) => String(x || '').trim()).slice(0, 6)
         : [],
       [graphHealth?.reasons]
     );
-    const graphRecommendedActions = Array.isArray(executionGraph?.recommended_actions)
-      ? (executionGraph?.recommended_actions || []).filter((x: any) => String(x || '').trim()).slice(0, 6)
-      : [];
-    const graphVerificationActions = Array.isArray((executionGraph as any)?.verification_actions)
-      ? ((executionGraph as any).verification_actions as Array<Record<string, any>>)
-      : [];
-    const graphSummarizationActions = Array.isArray((executionGraph as any)?.summarization_actions)
-      ? ((executionGraph as any).summarization_actions as Array<Record<string, any>>)
-      : [];
     const schedulerState = (job as any)?.scheduler_state && typeof (job as any).scheduler_state === 'object'
       ? ((job as any).scheduler_state as Record<string, any>)
       : null;
@@ -537,16 +532,6 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
           : `Saved from recovery job ${String(job.id || '')}.`,
       };
     }, [graphHealthReasons, isRecoveryPlaybookCandidate, job.error, job.id, job.name, job.phase_details, schedulerState?.queue_reason]);
-    const scopeResolvedId = String(scopeObservability?.resolved_scope_id || '').trim();
-    const scopeSource = String(scopeObservability?.scope_source || '').trim();
-    const scopeEvents = Array.isArray(scopeObservability?.events)
-      ? (scopeObservability?.events as Array<Record<string, any>>)
-      : [];
-    const recentScopeEvents = scopeEvents
-      .slice(-4)
-      .reverse()
-      .filter((event) => event && typeof event === 'object');
-    const scopeGuardBlocks = scopeEvents.filter((event) => String(event?.type || '').trim() === 'scope_guard_blocked').length;
     const schedulerSummaryLines = summarizeSchedulerState(schedulerState);
     const swarmSummary = useMemo(() => {
       const fromApi = (job as any)?.swarm_summary;

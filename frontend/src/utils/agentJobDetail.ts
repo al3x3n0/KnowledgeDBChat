@@ -8,7 +8,7 @@
  * 19,000-line page module.
  */
 
-import type { AgentJob } from '../types';
+import type { AgentJob, AgentJobExecutionGraph } from '../types';
 
 export const formatSchedulerTimestamp = (value: unknown): string | null => {
   const text = String(value || '').trim();
@@ -93,4 +93,105 @@ export const swarmOutcomeBadgeClass = (value?: string | null) => {
   if (normalized === 'backlog_routed') return 'bg-amber-100 text-amber-800';
   if (normalized === 'stalled_after_handoff') return 'bg-cyan-100 text-cyan-800';
   return 'bg-slate-100 text-slate-700';
+};
+
+/**
+ * Everything the execution-graph and scope views read off a job.
+ *
+ * These fourteen values were computed inline in JobDetailPanel, in three
+ * clusters scattered across four hundred lines of a four-thousand-line
+ * component body, and six of them were read by other sections too. That is
+ * what makes the panel hard to split: its sections are not independent, they
+ * share derivations.
+ *
+ * Pulling the derivations out is the precondition for pulling the sections
+ * out — and unlike the sections, this is a pure function of a job, so it can
+ * be tested without rendering anything.
+ */
+export interface ExecutionGraphView {
+  executionGraph: AgentJobExecutionGraph | null;
+  scopeObservability: Record<string, any> | null;
+  graphHealth: Record<string, any> | null;
+  dagStats: Record<string, any> | null;
+  graphHealthStatus: string;
+  graphHealthBadgeClass: string;
+  graphRecommendedActions: string[];
+  graphVerificationActions: Array<Record<string, any>>;
+  graphSummarizationActions: Array<Record<string, any>>;
+  scopeResolvedId: string;
+  scopeSource: string;
+  scopeEvents: Array<Record<string, any>>;
+  recentScopeEvents: Array<Record<string, any>>;
+  scopeGuardBlocks: number;
+}
+
+export const executionGraphView = (job: AgentJob): ExecutionGraphView => {
+  const strategy = (job.results as any)?.execution_strategy;
+
+  const executionGraph =
+    strategy?.execution_graph && typeof strategy.execution_graph === 'object'
+      ? (strategy.execution_graph as AgentJobExecutionGraph)
+      : null;
+  const scopeObservability =
+    strategy?.scope_observability && typeof strategy.scope_observability === 'object'
+      ? (strategy.scope_observability as Record<string, any>)
+      : null;
+
+  const graphHealth =
+    (executionGraph as any)?.graph_health &&
+    typeof (executionGraph as any).graph_health === 'object'
+      ? ((executionGraph as any).graph_health as Record<string, any>)
+      : null;
+  const dagStats =
+    (executionGraph as any)?.dag_stats && typeof (executionGraph as any).dag_stats === 'object'
+      ? ((executionGraph as any).dag_stats as Record<string, any>)
+      : null;
+  const graphHealthStatus = String(graphHealth?.status || '').toLowerCase();
+  const graphHealthBadgeClass =
+    graphHealthStatus === 'critical'
+      ? 'bg-red-50 text-red-700 border-red-200'
+      : graphHealthStatus === 'warning'
+        ? 'bg-amber-50 text-amber-700 border-amber-200'
+        : graphHealthStatus === 'ok'
+          ? 'bg-emerald-50 text-emerald-700 border-emerald-200'
+          : 'bg-gray-50 text-gray-700 border-gray-200';
+
+  const graphRecommendedActions = Array.isArray((executionGraph as any)?.recommended_actions)
+    ? ((executionGraph as any).recommended_actions as any[])
+        .filter((x: any) => String(x || '').trim())
+        .slice(0, 6)
+    : [];
+  const graphVerificationActions = Array.isArray((executionGraph as any)?.verification_actions)
+    ? ((executionGraph as any).verification_actions as Array<Record<string, any>>)
+    : [];
+  const graphSummarizationActions = Array.isArray((executionGraph as any)?.summarization_actions)
+    ? ((executionGraph as any).summarization_actions as Array<Record<string, any>>)
+    : [];
+
+  const scopeEvents = Array.isArray(scopeObservability?.events)
+    ? (scopeObservability?.events as Array<Record<string, any>>)
+    : [];
+
+  return {
+    executionGraph,
+    scopeObservability,
+    graphHealth,
+    dagStats,
+    graphHealthStatus,
+    graphHealthBadgeClass,
+    graphRecommendedActions,
+    graphVerificationActions,
+    graphSummarizationActions,
+    scopeResolvedId: String(scopeObservability?.resolved_scope_id || '').trim(),
+    scopeSource: String(scopeObservability?.scope_source || '').trim(),
+    scopeEvents,
+    // The four most recent, newest first — what the panel shows.
+    recentScopeEvents: scopeEvents
+      .slice(-4)
+      .reverse()
+      .filter((event) => event && typeof event === 'object'),
+    scopeGuardBlocks: scopeEvents.filter(
+      (event) => String(event?.type || '').trim() === 'scope_guard_blocked'
+    ).length,
+  };
 };

@@ -2409,7 +2409,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   }, 10000);
 
   shardIt('auto-applies the default trace view and labels it in the selector', async () => {
-    apiClient.listAgentDecisionTraceViews.mockResolvedValueOnce({
+    apiClient.listAgentDecisionTraceViews.mockResolvedValue({
       items: [
         {
           id: 'trace-view-default',
@@ -2441,7 +2441,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   });
 
   shardIt('restores explicit trace filters from the URL instead of the default trace view', async () => {
-    apiClient.listAgentDecisionTraceViews.mockResolvedValueOnce({
+    apiClient.listAgentDecisionTraceViews.mockResolvedValue({
       items: [
         {
           id: 'trace-view-default',
@@ -2517,7 +2517,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   });
 
   shardIt('opens a trace permalink event without letting the default view override it', async () => {
-    apiClient.listAgentDecisionTraceViews.mockResolvedValueOnce({
+    apiClient.listAgentDecisionTraceViews.mockResolvedValue({
       items: [
         {
           id: 'trace-view-default',

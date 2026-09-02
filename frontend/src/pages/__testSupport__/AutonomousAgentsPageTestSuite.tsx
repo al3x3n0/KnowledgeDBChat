@@ -330,19 +330,17 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
   describe(`AutonomousAgentsPage (shard ${shardIndex + 1}/${shardCount})`, () => {
   jest.setTimeout(30_000);
   beforeEach(() => {
-    const shouldIgnoreConsoleMessage = (args: unknown[]) =>
-      String(args[0] || '').includes('Warning: An update to JobDetailPanel inside a test was not wrapped in act');
+    // Nothing is filtered any more. This used to swallow "An update to
+    // JobDetailPanel inside a test was not wrapped in act", which the panel's
+    // async loaders produced; those loaders moved into their own components
+    // with their own mounted guards, and a full shard run with the filter
+    // disabled reports zero such warnings. A filter that matches nothing hides
+    // the next real one.
     consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation((...args: unknown[]) => {
-      if (shouldIgnoreConsoleMessage(args)) {
-        return;
-      }
       // eslint-disable-next-line no-console
       jest.requireActual('console').error(...args);
     });
     consoleWarnSpy = jest.spyOn(console, 'warn').mockImplementation((...args: unknown[]) => {
-      if (shouldIgnoreConsoleMessage(args)) {
-        return;
-      }
       // eslint-disable-next-line no-console
       jest.requireActual('console').warn(...args);
     });

@@ -151,7 +151,6 @@ from app.services.agent_job_scheduler_state import (
     extract_scheduler_state,
     queue_reason_label,
 )
-from app.services.agent_playbook_service import agent_playbook_service
 from app.services.agent_scope_service import (
     normalize_scope_config as _normalize_scope_config,
 )
@@ -298,74 +297,6 @@ async def _validate_domain_research_sandbox_profile(
 _build_repo_bug_triage_goal = quick_start_builders.build_repo_bug_triage_goal
 
 
-def _build_bug_triage_swarm_goal(
-    request: AgentJobQuickStartBugTriageSwarmRequest,
-) -> str:
-    symptom = str(request.failure_symptom or "").strip()
-    goal = str(request.goal or "").strip()
-    scope = str(request.scope or "auto").strip().lower()
-
-    if symptom and goal:
-        return (
-            f"Run a coding bug triage swarm for the reported {scope} bug.\n"
-            f"Symptom: {symptom}\n"
-            f"Desired outcome: {goal}"
-        )
-    if symptom:
-        return f"Run a coding bug triage swarm for the reported {scope} bug. Symptom: {symptom}"
-    return goal
-
-
-def _get_coding_swarm_preset_definition(preset_key: str) -> dict[str, Any]:
-    try:
-        return agent_coding_swarm_launch_service.get_preset(preset_key)
-    except AgentCodingSwarmLaunchError as error:
-        raise HTTPException(
-            status_code=error.status_code,
-            detail=error.detail,
-        ) from error
-
-
-def _build_coding_swarm_goal(
-    request: AgentJobQuickStartBugTriageSwarmRequest
-    | AgentJobQuickStartBuildBreakSwarmRequest
-    | AgentJobQuickStartFrontendRegressionSwarmRequest,
-    *,
-    preset_key: str,
-) -> str:
-    try:
-        return agent_coding_swarm_launch_service.build_goal(
-            request,
-            preset_key=preset_key,
-        )
-    except AgentCodingSwarmLaunchError as error:
-        raise HTTPException(
-            status_code=error.status_code,
-            detail=error.detail,
-        ) from error
-
-
-def _merge_coding_swarm_request_with_profile(
-    request: AgentJobQuickStartBugTriageSwarmRequest
-    | AgentJobQuickStartBuildBreakSwarmRequest
-    | AgentJobQuickStartFrontendRegressionSwarmRequest,
-    *,
-    profile: object,
-    preset_key: str,
-):
-    try:
-        return agent_coding_swarm_launch_service.merge_request_with_profile(
-            request,
-            profile=profile,
-            preset_key=preset_key,
-        )
-    except AgentCodingSwarmLaunchError as error:
-        raise HTTPException(
-            status_code=error.status_code,
-            detail=error.detail,
-        ) from error
-
-
 _is_coding_swarm_profile_visible_to_user = is_profile_visible_to_user
 _normalize_coding_swarm_profile_visibility = normalize_profile_visibility
 
@@ -419,29 +350,6 @@ def _extract_backlog_route_mode(item: Optional[CodingBacklogItem]) -> Optional[s
     return None
 
 
-async def _resolve_coding_swarm_profile(
-    db: AsyncSession,
-    *,
-    current_user: User,
-    source_id: UUID,
-    profile_id: Optional[UUID],
-    preset_key: str,
-):
-    try:
-        return await agent_coding_swarm_launch_service.resolve_profile(
-            db,
-            current_user=current_user,
-            source_id=source_id,
-            profile_id=profile_id,
-            preset_key=preset_key,
-        )
-    except AgentCodingSwarmLaunchError as error:
-        raise HTTPException(
-            status_code=error.status_code,
-            detail=error.detail,
-        ) from error
-
-
 def _build_quick_start_coding_swarm_config(
     request: AgentJobQuickStartBugTriageSwarmRequest
     | AgentJobQuickStartBuildBreakSwarmRequest
@@ -485,7 +393,6 @@ def _build_quick_start_bug_triage_swarm_config(
 
 
 _coerce_bool = quick_start_builders.coerce_bool
-_extract_enable_memory_from_config = agent_job_creation_service.extract_enable_memory
 _normalize_swarm_roles = quick_start_builders.normalize_swarm_roles
 _build_quick_start_role_workflow_config = (
     quick_start_builders.build_role_workflow_config
@@ -689,20 +596,6 @@ def _safe_float(value: Any) -> Optional[float]:
         return float(value)
     except Exception:
         return None
-
-
-def _normalize_datetime(value: Any) -> Optional[datetime]:
-    if isinstance(value, datetime):
-        return value
-    if isinstance(value, str):
-        raw = value.strip()
-        if not raw:
-            return None
-        try:
-            return datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        except Exception:
-            return None
-    return None
 
 
 def _datetime_sort_key(value: Optional[datetime]) -> float:
@@ -1012,13 +905,6 @@ def _get_follow_up_policy_from_job(job: Optional[AgentJob]) -> dict[str, Any]:
         "automation_policy": automation["automation_policy"],
         "effective_policy": automation["effective_policy"],
     }
-
-
-def _get_autonomy_budget_from_job(job: Optional[AgentJob]) -> dict[str, int]:
-    config = job.config if isinstance(getattr(job, "config", None), dict) else {}
-    return research_monitor_profile_service._normalize_budget_config(
-        config.get("autonomy_budget")
-    )
 
 
 def _decision_trace_reason_label(reason_code: Optional[str]) -> Optional[str]:
@@ -2028,12 +1914,7 @@ router.include_router(job_progress_api.router)
 agent_job_progress_websocket = job_progress_api.agent_job_progress_websocket
 
 
-_substitute_variables = agent_chain_launch_service.substitute_variables
 _build_chain_config_for_step = agent_chain_launch_service.build_chain_config_for_step
-
-
-_is_recovery_playbook_candidate = agent_playbook_service.is_recovery_candidate
-_build_recovery_playbook_metadata = agent_playbook_service.build_recovery_metadata
 
 
 # ============================================================================

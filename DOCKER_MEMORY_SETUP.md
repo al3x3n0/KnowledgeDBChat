@@ -1,5 +1,13 @@
 # Docker Memory Configuration for Mac
 
+> **Out of date as written.** The stack no longer runs an `ollama` container,
+> so every `knowledge_db_ollama` command below fails with "No such container".
+> The project talks to an external LLM API (`LLM_PROVIDER`, default `deepseek`);
+> Ollama still works, against an instance you run yourself via
+> `OLLAMA_BASE_URL`. What is still true is the Docker Desktop sizing advice —
+> though on this stack the memory goes to the backend, the Celery workers and
+> Qdrant, whose limits are set in `docker-compose.yml`, not to a model server.
+
 This guide helps you configure Docker Desktop memory settings for running Ollama models on Mac.
 
 ## Issue

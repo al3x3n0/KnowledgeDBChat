@@ -190,7 +190,11 @@ services:
     networks:
       - knowledge_net
     restart: unless-stopped
-    command: celery -A app.core.celery worker -Q latex --loglevel=info --concurrency=1
+    # app.core.celery_latex, not app.core.celery: this image carries
+    # requirements.latex-worker.txt, and the full app's include list reaches
+    # httpx on the first task module. Verified: the full app dies at worker
+    # startup with ModuleNotFoundError: No module named 'httpx'.
+    command: celery -A app.core.celery_latex worker -Q latex --loglevel=info --concurrency=1
     mem_limit: 2g
     shm_size: 512mb
     pids_limit: 256

@@ -82,7 +82,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - DEFAULT_MODEL=llama3.2:1b  # Force smallest model for Mac
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db
       # Vector store: "qdrant" (default) or "chroma"
       - VECTOR_STORE_PROVIDER=qdrant

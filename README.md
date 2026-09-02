@@ -223,9 +223,12 @@ VECTOR_STORE_PROVIDER=qdrant
 QDRANT_URL=http://qdrant:6333
 MINIO_ENDPOINT=minio:9000
 
-LLM_PROVIDER=ollama
-OLLAMA_BASE_URL=http://ollama:11434
-DEFAULT_MODEL=llama3.2:1b
+LLM_PROVIDER=deepseek
+DEEPSEEK_API_KEY=replace-me
+# Must name a model the chosen provider serves: it reaches the request as
+# `model or <PROVIDER>_MODEL`. For LLM_PROVIDER=ollama, point OLLAMA_BASE_URL
+# at an instance you run yourself — the stack does not bundle one.
+DEFAULT_MODEL=deepseek-v4-pro
 
 SECRET_KEY=replace-me
 CUSTOM_TOOL_DOCKER_ENABLED=false

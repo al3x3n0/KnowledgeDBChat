@@ -19,7 +19,7 @@ make stop               # Stop all services
 make logs-backend       # View backend logs
 make logs-celery        # View Celery worker logs
 make test-backend       # Run backend tests
-make test-backend-coverage  # Backend tests with CI-style 70% coverage gate
+make test-backend-coverage  # Backend tests with CI-style 48% coverage gate
 make test-frontend      # Run frontend tests
 make typecheck-frontend # Frontend TypeScript typecheck
 make db-migrate         # Run database migrations
@@ -233,7 +233,7 @@ All API endpoints are prefixed with `/api/v1/`. Endpoint groups by domain (see `
 - FastAPI dependency overrides replace `get_db` with test session
 - User fixtures: `test_user` (regular) and `admin_user` with real password hashing; `auth_headers` / `admin_headers` via live token creation
 - Async tests use `pytest-asyncio` (auto mode); markers: `unit`, `integration`, `slow`
-- Coverage gate: 44% backend (`make test-backend-coverage`) — that is the measured floor, meant to ratchet upward. The frontend has no `coverageThreshold` configured, so `npm run test:ci` collects coverage without enforcing it
+- Coverage gate: 48% backend (`make test-backend-coverage`) — that is the measured floor, meant to ratchet upward; the suite currently reports 49.55%. The frontend has no `coverageThreshold` configured, so `npm run test:ci` collects coverage without enforcing it
 
 ## Commit Style
 

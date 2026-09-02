@@ -75,11 +75,11 @@ jobs:
         working-directory: backend
         # Tests use in-memory SQLite and stub the heavy optional dependencies,
         # so no Postgres, Redis, Qdrant, or MinIO service is needed here.
-        # 44% is the measured floor today, not a target. The Makefile's
-        # test-backend-coverage target asks for 70 and CLAUDE.md documents 70,
-        # but the suite actually reports 44 — so that gate has never passed.
-        # Ratchet this number up as coverage improves; never lower it.
-        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=44
+        # 48% is the measured floor today, not a target: the suite reports
+        # 49.55% (4031 passed, 1 skipped), and the gate sits just under that
+        # so a small regression is caught rather than absorbed. It was 44 when
+        # the number was 44. Ratchet it up as coverage improves; never lower it.
+        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=48
       - name: Upload coverage
         if: always()
         uses: actions/upload-artifact@v4

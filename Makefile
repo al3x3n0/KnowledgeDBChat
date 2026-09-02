@@ -96,8 +96,9 @@ test-external-agents: ## Run external-agent gateway and registry regression test
 	$(DC) exec -T backend pytest -q --no-cov tests/test_external_agent_gateway_service.py tests/test_external_agents_endpoints.py
 
 test-backend-coverage: ## Run backend tests with CI-style coverage threshold
-# 44 is the measured floor; the suite has never reached the 70 this asked for.
-	$(DC) exec backend pytest --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=44
+# 48 is the measured floor; the suite reports 49.55%. Keep this equal to the
+# --cov-fail-under in .github/workflows/ci.yml.
+	$(DC) exec backend pytest --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=48
 
 test-frontend: ## Run frontend tests (non-interactive)
 	$(DC) exec frontend npm run test:ci

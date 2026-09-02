@@ -4174,6 +4174,35 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     expect(screen.queryByText(/Last run/i)).not.toBeInTheDocument();
   });
 
+  shardIt('keeps what you typed in the create form when the page refreshes', async () => {
+    // Every modal on this page was declared inside the page's render body, so
+    // each page render produced a new component type and React remounted the
+    // modal rather than reconciling it — resetting the form to its defaults.
+    // The page polls every ten seconds, so a half-filled form did not survive
+    // long enough to submit.
+    await renderWithProviders('/autonomous-agents');
+
+    fireEvent.click(screen.getByRole('button', { name: /New Job/i }));
+    const nameInput = await screen.findByPlaceholderText('My Research Job');
+    fireEvent.change(nameInput, { target: { value: 'Measure the INT8 ceiling' } });
+
+    apiClient.listAgentJobs.mockResolvedValue({
+      jobs: [makeJob({ id: 'job-new', name: 'Arrived while you were typing' })],
+      total: 1,
+      page: 1,
+      page_size: 50,
+      has_more: false,
+    });
+    await act(async () => {
+      fireEvent.focus(window);
+      await flushMockPromises();
+    });
+
+    expect(await screen.findByPlaceholderText('My Research Job')).toHaveValue(
+      'Measure the INT8 ceiling'
+    );
+  });
+
   shardIt('ignores late detail-panel loader responses after unmount', async () => {
     const logDeferred = createDeferred<{ entries: any[]; total: number }>();
     const stepEventsDeferred = createDeferred<{ items: any[]; total: number; source: string }>();

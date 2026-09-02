@@ -75,6 +75,108 @@ def _hold_for_chain_approval(job: AgentJob) -> None:
         log({"phase": "chain_gate", "waiting_stages": [n for n in waiting if n]})
 
 
+#: Finding types that record what a run READ rather than what it established.
+#: Shared with synthesis_service, which learned the same lesson: one real run
+#: recorded twelve findings of which eleven were search results.
+RETRIEVAL_FINDING_TYPES = {"document", "paper"}
+
+
+def _established_findings(job: AgentJob) -> list:
+    """The run's own contributions, minus what it merely retrieved."""
+    findings = (job.results or {}).get("findings")
+    if not isinstance(findings, list):
+        return []
+    return [
+        f
+        for f in findings
+        if isinstance(f, dict)
+        and str(f.get("type") or "").strip().lower() not in RETRIEVAL_FINDING_TYPES
+    ]
+
+
+async def _record_what_the_run_established(
+    executor, job: AgentJob, db, artifacts: list
+) -> None:
+    """Write one searchable document for a run, if it established anything.
+
+    Deliberately not a summary the model writes: the conclusion it already
+    wrote at finalization, plus the findings and methods verbatim. A run's
+    record should be readable back as what it recorded, not as a second-hand
+    account that could drift from it.
+    """
+    from app.models.document import Document
+    from app.services.agent_run_synthesis_service import summarize_findings_for_prompt
+
+    established = _established_findings(job)
+    methods = [
+        m
+        for m in ((job.results or {}).get("methods") or [])
+        if isinstance(m, dict) and str(m.get("procedure") or "").strip()
+    ]
+    if not established and not methods:
+        # Nothing of its own: a document here would say a run happened, which
+        # search does not need to know.
+        return
+
+    # One record per run. Re-finalizing must not leave two.
+    existing = ((job.results or {}).get("library_record") or {}).get("document_id")
+    if existing:
+        return
+
+    lines = [f"# {job.name}", "", f"**Goal:** {job.goal}", ""]
+    conclusion = (job.results or {}).get("conclusion")
+    if isinstance(conclusion, dict) and str(conclusion.get("answer") or "").strip():
+        lines += ["## What it concluded", "", str(conclusion["answer"]).strip(), ""]
+    if established:
+        lines += ["## What it established", ""]
+        lines += [f"- {row}" for row in summarize_findings_for_prompt(established)]
+        lines.append("")
+    if methods:
+        lines += ["## Methods it recorded", ""]
+        for method in methods:
+            name = str(method.get("name") or "method").strip()
+            lines.append(f"### {name}")
+            lines.append("")
+            lines.append(str(method.get("procedure") or "").strip())
+            prevents = str(method.get("prevents") or "").strip()
+            if prevents:
+                lines.append("")
+                lines.append(f"Prevents: {prevents}")
+            lines.append("")
+    content = "\n".join(lines).strip()
+
+    notes_source = await executor.document_service._get_or_create_agent_notes_source(db)
+    doc = Document(
+        title=f"Run: {job.name}",
+        content=content,
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        file_type="text/markdown",
+        file_size=len(content.encode("utf-8")),
+        source_id=notes_source.id,
+        source_identifier=f"agent_run_record:{job.id}",
+        tags=["autonomous_job", "run_record", str(job.job_type or "custom")],
+        extra_metadata={
+            "agent_job_id": str(job.id),
+            "job_type": job.job_type,
+            "finding_count": len(established),
+            "method_count": len(methods),
+        },
+    )
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+
+    try:
+        await executor.document_service.reprocess_document(
+            doc.id, db, user_id=job.user_id
+        )
+    except Exception as exc:  # noqa: BLE001 - the document stands unindexed
+        logger.warning(f"Failed to index the run record for {job.id}: {exc}")
+
+    artifacts.append({"type": "document", "id": str(doc.id), "title": doc.title})
+    job.results.setdefault("library_record", {})["document_id"] = str(doc.id)
+
+
 async def finalize_job(
     executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession
 ) -> Dict[str, Any]:
@@ -1143,6 +1245,24 @@ async def finalize_job(
                 job.results["research"]["brief_document_id"] = str(doc.id)
             except Exception as exc:
                 logger.warning(f"Failed to persist research brief: {exc}")
+
+    # R&D -> Library. A finished run established things, and until now they
+    # lived only inside the job: readable by whoever opened that run, invisible
+    # to search, to a chat answer, and to the next run's recall. One document
+    # per run closes that — the same machinery the research brief above uses,
+    # generalised past the one job type that had it.
+    #
+    # Only at a real end: a paused run finalizes again when it resumes, and two
+    # records of one run is one record too many. Off with
+    # `config.record_run_in_library = false`.
+    if job.status in (
+        AgentJobStatus.COMPLETED.value,
+        AgentJobStatus.FAILED.value,
+    ) and job_config.get("record_run_in_library", True):
+        try:
+            await _record_what_the_run_established(executor, job, db, artifacts)
+        except Exception as exc:  # noqa: BLE001 - never fail a run over its record
+            logger.warning(f"Failed to record what job {job.id} established: {exc}")
 
     # Ensure any finalize-time artifact additions are visible to callers.
     state["artifacts"] = artifacts

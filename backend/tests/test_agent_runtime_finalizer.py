@@ -14,6 +14,7 @@ from app.services.agent_runtime_finalizer import finalize_job
 class _DummyJob:
     def __init__(self, *, status: str = "running", goal_progress: int = 100) -> None:
         self.id = "job-1"
+        self.name = "Dataset study"
         self.status = status
         self.progress = 0
         self.iteration = 3
@@ -486,3 +487,95 @@ class TestAnUnmetContractIsNotAFinishedGoal:
 
         assert job.status == AgentJobStatus.COMPLETED.value
         assert job.progress == 100
+
+
+class _RecordingDocumentService:
+    """Just enough of DocumentService to see whether a record was written."""
+
+    def __init__(self):
+        self.created = []
+        self.reprocessed = []
+
+    async def _get_or_create_agent_notes_source(self, db):
+        class _Source:
+            id = "src-1"
+
+        return _Source()
+
+    async def reprocess_document(self, doc_id, db, user_id=None):
+        self.reprocessed.append(doc_id)
+
+
+class _LibraryExecutor(_DummyExecutor):
+    def __init__(self):
+        super().__init__()
+        self.document_service = _RecordingDocumentService()
+
+
+class _AddingDb(_DummyDb):
+    def __init__(self):
+        super().__init__()
+        self.added = []
+        self.refresh = AsyncMock()
+
+    def add(self, obj):
+        obj.id = f"doc-{len(self.added)}"
+        self.added.append(obj)
+
+
+@pytest.mark.asyncio
+class TestARunLeavesItsFindingsWhereTheyCanBeFound:
+    """Until this seam, everything a run established lived inside the job:
+    invisible to search, to a chat answer, and to the next run's recall."""
+
+    async def _finalize(self, job, state, executor=None, db=None, monkeypatch=None):
+        db = db or _AddingDb()
+        executor = executor or _LibraryExecutor()
+        await finalize_job(executor, job, state, db)
+        return executor, db
+
+    async def test_a_completed_run_leaves_one_searchable_record(self, monkeypatch):
+        monkeypatch.setattr(
+            agent_runtime_finalizer.agent_job_memory_service,
+            "extract_memories_from_job",
+            AsyncMock(return_value=[]),
+        )
+        job = _DummyJob(status="running")
+        state = _state_with(100, [{"id": "f1", "type": "insight", "title": "L2 bound"}])
+
+        executor, db = await self._finalize(job, state)
+
+        assert job.status == AgentJobStatus.COMPLETED.value
+        assert [d.title for d in db.added] == ["Run: Dataset study"]
+        assert executor.document_service.reprocessed == ["doc-0"]
+        assert job.results["library_record"]["document_id"] == "doc-0"
+
+    async def test_a_paused_run_records_nothing_yet(self, monkeypatch):
+        # It finalizes again when it resumes; two records of one run is one
+        # record too many.
+        monkeypatch.setattr(
+            agent_runtime_finalizer.agent_job_memory_service,
+            "extract_memories_from_job",
+            AsyncMock(return_value=[]),
+        )
+        job = _DummyJob(status=AgentJobStatus.PAUSED.value)
+        state = _state_with(60, [{"id": "f1", "type": "insight", "title": "L2 bound"}])
+
+        _, db = await self._finalize(job, state)
+
+        assert job.status == AgentJobStatus.PAUSED.value
+        assert db.added == []
+
+    async def test_a_job_can_opt_out(self, monkeypatch):
+        monkeypatch.setattr(
+            agent_runtime_finalizer.agent_job_memory_service,
+            "extract_memories_from_job",
+            AsyncMock(return_value=[]),
+        )
+        job = _DummyJob(status="running")
+        job.config = {"record_run_in_library": False}
+        state = _state_with(100, [{"id": "f1", "type": "insight", "title": "L2 bound"}])
+
+        _, db = await self._finalize(job, state)
+
+        assert db.added == []

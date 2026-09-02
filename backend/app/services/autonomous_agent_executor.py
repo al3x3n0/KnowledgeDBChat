@@ -7372,6 +7372,30 @@ class AutonomousAgentExecutor:
             return f"{stable}\n\n{volatile}"
         return stable
 
+    #: A starting context longer than this is a document, not a briefing, and
+    #: it would crowd out the run's own history in every later prompt.
+    STARTING_CONTEXT_MAX_CHARS = 4000
+
+    def _starting_context_for_prompt(self, job) -> str:
+        """What the caller says was already established, trimmed to fit.
+
+        Read from config rather than a column because it is exactly as
+        free-form as the caller's situation: a chat answer, a hand-written
+        briefing, a prior run's conclusion.
+        """
+        raw = (job.config or {}).get("starting_context")
+        if not isinstance(raw, str):
+            return ""
+        text = raw.strip()
+        if not text:
+            return ""
+        if len(text) <= self.STARTING_CONTEXT_MAX_CHARS:
+            return text
+        # Truncated at a fixed length rather than summarised: a summary here
+        # would differ between runs of the same job and break the byte
+        # stability this prompt half exists to preserve.
+        return text[: self.STARTING_CONTEXT_MAX_CHARS].rstrip() + "\n[...truncated]"
+
     def _build_thinking_prompt_stable(
         self,
         job: AgentJob,
@@ -7387,6 +7411,25 @@ Job Name: {job.name}
 
 GOAL:
 {job.goal}
+
+"""
+        # What was already established before this run started, when a caller
+        # supplied it -- a chat answer and the sources it read, most often.
+        # Without it a run launched from a question rediscovers what the corpus
+        # had already said, spending its first iterations reaching the point
+        # the operator started from.
+        #
+        # It belongs in the stable half: it is fixed for the job's life, so it
+        # keeps the prompt byte-stable and the provider's cache warm.
+        starting_context = self._starting_context_for_prompt(job)
+        if starting_context:
+            base_prompt += f"""ALREADY ESTABLISHED, BEFORE THIS RUN:
+{starting_context}
+
+This is what a search of the corpus returned. Treat it as a starting point to
+build on or to check, not as a measurement of your own: a value here is
+something someone else reported, and the contract's requirements are about
+what THIS run establishes.
 
 """
         # Soundness requirements belong in the stable prompt rather than being

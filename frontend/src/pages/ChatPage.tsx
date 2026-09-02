@@ -446,10 +446,18 @@ const ChatPage: React.FC = () => {
                 <LoadingSpinner className="h-32" text="Loading messages..." />
               ) : (
                 <>
-                  {currentSession?.messages?.map((msg) => (
+                  {currentSession?.messages?.map((msg, index) => (
                     <ChatMessageComponent
                       key={msg.id}
                       message={msg}
+                      question={
+                        msg.role === 'assistant'
+                          ? currentSession?.messages
+                              ?.slice(0, index)
+                              .reverse()
+                              .find((m) => m.role === 'user')?.content
+                          : undefined
+                      }
                       onFeedback={(rating) => handleFeedback(msg.id, rating)}
                     />
                   ))}
@@ -543,15 +551,18 @@ const ChatPage: React.FC = () => {
 // Chat Message Component
 interface ChatMessageProps {
   message: ChatMessage;
+  /** The question this answer replied to, so an answer can become a run's goal. */
+  question?: string;
   onFeedback: (rating: number) => void;
 }
 
-const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback }) => {
+const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, question, onFeedback }) => {
   const navigate = useNavigate();
   const isUser = message.role === 'user';
   const isAssistant = message.role === 'assistant';
   const [downloadingDocs, setDownloadingDocs] = React.useState<Set<string>>(new Set());
   const [kgOpen, setKgOpen] = React.useState(false);
+  const [startingRun, setStartingRun] = React.useState(false);
   const [kgLoading, setKgLoading] = React.useState(false);
   const [kgTrace, setKgTrace] = React.useState<RetrievalTrace | null>(null);
   const [kgError, setKgError] = React.useState<string | null>(null);
@@ -720,6 +731,50 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, onFeedback 
                 </button>
               );
             })}
+          </div>
+        )}
+
+        {/* Measure it. The corpus answered as far as it can; the next move is
+            a run, and it should start from what was just established rather
+            than rediscovering it. */}
+        {isAssistant && question && sourceDocs.length > 0 && (
+          <div className="mt-3 pt-3 border-t border-gray-200">
+            <button
+              type="button"
+              disabled={startingRun}
+              className="text-xs px-3 py-1.5 rounded-md border border-primary-500 text-primary-700 hover:bg-gray-100 disabled:opacity-50"
+              onClick={async () => {
+                setStartingRun(true);
+                try {
+                  const sources = sourceDocs
+                    .map((doc, i) => `[${i + 1}] ${doc.title || 'Untitled'}`)
+                    .join('\n');
+                  const job = await apiClient.createAgentJob({
+                    name: question.slice(0, 120),
+                    goal: question,
+                    job_type: 'research',
+                    config: {
+                      starting_context: `A search of the knowledge base answered:\n\n${message.content}\n\nIt read:\n${sources}`,
+                      // Kept so a run can be traced back to the question that
+                      // started it.
+                      origin: { kind: 'chat', message_id: message.id },
+                    },
+                  } as any);
+                  toast.success('Run started from this answer');
+                  navigate(`/autonomous-agents?job=${job.id}`);
+                } catch {
+                  toast.error('Could not start a run');
+                } finally {
+                  setStartingRun(false);
+                }
+              }}
+            >
+              {startingRun ? 'Starting…' : 'Measure this'}
+            </button>
+            <p className="text-xs text-gray-500 mt-1">
+              Starts a run with this question as its goal, carrying this answer and its
+              sources as context.
+            </p>
           </div>
         )}
 

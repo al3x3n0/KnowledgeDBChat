@@ -8,11 +8,13 @@
  * 19,000-line page module.
  */
 
+import { isExperimentRecoveryOpen, summarizeExperimentRun } from './experimentRunSummary';
 import type {
   AgentJob,
   AgentJobCodePatchExecution,
   AgentJobCodePatchRecovery,
   AgentJobExecutionGraph,
+  AgentJobExperimentRun,
 } from '../types';
 
 export const formatSchedulerTimestamp = (value: unknown): string | null => {
@@ -347,5 +349,100 @@ export const codePatchView = (job: AgentJob): CodePatchView => {
     codePatchProposals,
     codePatchApply,
     codePatchKbApply,
+  };
+};
+
+
+/**
+ * The swarm fan-in summary a job carries, from the API field when the backend
+ * supplied one and from results.swarm_fan_in when it did not.
+ */
+  export const swarmSummaryOf = (job: AgentJob): any => {
+    const fromApi = (job as any)?.swarm_summary;
+    if (fromApi && typeof fromApi === 'object') return fromApi as any;
+    const fanIn = (job.results as any)?.swarm_fan_in;
+    if (!fanIn || typeof fanIn !== 'object') return null;
+    return {
+      enabled: true,
+      configured: true,
+      fan_in_enabled: true,
+      fan_in_group_id: String(fanIn?.fan_in_group_id || ''),
+      roles: Array.isArray(fanIn?.roles) ? fanIn.roles : [],
+      role_count: Array.isArray(fanIn?.roles) ? fanIn.roles.length : 0,
+      expected_siblings: Number(fanIn?.expected_siblings || 0),
+      received_siblings: Number(fanIn?.received_siblings || 0),
+      terminal_siblings: Number(fanIn?.terminal_siblings || 0),
+      consensus_count: Array.isArray(fanIn?.consensus_findings) ? fanIn.consensus_findings.length : 0,
+      consensus_findings: (Array.isArray(fanIn?.consensus_findings) ? fanIn.consensus_findings : [])
+        .map((r: any) => String(r?.finding || ''))
+        .filter(Boolean),
+      conflict_count: Array.isArray(fanIn?.conflicts) ? fanIn.conflicts.length : 0,
+      conflicts: Array.isArray(fanIn?.conflicts) ? fanIn.conflicts : [],
+      action_plan: Array.isArray(fanIn?.action_plan) ? fanIn.action_plan : [],
+      confidence: fanIn?.confidence && typeof fanIn.confidence === 'object' ? fanIn.confidence : {},
+      winning_slice_id: String(fanIn?.winning_slice_id || ''),
+      winning_role: String(fanIn?.winning_role || ''),
+      promotion_reason: String(fanIn?.promotion_reason || ''),
+      review_state: String(fanIn?.review_state || ''),
+      review_reason: String(fanIn?.review_reason || ''),
+      review_required: Boolean(fanIn?.review_required),
+      tie_breaker_attempted: Boolean(fanIn?.tie_breaker_attempted),
+      tie_breaker_job_id: String(fanIn?.tie_breaker_job_id || ''),
+      tie_breaker_source_job_id: String(fanIn?.tie_breaker_source_job_id || ''),
+      file_converged: Boolean(fanIn?.file_converged),
+      file_convergence_support: Number(fanIn?.file_convergence_support || 0),
+      top_file_cluster: fanIn?.top_file_cluster && typeof fanIn.top_file_cluster === 'object' ? fanIn.top_file_cluster : null,
+      command_converged: Boolean(fanIn?.command_converged),
+      command_convergence_support: Number(fanIn?.command_convergence_support || 0),
+      top_command_cluster: fanIn?.top_command_cluster && typeof fanIn.top_command_cluster === 'object' ? fanIn.top_command_cluster : null,
+      repair_chain_job_id: String(fanIn?.repair_chain_job_id || ''),
+      candidate_paths: Array.isArray(fanIn?.candidate_paths) ? fanIn.candidate_paths : [],
+      recommended_commands: Array.isArray(fanIn?.recommended_commands) ? fanIn.recommended_commands : [],
+    } as any;
+  };
+
+/** The experiment runs attached to a job, and what the panel says about the
+ *  most recent one.
+ *
+ * `job.experiment_runs` is the typed column; `results.experiment_runs` is where
+ * an older path wrote the same thing, and a run in flight arrives on its own
+ * as `job.experiment_run`. All three are read here so no caller has to know
+ * which one produced this job. */
+export interface ExperimentRunsView {
+  experimentRuns: AgentJobExperimentRun[];
+  latestExperimentRunIndex: number;
+  latestExperimentRun: AgentJobExperimentRun | null;
+  latestExperimentSummary: ReturnType<typeof summarizeExperimentRun>;
+  latestExperimentRecoveryOpen: boolean;
+}
+
+export const experimentRunsView = (job: AgentJob): ExperimentRunsView => {
+    const experimentRuns = ((): AgentJobExperimentRun[] => {
+    const out: AgentJobExperimentRun[] = [];
+    const hist = Array.isArray(job.experiment_runs)
+      ? job.experiment_runs
+      : (job.results as any)?.experiment_runs;
+    if (Array.isArray(hist)) {
+      out.push(
+        ...hist.filter((row): row is AgentJobExperimentRun => Boolean(row && typeof row === 'object'))
+      );
+    }
+    const cur = job.experiment_run && typeof job.experiment_run === 'object'
+      ? job.experiment_run
+      : (job.results as any)?.experiment_run;
+    if (cur && typeof cur === 'object') out.push(cur as AgentJobExperimentRun);
+    return out.filter(Boolean).slice(-5);
+  })();
+  const latestExperimentRunIndex = Math.max(0, experimentRuns.length - 1);
+  const latestExperimentRun = experimentRuns.length > 0 ? experimentRuns[latestExperimentRunIndex] : null;
+  const latestExperimentSummary = summarizeExperimentRun(latestExperimentRun);
+  const latestExperimentRecoveryOpen = isExperimentRecoveryOpen(latestExperimentRun, latestExperimentSummary);
+
+  return {
+    experimentRuns,
+    latestExperimentRunIndex,
+    latestExperimentRun,
+    latestExperimentSummary,
+    latestExperimentRecoveryOpen,
   };
 };

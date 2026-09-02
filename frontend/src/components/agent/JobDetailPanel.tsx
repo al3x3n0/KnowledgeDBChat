@@ -48,7 +48,6 @@ import { useLocation, useNavigate } from 'react-router-dom';
 import { apiClient } from '../../services/api';
 import type {
   AgentJob,
-  AgentJobExperimentRun,
   AgentJobMemoryListResponse,
   AgentJobOperatorIntervention,
   AgentJobPromoteDomainResearchRequest,
@@ -67,6 +66,8 @@ import {
   buildDomainResearchPromotionDraft,
   codePatchView,
   executionGraphView,
+  experimentRunsView,
+  swarmSummaryOf,
   humanizeSwarmOutcome,
   slugifyText,
   summarizeSchedulerState,
@@ -195,6 +196,16 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     codePatchApply,
     codePatchKbApply,
   } = useMemo(() => codePatchView(job), [job]);
+
+  const swarmSummary = useMemo(() => swarmSummaryOf(job), [job]);
+  // latestExperimentRun and latestExperimentSummary are not destructured: the
+  // panel never read them directly, only the recovery flag they feed. They
+  // looked used while they were locals because another local consumed them.
+  const {
+    experimentRuns,
+    latestExperimentRunIndex,
+    latestExperimentRecoveryOpen,
+  } = useMemo(() => experimentRunsView(job), [job]);
     // location.search belongs in the deps: while this panel was declared
     // inside the page's render body it remounted constantly, so reading the
     // URL once per mount happened to look live. As a stable component it would
@@ -566,49 +577,6 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
       };
     }, [graphHealthReasons, isRecoveryPlaybookCandidate, job.error, job.id, job.name, job.phase_details, schedulerState?.queue_reason]);
     const schedulerSummaryLines = summarizeSchedulerState(schedulerState);
-    const swarmSummary = useMemo(() => {
-      const fromApi = (job as any)?.swarm_summary;
-      if (fromApi && typeof fromApi === 'object') return fromApi as any;
-      const fanIn = (job.results as any)?.swarm_fan_in;
-      if (!fanIn || typeof fanIn !== 'object') return null;
-      return {
-        enabled: true,
-        configured: true,
-        fan_in_enabled: true,
-        fan_in_group_id: String(fanIn?.fan_in_group_id || ''),
-        roles: Array.isArray(fanIn?.roles) ? fanIn.roles : [],
-        role_count: Array.isArray(fanIn?.roles) ? fanIn.roles.length : 0,
-        expected_siblings: Number(fanIn?.expected_siblings || 0),
-        received_siblings: Number(fanIn?.received_siblings || 0),
-        terminal_siblings: Number(fanIn?.terminal_siblings || 0),
-        consensus_count: Array.isArray(fanIn?.consensus_findings) ? fanIn.consensus_findings.length : 0,
-        consensus_findings: (Array.isArray(fanIn?.consensus_findings) ? fanIn.consensus_findings : [])
-          .map((r: any) => String(r?.finding || ''))
-          .filter(Boolean),
-        conflict_count: Array.isArray(fanIn?.conflicts) ? fanIn.conflicts.length : 0,
-        conflicts: Array.isArray(fanIn?.conflicts) ? fanIn.conflicts : [],
-        action_plan: Array.isArray(fanIn?.action_plan) ? fanIn.action_plan : [],
-        confidence: fanIn?.confidence && typeof fanIn.confidence === 'object' ? fanIn.confidence : {},
-        winning_slice_id: String(fanIn?.winning_slice_id || ''),
-        winning_role: String(fanIn?.winning_role || ''),
-        promotion_reason: String(fanIn?.promotion_reason || ''),
-        review_state: String(fanIn?.review_state || ''),
-        review_reason: String(fanIn?.review_reason || ''),
-        review_required: Boolean(fanIn?.review_required),
-        tie_breaker_attempted: Boolean(fanIn?.tie_breaker_attempted),
-        tie_breaker_job_id: String(fanIn?.tie_breaker_job_id || ''),
-        tie_breaker_source_job_id: String(fanIn?.tie_breaker_source_job_id || ''),
-        file_converged: Boolean(fanIn?.file_converged),
-        file_convergence_support: Number(fanIn?.file_convergence_support || 0),
-        top_file_cluster: fanIn?.top_file_cluster && typeof fanIn.top_file_cluster === 'object' ? fanIn.top_file_cluster : null,
-        command_converged: Boolean(fanIn?.command_converged),
-        command_convergence_support: Number(fanIn?.command_convergence_support || 0),
-        top_command_cluster: fanIn?.top_command_cluster && typeof fanIn.top_command_cluster === 'object' ? fanIn.top_command_cluster : null,
-        repair_chain_job_id: String(fanIn?.repair_chain_job_id || ''),
-        candidate_paths: Array.isArray(fanIn?.candidate_paths) ? fanIn.candidate_paths : [],
-        recommended_commands: Array.isArray(fanIn?.recommended_commands) ? fanIn.recommended_commands : [],
-      } as any;
-    }, [job]);
     // The maps are rebuilt by the page when the outcomes query refreshes;
     // keyed only on job.id this kept the outcome it saw first.
     const swarmOutcomeCase = useMemo(
@@ -703,26 +671,6 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
     );
 
 
-    const experimentRuns = useMemo(() => {
-      const out: AgentJobExperimentRun[] = [];
-      const hist = Array.isArray(job.experiment_runs)
-        ? job.experiment_runs
-        : (job.results as any)?.experiment_runs;
-      if (Array.isArray(hist)) {
-        out.push(
-          ...hist.filter((row): row is AgentJobExperimentRun => Boolean(row && typeof row === 'object'))
-        );
-      }
-      const cur = job.experiment_run && typeof job.experiment_run === 'object'
-        ? job.experiment_run
-        : (job.results as any)?.experiment_run;
-      if (cur && typeof cur === 'object') out.push(cur as AgentJobExperimentRun);
-      return out.filter(Boolean).slice(-5);
-    }, [job.experiment_run, job.experiment_runs, job.results]);
-    const latestExperimentRunIndex = Math.max(0, experimentRuns.length - 1);
-    const latestExperimentRun = experimentRuns.length > 0 ? experimentRuns[latestExperimentRunIndex] : null;
-    const latestExperimentSummary = summarizeExperimentRun(latestExperimentRun);
-    const latestExperimentRecoveryOpen = isExperimentRecoveryOpen(latestExperimentRun, latestExperimentSummary);
     const queueManagedApproval = Boolean(approvalCheckpoint && job.status === 'paused');
     const queueManagedRecovery = Boolean(latestExperimentRecoveryOpen && !codingRecoveryDirectControls);
     const supportsQuickStartRelaunch = ['quick_start_claude_backend', 'quick_start_domain_research', 'quick_start_bug_triage_swarm', 'quick_start_build_break_swarm', 'quick_start_frontend_regression_swarm', 'quick_start_repo_bug_triage', 'quick_start_role_workflow'].includes(launchMode);

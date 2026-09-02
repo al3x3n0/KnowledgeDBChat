@@ -7,7 +7,12 @@
  * rendered test would never set up, like a job whose results are absent.
  */
 
-import { codePatchView, executionGraphView } from '../agentJobDetail';
+import {
+  codePatchView,
+  executionGraphView,
+  experimentRunsView,
+  swarmSummaryOf,
+} from '../agentJobDetail';
 import type { AgentJob } from '../../types';
 
 const jobWith = (results: any): AgentJob =>
@@ -146,5 +151,69 @@ describe('codePatchView', () => {
     expect(view.codePatchExecutionPlan).toEqual([]);
     expect(view.codePatchDetectedStack).toEqual([]);
     expect(view.codingRecoveryState).toBe('');
+  });
+});
+
+describe('swarmSummaryOf', () => {
+  it('prefers the summary the API supplied', () => {
+    const job = {
+      id: 'j-1',
+      swarm_summary: { enabled: true, source: 'api' },
+      results: { swarm_fan_in: { file_converged: true } },
+    } as unknown as AgentJob;
+    expect(swarmSummaryOf(job).source).toBe('api');
+  });
+
+  it('falls back to the fan-in recorded in results', () => {
+    const view = swarmSummaryOf(
+      jobWith({ swarm_fan_in: { file_converged: true, file_convergence_support: 3 } })
+    );
+    expect(view.enabled).toBe(true);
+    expect(view.file_converged).toBe(true);
+    expect(view.file_convergence_support).toBe(3);
+  });
+
+  it('is null when the job ran no swarm', () => {
+    expect(swarmSummaryOf(jobWith(undefined))).toBeNull();
+    expect(swarmSummaryOf(jobWith({ swarm_fan_in: 'not an object' }))).toBeNull();
+  });
+});
+
+describe('experimentRunsView', () => {
+  it('reads runs from the typed column when it has them', () => {
+    const job = {
+      id: 'j-1',
+      experiment_runs: [{ id: 'r-1' }, { id: 'r-2' }],
+      results: {},
+    } as unknown as AgentJob;
+    const view = experimentRunsView(job);
+    expect(view.experimentRuns.map((r: any) => r.id)).toEqual(['r-1', 'r-2']);
+    expect(view.latestExperimentRun).toMatchObject({ id: 'r-2' });
+    expect(view.latestExperimentRunIndex).toBe(1);
+  });
+
+  it('falls back to the runs recorded in results', () => {
+    // Written by an older path; a job from either era has to read the same.
+    const view = experimentRunsView(jobWith({ experiment_runs: [{ id: 'r-9' }] }));
+    expect(view.experimentRuns.map((r: any) => r.id)).toEqual(['r-9']);
+  });
+
+  it('includes a run still in flight, which arrives on its own', () => {
+    const job = {
+      id: 'j-1',
+      experiment_runs: [{ id: 'r-1' }],
+      experiment_run: { id: 'r-live' },
+      results: {},
+    } as unknown as AgentJob;
+    const view = experimentRunsView(job);
+    expect(view.latestExperimentRun).toMatchObject({ id: 'r-live' });
+  });
+
+  it('has no latest run, and index zero, when there are none', () => {
+    const view = experimentRunsView(jobWith(undefined));
+    expect(view.experimentRuns).toEqual([]);
+    expect(view.latestExperimentRun).toBeNull();
+    // Not -1: the index is used to address the list and must stay in range.
+    expect(view.latestExperimentRunIndex).toBe(0);
   });
 });

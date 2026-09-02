@@ -1265,8 +1265,6 @@ const AutonomousAgentsPage: React.FC = () => {
   const navigate = useNavigate();
   const { user } = useAuth();
   const isAdmin = user?.role === 'admin';
-  const [creatingPluginId, setCreatingPluginId] = useState<string | null>(null);
-  const [enableAfterCreate, setEnableAfterCreate] = useState(true);
   const traceFiltersDirtyRef = useRef(false);
   const deepLinkedJobId = useMemo(() => new URLSearchParams(location.search).get('job'), [location.search]);
   const deepLinkedTraceTab = useMemo(() => String(new URLSearchParams(location.search).get('tab') || '').trim().toLowerCase() === 'trace', [location.search]);
@@ -17660,10 +17658,6 @@ const AutonomousAgentsPage: React.FC = () => {
                   deleteMutation={deleteMutation}
                   createCodingBacklogMutation={createCodingBacklogMutation}
                   promoteDomainResearchMutation={promoteDomainResearchMutation}
-                  creatingPluginId={creatingPluginId}
-                  setCreatingPluginId={setCreatingPluginId}
-                  enableAfterCreate={enableAfterCreate}
-                  setEnableAfterCreate={setEnableAfterCreate}
                   setSelectedJob={setSelectedJob}
                   setActiveTab={setActiveTab}
                   setExportingJob={setExportingJob}

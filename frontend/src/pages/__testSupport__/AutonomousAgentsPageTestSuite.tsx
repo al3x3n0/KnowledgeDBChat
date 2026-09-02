@@ -4199,8 +4199,11 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       await Promise.all([logDeferred.promise, stepEventsDeferred.promise, memoriesDeferred.promise]);
     });
 
+    // Not named after one component: the memories loader moved into
+    // JobMemoriesSection, and an assertion naming JobDetailPanel would have
+    // gone on passing while the loader it was written for leaked.
     expect(consoleErrorSpy).not.toHaveBeenCalledWith(
-      expect.stringContaining('Warning: An update to JobDetailPanel')
+      expect.stringContaining('Warning: An update to')
     );
 
     consoleErrorSpy.mockRestore();

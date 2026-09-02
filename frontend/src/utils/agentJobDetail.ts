@@ -8,6 +8,7 @@
  * 19,000-line page module.
  */
 
+import { TERMINAL_JOB_STATUSES } from './agentJobProgress';
 import { isExperimentRecoveryOpen, summarizeExperimentRun } from './experimentRunSummary';
 import type {
   AgentJob,
@@ -446,3 +447,16 @@ export const experimentRunsView = (job: AgentJob): ExperimentRunsView => {
     latestExperimentRecoveryOpen,
   };
 };
+
+/** The executive digest, from the API field or from results where an older
+ *  path wrote it. */
+export const executiveDigestOf = (job: AgentJob): Record<string, any> | null => {
+  const direct = (job as any)?.executive_digest;
+  if (direct && typeof direct === 'object') return direct;
+  const fromResults = (job.results as any)?.executive_digest;
+  return fromResults && typeof fromResults === 'object' ? fromResults : null;
+};
+
+/** Whether the job is still running, as opposed to finished in any way. */
+export const isLiveRuntimeJob = (job: AgentJob): boolean =>
+  !TERMINAL_JOB_STATUSES.has(String(job.status || '').toLowerCase());

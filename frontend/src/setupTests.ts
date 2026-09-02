@@ -3,6 +3,17 @@
 // expect(element).toHaveTextContent(/react/i)
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom';
+import { configure } from '@testing-library/react';
+
+// testing-library gives every findBy* and waitFor one second by default. The
+// heavier pages here mount, fire several queries and settle well inside that
+// on an idle machine and not reliably on a loaded one, which is what made
+// AutonomousAgentsPage's shards fail intermittently: 'auto-applies the default
+// trace view' failed looking for an option that arrived at 1.1 seconds.
+//
+// This weakens no assertion. A test that passes in 200ms still passes in
+// 200ms; only a failing one waits longer before saying so.
+configure({ asyncUtilTimeout: 5000 });
 
 // CRA/Jest (react-scripts) doesn't transform ESM in node_modules by default.
 // Some dependencies we use (react-markdown, tiptap v3) ship ESM and will fail

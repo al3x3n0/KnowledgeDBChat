@@ -1,5 +1,7 @@
 import React from 'react';
 
+import { DEFAULT_LAYOUT, GraphLayout } from './kgLayout';
+
 export type FGNode = { id: string; name: string; type: string };
 export type FGEdge = {
   id: string;
@@ -34,49 +36,62 @@ export interface ForceGraphHandle {
   centerOnNode: (nodeId: string, scale?: number) => void;
 }
 
+/** Entity colours, for a dark canvas.
+ *
+ *  These were the 600-weight Tailwind colours, chosen for a white background:
+ *  #2563eb, #059669, #0f766e and so on. On this app's near-black ground they
+ *  are muddy and several of them read as the same dark smudge at node size.
+ *  These are the 400-weight equivalents — same hues, so a person is still
+ *  blue and an organisation still green, at a lightness that separates them
+ *  against #0b0f10. */
 const typeColor = (t: string): string => {
   switch ((t || '').toLowerCase()) {
     case 'person':
-      return '#2563eb';
+      return '#60a5fa';
     case 'org':
     case 'organization':
-      return '#059669';
+      return '#34d399';
     case 'location':
     case 'place':
-      return '#0f766e';
+      return '#2dd4bf';
     case 'product':
-      return '#b45309';
+      return '#fbbf24';
     case 'concept':
     case 'topic':
-      return '#7c3aed';
+      return '#c084fc';
     case 'technology':
     case 'tool':
     case 'framework':
-      return '#4f46e5';
+      return '#818cf8';
     case 'event':
-      return '#be123c';
+      return '#fb7185';
     case 'email':
-      return '#0ea5e9';
+      return '#38bdf8';
     case 'url':
-      return '#ea580c';
+      return '#fb923c';
     default:
-      return '#6b7280';
+      return '#94a3b8';
   }
 };
+
+/** The canvas palette, matching the app's surfaces so the graph reads as part
+ *  of the page rather than a white panel dropped into it. */
+const CANVAS = {
+  ground: '#0b0f10',
+  grid: 'rgba(159, 178, 172, 0.07)',
+  gridBold: 'rgba(159, 178, 172, 0.11)',
+  label: '#e7f2ec',
+  labelHalo: '#0b0f10',
+  nodeRing: '#0b0f10',
+  accent: '#19c77b',
+  edge: 'rgba(159, 178, 172, 0.45)',
+  edgeDim: 'rgba(108, 132, 130, 0.22)',
+  edgeHover: '#c8d6cf',
+} as const;
 
 const clamp = (v: number, min: number, max: number) => Math.max(min, Math.min(max, v));
 
-const hashU32 = (s: string): number => {
-  // FNV-1a 32-bit
-  let h = 2166136261;
-  for (let i = 0; i < s.length; i++) {
-    h ^= s.charCodeAt(i);
-    h = Math.imul(h, 16777619);
-  }
-  return h >>> 0;
-};
 
-const goldenAngle = Math.PI * (3 - Math.sqrt(5));
 
 const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
   (
@@ -187,10 +202,38 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
       n.x = nx;
       n.y = ny;
       posRef.current.set(n.id, { x: nx, y: ny });
+      // Pin it, so the running simulation treats this position as given
+      // rather than pulling the node back out from under the pointer.
+      layoutRef.current?.pin(n.id, nx, ny);
       setSimNodes([...nodesRef.current]);
     };
     const endDrag = () => {
+      const id = draggingRef.current;
       draggingRef.current = null;
+      if (!id) return;
+      // Let go and let the neighbourhood settle around where it was put. The
+      // node stays put itself — a drag is a statement about where it belongs,
+      // so undoing it on release would make the gesture pointless.
+      const sim = layoutRef.current;
+      if (!sim) return;
+      sim.reheat(0.3);
+      if (frameRef.current === null) {
+        const tick = () => {
+          let moving = false;
+          for (let i = 0; i < 3; i += 1) moving = sim.step() || moving;
+          const byId = new Map(nodesRef.current.map((n) => [n.id, n]));
+          sim.nodes.forEach((ln, nid) => {
+            const meta = byId.get(nid);
+            if (meta) {
+              meta.x = ln.x;
+              meta.y = ln.y;
+            }
+          });
+          setSimNodes([...nodesRef.current]);
+          frameRef.current = moving ? requestAnimationFrame(tick) : null;
+        };
+        frameRef.current = requestAnimationFrame(tick);
+      }
     };
 
     const endAllGestures = React.useCallback(() => {
@@ -269,137 +312,99 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
     );
 
     // Initialize nodes when data changes.
+    // The layout, as an animated simulation rather than a synchronous loop.
+    //
+    // What was here before ran up to fourteen O(n²) passes of overlap
+    // repulsion inside this effect — blocking the main thread for as long as
+    // it took — and had no attraction at all, so edge length meant nothing and
+    // clusters never formed. `kgLayout` supplies the three forces that make a
+    // graph readable; this drives it from requestAnimationFrame and stops when
+    // it settles, so a still graph costs nothing.
+    const layoutRef = React.useRef<GraphLayout | null>(null);
+    const frameRef = React.useRef<number | null>(null);
+
+    // Kept in a ref so the animation loop reads the current size without
+    // being restarted by a resize.
+    const sizeRef = React.useRef({ width, height });
     React.useEffect(() => {
-      const cx = width / 2;
-      const cy = height / 2;
-      // Keep positions within a large, off-screen-allowed layout box so graphs can sprawl.
-      const layoutBound = Math.max(width, height) * 6;
-      const minX = cx - layoutBound;
-      const maxX = cx + layoutBound;
-      const minY = cy - layoutBound;
-      const maxY = cy + layoutBound;
+      sizeRef.current = { width, height };
+      layoutRef.current?.setOptions({ centerX: width / 2, centerY: height / 2 });
+    }, [width, height]);
 
-      const viewMin = Math.min(width, height);
-      // Spread nodes even if the graph does not fit the viewport (user can pan/zoom/fit).
-      const desiredRadius = viewMin * 0.9;
-      const maxRelayoutScale = 10;
+    // Identity of the graph, not of the arrays holding it. A poll that returns
+    // the same entities must not disturb a settled picture, and the previous
+    // code re-ran its whole effect whenever the parent handed it a new array.
+    const graphSignature = React.useMemo(
+      () =>
+        `${nodes.map((n) => n.id).sort().join(',')}|${edges
+          .map((e) => `${e.source}>${e.target}`)
+          .sort()
+          .join(',')}`,
+      [nodes, edges]
+    );
 
-      // Prune stale positions to keep the map bounded.
-      const ids = new Set(nodes.map((n) => n.id));
-      Array.from(posRef.current.keys()).forEach((k) => {
-        if (!ids.has(k)) posRef.current.delete(k);
-      });
+    React.useEffect(() => {
+      const { width: w, height: h } = sizeRef.current;
+      if (!layoutRef.current) {
+        layoutRef.current = new GraphLayout({
+          ...DEFAULT_LAYOUT,
+          centerX: w / 2,
+          centerY: h / 2,
+        });
+      }
+      const sim = layoutRef.current;
+      const changed = sim.setGraph(
+        nodes.map((n) => n.id),
+        edges.map((e) => ({ source: e.source, target: e.target }))
+      );
+      if (!changed && sim.settled) {
+        // Same graph, already laid out: leave the picture exactly as it is.
+        return;
+      }
+      sim.reheat(changed ? 1 : 0.4);
 
-      const edgesLocal = edges.slice();
-      const hasPos = (id: string) => posRef.current.has(id);
-      const getPos = (id: string) => posRef.current.get(id);
-      const neighborsOf = (id: string): string[] => {
-        const out: string[] = [];
-        for (const e of edgesLocal) {
-          if (e.source === id) out.push(e.target);
-          else if (e.target === id) out.push(e.source);
-        }
-        return out;
+      const publish = () => {
+        const byId = new Map(nodes.map((n) => [n.id, n]));
+        const next: SimNode[] = [];
+        sim.nodes.forEach((ln, id) => {
+          const meta = byId.get(id);
+          if (meta) next.push({ ...meta, x: ln.x, y: ln.y });
+        });
+        nodesRef.current = next;
+        posRef.current = new Map(next.map((n) => [n.id, { x: n.x, y: n.y }]));
+        setSimNodes(next);
       };
 
-      const missing = nodes.filter((n) => !hasPos(n.id)).map((n) => n.id);
-      missing.sort((a, b) => hashU32(a) - hashU32(b));
-      const isInitialLayout = posRef.current.size === 0;
-      const hasNewNodes = missing.length > 0;
+      const tick = () => {
+        // A few steps per frame: the simulation converges in far fewer frames
+        // without ever holding the thread long enough to drop one.
+        let moving = false;
+        for (let i = 0; i < 3; i += 1) moving = sim.step() || moving;
+        publish();
+        frameRef.current = moving ? requestAnimationFrame(tick) : null;
+      };
 
-      let spiralIndex = posRef.current.size;
-      for (const id of missing) {
-        const neigh = neighborsOf(id).filter(hasPos);
-        let x: number;
-        let y: number;
-        const h = hashU32(id);
-        const jx = ((h & 0xffff) / 0xffff - 0.5) * 320;
-        const jy = (((h >>> 16) & 0xffff) / 0xffff - 0.5) * 320;
+      if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      frameRef.current = requestAnimationFrame(tick);
 
-        if (neigh.length) {
-          let sx = 0;
-          let sy = 0;
-          for (const nid of neigh) {
-            const p = getPos(nid)!;
-            sx += p.x;
-            sy += p.y;
-          }
-          // Push slightly away from neighbors to avoid "sticking" to clusters.
-          const a = (h / 0xffffffff) * Math.PI * 2;
-          const r = Math.max(nodeRadius * 7, 130);
-          x = sx / neigh.length + jx + Math.cos(a) * r;
-          y = sy / neigh.length + jy + Math.sin(a) * r;
-        } else {
-          const i = spiralIndex++;
-          const r = 120 + 110 * Math.sqrt(i);
-          const a = i * goldenAngle + (h / 0xffffffff) * 0.25;
-          x = cx + r * Math.cos(a);
-          y = cy + r * Math.sin(a);
+      return () => {
+        if (frameRef.current !== null) {
+          cancelAnimationFrame(frameRef.current);
+          frameRef.current = null;
         }
+      };
+      // Deliberately keyed on the graph's identity rather than the arrays':
+      // see graphSignature above.
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [graphSignature]);
 
-        x = clamp(x, minX, maxX);
-        y = clamp(y, minY, maxY);
-        posRef.current.set(id, { x, y });
-      }
-
-      const init: SimNode[] = nodes.map((n) => {
-        const p = posRef.current.get(n.id) || { x: cx, y: cy };
-        return { ...n, x: p.x, y: p.y };
-      });
-
-      // Only re-layout when nodes are newly introduced (or first load). Otherwise keep positions fixed.
-      if (isInitialLayout || hasNewNodes) {
-        const relaxIterations = Math.max(4, Math.min(14, Math.round(6 + init.length / 90)));
-        const minSep = Math.max(nodeRadius * 5.0, 110);
-        const repelStrength = 0.55;
-
-        for (let iter = 0; iter < relaxIterations; iter++) {
-          for (let i = 0; i < init.length; i++) {
-            for (let j = i + 1; j < init.length; j++) {
-              const a = init[i];
-              const b = init[j];
-              const dx = b.x - a.x;
-              const dy = b.y - a.y;
-              const dist = Math.hypot(dx, dy) || 1;
-              if (dist >= minSep) continue;
-              const overlap = (minSep - dist) / dist;
-              const push = overlap * repelStrength * 0.5;
-              a.x -= dx * push;
-              a.y -= dy * push;
-              b.x += dx * push;
-              b.y += dy * push;
-            }
-          }
-          for (const n of init) {
-            n.x = clamp(n.x, minX, maxX);
-            n.y = clamp(n.y, minY, maxY);
-          }
-        }
-
-        let mx = 0;
-        let my = 0;
-        for (const n of init) {
-          mx += n.x;
-          my += n.y;
-        }
-        mx /= Math.max(1, init.length);
-        my /= Math.max(1, init.length);
-        let maxR = 0;
-        for (const n of init) maxR = Math.max(maxR, Math.hypot(n.x - mx, n.y - my));
-        if (maxR > 1) {
-          // Only scale outward (never shrink to "fit"); this keeps distance even if it overflows the viewport.
-          const scaleUp = clamp(Math.max(1, desiredRadius / maxR), 1, maxRelayoutScale);
-          for (const n of init) {
-            n.x = clamp(mx + (n.x - mx) * scaleUp, minX, maxX);
-            n.y = clamp(my + (n.y - my) * scaleUp, minY, maxY);
-          }
-        }
-      }
-
-      for (const n of init) posRef.current.set(n.id, { x: n.x, y: n.y });
-      nodesRef.current = init;
-      setSimNodes(init);
-    }, [nodes, edges, width, height, nodeRadius]);
+    // Stop the loop when the component goes away, whatever state it is in.
+    React.useEffect(
+      () => () => {
+        if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
+      },
+      []
+    );
 
     // Wheel zoom (mouse/trackpad). Zooms around cursor.
     const onWheel = (e: React.WheelEvent) => {
@@ -619,10 +624,10 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
         >
           <defs>
             <pattern id="kg-grid" width="32" height="32" patternUnits="userSpaceOnUse">
-              <path d="M 32 0 L 0 0 0 32" fill="none" stroke="rgba(15, 23, 42, 0.06)" strokeWidth="1" />
+              <path d="M 32 0 L 0 0 0 32" fill="none" stroke={CANVAS.grid} strokeWidth="1" />
             </pattern>
             <pattern id="kg-grid-bold" width="160" height="160" patternUnits="userSpaceOnUse">
-              <path d="M 160 0 L 0 0 0 160" fill="none" stroke="rgba(15, 23, 42, 0.08)" strokeWidth="1" />
+              <path d="M 160 0 L 0 0 0 160" fill="none" stroke={CANVAS.gridBold} strokeWidth="1" />
             </pattern>
           </defs>
 
@@ -631,7 +636,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
             y={0}
             width={width}
             height={height}
-            fill="#f8fafc"
+            fill={CANVAS.ground}
             onPointerDown={onPointerDownBg}
             onClick={() => onBackgroundClick && onBackgroundClick()}
           />
@@ -654,7 +659,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
                   : false;
               const selected = e.id === (selectedEdgeId || '');
               const hovered = e.id === hoveredEdgeId;
-              const stroke = selected ? '#0f172a' : hovered ? '#334155' : dim ? 'rgba(148, 163, 184, 0.35)' : 'rgba(100, 116, 139, 0.55)';
+              const stroke = selected ? CANVAS.accent : hovered ? CANVAS.edgeHover : dim ? CANVAS.edgeDim : CANVAS.edge;
               return (
                 <g
                   key={e.id}
@@ -687,7 +692,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
                   <text
                     x={(s.x + t.x) / 2}
                     y={(s.y + t.y) / 2}
-                    fill={selected ? '#0f172a' : dim ? 'rgba(148, 163, 184, 0.55)' : 'rgba(100, 116, 139, 0.85)'}
+                    fill={selected ? CANVAS.accent : dim ? CANVAS.edgeDim : CANVAS.edge}
                     fontSize={10}
                     textAnchor="middle"
                     dy={-4}
@@ -738,13 +743,13 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
                     r={nodeRadius}
                     fill={color}
                     opacity={dim ? (focusMode === 'node' ? 0.25 : 0.9) : 0.9}
-                    stroke={selected ? '#0f172a' : hovered ? 'rgba(15, 23, 42, 0.55)' : '#ffffff'}
+                    stroke={selected ? CANVAS.accent : hovered ? CANVAS.label : CANVAS.nodeRing}
                     strokeWidth={selected ? 2.5 : hovered ? 2 : 1}
                   />
                   <text
                     x={n.x}
                     y={n.y + nodeRadius + 14}
-                    fill="#111827"
+                    fill={CANVAS.label}
                     fontSize={12}
                     textAnchor="middle"
                     style={{ opacity: dim ? 0.35 : 1 }}

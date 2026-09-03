@@ -168,6 +168,9 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
     } | null>(null);
 
     const startPan = (clientX: number, clientY: number) => {
+      // From here on the camera belongs to the user: no automatic fit will
+      // move it out from under them.
+      userMovedViewRef.current = true;
       panningRef.current = true;
       lastPanRef.current = { x: clientX, y: clientY };
     };
@@ -298,6 +301,11 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
       [width, height, nodeRadius, minScale, maxScale]
     );
 
+    React.useEffect(() => {
+      fitOnSettleRef.current = () => doFitView(60);
+    }, [doFitView]);
+
+
     const doCenterOnNode = React.useCallback(
       (nodeId: string, newScale?: number) => {
         const n = nodesRef.current.find((nn) => nn.id === nodeId);
@@ -322,6 +330,11 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
     // it settles, so a still graph costs nothing.
     const layoutRef = React.useRef<GraphLayout | null>(null);
     const frameRef = React.useRef<number | null>(null);
+    /** Set once the user pans, zooms or drags: after that the camera is theirs. */
+    const userMovedViewRef = React.useRef(false);
+    /** doFitView is defined below this effect; the ref lets the loop reach it
+     *  without making the effect depend on its identity. */
+    const fitOnSettleRef = React.useRef<(() => void) | null>(null);
 
     // Kept in a ref so the animation loop reads the current size without
     // being restarted by a resize.
@@ -342,6 +355,12 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
           .join(',')}`,
       [nodes, edges]
     );
+
+    // A different graph is a different picture: fit it once, even if the user
+    // had moved the camera around the previous one.
+    React.useEffect(() => {
+      userMovedViewRef.current = false;
+    }, [graphSignature]);
 
     React.useEffect(() => {
       const { width: w, height: h } = sizeRef.current;
@@ -381,7 +400,23 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
         let moving = false;
         for (let i = 0; i < 3; i += 1) moving = sim.step() || moving;
         publish();
-        frameRef.current = moving ? requestAnimationFrame(tick) : null;
+        if (moving) {
+          frameRef.current = requestAnimationFrame(tick);
+          return;
+        }
+        frameRef.current = null;
+        // Settled: fill the canvas with what we laid out. A force-balanced
+        // graph settles at whatever size its forces imply, which for a small
+        // graph is a cluster in the middle of a large empty canvas — the
+        // layout this replaced compensated by scaling every position outward,
+        // which distorts world coordinates to solve a viewport problem.
+        //
+        // Skipped once the user has moved the view themselves: yanking the
+        // camera away from where someone deliberately put it is worse than a
+        // graph that does not fill the frame.
+        if (!userMovedViewRef.current) {
+          fitOnSettleRef.current?.();
+        }
       };
 
       if (frameRef.current !== null) cancelAnimationFrame(frameRef.current);
@@ -409,6 +444,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
     // Wheel zoom (mouse/trackpad). Zooms around cursor.
     const onWheel = (e: React.WheelEvent) => {
       e.preventDefault();
+      userMovedViewRef.current = true;
       const rect = svgRef.current?.getBoundingClientRect();
       if (!rect) return;
       const px = e.clientX - rect.left;

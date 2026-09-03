@@ -49,6 +49,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="ingest_arxiv_papers",
+        produces=("papers_ingested",),
+        typical_seconds=180,
+        consumes="An arXiv query or id list; leaves the papers in the corpus.",
         description="Ingest arXiv papers into the Knowledge DB by creating an arXiv document source and running ingestion (async). Provide either paper_ids, search_queries, or categories.",
         parameters={
             "type": "object",
@@ -108,6 +111,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="literature_review_arxiv",
+        produces=("literature_review",),
+        typical_seconds=240,
+        consumes="A topic; searches arXiv and returns a starter set with links.",
         description="Search arXiv for a topic, optionally ingest top papers into the Knowledge DB, and return a compact literature review starter set (papers + links).",
         parameters={
             "type": "object",
@@ -177,6 +183,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="generate_literature_review_for_source",
+        produces=("literature_review",),
+        typical_seconds=240,
+        consumes="A document source already ingested.",
         description="Generate a literature review document for an arXiv import source (uses available summaries and extracted paper insights).",
         parameters={
             "type": "object",
@@ -260,6 +269,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="save_research_finding",
+        produces=("research_finding",),
+        typical_seconds=0,
+        consumes="One finding, with the evidence it rests on.",
         description="Save a research finding or insight discovered during analysis. Findings are stored for later synthesis and reporting.",
         parameters={
             "type": "object",
@@ -350,6 +362,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="create_synthesis_document",
+        produces=("synthesis_document",),
+        typical_seconds=120,
+        consumes="Findings and document ids; writes the structured report.",
         description="Create a synthesis document from collected findings and sources. Generates a structured research report.",
         parameters={
             "type": "object",
@@ -391,6 +406,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="extract_paper_insights",
+        produces=("paper_insights",),
+        typical_seconds=45,
+        consumes="One document id already in the corpus; ingest the paper first if it is new.",
         description="Extract structured insights from a research paper including methodology, key findings, limitations, and future work.",
         parameters={
             "type": "object",
@@ -428,6 +446,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="find_related_papers",
+        produces=("related_paper_set",),
+        typical_seconds=30,
+        consumes="A document id; finds neighbours by similarity.",
         description="Find papers related to a given paper through citations, shared authors, or semantic similarity.",
         parameters={
             "type": "object",
@@ -469,6 +490,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="build_research_graph",
+        produces=("research_graph",),
+        typical_seconds=90,
+        consumes="Document ids whose entities and relations become a graph.",
         description="Build a knowledge graph of concepts, methods, and relationships from a set of papers. Useful for understanding the research landscape.",
         parameters={
             "type": "object",
@@ -510,6 +534,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="compare_methodologies",
+        produces=("methodology_comparison",),
+        typical_seconds=120,
+        consumes="Document ids already in the corpus, two or more, to compare.",
         description="Compare methodologies across multiple papers. Useful for understanding different approaches to a problem.",
         parameters={
             "type": "object",
@@ -547,6 +574,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="identify_research_gaps",
+        produces=("research_gap",),
+        typical_seconds=120,
+        consumes="Document ids already in the corpus; reads them for what is missing.",
         description="Analyze papers to identify potential research gaps and opportunities.",
         parameters={
             "type": "object",
@@ -586,6 +616,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="generate_research_presentation",
+        produces=("research_presentation",),
+        typical_seconds=180,
+        consumes="Document ids and a title; produces the deck.",
         description="Generate a presentation from research findings. Creates a presentation job that can be downloaded.",
         parameters={
             "type": "object",
@@ -649,6 +682,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="ingest_paper_by_id",
+        produces=("papers_ingested",),
+        typical_seconds=60,
+        consumes="One arXiv id; leaves that paper in the corpus.",
         description="Ingest a specific paper into the knowledge base by its arXiv ID.",
         parameters={
             "type": "object",
@@ -674,6 +710,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="analyze_document_cluster",
+        produces=("document_cluster",),
+        typical_seconds=60,
+        consumes="Document ids to group by topic.",
         description="Analyze a cluster of related documents to find common themes, differences, and patterns.",
         parameters={
             "type": "object",
@@ -701,6 +740,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="create_knowledge_base_entry",
+        produces=("kb_entry",),
+        typical_seconds=30,
+        consumes="A title and body to file into the knowledge base.",
         description="Create a new structured entry in the knowledge base (not a raw document). Good for storing curated knowledge from research.",
         parameters={
             "type": "object",

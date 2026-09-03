@@ -82,6 +82,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="ingest_url",
+        produces=("documents_ingested",),
+        typical_seconds=30,
+        consumes="A URL; leaves the fetched page in the corpus.",
         description="Scrape a URL and ingest the extracted text into the KnowledgeDB as document(s) (optionally crawling a few linked pages).",
         parameters={
             "type": "object",
@@ -169,6 +172,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="summarize_document",
+        produces=("document_summary",),
+        typical_seconds=20,
+        consumes="One document id already in the corpus.",
         description="Generate or retrieve a summary for a specific document. If a summary already exists, returns it unless force_regenerate is true.",
         parameters={
             "type": "object",
@@ -185,7 +191,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["document_id"],
         },
-        job_types=('research', 'analysis', 'synthesis', 'document_authoring', 'custom'),
+        job_types=("research", "analysis", "synthesis", "document_authoring", "custom"),
     ),
     ToolSpec(
         name="delete_document",
@@ -295,6 +301,9 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="create_document_from_text",
+        produces=("documents_ingested",),
+        typical_seconds=5,
+        consumes="Title and body; leaves a document in the corpus.",
         description="Create a new document directly from text content. Useful for saving notes, code snippets, or any text the user wants to store in the knowledge base.",
         parameters={
             "type": "object",
@@ -316,7 +325,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["title", "content"],
         },
         effects="write",
-        job_types=('research', 'analysis', 'synthesis', 'document_authoring', 'custom'),
+        job_types=("research", "analysis", "synthesis", "document_authoring", "custom"),
     ),
     ToolSpec(
         name="find_similar_documents",
@@ -336,7 +345,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["document_id"],
         },
-        job_types=('research', 'analysis', 'knowledge_expansion', 'custom'),
+        job_types=("research", "analysis", "knowledge_expansion", "custom"),
     ),
     ToolSpec(
         name="search_documents_by_author",
@@ -394,7 +403,7 @@ SPECS: tuple[ToolSpec, ...] = (
         name="get_knowledge_base_stats",
         description="Get statistics about the knowledge base including document counts, storage usage, and processing status.",
         parameters={"type": "object", "properties": {}, "required": []},
-        job_types=('research', 'monitor', 'knowledge_expansion'),
+        job_types=("research", "monitor", "knowledge_expansion"),
     ),
     ToolSpec(
         name="batch_delete_documents",
@@ -519,7 +528,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["document_id_1", "document_id_2"],
         },
-        job_types=('analysis',),
+        job_types=("analysis",),
     ),
     ToolSpec(
         name="answer_question",

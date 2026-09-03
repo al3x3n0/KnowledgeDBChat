@@ -312,3 +312,106 @@ class TestLaunchingOne:
     def test_it_needs_a_caller(self, client):
         response = client.post(LAUNCH, json={"spec": self._good()})
         assert response.status_code in (401, 403)
+
+
+class TestResearchWorkIsExpressible:
+    """Literature and synthesis work as a pipeline, not just microarchitecture.
+
+    The evidence map began as measurement tools only — compile, profile,
+    benchmark, gem5 — so a pipeline could express a cycle-accurate study and
+    could not express reading twenty papers and writing up what they missed.
+    The research tools existed the whole time; they simply declared no
+    evidence, so nothing could plan with them.
+    """
+
+    def test_a_literature_survey_compiles_from_its_contracts(
+        self, client, auth_headers
+    ):
+        payload = {
+            "spec": _spec(
+                _stage("gather", ["papers_ingested"]),
+                _stage(
+                    "read",
+                    ["paper_insights"],
+                    depends_on=["gather"],
+                    assumes=["papers_ingested"],
+                    loop={"max_iterations": 8},
+                ),
+                _stage(
+                    "compare",
+                    ["methodology_comparison"],
+                    depends_on=["read"],
+                    assumes=["paper_insights"],
+                ),
+                _stage(
+                    "writeup",
+                    ["synthesis_document"],
+                    depends_on=["compare"],
+                    assumes=["methodology_comparison"],
+                    checkpoint=True,
+                ),
+                name="attention-survey",
+            )
+        }
+        body = client.post(CHECK, json=payload, headers=auth_headers).json()
+
+        assert body["valid"] is True, body["problems"]
+        assert body["expressible"] is True
+        assert body["plan"]["order"] == ["gather", "read", "compare", "writeup"]
+
+        # The tools are deduced from what each stage must be true of, the same
+        # way a measurement pipeline's are.
+        tools = {s["stage_id"]: s["tools"] for s in body["plan"]["stages"]}
+        assert "extract_paper_insights" in tools["read"]
+        assert "compare_methodologies" in tools["compare"]
+        assert "create_synthesis_document" in tools["writeup"]
+        # And a survey that stops for a person says so beforehand.
+        assert body["plan"]["checkpoints"] == ["writeup"]
+
+    def test_reading_is_priced_per_iteration(self, client, auth_headers):
+        # Eight papers cost eight extractions. A loop that priced as one pass
+        # would make every survey look affordable.
+        once = client.post(
+            CHECK,
+            json={"spec": _spec(_stage("read", ["paper_insights"]))},
+            headers=auth_headers,
+        ).json()
+        eight = client.post(
+            CHECK,
+            json={
+                "spec": _spec(
+                    _stage("read", ["paper_insights"], loop={"max_iterations": 8})
+                )
+            },
+            headers=auth_headers,
+        ).json()
+
+        assert eight["plan"]["total_seconds"] > once["plan"]["total_seconds"]
+
+    def test_synthesising_from_evidence_nothing_gathered_is_refused(
+        self, client, auth_headers
+    ):
+        # The research-side version of the failure the whole module exists for:
+        # a write-up stage resting on papers no stage ever read.
+        payload = {
+            "spec": _spec(
+                _stage(
+                    "writeup",
+                    ["synthesis_document"],
+                    assumes=["paper_insights"],
+                )
+            )
+        }
+        body = client.post(CHECK, json=payload, headers=auth_headers).json()
+
+        assert body["valid"] is False
+        assert "paper_insights" in " ".join(body["problems"])
+
+    def test_a_contract_no_research_tool_can_satisfy_is_refused(
+        self, client, auth_headers
+    ):
+        payload = {"spec": _spec(_stage("review", ["peer_review"]))}
+        body = client.post(CHECK, json=payload, headers=auth_headers).json()
+
+        assert body["valid"] is False
+        assert "peer_review" in " ".join(body["problems"])

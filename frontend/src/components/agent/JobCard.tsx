@@ -179,12 +179,21 @@ export const JobCard: React.FC<JobCardProps> = ({
 
     return (
       <div
-        className={`bg-white border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer ${
+        // The three utilities `border rounded-lg p-4` stay exactly as they
+        // are: eight places in the test suite reach this element with
+        // `closest('.border.rounded-lg.p-4')`, so they are structure here, not
+        // decoration. Everything below is additive.
+        className={`bg-white border rounded-lg p-4 cursor-pointer
+          transition-all duration-fast ease-ui
+          hover:shadow-level-2 hover:-translate-y-px
+          active:translate-y-0 active:shadow-level-1 ${
           isSelected
-            ? 'border-primary-500 ring-2 ring-primary-200'
+            // The current card carries an accent bar down its leading edge as
+            // well as the ring: at a glance in a grid, the bar is what reads.
+            ? 'border-primary-500 ring-2 ring-primary-200 shadow-[inset_3px_0_0_0_theme(colors.primary.600)]'
             : isPinnedDeepLink
               ? 'border-primary-300 ring-1 ring-primary-100'
-              : 'border-gray-200'
+              : 'border-gray-200 hover:border-gray-400'
         }`}
         onClick={() => {
           onOpen(job);

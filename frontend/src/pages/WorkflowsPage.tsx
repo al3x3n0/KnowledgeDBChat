@@ -298,7 +298,7 @@ const WorkflowsPage: React.FC = () => {
             {filteredWorkflows.map((workflow) => (
               <div
                 key={workflow.id}
-                className={`bg-white rounded-lg border shadow-sm hover:shadow-md transition-shadow ${
+                className={`bg-white rounded-lg border shadow-sm transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 ${
                   selectedExecution?.workflow_id === workflow.id ? 'border-sky-400 ring-2 ring-sky-100' : ''
                 }`}
               >

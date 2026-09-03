@@ -14860,7 +14860,7 @@ const AutonomousAgentsPage: React.FC = () => {
                   return (
                   <div
                     key={chain.id}
-                    className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow"
+                    className="bg-white border border-gray-200 rounded-lg p-4 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400"
                   >
                     <div className="flex items-start gap-3 mb-3">
                       <div className="p-2 rounded-lg bg-purple-100 text-purple-600">

@@ -336,7 +336,7 @@ const MemoryCard: React.FC<MemoryCardProps> = ({ memory, onView, onDelete }) => 
   };
 
   return (
-    <div className="bg-white rounded-lg shadow p-6 hover:shadow-md transition-shadow duration-200">
+    <div className="bg-white rounded-lg shadow p-6 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 duration-200">
       <div className="flex items-start justify-between">
         <div className="flex-1 min-w-0">
           {/* Header */}

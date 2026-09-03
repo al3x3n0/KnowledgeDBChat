@@ -32,7 +32,10 @@ export const TemplateCard: React.FC<TemplateCardProps> = ({
 
   return (
     <div
-      className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer"
+      className="bg-white border border-gray-200 rounded-lg p-4 cursor-pointer
+        transition-all duration-fast ease-ui
+        hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400
+        active:translate-y-0 active:shadow-level-1"
       onClick={() => onSelect(template)}
     >
       <div className="flex items-start gap-3 mb-3">

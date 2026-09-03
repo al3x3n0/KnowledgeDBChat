@@ -1447,7 +1447,7 @@ const DocumentsPage: React.FC = () => {
     const dangerBtnClass =
       'bg-red-50 text-red-800 border border-red-300 hover:bg-red-100 focus:ring-red-500';
     return (
-      <div className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow duration-200">
+      <div className="bg-white border border-gray-200 rounded-lg p-4 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 duration-200">
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex-1 min-w-0">
             {/* Title and status */}

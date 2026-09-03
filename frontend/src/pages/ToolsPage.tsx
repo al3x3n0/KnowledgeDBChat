@@ -256,7 +256,7 @@ const ToolsPage: React.FC = () => {
             return (
               <div
                 key={tool.id}
-                className={`bg-white rounded-lg border shadow-sm hover:shadow-md transition-shadow ${
+                className={`bg-white rounded-lg border shadow-sm transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 ${
                   !tool.is_enabled ? 'opacity-60' : ''
                 }`}
               >

@@ -34,7 +34,7 @@ const statusTone = (status?: string | null) => {
     case 'blocked':
       return 'bg-amber-100 text-amber-800';
     default:
-      return 'bg-slate-100 text-slate-700';
+      return 'bg-gray-200 text-gray-700';
   }
 };
 
@@ -436,9 +436,9 @@ const STAGE_LANES: Array<{ key: string; label: string }> = [
 ];
 
 const StageCard: React.FC<{ title: string; body?: string | null }> = ({ title, body }) => (
-  <div className="rounded-xl border border-slate-200 bg-white p-4">
-    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{title}</div>
-    <p className="mt-2 text-sm leading-6 text-slate-700">{body || 'No lineage available.'}</p>
+  <div className="rounded-xl border border-gray-200 bg-white p-4">
+    <div className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">{title}</div>
+    <p className="mt-2 text-sm leading-6 text-gray-700">{body || 'No lineage available.'}</p>
   </div>
 );
 
@@ -451,15 +451,15 @@ const NodeListItem: React.FC<{ node: AgentControlRunNode; isSelected: boolean; o
     type="button"
     onClick={onClick}
     className={`w-full rounded-xl border px-4 py-3 text-left transition ${
-      isSelected ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white hover:border-slate-300'
+      isSelected ? 'border-primary-500 bg-primary-500/15 text-primary-700' : 'border-gray-200 bg-white hover:border-gray-300'
     }`}
   >
     <div className="flex items-start justify-between gap-3">
       <div className="flex items-start gap-3">
-        <div className={`mt-0.5 ${isSelected ? 'text-slate-200' : 'text-slate-500'}`}>{kindIcon(node.kind)}</div>
+        <div className={`mt-0.5 ${isSelected ? 'text-gray-700' : 'text-gray-500'}`}>{kindIcon(node.kind)}</div>
         <div>
           <div className="text-sm font-semibold">{node.label}</div>
-          <div className={`mt-1 text-xs ${isSelected ? 'text-slate-300' : 'text-slate-500'}`}>
+          <div className={`mt-1 text-xs ${isSelected ? 'text-gray-600' : 'text-gray-500'}`}>
             {node.kind.replace(/_/g, ' ')}{node.stage ? ` • ${node.stage}` : ''}
           </div>
         </div>
@@ -1119,27 +1119,27 @@ const AgentControlPlanePage: React.FC = () => {
 
   return (
     <div className="space-y-6">
-      <div className="rounded-2xl border border-slate-200 bg-white p-6 shadow-sm">
+      <div className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
         <div className="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
           <div>
-            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">Agent Control Plane</div>
-            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-slate-900">Planner, router, and executor lineage</h1>
-            <p className="mt-2 max-w-3xl text-sm leading-6 text-slate-600">
+            <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">Agent Control Plane</div>
+            <h1 className="mt-2 text-3xl font-semibold tracking-tight text-gray-900">Planner, router, and executor lineage</h1>
+            <p className="mt-2 max-w-3xl text-sm leading-6 text-gray-600">
               Read-only control runs stitched from autonomous jobs, workflow executions, decision trace events, and task memory.
             </p>
           </div>
           <div className="grid gap-3 sm:grid-cols-3">
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Source</div>
-              <select className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2" value={sourceType} onChange={(event) => updateFilter('type', event.target.value)}>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Source</div>
+              <select className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2" value={sourceType} onChange={(event) => updateFilter('type', event.target.value)}>
                 <option value="">All</option>
                 <option value="job">Jobs</option>
                 <option value="workflow">Workflows</option>
               </select>
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Outcome</div>
-              <select className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2" value={outcome} onChange={(event) => updateFilter('outcome', event.target.value)}>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Outcome</div>
+              <select className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2" value={outcome} onChange={(event) => updateFilter('outcome', event.target.value)}>
                 <option value="">All</option>
                 <option value="running">Running</option>
                 <option value="completed">Completed</option>
@@ -1148,8 +1148,8 @@ const AgentControlPlanePage: React.FC = () => {
               </select>
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Routing tier</div>
-              <select className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2" value={routingTier} onChange={(event) => updateFilter('routingTier', event.target.value)}>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Routing tier</div>
+              <select className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2" value={routingTier} onChange={(event) => updateFilter('routingTier', event.target.value)}>
                 <option value="">All</option>
                 <option value="fast">fast</option>
                 <option value="balanced">balanced</option>
@@ -1157,16 +1157,16 @@ const AgentControlPlanePage: React.FC = () => {
               </select>
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Operator review</div>
-              <select className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2" value={hasOperatorReview} onChange={(event) => updateFilter('hasOperatorReview', event.target.value)}>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Operator review</div>
+              <select className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2" value={hasOperatorReview} onChange={(event) => updateFilter('hasOperatorReview', event.target.value)}>
                 <option value="">All</option>
                 <option value="true">Queued only</option>
                 <option value="false">No queued reviews</option>
               </select>
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Review type</div>
-              <select className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2" value={reviewType} onChange={(event) => updateFilter('reviewType', event.target.value)}>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Review type</div>
+              <select className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2" value={reviewType} onChange={(event) => updateFilter('reviewType', event.target.value)}>
                 <option value="">All</option>
                 <option value="follow_up_recommendation">follow_up_recommendation</option>
                 <option value="manual_follow_up_recommendation">manual_follow_up_recommendation</option>
@@ -1177,43 +1177,43 @@ const AgentControlPlanePage: React.FC = () => {
               </select>
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Review status</div>
-              <select className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2" value={reviewStatus} onChange={(event) => updateFilter('reviewStatus', event.target.value)}>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Review status</div>
+              <select className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2" value={reviewStatus} onChange={(event) => updateFilter('reviewStatus', event.target.value)}>
                 <option value="">All</option>
                 <option value="queued">queued</option>
               </select>
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Queue status</div>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Queue status</div>
               <input
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2"
                 value={queueStatus}
                 onChange={(event) => updateFilter('queueStatus', event.target.value)}
                 placeholder="pending_approval, paused, blocked"
               />
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Queue customer</div>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Queue customer</div>
               <input
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2"
                 value={queueCustomer}
                 onChange={(event) => updateFilter('queueCustomer', event.target.value)}
                 placeholder="compiler"
               />
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Queue SLA</div>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Queue SLA</div>
               <input
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2"
                 value={queueSla}
                 onChange={(event) => updateFilter('queueSla', event.target.value)}
                 placeholder="at_risk, overdue"
               />
             </label>
             <label className="text-sm">
-              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-slate-500">Escalation</div>
+              <div className="mb-1 text-xs font-medium uppercase tracking-wide text-gray-500">Escalation</div>
               <input
-                className="w-full rounded-lg border border-slate-300 bg-white px-3 py-2"
+                className="w-full rounded-lg border border-gray-300 bg-white px-3 py-2"
                 value={queueEscalation}
                 onChange={(event) => updateFilter('queueEscalation', event.target.value)}
                 placeholder="medium, high"
@@ -1249,8 +1249,8 @@ const AgentControlPlanePage: React.FC = () => {
                 onClick={() => updateFilter('queueHealthDrilldown', queueHealthDrilldown === value ? '' : value)}
                 className={`rounded-full border px-3 py-1.5 text-sm font-medium ${
                   queueHealthDrilldown === value
-                    ? 'border-slate-900 bg-slate-900 text-white'
-                    : 'border-slate-300 bg-white text-slate-700 hover:border-slate-900'
+                    ? 'border-primary-500 bg-primary-500/15 text-primary-700'
+                    : 'border-gray-300 bg-white text-gray-700 hover:border-primary-500'
                 }`}
               >
                 {label}
@@ -1278,11 +1278,11 @@ const AgentControlPlanePage: React.FC = () => {
         </div>
       </div>
 
-      <div className="rounded-2xl border border-slate-200 bg-white p-4 shadow-sm">
+      <div className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
         <div className="flex flex-wrap items-center gap-3">
           <select
             aria-label="Control-plane saved view"
-            className="rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            className="rounded-lg border border-gray-300 px-3 py-2 text-sm"
             value={selectedViewId}
             onChange={(event) => {
               const viewId = event.target.value;
@@ -1314,16 +1314,16 @@ const AgentControlPlanePage: React.FC = () => {
           </select>
           <input
             aria-label="Control-plane view name"
-            className="min-w-[220px] rounded-lg border border-slate-300 px-3 py-2 text-sm"
+            className="min-w-[220px] rounded-lg border border-gray-300 px-3 py-2 text-sm"
             placeholder="Current view name"
             value={viewNameDraft}
             onChange={(event) => setViewNameDraft(event.target.value)}
           />
-          <label className="inline-flex items-center gap-2 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-700">
+          <label className="inline-flex items-center gap-2 rounded-lg border border-gray-200 bg-gray-100 px-3 py-2 text-sm text-gray-700">
             <input
               aria-label="Default control-plane view"
               type="checkbox"
-              className="h-4 w-4 rounded border-slate-300"
+              className="h-4 w-4 rounded border-gray-300"
               checked={viewIsDefaultDraft}
               onChange={(event) => setViewIsDefaultDraft(event.target.checked)}
             />
@@ -1392,11 +1392,11 @@ const AgentControlPlanePage: React.FC = () => {
       </div>
 
       <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_380px]">
-        <section className="rounded-2xl border border-slate-200 bg-slate-50 p-4 shadow-sm">
+        <section className="rounded-2xl border border-gray-200 bg-gray-100 p-4 shadow-sm">
           <div className="mb-4 flex items-center justify-between">
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">Runs</h2>
-              <p className="text-xs text-slate-500">{filteredRuns.length} visible</p>
+              <h2 className="text-sm font-semibold text-gray-900">Runs</h2>
+              <p className="text-xs text-gray-500">{filteredRuns.length} visible</p>
             </div>
             {runsQuery.isFetching ? <LoadingSpinner size="sm" /> : null}
           </div>
@@ -1407,13 +1407,13 @@ const AgentControlPlanePage: React.FC = () => {
                 key={run.id}
                 onClick={() => selectRun(run)}
                 className={`w-full rounded-xl border px-4 py-3 text-left transition ${
-                  selectedRunId === run.id ? 'border-slate-900 bg-slate-900 text-white' : 'border-slate-200 bg-white hover:border-slate-300'
+                  selectedRunId === run.id ? 'border-primary-500 bg-primary-500/15 text-primary-700' : 'border-gray-200 bg-white hover:border-gray-300'
                 }`}
               >
                 <div className="flex items-center justify-between gap-3">
                   <div className="min-w-0">
                     <div className="truncate text-sm font-semibold">{run.title}</div>
-                    <div className={`mt-1 text-xs ${selectedRunId === run.id ? 'text-slate-300' : 'text-slate-500'}`}>
+                    <div className={`mt-1 text-xs ${selectedRunId === run.id ? 'text-gray-600' : 'text-gray-500'}`}>
                       {run.source_type} • {run.replayability_status.replace(/_/g, ' ')}
                     </div>
                   </div>
@@ -1421,18 +1421,18 @@ const AgentControlPlanePage: React.FC = () => {
                     {run.status}
                   </span>
                 </div>
-                <div className={`mt-3 grid grid-cols-3 gap-2 text-[11px] ${selectedRunId === run.id ? 'text-slate-300' : 'text-slate-500'}`}>
+                <div className={`mt-3 grid grid-cols-3 gap-2 text-[11px] ${selectedRunId === run.id ? 'text-gray-600' : 'text-gray-500'}`}>
                   <div>{run.child_job_count + run.child_execution_count} downstream</div>
                   <div>{run.linked_note_count} notes</div>
                   <div>{run.linked_experiment_count} experiments</div>
                 </div>
                 {Number(run.queued_operator_review_count || 0) > 0 ? (
-                  <div className={`mt-3 flex flex-wrap gap-2 text-[11px] ${selectedRunId === run.id ? 'text-slate-200' : 'text-slate-600'}`}>
+                  <div className={`mt-3 flex flex-wrap gap-2 text-[11px] ${selectedRunId === run.id ? 'text-gray-700' : 'text-gray-600'}`}>
                     <span className={`rounded-full px-2 py-1 font-medium ${selectedRunId === run.id ? 'bg-amber-400/20 text-amber-100' : 'bg-amber-100 text-amber-800'}`}>
                       {run.queued_operator_review_count} queued reviews
                     </span>
                     {Object.entries(run.queued_operator_reviews_by_type || {}).map(([type, count]) => (
-                      <span key={`${run.id}-${type}`} className={`rounded-full px-2 py-1 ${selectedRunId === run.id ? 'bg-white/10 text-slate-100' : 'bg-slate-100 text-slate-700'}`}>
+                      <span key={`${run.id}-${type}`} className={`rounded-full px-2 py-1 ${selectedRunId === run.id ? 'bg-white/10 text-gray-800' : 'bg-gray-200 text-gray-700'}`}>
                         {type}: {count}
                       </span>
                     ))}
@@ -1441,7 +1441,7 @@ const AgentControlPlanePage: React.FC = () => {
               </button>
             ))}
             {!runsQuery.isLoading && filteredRuns.length === 0 ? (
-              <div className="rounded-xl border border-dashed border-slate-300 bg-white px-4 py-8 text-center text-sm text-slate-500">
+              <div className="rounded-xl border border-dashed border-gray-300 bg-white px-4 py-8 text-center text-sm text-gray-500">
                 No control runs match the current filters.
               </div>
             ) : null}
@@ -1449,9 +1449,9 @@ const AgentControlPlanePage: React.FC = () => {
         </section>
 
         <section className="space-y-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             {!selectedRunId && !runsQuery.isLoading ? (
-              <div className="flex min-h-[240px] items-center justify-center text-sm text-slate-500">
+              <div className="flex min-h-[240px] items-center justify-center text-sm text-gray-500">
                 Select a control run to inspect its graph and replay.
               </div>
             ) : detailQuery.isLoading ? (
@@ -1466,13 +1466,13 @@ const AgentControlPlanePage: React.FC = () => {
               <>
                 <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
                   <div>
-                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-slate-500">{detail.run.source_type}</div>
-                    <h2 className="mt-2 text-2xl font-semibold tracking-tight text-slate-900">{detail.run.title}</h2>
-                    <p className="mt-2 text-sm leading-6 text-slate-600">{detail.run.subtitle || 'No root objective summary was recorded.'}</p>
+                    <div className="text-xs font-semibold uppercase tracking-[0.18em] text-gray-500">{detail.run.source_type}</div>
+                    <h2 className="mt-2 text-2xl font-semibold tracking-tight text-gray-900">{detail.run.title}</h2>
+                    <p className="mt-2 text-sm leading-6 text-gray-600">{detail.run.subtitle || 'No root objective summary was recorded.'}</p>
                   </div>
                   <div className="flex flex-wrap gap-2">
                     <span className={`rounded-full px-3 py-1 text-xs font-medium ${statusTone(detail.run.status)}`}>{detail.run.status}</span>
-                    <span className="rounded-full bg-slate-100 px-3 py-1 text-xs font-medium text-slate-700">
+                    <span className="rounded-full bg-gray-200 px-3 py-1 text-xs font-medium text-gray-700">
                       {detail.run.replayability_status.replace(/_/g, ' ')}
                     </span>
                   </div>
@@ -1485,21 +1485,21 @@ const AgentControlPlanePage: React.FC = () => {
                 </div>
 
                 <div className="mt-6 grid gap-4 md:grid-cols-4">
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Created</div>
-                    <div className="mt-2 text-sm text-slate-800">{formatDateTime(detail.run.created_at)}</div>
+                  <div className="rounded-xl border border-gray-200 bg-gray-100 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Created</div>
+                    <div className="mt-2 text-sm text-gray-800">{formatDateTime(detail.run.created_at)}</div>
                   </div>
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Routing</div>
-                    <div className="mt-2 text-sm text-slate-800">{detail.routing?.summary || 'No routing snapshot'}</div>
+                  <div className="rounded-xl border border-gray-200 bg-gray-100 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Routing</div>
+                    <div className="mt-2 text-sm text-gray-800">{detail.routing?.summary || 'No routing snapshot'}</div>
                   </div>
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Memory graph</div>
-                    <div className="mt-2 text-sm text-slate-800">{detail.memory_graph?.stats?.memory_count ?? 0} nodes</div>
+                  <div className="rounded-xl border border-gray-200 bg-gray-100 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Memory graph</div>
+                    <div className="mt-2 text-sm text-gray-800">{detail.memory_graph?.stats?.memory_count ?? 0} nodes</div>
                   </div>
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 p-4">
-                    <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Decision trace</div>
-                    <div className="mt-2 text-sm text-slate-800">{detail.decision_trace.length} persisted events</div>
+                  <div className="rounded-xl border border-gray-200 bg-gray-100 p-4">
+                    <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Decision trace</div>
+                    <div className="mt-2 text-sm text-gray-800">{detail.decision_trace.length} persisted events</div>
                   </div>
                 </div>
               </>
@@ -1508,13 +1508,13 @@ const AgentControlPlanePage: React.FC = () => {
 
           {detail ? (
             <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_320px]">
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                 <div className="mb-4 flex items-center justify-between">
                   <div>
-                    <h3 className="text-sm font-semibold text-slate-900">Graph + Timeline</h3>
-                    <p className="text-xs text-slate-500">Derived nodes and edges for the current run</p>
+                    <h3 className="text-sm font-semibold text-gray-900">Graph + Timeline</h3>
+                    <p className="text-xs text-gray-500">Derived nodes and edges for the current run</p>
                   </div>
-                  <div className="flex items-center gap-2 text-xs text-slate-500">
+                  <div className="flex items-center gap-2 text-xs text-gray-500">
                     <GitFork className="h-4 w-4" />
                     {detail.edges.length} edges
                   </div>
@@ -1523,8 +1523,8 @@ const AgentControlPlanePage: React.FC = () => {
                   {groupedNodes.map((group) => (
                     <div key={group.key} className="space-y-3">
                       <div className="flex items-center justify-between">
-                        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-slate-500">{group.label}</div>
-                        <div className="text-xs text-slate-400">{group.nodes.length} nodes</div>
+                        <div className="text-xs font-semibold uppercase tracking-[0.16em] text-gray-500">{group.label}</div>
+                        <div className="text-xs text-gray-500">{group.nodes.length} nodes</div>
                       </div>
                       <div className="space-y-3">
                         {group.nodes.map((node) => (
@@ -1541,77 +1541,77 @@ const AgentControlPlanePage: React.FC = () => {
                 </div>
               </div>
 
-              <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+              <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
                 <div className="mb-4 flex items-center gap-2">
-                  <Route className="h-4 w-4 text-slate-500" />
-                  <h3 className="text-sm font-semibold text-slate-900">Node Inspector</h3>
+                  <Route className="h-4 w-4 text-gray-500" />
+                  <h3 className="text-sm font-semibold text-gray-900">Node Inspector</h3>
                 </div>
                 {selectedNode ? (
                   <div className="space-y-4">
                     <div>
-                      <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">{selectedNode.kind.replace(/_/g, ' ')}</div>
-                      <div className="mt-1 text-lg font-semibold text-slate-900">{selectedNode.label}</div>
+                      <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">{selectedNode.kind.replace(/_/g, ' ')}</div>
+                      <div className="mt-1 text-lg font-semibold text-gray-900">{selectedNode.label}</div>
                     </div>
                     <dl className="space-y-3 text-sm">
                       <div>
-                        <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Stage</dt>
-                        <dd className="mt-1 text-slate-800">{selectedNode.stage || '—'}</dd>
+                        <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Stage</dt>
+                        <dd className="mt-1 text-gray-800">{selectedNode.stage || '—'}</dd>
                       </div>
                       <div>
-                        <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Timestamp</dt>
-                        <dd className="mt-1 text-slate-800">{formatDateTime(selectedNode.timestamp)}</dd>
+                        <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Timestamp</dt>
+                        <dd className="mt-1 text-gray-800">{formatDateTime(selectedNode.timestamp)}</dd>
                       </div>
                       <div>
-                        <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Metadata</dt>
-                        <dd className="mt-2 overflow-x-auto rounded-xl bg-slate-950 p-3 text-xs leading-6 text-slate-100">
+                        <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Metadata</dt>
+                        <dd className="mt-2 overflow-x-auto rounded-xl bg-gray-100 border border-gray-200 p-3 text-xs leading-6 text-gray-800">
                           <pre>{JSON.stringify(selectedNode.metadata || {}, null, 2)}</pre>
                         </dd>
                       </div>
                       <div>
-                        <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Open in</dt>
+                        <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Open in</dt>
                         <dd className="mt-2 flex flex-wrap gap-2">
                           {selectedNodeLinks.map((link) => (
                             <Link
                               key={`${selectedNode.id}-${link.path}`}
                               to={link.path}
-                              className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900"
+                              className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900"
                             >
                               {link.label}
                             </Link>
                           ))}
                           {selectedNodeLinks.length === 0 ? (
-                            <span className="text-sm text-slate-500">No supported destination for this node yet.</span>
+                            <span className="text-sm text-gray-500">No supported destination for this node yet.</span>
                           ) : null}
                         </dd>
                       </div>
                       <div>
-                        <dt className="text-xs font-medium uppercase tracking-wide text-slate-500">Relations</dt>
+                        <dt className="text-xs font-medium uppercase tracking-wide text-gray-500">Relations</dt>
                         <dd className="mt-2 space-y-3">
                           <div>
-                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Inbound</div>
+                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Inbound</div>
                             <div className="mt-2 space-y-2">
                               {selectedNodeRelations.inbound.map(({ edge, node }) => (
-                                <div key={`${edge.source}-${edge.target}-${edge.relation}`} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                                  <div className="text-sm font-medium text-slate-800">{node?.label || edge.source}</div>
-                                  <div className="text-xs text-slate-500">{edge.relation.replace(/_/g, ' ')}</div>
+                                <div key={`${edge.source}-${edge.target}-${edge.relation}`} className="rounded-lg border border-gray-200 bg-gray-100 px-3 py-2">
+                                  <div className="text-sm font-medium text-gray-800">{node?.label || edge.source}</div>
+                                  <div className="text-xs text-gray-500">{edge.relation.replace(/_/g, ' ')}</div>
                                 </div>
                               ))}
                               {selectedNodeRelations.inbound.length === 0 ? (
-                                <div className="text-sm text-slate-500">No inbound relations.</div>
+                                <div className="text-sm text-gray-500">No inbound relations.</div>
                               ) : null}
                             </div>
                           </div>
                           <div>
-                            <div className="text-xs font-semibold uppercase tracking-wide text-slate-400">Outbound</div>
+                            <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Outbound</div>
                             <div className="mt-2 space-y-2">
                               {selectedNodeRelations.outbound.map(({ edge, node }) => (
-                                <div key={`${edge.source}-${edge.target}-${edge.relation}`} className="rounded-lg border border-slate-200 bg-slate-50 px-3 py-2">
-                                  <div className="text-sm font-medium text-slate-800">{node?.label || edge.target}</div>
-                                  <div className="text-xs text-slate-500">{edge.relation.replace(/_/g, ' ')}</div>
+                                <div key={`${edge.source}-${edge.target}-${edge.relation}`} className="rounded-lg border border-gray-200 bg-gray-100 px-3 py-2">
+                                  <div className="text-sm font-medium text-gray-800">{node?.label || edge.target}</div>
+                                  <div className="text-xs text-gray-500">{edge.relation.replace(/_/g, ' ')}</div>
                                 </div>
                               ))}
                               {selectedNodeRelations.outbound.length === 0 ? (
-                                <div className="text-sm text-slate-500">No outbound relations.</div>
+                                <div className="text-sm text-gray-500">No outbound relations.</div>
                               ) : null}
                             </div>
                           </div>
@@ -1620,7 +1620,7 @@ const AgentControlPlanePage: React.FC = () => {
                     </dl>
                   </div>
                 ) : (
-                  <div className="text-sm text-slate-500">Select a node to inspect its metadata and stage context.</div>
+                  <div className="text-sm text-gray-500">Select a node to inspect its metadata and stage context.</div>
                 )}
               </div>
             </div>
@@ -1628,46 +1628,46 @@ const AgentControlPlanePage: React.FC = () => {
         </section>
 
         <section className="space-y-6">
-          <div className="rounded-2xl border border-slate-200 bg-white p-5 shadow-sm">
+          <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
             <div className="mb-4 flex items-center gap-2">
-              <MemoryStick className="h-4 w-4 text-slate-500" />
-              <h3 className="text-sm font-semibold text-slate-900">Inspector</h3>
+              <MemoryStick className="h-4 w-4 text-gray-500" />
+              <h3 className="text-sm font-semibold text-gray-900">Inspector</h3>
             </div>
             {detail ? (
               <div className="space-y-5">
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Related surfaces</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Related surfaces</div>
                   <div className="mt-3 flex flex-wrap gap-2">
                     {detail.related_links.map((link) => (
                       <Link
                         key={`${link.label}-${link.path}`}
                         to={link.path}
-                        className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900"
+                        className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900"
                       >
                         {link.label}
                       </Link>
                     ))}
                     {detail.related_links.length === 0 ? (
-                      <div className="text-sm text-slate-500">No linked operator surfaces were recorded for this run.</div>
+                      <div className="text-sm text-gray-500">No linked operator surfaces were recorded for this run.</div>
                     ) : null}
                   </div>
                 </div>
 
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Policy snapshot</div>
-                  <div className="mt-2 rounded-xl bg-slate-50 p-4 text-sm text-slate-700">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Policy snapshot</div>
+                  <div className="mt-2 rounded-xl bg-gray-100 p-4 text-sm text-gray-700">
                     <div>Automation profile: {detail.run.automation_profile || '—'}</div>
                     <div className="mt-2">Effective policy: {detail.policy_summary?.effective_policy ? 'Attached' : 'Not recorded'}</div>
                   </div>
                 </div>
 
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Operator review queue</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Operator review queue</div>
                   <div className="mt-3 space-y-3">
-                    <div className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                    <div className="rounded-xl border border-gray-200 bg-gray-100 p-3">
                       <div className="flex flex-col gap-3">
-                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                          <span className="rounded-full bg-white px-2 py-1 font-medium text-slate-700">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                          <span className="rounded-full bg-white px-2 py-1 font-medium text-gray-700">
                             {queueScope === 'global' ? 'Global queue' : 'Selected run queue'}
                           </span>
                           <span>
@@ -1676,10 +1676,10 @@ const AgentControlPlanePage: React.FC = () => {
                           {queueScope === 'global' && globalReviewsQuery.isFetching ? <LoadingSpinner size="sm" /> : null}
                         </div>
                         {queueScope === 'global' ? (
-                          <div className="rounded-lg border border-slate-200 bg-white p-3">
+                          <div className="rounded-lg border border-gray-200 bg-white p-3">
                             <div className="flex flex-col gap-3">
-                              <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
-                                <span className="rounded-full bg-slate-100 px-2 py-1 font-medium text-slate-700">
+                              <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
+                                <span className="rounded-full bg-gray-200 px-2 py-1 font-medium text-gray-700">
                                   Total {globalQueueSummary?.total ?? globalReviewsQuery.data?.total ?? globalReviewItems.length}
                                 </span>
                                 {Object.entries(globalQueueSummary?.by_type || {}).map(([value, count]) => (
@@ -1694,11 +1694,11 @@ const AgentControlPlanePage: React.FC = () => {
                                 ))}
                               </div>
                               <div className="flex flex-wrap items-center gap-2">
-                                <label className="text-xs font-medium text-slate-600">
+                                <label className="text-xs font-medium text-gray-600">
                                   Sort
                                   <select
                                     aria-label="Global queue sort"
-                                    className="ml-2 rounded-lg border border-slate-300 bg-white px-2 py-1 text-sm text-slate-700"
+                                    className="ml-2 rounded-lg border border-gray-300 bg-white px-2 py-1 text-sm text-gray-700"
                                     value={queueSort}
                                     onChange={(event) => updateFilter('queueSort', event.target.value === 'priority' ? '' : event.target.value)}
                                   >
@@ -1753,7 +1753,7 @@ const AgentControlPlanePage: React.FC = () => {
                         {bulkReviewState.itemType ? (
                           <div className="flex flex-wrap items-center gap-2">
                             <input
-                              className="min-w-[220px] rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm"
+                              className="min-w-[220px] rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm"
                               placeholder={
                                 bulkReviewState.itemType === 'follow_up_recommendation'
                                   ? 'Shared note for selected follow-up approvals'
@@ -1792,26 +1792,26 @@ const AgentControlPlanePage: React.FC = () => {
                             ))}
                           </div>
                         ) : (
-                          <div className="text-xs text-slate-600">{bulkReviewState.disabledReason}</div>
+                          <div className="text-xs text-gray-600">{bulkReviewState.disabledReason}</div>
                         )}
                       </div>
                     </div>
                     {activeReviewItems.map((review, index) => (
-                      <div key={`${review.source_kind || 'review'}-${review.source_id || 'unknown'}-${review.opportunity_id || index}`} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div key={`${review.source_kind || 'review'}-${review.source_id || 'unknown'}-${review.opportunity_id || index}`} className="rounded-xl border border-gray-200 bg-gray-100 p-3">
                         <div className="flex items-start justify-between gap-3">
                           <div className="flex min-w-0 items-start gap-3">
                             <div className="pt-1">
                               <input
                                 type="checkbox"
-                                className="rounded border-slate-300"
+                                className="rounded border-gray-300"
                                 checked={!!reviewSelection[buildReviewSelectionKey(review)]}
                                 onChange={() => toggleReviewSelection(review)}
                                 aria-label={`Select control-plane review ${review.title || review.reason_label || review.review_type || index}`}
                               />
                             </div>
                             <div>
-                            <div className="text-sm font-medium text-slate-900">{review.title || review.reason_label || review.review_type || 'Operator review'}</div>
-                            <div className="mt-1 text-xs text-slate-500">
+                            <div className="text-sm font-medium text-gray-900">{review.title || review.reason_label || review.review_type || 'Operator review'}</div>
+                            <div className="mt-1 text-xs text-gray-500">
                               {review.review_type || 'review'} • {review.review_status || 'queued'} • {review.reason_code || 'no reason code'}
                               {review.status ? ` • status ${review.status}` : ''}
                               {review.follow_up_launch_status ? ` • launch ${review.follow_up_launch_status}` : ''}
@@ -1824,13 +1824,13 @@ const AgentControlPlanePage: React.FC = () => {
                           </span>
                         </div>
                         {review.summary ? (
-                          <div className="mt-2 text-sm text-slate-600">{review.summary}</div>
+                          <div className="mt-2 text-sm text-gray-600">{review.summary}</div>
                         ) : null}
                         {review.evidence_summary ? (
-                          <div className="mt-2 text-xs text-slate-500">Evidence: {review.evidence_summary}</div>
+                          <div className="mt-2 text-xs text-gray-500">Evidence: {review.evidence_summary}</div>
                         ) : null}
                         {(review.customer || review.job_name || review.job_type) ? (
-                          <div className="mt-2 text-xs text-slate-500">
+                          <div className="mt-2 text-xs text-gray-500">
                             {review.customer ? <span>Customer: {review.customer}</span> : null}
                             {review.customer && review.job_name ? <span> • </span> : null}
                             {review.job_name ? <span>Job: {review.job_name}</span> : null}
@@ -1839,14 +1839,14 @@ const AgentControlPlanePage: React.FC = () => {
                           </div>
                         ) : null}
                         {queueScope === 'global' && review.run_id ? (
-                          <div className="mt-2 text-xs text-slate-500">
+                          <div className="mt-2 text-xs text-gray-500">
                             Run: {review.run_title || review.run_id}
                             {review.run_source_type ? <span> • {review.run_source_type}</span> : null}
                             {review.run_status ? <span> • {review.run_status}</span> : null}
                           </div>
                         ) : null}
                         {(review.age_minutes !== undefined && review.age_minutes !== null) || review.priority_score !== undefined || review.sla_bucket || review.escalation_level ? (
-                          <div className="mt-2 text-xs text-slate-500">
+                          <div className="mt-2 text-xs text-gray-500">
                             {review.age_minutes !== undefined && review.age_minutes !== null ? <span>Age: {review.age_minutes}m</span> : null}
                             {review.age_minutes !== undefined && review.age_minutes !== null && review.priority_score !== undefined && review.priority_score !== null ? <span> • </span> : null}
                             {review.priority_score !== undefined && review.priority_score !== null ? <span>Urgency: {review.priority_score}</span> : null}
@@ -1857,40 +1857,40 @@ const AgentControlPlanePage: React.FC = () => {
                           </div>
                         ) : null}
                         {review.item_type === 'approval_checkpoint' && review.checkpoint?.action?.tool ? (
-                          <div className="mt-2 text-xs text-slate-500">
+                          <div className="mt-2 text-xs text-gray-500">
                             Pending tool: <span className="font-mono">{String(review.checkpoint.action.tool)}</span>
                           </div>
                         ) : null}
                         {review.item_type === 'approval_checkpoint' && ((review.available_actions || []).includes('edit') || review.can_approve) ? (
-                          <div className="mt-3 rounded-lg border border-slate-200 bg-white p-3">
-                            <div className="text-xs font-medium uppercase tracking-wide text-slate-500">Checkpoint edit</div>
+                          <div className="mt-3 rounded-lg border border-gray-200 bg-white p-3">
+                            <div className="text-xs font-medium uppercase tracking-wide text-gray-500">Checkpoint edit</div>
                             <div className="mt-3 grid gap-3 md:grid-cols-2">
-                              <label className="text-xs font-medium text-slate-600">
+                              <label className="text-xs font-medium text-gray-600">
                                 Tool
                                 <input
                                   aria-label={`Checkpoint tool ${review.title || review.queue_item_key || review.source_id || 'review'}`}
-                                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
                                   value={getCheckpointDraftValue(review).tool}
                                   onChange={(event) => updateCheckpointDraftValue(review, 'tool', event.target.value)}
                                   placeholder="web.search"
                                 />
                               </label>
-                              <label className="text-xs font-medium text-slate-600">
+                              <label className="text-xs font-medium text-gray-600">
                                 Purpose
                                 <input
                                   aria-label={`Checkpoint purpose ${review.title || review.queue_item_key || review.source_id || 'review'}`}
-                                  className="mt-1 w-full rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                                  className="mt-1 w-full rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
                                   value={getCheckpointDraftValue(review).purpose}
                                   onChange={(event) => updateCheckpointDraftValue(review, 'purpose', event.target.value)}
                                   placeholder="Refine compiler regression hypothesis"
                                 />
                               </label>
                             </div>
-                            <label className="mt-3 block text-xs font-medium text-slate-600">
+                            <label className="mt-3 block text-xs font-medium text-gray-600">
                               Params JSON
                               <textarea
                                 aria-label={`Checkpoint params ${review.title || review.queue_item_key || review.source_id || 'review'}`}
-                                className="mt-1 min-h-[120px] w-full rounded-lg border border-slate-300 bg-white px-3 py-2 font-mono text-xs text-slate-700"
+                                className="mt-1 min-h-[120px] w-full rounded-lg border border-gray-300 bg-white px-3 py-2 font-mono text-xs text-gray-700"
                                 value={getCheckpointDraftValue(review).params}
                                 onChange={(event) => updateCheckpointDraftValue(review, 'params', event.target.value)}
                                 placeholder='{"q":"compiler regression"}'
@@ -1899,14 +1899,14 @@ const AgentControlPlanePage: React.FC = () => {
                           </div>
                         ) : null}
                         {review.item_type === 'job_recovery' && summarizeSchedulerState(review.scheduler_state).length > 0 ? (
-                          <div className="mt-2 rounded-lg border border-slate-200 bg-white px-3 py-2 text-xs text-slate-600">
+                          <div className="mt-2 rounded-lg border border-gray-200 bg-white px-3 py-2 text-xs text-gray-600">
                             {summarizeSchedulerState(review.scheduler_state).slice(0, 4).map((line) => (
                               <div key={`${review.queue_item_key || review.source_id || 'review'}-${line}`}>{line}</div>
                             ))}
                           </div>
                         ) : null}
                         {review.follow_up_recommendation_key || review.recommendation_score !== undefined ? (
-                          <div className="mt-2 text-xs text-slate-500">
+                          <div className="mt-2 text-xs text-gray-500">
                             {review.follow_up_recommendation_key ? <span>Recommendation key: {review.follow_up_recommendation_key}</span> : null}
                             {review.follow_up_recommendation_key && review.recommendation_score !== undefined ? <span> • </span> : null}
                             {review.recommendation_score !== undefined ? <span>Score: {review.recommendation_score}</span> : null}
@@ -1916,7 +1916,7 @@ const AgentControlPlanePage: React.FC = () => {
                           <div className="mt-2 text-xs text-amber-700">Blocked: {review.follow_up_block_reason}</div>
                         ) : null}
                         {(review.follow_up_budget_decision || review.follow_up_budget_reason || review.follow_up_customer_budget_decision || review.follow_up_customer_budget_reason) ? (
-                          <div className="mt-2 text-xs text-slate-500">
+                          <div className="mt-2 text-xs text-gray-500">
                             {review.follow_up_budget_decision ? <span>Budget: {review.follow_up_budget_decision}</span> : null}
                             {review.follow_up_budget_decision && review.follow_up_budget_reason ? <span> • </span> : null}
                             {review.follow_up_budget_reason ? <span>{review.follow_up_budget_reason}</span> : null}
@@ -1927,7 +1927,7 @@ const AgentControlPlanePage: React.FC = () => {
                           </div>
                         ) : null}
                         {review.policy_guardrail_action || (review.policy_guardrail_reasons && review.policy_guardrail_reasons.length > 0) ? (
-                          <div className="mt-2 text-xs text-slate-500">
+                          <div className="mt-2 text-xs text-gray-500">
                             {review.policy_guardrail_action ? <span>Guardrail: {review.policy_guardrail_action}</span> : null}
                             {review.policy_guardrail_action && review.policy_guardrail_reasons && review.policy_guardrail_reasons.length > 0 ? <span> • </span> : null}
                             {review.policy_guardrail_reasons && review.policy_guardrail_reasons.length > 0 ? (
@@ -1945,10 +1945,10 @@ const AgentControlPlanePage: React.FC = () => {
                         review.can_cancel ||
                         (review.available_actions || []).includes('apply_guardrail') ? (
                           <div className="mt-3">
-                            <label className="block text-xs font-medium uppercase tracking-wide text-slate-500">
+                            <label className="block text-xs font-medium uppercase tracking-wide text-gray-500">
                               Operator note
                               <textarea
-                                className="mt-2 min-h-[72px] w-full rounded-xl border border-slate-300 bg-white px-3 py-2 text-sm text-slate-700"
+                                className="mt-2 min-h-[72px] w-full rounded-xl border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700"
                                 value={reviewNoteDrafts[buildReviewQueueKey(review)] || ''}
                                 onChange={(event) =>
                                   setReviewNoteDrafts((prev) => ({
@@ -2161,7 +2161,7 @@ const AgentControlPlanePage: React.FC = () => {
                           {review.review_type === 'policy_review' && review.job_id ? (
                             <Link
                               to={buildHealthMonitorPath(review, { includePolicyHistory: true })}
-                              className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900"
+                              className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900"
                             >
                               Compare before/after
                             </Link>
@@ -2169,7 +2169,7 @@ const AgentControlPlanePage: React.FC = () => {
                           {(review.review_type === 'policy_review' || review.review_type === 'budget_review') && review.job_id ? (
                             <Link
                               to={buildHealthMonitorPath(review)}
-                              className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900"
+                              className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900"
                             >
                               Open monitor
                             </Link>
@@ -2179,13 +2179,13 @@ const AgentControlPlanePage: React.FC = () => {
                           review.source_kind === 'portfolio' ? (
                             <Link
                               to={review.action_path}
-                              className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900"
+                              className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900"
                             >
                               Open fleet
                             </Link>
                           ) : null}
                           {review.queue_path ? (
-                            <Link to={review.queue_path} className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900">
+                            <Link to={review.queue_path} className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900">
                               Open in queue
                             </Link>
                           ) : null}
@@ -2200,23 +2200,23 @@ const AgentControlPlanePage: React.FC = () => {
                                 next.delete('queueOffset');
                                 setSearchParams(next);
                               }}
-                              className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900"
+                              className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900"
                             >
                               Open run
                             </button>
                           ) : null}
                           {review.action_path ? (
-                            <Link to={review.action_path} className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900">
+                            <Link to={review.action_path} className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900">
                               Open context
                             </Link>
                           ) : null}
                           {review.note_path ? (
-                            <Link to={review.note_path} className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900">
+                            <Link to={review.note_path} className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900">
                               Open note
                             </Link>
                           ) : null}
                           {review.synthesis_path ? (
-                            <Link to={review.synthesis_path} className="rounded-full border border-slate-300 px-3 py-1.5 text-sm font-medium text-slate-700 hover:border-slate-900 hover:text-slate-900">
+                            <Link to={review.synthesis_path} className="rounded-full border border-gray-300 px-3 py-1.5 text-sm font-medium text-gray-700 hover:border-primary-500 hover:text-gray-900">
                               Open synthesis
                             </Link>
                           ) : null}
@@ -2224,7 +2224,7 @@ const AgentControlPlanePage: React.FC = () => {
                       </div>
                     ))}
                     {activeReviewItems.length === 0 ? (
-                      <div className="text-sm text-slate-500">
+                      <div className="text-sm text-gray-500">
                         {queueScope === 'global'
                           ? 'No queued operator reviews match the active global queue filters.'
                           : detail.queued_operator_reviews.length === 0
@@ -2236,8 +2236,8 @@ const AgentControlPlanePage: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Routing snapshot</div>
-                  <div className="mt-2 rounded-xl bg-slate-50 p-4 text-sm text-slate-700">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Routing snapshot</div>
+                  <div className="mt-2 rounded-xl bg-gray-100 p-4 text-sm text-gray-700">
                     <div>Summary: {detail.routing?.summary || '—'}</div>
                     <div className="mt-1">Provider/model: {[detail.routing?.provider, detail.routing?.model].filter(Boolean).join(' / ') || '—'}</div>
                     <div className="mt-1">Requests with metadata: {detail.routing?.request_count ?? 0}</div>
@@ -2245,8 +2245,8 @@ const AgentControlPlanePage: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Memory graph</div>
-                  <div className="mt-2 rounded-xl bg-slate-50 p-4 text-sm text-slate-700">
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Memory graph</div>
+                  <div className="mt-2 rounded-xl bg-gray-100 p-4 text-sm text-gray-700">
                     <div>Nodes: {detail.memory_graph?.stats?.memory_count ?? 0}</div>
                     <div className="mt-1">Edges: {detail.memory_graph?.stats?.edge_count ?? 0}</div>
                     <div className="mt-1">Jobs represented: {detail.memory_graph?.stats?.job_count ?? 0}</div>
@@ -2254,21 +2254,21 @@ const AgentControlPlanePage: React.FC = () => {
                 </div>
 
                 <div>
-                  <div className="text-xs font-semibold uppercase tracking-wide text-slate-500">Decision trace</div>
+                  <div className="text-xs font-semibold uppercase tracking-wide text-gray-500">Decision trace</div>
                   <div className="mt-3 space-y-3">
                     {detail.decision_trace.slice(0, 8).map((event) => (
-                      <div key={event.event_id} className="rounded-xl border border-slate-200 bg-slate-50 p-3">
+                      <div key={event.event_id} className="rounded-xl border border-gray-200 bg-gray-100 p-3">
                         <div className="flex items-start justify-between gap-3">
                           <div>
-                            <div className="text-sm font-medium text-slate-900">{event.summary}</div>
-                            <div className="mt-1 text-xs text-slate-500">
+                            <div className="text-sm font-medium text-gray-900">{event.summary}</div>
+                            <div className="mt-1 text-xs text-gray-500">
                               {event.decision_type} • {formatDateTime(event.event_time)}
                             </div>
                           </div>
                           {event.deep_link ? (
                             <Link
                               to={resolveDecisionTraceDeepLink(event.deep_link.target_tab, event.deep_link.params)}
-                              className="text-xs font-medium text-slate-700 underline-offset-2 hover:underline"
+                              className="text-xs font-medium text-gray-700 underline-offset-2 hover:underline"
                             >
                               Open
                             </Link>
@@ -2276,12 +2276,12 @@ const AgentControlPlanePage: React.FC = () => {
                         </div>
                       </div>
                     ))}
-                    {detail.decision_trace.length === 0 ? <div className="text-sm text-slate-500">No persisted decision events were linked.</div> : null}
+                    {detail.decision_trace.length === 0 ? <div className="text-sm text-gray-500">No persisted decision events were linked.</div> : null}
                   </div>
                 </div>
               </div>
             ) : (
-              <div className="text-sm text-slate-500">Select a run to see replay, memory, routing, and downstream links.</div>
+              <div className="text-sm text-gray-500">Select a run to see replay, memory, routing, and downstream links.</div>
             )}
           </div>
         </section>

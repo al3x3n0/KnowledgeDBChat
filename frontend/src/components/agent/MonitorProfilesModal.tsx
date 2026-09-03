@@ -241,7 +241,7 @@ export const MonitorProfilesModal: React.FC<MonitorProfilesModalProps> = ({
                 ) : (
                   <div className="flex flex-wrap gap-2">
                     {Object.entries(outcomeCounters).map(([k, v]) => (
-                      <span key={k} className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                      <span key={k} className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
                         {k} {v}
                       </span>
                     ))}

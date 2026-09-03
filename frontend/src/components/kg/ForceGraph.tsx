@@ -808,7 +808,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
               pointerEvents: 'none',
               zIndex: 30,
             }}
-            className="rounded-md border border-slate-200 bg-slate-50/98 shadow-sm px-3 py-2 text-xs text-slate-900"
+            className="rounded-md border border-gray-200 bg-gray-100/98 shadow-sm px-3 py-2 text-xs text-gray-900"
           >
             {tooltip.kind === 'node' ? (
               <div>
@@ -832,9 +832,9 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
 
         {/* Controls */}
         <div style={{ position: 'absolute', right: 8, top: 8 }}>
-          <div className="flex flex-col gap-1 bg-slate-50/98 border border-slate-200 rounded-md shadow-sm p-1 text-slate-900" style={{ zIndex: 20 }}>
+          <div className="flex flex-col gap-1 bg-gray-100/98 border border-gray-200 rounded-md shadow-sm p-1 text-gray-900" style={{ zIndex: 20 }}>
             <button
-              className="px-2 h-8 text-xs rounded hover:bg-slate-100"
+              className="px-2 h-8 text-xs rounded hover:bg-gray-200"
               onClick={() => {
                 setFocusMode((m) => (m === 'neighbors' ? 'node' : m === 'node' ? 'none' : 'neighbors'));
               }}
@@ -844,7 +844,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
               {focusMode === 'neighbors' ? 'Focus: Neigh' : focusMode === 'node' ? 'Focus: Node' : 'Focus: All'}
             </button>
             <button
-              className="px-2 h-8 text-xs rounded hover:bg-slate-100"
+              className="px-2 h-8 text-xs rounded hover:bg-gray-200"
               onClick={() => setEditLayout((v) => !v)}
               title={editLayout ? 'Lock layout' : 'Edit layout (drag nodes)'}
               type="button"
@@ -852,7 +852,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
               {editLayout ? 'Lock' : 'Edit'}
             </button>
             <button
-              className="w-8 h-8 text-sm rounded hover:bg-slate-100"
+              className="w-8 h-8 text-sm rounded hover:bg-gray-200"
               onClick={() => zoomAt(viewportRef.current.scale * 1.2, width / 2, height / 2)}
               title="Zoom in"
               type="button"
@@ -860,7 +860,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
               +
             </button>
             <button
-              className="w-8 h-8 text-sm rounded hover:bg-slate-100"
+              className="w-8 h-8 text-sm rounded hover:bg-gray-200"
               onClick={() => zoomAt(viewportRef.current.scale / 1.2, width / 2, height / 2)}
               title="Zoom out"
               type="button"
@@ -868,7 +868,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
               -
             </button>
             <button
-              className="px-2 h-8 text-xs rounded hover:bg-slate-100"
+              className="px-2 h-8 text-xs rounded hover:bg-gray-200"
               onClick={() => doFitView(60)}
               title="Fit (f)"
               type="button"
@@ -876,7 +876,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
               Fit
             </button>
             <button
-              className="px-2 h-8 text-xs rounded hover:bg-slate-100 disabled:opacity-50"
+              className="px-2 h-8 text-xs rounded hover:bg-gray-200 disabled:opacity-50"
               onClick={() => selectedNodeId && doCenterOnNode(selectedNodeId, Math.min(1.2, maxScale))}
               disabled={!selectedNodeId}
               title="Center on selection"
@@ -885,7 +885,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
               Center
             </button>
             <button
-              className="w-8 h-8 text-xs rounded hover:bg-slate-100"
+              className="w-8 h-8 text-xs rounded hover:bg-gray-200"
               onClick={() => {
                 setScale(1);
                 setTx(0);
@@ -896,7 +896,7 @@ const ForceGraph = React.forwardRef<ForceGraphHandle, ForceGraphProps>(
             >
               1:1
             </button>
-            <div className="text-[11px] text-slate-600 text-center px-1 py-0.5 select-none">
+            <div className="text-[11px] text-gray-600 text-center px-1 py-0.5 select-none">
               {Math.round(scale * 100)}%
             </div>
           </div>

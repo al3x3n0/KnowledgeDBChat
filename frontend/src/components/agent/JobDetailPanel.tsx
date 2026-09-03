@@ -1927,7 +1927,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 </Button>
               </div>
             </div>
-            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+            <div className="bg-gray-100 border border-gray-200 rounded-lg p-3">
               {!showStepEvents ? (
                 <div className="text-xs text-gray-500">Step events load on demand.</div>
               ) : loadingStepEvents ? (
@@ -1951,11 +1951,11 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                         const evNote = ev?.note ? ` • ${String(ev.note).slice(0, 120)}` : '';
                         const evAt = ev?.at ? new Date(String(ev.at)).toLocaleString() : '';
                         return (
-                          <div key={`${idx}-${String(ev?.at || '')}-${String(ev?.type || '')}`} className="text-xs text-slate-700 bg-white border border-slate-200 rounded p-2">
-                            <div className="font-medium text-slate-800">
+                          <div key={`${idx}-${String(ev?.at || '')}-${String(ev?.type || '')}`} className="text-xs text-gray-700 bg-white border border-gray-200 rounded p-2">
+                            <div className="font-medium text-gray-800">
                               {evType}{evStep}{evTool}
                             </div>
-                            <div className="text-slate-600">
+                            <div className="text-gray-600">
                               {evAt}
                               {ev?.iteration !== undefined ? ` • iter ${Number(ev.iteration || 0)}` : ''}
                               {ev?.plan_step_index !== undefined && Number(ev.plan_step_index) >= 0 ? ` • plan idx ${Number(ev.plan_step_index)}` : ''}
@@ -2115,8 +2115,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 <Layers className="w-4 h-4" />
                 Swarm Summary
               </h3>
-              <div className="bg-slate-50 rounded-lg p-3 space-y-2">
-                <div className="flex flex-wrap gap-3 text-xs text-slate-600">
+              <div className="bg-gray-100 rounded-lg p-3 space-y-2">
+                <div className="flex flex-wrap gap-3 text-xs text-gray-600">
                   <span>Roles: {Number(swarmSummary?.role_count || 0)}</span>
                   <span>Siblings: {Number(swarmSummary?.terminal_siblings || 0)}/{Number(swarmSummary?.expected_siblings || 0)}</span>
                   <span>Consensus: {Number(swarmSummary?.consensus_count || 0)}</span>
@@ -2126,12 +2126,12 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                   )}
                 </div>
                 {Array.isArray(swarmSummary?.roles) && swarmSummary.roles.length > 0 && (
-                  <div className="text-xs text-slate-700">
+                  <div className="text-xs text-gray-700">
                     Roles: {swarmSummary.roles.slice(0, 8).join(', ')}
                   </div>
                 )}
                 {(swarmSummary?.winning_role || swarmSummary?.repair_chain_job_id) && (
-                  <div className="flex flex-wrap gap-2 text-xs text-slate-700">
+                  <div className="flex flex-wrap gap-2 text-xs text-gray-700">
                     {swarmSummary?.winning_role ? (
                       <span className="px-2 py-1 rounded-full bg-orange-100 text-orange-800">
                         Winning role: {String(swarmSummary.winning_role)}
@@ -2145,8 +2145,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                   </div>
                 )}
                 {swarmSummary?.review_state ? (
-                  <div className="flex flex-wrap gap-2 text-xs text-slate-700">
-                    <span className="px-2 py-1 rounded-full bg-slate-200 text-slate-800">
+                  <div className="flex flex-wrap gap-2 text-xs text-gray-700">
+                    <span className="px-2 py-1 rounded-full bg-gray-200 text-gray-800">
                       Review state: {String(swarmSummary.review_state).replace(/_/g, ' ')}
                     </span>
                     {swarmSummary?.tie_breaker_job_id ? (
@@ -2157,17 +2157,17 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                   </div>
                 ) : null}
                 {swarmSummary?.promotion_reason ? (
-                  <div className="text-xs text-slate-700">
+                  <div className="text-xs text-gray-700">
                     Promotion: {String(swarmSummary.promotion_reason)}
                   </div>
                 ) : null}
                 {swarmReviewReason ? (
-                  <div className="text-xs text-slate-700">
+                  <div className="text-xs text-gray-700">
                     Review: {swarmReviewReason}
                   </div>
                 ) : null}
                 {(swarmSummary?.top_file_cluster || swarmSummary?.top_command_cluster) ? (
-                  <div className="flex flex-wrap gap-2 text-xs text-slate-700">
+                  <div className="flex flex-wrap gap-2 text-xs text-gray-700">
                     {swarmSummary?.top_file_cluster ? (
                       <span className="px-2 py-1 rounded-full bg-sky-100 text-sky-800">
                         File cluster: {String((swarmSummary.top_file_cluster as any)?.cluster || 'unknown')} · {Number((swarmSummary.top_file_cluster as any)?.support_count || 0)}
@@ -2182,8 +2182,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 ) : null}
                 {Array.isArray(swarmSummary?.candidate_paths) && swarmSummary.candidate_paths.length > 0 && (
                   <div>
-                    <div className="text-xs font-medium text-slate-700 mb-1">Candidate paths</div>
-                    <ul className="text-xs text-slate-700 space-y-2">
+                    <div className="text-xs font-medium text-gray-700 mb-1">Candidate paths</div>
+                    <ul className="text-xs text-gray-700 space-y-2">
                       {swarmSummary.candidate_paths.slice(0, 3).map((row: any, idx: number) => {
                         const suspectFiles = Array.isArray(row?.suspect_files) ? row.suspect_files : [];
                         return (
@@ -2218,8 +2218,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 )}
                 {Array.isArray(swarmSummary?.recommended_commands) && swarmSummary.recommended_commands.length > 0 && (
                   <div>
-                    <div className="text-xs font-medium text-slate-700 mb-1">Recommended commands</div>
-                    <ul className="text-xs text-slate-700 space-y-1">
+                    <div className="text-xs font-medium text-gray-700 mb-1">Recommended commands</div>
+                    <ul className="text-xs text-gray-700 space-y-1">
                       {swarmSummary.recommended_commands.slice(0, 3).map((command: string, idx: number) => (
                         <li key={`${idx}-${command.slice(0, 24)}`}>- {command}</li>
                       ))}
@@ -2228,8 +2228,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 )}
                 {Array.isArray(swarmSummary?.consensus_findings) && swarmSummary.consensus_findings.length > 0 && (
                   <div>
-                    <div className="text-xs font-medium text-slate-700 mb-1">Top consensus findings</div>
-                    <ul className="text-xs text-slate-700 space-y-1">
+                    <div className="text-xs font-medium text-gray-700 mb-1">Top consensus findings</div>
+                    <ul className="text-xs text-gray-700 space-y-1">
                       {swarmSummary.consensus_findings.slice(0, 4).map((finding: string, idx: number) => (
                         <li key={`${idx}-${finding.slice(0, 24)}`}>- {finding}</li>
                       ))}
@@ -2238,8 +2238,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 )}
                 {Array.isArray(swarmSummary?.conflicts) && swarmSummary.conflicts.length > 0 && (
                   <div>
-                    <div className="text-xs font-medium text-slate-700 mb-1">Conflicts</div>
-                    <ul className="text-xs text-slate-700 space-y-1">
+                    <div className="text-xs font-medium text-gray-700 mb-1">Conflicts</div>
+                    <ul className="text-xs text-gray-700 space-y-1">
                       {swarmSummary.conflicts.slice(0, 3).map((c: any, idx: number) => (
                         <li key={`${idx}-${String(c?.type || 'conflict')}`}>
                           - {String(c?.description || c?.type || 'Conflict').slice(0, 220)}
@@ -2250,8 +2250,8 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 )}
                 {Array.isArray(swarmSummary?.action_plan) && swarmSummary.action_plan.length > 0 && (
                   <div>
-                    <div className="text-xs font-medium text-slate-700 mb-1">Action plan</div>
-                    <ul className="text-xs text-slate-700 space-y-1">
+                    <div className="text-xs font-medium text-gray-700 mb-1">Action plan</div>
+                    <ul className="text-xs text-gray-700 space-y-1">
                       {swarmSummary.action_plan.slice(0, 4).map((step: any, idx: number) => (
                         <li key={`${idx}-${String(step?.action || 'step')}`}>
                           - {String(step?.action || '').slice(0, 220)}
@@ -2284,7 +2284,7 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                     </span>
                   ) : null}
                   {swarmOutcomeCase.repair_status ? (
-                    <span className="px-2 py-1 rounded-full bg-slate-100 text-slate-700">
+                    <span className="px-2 py-1 rounded-full bg-gray-200 text-gray-700">
                       Repair: {humanizeSwarmOutcome(swarmOutcomeCase.repair_status)}
                     </span>
                   ) : null}

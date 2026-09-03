@@ -245,13 +245,13 @@ const WorkflowsPage: React.FC = () => {
                 <div className="text-xs font-semibold uppercase tracking-wide text-sky-700">Execution Drilldown</div>
                 {selectedExecution ? (
                   <>
-                    <h2 className="mt-2 text-lg font-semibold text-slate-900">
+                    <h2 className="mt-2 text-lg font-semibold text-gray-900">
                       {selectedExecutionWorkflow?.name || 'Workflow execution'} · {selectedExecution.id}
                     </h2>
-                    <div className="mt-2 text-sm text-slate-700">
+                    <div className="mt-2 text-sm text-gray-700">
                       Status: <span className="font-medium">{selectedExecution.status}</span> · Trigger: {selectedExecution.trigger_type} · Progress: {selectedExecution.progress}%
                     </div>
-                    <div className="mt-1 text-sm text-slate-600">
+                    <div className="mt-1 text-sm text-gray-600">
                       Current node: {selectedExecution.current_node_id || '—'} · Started: {selectedExecution.started_at ? formatDate(selectedExecution.started_at) : '—'}
                     </div>
                     {selectedExecution.error ? (
@@ -259,7 +259,7 @@ const WorkflowsPage: React.FC = () => {
                     ) : null}
                   </>
                 ) : (
-                  <div className="mt-2 text-sm text-slate-600">Execution not found or no longer available.</div>
+                  <div className="mt-2 text-sm text-gray-600">Execution not found or no longer available.</div>
                 )}
               </div>
               {selectedExecutionWorkflow ? (

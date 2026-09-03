@@ -3076,7 +3076,7 @@ const ResearchNotesPage: React.FC = () => {
                                             </span>
                                           ) : null}
                                           {finalPhase ? (
-                                            <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                                            <span className="px-2 py-0.5 rounded-full bg-gray-200 text-gray-700 border border-gray-200">
                                               Final {finalPhase}
                                             </span>
                                           ) : null}
@@ -3228,7 +3228,7 @@ const ResearchNotesPage: React.FC = () => {
                                         </details>
                                       ) : null}
                                       {isScientificValidation && operatorActions.length > 0 ? (
-                                        <div className="mt-2 text-[11px] text-slate-700 border border-slate-200 rounded bg-slate-50 p-2">
+                                        <div className="mt-2 text-[11px] text-gray-700 border border-gray-200 rounded bg-gray-100 p-2">
                                           <div className="font-medium mb-1">Run control history</div>
                                           <ul className="space-y-1">
                                             {operatorActions.slice(-3).reverse().map((actionRow, idx) => (
@@ -3527,7 +3527,7 @@ const ResearchNotesPage: React.FC = () => {
                                   {isScientificValidation ? (
                                     <div className="mt-2">
                                       <input
-                                        className="w-full border border-slate-200 rounded px-2 py-1 text-[11px]"
+                                        className="w-full border border-gray-200 rounded px-2 py-1 text-[11px]"
                                         placeholder="Operator note for pause/cancel/retry/requeue"
                                         value={scientificActionNote}
                                         onChange={(e) =>

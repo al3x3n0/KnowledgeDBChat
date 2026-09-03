@@ -50,12 +50,12 @@ const renderSection = (job: Partial<AgentJob>) =>
 it('shows a coding run its patch, with no research artifact in sight', () => {
   // The regression: this job has no customer profile, no document artifact,
   // no reading list and no arXiv source. It used to render nothing.
-  const { container } = renderSection({
+  renderSection({
     results: { code_patch: { proposal_id: 'p-42', title: 'Fix the off-by-one' } } as any,
     output_artifacts: [{ type: 'code_patch_proposal', id: 'p-42', title: 'Fix the off-by-one' }] as any,
   });
 
-  expect(container.querySelector('div')).not.toBeNull();
+  expect(screen.getByText('Run output')).toBeInTheDocument();
   expect(screen.getByText('Code patch')).toBeInTheDocument();
   expect(screen.getByText('Fix the off-by-one')).toBeInTheDocument();
   expect(screen.getByText('p-42')).toBeInTheDocument();

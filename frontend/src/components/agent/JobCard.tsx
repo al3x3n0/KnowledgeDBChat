@@ -267,7 +267,7 @@ export const JobCard: React.FC<JobCardProps> = ({
           operatorInterventionSummary.latestLabel) && (
           <div className="flex flex-wrap items-center gap-1.5 mt-1 mb-2">
             {latestExperimentSummary.finalPhase ? (
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-50 text-slate-700 border border-slate-100">
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 text-gray-700 border border-gray-200">
                 Final {latestExperimentSummary.finalPhase}
               </span>
             ) : null}
@@ -373,7 +373,7 @@ export const JobCard: React.FC<JobCardProps> = ({
               </span>
             ) : null}
             {cardDomainNoteCount > 0 ? (
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-50 text-slate-700 border border-slate-100">
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 text-gray-700 border border-gray-200">
                 Notes {cardDomainNoteCount}
               </span>
             ) : null}
@@ -395,7 +395,7 @@ export const JobCard: React.FC<JobCardProps> = ({
               </span>
             ) : null}
             {cardExecutionPlan.length > 0 ? (
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-50 text-slate-700 border border-slate-100">
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-100 text-gray-700 border border-gray-200">
                 Plan {cardExecutionPlan.length} steps
               </span>
             ) : null}
@@ -439,7 +439,7 @@ export const JobCard: React.FC<JobCardProps> = ({
               </span>
             ) : null}
             {['needs_review', 'insufficient_swarm_consensus', 'consensus_failed'].includes(String(swarmSummary?.review_state || '').trim()) ? (
-              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-slate-100 text-slate-700 border border-slate-200">
+              <span className="px-2 py-0.5 rounded-full text-[11px] font-medium bg-gray-200 text-gray-700 border border-gray-200">
                 Needs review
               </span>
             ) : null}
@@ -631,7 +631,7 @@ export const JobCard: React.FC<JobCardProps> = ({
               </span>
             )}
             {cardMemoryExtraction?.parsed_count !== undefined && (
-              <span className="px-2 py-0.5 rounded-full text-[11px] bg-slate-50 text-slate-700 border border-slate-100">
+              <span className="px-2 py-0.5 rounded-full text-[11px] bg-gray-100 text-gray-700 border border-gray-200">
                 Parsed {Number(cardMemoryExtraction.parsed_count || 0)}
               </span>
             )}

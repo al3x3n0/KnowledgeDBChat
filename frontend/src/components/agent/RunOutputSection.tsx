@@ -253,7 +253,7 @@ export const RunOutputSection: React.FC<RunOutputSectionProps> = ({
             <div className="mt-2 space-y-3 text-xs text-gray-700">
               <div className="flex flex-wrap gap-1.5">
                 {codePatchExecution.mode ? (
-                  <span className="px-2 py-0.5 rounded-full bg-slate-50 text-slate-700 border border-slate-100">
+                  <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
                     {String(codePatchExecution.mode)}
                   </span>
                 ) : null}
@@ -390,7 +390,7 @@ export const RunOutputSection: React.FC<RunOutputSectionProps> = ({
                         <div className="flex items-center justify-between gap-2">
                           <div className="font-medium text-gray-800">{String(step?.title || `Step ${idx + 1}`)}</div>
                           {step?.status ? (
-                            <span className="px-2 py-0.5 rounded-full bg-slate-50 text-slate-700 border border-slate-100">
+                            <span className="px-2 py-0.5 rounded-full bg-gray-100 text-gray-700 border border-gray-200">
                               {String(step.status)}
                             </span>
                           ) : null}
@@ -458,7 +458,7 @@ export const RunOutputSection: React.FC<RunOutputSectionProps> = ({
                     </div>
                     <div className="mt-2 flex flex-wrap gap-1 text-[11px]">
                       {finalPhase ? (
-                        <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                        <span className="px-2 py-0.5 rounded-full bg-gray-200 text-gray-700 border border-gray-200">
                           Final {finalPhase}
                         </span>
                       ) : null}

@@ -534,8 +534,8 @@ const CollaborationSummaryPanel: React.FC<{
   const assigneeList = assigneeUsers.length > 0 ? assigneeUsers : [];
 
   return (
-    <div className="mt-3 rounded-lg border border-slate-200 bg-slate-50 p-3">
-      <div className="flex flex-wrap gap-2 text-xs text-slate-700">
+    <div className="mt-3 rounded-lg border border-gray-200 bg-gray-100 p-3">
+      <div className="flex flex-wrap gap-2 text-xs text-gray-700">
         <span>Owner {ownerLabel}</span>
         {assigneeLabel ? <span>Assignee {assigneeLabel}</span> : null}
         {assignedByLabel ? <span>Assigned by {assignedByLabel}</span> : null}
@@ -573,7 +573,7 @@ const CollaborationSummaryPanel: React.FC<{
             onChange={(e) => onNoteChange(e.target.value)}
           />
           <div className="flex items-center justify-between gap-2">
-            <div className="text-xs text-slate-600">Note {noteText ? 'saved locally until you click save' : 'optional'}</div>
+            <div className="text-xs text-gray-600">Note {noteText ? 'saved locally until you click save' : 'optional'}</div>
             {onNoteSave ? (
               <Button size="sm" variant="ghost" onClick={onNoteSave}>
                 {noteSaveLabel}
@@ -582,7 +582,7 @@ const CollaborationSummaryPanel: React.FC<{
           </div>
         </div>
       ) : noteText ? (
-        <div className="mt-2 text-xs text-slate-600">Note: {noteText}</div>
+        <div className="mt-2 text-xs text-gray-600">Note: {noteText}</div>
       ) : null}
     </div>
   );
@@ -681,7 +681,7 @@ const decisionTraceSeverityClasses = (value?: string | null) => {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'high') return 'bg-rose-100 text-rose-700';
   if (normalized === 'medium') return 'bg-amber-100 text-amber-800';
-  return 'bg-slate-100 text-slate-700';
+  return 'bg-gray-200 text-gray-700';
 };
 
 const decisionTraceTriageClasses = (value?: string | null) => {
@@ -749,7 +749,7 @@ const scientificValidationStatusClasses = (status?: string | null) => {
   if (normalized === 'blocked' || normalized === 'failed') return 'bg-rose-100 text-rose-700';
   if (normalized === 'running' || normalized === 'paused' || normalized === 'provisioning' || normalized === 'queued') return 'bg-amber-100 text-amber-800';
   if (normalized === 'succeeded' || normalized === 'completed') return 'bg-emerald-100 text-emerald-700';
-  return 'bg-slate-100 text-slate-700';
+  return 'bg-gray-200 text-gray-700';
 };
 
 const synthesisStatusClasses = (status?: string | null) => {
@@ -757,7 +757,7 @@ const synthesisStatusClasses = (status?: string | null) => {
   if (normalized === 'completed') return 'bg-emerald-100 text-emerald-700';
   if (normalized === 'failed' || normalized === 'cancelled') return 'bg-rose-100 text-rose-700';
   if (normalized) return 'bg-amber-100 text-amber-800';
-  return 'bg-slate-100 text-slate-700';
+  return 'bg-gray-200 text-gray-700';
 };
 
 
@@ -768,7 +768,7 @@ const researchOpportunityStageClass = (value?: string | null) => {
   if (normalized === 'blocked' || normalized === 'suppressed') return 'bg-rose-100 text-rose-700';
   if (normalized === 'planned' || normalized === 'accepted') return 'bg-blue-100 text-blue-700';
   if (normalized === 'validating') return 'bg-amber-100 text-amber-800';
-  return 'bg-slate-100 text-slate-700';
+  return 'bg-gray-200 text-gray-700';
 };
 
 const formatOpportunityDelta = (nextValue: unknown, previousValue: unknown) => {
@@ -827,9 +827,9 @@ const renderOpportunityFollowUpOutcomeMeta = (row: Record<string, any>) => {
     ? 'bg-emerald-100 text-emerald-700'
     : outcomeStatus === 'failed' || outcomeStatus === 'cancelled'
       ? 'bg-rose-100 text-rose-700'
-      : 'bg-slate-100 text-slate-700';
+      : 'bg-gray-200 text-gray-700';
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-600">
       <span className={`px-2 py-0.5 rounded ${badgeClass}`}>
         Outcome {humanizeDecisionTraceValue(outcomeStatus)}
       </span>
@@ -856,10 +856,10 @@ const renderOpportunityReevaluationReviewMeta = (
     onNavigate(url);
   };
   const badgeClass = outcomeStatus === 'dismissed'
-    ? 'bg-slate-100 text-slate-700'
+    ? 'bg-gray-200 text-gray-700'
     : 'bg-violet-100 text-violet-700';
   return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-slate-600">
+    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-600">
       <span className={`px-2 py-0.5 rounded ${badgeClass}`}>
         Reevaluation {humanizeDecisionTraceValue(outcomeStatus)}
       </span>
@@ -2993,13 +2993,13 @@ const AutonomousAgentsPage: React.FC = () => {
                   {!run.completed_at && run.created_at ? ` · Created ${new Date(String(run.created_at)).toLocaleString()}` : ''}
                 </div>
                 {latestOperatorAction ? (
-                  <div className="mt-1 text-slate-600">
+                  <div className="mt-1 text-gray-600">
                     Latest action: {latestOperatorAction}
                     {latestOperatorOutcome ? ` · ${latestOperatorOutcome}` : ''}
                   </div>
                 ) : null}
                 {Number(run.retry_count || 0) > 0 || run.parent_run_id || run.latest_child_run_id ? (
-                  <div className="mt-1 text-slate-500">
+                  <div className="mt-1 text-gray-500">
                     Retry lineage
                     {Number(run.retry_count || 0) > 0 ? ` · attempt ${Number(run.retry_count || 0)}` : ''}
                     {run.parent_run_id ? ` · parent ${String(run.parent_run_id)}` : ''}
@@ -4751,9 +4751,9 @@ const AutonomousAgentsPage: React.FC = () => {
       && String(opportunityNoteDraft.ownerId) === String(context?.ownerId || '')
       && String(opportunityNoteDraft.opportunityId) === String(row.opportunity_id || '');
     return (
-      <div className="mt-2 rounded border border-slate-200 bg-slate-50 p-2 text-[11px] text-slate-700">
+      <div className="mt-2 rounded border border-gray-200 bg-gray-100 p-2 text-[11px] text-gray-700">
         <div className="flex items-center justify-between gap-2">
-          <div className="font-medium text-slate-800">{resolveOpportunityExplanationHeading(row)}</div>
+          <div className="font-medium text-gray-800">{resolveOpportunityExplanationHeading(row)}</div>
           <Button
             size="sm"
             variant="ghost"
@@ -4766,7 +4766,7 @@ const AutonomousAgentsPage: React.FC = () => {
           <div className="mt-2 space-y-1">
             {explanationRows.map((item) => (
               <div key={`${rowKey}-${item.label}`}>
-                <span className="font-medium text-slate-800">{item.label}:</span>{' '}
+                <span className="font-medium text-gray-800">{item.label}:</span>{' '}
                 <span>{item.value}</span>
               </div>
             ))}
@@ -6218,7 +6218,7 @@ const AutonomousAgentsPage: React.FC = () => {
             <div className="min-w-0">
               <div>{String(row.title || row.canonical_key || 'Manual recommendation')}{row.reason_code ? ` · ${String(row.reason_code)}` : ''}</div>
               {bulkAction ? (
-                <div className="mt-1 text-[11px] text-slate-500">
+                <div className="mt-1 text-[11px] text-gray-500">
                   Bulk action {bulkAction.action === 'relaunch_follow_up' ? 'relaunch' : 'launch'} ready
                 </div>
               ) : null}
@@ -6322,7 +6322,7 @@ const AutonomousAgentsPage: React.FC = () => {
             <div className="min-w-0">
               <div>{String(row.title || row.canonical_key || 'Suppressed relaunch')} · {String(row.reason_code || 'suppressed').replaceAll('_', ' ')}</div>
               {canRelaunch ? (
-                <div className="mt-1 text-[11px] text-slate-500">
+                <div className="mt-1 text-[11px] text-gray-500">
                   Bulk action relaunch ready
                 </div>
               ) : null}
@@ -6478,8 +6478,8 @@ const AutonomousAgentsPage: React.FC = () => {
         });
       };
       return (
-        <div className="rounded border border-slate-200 bg-slate-50 p-2 space-y-2">
-          <div className="flex flex-wrap items-center gap-2 text-xs text-slate-600">
+        <div className="rounded border border-gray-200 bg-gray-100 p-2 space-y-2">
+          <div className="flex flex-wrap items-center gap-2 text-xs text-gray-600">
             <Button
               size="sm"
               variant="ghost"
@@ -7264,13 +7264,13 @@ const AutonomousAgentsPage: React.FC = () => {
               <div className="min-w-0">
                 <div className="flex items-center gap-2 flex-wrap">
                   <div className="font-medium text-gray-900">{String(profile.name)}</div>
-                  <span className={`text-[11px] px-2 py-0.5 rounded ${profile.enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-600'}`}>
+                  <span className={`text-[11px] px-2 py-0.5 rounded ${profile.enabled ? 'bg-emerald-100 text-emerald-700' : 'bg-gray-200 text-gray-600'}`}>
                     {profile.enabled ? 'enabled' : 'disabled'}
                   </span>
                   <span className="text-[11px] px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">
                     {String(profile.track_type || 'generic')}
                   </span>
-                  <span className="text-[11px] px-2 py-0.5 rounded bg-slate-100 text-slate-700">
+                  <span className="text-[11px] px-2 py-0.5 rounded bg-gray-200 text-gray-700">
                     {profile.system_managed ? 'system' : 'custom'}
                   </span>
                   {profile.is_default ? (
@@ -7493,19 +7493,19 @@ const AutonomousAgentsPage: React.FC = () => {
       </div>
 
       {showSystemMap && (
-        <div className="mb-6 rounded-lg border border-slate-200 bg-slate-50 p-4">
+        <div className="mb-6 rounded-lg border border-gray-200 bg-gray-100 p-4">
           <div className="flex items-start justify-between gap-4">
             <div>
-              <h2 className="text-sm font-semibold text-slate-900">System Map</h2>
-              <p className="mt-1 text-sm text-slate-600">
+              <h2 className="text-sm font-semibold text-gray-900">System Map</h2>
+              <p className="mt-1 text-sm text-gray-600">
                 Current operator surface and runtime ownership. Canonical doc: <code>docs/ARCHITECTURE_ASCII.md</code>
               </p>
             </div>
-            <span className="rounded bg-white px-2 py-1 text-xs text-slate-500 border border-slate-200">
+            <span className="rounded bg-white px-2 py-1 text-xs text-gray-500 border border-gray-200">
               Canonical autonomy: <code>automation_profile</code> / <code>automation_policy</code> / <code>effective_policy</code>
             </span>
           </div>
-          <pre className="mt-4 overflow-x-auto rounded border border-slate-200 bg-white p-3 text-xs leading-5 text-slate-700">
+          <pre className="mt-4 overflow-x-auto rounded border border-gray-200 bg-white p-3 text-xs leading-5 text-gray-700">
             {AUTONOMOUS_SYSTEM_MAP}
           </pre>
         </div>
@@ -7750,7 +7750,7 @@ const AutonomousAgentsPage: React.FC = () => {
           <Clock className="w-4 h-4" />
           Decision Trace
           {decisionTraceData?.total ? (
-            <span className="ml-1 text-xs bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+            <span className="ml-1 text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
               {decisionTraceData.total}
             </span>
           ) : null}
@@ -7818,7 +7818,7 @@ const AutonomousAgentsPage: React.FC = () => {
           <Settings className="w-4 h-4" />
           Swarm Profiles
           {codingSwarmProfiles.length > 0 ? (
-            <span className="ml-1 text-xs bg-slate-100 text-slate-700 px-1.5 py-0.5 rounded">
+            <span className="ml-1 text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
               {codingSwarmProfiles.length}
             </span>
           ) : null}
@@ -8110,7 +8110,7 @@ const AutonomousAgentsPage: React.FC = () => {
               </div>
             ) : (
               <div className="space-y-3 overflow-y-auto flex-1 pr-1">
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3">
+                <div className="bg-gray-100 border border-gray-200 rounded-lg p-3">
                   <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                     <div className="flex flex-wrap items-center gap-2">
                       <Button size="sm" variant="ghost" onClick={selectVisibleQueueItems}>
@@ -8119,7 +8119,7 @@ const AutonomousAgentsPage: React.FC = () => {
                       <Button size="sm" variant="ghost" onClick={clearQueueSelection}>
                         Clear Selection
                       </Button>
-                      <span className="text-xs text-slate-600">
+                      <span className="text-xs text-gray-600">
                         Selected {selectedQueueItems.length} of {visibleQueueItems.length}
                       </span>
                     </div>
@@ -8183,7 +8183,7 @@ const AutonomousAgentsPage: React.FC = () => {
                         ))}
                       </div>
                     ) : (
-                      <div className="text-xs text-slate-600">
+                      <div className="text-xs text-gray-600">
                         {queueBulkState.disabledReason}
                       </div>
                     )}
@@ -8222,7 +8222,7 @@ const AutonomousAgentsPage: React.FC = () => {
                             </span>
                           ) : null}
                           {item.reason_label ? (
-                            <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                            <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
                               {item.reason_label}
                             </span>
                           ) : null}
@@ -8243,7 +8243,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                 ? 'bg-rose-50 text-rose-700 border border-rose-200'
                                 : item.escalation_level === 'medium'
                                   ? 'bg-amber-50 text-amber-700 border border-amber-200'
-                                  : 'bg-slate-50 text-slate-600 border border-slate-200'
+                                  : 'bg-gray-100 text-gray-600 border border-gray-200'
                             }`}>
                               {item.escalation_level}
                             </span>
@@ -8614,7 +8614,7 @@ const AutonomousAgentsPage: React.FC = () => {
                   <div className="flex flex-wrap gap-2">
                     {(summarizeTraceAnalyticsBuckets(decisionTraceAnalyticsData?.top_decision_types) || []).length ? (
                       summarizeTraceAnalyticsBuckets(decisionTraceAnalyticsData?.top_decision_types).map((value) => (
-                        <span key={value} className="inline-flex items-center rounded-full bg-slate-100 px-2 py-1 text-xs text-slate-700">
+                        <span key={value} className="inline-flex items-center rounded-full bg-gray-200 px-2 py-1 text-xs text-gray-700">
                           {value}
                         </span>
                       ))
@@ -9498,7 +9498,7 @@ const AutonomousAgentsPage: React.FC = () => {
                               }`}>
                                 {status.replace(/_/g, ' ')}
                               </span>
-                              <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                              <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
                                 {customerRow.monitor_count} monitor{customerRow.monitor_count === 1 ? '' : 's'}
                               </span>
                             </div>
@@ -9512,19 +9512,19 @@ const AutonomousAgentsPage: React.FC = () => {
                               }`}>
                                 Shared budget {String(customerRow.customer_budget_throttle_state || 'normal').replace(/_/g, ' ')}
                               </span>
-                              <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                              <span className="bg-gray-200 text-gray-700 px-2 py-1 rounded">
                                 Auto {customerRow.auto_launch_used_24h}/{customerRow.auto_launch_capacity_24h}
                               </span>
-                              <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                              <span className="bg-gray-200 text-gray-700 px-2 py-1 rounded">
                                 Queue {customerRow.approval_queue_used_24h}/{customerRow.approval_queue_capacity_24h}
                               </span>
-                              <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                              <span className="bg-gray-200 text-gray-700 px-2 py-1 rounded">
                                 Alerts {customerRow.alert_used_24h}/{customerRow.alert_capacity_24h}
                               </span>
-                              <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                              <span className="bg-gray-200 text-gray-700 px-2 py-1 rounded">
                                 Backlog {customerRow.backlog_used}/{customerRow.backlog_capacity}
                               </span>
-                              <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                              <span className="bg-gray-200 text-gray-700 px-2 py-1 rounded">
                                 Throttled {customerRow.throttled_monitor_count}
                               </span>
                             </div>
@@ -9555,7 +9555,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                       ? 'bg-rose-100 text-rose-700'
                                       : customerRow.latest_rebalance_evaluation_status === 'mixed'
                                         ? 'bg-amber-100 text-amber-800'
-                                        : 'bg-slate-100 text-slate-700'
+                                        : 'bg-gray-200 text-gray-700'
                                 }`}>
                                   Rebalance {formatPolicyEvaluationStatus(customerRow.latest_rebalance_evaluation_status)}
                                 </span>
@@ -9703,11 +9703,11 @@ const AutonomousAgentsPage: React.FC = () => {
                             ) : null}
                           </div>
                         </div>
-                        <div className="mt-3 border border-gray-200 rounded p-3 bg-slate-50">
+                        <div className="mt-3 border border-gray-200 rounded p-3 bg-gray-100">
                           <div className="flex items-center justify-between gap-2 mb-3">
                             <div>
-                              <div className="text-xs font-medium text-slate-700">Shared customer budget</div>
-                              <div className="text-[11px] text-slate-500">
+                              <div className="text-xs font-medium text-gray-700">Shared customer budget</div>
+                              <div className="text-[11px] text-gray-500">
                                 Auto {customerRow.customer_budget_usage?.auto_launch_count_24h || 0}/{customerRow.customer_budget?.auto_launch_limit_24h || 0}
                                 {' · '}
                                 Queue {customerRow.customer_budget_usage?.approval_queue_count_24h || 0}/{customerRow.customer_budget?.approval_queue_limit_24h || 0}
@@ -9753,7 +9753,7 @@ const AutonomousAgentsPage: React.FC = () => {
                               ['Backlog cap', 'queue_backlog_cap'],
                             ].map(([label, key]) => (
                               <label key={`${customerRow.customer}-${key}`} className="block">
-                                <div className="text-[11px] text-slate-600 mb-1">{label}</div>
+                                <div className="text-[11px] text-gray-600 mb-1">{label}</div>
                                 <input
                                   type="number"
                                   min={0}
@@ -9839,9 +9839,9 @@ const AutonomousAgentsPage: React.FC = () => {
                               ))}
                             </div>
                             {rebalancePreview?.customer === customerRow.customer ? (
-                              <div className="mt-3 rounded border border-slate-200 bg-white p-3 text-xs">
-                                <div className="font-medium text-slate-800">Rebalance preview</div>
-                                <div className="mt-1 text-slate-600">
+                              <div className="mt-3 rounded border border-gray-200 bg-white p-3 text-xs">
+                                <div className="font-medium text-gray-800">Rebalance preview</div>
+                                <div className="mt-1 text-gray-600">
                                   Capacity before:
                                   {' '}
                                   Auto {rebalancePreview.before_capacity.auto_launch_limit_24h}
@@ -9852,7 +9852,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                   {' · '}
                                   Backlog {rebalancePreview.before_capacity.queue_backlog_cap}
                                 </div>
-                                <div className="text-slate-600">
+                                <div className="text-gray-600">
                                   Capacity after:
                                   {' '}
                                   Auto {rebalancePreview.after_capacity.auto_launch_limit_24h}
@@ -9865,9 +9865,9 @@ const AutonomousAgentsPage: React.FC = () => {
                                 </div>
                                 <div className="mt-2 space-y-2">
                                   {(rebalancePreview.changes || []).map((change) => (
-                                    <div key={`${rebalancePreview.customer}-preview-${change.monitor_job_id}`} className="rounded bg-slate-50 px-2 py-2">
-                                      <div className="font-medium text-slate-800">{change.monitor_name}</div>
-                                      <div className="text-slate-600 mt-1">
+                                    <div key={`${rebalancePreview.customer}-preview-${change.monitor_job_id}`} className="rounded bg-gray-100 px-2 py-2">
+                                      <div className="font-medium text-gray-800">{change.monitor_name}</div>
+                                      <div className="text-gray-600 mt-1">
                                         Auto {change.delta_budget.auto_launch_limit_24h >= 0 ? '+' : ''}{change.delta_budget.auto_launch_limit_24h}
                                         {' · '}
                                         Queue {change.delta_budget.approval_queue_limit_24h >= 0 ? '+' : ''}{change.delta_budget.approval_queue_limit_24h}
@@ -9923,7 +9923,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                                   ? 'bg-rose-100 text-rose-700'
                                                   : entry.evaluation_status === 'mixed'
                                                     ? 'bg-amber-100 text-amber-800'
-                                                    : 'bg-slate-100 text-slate-700'
+                                                    : 'bg-gray-200 text-gray-700'
                                             }`}>
                                               {formatPolicyEvaluationStatus(entry.evaluation_status)}
                                             </span>
@@ -9953,7 +9953,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                       </div>
                                     </div>
                                     {evaluationDetail ? (
-                                      <div className="mt-3 border border-slate-200 rounded bg-white p-3">
+                                      <div className="mt-3 border border-gray-200 rounded bg-white p-3">
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <span className={`text-[11px] px-2 py-1 rounded ${
                                             evaluationDetail.evaluation_status === 'improving'
@@ -9962,30 +9962,30 @@ const AutonomousAgentsPage: React.FC = () => {
                                                 ? 'bg-rose-100 text-rose-700'
                                                 : evaluationDetail.evaluation_status === 'mixed'
                                                   ? 'bg-amber-100 text-amber-800'
-                                                  : 'bg-slate-100 text-slate-700'
+                                                  : 'bg-gray-200 text-gray-700'
                                           }`}>
                                             {formatPolicyEvaluationStatus(evaluationDetail.evaluation_status)}
                                           </span>
-                                          <span className="text-[11px] text-slate-600">
+                                          <span className="text-[11px] text-gray-600">
                                             {evaluationDetail.evaluation_sample_count}/{evaluationDetail.evaluation_target_count} accepted signals after rebalance
                                           </span>
                                         </div>
                                         <div className="grid grid-cols-3 gap-3 mt-3 text-[11px]">
-                                          <div className="border border-slate-200 rounded p-2">
-                                            <div className="font-medium text-slate-700">Before</div>
-                                            <div className="mt-1 text-slate-600">
+                                          <div className="border border-gray-200 rounded p-2">
+                                            <div className="font-medium text-gray-700">Before</div>
+                                            <div className="mt-1 text-gray-600">
                                               Backlog {evaluationDetail.before_counts.backlog_used} · Throttled {evaluationDetail.before_counts.throttled_monitor_count} · Blocked {evaluationDetail.before_counts.blocked_count}
                                             </div>
                                           </div>
-                                          <div className="border border-slate-200 rounded p-2">
-                                            <div className="font-medium text-slate-700">After</div>
-                                            <div className="mt-1 text-slate-600">
+                                          <div className="border border-gray-200 rounded p-2">
+                                            <div className="font-medium text-gray-700">After</div>
+                                            <div className="mt-1 text-gray-600">
                                               Backlog {evaluationDetail.after_counts.backlog_used} · Throttled {evaluationDetail.after_counts.throttled_monitor_count} · Blocked {evaluationDetail.after_counts.blocked_count}
                                             </div>
                                           </div>
-                                          <div className="border border-slate-200 rounded p-2">
-                                            <div className="font-medium text-slate-700">Delta</div>
-                                            <div className="mt-1 text-slate-600">
+                                          <div className="border border-gray-200 rounded p-2">
+                                            <div className="font-medium text-gray-700">Delta</div>
+                                            <div className="mt-1 text-gray-600">
                                               Backlog {formatSimulationCountDelta(evaluationDetail.delta_counts.backlog_used)} · Throttled {formatSimulationCountDelta(evaluationDetail.delta_counts.throttled_monitor_count)} · Blocked {formatSimulationCountDelta(evaluationDetail.delta_counts.blocked_count)}
                                             </div>
                                           </div>
@@ -9993,7 +9993,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                         {(evaluationDetail.evaluation_reasons || []).length > 0 ? (
                                           <div className="mt-3 flex flex-wrap gap-2">
                                             {evaluationDetail.evaluation_reasons.map((reason) => (
-                                              <span key={reason} className="text-[11px] bg-slate-50 text-slate-700 border border-slate-200 px-2 py-1 rounded">
+                                              <span key={reason} className="text-[11px] bg-gray-100 text-gray-700 border border-gray-200 px-2 py-1 rounded">
                                                 {reason}
                                               </span>
                                             ))}
@@ -10001,19 +10001,19 @@ const AutonomousAgentsPage: React.FC = () => {
                                         ) : null}
                                         {(evaluationDetail.sample_items || []).length > 0 ? (
                                           <div className="mt-3 space-y-2">
-                                            <div className="text-[11px] font-medium text-slate-700">Sample signals</div>
+                                            <div className="text-[11px] font-medium text-gray-700">Sample signals</div>
                                             {evaluationDetail.sample_items.map((sample) => (
-                                              <div key={`${sample.period}-${sample.item_id}`} className="border border-slate-200 rounded p-2">
+                                              <div key={`${sample.period}-${sample.item_id}`} className="border border-gray-200 rounded p-2">
                                                 <div className="flex items-start justify-between gap-3">
                                                   <div className="min-w-0">
-                                                    <div className="text-xs font-medium text-slate-900">{sample.title}</div>
-                                                    <div className="text-[11px] text-slate-600 mt-1">
+                                                    <div className="text-xs font-medium text-gray-900">{sample.title}</div>
+                                                    <div className="text-[11px] text-gray-600 mt-1">
                                                       {sample.period} · {sample.monitor_name || 'Unknown monitor'}
                                                       {sample.launch_status ? ` · ${sample.launch_status.replace(/_/g, ' ')}` : ''}
                                                       {sample.outcome_status ? ` · ${sample.outcome_status.replace(/_/g, ' ')}` : ''}
                                                     </div>
                                                     {sample.summary ? (
-                                                      <div className="text-[11px] text-slate-600 mt-1">{sample.summary}</div>
+                                                      <div className="text-[11px] text-gray-600 mt-1">{sample.summary}</div>
                                                     ) : null}
                                                   </div>
                                                   <Button
@@ -10050,30 +10050,30 @@ const AutonomousAgentsPage: React.FC = () => {
                           )}
                         </div>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3 mt-3 text-xs">
-                          <div className="bg-slate-50 rounded p-3">
-                            <div className="font-medium text-slate-700 mb-1">Top launch monitors</div>
+                          <div className="bg-gray-100 rounded p-3">
+                            <div className="font-medium text-gray-700 mb-1">Top launch monitors</div>
                             {(customerRow.top_launch_monitors || []).length > 0 ? (
                               <div className="space-y-1">
                                 {customerRow.top_launch_monitors.map((row) => (
-                                  <div key={`${customerRow.customer}-launch-${row.monitor_name}`} className="text-slate-600">
+                                  <div key={`${customerRow.customer}-launch-${row.monitor_name}`} className="text-gray-600">
                                     {row.monitor_name} · {row.value}
                                   </div>
                                 ))}
                               </div>
                             ) : (
-                              <div className="text-slate-500">No recent launch pressure.</div>
+                              <div className="text-gray-500">No recent launch pressure.</div>
                             )}
                           </div>
-                          <div className="bg-slate-50 rounded p-3">
-                            <div className="font-medium text-slate-700 mb-1">Top backlog / alerts</div>
+                          <div className="bg-gray-100 rounded p-3">
+                            <div className="font-medium text-gray-700 mb-1">Top backlog / alerts</div>
                             <div className="space-y-1">
                               {(customerRow.top_backlog_monitors || []).slice(0, 2).map((row) => (
-                                <div key={`${customerRow.customer}-backlog-${row.monitor_name}`} className="text-slate-600">
+                                <div key={`${customerRow.customer}-backlog-${row.monitor_name}`} className="text-gray-600">
                                   Backlog: {row.monitor_name} · {row.value}
                                 </div>
                               ))}
                               {(customerRow.top_alert_monitors || []).slice(0, 1).map((row) => (
-                                <div key={`${customerRow.customer}-alert-${row.monitor_name}`} className="text-slate-600">
+                                <div key={`${customerRow.customer}-alert-${row.monitor_name}`} className="text-gray-600">
                                   Alerts: {row.monitor_name} · {row.value}
                                 </div>
                               ))}
@@ -10243,7 +10243,7 @@ const AutonomousAgentsPage: React.FC = () => {
                               <span className="text-xs bg-gray-100 text-gray-700 px-2 py-1 rounded">{monitor.customer}</span>
                             ) : null}
                             {monitor.monitor_job_type ? (
-                              <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">{monitor.monitor_job_type}</span>
+                              <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">{monitor.monitor_job_type}</span>
                             ) : null}
                             {latestEvaluationStatus ? (
                               <span
@@ -10254,7 +10254,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                       ? 'bg-rose-100 text-rose-700'
                                       : latestEvaluationStatus === 'mixed'
                                         ? 'bg-amber-100 text-amber-800'
-                                        : 'bg-slate-100 text-slate-700'
+                                        : 'bg-gray-200 text-gray-700'
                                 }`}
                               >
                                 Policy {formatPolicyEvaluationStatus(latestEvaluationStatus)}
@@ -10274,13 +10274,13 @@ const AutonomousAgentsPage: React.FC = () => {
                             }`}>
                               Budget {String(monitor.budget_throttle_state || 'normal').replace(/_/g, ' ')}
                             </span>
-                            <span className="text-[11px] bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                            <span className="text-[11px] bg-gray-200 text-gray-700 px-2 py-1 rounded">
                               Auto {monitor.budget_usage?.auto_launch_count_24h || 0}/{monitor.autonomy_budget?.auto_launch_limit_24h || 0}
                             </span>
-                            <span className="text-[11px] bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                            <span className="text-[11px] bg-gray-200 text-gray-700 px-2 py-1 rounded">
                               Queue {monitor.budget_usage?.approval_queue_count_24h || 0}/{monitor.autonomy_budget?.approval_queue_limit_24h || 0}
                             </span>
-                            <span className="text-[11px] bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                            <span className="text-[11px] bg-gray-200 text-gray-700 px-2 py-1 rounded">
                               Backlog {monitor.budget_usage?.queue_backlog_count || 0}/{monitor.autonomy_budget?.queue_backlog_cap || 0}
                             </span>
                           </div>
@@ -10295,11 +10295,11 @@ const AutonomousAgentsPage: React.FC = () => {
                           ) : null}
                           {latestEvaluationStatus ? (
                             <div className="mt-2 flex flex-wrap gap-2">
-                              <span className="text-[11px] bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                              <span className="text-[11px] bg-gray-200 text-gray-700 px-2 py-1 rounded">
                                 Post-change sample {monitor.latest_policy_evaluation_sample_count}/{monitor.latest_policy_evaluation_target_count || monitor.latest_policy_evaluation_sample_count}
                               </span>
                               {(monitor.latest_policy_evaluation_reasons || []).map((reason) => (
-                                <span key={reason} className="text-[11px] bg-slate-50 text-slate-700 px-2 py-1 rounded border border-slate-200">
+                                <span key={reason} className="text-[11px] bg-gray-100 text-gray-700 px-2 py-1 rounded border border-gray-200">
                                   {reason}
                                 </span>
                               ))}
@@ -10416,7 +10416,7 @@ const AutonomousAgentsPage: React.FC = () => {
                       </div>
 
                       <div className="mt-4 grid grid-cols-2 gap-4">
-                        <div className="border border-gray-200 rounded p-3 bg-slate-50">
+                        <div className="border border-gray-200 rounded p-3 bg-gray-100">
                           <div className="text-xs font-medium text-gray-700 mb-2">Effective autonomy</div>
                           <div className="text-sm text-gray-900">
                             Review mode: <span className="font-medium">{formatReviewModeLabel(currentReviewMode)}</span>
@@ -10808,7 +10808,7 @@ const AutonomousAgentsPage: React.FC = () => {
                             ].map(([label, key]) => (
                               <div key={key} className="bg-white border border-sky-100 rounded p-3">
                                 <div className="uppercase tracking-wide text-sky-700">{label}</div>
-                                <div className="mt-2 text-slate-900">
+                                <div className="mt-2 text-gray-900">
                                   Current {(policySimulation.baseline_counts as any)[key]} {'->'} Proposed {(policySimulation.simulated_counts as any)[key]}
                                 </div>
                                 <div className="mt-1 text-sky-800">
@@ -10836,8 +10836,8 @@ const AutonomousAgentsPage: React.FC = () => {
                                 <div key={sample.item_id} className="bg-white border border-sky-100 rounded p-3">
                                   <div className="flex items-start justify-between gap-3">
                                     <div className="min-w-0">
-                                      <div className="text-sm font-medium text-slate-900">{sample.title}</div>
-                                      <div className="text-[11px] text-slate-600 mt-1">
+                                      <div className="text-sm font-medium text-gray-900">{sample.title}</div>
+                                      <div className="text-[11px] text-gray-600 mt-1">
                                         {sample.current_outcome.replace(/_/g, ' ')} {'->'} {sample.simulated_outcome.replace(/_/g, ' ')}
                                         {sample.recommendation_key ? ` via ${sample.recommendation_key}` : ''}
                                       </div>
@@ -10908,7 +10908,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                                     ? 'bg-rose-100 text-rose-700'
                                                     : entry.evaluation_status === 'mixed'
                                                       ? 'bg-amber-100 text-amber-800'
-                                                      : 'bg-slate-100 text-slate-700'
+                                                      : 'bg-gray-200 text-gray-700'
                                               }`}
                                             >
                                               {formatPolicyEvaluationStatus(entry.evaluation_status)}
@@ -10974,7 +10974,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                       </div>
                                     </div>
                                     {evaluationDetail ? (
-                                      <div className="mt-3 border border-slate-200 rounded bg-white p-3">
+                                      <div className="mt-3 border border-gray-200 rounded bg-white p-3">
                                         <div className="flex items-center gap-2 flex-wrap">
                                           <span
                                             className={`text-[11px] px-2 py-1 rounded ${
@@ -10984,31 +10984,31 @@ const AutonomousAgentsPage: React.FC = () => {
                                                   ? 'bg-rose-100 text-rose-700'
                                                   : evaluationDetail.evaluation_status === 'mixed'
                                                     ? 'bg-amber-100 text-amber-800'
-                                                    : 'bg-slate-100 text-slate-700'
+                                                    : 'bg-gray-200 text-gray-700'
                                             }`}
                                           >
                                             {formatPolicyEvaluationStatus(evaluationDetail.evaluation_status)}
                                           </span>
-                                          <span className="text-[11px] text-slate-600">
+                                          <span className="text-[11px] text-gray-600">
                                             {evaluationDetail.evaluation_sample_count}/{evaluationDetail.evaluation_target_count} accepted signals after rollout
                                           </span>
                                         </div>
                                         <div className="grid grid-cols-3 gap-3 mt-3 text-[11px]">
-                                          <div className="border border-slate-200 rounded p-2">
-                                            <div className="font-medium text-slate-700">Before</div>
-                                            <div className="mt-1 text-slate-600">
+                                          <div className="border border-gray-200 rounded p-2">
+                                            <div className="font-medium text-gray-700">Before</div>
+                                            <div className="mt-1 text-gray-600">
                                               Completed {evaluationDetail.before_counts.follow_up_completed_count} · Failed {evaluationDetail.before_counts.follow_up_failed_count} · Blocked {evaluationDetail.before_counts.blocked_count}
                                             </div>
                                           </div>
-                                          <div className="border border-slate-200 rounded p-2">
-                                            <div className="font-medium text-slate-700">After</div>
-                                            <div className="mt-1 text-slate-600">
+                                          <div className="border border-gray-200 rounded p-2">
+                                            <div className="font-medium text-gray-700">After</div>
+                                            <div className="mt-1 text-gray-600">
                                               Completed {evaluationDetail.after_counts.follow_up_completed_count} · Failed {evaluationDetail.after_counts.follow_up_failed_count} · Blocked {evaluationDetail.after_counts.blocked_count}
                                             </div>
                                           </div>
-                                          <div className="border border-slate-200 rounded p-2">
-                                            <div className="font-medium text-slate-700">Delta</div>
-                                            <div className="mt-1 text-slate-600">
+                                          <div className="border border-gray-200 rounded p-2">
+                                            <div className="font-medium text-gray-700">Delta</div>
+                                            <div className="mt-1 text-gray-600">
                                               Completed {formatSimulationCountDelta(evaluationDetail.delta_counts.follow_up_completed_count)} · Failed {formatSimulationCountDelta(evaluationDetail.delta_counts.follow_up_failed_count)} · Blocked {formatSimulationCountDelta(evaluationDetail.delta_counts.blocked_count)}
                                             </div>
                                           </div>
@@ -11016,7 +11016,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                         {(evaluationDetail.evaluation_reasons || []).length > 0 ? (
                                           <div className="mt-3 flex flex-wrap gap-2">
                                             {evaluationDetail.evaluation_reasons.map((reason) => (
-                                              <span key={reason} className="text-[11px] bg-slate-50 text-slate-700 border border-slate-200 px-2 py-1 rounded">
+                                              <span key={reason} className="text-[11px] bg-gray-100 text-gray-700 border border-gray-200 px-2 py-1 rounded">
                                                 {reason}
                                               </span>
                                             ))}
@@ -11024,19 +11024,19 @@ const AutonomousAgentsPage: React.FC = () => {
                                         ) : null}
                                         {(evaluationDetail.sample_items || []).length > 0 ? (
                                           <div className="mt-3 space-y-2">
-                                            <div className="text-[11px] font-medium text-slate-700">Sample signals</div>
+                                            <div className="text-[11px] font-medium text-gray-700">Sample signals</div>
                                             {evaluationDetail.sample_items.map((sample) => (
-                                              <div key={`${sample.period}-${sample.item_id}`} className="border border-slate-200 rounded p-2">
+                                              <div key={`${sample.period}-${sample.item_id}`} className="border border-gray-200 rounded p-2">
                                                 <div className="flex items-start justify-between gap-3">
                                                   <div className="min-w-0">
-                                                    <div className="text-xs font-medium text-slate-900">{sample.title}</div>
-                                                    <div className="text-[11px] text-slate-600 mt-1">
+                                                    <div className="text-xs font-medium text-gray-900">{sample.title}</div>
+                                                    <div className="text-[11px] text-gray-600 mt-1">
                                                       {sample.period} · {sample.launch_status ? sample.launch_status.replace(/_/g, ' ') : 'no launch'}
                                                       {sample.outcome_status ? ` · ${sample.outcome_status.replace(/_/g, ' ')}` : ''}
                                                       {sample.recommendation_key ? ` · ${sample.recommendation_key}` : ''}
                                                     </div>
                                                     {sample.summary ? (
-                                                      <div className="text-[11px] text-slate-600 mt-1">{sample.summary}</div>
+                                                      <div className="text-[11px] text-gray-600 mt-1">{sample.summary}</div>
                                                     ) : null}
                                                   </div>
                                                   <Button
@@ -11066,7 +11066,7 @@ const AutonomousAgentsPage: React.FC = () => {
                           <div className="text-xs font-medium text-gray-700 mb-2">Top recommendation signals</div>
                           <div className="flex flex-wrap gap-2">
                             {monitor.top_recommendations.map((recommendation) => (
-                              <span key={recommendation.recommendation_key} className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                              <span key={recommendation.recommendation_key} className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
                                 {recommendation.recommendation_key}: {recommendation.completed_count} complete / {recommendation.launch_count} launches
                               </span>
                             ))}
@@ -11250,7 +11250,7 @@ const AutonomousAgentsPage: React.FC = () => {
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 mb-1 flex-wrap">
                                 <h3 className="section-heading">{portfolio.title}</h3>
-                                <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700">{portfolio.status}</span>
+                                <span className="text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-700">{portfolio.status}</span>
                                 <span className={`text-xs px-2 py-0.5 rounded ${autonomyMode === 'max_autonomy' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-700'}`}>
                                   {autonomyMode === 'max_autonomy' ? 'max autonomy' : autonomyMode}
                                 </span>
@@ -11863,7 +11863,7 @@ const AutonomousAgentsPage: React.FC = () => {
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 mb-1 flex-wrap">
                                 <h3 className="section-heading">{profile.title}</h3>
-                                <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700">{profile.status}</span>
+                                <span className="text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-700">{profile.status}</span>
                                 <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">{profile.domain}</span>
                                 <span className="text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">
                                   {String(profile.track_type || 'generic').replaceAll('_', ' ')}
@@ -12453,7 +12453,7 @@ const AutonomousAgentsPage: React.FC = () => {
                 <div key={String(row.preset_key || row.launch_mode)} className="bg-white border border-gray-200 rounded-lg p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium text-gray-900">{String(row.label || row.preset_key)}</div>
-                    <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                    <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
                       {Number(row.total_runs || 0)} runs
                     </span>
                   </div>
@@ -12466,7 +12466,7 @@ const AutonomousAgentsPage: React.FC = () => {
                   <div className="mt-2 flex flex-wrap gap-2 text-xs">
                     <span className="bg-emerald-50 text-emerald-700 px-2 py-1 rounded">Repair {Number(row.repair_handoff_runs || 0)}</span>
                     <span className="bg-amber-50 text-amber-700 px-2 py-1 rounded">Review {Number(row.review_needed_runs || 0)}</span>
-                    <span className="bg-slate-100 text-slate-700 px-2 py-1 rounded">Backlog {Number(row.backlog_handoff_runs || 0)}</span>
+                    <span className="bg-gray-200 text-gray-700 px-2 py-1 rounded">Backlog {Number(row.backlog_handoff_runs || 0)}</span>
                     <span className="bg-amber-100 text-amber-800 px-2 py-1 rounded">Auto backlog {Number(row.auto_backlog_handoff_runs || 0)}</span>
                   </div>
                 </div>
@@ -12511,7 +12511,7 @@ const AutonomousAgentsPage: React.FC = () => {
                           <div className="flex flex-wrap items-center gap-2">
                             <div className="font-medium text-gray-900">{job.name}</div>
                             <span className="text-xs px-2 py-1 rounded bg-rose-50 text-rose-700 border border-rose-100">{presetLabel}</span>
-                            <span className="text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-200">{reviewState.replace(/_/g, ' ')}</span>
+                            <span className="text-xs px-2 py-1 rounded bg-gray-200 text-gray-700 border border-gray-200">{reviewState.replace(/_/g, ' ')}</span>
                             {typeof confidenceOverall === 'number' ? (
                               <span className="text-xs px-2 py-1 rounded bg-cyan-50 text-cyan-700 border border-cyan-100">
                                 Confidence {(confidenceOverall * 100).toFixed(0)}%
@@ -12608,7 +12608,7 @@ const AutonomousAgentsPage: React.FC = () => {
                       {candidatePaths.length > 0 ? (
                         <div className="mt-4 grid grid-cols-1 lg:grid-cols-2 gap-3">
                           {candidatePaths.slice(0, 4).map((candidate: any, idx: number) => (
-                            <div key={`${String(candidate.job_id || 'candidate')}-${idx}`} className="border border-gray-200 rounded-lg p-3 bg-slate-50">
+                            <div key={`${String(candidate.job_id || 'candidate')}-${idx}`} className="border border-gray-200 rounded-lg p-3 bg-gray-100">
                               <div className="flex items-center justify-between gap-2">
                                 <div className="font-medium text-gray-900">{String(candidate.role || 'Candidate')}</div>
                                 <div className="text-xs text-gray-500">Score {Number(candidate.score || 0).toFixed(2)}</div>
@@ -12834,7 +12834,7 @@ const AutonomousAgentsPage: React.FC = () => {
                 <div key={String(row.preset_key || row.launch_mode)} className="bg-white border border-gray-200 rounded-lg p-3">
                   <div className="flex items-center justify-between gap-2">
                     <div className="font-medium text-gray-900">{String(row.label || row.preset_key)}</div>
-                    <span className="text-xs bg-slate-100 text-slate-700 px-2 py-1 rounded">
+                    <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
                       {Number(row.total_swarm_roots || 0)} roots
                     </span>
                   </div>
@@ -12880,7 +12880,7 @@ const AutonomousAgentsPage: React.FC = () => {
                         <div className="min-w-0">
                           <div className="flex flex-wrap items-center gap-2">
                             <div className="font-medium text-gray-900">{String(item.swarm_job_name || item.swarm_job_id)}</div>
-                            <span className="text-xs px-2 py-1 rounded bg-slate-100 text-slate-700 border border-slate-200">
+                            <span className="text-xs px-2 py-1 rounded bg-gray-200 text-gray-700 border border-gray-200">
                               {humanizeSwarmOutcome(item.preset_key)}
                             </span>
                             <span className={`text-xs px-2 py-1 rounded ${swarmOutcomeBadgeClass(item.terminal_outcome)}`}>
@@ -12902,7 +12902,7 @@ const AutonomousAgentsPage: React.FC = () => {
                             {typeof item.handoff_latency_minutes === 'number' ? <span>Handoff {Number(item.handoff_latency_minutes).toFixed(0)}m</span> : null}
                           </div>
                           {item.review_note ? (
-                            <div className="mt-1 text-xs text-slate-600">Note: {String(item.review_note)}</div>
+                            <div className="mt-1 text-xs text-gray-600">Note: {String(item.review_note)}</div>
                           ) : null}
                           {item.terminal_reason ? (
                             <div className="mt-2 text-xs text-gray-600">{String(item.terminal_reason)}</div>
@@ -13059,10 +13059,10 @@ const AutonomousAgentsPage: React.FC = () => {
                                 <span className="text-xs px-2 py-1 rounded bg-rose-50 text-rose-700 border border-rose-100">
                                   {codingSwarmPresetLabel(profile.preset_key)}
                                 </span>
-                                <span className={`text-xs px-2 py-1 rounded ${String(profile.status || '').toLowerCase() === 'active' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-slate-100 text-slate-700 border border-slate-200'}`}>
+                                <span className={`text-xs px-2 py-1 rounded ${String(profile.status || '').toLowerCase() === 'active' ? 'bg-emerald-50 text-emerald-700 border border-emerald-100' : 'bg-gray-200 text-gray-700 border border-gray-200'}`}>
                                   {String(profile.status || 'active')}
                                 </span>
-                                <span className={`text-xs px-2 py-1 rounded ${String(profile.visibility || 'private').toLowerCase() === 'shared' ? 'bg-cyan-50 text-cyan-700 border border-cyan-100' : 'bg-slate-100 text-slate-700 border border-slate-200'}`}>
+                                <span className={`text-xs px-2 py-1 rounded ${String(profile.visibility || 'private').toLowerCase() === 'shared' ? 'bg-cyan-50 text-cyan-700 border border-cyan-100' : 'bg-gray-200 text-gray-700 border border-gray-200'}`}>
                                   {String(profile.visibility || 'private')}
                                 </span>
                                 {profile.is_default ? (
@@ -13561,7 +13561,7 @@ const AutonomousAgentsPage: React.FC = () => {
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 mb-1">
                                 <h3 className="section-heading">{item.title}</h3>
-                                <span className={`${chipBase} bg-slate-100 text-slate-700`}>{item.status}</span>
+                                <span className={`${chipBase} bg-gray-200 text-gray-700`}>{item.status}</span>
                                 <span className={`${chipBase} bg-blue-100 text-blue-700`}>Priority {item.priority}</span>
                                 {summary?.promotion_decision ? (
                                   <span className={`${chipBase} ${String(summary.promotion_decision) === 'auto_applied' ? 'bg-emerald-100 text-emerald-700' : 'bg-amber-100 text-amber-700'}`}>
@@ -13579,7 +13579,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                   </span>
                                 ) : null}
                                 {originatingSwarmRouteMode ? (
-                                  <span className={`${chipBase} ${originatingSwarmRouteMode === 'auto' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-slate-100 text-slate-700'}`}>
+                                  <span className={`${chipBase} ${originatingSwarmRouteMode === 'auto' ? 'bg-amber-50 text-amber-700 border border-amber-100' : 'bg-gray-200 text-gray-700'}`}>
                                     {originatingSwarmRouteMode === 'auto' ? 'Auto-routed' : 'Manual backlog'}
                                   </span>
                                 ) : null}
@@ -13589,7 +13589,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                   </span>
                                 ) : null}
                                 {item.closure_reason ? (
-                                  <span className={`${chipBase} bg-slate-100 text-slate-700 border border-slate-200`}>
+                                  <span className={`${chipBase} bg-gray-200 text-gray-700 border border-gray-200`}>
                                     {String(item.closure_reason).replace(/_/g, ' ')}
                                   </span>
                                 ) : null}
@@ -13678,7 +13678,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                 <div className="text-xs text-gray-500 mt-2">{String(summary.note)}</div>
                               ) : null}
                               {operatorNote ? (
-                                <div className="text-xs text-slate-600 mt-2">Operator note: {operatorNote}</div>
+                                <div className="text-xs text-gray-600 mt-2">Operator note: {operatorNote}</div>
                               ) : null}
                             </div>
                             <div className="flex gap-2 shrink-0">
@@ -13839,7 +13839,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                         <div className="flex items-center justify-between gap-2">
                                           <div className="font-medium text-gray-800">{String(slice.title || slice.slice_id)}</div>
                                           <div className="flex gap-1 flex-wrap justify-end">
-                                            <span className={`${chipBase} ${isActive ? 'bg-violet-100 text-violet-700' : 'bg-slate-100 text-slate-700'}`}>
+                                            <span className={`${chipBase} ${isActive ? 'bg-violet-100 text-violet-700' : 'bg-gray-200 text-gray-700'}`}>
                                               {String(slice.status || 'pending').replace(/_/g, ' ')}
                                             </span>
                                             {slice.promotion_decision ? (
@@ -15436,7 +15436,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                     ? 'bg-amber-100 text-amber-800'
                                     : item.follow_up_launch_status === 'failed'
                                       ? 'bg-rose-100 text-rose-700'
-                                      : 'bg-slate-100 text-slate-700'
+                                      : 'bg-gray-200 text-gray-700'
                               }`}
                             >
                               {item.follow_up_launch_status.replace(/_/g, ' ')}
@@ -15449,7 +15449,7 @@ const AutonomousAgentsPage: React.FC = () => {
                                   ? 'bg-blue-100 text-blue-700'
                                   : item.follow_up_outcome_status === 'failed'
                                     ? 'bg-rose-100 text-rose-700'
-                                    : 'bg-slate-100 text-slate-700'
+                                    : 'bg-gray-200 text-gray-700'
                               }`}
                             >
                               outcome: {item.follow_up_outcome_status.replace(/_/g, ' ')}

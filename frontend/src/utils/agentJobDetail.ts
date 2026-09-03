@@ -100,7 +100,7 @@ export const swarmOutcomeBadgeClass = (value?: string | null) => {
   if (normalized === 'repair_failed') return 'bg-rose-100 text-rose-700';
   if (normalized === 'backlog_routed') return 'bg-amber-100 text-amber-800';
   if (normalized === 'stalled_after_handoff') return 'bg-cyan-100 text-cyan-800';
-  return 'bg-slate-100 text-slate-700';
+  return 'bg-gray-200 text-gray-700';
 };
 
 /**

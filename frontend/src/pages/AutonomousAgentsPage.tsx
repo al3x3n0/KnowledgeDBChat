@@ -9,35 +9,37 @@ import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useR
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
-  Bot,
-  Play,
-  XCircle,
-  RotateCcw,
-  Plus,
-  Eye,
-  Clock,
-  CheckCircle2,
-  AlertCircle,
-  Loader2,
-  Search,
   Activity,
+  AlertCircle,
   BarChart3,
+  Bot,
+  Brain,
+  Bug,
+  CheckCircle2,
+  Clock,
+  Download,
+  Eye,
+  FileDown,
   FileText,
-  RefreshCw,
-  Zap,
-  Settings,
+  GitBranch,
+  Inbox,
   Layers,
   Link2,
-  GitBranch,
-  Download,
-  FileDown,
-  Brain,
-  Sparkles,
-  Inbox,
-  Bug,
-  ThumbsUp,
-  ThumbsDown,
+  Loader2,
   Map as MapIcon,
+  PanelRightClose,
+  PanelRightOpen,
+  Play,
+  Plus,
+  RefreshCw,
+  RotateCcw,
+  Search,
+  Settings,
+  Sparkles,
+  ThumbsDown,
+  ThumbsUp,
+  XCircle,
+  Zap,
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
@@ -1067,6 +1069,28 @@ const AutonomousAgentsPage: React.FC = () => {
   const [launchModeFilter, setLaunchModeFilter] = useState<string>('');
   const [hasRelaunchChildrenFilter, setHasRelaunchChildrenFilter] = useState<string>('');
   const [relaunchFromJobIdFilter, setRelaunchFromJobIdFilter] = useState<string>('');
+  // The detail panel collapses, and remembers it. It is a third of the width
+  // and permanently open, which is a lot of screen to give a panel you are not
+  // reading. localStorage is wrapped because it throws outright in a private
+  // window rather than returning null.
+  const [detailPanelCollapsed, setDetailPanelCollapsed] = useState<boolean>(() => {
+    try {
+      return window.localStorage.getItem('agent_detail_panel_collapsed') === '1';
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        'agent_detail_panel_collapsed',
+        detailPanelCollapsed ? '1' : '0'
+      );
+    } catch {
+      // Still works, just does not persist.
+    }
+  }, [detailPanelCollapsed]);
+
   const [swarmOnlyFilter, setSwarmOnlyFilter] = useState<boolean>(false);
   const [swarmSortBy, setSwarmSortBy] = useState<string>('created_desc');
   const [swarmMinConsensus, setSwarmMinConsensus] = useState<number>(0);
@@ -14663,8 +14687,39 @@ const AutonomousAgentsPage: React.FC = () => {
               )}
             </div>
 
-            {/* Detail panel */}
-            <div className="w-1/3">
+            {/* Detail panel. Collapsed, it is a rail rather than nothing: the
+                control to bring it back has to live somewhere the user can
+                see, and inside the panel that just closed is not that. */}
+            {detailPanelCollapsed ? (
+              <div className="w-10 shrink-0 flex flex-col items-center pt-2 border-l border-gray-200">
+                <button
+                  type="button"
+                  aria-label="Show detail panel"
+                  title="Show detail panel"
+                  className="p-1.5 rounded-md text-gray-500 hover:bg-gray-200 hover:text-gray-900 transition-all duration-fast ease-ui"
+                  onClick={() => setDetailPanelCollapsed(false)}
+                >
+                  <PanelRightOpen className="w-4 h-4" />
+                </button>
+                {selectedJob && (
+                  <span
+                    className="mt-2 live-dot"
+                    title={`${selectedJob.name} is selected`}
+                    aria-hidden="true"
+                  />
+                )}
+              </div>
+            ) : (
+            <div className="w-1/3 shrink-0 relative">
+              <button
+                type="button"
+                aria-label="Collapse detail panel"
+                title="Collapse detail panel"
+                className="absolute right-1 top-1 z-10 p-1.5 rounded-md text-gray-500 hover:bg-gray-200 hover:text-gray-900 transition-all duration-fast ease-ui"
+                onClick={() => setDetailPanelCollapsed(true)}
+              >
+                <PanelRightClose className="w-4 h-4" />
+              </button>
               {selectedJob ? (
                 <JobDetailPanel
                   job={selectedJob}
@@ -14693,6 +14748,7 @@ const AutonomousAgentsPage: React.FC = () => {
                 </div>
               )}
             </div>
+            )}
         </div>
 
         {activeTab === 'templates' && (

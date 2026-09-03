@@ -271,6 +271,8 @@ import {
   LatexCompileJobCreateRequest,
   LatexCompileJobResponse,
   DocumentFolder,
+  PipelineBinding,
+  PipelineCheck,
   DocumentFolderItemsResult,
   DocumentFolderRef,
   DocumentFolderTree,
@@ -599,6 +601,27 @@ class ApiClient {
     const response = await this.client.get('/api/v1/documents/', { params });
     // Backend returns PaginatedResponse with items array
     return response.data?.items || response.data || [];
+  }
+
+  // ------------------------------------------------------------- Pipelines
+
+  /** Everything wrong with a pipeline spec, before anything expensive runs.
+   *  Read-only: this launches nothing. */
+  async checkPipeline(
+    spec: Record<string, any>,
+    budgetSeconds?: number
+  ): Promise<PipelineCheck> {
+    const response = await this.client.post('/api/v1/agent-pipelines/check', {
+      spec,
+      budget_seconds: budgetSeconds,
+    });
+    return response.data;
+  }
+
+  /** The job chain a pipeline compiles to, returned rather than launched. */
+  async bindPipeline(spec: Record<string, any>): Promise<PipelineBinding> {
+    const response = await this.client.post('/api/v1/agent-pipelines/bind', { spec });
+    return response.data;
   }
 
   // -------------------------------------------------------- Document folders

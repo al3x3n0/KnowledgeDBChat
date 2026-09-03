@@ -5567,3 +5567,54 @@ export interface DocumentFolderItemsResult {
   not_found: number;
   removed: number;
 }
+
+// ------------------------------------------------------------ Agent pipelines
+
+/** One stage's compiled plan: the tools derived from its contract, and cost. */
+export interface PipelineStagePlan {
+  stage_id: string;
+  tools: string[];
+  iterations: number;
+  seconds: number;
+  checkpoint: boolean;
+  /** Tools with no recorded cost. Counted as zero because nothing knows
+   *  better, which is not the same as being free. */
+  unpriced: string[];
+}
+
+export interface PipelinePlan {
+  order: string[];
+  stages: PipelineStagePlan[];
+  total_seconds: number;
+  critical_path_seconds: number;
+  checkpoints: string[];
+}
+
+/** What is wrong with a pipeline, decided before anything expensive runs.
+ *
+ *  Three separate answers on purpose: a pipeline can be valid, compile to a
+ *  chain, and still be unaffordable. */
+export interface PipelineCheck {
+  valid: boolean;
+  problems: string[];
+  expressible: boolean;
+  binding_problems: string[];
+  description: string[];
+  plan?: PipelinePlan | null;
+  budget?: {
+    affordable: boolean;
+    budget_seconds: number;
+    estimated_seconds: number;
+    critical_path_seconds: number;
+    unpriced_tools: string[];
+    caveat?: string;
+  } | null;
+}
+
+export interface PipelineBinding {
+  name: string;
+  chain_config: Record<string, any>;
+  deferred_edges: Array<{ after: string; launch: string; reason: string }>;
+  checkpoints: string[];
+  description: string[];
+}

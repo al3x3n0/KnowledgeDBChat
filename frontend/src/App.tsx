@@ -21,6 +21,7 @@ const KGAuditPage = lazy(() => import('./pages/KGAuditPage'));
 const DocumentGraphPage = lazy(() => import('./pages/DocumentGraphPage'));
 const TemplateFillPage = lazy(() => import('./pages/TemplateFillPage'));
 const WorkflowsPage = lazy(() => import('./pages/WorkflowsPage'));
+const PipelineStudioPage = lazy(() => import('./pages/PipelineStudioPage'));
 const WorkflowEditorPage = lazy(() => import('./pages/WorkflowEditorPage'));
 const ToolsPage = lazy(() => import('./pages/ToolsPage'));
 const PresentationsPage = lazy(() => import('./pages/PresentationsPage'));
@@ -327,6 +328,14 @@ const AppRoutes: React.FC = () => {
             element={
               <Suspense fallback={<PageLoader />}>
                 <WorkflowsPage />
+              </Suspense>
+            }
+          />
+          <Route
+            path="pipelines"
+            element={
+              <Suspense fallback={<PageLoader />}>
+                <PipelineStudioPage />
               </Suspense>
             }
           />

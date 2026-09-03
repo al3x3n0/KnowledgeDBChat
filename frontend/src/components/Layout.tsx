@@ -5,11 +5,39 @@
 import React, { useMemo, useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  MessageCircle, FileText, Brain, Settings, Menu, X, LogOut, Shield, User,
-  Database, FileCheck, Workflow, Wrench, Presentation, Network, Search,
-  Bot, BookOpen, ListChecks, BarChart3, Activity, FlaskConical, FolderGit2,
-  Server, Key, Zap, Layers, Cpu, StickyNote, Sigma, GitPullRequest,
-  ClipboardCheck
+  Activity,
+  BarChart3,
+  BookOpen,
+  Bot,
+  Brain,
+  ClipboardCheck,
+  Cpu,
+  Database,
+  FileCheck,
+  FileText,
+  FlaskConical,
+  FolderGit2,
+  GitBranch,
+  GitPullRequest,
+  Key,
+  Layers,
+  ListChecks,
+  LogOut,
+  Menu,
+  MessageCircle,
+  Network,
+  Presentation,
+  Search,
+  Server,
+  Settings,
+  Shield,
+  Sigma,
+  StickyNote,
+  User,
+  Workflow,
+  Wrench,
+  X,
+  Zap,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
@@ -186,6 +214,7 @@ const Layout: React.FC = () => {
         sections: [
           { name: 'Runs', to: '/autonomous-agents', icon: Zap },
           { name: 'Control Plane', to: '/agent-control-plane', icon: Activity },
+          { name: 'Pipelines', to: '/pipelines', icon: GitBranch },
           { name: 'Workflows', to: '/workflows', icon: Workflow },
           { name: 'Agents', to: '/agent-builder', icon: Bot },
         ],

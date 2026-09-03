@@ -111,6 +111,7 @@ import {
 } from '../utils/experimentRunSummary';
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
+import SkeletonList from '../components/common/SkeletonList';
 import CreateFromTemplateModal from '../components/agent/CreateFromTemplateModal';
 import CustomerResearchModal from '../components/agent/CustomerResearchModal';
 import InboxMonitorModal from '../components/agent/InboxMonitorModal';
@@ -14609,9 +14610,7 @@ const AutonomousAgentsPage: React.FC = () => {
 
               {/* Jobs grid */}
               {jobsLoading ? (
-                <div className="flex justify-center items-center flex-1">
-                  <LoadingSpinner />
-                </div>
+                <SkeletonList rows={5} label="Loading jobs" className="flex-1" />
               ) : (Array.isArray((jobsData as any)?.jobs) ? (jobsData as any).jobs.length : 0) === 0 ? (
                 <div className="flex flex-col items-center justify-center flex-1 text-gray-500">
                   <Bot className="w-12 h-12 mb-3 text-gray-400" />

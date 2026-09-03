@@ -38,6 +38,7 @@ import { apiClient } from '../services/api';
 import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document, AgentJob } from '../types';
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
+import SkeletonList from '../components/common/SkeletonList';
 import { useNotifications } from '../contexts/NotificationContext';
 
 // Job type configuration
@@ -1399,9 +1400,7 @@ const SynthesisPage: React.FC = () => {
                     Or build on what a run measured
                   </label>
                   {runsLoading ? (
-                    <div className="flex justify-center py-4">
-                      <LoadingSpinner />
-                    </div>
+                    <SkeletonList rows={3} variant="row" label="Loading completed runs" />
                   ) : (runsData?.jobs || []).length === 0 ? (
                     <p className="text-xs text-gray-500">
                       No completed runs yet. A run's findings become citable here once it finishes.

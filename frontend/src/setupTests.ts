@@ -15,6 +15,20 @@ import { configure } from '@testing-library/react';
 // 200ms; only a failing one waits longer before saying so.
 configure({ asyncUtilTimeout: 5000 });
 
+// ...and the per-test budget has to be larger than that, which it was not.
+//
+// Jest's default test timeout is also 5000ms, so a test allowed to wait five
+// seconds for an element had exactly zero time left to do anything with it:
+// any test that actually used the async budget above died by construction.
+// That is what every intermittent failure in this suite turned out to be —
+// five different suites, five different days' worth of "flakiness", and not
+// one assertion failure among them, only "Exceeded timeout of 5000 ms".
+//
+// 20s leaves room for the async budget plus the render work around it, and is
+// still short enough that a genuine hang fails the build rather than stalling
+// it. Raise `asyncUtilTimeout` and this together, never one alone.
+jest.setTimeout(20_000);
+
 // CRA/Jest (react-scripts) doesn't transform ESM in node_modules by default.
 // Some dependencies we use (react-markdown, tiptap v3) ship ESM and will fail
 // to parse in tests unless mocked.

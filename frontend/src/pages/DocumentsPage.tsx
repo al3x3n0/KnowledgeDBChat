@@ -49,7 +49,7 @@ import type {
 import { useAuth } from '../contexts/AuthContext';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
-import LoadingSpinner from '../components/common/LoadingSpinner';
+import SkeletonList from '../components/common/SkeletonList';
 import ConfirmationModal from '../components/common/ConfirmationModal';
 import ProgressBar from '../components/common/ProgressBar';
 import { DocxEditorModal } from '../components/docx';
@@ -2526,7 +2526,10 @@ const DocumentsPage: React.FC = () => {
             </div>
           </div>
         ) : documentsLoading ? (
-          <LoadingSpinner className="h-64" text={`Loading ${activeTab === 'videos' ? 'videos' : 'documents'}...`} />
+          <SkeletonList
+            rows={6}
+            label={`Loading ${activeTab === 'videos' ? 'videos' : 'documents'}`}
+          />
         ) : documents.length === 0 ? (
           <div className="flex items-center justify-center h-64">
             <div className="text-center">

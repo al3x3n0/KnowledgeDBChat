@@ -9438,7 +9438,7 @@ const AutonomousAgentsPage: React.FC = () => {
               <div className="mb-4">
                 <div className="flex items-center justify-between mb-2">
                   <div>
-                    <h3 className="text-sm font-semibold text-gray-900">Customer Fleet Health</h3>
+                    <h3 className="section-heading">Customer Fleet Health</h3>
                     <p className="text-xs text-gray-500">Cross-monitor autonomy load, backlog, alert pressure, and throttle state by customer.</p>
                   </div>
                 </div>
@@ -10202,7 +10202,7 @@ const AutonomousAgentsPage: React.FC = () => {
                       <div className="flex items-start justify-between gap-4">
                         <div>
                           <div className="flex items-center gap-2 flex-wrap">
-                            <h3 className="font-medium text-gray-900">{monitor.monitor_name}</h3>
+                            <h3 className="section-heading">{monitor.monitor_name}</h3>
                             <span
                               className={`text-xs px-2 py-1 rounded ${
                                 monitor.health_bucket === 'strong'
@@ -11055,7 +11055,7 @@ const AutonomousAgentsPage: React.FC = () => {
                 <div className="bg-white border border-gray-200 rounded-lg p-4 overflow-y-auto">
                   <div className="flex items-center justify-between mb-3">
                     <div>
-                      <h3 className="font-medium text-gray-900">Recommendation Performance</h3>
+                      <h3 className="section-heading">Recommendation Performance</h3>
                       <p className="text-xs text-gray-500">Which bounded follow-ups are actually working.</p>
                     </div>
                   </div>
@@ -11224,7 +11224,7 @@ const AutonomousAgentsPage: React.FC = () => {
                           <div className="flex items-start justify-between gap-4">
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                <h3 className="font-medium text-gray-900">{portfolio.title}</h3>
+                                <h3 className="section-heading">{portfolio.title}</h3>
                                 <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700">{portfolio.status}</span>
                                 <span className={`text-xs px-2 py-0.5 rounded ${autonomyMode === 'max_autonomy' ? 'bg-amber-100 text-amber-800' : 'bg-blue-100 text-blue-700'}`}>
                                   {autonomyMode === 'max_autonomy' ? 'max autonomy' : autonomyMode}
@@ -11837,7 +11837,7 @@ const AutonomousAgentsPage: React.FC = () => {
                           <div className="flex items-start justify-between gap-4">
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                <h3 className="font-medium text-gray-900">{profile.title}</h3>
+                                <h3 className="section-heading">{profile.title}</h3>
                                 <span className="text-xs px-2 py-0.5 rounded bg-slate-100 text-slate-700">{profile.status}</span>
                                 <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">{profile.domain}</span>
                                 <span className="text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">
@@ -12834,7 +12834,7 @@ const AutonomousAgentsPage: React.FC = () => {
 
             <div className="bg-white border border-gray-200 rounded-lg p-4 flex-1 min-h-0">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="text-sm font-semibold text-gray-900">Recent Cases</h3>
+                <h3 className="section-heading">Recent Cases</h3>
                 <div className="text-xs text-gray-500">
                   {swarmOutcomeCases.length} cases
                 </div>
@@ -13012,7 +13012,7 @@ const AutonomousAgentsPage: React.FC = () => {
             <div className="grid grid-cols-1 xl:grid-cols-3 gap-4 min-h-0">
               <div className="xl:col-span-2 bg-white border border-gray-200 rounded-lg p-4 min-h-0">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-gray-900">Saved Profiles</h3>
+                  <h3 className="section-heading">Saved Profiles</h3>
                   <div className="text-xs text-gray-500">{filteredCodingSwarmProfiles.length} profiles</div>
                 </div>
                 <div className="space-y-3 max-h-[42rem] overflow-y-auto pr-1">
@@ -13138,7 +13138,7 @@ const AutonomousAgentsPage: React.FC = () => {
 
               <div className="bg-white border border-gray-200 rounded-lg p-4">
                 <div className="flex items-center justify-between mb-3">
-                  <h3 className="text-sm font-semibold text-gray-900">
+                  <h3 className="section-heading">
                     {editingCodingSwarmProfileId ? 'Edit Profile' : codingSwarmProfileDraft.duplicate_mode ? 'Duplicate Profile' : 'New Profile'}
                   </h3>
                   {(editingCodingSwarmProfileId || codingSwarmProfileDraft.title) ? (
@@ -13535,7 +13535,7 @@ const AutonomousAgentsPage: React.FC = () => {
                           <div className="flex items-start justify-between gap-4">
                             <div className="min-w-0">
                               <div className="flex items-center gap-2 mb-1">
-                                <h3 className="font-medium text-gray-900">{item.title}</h3>
+                                <h3 className="section-heading">{item.title}</h3>
                                 <span className={`${chipBase} bg-slate-100 text-slate-700`}>{item.status}</span>
                                 <span className={`${chipBase} bg-blue-100 text-blue-700`}>Priority {item.priority}</span>
                                 {summary?.promotion_decision ? (
@@ -14868,7 +14868,7 @@ const AutonomousAgentsPage: React.FC = () => {
                         <GitBranch className="w-5 h-5" />
                       </div>
                       <div className="flex-1">
-                        <h3 className="font-medium text-gray-900">{chain.display_name}</h3>
+                        <h3 className="section-heading">{chain.display_name}</h3>
                         <p className="text-sm text-gray-500">{chain.chain_steps.length} steps</p>
                       </div>
                       {isRecoveryPlaybook ? (
@@ -15401,7 +15401,7 @@ const AutonomousAgentsPage: React.FC = () => {
                             </span>
                           ) : null}
                         </div>
-                        <h3 className="mt-2 font-medium text-gray-900 truncate">{item.title}</h3>
+                        <h3 className="section-heading mt-2 truncate">{item.title}</h3>
                         {item.summary ? (
                           <p className="text-sm text-gray-600 mt-1 line-clamp-2">{item.summary}</p>
                         ) : null}

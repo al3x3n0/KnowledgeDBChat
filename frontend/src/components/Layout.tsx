@@ -281,23 +281,23 @@ const Layout: React.FC = () => {
           className="fixed inset-0 flex z-40 md:hidden"
           onClick={() => setSidebarOpen(false)}
         >
-          <div className="fixed inset-0 bg-gray-600 bg-opacity-75" />
+          <div className="fixed inset-0 bg-black/70 backdrop-blur-sm animate-fade-in" />
         </div>
       )}
 
       {/* Sidebar: doors on the left, the active door's sections beside them */}
       <div className={`
-        fixed inset-y-0 left-0 flex w-[344px] bg-white shadow-lg transform transition-transform duration-300 ease-in-out z-50
+        fixed inset-y-0 left-0 flex w-[344px] bg-gray-50 shadow-level-3 md:shadow-none transform transition-transform duration-slow ease-enter z-50
         ${sidebarOpen ? 'translate-x-0' : '-translate-x-full'}
         md:translate-x-0 md:static md:inset-0
       `}>
 
-        {/* Doors */}
-        <div className="w-[184px] flex-shrink-0 flex flex-col border-r border-gray-200">
+        {/* Doors. The deepest plane in the app: everything else sits above it. */}
+        <div className="w-[184px] flex-shrink-0 flex flex-col border-r border-gray-200 bg-gray-50">
           <div className="flex items-center h-16 px-4 border-b border-gray-200">
-            <div className="flex items-center space-x-2 min-w-0">
-              <Database className="w-6 h-6 text-primary-700 flex-shrink-0" />
-              <span className="text-gray-900 font-semibold text-sm truncate">Knowledge DB</span>
+            <div className="flex items-center space-x-2 min-w-0 group">
+              <Database className="w-6 h-6 text-primary-700 flex-shrink-0 transition-transform duration-base ease-ui group-hover:scale-110" />
+              <span className="text-gray-900 font-semibold text-sm truncate tracking-tight">Knowledge DB</span>
             </div>
           </div>
 
@@ -311,11 +311,17 @@ const Layout: React.FC = () => {
                   to={door.sections[0].to}
                   onClick={() => setSidebarOpen(false)}
                   className={`
-                    flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors duration-200
-                    ${isActive ? 'bg-primary-100 text-primary-700 font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}
+                    group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm
+                    transition-all duration-fast ease-ui
+                    ${isActive
+                      ? 'bg-primary-500/10 text-primary-700 font-medium shadow-[inset_2px_0_0_0_theme(colors.primary.600)]'
+                      : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900'}
                   `}
                 >
-                  <DoorIcon className="w-5 h-5 flex-shrink-0" />
+                  <DoorIcon
+                    className={`w-5 h-5 flex-shrink-0 transition-transform duration-fast ease-ui
+                      ${isActive ? '' : 'group-hover:scale-110'}`}
+                  />
                   <span className="truncate">{door.name}</span>
                 </Link>
               );
@@ -332,11 +338,17 @@ const Layout: React.FC = () => {
                   to={door.sections[0].to}
                   onClick={() => setSidebarOpen(false)}
                   className={`
-                    flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm transition-colors duration-200
-                    ${isActive ? 'bg-primary-100 text-primary-700 font-medium' : 'text-gray-500 hover:bg-gray-100 hover:text-gray-900'}
+                    group relative flex items-center gap-3 px-3 py-2.5 rounded-lg text-sm
+                    transition-all duration-fast ease-ui
+                    ${isActive
+                      ? 'bg-primary-500/10 text-primary-700 font-medium shadow-[inset_2px_0_0_0_theme(colors.primary.600)]'
+                      : 'text-gray-500 hover:bg-gray-200 hover:text-gray-900'}
                   `}
                 >
-                  <DoorIcon className="w-5 h-5 flex-shrink-0" />
+                  <DoorIcon
+                    className={`w-5 h-5 flex-shrink-0 transition-transform duration-fast ease-ui
+                      ${isActive ? '' : 'group-hover:scale-110'}`}
+                  />
                   <span className="truncate">{door.name}</span>
                 </Link>
               );
@@ -373,8 +385,10 @@ const Layout: React.FC = () => {
           </div>
         </div>
 
-        {/* Sections of the active door, or filter results across all of them */}
-        <div className="flex-1 min-w-0 flex flex-col">
+        {/* Sections of the active door, or filter results across all of them.
+            One plane above the door rail, so the two read as depth rather
+            than as a single panel split by a line. */}
+        <div className="flex-1 min-w-0 flex flex-col bg-gray-100">
           <div className="flex items-center justify-between h-16 px-4 border-b border-gray-200">
             <span className="text-xs font-semibold tracking-wide uppercase text-gray-500 truncate">
               {filterResults ? 'Results' : activeDoor?.name}
@@ -392,7 +406,11 @@ const Layout: React.FC = () => {
               value={navFilter}
               onChange={(e) => setNavFilter(e.target.value)}
               placeholder="Filter…"
-              className="w-full px-3 py-2 text-sm rounded-md border border-gray-200 focus:outline-none focus:ring-2 focus:ring-primary-200 focus:border-primary-300"
+              className="w-full px-3 py-2 text-sm rounded-md bg-gray-50 border border-gray-300
+                shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.35)]
+                transition-all duration-fast ease-ui
+                hover:border-gray-400
+                focus:outline-none focus:ring-0 focus:border-primary-600 focus:shadow-accent-glow"
             />
           </div>
 
@@ -412,8 +430,11 @@ const Layout: React.FC = () => {
                           to={item.to}
                           onClick={() => { setNavFilter(''); setSidebarOpen(false); }}
                           className={`
-                            flex items-center gap-3 px-3 py-2 text-sm rounded-md transition-colors duration-200
-                            ${isActiveNavItem(item) ? 'bg-primary-100 text-primary-700 font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}
+                            group flex items-center gap-3 px-3 py-2 text-sm rounded-md
+                            transition-all duration-fast ease-ui
+                            ${isActiveNavItem(item)
+                              ? 'bg-primary-500/10 text-primary-700 font-medium shadow-[inset_2px_0_0_0_theme(colors.primary.600)]'
+                              : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 hover:translate-x-0.5'}
                           `}
                         >
                           <Icon className="w-4 h-4 flex-shrink-0" />
@@ -434,8 +455,11 @@ const Layout: React.FC = () => {
                       to={item.to}
                       onClick={() => setSidebarOpen(false)}
                       className={`
-                        flex items-center gap-3 px-3 py-2 text-sm rounded-md transition-colors duration-200
-                        ${isActiveNavItem(item) ? 'bg-primary-100 text-primary-700 font-medium' : 'text-gray-600 hover:bg-gray-100 hover:text-gray-900'}
+                        group flex items-center gap-3 px-3 py-2 text-sm rounded-md
+                        transition-all duration-fast ease-ui
+                        ${isActiveNavItem(item)
+                          ? 'bg-primary-500/10 text-primary-700 font-medium shadow-[inset_2px_0_0_0_theme(colors.primary.600)]'
+                          : 'text-gray-600 hover:bg-gray-200 hover:text-gray-900 hover:translate-x-0.5'}
                       `}
                     >
                       <Icon className="w-4 h-4 flex-shrink-0" />
@@ -451,21 +475,27 @@ const Layout: React.FC = () => {
           <div className="px-3 pb-3 grid grid-cols-3 gap-2 border-t border-gray-200 pt-3">
             <button
               type="button"
-              className="px-2 py-2 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+              className="px-2 py-2 text-xs font-medium rounded-md bg-gray-200 text-gray-700 border border-gray-300
+                transition-all duration-fast ease-ui active:translate-y-px
+                hover:bg-gray-300 hover:text-gray-900 hover:border-gray-400 hover:shadow-level-1"
               onClick={() => handleQuickNav('/chat')}
             >
               Ask
             </button>
             <button
               type="button"
-              className="px-2 py-2 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+              className="px-2 py-2 text-xs font-medium rounded-md bg-gray-200 text-gray-700 border border-gray-300
+                transition-all duration-fast ease-ui active:translate-y-px
+                hover:bg-gray-300 hover:text-gray-900 hover:border-gray-400 hover:shadow-level-1"
               onClick={() => handleQuickNav('/documents')}
             >
               Ingest
             </button>
             <button
               type="button"
-              className="px-2 py-2 text-xs font-medium rounded-md bg-gray-100 text-gray-700 hover:bg-gray-200"
+              className="px-2 py-2 text-xs font-medium rounded-md bg-gray-200 text-gray-700 border border-gray-300
+                transition-all duration-fast ease-ui active:translate-y-px
+                hover:bg-gray-300 hover:text-gray-900 hover:border-gray-400 hover:shadow-level-1"
               onClick={() => handleQuickNav('/autonomous-agents')}
             >
               Run
@@ -477,7 +507,7 @@ const Layout: React.FC = () => {
       {/* Main content */}
       <div className="flex-1 flex flex-col overflow-hidden min-h-0">
         {/* Top navigation */}
-        <header className="bg-white shadow-sm border-b border-gray-200 h-16 flex items-center justify-between px-4 md:px-6">
+        <header className="bg-gray-100 border-b border-gray-200 shadow-level-1 h-16 flex items-center justify-between px-4 md:px-6 relative z-10">
           <button
             className="md:hidden text-gray-500 hover:text-gray-700"
             onClick={() => setSidebarOpen(true)}

@@ -50,6 +50,28 @@
   html {
     @apply scroll-smooth;
   }
+
+  /* One focus treatment for the whole app.
+     `:focus-visible` rather than `:focus`, so a mouse click does not leave a
+     ring behind but a keyboard tab always does. Individual components no
+     longer need to remember this; they only override it when the ring needs
+     to sit on a different colour. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-primary-600/70 ring-offset-2 ring-offset-gray-50;
+  }
+
+  /* Honour the system setting. Everything below animates for polish, not for
+     meaning, so removing it costs nothing. */
+  @media (prefers-reduced-motion: reduce) {
+    *,
+    *::before,
+    *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+      scroll-behavior: auto !important;
+    }
+  }
 }
 
 @layer utilities {
@@ -77,6 +99,135 @@
 }
 
 @layer components {
+  /*
+   * The card pattern, lifted where it already stands.
+   *
+   * 127 cards across 17 files are written as `bg-white border
+   * border-gray-200 rounded-*`. Rewriting them all to a `surface-1` utility
+   * was the tidier-looking change and the wrong one: 38 places in the test
+   * suite navigate the DOM with `closest('.bg-white')` and
+   * `closest('.border.rounded-lg.p-4')`, so the rename broke 25 tests to
+   * achieve a purely visual result.
+   *
+   * Matching the compound selector instead gives every one of those cards the
+   * plane, the top hairline and the ambient shadow with no markup change and
+   * no test churn. `.bg-white` is already remapped below, so this extends a
+   * decision the codebase had made rather than introducing a new one.
+   *
+   * The `:not()` clauses keep it off form controls, which share the
+   * background colour but are wells rather than raised surfaces.
+   */
+  .bg-white.border-gray-200:not(input):not(textarea):not(select) {
+    background-color: theme('colors.gray.100') !important;
+    border-top-color: theme('colors.gray.300');
+    box-shadow: theme('boxShadow.level-1');
+  }
+
+  /*
+   * Surfaces: the elevation system, as four utilities.
+   *
+   * Height on a dark UI is carried by the plane, not by the shadow. Each level
+   * is a lighter surface than the one beneath, with a hairline top edge (light
+   * falls from above, so the top border catches it and the bottom does not)
+   * and an ambient shadow for separation. Reach for these instead of
+   * assembling bg + border + shadow at each call site.
+   */
+  .surface-0 {
+    @apply bg-gray-50 border border-gray-200;
+  }
+
+  .surface-1 {
+    @apply bg-gray-100 border border-gray-200 shadow-level-1;
+    border-top-color: theme('colors.gray.300');
+  }
+
+  .surface-2 {
+    @apply bg-gray-200 border border-gray-300 shadow-level-2;
+    border-top-color: theme('colors.gray.400');
+  }
+
+  .surface-3 {
+    @apply bg-gray-200 border border-gray-300 shadow-level-3;
+    border-top-color: theme('colors.gray.400');
+  }
+
+  /* A surface that answers the pointer: rises one level, and its edge warms
+     toward the accent. 120ms, because this is a response, not an event. */
+  .surface-interactive {
+    @apply surface-1 transition-all duration-fast ease-ui;
+  }
+
+  .surface-interactive:hover {
+    @apply bg-gray-200 border-gray-400 shadow-level-2;
+  }
+
+  .surface-interactive:active {
+    @apply shadow-level-1;
+    transform: translateY(0.5px);
+  }
+
+  /* Marks the element as the current one: an accent hairline down the leading
+     edge, which reads at a glance without recolouring the whole surface. */
+  .surface-selected {
+    @apply bg-gray-200 border-gray-400;
+    box-shadow: inset 2px 0 0 0 theme('colors.primary.600');
+  }
+
+  /* A hairline that fades at both ends, for separating sections inside a
+     panel. A full-width 1px line boxes content in; this one just stops. */
+  .hairline {
+    height: 1px;
+    border: 0;
+    background: linear-gradient(
+      to right,
+      transparent,
+      theme('colors.gray.300') 15%,
+      theme('colors.gray.300') 85%,
+      transparent
+    );
+  }
+
+  /* Loading placeholder that reads as "arriving" rather than "broken". */
+  .skeleton {
+    @apply rounded bg-gray-200;
+    background-image: linear-gradient(
+      90deg,
+      theme('colors.gray.200') 0%,
+      theme('colors.gray.300') 50%,
+      theme('colors.gray.200') 100%
+    );
+    background-size: 200% 100%;
+    @apply animate-shimmer;
+  }
+
+  /* Something is happening right now. Paired with `animate-breathe` on a dot,
+     this is the app's one "live" signal. */
+  .live-dot {
+    @apply inline-block w-1.5 h-1.5 rounded-full bg-primary-600 animate-breathe;
+    box-shadow: 0 0 6px 0 theme('colors.primary.500');
+  }
+
+  /*
+   * Headings, as two levels rather than twelve.
+   *
+   * A survey of the four main pages found forty <h3> elements — one semantic
+   * level — wearing twelve different treatments: three sizes, two weights,
+   * three colours and three different margins below. That is what makes a
+   * dense app read as assembled rather than designed, because the eye uses
+   * type to work out what belongs to what.
+   *
+   * `.panel-title` names the thing you are looking at. `.section-heading`
+   * labels a part of it, and is deliberately quieter than the content it
+   * introduces — a label should be findable, not loud.
+   */
+  .panel-title {
+    @apply text-base font-semibold text-gray-900 tracking-tight;
+  }
+
+  .section-heading {
+    @apply text-sm font-medium text-gray-700 mb-2;
+  }
+
   /* Custom scrollbar */
   .scrollbar-thin {
     scrollbar-width: thin;

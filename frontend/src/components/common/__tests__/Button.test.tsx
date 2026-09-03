@@ -34,11 +34,40 @@ describe('Button', () => {
     expect(handleClick).not.toHaveBeenCalled();
   });
 
-  it('applies variant classes correctly', () => {
+  // These assert the distinctions the variants exist to make, not the exact
+  // utilities that express them: only `primary` carries the accent, only
+  // `danger` carries red, and `ghost` has no border at rest. Asserting the
+  // full utility string made restyling a test failure rather than a review.
+  it('gives only the primary variant the accent', () => {
     const { rerender } = render(<Button variant="primary">Primary</Button>);
-    expect(screen.getByText('Primary')).toHaveClass('bg-gray-50', 'text-primary-700', 'border-primary-500');
-    
+    expect(screen.getByText('Primary').className).toContain('primary-');
+
     rerender(<Button variant="secondary">Secondary</Button>);
-    expect(screen.getByText('Secondary')).toHaveClass('bg-gray-50', 'text-gray-900', 'border-gray-300');
+    expect(screen.getByText('Secondary').className).not.toContain('primary-');
+  });
+
+  it('marks the destructive variant in red, and no other', () => {
+    const { rerender } = render(<Button variant="danger">Delete</Button>);
+    expect(screen.getByText('Delete').className).toContain('red-');
+
+    rerender(<Button variant="ghost">Ghost</Button>);
+    expect(screen.getByText('Ghost').className).not.toContain('red-');
+    // A ghost button should be invisible until wanted.
+    expect(screen.getByText('Ghost')).toHaveClass('border-transparent');
+  });
+
+  it('shows a spinner and blocks the click while loading', () => {
+    const handleClick = jest.fn();
+    render(
+      <Button loading onClick={handleClick}>
+        Saving
+      </Button>
+    );
+    const button = screen.getByText('Saving');
+    expect(button).toBeDisabled();
+    expect(button).toHaveAttribute('aria-busy', 'true');
+
+    fireEvent.click(button);
+    expect(handleClick).not.toHaveBeenCalled();
   });
 });

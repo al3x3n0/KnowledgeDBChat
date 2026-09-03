@@ -134,7 +134,7 @@ const AlertModal: React.FC<AlertModalProps> = ({
     >
       {/* Backdrop */}
       <div
-        className="fixed inset-0 bg-black bg-opacity-50 transition-opacity"
+        className="fixed inset-0 bg-black/70 backdrop-blur-sm transition-opacity duration-base ease-ui animate-fade-in"
         onClick={onClose}
         aria-hidden="true"
       />
@@ -143,7 +143,7 @@ const AlertModal: React.FC<AlertModalProps> = ({
       <div className="flex min-h-full items-center justify-center p-4">
         <div
           ref={modalRef}
-          className="relative bg-white rounded-lg shadow-xl max-w-md w-full transform transition-all"
+          className="relative surface-3 rounded-xl max-w-md w-full transform transition-all animate-scale-in"
           onClick={(e) => e.stopPropagation()}
         >
           {/* Header */}

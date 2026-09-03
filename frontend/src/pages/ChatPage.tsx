@@ -371,7 +371,7 @@ const ChatPage: React.FC = () => {
                 >
                   <div className="flex items-start justify-between">
                     <div className="flex-1 min-w-0">
-                      <h3 className="text-sm font-medium text-gray-900 truncate">
+                      <h3 className="section-heading truncate">
                         {session.title || 'Untitled Chat'}
                       </h3>
                       <p className="text-xs text-gray-500 mt-1">

@@ -1173,7 +1173,7 @@ const DocumentsPage: React.FC = () => {
             <div>
               <div className="flex items-center gap-2">
                 <FileText className="w-5 h-5 text-primary-600" />
-                <h3 className="text-lg font-semibold text-gray-900">{repoLabel}</h3>
+                <h3 className="panel-title">{repoLabel}</h3>
               </div>
               <p className="text-sm text-gray-600 mt-1">
                 {fileCount} {fileCount === 1 ? 'file' : 'files'} from {repoSource?.name || firstDoc?.source?.name}
@@ -1455,7 +1455,7 @@ const DocumentsPage: React.FC = () => {
               {isVideoAudio(document) && (
                 <Video className="w-5 h-5 text-primary-600 flex-shrink-0" />
               )}
-              <h3 className="text-lg font-medium text-gray-900 truncate">
+              <h3 className="panel-title truncate">
                 {getDisplayTitle(document)}
               </h3>
               <div className="flex items-center space-x-1 ml-auto">
@@ -2041,7 +2041,7 @@ const DocumentsPage: React.FC = () => {
             <div className="bg-white border border-gray-200 rounded-lg p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-lg font-medium text-gray-900">Process a Git Repository</h3>
+                  <h3 className="panel-title">Process a Git Repository</h3>
                   <p className="text-sm text-gray-600">Provide repository details to ingest documentation, code, issues, or wiki content.</p>
                 </div>
               </div>
@@ -2237,7 +2237,7 @@ const DocumentsPage: React.FC = () => {
                 </div>
               </form>
               <div className="mt-8 border-t border-gray-100 pt-6">
-                <h3 className="text-lg font-medium text-gray-900">Compare branches with LLM explanation</h3>
+                <h3 className="panel-title">Compare branches with LLM explanation</h3>
                 <p className="text-sm text-gray-600">
                   Select one of your Git sources, choose two branches, and generate an automated summary of the differences.
                 </p>
@@ -2409,7 +2409,7 @@ const DocumentsPage: React.FC = () => {
             <div className="bg-white border border-gray-200 rounded-lg p-4">
               <div className="flex items-center justify-between">
                 <div>
-                  <h3 className="text-lg font-medium text-gray-900">Ingest Papers from ArXiv</h3>
+                  <h3 className="panel-title">Ingest Papers from ArXiv</h3>
                   <p className="text-sm text-gray-600">Search the ArXiv API or provide explicit IDs to keep research papers in sync.</p>
                 </div>
               </div>
@@ -2535,7 +2535,7 @@ const DocumentsPage: React.FC = () => {
               ) : (
                 <FileText className="w-16 h-16 mx-auto mb-4 text-gray-300" />
               )}
-              <h3 className="text-lg font-medium text-gray-900 mb-2">
+              <h3 className="panel-title mb-2">
                 No {activeTab === 'videos' ? 'videos or audio files' : 'documents'} found
               </h3>
               <p className="text-gray-500 mb-6">
@@ -4032,7 +4032,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
             <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
               {/* Video Player - Takes 2/3 width on large screens */}
               <div className="lg:col-span-2">
-                <h3 className="font-medium text-gray-900 mb-2">
+                <h3 className="section-heading">
                   {document.file_type?.startsWith('video/') ? 'Video Player' : 'Audio Player'}
                 </h3>
                 <div className="bg-black rounded-lg overflow-hidden">
@@ -4055,7 +4055,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
           {/* Transcript Sidebar - Takes 1/3 width on large screens */}
           <div className="lg:col-span-1">
             <div className="flex items-center justify-between mb-2">
-              <h3 className="font-medium text-gray-900">
+              <h3 className="section-heading">
                 Transcript ({(playbackSegments.length > 0 ? playbackSegments.length : liveSegs.length)} segments)
               </h3>
               {document.extra_metadata?.transcript_document_id && (
@@ -4145,7 +4145,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
             </div>
           ) : isMediaFile ? (
             <div>
-              <h3 className="font-medium text-gray-900 mb-2">
+              <h3 className="section-heading">
                 {document.file_type?.startsWith('video/') ? 'Video Player' : 'Audio Player'}
               </h3>
               <div className="bg-black rounded-lg overflow-hidden">
@@ -4225,7 +4225,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
           {speakerSummary.length > 0 && (
             <div className="border border-gray-200 rounded-lg p-4 bg-white">
               <div className="flex items-center justify-between mb-3">
-                <h3 className="font-medium text-gray-900">Detected speakers</h3>
+                <h3 className="section-heading">Detected speakers</h3>
                 <span className="text-xs text-gray-500">
                   {speakerSummary.reduce((acc, item) => acc + item.count, 0)} segments
                 </span>
@@ -4275,7 +4275,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
               <div className="border border-gray-200 rounded-lg p-4 bg-white">
                 <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
                   <div>
-                    <h3 className="font-medium text-gray-900">Narration Audio</h3>
+                    <h3 className="section-heading">Narration Audio</h3>
                     <p className="text-sm text-gray-600">
                       Attach a narration track to sync with slides. Slides highlight automatically while audio plays.
                     </p>
@@ -4354,7 +4354,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
               </div>
               <div>
                 <div className="flex items-center justify-between mb-2">
-                  <h3 className="font-medium text-gray-900">Slides & Comments</h3>
+                  <h3 className="section-heading">Slides & Comments</h3>
                   <span className="text-sm text-gray-500">
                     {presentationMeta.slide_count || presentationMeta.slides.length} slides
                   </span>
@@ -4457,7 +4457,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
           {/* Content (hide for transcript docs) */}
           {document.content && document.extra_metadata?.doc_type !== 'transcript' && (
             <div>
-              <h3 className="font-medium text-gray-900 mb-2">Content Preview</h3>
+              <h3 className="section-heading">Content Preview</h3>
               <div className="p-4 bg-gray-50 rounded-lg max-h-96 overflow-auto">
                 <pre className="whitespace-pre-wrap text-sm text-gray-700">
                   {document.content.substring(0, 2000)}
@@ -4473,7 +4473,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
             (document.extra_metadata?.transcription_metadata?.segments && document.extra_metadata.transcription_metadata.segments.length > 0)
            ) && (
             <div>
-              <h3 className="font-medium text-gray-900 mb-2">
+              <h3 className="section-heading">
                 Transcript with Time Codes ({(document.extra_metadata.transcription_metadata.sentence_segments || document.extra_metadata.transcription_metadata.segments).length} segments)
               </h3>
               <div className="p-4 bg-gray-50 rounded-lg max-h-96 overflow-auto">
@@ -4541,7 +4541,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
           {/* Chunks */}
           {document.chunks && document.chunks.length > 0 && (
             <div>
-              <h3 className="font-medium text-gray-900 mb-2">
+              <h3 className="section-heading">
                 Processed Chunks ({document.chunks.length})
               </h3>
               <div className="space-y-2 max-h-64 overflow-auto">
@@ -4567,7 +4567,7 @@ const DocumentDetailsModal: React.FC<DocumentDetailsModalProps> = ({
           {/* Summary */}
           <div>
             <div className="flex items-center justify-between mb-2">
-              <h3 className="font-medium text-gray-900">Summary</h3>
+              <h3 className="section-heading">Summary</h3>
               <button
                 className="text-sm text-primary-700 hover:text-primary-800"
                 onClick={async () => {
@@ -4635,7 +4635,7 @@ const PersonaEditRequestModal: React.FC<PersonaEditRequestModalProps> = ({
       <div className="bg-white rounded-lg shadow-lg w-full max-w-lg p-6">
         <div className="flex items-center justify-between mb-4">
           <div>
-            <h3 className="text-lg font-semibold text-gray-900">Suggest persona change</h3>
+            <h3 className="panel-title">Suggest persona change</h3>
             <p className="text-sm text-gray-600">
               Your request will be routed to administrators for review. Please include what should change.
             </p>

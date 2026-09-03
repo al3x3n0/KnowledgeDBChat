@@ -10,6 +10,7 @@ from app.api.endpoints import (
     agent,
     agent_control_plane,
     agent_jobs,
+    agent_pipelines,
     ai_hub_eval,
     analytics,
     api_keys,
@@ -76,6 +77,9 @@ api_router.include_router(chat.router, prefix="/chat", tags=["chat"])
 api_router.include_router(documents.router, prefix="/documents", tags=["documents"])
 api_router.include_router(
     document_folders.router, prefix="/document-folders", tags=["document-folders"]
+)
+api_router.include_router(
+    agent_pipelines.router, prefix="/agent-pipelines", tags=["agent-pipelines"]
 )
 api_router.include_router(upload.router, prefix="/upload", tags=["upload"])
 api_router.include_router(memory.router, prefix="/memory", tags=["memory"])

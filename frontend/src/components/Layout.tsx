@@ -54,35 +54,60 @@ interface NavDoor {
 const Layout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [navFilter, setNavFilter] = useState('');
+  const navFilterRef = React.useRef<HTMLInputElement | null>(null);
   const { user, logout } = useAuth();
   const location = useLocation();
   const navigate = useNavigate();
 
   // Global keyboard shortcuts for navigation
+  // One shortcut per door, in the order the doors are drawn.
+  //
+  // These predated the four-door navigation and never caught up: Ctrl+3 went
+  // to Memory — a page that now lives under Settings — while R&D and
+  // Synthesis, two of the four doors and the bulk of the actual work here,
+  // had no shortcut at all. Ctrl+K focuses the cross-door filter, which is the
+  // fastest way to anything that is not a door.
   useKeyboardShortcuts([
     {
       key: '1',
       ctrlKey: true,
       handler: () => navigate('/chat'),
-      description: 'Navigate to Chat',
+      description: 'Go to Chat',
     },
     {
       key: '2',
       ctrlKey: true,
       handler: () => navigate('/documents'),
-      description: 'Navigate to Documents',
+      description: 'Go to Library',
     },
     {
       key: '3',
       ctrlKey: true,
-      handler: () => navigate('/memory'),
-      description: 'Navigate to Memory',
+      handler: () => navigate('/autonomous-agents'),
+      description: 'Go to R&D',
+    },
+    {
+      key: '4',
+      ctrlKey: true,
+      handler: () => navigate('/synthesis'),
+      description: 'Go to Synthesis',
+    },
+    {
+      key: 'k',
+      ctrlKey: true,
+      preventDefault: true,
+      handler: () => {
+        setSidebarOpen(true);
+        // The rail may have just been revealed, so focus after it paints.
+        requestAnimationFrame(() => navFilterRef.current?.focus());
+      },
+      description: 'Search every destination',
     },
     {
       key: ',',
       ctrlKey: true,
       handler: () => navigate('/settings'),
-      description: 'Navigate to Settings',
+      description: 'Go to Settings',
     },
   ]);
 
@@ -403,8 +428,16 @@ const Layout: React.FC = () => {
 
           <div className="px-3 pt-3">
             <input
+              ref={navFilterRef}
               value={navFilter}
               onChange={(e) => setNavFilter(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Escape') {
+                  setNavFilter('');
+                  e.currentTarget.blur();
+                }
+              }}
+              aria-label="Search every destination"
               placeholder="Filter…"
               className="w-full px-3 py-2 text-sm rounded-md bg-gray-50 border border-gray-300
                 shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.35)]

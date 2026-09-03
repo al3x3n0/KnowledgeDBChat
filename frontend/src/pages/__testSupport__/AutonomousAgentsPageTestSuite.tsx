@@ -7672,6 +7672,45 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
     expect(screen.getByText(/Queued follow-up/i)).toBeInTheDocument();
   });
 
+  shardIt('turns a finished run into a write-up, which is the way the pipeline faces', async () => {
+    // corpus -> question -> run -> document. Until this action existed the
+    // last hop only went backwards: Synthesis could pull a run in, but a
+    // finished run could not push out to a document, which is the direction
+    // you are facing when a run ends.
+    apiClient.createSynthesisJob.mockResolvedValueOnce({
+      id: 'syn-writeup-1',
+      job_type: 'report',
+      status: 'pending',
+    });
+    const finished = makeJob({
+      id: 'job-done',
+      name: 'INT8 attention ceiling',
+      status: 'completed',
+    });
+    apiClient.listAgentJobs.mockResolvedValue({
+      jobs: [finished],
+      total: 1,
+      page: 1,
+      page_size: 50,
+      has_more: false,
+    });
+    apiClient.getAgentJob.mockResolvedValue(finished);
+
+    await renderWithProviders('/autonomous-agents?job=job-done');
+
+    fireEvent.click(await screen.findByRole('button', { name: /Write this up/i }));
+
+    await waitFor(() =>
+      expect(apiClient.createSynthesisJob).toHaveBeenCalledWith(
+        expect.objectContaining({
+          job_type: 'report',
+          agent_job_ids: ['job-done'],
+          title: 'Write-up: INT8 attention ceiling',
+        })
+      )
+    );
+  });
+
   shardIt('creates a compiler regression explanation from a domain validation summary row', async () => {
     apiClient.createSynthesisJob.mockResolvedValueOnce({
       id: 'syn-job-1',

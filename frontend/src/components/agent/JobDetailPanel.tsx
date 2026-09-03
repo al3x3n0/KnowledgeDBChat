@@ -24,6 +24,7 @@ import {
   BarChart3,
   Brain,
   Download,
+  FileText,
   GitBranch,
   Layers,
   Link2,
@@ -1054,6 +1055,37 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 {showPromotionPanel ? 'Hide Promotion' : 'Promote to Monitor'}
               </Button>
             )}
+            {/* Write-up. The pipeline this app is for runs corpus -> question ->
+                run -> document, and until now it was only navigable backwards:
+                the Synthesis page could pull a run in, but standing on a
+                finished run there was no way to say "write this up" — which is
+                the direction you are actually facing when a run ends. */}
+            {job.status === 'completed' && (
+              <Button
+                size="sm"
+                onClick={async () => {
+                  try {
+                    const synthesis = await apiClient.createSynthesisJob({
+                      job_type: 'report',
+                      title: `Write-up: ${job.name}`,
+                      document_ids: [],
+                      agent_job_ids: [String(job.id)],
+                      description: `Synthesised from what "${job.name}" established.`,
+                    });
+                    toast.success('Write-up started from this run');
+                    navigate(`/synthesis?job=${synthesis.id}`);
+                  } catch (error: any) {
+                    toast.error(
+                      error?.response?.data?.detail || 'Could not start the write-up'
+                    );
+                  }
+                }}
+              >
+                <FileText className="w-4 h-4 mr-1" />
+                Write this up
+              </Button>
+            )}
+
             {/* Export button - available for completed or failed jobs with results */}
             {['completed', 'failed'].includes(job.status) && (
               <Button

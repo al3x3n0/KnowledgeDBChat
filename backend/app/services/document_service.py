@@ -57,6 +57,7 @@ class DocumentService:
         owner_persona_id: Optional[UUID] = None,
         persona_id: Optional[UUID] = None,
         persona_role: Optional[str] = None,
+        extra_where: Optional[Any] = None,
     ) -> tuple[List[Document], int]:
         """
         Get paginated list of documents with total count.
@@ -68,6 +69,10 @@ class DocumentService:
             search: Optional search term
             order_by: Field to order by (default: updated_at)
             order: Sort order - 'asc' or 'desc' (default: desc)
+            extra_where: An additional predicate over Document, used by the
+                folder filter so that "what is in this folder" stays defined
+                in one place (document_folder_service) rather than being
+                reimplemented here as a set of parallel parameters.
             db: Database session
 
         Returns:
@@ -79,6 +84,9 @@ class DocumentService:
         base_query = select(Document)
 
         # Apply filters
+        if extra_where is not None:
+            base_query = base_query.where(extra_where)
+
         if source_id:
             base_query = base_query.where(Document.source_id == source_id)
 

@@ -42,6 +42,7 @@ from .compops_evidence_subscription import (
     CompOpsWebhookEvent,
 )
 from .document import Document, DocumentChunk, DocumentSource
+from .document_folder import DocumentFolder, DocumentFolderItem
 from .domain_research_profile import DomainResearchProfile
 from .experiment import ExperimentPlan, ExperimentRun
 from .export_job import ExportJob
@@ -106,6 +107,8 @@ from .workflow import (
 
 __all__ = [
     "Document",
+    "DocumentFolder",
+    "DocumentFolderItem",
     "DocumentChunk",
     "DocumentSource",
     "ChatSession",

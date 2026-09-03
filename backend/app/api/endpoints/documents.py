@@ -53,6 +53,7 @@ from app.schemas.document import (
     InstantArxivIngestResponse,
 )
 from app.services.auth_service import get_current_user
+from app.services.document_folder_service import FolderError, document_folder_service
 from app.services.document_service import DocumentService
 from app.services.storage_service import storage_service
 from app.services.text_processor import TextProcessor
@@ -236,6 +237,13 @@ async def get_documents(
         None, ge=1, le=2000, description="Optional limit (alternative to page_size)"
     ),
     source_id: Optional[UUID] = None,
+    folder: Optional[str] = Query(
+        None,
+        description=(
+            "A folder key from /document-folders/tree: 'all', 'unfiled', "
+            "'user:<id>', 'source:<id>', 'type:<ext>', 'recent:week', 'tag:<t>'"
+        ),
+    ),
     search: Optional[str] = None,
     order_by: Optional[str] = "updated_at",
     order: Optional[str] = "desc",
@@ -279,6 +287,19 @@ async def get_documents(
         effective_page_size = limit or page_size
         effective_skip = skip if skip is not None else (page - 1) * effective_page_size
 
+        # One vocabulary for "what is in this folder": the tree hands out
+        # keys, this resolves them, and neither can drift from the other.
+        extra_where = None
+        if folder:
+            try:
+                extra_where = document_folder_service.resolve_filter(
+                    folder, current_user.id
+                )
+            except FolderError as error:
+                raise HTTPException(
+                    status_code=error.status_code, detail=error.detail
+                ) from error
+
         # Get documents with total count
         documents, total = await document_service.get_documents(
             skip=effective_skip,
@@ -287,6 +308,7 @@ async def get_documents(
             search=search,
             order_by=order_by,
             order=order,
+            extra_where=extra_where,
             owner_persona_id=owner_persona_id,
             persona_id=persona_id,
             persona_role=persona_role,
@@ -333,6 +355,11 @@ async def get_documents(
             items=items, total=total, page=page, page_size=effective_page_size
         )
     except ValidationError:
+        raise
+    except HTTPException:
+        # An HTTPException is a decision already made, with a status code
+        # chosen deliberately. Falling into the handler below would relabel a
+        # 400 "not a folder key" as a 500 and lose the reason with it.
         raise
     except Exception as e:
         logger.exception(

@@ -270,6 +270,10 @@ import {
   LatexProjectFileUploadResponse,
   LatexCompileJobCreateRequest,
   LatexCompileJobResponse,
+  DocumentFolder,
+  DocumentFolderItemsResult,
+  DocumentFolderRef,
+  DocumentFolderTree,
 } from '../types';
 
 // CRA substitutes the *bare identifier* `process.env.REACT_APP_X` at build
@@ -585,6 +589,9 @@ class ApiClient {
     limit?: number;
     source_id?: string;
     search?: string;
+    /** A folder key from getDocumentFolderTree(): the server resolves it, so
+     *  the tree and this list can never disagree about a folder's contents. */
+    folder?: string;
     owner_persona_id?: string;
     persona_id?: string;
     persona_role?: string;
@@ -592,6 +599,89 @@ class ApiClient {
     const response = await this.client.get('/api/v1/documents/', { params });
     // Backend returns PaginatedResponse with items array
     return response.data?.items || response.data || [];
+  }
+
+  // -------------------------------------------------------- Document folders
+
+  /** The whole tree: computed system folders, then this user's own. */
+  async getDocumentFolderTree(includeSystem = true): Promise<DocumentFolderTree> {
+    const response = await this.client.get('/api/v1/document-folders/tree', {
+      params: { include_system: includeSystem },
+    });
+    return response.data;
+  }
+
+  async createDocumentFolder(payload: {
+    name: string;
+    parent_id?: string | null;
+    description?: string | null;
+    color?: string | null;
+    position?: number;
+  }): Promise<DocumentFolder> {
+    const response = await this.client.post('/api/v1/document-folders', payload);
+    return response.data;
+  }
+
+  /** Rename, recolour or reorder. A move needs `reparent: true` as well,
+   *  because `parent_id: null` cannot otherwise be told from "unchanged". */
+  async updateDocumentFolder(
+    folderId: string,
+    payload: {
+      name?: string;
+      description?: string | null;
+      color?: string | null;
+      position?: number;
+      parent_id?: string | null;
+      reparent?: boolean;
+    }
+  ): Promise<DocumentFolder> {
+    const response = await this.client.patch(
+      `/api/v1/document-folders/${folderId}`,
+      payload
+    );
+    return response.data;
+  }
+
+  async deleteDocumentFolder(folderId: string, recursive = false): Promise<{
+    deleted: string;
+    name: string;
+    subfolders_deleted: number;
+  }> {
+    const response = await this.client.delete(`/api/v1/document-folders/${folderId}`, {
+      params: { recursive },
+    });
+    return response.data;
+  }
+
+  async addDocumentsToFolder(
+    folderId: string,
+    documentIds: string[]
+  ): Promise<DocumentFolderItemsResult> {
+    const response = await this.client.post(
+      `/api/v1/document-folders/${folderId}/documents`,
+      { document_ids: documentIds }
+    );
+    return response.data;
+  }
+
+  async removeDocumentsFromFolder(
+    folderId: string,
+    documentIds: string[]
+  ): Promise<DocumentFolderItemsResult> {
+    // A body on DELETE, which axios needs told explicitly.
+    const response = await this.client.delete(
+      `/api/v1/document-folders/${folderId}/documents`,
+      { data: { document_ids: documentIds } }
+    );
+    return response.data;
+  }
+
+  /** Which of this user's folders hold a document. */
+  async getFoldersForDocument(documentId: string): Promise<DocumentFolderRef[]> {
+    const response = await this.client.get(
+      `/api/v1/document-folders/for-document/${documentId}`
+    );
+    return response.data;
   }
 
   async searchDocuments(params: SearchParams): Promise<SearchResponse> {

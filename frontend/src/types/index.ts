@@ -5513,3 +5513,57 @@ export interface TrainingEvalRunResponse {
   num_cases: number;
   results: Array<Record<string, any>>;
 }
+
+// ---------------------------------------------------------------- Document folders
+
+/** A node in the document folder tree.
+ *
+ *  `key` is the whole addressing story and the only thing the documents list
+ *  needs: 'all' | 'unfiled' | 'user:<id>' | 'source:<id>' | 'type:<ext>' |
+ *  'recent:today|week|month' | 'tag:<t>'. System nodes have no `id`, which is
+ *  why the key rather than the id is what gets passed around.
+ */
+export interface DocumentFolderNode {
+  key: string;
+  name: string;
+  /** 'user' can be edited and filled; 'system' is computed and read-only;
+   *  'group' is a heading that holds system nodes and selects nothing. */
+  kind: 'user' | 'system' | 'group';
+  document_count: number;
+  subtree_count: number;
+  children: DocumentFolderNode[];
+  id?: string | null;
+  description?: string | null;
+  color?: string | null;
+  icon?: string | null;
+  position?: number | null;
+}
+
+export interface DocumentFolderTree {
+  system: DocumentFolderNode[];
+  folders: DocumentFolderNode[];
+}
+
+export interface DocumentFolderRef {
+  key: string;
+  id: string;
+  name: string;
+  color?: string | null;
+}
+
+export interface DocumentFolder {
+  id: string;
+  name: string;
+  key: string;
+  parent_id?: string | null;
+  description?: string | null;
+  color?: string | null;
+  position: number;
+}
+
+export interface DocumentFolderItemsResult {
+  added: number;
+  already_present: number;
+  not_found: number;
+  removed: number;
+}

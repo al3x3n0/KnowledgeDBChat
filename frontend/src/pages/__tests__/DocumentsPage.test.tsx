@@ -23,6 +23,14 @@ jest.mock('../../contexts/AuthContext', () => ({
 jest.mock('../../services/api', () => ({
   apiClient: {
     getDocuments: jest.fn().mockResolvedValue([]),
+    // The folder tree loads alongside the list. Unmocked it rejects, which
+    // react-query swallows into a console error rather than a failure — the
+    // test would pass while the page logged noise on every run.
+    getDocumentFolderTree: jest.fn().mockResolvedValue({ system: [], folders: [] }),
+    createDocumentFolder: jest.fn(),
+    updateDocumentFolder: jest.fn(),
+    deleteDocumentFolder: jest.fn(),
+    addDocumentsToFolder: jest.fn(),
     getDocumentSources: jest.fn().mockResolvedValue([]),
     getActiveGitSources: jest.fn().mockResolvedValue([]),
     getGitComparisonJobs: jest.fn().mockResolvedValue([]),

@@ -45,11 +45,14 @@ import type {
   GitCompareJob,
   Persona,
   DocumentPersonaDetection,
+  DocumentFolderNode,
+  DocumentFolderTree,
 } from '../types';
 import { useAuth } from '../contexts/AuthContext';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import SkeletonList from '../components/common/SkeletonList';
+import FolderTree from '../components/documents/FolderTree';
 import ConfirmationModal from '../components/common/ConfirmationModal';
 import ProgressBar from '../components/common/ProgressBar';
 import { DocxEditorModal } from '../components/docx';
@@ -158,6 +161,15 @@ const DocumentsPage: React.FC = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
   const [selectedSource, setSelectedSource] = useState<string>('');
+  // Which folder the list is showing. A key, not an id: system folders have
+  // no id, and the key is what the API takes.
+  const [selectedFolderKey, setSelectedFolderKey] = useState<string>(() => {
+    try {
+      return window.localStorage.getItem('documents_selected_folder') || 'all';
+    } catch {
+      return 'all';
+    }
+  });
   const [showUploadModal, setShowUploadModal] = useState(false);
   const [showIngestUrlModal, setShowIngestUrlModal] = useState(false);
   const [selectedDocument, setSelectedDocument] = useState<KnowledgeDocument | null>(null);
@@ -349,12 +361,103 @@ const DocumentsPage: React.FC = () => {
     return () => clearTimeout(timer);
   }, [searchQuery]);
 
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('documents_selected_folder', selectedFolderKey);
+    } catch {
+      // A private window: the selection simply does not survive a reload.
+    }
+  }, [selectedFolderKey]);
+
+  // The folder tree. Its counts are computed server-side from the documents
+  // themselves, so this is refetched after anything that files or unfiles.
+  const {
+    data: folderTree,
+    isLoading: folderTreeLoading,
+    refetch: refetchFolderTree,
+  } = useQuery<DocumentFolderTree>(
+    ['document-folder-tree'],
+    () => apiClient.getDocumentFolderTree(),
+    { refetchOnWindowFocus: false, staleTime: 30000 }
+  );
+
+
+  // ------------------------------------------------------------ folder actions
+  //
+  // Deliberately prompt-based rather than modal-based: this page already has
+  // eight modals, and a folder name is one field. If folders grow options
+  // (colour, description) this is the place that becomes a modal.
+
+  const handleCreateFolder = async (parentId: string | null) => {
+    const name = window.prompt(parentId ? 'Name for the subfolder' : 'Name for the folder');
+    if (!name || !name.trim()) return;
+    try {
+      await apiClient.createDocumentFolder({ name: name.trim(), parent_id: parentId });
+      toast.success(`Created "${name.trim()}"`);
+      refetchFolderTree();
+    } catch (error: any) {
+      // The server's reason is the useful part: a duplicate name and a depth
+      // limit are different problems and it says which.
+      toast.error(error?.response?.data?.detail || 'Could not create the folder');
+    }
+  };
+
+  const handleRenameFolder = async (node: DocumentFolderNode) => {
+    if (!node.id) return;
+    const name = window.prompt('Rename folder', node.name);
+    if (!name || !name.trim() || name.trim() === node.name) return;
+    try {
+      await apiClient.updateDocumentFolder(node.id, { name: name.trim() });
+      refetchFolderTree();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Could not rename the folder');
+    }
+  };
+
+  const handleDeleteFolder = async (node: DocumentFolderNode) => {
+    if (!node.id) return;
+    const hasChildren = node.children.length > 0;
+    const ok = window.confirm(
+      hasChildren
+        ? `Delete "${node.name}" and its ${node.children.length} subfolder(s)? The documents themselves stay in the library.`
+        : `Delete "${node.name}"? The documents themselves stay in the library.`
+    );
+    if (!ok) return;
+    try {
+      await apiClient.deleteDocumentFolder(node.id, hasChildren);
+      // If the list was showing what we just deleted, fall back to everything
+      // rather than leaving it filtered to a folder that no longer exists.
+      if (selectedFolderKey === node.key) setSelectedFolderKey('all');
+      refetchFolderTree();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Could not delete the folder');
+    }
+  };
+
+  const handleFileDocuments = async (folderId: string, documentIds: string[]) => {
+    try {
+      const result = await apiClient.addDocumentsToFolder(folderId, documentIds);
+      if (result.added > 0) {
+        toast.success(`Filed ${result.added} document${result.added === 1 ? '' : 's'}`);
+      } else if (result.already_present > 0) {
+        toast('Already in that folder');
+      }
+      refetchFolderTree();
+      // The list only changes if we are looking at a folder whose membership
+      // just changed, but refetching is cheap and being wrong is not.
+      refetchDocuments();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Could not file the documents');
+    }
+  };
+
   // Fetch documents
   const { data: allDocuments, isLoading: documentsLoading, refetch: refetchDocuments } = useQuery<KnowledgeDocument[]>(
-    ['documents', debouncedSearchQuery, selectedSource, ownerPersonaFilter, speakerPersonaFilter],
+    ['documents', debouncedSearchQuery, selectedSource, selectedFolderKey, ownerPersonaFilter, speakerPersonaFilter],
     () => apiClient.getDocuments({
       search: debouncedSearchQuery || undefined,
       source_id: selectedSource || undefined,
+      folder: selectedFolderKey && selectedFolderKey !== 'all' ? selectedFolderKey : undefined,
       limit: 100,
       owner_persona_id: ownerPersonaFilter || undefined,
       persona_id: speakerPersonaFilter || undefined,
@@ -1447,7 +1550,20 @@ const DocumentsPage: React.FC = () => {
     const dangerBtnClass =
       'bg-red-50 text-red-800 border border-red-300 hover:bg-red-100 focus:ring-red-500';
     return (
-      <div className="bg-white border border-gray-200 rounded-lg p-4 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 duration-200">
+      <div
+        // Draggable onto a user folder in the tree. The payload is a list even
+        // for one document, so a future multi-select drags through the same
+        // path rather than needing a second one.
+        draggable
+        onDragStart={(event) => {
+          event.dataTransfer.setData(
+            'application/x-document-ids',
+            JSON.stringify([document.id])
+          );
+          event.dataTransfer.effectAllowed = 'copy';
+        }}
+        className="bg-white border border-gray-200 rounded-lg p-4 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 duration-200"
+      >
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="flex-1 min-w-0">
             {/* Title and status */}
@@ -2525,53 +2641,75 @@ const DocumentsPage: React.FC = () => {
               </form>
             </div>
           </div>
-        ) : documentsLoading ? (
-          <SkeletonList
-            rows={6}
-            label={`Loading ${activeTab === 'videos' ? 'videos' : 'documents'}`}
-          />
-        ) : documents.length === 0 ? (
-          <div className="flex items-center justify-center h-64">
-            <div className="text-center">
-              {activeTab === 'videos' ? (
-                <Video className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-              ) : (
-                <FileText className="w-16 h-16 mx-auto mb-4 text-gray-300" />
-              )}
-              <h3 className="panel-title mb-2">
-                No {activeTab === 'videos' ? 'videos or audio files' : 'documents'} found
-              </h3>
-              <p className="text-gray-500 mb-6">
-                {searchQuery || selectedSource 
-                  ? 'Try adjusting your search or filter criteria'
-                  : activeTab === 'videos'
-                    ? 'Upload video or audio files to get started'
-                    : 'Upload documents or configure data sources to get started'
-                }
-              </p>
-              <Button
-                onClick={() => setShowUploadModal(true)}
-                icon={<Upload className="w-4 h-4" />}
-              >
-                Upload {activeTab === 'videos' ? 'Video/Audio' : 'Document'}
-              </Button>
-            </div>
-          </div>
         ) : (
-          <div className="p-6">
-            <div className="grid gap-4">
-              {repoGroupComponents}
-              {regularDocuments.map((document) => (
-                <DocumentCard
-                  key={document.id}
-                  document={document}
-                  onFilterPersona={handlePersonaFilter}
-                  canManagePersona={canManagePersona}
-                  onManagePersona={openPersonaManager}
-                  canRequestPersonaEdit={canRequestPersonaEdit}
-                  onRequestPersonaEdit={handlePersonaEditRequest}
-                />
-              ))}
+          // The folder tree and the list are one region: the tree
+          // hands out a key and the list is a query on that key, so
+          // they cannot disagree about what a folder contains.
+          <div className="flex min-h-0 flex-1 overflow-hidden">
+            <aside className="w-64 shrink-0 overflow-y-auto border-r border-gray-200 bg-gray-100 p-3 scrollbar-thin">
+              <FolderTree
+                system={folderTree?.system || []}
+                folders={folderTree?.folders || []}
+                loading={folderTreeLoading}
+                selectedKey={selectedFolderKey}
+                onSelect={(key) => setSelectedFolderKey(key)}
+                onCreate={handleCreateFolder}
+                onRename={handleRenameFolder}
+                onDelete={handleDeleteFolder}
+                onDropDocuments={handleFileDocuments}
+              />
+            </aside>
+            <div className="flex-1 min-w-0 overflow-y-auto scrollbar-thin">
+            {documentsLoading ? (
+            <SkeletonList
+              rows={6}
+              label={`Loading ${activeTab === 'videos' ? 'videos' : 'documents'}`}
+            />
+          ) : documents.length === 0 ? (
+            <div className="flex items-center justify-center h-64">
+              <div className="text-center">
+                {activeTab === 'videos' ? (
+                  <Video className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                ) : (
+                  <FileText className="w-16 h-16 mx-auto mb-4 text-gray-300" />
+                )}
+                <h3 className="panel-title mb-2">
+                  No {activeTab === 'videos' ? 'videos or audio files' : 'documents'} found
+                </h3>
+                <p className="text-gray-500 mb-6">
+                  {searchQuery || selectedSource 
+                    ? 'Try adjusting your search or filter criteria'
+                    : activeTab === 'videos'
+                      ? 'Upload video or audio files to get started'
+                      : 'Upload documents or configure data sources to get started'
+                  }
+                </p>
+                <Button
+                  onClick={() => setShowUploadModal(true)}
+                  icon={<Upload className="w-4 h-4" />}
+                >
+                  Upload {activeTab === 'videos' ? 'Video/Audio' : 'Document'}
+                </Button>
+              </div>
+            </div>
+          ) : (
+            <div className="p-6">
+              <div className="grid gap-4">
+                {repoGroupComponents}
+                {regularDocuments.map((document) => (
+                  <DocumentCard
+                    key={document.id}
+                    document={document}
+                    onFilterPersona={handlePersonaFilter}
+                    canManagePersona={canManagePersona}
+                    onManagePersona={openPersonaManager}
+                    canRequestPersonaEdit={canRequestPersonaEdit}
+                    onRequestPersonaEdit={handlePersonaEditRequest}
+                  />
+                ))}
+              </div>
+            </div>
+            )}
             </div>
           </div>
         )}

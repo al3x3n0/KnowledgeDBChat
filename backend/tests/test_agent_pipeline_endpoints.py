@@ -207,3 +207,108 @@ class TestCompilingToAChain:
         # A pipeline that stops for a person should say so before it is run,
         # not when it stops.
         assert "measure" in body["checkpoints"]
+
+
+LAUNCH = "/api/v1/agent-pipelines/launch"
+
+
+class TestLaunchingOne:
+    """The first endpoint here that spends anything.
+
+    Every check `/check` performs runs again at launch, and none of them are
+    advisory any more. These tests are about the refusals: a launch that should
+    not have happened costs a whole run to discover.
+    """
+
+    def _good(self):
+        return _spec(
+            _stage("measure", ["benchmark_measurement"]),
+            _stage(
+                "attribute",
+                ["bottleneck_attribution"],
+                depends_on=["measure"],
+                assumes=["benchmark_measurement"],
+            ),
+            name="int8-study",
+        )
+
+    def test_it_starts_a_job_and_says_what_it_started(self, client, auth_headers):
+        response = client.post(
+            LAUNCH, json={"spec": self._good()}, headers=auth_headers
+        )
+        assert response.status_code == 201
+        body = response.json()
+
+        assert body["job_id"]
+        assert body["stages"] == ["measure", "attribute"]
+        assert body["estimated_seconds"] > 0
+
+    def test_an_invalid_pipeline_is_not_started(self, client, auth_headers):
+        payload = {
+            "spec": _spec(
+                _stage(
+                    "attribute",
+                    ["bottleneck_attribution"],
+                    assumes=["counter_trace"],
+                )
+            )
+        }
+        response = client.post(LAUNCH, json=payload, headers=auth_headers)
+        assert response.status_code == 422
+        assert "counter_trace" in response.json()["detail"]
+
+    def test_a_budget_is_a_refusal_here_rather_than_a_note(self, client, auth_headers):
+        # On /check a budget is information. At launch it has to stop the run,
+        # or pricing a pipeline beforehand bought nothing.
+        response = client.post(
+            LAUNCH,
+            json={"spec": self._good(), "budget_seconds": 1},
+            headers=auth_headers,
+        )
+        assert response.status_code == 422
+        assert "budget" in response.json()["detail"].lower()
+
+    def test_a_spec_edited_since_it_was_priced_is_refused(self, client, auth_headers):
+        # The ordinary way someone starts a run they never actually saw priced:
+        # check one spec, edit it, launch. The estimate the caller agreed to
+        # must be the estimate about to be spent.
+        response = client.post(
+            LAUNCH,
+            json={"spec": self._good(), "acknowledged_seconds": 7},
+            headers=auth_headers,
+        )
+        assert response.status_code == 409
+        detail = response.json()["detail"]
+        assert "7" in detail and "again" in detail.lower()
+
+    def test_the_matching_estimate_is_accepted(self, client, auth_headers):
+        checked = client.post(
+            CHECK, json={"spec": self._good()}, headers=auth_headers
+        ).json()
+        total = checked["plan"]["total_seconds"]
+
+        response = client.post(
+            LAUNCH,
+            json={"spec": self._good(), "acknowledged_seconds": total},
+            headers=auth_headers,
+        )
+        assert response.status_code == 201
+
+    def test_several_independent_roots_are_refused_rather_than_half_run(
+        self, client, auth_headers
+    ):
+        # A chain runs from one head. Launching only the first root would
+        # silently run part of what was asked for.
+        payload = {
+            "spec": _spec(
+                _stage("one", ["benchmark_measurement"]),
+                _stage("two", ["dynamic_profile"]),
+            )
+        }
+        response = client.post(LAUNCH, json=payload, headers=auth_headers)
+        assert response.status_code == 422
+        assert "starting stages" in response.json()["detail"]
+
+    def test_it_needs_a_caller(self, client):
+        response = client.post(LAUNCH, json={"spec": self._good()})
+        assert response.status_code in (401, 403)

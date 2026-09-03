@@ -273,6 +273,7 @@ import {
   DocumentFolder,
   PipelineBinding,
   PipelineCheck,
+  PipelineLaunch,
   DocumentFolderItemsResult,
   DocumentFolderRef,
   DocumentFolderTree,
@@ -614,6 +615,21 @@ class ApiClient {
     const response = await this.client.post('/api/v1/agent-pipelines/check', {
       spec,
       budget_seconds: budgetSeconds,
+    });
+    return response.data;
+  }
+
+  /** Start a pipeline. Every check from checkPipeline runs again server-side
+   *  and refuses rather than advises — pass `acknowledgedSeconds` so a spec
+   *  edited since it was priced is rejected instead of quietly costing more. */
+  async launchPipeline(
+    spec: Record<string, any>,
+    options?: { budgetSeconds?: number; acknowledgedSeconds?: number }
+  ): Promise<PipelineLaunch> {
+    const response = await this.client.post('/api/v1/agent-pipelines/launch', {
+      spec,
+      budget_seconds: options?.budgetSeconds,
+      acknowledged_seconds: options?.acknowledgedSeconds,
     });
     return response.data;
   }

@@ -13,7 +13,22 @@ import React from 'react';
 import PipelineStudioPage from '../PipelineStudioPage';
 
 jest.mock('../../services/api', () => ({
-  apiClient: { checkPipeline: jest.fn(), bindPipeline: jest.fn() },
+  apiClient: {
+    checkPipeline: jest.fn(),
+    bindPipeline: jest.fn(),
+    launchPipeline: jest.fn(),
+  },
+}));
+
+jest.mock('react-hot-toast', () => ({
+  __esModule: true,
+  default: { success: jest.fn(), error: jest.fn() },
+}));
+
+const mockNavigate = jest.fn();
+jest.mock('react-router-dom', () => ({
+  ...jest.requireActual('react-router-dom'),
+  useNavigate: () => mockNavigate,
 }));
 
 const apiClient = require('../../services/api').apiClient;
@@ -162,4 +177,79 @@ it('marks unpriced tools rather than letting a stage look free', async () => {
 
   // Zero seconds because nothing knows the cost is not the same as free.
   expect(await screen.findByText('1 unpriced')).toBeInTheDocument();
+});
+
+
+describe('launching', () => {
+  it('does not offer to launch a pipeline the server would refuse', async () => {
+    apiClient.checkPipeline.mockResolvedValue({
+      ...okCheck,
+      valid: false,
+      plan: null,
+      problems: ['a: no tool produces telepathy'],
+    });
+    render(<PipelineStudioPage />);
+    await screen.findByText('1 problem');
+
+    // Offering a button whose only outcome is a refusal teaches the user that
+    // buttons here do not mean anything.
+    expect(screen.getByRole('button', { name: /Launch/i })).toBeDisabled();
+  });
+
+  it('does not offer to launch a pipeline that cannot afford itself', async () => {
+    apiClient.checkPipeline.mockResolvedValue({
+      ...okCheck,
+      budget: {
+        affordable: false,
+        budget_seconds: 60,
+        estimated_seconds: 1200,
+        critical_path_seconds: 1200,
+        unpriced_tools: [],
+      },
+    });
+    render(<PipelineStudioPage />);
+    await screen.findByText(/Needs 20 min/);
+
+    expect(screen.getByRole('button', { name: /Launch/i })).toBeDisabled();
+  });
+
+  it('names the price and the stops before spending anything', async () => {
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    render(<PipelineStudioPage />);
+    await screen.findByText('profile_c_workload');
+
+    fireEvent.click(screen.getByRole('button', { name: /Launch/i }));
+
+    const asked = confirm.mock.calls[0][0] as string;
+    expect(asked).toContain('3 min');
+    expect(asked).toContain('measure'); // the checkpoint it will stop at
+    // Declining means nothing was started.
+    expect(apiClient.launchPipeline).not.toHaveBeenCalled();
+    confirm.mockRestore();
+  });
+
+  it('sends the estimate it showed, so an edited spec is refused', async () => {
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    apiClient.launchPipeline.mockResolvedValue({
+      job_id: 'job-9',
+      name: 'study',
+      stages: ['profile', 'measure'],
+      estimated_seconds: 180,
+      checkpoints: [],
+    });
+    render(<PipelineStudioPage />);
+    await screen.findByText('profile_c_workload');
+
+    fireEvent.click(screen.getByRole('button', { name: /Launch/i }));
+
+    await waitFor(() =>
+      expect(apiClient.launchPipeline).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ acknowledgedSeconds: 180 })
+      )
+    );
+    // And it goes to the run it just started, rather than leaving the user on
+    // an editor with no sign anything happened.
+    await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/autonomous-agents?job=job-9'));
+  });
 });

@@ -19,16 +19,23 @@ authorisation and budget checks a launch needs.
 """
 
 from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.database import get_db
 from app.models.user import User
+from app.schemas.agent_job import AgentJobCreate
 from app.schemas.agent_pipeline import (
     PipelineBindResponse,
     PipelineCheckResponse,
+    PipelineLaunchRequest,
+    PipelineLaunchResponse,
     PipelinePlanResponse,
     PipelineSpecRequest,
     StagePlanResponse,
 )
 from app.services import agent_pipeline_binding, agent_pipeline_spec
+from app.services.agent_job_creation_service import agent_job_creation_service
 from app.services.auth_service import get_current_user
 
 router = APIRouter()
@@ -154,4 +161,100 @@ async def bind_pipeline(
         ],
         checkpoints=list(compiled.checkpoints),
         description=agent_pipeline_binding.describe(pipeline),
+    )
+
+
+@router.post("/launch", response_model=PipelineLaunchResponse, status_code=201)
+async def launch_pipeline(
+    payload: PipelineLaunchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a pipeline. The first thing here that actually spends anything.
+
+    Every check `/check` performs runs again, and none of them are advisory at
+    this point: a pipeline that cannot be satisfied, cannot be expressed as a
+    chain, or cannot afford itself is refused rather than started. Re-running
+    them is deliberate — the spec that arrives here is not necessarily the one
+    the caller last checked.
+    """
+    pipeline = _normalized(payload.spec)
+
+    problems = agent_pipeline_spec.validate(pipeline)
+    if problems:
+        raise HTTPException(status_code=422, detail="; ".join(problems))
+
+    binding_problems = agent_pipeline_binding.expressible(pipeline)
+    if binding_problems:
+        raise HTTPException(status_code=422, detail="; ".join(binding_problems))
+
+    compiled = agent_pipeline_spec.plan(pipeline)
+
+    if payload.budget_seconds:
+        budget = agent_pipeline_spec.check_budget(pipeline, payload.budget_seconds)
+        if not budget.get("affordable"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Needs {compiled.total_seconds}s and the budget is "
+                    f"{payload.budget_seconds}s"
+                ),
+            )
+
+    # The estimate the caller agreed to must be the estimate that is about to
+    # be spent. A spec edited between checking and launching is the ordinary
+    # way someone starts a run they have not actually seen priced.
+    if (
+        payload.acknowledged_seconds is not None
+        and payload.acknowledged_seconds != compiled.total_seconds
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This pipeline now costs {compiled.total_seconds}s, not "
+                f"{payload.acknowledged_seconds}s. Check it again before launching."
+            ),
+        )
+
+    bound = agent_pipeline_binding.bind(pipeline)
+    if not bound.roots:
+        raise HTTPException(status_code=422, detail="Pipeline compiled to no jobs")
+    if len(bound.roots) > 1:
+        # A chain has one head. A pipeline with several independent roots is a
+        # real shape, and launching only the first of them silently would run
+        # part of what was asked for.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This pipeline has {len(bound.roots)} independent starting stages; "
+                "a chain runs from one. Give them a common first stage."
+            ),
+        )
+
+    root = bound.roots[0]
+    chain_config = root.get("chain_config") or {}
+    job = await agent_job_creation_service.create_from_request(
+        request=AgentJobCreate(
+            name=root.get("name") or pipeline.name,
+            description=root.get("description"),
+            goal=root.get("goal") or "",
+            job_type=root.get("job_type") or "research",
+            config=root.get("config") or {},
+            chain_config=chain_config,
+            max_iterations=root.get("max_iterations") or 100,
+        ),
+        user_id=current_user.id,
+        db=db,
+    )
+
+    logger.info(
+        f"Launched pipeline '{pipeline.name}' as job {job.id} "
+        f"({len(compiled.order)} stages, ~{compiled.total_seconds}s)"
+    )
+    return PipelineLaunchResponse(
+        job_id=str(job.id),
+        name=pipeline.name,
+        stages=list(compiled.order),
+        estimated_seconds=compiled.total_seconds,
+        checkpoints=list(compiled.checkpoints),
     )

@@ -7,15 +7,19 @@
  * them rather than asking for them: if you have to name the tool yourself, you
  * can name one that cannot produce what you asked for.
  *
- * Everything here happens before anything expensive starts. The four failures
- * it catches are the ones that otherwise cost a whole run to discover:
+ * The checking happens before anything expensive starts. The four failures it
+ * catches are the ones that otherwise cost a whole run to discover:
  *
  *   - a contract asking for evidence no tool produces
  *   - a stage built on a measurement the stage before it never takes
  *   - a budget that sounded generous and is two orders short
  *   - a loop with no bound
  *
- * Nothing on this page launches anything.
+ * Launch is the one thing here that spends anything. It is offered only for a
+ * pipeline that is startable — valid, expressible as a chain, and inside its
+ * budget — and it names the price and the stopping points before it starts.
+ * The estimate on screen is sent with the request, so a spec edited since it
+ * was priced is refused by the server rather than quietly costing more.
  */
 
 import clsx from 'clsx';
@@ -26,9 +30,12 @@ import {
   GitBranch,
   Layers,
   PauseCircle,
+  Play,
   Workflow,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
+import toast from 'react-hot-toast';
+import { useNavigate } from 'react-router-dom';
 
 import Button from '../components/common/Button';
 import { apiClient } from '../services/api';
@@ -76,12 +83,14 @@ const minutes = (seconds: number) =>
   seconds < 60 ? `${seconds}s` : `${Math.round(seconds / 60)} min`;
 
 const PipelineStudioPage: React.FC = () => {
+  const navigate = useNavigate();
   const [source, setSource] = useState<string>(readDraft);
   const [budget, setBudget] = useState<string>('');
   const [check, setCheck] = useState<PipelineCheck | null>(null);
   const [parseError, setParseError] = useState<string>('');
   const [serverError, setServerError] = useState<string>('');
   const [checking, setChecking] = useState(false);
+  const [launching, setLaunching] = useState(false);
 
   useEffect(() => {
     try {
@@ -135,6 +144,49 @@ const PipelineStudioPage: React.FC = () => {
     return () => window.clearTimeout(timer);
   }, [runCheck]);
 
+  // Startable, not merely valid: a pipeline that cannot be expressed as a
+  // chain, or cannot afford its own budget, must not offer a Launch button
+  // that the server is only going to refuse.
+  const canLaunch = Boolean(
+    check?.valid &&
+      check.expressible &&
+      check.plan &&
+      (!check.budget || check.budget.affordable)
+  );
+
+  const handleLaunch = useCallback(async () => {
+    if (!canLaunch || !parsed.value || !check?.plan) return;
+    const total = check.plan.total_seconds;
+    const stops = check.plan.checkpoints.length
+      ? `\n\nIt will stop for you at: ${check.plan.checkpoints.join(', ')}.`
+      : '';
+    // The one place in this feature that spends anything, so the number and
+    // the stopping points are said out loud before it does.
+    const ok = window.confirm(
+      `Start "${parsed.value.name || 'this pipeline'}"?\n\n` +
+        `${check.plan.order.length} stages, about ${minutes(total)} of work.${stops}`
+    );
+    if (!ok) return;
+
+    setLaunching(true);
+    try {
+      const budgetSeconds = budget.trim() ? Number(budget.trim()) : undefined;
+      const started = await apiClient.launchPipeline(parsed.value, {
+        budgetSeconds: budgetSeconds || undefined,
+        // The estimate shown above is the estimate being agreed to. If the
+        // spec changed since it was priced the server refuses rather than
+        // running something nobody saw costed.
+        acknowledgedSeconds: total,
+      });
+      toast.success(`Started ${started.name}`);
+      navigate(`/autonomous-agents?job=${started.job_id}`);
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Could not start the pipeline');
+    } finally {
+      setLaunching(false);
+    }
+  }, [canLaunch, parsed, check, budget, navigate]);
+
   const problems = check?.problems || [];
   const bindingProblems = check?.binding_problems || [];
   const plan = check?.plan;
@@ -162,6 +214,20 @@ const PipelineStudioPage: React.FC = () => {
           />
           <Button size="sm" variant="secondary" onClick={() => setSource(EXAMPLE)}>
             Reset to example
+          </Button>
+          <Button
+            size="sm"
+            disabled={!canLaunch || launching}
+            loading={launching}
+            title={
+              canLaunch
+                ? 'Start this pipeline'
+                : 'Fix the problems above before launching'
+            }
+            onClick={handleLaunch}
+          >
+            <Play className="w-4 h-4 mr-1" />
+            Launch
           </Button>
         </div>
       </div>

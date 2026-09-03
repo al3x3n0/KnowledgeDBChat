@@ -5611,6 +5611,14 @@ export interface PipelineCheck {
   } | null;
 }
 
+export interface PipelineLaunch {
+  job_id: string;
+  name: string;
+  stages: string[];
+  estimated_seconds: number;
+  checkpoints: string[];
+}
+
 export interface PipelineBinding {
   name: string;
   chain_config: Record<string, any>;

@@ -74,3 +74,31 @@ class PipelineBindResponse(BaseModel):
     deferred_edges: List[Dict[str, Any]] = Field(default_factory=list)
     checkpoints: List[str] = Field(default_factory=list)
     description: List[str] = Field(default_factory=list)
+
+
+class PipelineLaunchRequest(PipelineSpecRequest):
+    """Launch a pipeline. `budget_seconds` is a limit, not a note.
+
+    On `/check` a budget is information. Here it is a refusal: a pipeline that
+    does not fit is not started, because the whole point of pricing it before
+    it runs is to not run the one that cannot afford itself.
+    """
+
+    #: Say the estimate out loud. If it does not match what the server computes
+    #: the spec changed between checking and launching, and the caller is about
+    #: to spend on something they have not seen.
+    acknowledged_seconds: Optional[int] = Field(
+        None,
+        ge=0,
+        description="The total the caller was shown when they checked",
+    )
+
+
+class PipelineLaunchResponse(BaseModel):
+    """What was started."""
+
+    job_id: str
+    name: str
+    stages: List[str] = Field(default_factory=list)
+    estimated_seconds: int = 0
+    checkpoints: List[str] = Field(default_factory=list)

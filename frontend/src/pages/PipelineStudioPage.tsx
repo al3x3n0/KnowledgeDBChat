@@ -38,6 +38,7 @@ import toast from 'react-hot-toast';
 import { useNavigate } from 'react-router-dom';
 
 import Button from '../components/common/Button';
+import PipelineGraph from '../components/pipelines/PipelineGraph';
 import { apiClient } from '../services/api';
 import type { PipelineCheck } from '../types';
 
@@ -91,6 +92,22 @@ const PipelineStudioPage: React.FC = () => {
   const [serverError, setServerError] = useState<string>('');
   const [checking, setChecking] = useState(false);
   const [launching, setLaunching] = useState(false);
+  const [view, setView] = useState<'split' | 'text' | 'graph'>(() => {
+    try {
+      return (window.localStorage.getItem('pipeline_studio_view') as any) || 'split';
+    } catch {
+      return 'split';
+    }
+  });
+  const [selectedStage, setSelectedStage] = useState<string | null>(null);
+
+  useEffect(() => {
+    try {
+      window.localStorage.setItem('pipeline_studio_view', view);
+    } catch {
+      // Not worth telling the user about.
+    }
+  }, [view]);
 
   useEffect(() => {
     try {
@@ -187,6 +204,16 @@ const PipelineStudioPage: React.FC = () => {
     }
   }, [canLaunch, parsed, check, budget, navigate]);
 
+  // The graph never holds a model of its own: it hands back a whole spec and
+  // that is serialised straight into the text. Two views of one document
+  // cannot diverge, because there is nothing for them to diverge between.
+  const applySpecFromGraph = useCallback(
+    (next: Record<string, any>) => {
+      setSource(JSON.stringify(next, null, 2));
+    },
+    []
+  );
+
   const problems = check?.problems || [];
   const bindingProblems = check?.binding_problems || [];
   const plan = check?.plan;
@@ -212,6 +239,27 @@ const PipelineStudioPage: React.FC = () => {
               shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.35)]
               focus:outline-none focus:border-primary-600 focus:shadow-accent-glow"
           />
+          <div
+            className="flex rounded-md border border-gray-300 overflow-hidden"
+            role="group"
+            aria-label="Editor view"
+          >
+            {(['text', 'split', 'graph'] as const).map((mode) => (
+              <button
+                key={mode}
+                type="button"
+                aria-pressed={view === mode}
+                className={`px-2.5 py-1 text-xs capitalize transition-colors duration-fast ${
+                  view === mode
+                    ? 'bg-primary-500/15 text-primary-700'
+                    : 'text-gray-600 hover:bg-gray-200'
+                }`}
+                onClick={() => setView(mode)}
+              >
+                {mode}
+              </button>
+            ))}
+          </div>
           <Button size="sm" variant="secondary" onClick={() => setSource(EXAMPLE)}>
             Reset to example
           </Button>
@@ -239,22 +287,56 @@ const PipelineStudioPage: React.FC = () => {
       </p>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0">
-        {/* The spec */}
-        <div className="flex flex-col min-h-0">
-          <div className="flex items-center justify-between mb-2">
-            <h2 className="section-heading mb-0">Specification</h2>
+        {/* The spec, as text and/or as a graph. Both edit the same document:
+            the graph hands back a whole spec and it is serialised into the
+            text, so neither view holds state the other cannot see. */}
+        <div className="flex flex-col min-h-0 gap-3">
+          <div className="flex items-center justify-between">
+            <h2 className="section-heading mb-0">
+              {view === 'graph' ? 'Shape' : 'Specification'}
+            </h2>
             {checking && <span className="text-xs text-gray-500">checking…</span>}
           </div>
-          <textarea
-            aria-label="Pipeline specification"
-            spellCheck={false}
-            value={source}
-            onChange={(e) => setSource(e.target.value)}
-            className="flex-1 min-h-[320px] w-full rounded-lg bg-gray-50 border border-gray-300
-              px-3 py-2 font-mono text-xs leading-relaxed text-gray-900
-              shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.35)]
-              focus:outline-none focus:border-primary-600 focus:shadow-accent-glow"
-          />
+
+          {view !== 'graph' && (
+            <textarea
+              aria-label="Pipeline specification"
+              spellCheck={false}
+              value={source}
+              onChange={(e) => setSource(e.target.value)}
+              className={`w-full rounded-lg bg-gray-50 border border-gray-300
+                px-3 py-2 font-mono text-xs leading-relaxed text-gray-900
+                shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.35)]
+                focus:outline-none focus:border-primary-600 focus:shadow-accent-glow
+                ${view === 'split' ? 'h-1/2 min-h-[200px]' : 'flex-1 min-h-[320px]'}`}
+            />
+          )}
+
+          {view !== 'text' && (
+            <div
+              className={`rounded-lg border border-gray-200 overflow-hidden bg-gray-50
+                ${view === 'split' ? 'flex-1 min-h-[220px]' : 'flex-1 min-h-[320px]'}`}
+            >
+              {parsed.value && !parsed.error ? (
+                <PipelineGraph
+                  spec={parsed.value}
+                  check={check}
+                  onChange={applySpecFromGraph}
+                  selectedStageId={selectedStage}
+                  onSelectStage={setSelectedStage}
+                />
+              ) : (
+                // No picture of a document that does not parse. Drawing the
+                // last good shape would show a graph that is not the one being
+                // edited, which is worse than showing none.
+                <div className="h-full flex items-center justify-center p-4 text-center">
+                  <p className="text-xs text-gray-500">
+                    The graph appears once the specification parses.
+                  </p>
+                </div>
+              )}
+            </div>
+          )}
         </div>
 
         {/* What is wrong with it, and what it will cost */}

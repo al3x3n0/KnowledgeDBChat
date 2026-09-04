@@ -82,8 +82,13 @@ it('shows the tools it derived, which the author never writes', async () => {
 
   // The point of contracts: you say what must be true, and the tools that get
   // there are deduced. An author who names tools can name an impossible one.
-  expect(await screen.findByText('profile_c_workload')).toBeInTheDocument();
-  expect(screen.getByText('benchmark_c_snippet')).toBeInTheDocument();
+  //
+  // getAllBy, because the default split view shows each tool twice — once in
+  // the plan and once on its node in the graph. Two views of one document is
+  // the design, so a query that demanded uniqueness would be asserting the
+  // opposite of what this page is for.
+  expect((await screen.findAllByText('profile_c_workload')).length).toBeGreaterThan(0);
+  expect(screen.getAllByText('benchmark_c_snippet').length).toBeGreaterThan(0);
 });
 
 it('reports a checkpoint before the run stops at it, not when it does', async () => {
@@ -216,7 +221,7 @@ describe('launching', () => {
   it('names the price and the stops before spending anything', async () => {
     const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
     render(<PipelineStudioPage />);
-    await screen.findByText('profile_c_workload');
+    await screen.findAllByText('profile_c_workload');
 
     fireEvent.click(screen.getByRole('button', { name: /Launch/i }));
 
@@ -238,7 +243,7 @@ describe('launching', () => {
       checkpoints: [],
     });
     render(<PipelineStudioPage />);
-    await screen.findByText('profile_c_workload');
+    await screen.findAllByText('profile_c_workload');
 
     fireEvent.click(screen.getByRole('button', { name: /Launch/i }));
 

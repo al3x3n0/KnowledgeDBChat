@@ -29,6 +29,28 @@ configure({ asyncUtilTimeout: 5000 });
 // it. Raise `asyncUtilTimeout` and this together, never one alone.
 jest.setTimeout(20_000);
 
+// jsdom implements no ResizeObserver, and several things here need one:
+// `useElementSize` (the KG canvas, the graph pages) and ReactFlow, which throws
+// outright without it. That absence is why those surfaces had no tests — the
+// component was fine and the environment could not mount it.
+//
+// A stub, not an implementation: it never fires. A test that needs a real
+// measurement should drive the callback itself rather than expect layout from
+// a DOM that does no layout.
+class ResizeObserverStub {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+(global as any).ResizeObserver = (global as any).ResizeObserver || ResizeObserverStub;
+
+// ReactFlow measures with these too, and jsdom reports zero for all of them.
+if (!(window as any).DOMMatrixReadOnly) {
+  (window as any).DOMMatrixReadOnly = class {
+    m22 = 1;
+  };
+}
+
 // CRA/Jest (react-scripts) doesn't transform ESM in node_modules by default.
 // Some dependencies we use (react-markdown, tiptap v3) ship ESM and will fail
 // to parse in tests unless mocked.

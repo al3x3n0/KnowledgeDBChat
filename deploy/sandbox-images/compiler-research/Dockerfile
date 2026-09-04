@@ -70,6 +70,46 @@ RUN apt-get update && apt-get install -y --no-install-recommends curl ca-certifi
     && apt-get purge -y curl && apt-get autoremove -y \
     && rm -rf /var/lib/apt/lists/*
 
+# The crates an agent may use. The sandbox runs with --network none, so cargo
+# can never fetch anything at run time; these are built HERE, where there is a
+# network, and linked as prebuilt rlibs.
+#
+# The list is NOT written out here. It lives in RUST_CRATES in
+# app/services/agent_toolchains.py -- the same list the model is told it may
+# use -- and this generates the manifest from it. Two hand-maintained copies
+# drift, and a test comparing them can only run where both files exist, so in
+# the backend-only test container it skips and guards nothing.
+WORKDIR /crate-build
+COPY backend/app/services/agent_toolchains.py /tmp/agent_toolchains.py
+COPY deploy/sandbox-images/compiler-research/gen_crate_manifest.py /tmp/gen_crate_manifest.py
+RUN python3 /tmp/gen_crate_manifest.py /tmp/agent_toolchains.py > Cargo.toml \
+    && cat Cargo.toml \
+    && mkdir -p src && echo 'fn main(){}' > src/main.rs \
+    && cargo build --release
+
+# Harvest the rlibs and write the exact --extern line that names them. The
+# compile line reads this file rather than hard-coding the flags, so the image
+# stays the authority on which crates exist, and code built against a different
+# image degrades to "no crates" instead of failing to compile at all.
+RUN mkdir -p /opt/rust-deps \
+    && cp /crate-build/target/release/deps/*.rlib /opt/rust-deps/ \
+    && cd /opt/rust-deps \
+    && for f in lib*.rlib; do \
+         base=$(echo "$f" | sed -E 's/^lib([a-zA-Z0-9_]+)-[0-9a-f]+\.rlib$/\1/'); \
+         [ "$base" != "$f" ] && ln -sf "$f" "lib$base.rlib" || true; \
+       done \
+    && { printf -- '-L dependency=/opt/rust-deps'; \
+         for c in $(python3 /tmp/gen_crate_manifest.py /tmp/agent_toolchains.py \
+                    --emit extern-names); do \
+           test -f "/opt/rust-deps/lib$c.rlib" \
+             || { echo "declared crate built no rlib: $c" >&2; exit 1; }; \
+           printf -- ' --extern %s=/opt/rust-deps/lib%s.rlib' "$c" "$c"; \
+         done; printf '\n'; } > /opt/rust-deps/externs.txt \
+    && cat /opt/rust-deps/externs.txt \
+    && chmod -R a+rX /opt/rust-deps \
+    && rm -rf /crate-build /tmp/agent_toolchains.py /tmp/gen_crate_manifest.py
+WORKDIR /
+
 COPY --from=coster /src/target/release/candidate-coster /usr/local/bin/candidate-coster
 
 RUN llvm-mca --version > /dev/null && candidate-coster --help > /dev/null
@@ -79,8 +119,20 @@ RUN llvm-mca --version > /dev/null && candidate-coster --help > /dev/null
 # probe used `su`, which inherits root's environment, so it passed while every
 # real run failed with `rustc: not found` -- the login shell had reset PATH.
 # A probe that does not reproduce the caller's posture verifies nothing.
-RUN printf 'fn main(){println!("{}", 6*7);}' > /probe.rs && chmod 644 /probe.rs \
+# The probe uses a crate and a seeded RNG on purpose: a bare `fn main` compiles
+# without ever touching the externs, so it would pass on an image where every
+# crate is unreachable. --edition 2021 is also load-bearing -- rustc defaults to
+# 2015, where `use rand::...` does not resolve at all.
+RUN printf '%s\n' \
+        'use rand::{Rng, SeedableRng};' \
+        'use rayon::prelude::*;' \
+        'fn main() {' \
+        '    let mut r = rand_chacha::ChaCha8Rng::seed_from_u64(1);' \
+        '    let v: Vec<u64> = (0..10).map(|_| r.gen_range(0..2u64)).collect();' \
+        '    println!("{}", v.par_iter().sum::<u64>() + 40);' \
+        '}' > /probe.rs && chmod 644 /probe.rs \
     && setpriv --reuid 65534 --regid 65534 --clear-groups \
-        /bin/sh -lc 'cd /tmp && rustc -O -C linker=clang -o p /probe.rs && ./p' \
-    | grep -qx 42 \
+        /bin/sh -lc 'cd /tmp && RUSTC_EXTERNS=$(cat /opt/rust-deps/externs.txt) && \
+            rustc -O --edition 2021 -C linker=clang $RUSTC_EXTERNS -o p /probe.rs && ./p' \
+    | grep -qE '^4[0-9]$' \
     && rm -f /probe.rs

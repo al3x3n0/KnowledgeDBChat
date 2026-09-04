@@ -7,6 +7,13 @@ registration went wrong most often, which is why they moved first.
 from __future__ import annotations
 
 from app.agent_core.tool_specs.spec import ToolSpec
+from app.services.agent_toolchains import describe_rust_crates
+
+#: Named once and used in both tool descriptions, so the crate set a model is
+#: told about cannot differ between the tool that checks code and the tool that
+#: times it -- and so neither can drift from the image, which derives its
+#: manifest from the same list.
+_RUST_CRATES_HINT = describe_rust_crates()
 
 SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
@@ -331,10 +338,14 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "string",
                     "enum": ["c", "rust"],
                     "description": (
-                        "Which toolchain builds it (default 'c'). Rust is "
-                        "compiled with rustc as a single file: there is no "
-                        "network in the sandbox, so no crate dependencies are "
-                        "available -- std only."
+                        "Which toolchain builds it (default 'c'). Rust is one "
+                        "self-contained .rs file compiled with rustc at "
+                        "edition 2021 -- no Cargo.toml, no modules. A fixed "
+                        "set of crates is prebuilt into the image and already "
+                        "in scope, so `use rand::Rng;` works with no "
+                        "declaration; nothing outside that set can be fetched, "
+                        "because the sandbox has no network. Available: "
+                        + _RUST_CRATES_HINT
                     ),
                 },
                 "flags": {
@@ -1467,7 +1478,9 @@ SPECS: tuple[ToolSpec, ...] = (
                         "Which toolchain builds it (default 'c'). Use the same "
                         "language and the same source when you benchmark it, "
                         "or the program that was checked is not the program "
-                        "that was timed."
+                        "that was timed. Rust is a single .rs file at edition "
+                        "2021 with these crates prebuilt and in scope: "
+                        + _RUST_CRATES_HINT
                     ),
                 },
                 "cases": {

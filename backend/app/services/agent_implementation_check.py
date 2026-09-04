@@ -300,10 +300,13 @@ async def check_implementation(
             language=chain.language,
             note=f"flags contain unsupported characters: {flags!r}",
         )
+    # After sanitising, never before: what is added here is ours and known
+    # safe, and running it through the caller's filter could only reject it.
+    safe_flags = agent_toolchains.enforce(chain, safe_flags)
 
     with tempfile.TemporaryDirectory(prefix="impl_check_") as workdir:
         Path(workdir, chain.source_file).write_text(code, encoding="utf-8")
-        build = agent_toolchains.compile_command(chain, safe_flags)
+        build = agent_toolchains.build_script(chain, safe_flags)
         script_parts = [
             f"{build} 2>compile_err.txt || " "{ cat compile_err.txt >&2; exit 90; }"
         ]

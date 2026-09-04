@@ -12,6 +12,7 @@ from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
 from app.services import llm_json
+from app.services import llm_truncation
 
 # ---------------------------------------------------------------------------
 # Pydantic models
@@ -175,6 +176,11 @@ class AgentDecisionParser:
             "parse_success": 0,
             "parse_retry": 0,
             "parse_repair": 0,
+            # Counted separately from parse_repair: one is a response the
+            # budget cut off and we closed for free, the other is a response
+            # the model got wrong and we paid a call to fix. Collapsing them
+            # would hide which of the two a run is actually suffering.
+            "truncation_repair": 0,
             "parse_failure": 0,
         }
 
@@ -282,6 +288,23 @@ class AgentDecisionParser:
                     logger.error(f"LLM retry call failed: {exc}")
 
             elif attempt == 2:
+                # Closing a truncated response comes first, because it costs
+                # nothing and answers a different failure. A response cut off
+                # by the budget is a correct PREFIX: closing its open braces
+                # recovers the decision the model had already made, while
+                # asking again spends another call re-deriving it on the same
+                # budget that just proved too small.
+                closed = llm_truncation.repair_truncated_json(raw_response)
+                if closed:
+                    decision, error = self.parse(closed, available_tools)
+                    if decision is not None:
+                        self._metrics["truncation_repair"] += 1
+                        logger.info(
+                            "Recovered a truncated decision by closing it; "
+                            "no repair call needed"
+                        )
+                        return decision
+
                 # Retry 2: LLM-assisted JSON repair
                 repaired = await self.repair_json(
                     raw_response,

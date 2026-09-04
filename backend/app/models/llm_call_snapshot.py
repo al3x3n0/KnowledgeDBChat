@@ -61,6 +61,13 @@ class LLMCallSnapshot(Base):
     # summary of that thinking.
     reasoning_text = Column(Text, nullable=True)
     reasoning_tokens = Column(Integer, nullable=True)
+    # Prompt tokens the provider served from its cache, and those it did not.
+    # The thinking prompt is split into a byte-stable prefix and a volatile
+    # tail so the prefix can be cached; without these the split is an
+    # assumption nobody can check. Nullable because "the provider said
+    # nothing" and "the cache missed entirely" are different facts.
+    cache_hit_tokens = Column(Integer, nullable=True)
+    cache_miss_tokens = Column(Integer, nullable=True)
 
     error = Column(Text, nullable=True)
     latency_ms = Column(Integer, nullable=True)

@@ -40,6 +40,7 @@ from app.services.llm_routing import (
     resolve_tier_overrides,
 )
 from app.utils.exceptions import LLMServiceError
+from app.services import llm_truncation
 
 _LLM_SEMAPHORE = asyncio.Semaphore(settings.LLM_MAX_CONCURRENCY)
 
@@ -52,6 +53,13 @@ _LLM_SEMAPHORE = asyncio.Semaphore(settings.LLM_MAX_CONCURRENCY)
 #: have under LLM_MAX_CONCURRENCY: each task gets its own copy.
 _LAST_REASONING: ContextVar[Optional[Tuple[str, Optional[int]]]] = ContextVar(
     "llm_last_reasoning", default=None
+)
+
+#: Cache accounting from the most recent completion, carried the same way the
+#: reasoning is: the recorder runs a layer above the provider call and has no
+#: other way to see the raw usage block.
+_LAST_CACHE: ContextVar[Optional[Tuple[Optional[int], Optional[int]]]] = ContextVar(
+    "llm_last_cache", default=None
 )
 
 
@@ -194,6 +202,8 @@ def _meta_from_completion(
         details.get("reasoning_tokens") if isinstance(details, dict) else None
     )
     _LAST_REASONING.set((reasoning, reasoning_tokens) if reasoning else None)
+    cache_hit, cache_miss = _cache_tokens(usage)
+    _LAST_CACHE.set((cache_hit, cache_miss))
     return {
         "id": data.get("id"),
         "model": data.get("model") or fallback_model,
@@ -201,7 +211,59 @@ def _meta_from_completion(
         "finish_reason": choice.get("finish_reason"),
         "reasoning_tokens": reasoning_tokens,
         "reasoning_chars": len(reasoning) if reasoning else 0,
+        "cache_hit_tokens": cache_hit,
+        "cache_miss_tokens": cache_miss,
     }
+
+
+def _cache_tokens(usage: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """Prompt tokens served from the provider's cache, and those that were not.
+
+    The prompt is split into a byte-stable prefix and a volatile tail precisely
+    so the prefix can be cached, and Anthropic requests carry cache_control
+    breakpoints for the same reason -- but nothing ever read back whether any
+    of it worked. A cache mechanism whose hit rate is never measured is a
+    mechanism nobody can tell apart from a comment.
+
+    Providers spell it three ways and none of them agree:
+      DeepSeek    prompt_cache_hit_tokens / prompt_cache_miss_tokens
+      OpenAI      prompt_tokens_details.cached_tokens (hits only)
+      Anthropic   cache_read_input_tokens / cache_creation_input_tokens
+
+    Returns (hit, miss), either of which is None when the provider said
+    nothing. None is not zero here: zero is a measured miss, None is silence,
+    and averaging silence as zero would report a healthy cache as broken.
+    """
+    if not isinstance(usage, dict):
+        return None, None
+
+    hit = usage.get("prompt_cache_hit_tokens")
+    miss = usage.get("prompt_cache_miss_tokens")
+    if hit is not None or miss is not None:
+        return _as_int_or_none(hit), _as_int_or_none(miss)
+
+    read = usage.get("cache_read_input_tokens")
+    created = usage.get("cache_creation_input_tokens")
+    if read is not None or created is not None:
+        return _as_int_or_none(read), _as_int_or_none(created)
+
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and details.get("cached_tokens") is not None:
+        cached = _as_int_or_none(details.get("cached_tokens"))
+        total = _as_int_or_none(usage.get("prompt_tokens"))
+        # The miss is inferred, and only when both halves are known: reporting
+        # a miss of "everything" against an unknown total would invent a rate.
+        return cached, (
+            max(total - cached, 0) if total is not None and cached is not None else None
+        )
+    return None, None
+
+
+def _as_int_or_none(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
 
 
 class LLMService:
@@ -288,6 +350,8 @@ class LLMService:
         snapshot_context: Optional[Dict[str, Any]] = None,
         reasoning_text: Optional[str] = None,
         reasoning_tokens: Optional[int] = None,
+        cache_hit_tokens: Optional[int] = None,
+        cache_miss_tokens: Optional[int] = None,
     ) -> None:
         """Persist a full request/response snapshot for replay debugging.
 
@@ -340,6 +404,8 @@ class LLMService:
                 latency_ms=latency_ms,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                cache_hit_tokens=cache_hit_tokens,
+                cache_miss_tokens=cache_miss_tokens,
             )
             db.add(snapshot)
         except Exception:
@@ -546,6 +612,8 @@ class LLMService:
                     snapshot_context=snapshot_context,
                     reasoning_text=(_LAST_REASONING.get() or (None, None))[0],
                     reasoning_tokens=(_LAST_REASONING.get() or (None, None))[1],
+                    cache_hit_tokens=(_LAST_CACHE.get() or (None, None))[0],
+                    cache_miss_tokens=(_LAST_CACHE.get() or (None, None))[1],
                 )
                 return result_text
             except LLMServiceError as e:
@@ -1418,8 +1486,13 @@ Citation format:
         api_key_override: Optional[str] = None,
         api_base_override: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
+        _budget_retry: bool = False,
     ) -> tuple[str, Dict[str, Any]]:
-        """Call DeepSeek's OpenAI-compatible chat completions API."""
+        """Call DeepSeek's OpenAI-compatible chat completions API.
+
+        `_budget_retry` marks the one automatic retry on a truncated empty
+        response, so a second truncation reports rather than recursing.
+        """
         api_key = api_key_override or settings.DEEPSEEK_API_KEY
         if not api_key:
             raise LLMServiceError("DEEPSEEK_API_KEY is not set")
@@ -1490,13 +1563,40 @@ Citation format:
                     if effective_max_tokens == floor and floor > int(max_tokens or 0)
                     else f"Ask for more than {max_tokens} tokens at the call site."
                 )
+                # The cause is known exactly -- the budget ended before the
+                # answer began -- so the first response is to give it room,
+                # not to report. Once: a second truncation means the prompt
+                # itself is the problem and doubling again only spends more.
+                retry_budget = (
+                    None
+                    if _budget_retry
+                    else llm_truncation.next_budget(effective_max_tokens)
+                )
+                if retry_budget is not None and llm_truncation.is_truncated(
+                    choice.get("finish_reason"), content
+                ):
+                    logger.warning(
+                        f"{model} spent its whole {effective_max_tokens}-token "
+                        f"budget reasoning; retrying once at {retry_budget}"
+                    )
+                    return await self._make_deepseek_chat_request(
+                        model=model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=retry_budget,
+                        api_key_override=api_key_override,
+                        api_base_override=api_base_override,
+                        timeout_seconds=timeout_seconds,
+                        _budget_retry=True,
+                    )
                 raise LLMServiceError(
                     f"{model} returned no content "
                     f"(finish_reason={choice.get('finish_reason')!r}, "
                     f"max_tokens={effective_max_tokens} "
                     f"(caller asked {max_tokens}), "
-                    f"completion_tokens={usage.get('completion_tokens')}). "
-                    "These models spend max_tokens on reasoning before "
+                    f"completion_tokens={usage.get('completion_tokens')}"
+                    + (", already retried on a doubled budget" if _budget_retry else "")
+                    + "). These models spend max_tokens on reasoning before "
                     f"answering, so a budget that fits the answer may not fit "
                     f"the thinking. {remedy}"
                 )

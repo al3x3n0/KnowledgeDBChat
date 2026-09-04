@@ -1322,6 +1322,15 @@ class AgentJobMemoryService:
             user_id=user_id,
             user_settings=llm_settings,
             db=db,
+            # Ranking is a sorting task whose whole output is a list of ids in
+            # order, and it runs BEFORE the loop starts. Left on the default
+            # model it reached the reasoning tier and behaved accordingly:
+            # 245 calls in one day, 646,989 reasoning tokens, 39s mean and
+            # 210s worst, all spent deciding an order while the job sat at
+            # iteration zero and its lease ticked down. The fast tier is what
+            # this is for; balanced is the fallback so a provider outage
+            # degrades rather than fails.
+            routing={"llm_tier": "fast", "llm_fallback_tiers": ["balanced"]},
             snapshot_context={
                 "job_id": str(getattr(job, "id", "") or "") or None,
                 "iteration": int(getattr(job, "iteration", 0) or 0),

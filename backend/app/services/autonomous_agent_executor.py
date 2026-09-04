@@ -179,8 +179,44 @@ class _AutonomousRuntimeAdapter:
         self.progress_callback = progress_callback
         self.counterfactual_candidates: List[Dict[str, Any]] = []
         self.selection_explainability: Dict[str, Any] = {}
+        # The loop's two safety limits, held here rather than on the job.
+        #
+        # `job` is a database-managed instance, and a rollback -- including one
+        # issued deep inside a failing tool, on a session this loop does not
+        # own -- reverts every attribute on it to the row's values. For a run
+        # that has not committed, those values are zero. Both limits the loop
+        # relied on then rearmed themselves, and a persistently failing
+        # iteration repeated for ever: 60,697 identical errors in eight
+        # minutes, every one reporting "iteration 1", pegging a worker, while
+        # the job row still read error_count 0. The cap of five was never
+        # reached because the count could not survive to reach it.
+        #
+        # These are plain Python attributes on an object no session knows
+        # about, so nothing can revert them. The job's own fields are still
+        # written, because that is what the UI and the log read; they are just
+        # no longer what the loop trusts.
+        self._iterations_started = 0
+        self._errors_seen = 0
+        # A resumed job continues from its checkpoint, so the budget is
+        # counted from where it actually started rather than from zero.
+        self._start_iteration = int(getattr(job, "iteration", 0) or 0)
+
+    #: Consecutive failures before the run is abandoned. Reaching it means the
+    #: same thing goes wrong every time, and the iterations left will be spent
+    #: the same way.
+    MAX_ITERATION_ERRORS = 5
 
     async def can_continue(self) -> bool:
+        # Checked before the job's own limits, because this one cannot be
+        # rolled back. Without it a reverted job.iteration lets the loop run
+        # past its budget indefinitely.
+        if self._start_iteration + self._iterations_started >= int(
+            self.job.max_iterations or 0
+        ):
+            return False
+        if self._errors_seen >= self.MAX_ITERATION_ERRORS:
+            return False
+
         if not self.job.can_continue():
             return False
 
@@ -204,14 +240,36 @@ class _AutonomousRuntimeAdapter:
                 }
             )
             return False
+        # Refresh reads the row back to notice an external status change --
+        # a cancellation, or another worker taking the lease. It also
+        # overwrites everything else on the instance with what the row says,
+        # which for an uncommitted run means discarding the counts and the log
+        # entries this iteration just made. That is why a job with 60,697
+        # errors ended up reporting error_count 0 and three log entries.
+        #
+        # The loop no longer depends on those fields, but what the UI reads
+        # should still describe what happened, so they are put back.
+        preserved_iteration = self.job.iteration
+        preserved_errors = self.job.error_count
+        preserved_log = self.job.execution_log
         await self.db.refresh(self.job)
+        self.job.iteration = preserved_iteration
+        self.job.error_count = preserved_errors
+        if preserved_log is not None and len(preserved_log or []) > len(
+            self.job.execution_log or []
+        ):
+            self.job.execution_log = preserved_log
         if self.job.status not in [AgentJobStatus.RUNNING.value]:
             logger.info(f"Job {self.job.id} status changed to {self.job.status}")
             return False
         return True
 
     async def on_iteration_start(self) -> None:
-        self.job.iteration += 1
+        self._iterations_started += 1
+        # Assigned from the adapter's count rather than incremented in place:
+        # `+= 1` on a rolled-back attribute reads zero and writes one, for
+        # ever. This makes the job's number a report of what the loop did.
+        self.job.iteration = self._start_iteration + self._iterations_started
         self.job.last_activity_at = datetime.utcnow()
         # Snapshot what the run had established before this round, so a policy
         # looking back over several rounds can tell a productive one from a
@@ -1377,12 +1435,27 @@ class _AutonomousRuntimeAdapter:
         await self.db.commit()
 
     async def on_iteration_error(self, exc: Exception) -> bool:
-        logger.error(f"Error in iteration {self.job.iteration}: {exc}")
-        self.job.add_log_entry({"phase": "error", "error": str(exc)})
-        self.job.error_count += 1
+        self._errors_seen += 1
+        logger.error(
+            f"Error in iteration {self.job.iteration} "
+            f"({self._errors_seen}/{self.MAX_ITERATION_ERRORS}): {exc}"
+        )
+        self.job.add_log_entry(
+            {
+                "phase": "error",
+                "error": str(exc),
+                "error_number": self._errors_seen,
+            }
+        )
+        # Reported on the job, but never read back for the decision: a
+        # rollback restores it to whatever the row says.
+        self.job.error_count = (self.job.error_count or 0) + 1
         self.job.last_error_at = datetime.utcnow()
-        if self.job.error_count >= 5:
-            self.job.error = f"Too many errors: {exc}"
+        if self._errors_seen >= self.MAX_ITERATION_ERRORS:
+            self.job.error = (
+                f"Stopped after {self._errors_seen} iteration errors; "
+                f"the last was: {exc}"
+            )
             return False
         return True
 

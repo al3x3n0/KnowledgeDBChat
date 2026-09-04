@@ -46,8 +46,11 @@ import type { PipelineCheck, SavedPipeline } from '../types';
 
 const STORAGE_KEY = 'pipeline_studio_draft_v1';
 
-/** A worked example rather than an empty box: the shape is unfamiliar enough
- *  that a blank editor is a worse starting point than something to edit. */
+/** Worked examples rather than an empty box: the shape is unfamiliar enough
+ *  that a blank editor is a worse starting point than something to edit.
+ *
+ *  Each one is a pipeline that validates as written -- a starter that fails
+ *  its own check teaches the wrong thing about the format. */
 const EXAMPLE = `{
   "name": "int8-attention-study",
   "stages": [
@@ -73,6 +76,60 @@ const EXAMPLE = `{
     }
   ]
 }`;
+
+/** Read a paper, implement the algorithm it describes, and find out whether the
+ *  number reproduces. The `implement` stage loops because writing an algorithm
+ *  from prose does not work first try, and its contract asks for a *verified*
+ *  implementation: the fastest implementation of anything is one that returns
+ *  garbage, so timing unchecked code measures work nobody looked at. */
+const REPRODUCE_PAPER = `{
+  "name": "reproduce-paper-algorithm",
+  "stages": [
+    {
+      "id": "find",
+      "goal": "Ingest the paper describing the algorithm to reproduce",
+      "contract": { "required_finding_types": ["papers_ingested"] }
+    },
+    {
+      "id": "specify",
+      "goal": "Read the paper into an implementable specification: the steps, its worked examples, and the numbers it claims -- written down before any code exists",
+      "depends_on": ["find"],
+      "assumes": ["papers_ingested"],
+      "contract": { "required_finding_types": ["algorithm_spec"] }
+    },
+    {
+      "id": "implement",
+      "goal": "Write the algorithm in C and establish that it computes the paper's worked examples",
+      "depends_on": ["specify"],
+      "assumes": ["algorithm_spec"],
+      "loop": { "max_iterations": 6, "until": "contract_satisfied" },
+      "contract": { "required_finding_types": ["implementation_verified"] }
+    },
+    {
+      "id": "measure",
+      "goal": "Time the verified implementation",
+      "depends_on": ["implement"],
+      "assumes": ["implementation_verified"],
+      "contract": {
+        "required_finding_types": ["benchmark_measurement"],
+        "validity": { "require_uncertainty": ["benchmark_measurement"] }
+      }
+    },
+    {
+      "id": "compare",
+      "goal": "Score the measurement against the paper's claim, or say which condition makes them incomparable",
+      "depends_on": ["measure"],
+      "assumes": ["benchmark_measurement", "implementation_verified"],
+      "checkpoint": true,
+      "contract": { "required_finding_types": ["reproduction_verdict"] }
+    }
+  ]
+}`;
+
+const STARTERS: { label: string; source: string }[] = [
+  { label: 'Bottleneck study', source: EXAMPLE },
+  { label: 'Reproduce a paper', source: REPRODUCE_PAPER },
+];
 
 const readDraft = (): string => {
   try {
@@ -340,9 +397,24 @@ const PipelineStudioPage: React.FC = () => {
             <Save className="w-4 h-4 mr-1" />
             {openId ? 'Save' : 'Save as…'}
           </Button>
-          <Button size="sm" variant="ghost" onClick={() => { setOpenId(null); setSource(EXAMPLE); }}>
-            New
-          </Button>
+          <select
+            aria-label="Start from a worked example"
+            className="h-8 rounded-md border border-gray-300 bg-gray-100 px-2 text-xs text-gray-700"
+            value=""
+            onChange={(e) => {
+              const starter = STARTERS.find((s) => s.label === e.target.value);
+              if (!starter) return;
+              setOpenId(null);
+              setSource(starter.source);
+            }}
+          >
+            <option value="">New…</option>
+            {STARTERS.map((s) => (
+              <option key={s.label} value={s.label}>
+                {s.label}
+              </option>
+            ))}
+          </select>
           <Button
             size="sm"
             disabled={!canLaunch || launching}

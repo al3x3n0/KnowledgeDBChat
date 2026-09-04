@@ -527,7 +527,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["title", "sections"],
         },
-        job_types=('synthesis', 'document_authoring'),
+        job_types=("synthesis", "document_authoring"),
     ),
     ToolSpec(
         name="write_section",
@@ -573,7 +573,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["section_id", "content"],
         },
-        job_types=('synthesis', 'document_authoring'),
+        job_types=("synthesis", "document_authoring"),
     ),
     ToolSpec(
         name="revise_section",
@@ -606,7 +606,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["section_id", "new_content"],
         },
-        job_types=('synthesis', 'document_authoring'),
+        job_types=("synthesis", "document_authoring"),
     ),
     ToolSpec(
         name="assemble_document",
@@ -637,7 +637,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('synthesis', 'document_authoring'),
+        job_types=("synthesis", "document_authoring"),
     ),
     ToolSpec(
         name="export_document",
@@ -664,7 +664,7 @@ SPECS: tuple[ToolSpec, ...] = (
         },
         effects="write",
         cost_tier="medium",
-        job_types=('synthesis', 'document_authoring'),
+        job_types=("synthesis", "document_authoring"),
     ),
     ToolSpec(
         name="insert_figure",
@@ -693,7 +693,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["section_id", "figure_type", "caption"],
         },
-        job_types=('synthesis', 'document_authoring'),
+        job_types=("synthesis", "document_authoring"),
     ),
     ToolSpec(
         name="get_workspace_artifact_url",
@@ -712,7 +712,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["job_id", "file_path"],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="create_chart",
@@ -816,6 +816,6 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["document_ids", "title"],
         },
         effects="write",
-        job_types=('research', 'analysis', 'synthesis'),
+        job_types=("research", "analysis", "synthesis"),
     ),
 )

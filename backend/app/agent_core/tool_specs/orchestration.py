@@ -354,8 +354,8 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="enqueue_external_agent_call",
         description="Durably enqueue a capability-scoped call to a configured external "
-            "agent through the transactional outbox. Delivery occurs only after "
-            "the current agent checkpoint commits.",
+        "agent through the transactional outbox. Delivery occurs only after "
+        "the current agent checkpoint commits.",
         parameters={
             "type": "object",
             "properties": {
@@ -390,7 +390,7 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="get_external_call_status",
         description="Read delivery, retry, dead-letter, or response state for an "
-            "external-agent outbox request created by this job.",
+        "external-agent outbox request created by this job.",
         parameters={
             "type": "object",
             "properties": {

@@ -136,6 +136,8 @@ _METHOD_SOURCES: Tuple[Tuple[Tuple[str, ...], str], ...] = (
         "app.services.agent_predictability",
     ),
     (("evaluate_predictor_design",), "app.services.agent_predictor_design"),
+    (("check_implementation",), "app.services.agent_implementation_check"),
+    (("compare_to_claim",), "app.services.agent_claim_comparison"),
 )
 
 

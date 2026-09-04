@@ -865,4 +865,41 @@ SPECS: tuple[ToolSpec, ...] = (
         },
         network="egress",
     ),
+    ToolSpec(
+        name="extract_algorithm_spec",
+        description=(
+            "Read a paper into a specification precise enough to implement, "
+            "and separate out the numbers it claims. Three parts, and they "
+            "feed different things: the algorithm itself (inputs, outputs, "
+            "steps, parameters) is what gets written as code; the reference "
+            "cases are worked examples with known outputs, which are what "
+            "check_implementation uses to establish the code computes the "
+            "right answer; and the claims are the paper's own measured "
+            "numbers with the conditions they were taken under, which are what "
+            "compare_to_claim scores a measurement against. Extract the claims "
+            "BEFORE implementing anything: a target written down after the "
+            "measurement is known is not a target."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "document_id": {
+                    "type": "string",
+                    "description": "The ingested paper to read",
+                },
+                "algorithm_name": {
+                    "type": "string",
+                    "description": (
+                        "Which algorithm, when the paper describes several"
+                    ),
+                },
+            },
+            "required": ["document_id"],
+        },
+        effects="read",
+        cost_tier="medium",
+        produces=("algorithm_spec",),
+        typical_seconds=45,
+        consumes="an ingested paper; returns steps, reference cases and claimed numbers.",
+    ),
 )

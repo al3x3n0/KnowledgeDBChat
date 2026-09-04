@@ -265,7 +265,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["relationship_type"],
         },
         effects="write",
-        job_types=('synthesis', 'knowledge_expansion'),
+        job_types=("synthesis", "knowledge_expansion"),
     ),
     ToolSpec(
         name="query_kg_entities",
@@ -325,7 +325,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["name", "entity_type"],
         },
         effects="write",
-        job_types=('research', 'analysis'),
+        job_types=("research", "analysis"),
     ),
     ToolSpec(
         name="create_kg_relationship",
@@ -357,7 +357,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["source_entity_id", "target_entity_id", "relation_type"],
         },
         effects="write",
-        job_types=('research', 'analysis'),
+        job_types=("research", "analysis"),
     ),
     ToolSpec(
         name="query_kg_graph",

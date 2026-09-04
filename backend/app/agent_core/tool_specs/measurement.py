@@ -1419,4 +1419,165 @@ SPECS: tuple[ToolSpec, ...] = (
         cost_tier="high",
         pii_risk="medium",
     ),
+    ToolSpec(
+        name="check_implementation",
+        description=(
+            "Run an implementation against reference cases with known outputs, "
+            "before timing it. The fastest implementation of any algorithm is "
+            "one that returns garbage, so a benchmark of unverified code is an "
+            "accurate number for something nobody checked. Pass the SAME "
+            "source you will hand to benchmark_c_snippet: verifying one "
+            "program and timing another proves nothing about the timing. A "
+            "check with no cases is reported as unverified rather than "
+            "passing vacuously."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "code": {
+                    "type": "string",
+                    "description": (
+                        "Self-contained C program including main(). It should "
+                        "read its input from stdin and print its result to "
+                        "stdout."
+                    ),
+                },
+                "cases": {
+                    "type": "array",
+                    "description": (
+                        "Reference cases. Take them from the paper's own "
+                        "worked examples where it gives them: a case invented "
+                        "to match the implementation checks nothing."
+                    ),
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "input": {
+                                "type": "string",
+                                "description": "Fed to the program on stdin",
+                            },
+                            "expected_output": {
+                                "type": "string",
+                                "description": "What a correct program prints",
+                            },
+                        },
+                        "required": ["expected_output"],
+                    },
+                },
+                "flags": {
+                    "type": "string",
+                    "description": (
+                        "Compiler flags. The sandbox targets aarch64: use "
+                        "'-mcpu=native', not '-march=native'."
+                    ),
+                },
+                "tolerance": {
+                    "type": "number",
+                    "description": (
+                        "Relative tolerance for numeric outputs (default "
+                        "1e-6). An algorithm rebuilt from prose will not "
+                        "match a reference bit for bit."
+                    ),
+                },
+            },
+            "required": ["code", "cases"],
+        },
+        effects="write",
+        cost_tier="high",
+        pii_risk="medium",
+        produces=("implementation_verified",),
+        requires=("extract_algorithm_spec",),
+        typical_seconds=30,
+        # Perishable for the same reason a test run is: the implement stage
+        # loops, and a check that passed against the code as it stood two
+        # rounds ago describes a program that no longer exists. Inheriting it
+        # would let an edited implementation carry forward a certificate it
+        # earned before the edit -- a gate that inherits its own answer is not
+        # a gate.
+        perishable=True,
+        consumes="the C source to be timed, and reference cases from the paper.",
+    ),
+    ToolSpec(
+        name="compare_to_claim",
+        description=(
+            "Score a measurement against a number the paper claimed, and say "
+            "whether the two are comparable at all. Three verdicts, not two: "
+            "'incomparable' is a first-class answer, because a 3.0x claimed on "
+            "a Xeon at one input size and a 2.1x measured on aarch64 at "
+            "another has not failed to reproduce -- those numbers never tested "
+            "each other, and calling that a refutation claims a finding the "
+            "run did not earn. State the conditions on both sides so this can "
+            "tell the cases apart."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "subject": {
+                    "type": "string",
+                    "description": "What was compared, e.g. 'blocked GEMM speedup over naive'",
+                },
+                "metric": {
+                    "type": "string",
+                    "description": "The quantity, e.g. 'speedup' or 'runtime'",
+                },
+                "claimed_value": {
+                    "type": "number",
+                    "description": "The number the paper reports",
+                },
+                "claimed_unit": {
+                    "type": "string",
+                    "description": "Its unit, e.g. 'x', 'percent', 'ms', 'cycles_per_element'",
+                },
+                "measured_value": {
+                    "type": "number",
+                    "description": "What this run measured",
+                },
+                "measured_unit": {
+                    "type": "string",
+                    "description": "Its unit; a mismatch with the claim is refused, not converted",
+                },
+                "measurement_source": {
+                    "type": "string",
+                    "description": (
+                        "What produced the measured number, e.g. 'wall clock, "
+                        "5 trials, benchmark_c_snippet'. Required: a number "
+                        "whose origin is not stated cannot settle a claim."
+                    ),
+                },
+                "claimed_conditions": {
+                    "type": "object",
+                    "description": (
+                        "The conditions the paper's number was taken under: "
+                        "{'hardware': 'Xeon 8280', 'input_size': '1e7', "
+                        "'baseline': 'naive triple loop'}"
+                    ),
+                },
+                "measured_conditions": {
+                    "type": "object",
+                    "description": "The same fields for this run's measurement",
+                },
+                "tolerance": {
+                    "type": "number",
+                    "description": (
+                        "Relative tolerance, default 0.2. Papers report to two "
+                        "significant figures on a machine you do not have."
+                    ),
+                },
+            },
+            "required": [
+                "subject",
+                "metric",
+                "claimed_value",
+                "measured_value",
+                "measurement_source",
+            ],
+        },
+        effects="write",
+        cost_tier="low",
+        produces=("reproduction_verdict",),
+        requires=("check_implementation",),
+        typical_seconds=5,
+        consumes="a claimed number with its conditions, and a measured one with its source.",
+    ),
 )

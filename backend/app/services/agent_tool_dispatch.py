@@ -931,6 +931,23 @@ def build_agent_service_chat_core_provider(service: Any) -> FunctionToolProvider
     )
 
 
+def _as_float(value: Any) -> Optional[float]:
+    """A number, or None. Never 0.0 for a missing value.
+
+    The distinction matters here: a comparison that reads an absent claimed
+    value as zero divides by it, and one that reads an absent measurement as
+    zero scores a perfect failure against a claim nothing was measured for.
+    None reaches the comparison as "not supplied" and comes back as a named
+    blocker.
+    """
+    if value is None or isinstance(value, bool):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
 def _tool_snapshot_context(ctx: Any, tool: str) -> Dict[str, Any]:
     """Attribute a tool's own LLM call to the job phase that made it.
 
@@ -1284,6 +1301,110 @@ Provide structured insights in JSON format:
         except Exception as exc:
             raw = response if "response" in locals() else str(exc)
             return {"success": True, "data": {"raw_analysis": raw}}
+
+    async def _extract_algorithm_spec(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """Read a paper into something implementable, with its claims separated.
+
+        The claims are pulled out as their own list, with the conditions each
+        was measured under, because that is what makes them testable later. A
+        claimed number buried in prose gets remembered approximately and
+        compared against generously.
+        """
+        job = getattr(ctx, "job", None)
+        executor = ctx.executor
+        doc_id = str(params.get("document_id") or "").strip()
+        if not doc_id:
+            return {"error": "document_id is required"}
+
+        doc_result = await ctx.db.execute(select(Document).where(Document.id == doc_id))
+        doc = doc_result.scalar_one_or_none()
+        if not doc or not doc.content:
+            return {"error": "Document not found or has no content"}
+
+        wanted = str(params.get("algorithm_name") or "").strip()
+        focus = (
+            f"Focus on the algorithm called {wanted!r}."
+            if wanted
+            else "If the paper describes several algorithms, take the main one."
+        )
+        prompt = f"""Read this paper into a specification precise enough to implement.
+{focus}
+
+Paper Title: {doc.title}
+Content: {doc.content[:12000]}
+
+Return JSON:
+{{
+  "algorithm_name": "...",
+  "inputs": ["what it takes, with types and shapes"],
+  "outputs": ["what it produces"],
+  "steps": ["ordered steps, precise enough to code from"],
+  "parameters": {{"name": "value or range the paper used"}},
+  "complexity": "the paper's stated complexity, or null",
+  "reference_cases": [
+    {{"name": "...", "input": "...", "expected_output": "...",
+      "source": "where in the paper this worked example comes from"}}
+  ],
+  "claims": [
+    {{"metric": "speedup", "value": 3.0, "unit": "x",
+      "conditions": {{"hardware": "...", "input_size": "...", "baseline": "..."}},
+      "quote": "the sentence the number comes from"}}
+  ],
+  "unstated": ["anything the paper leaves unspecified that an implementer must choose"]
+}}
+
+Rules: put a number in "claims" only if the paper states it -- do not
+estimate one. Leave "reference_cases" empty rather than inventing examples;
+a case you made up checks nothing. "unstated" is important: papers routinely
+omit initialisation, tie-breaking and precision, and an implementer who does
+not know what they are choosing cannot say why their number differs."""
+        response = ""
+        try:
+            response = await executor.llm_service.generate_response(
+                system_prompt=(
+                    "You extract implementable algorithm specifications from "
+                    "papers. You never invent a number or a worked example."
+                ),
+                user_message=prompt,
+                routing=executor._llm_routing_from_job_config(job.config),
+                task_type="analysis",
+                user_id=job.user_id,
+                db=ctx.db,
+                snapshot_context=_tool_snapshot_context(ctx, "extract_algorithm_spec"),
+            )
+            spec = json.loads(response)
+        except Exception as exc:
+            return {
+                "error": (
+                    "Could not read a specification out of this paper: "
+                    f"{exc}. Raw response kept for inspection."
+                ),
+                "raw": (response or str(exc))[:2000],
+            }
+
+        cases = spec.get("reference_cases")
+        claims = spec.get("claims")
+        return {
+            "success": True,
+            "data": spec,
+            "findings": [
+                {
+                    "type": "algorithm_spec",
+                    "document_id": doc_id,
+                    "algorithm_name": spec.get("algorithm_name") or wanted,
+                    "spec": spec,
+                    # Surfaced separately because the two downstream tools each
+                    # need one of them, and a run should be able to see it has
+                    # a spec with no testable claim before it starts coding.
+                    "reference_case_count": len(cases)
+                    if isinstance(cases, list)
+                    else 0,
+                    "claim_count": len(claims) if isinstance(claims, list) else 0,
+                }
+            ],
+        }
 
     async def _create_synthesis_document(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -1851,6 +1972,7 @@ Suggest the single best next action and explain why."""
             "monitor_arxiv_topic": _monitor_arxiv_topic,
             "find_related_papers": _find_related_papers,
             "extract_paper_insights": _extract_paper_insights,
+            "extract_algorithm_spec": _extract_algorithm_spec,
             "create_synthesis_document": _create_synthesis_document,
             "compare_methodologies": _compare_methodologies,
             "identify_research_gaps": _identify_research_gaps,
@@ -5332,6 +5454,108 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             label=str(params.get("label") or ""),
         )
 
+    async def _check_implementation(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """Establish that the code about to be timed computes the right answer."""
+        from app.services import agent_implementation_check as impl
+
+        outcome = await impl.check_c_implementation(
+            code=str(params.get("code") or ""),
+            cases=params.get("cases") or [],
+            flags=str(params.get("flags") or "-O2"),
+            tolerance=float(params.get("tolerance") or impl.DEFAULT_TOLERANCE),
+        )
+        evidence = outcome.as_evidence()
+        return {
+            "success": True,
+            "data": evidence,
+            # Recorded whether or not it passed. A failed check is a finding a
+            # later stage needs to see: it is the difference between "this
+            # algorithm is slow" and "this implementation is wrong".
+            "findings": [
+                {
+                    "type": "implementation_verified",
+                    "subject": str(params.get("label") or "implementation"),
+                    **evidence,
+                }
+            ],
+        }
+
+    async def _compare_to_claim(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """Score a measurement against the paper's number, or refuse to.
+
+        The verdict is `incomparable` rather than an error whenever the
+        comparison does not hold -- including when the implementation was never
+        checked for correctness. That is not a technicality: a benchmark of
+        code nobody verified is an accurate timing of unknown work, and scoring
+        it against a paper's claim launders it into a reproduction result.
+        Returning a verdict with the blocker named tells the run what to fix;
+        an error would just look like the tool being broken.
+        """
+        from app.services import agent_claim_comparison as claims
+
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        findings = (
+            state.get("findings") if isinstance(state.get("findings"), list) else []
+        )
+        verifications = [
+            f
+            for f in findings
+            if isinstance(f, dict)
+            and str(f.get("type") or "") == "implementation_verified"
+        ]
+        verified = any(f.get("verified") is True for f in verifications)
+
+        comparison = claims.compare(
+            claimed_value=_as_float(params.get("claimed_value")),
+            measured_value=_as_float(params.get("measured_value")),
+            claimed_unit=params.get("claimed_unit"),
+            measured_unit=params.get("measured_unit"),
+            measurement_source=params.get("measurement_source"),
+            claimed_conditions=params.get("claimed_conditions"),
+            measured_conditions=params.get("measured_conditions"),
+            tolerance=_as_float(params.get("tolerance")),
+        )
+
+        if not verified:
+            reason = (
+                "no implementation_verified finding in this run"
+                if not verifications
+                else "the correctness check on this implementation did not pass"
+            )
+            comparison.blockers.insert(
+                0,
+                (
+                    f"The measured code was never established to compute the "
+                    f"right answer ({reason}): a timing of unverified code is "
+                    "accurate for work nobody checked. Run check_implementation "
+                    "against the paper's worked examples first."
+                ),
+            )
+            comparison.verdict = claims.VERDICT_INCOMPARABLE
+            comparison.summary = (
+                "Not comparable: the implementation's correctness was never "
+                "established, so this measurement cannot settle the paper's claim."
+            )
+
+        evidence = comparison.as_evidence()
+        return {
+            "success": True,
+            "data": evidence,
+            "findings": [
+                {
+                    "type": "reproduction_verdict",
+                    "subject": str(params.get("subject") or ""),
+                    "metric": str(params.get("metric") or ""),
+                    "measurement_source": str(params.get("measurement_source") or ""),
+                    **evidence,
+                }
+            ],
+        }
+
     async def _create_custom_tool(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -5537,6 +5761,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "axis_emit": _axis_emit,
             "axis_prove": _axis_prove,
             "benchmark_c_snippet": _benchmark_c_snippet,
+            "check_implementation": _check_implementation,
+            "compare_to_claim": _compare_to_claim,
             "sample_hardware_counters": _sample_hardware_counters,
             "measure_predictability": _measure_predictability,
             "select_counter_taps": _select_counter_taps,

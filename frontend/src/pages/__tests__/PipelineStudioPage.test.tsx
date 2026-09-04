@@ -339,3 +339,59 @@ describe('the library', () => {
     confirm.mockRestore();
   });
 });
+
+describe('the starters', () => {
+  beforeEach(() => {
+    apiClient.listSavedPipelines.mockResolvedValue([]);
+    apiClient.checkPipeline.mockResolvedValue(okCheck);
+    window.localStorage.clear();
+  });
+
+  it('offers a reproduction pipeline as well as the default', () => {
+    render(<PipelineStudioPage />);
+    const picker = screen.getByLabelText('Start from a worked example');
+    expect(picker).toHaveTextContent('Reproduce a paper');
+  });
+
+  it('loads a starter that is itself a valid pipeline', async () => {
+    // The studio's copy of this spec is a duplicate of the one the backend
+    // suite validates, so a typo here would ship a starter that fails its own
+    // check — which teaches the wrong thing about the format on first contact.
+    render(<PipelineStudioPage />);
+    fireEvent.change(screen.getByLabelText('Start from a worked example'), {
+      target: { value: 'Reproduce a paper' },
+    });
+
+    await waitFor(() => {
+      const sent = apiClient.checkPipeline.mock.calls.at(-1)?.[0];
+      expect(sent).toBeDefined();
+      expect(sent.name).toBe('reproduce-paper-algorithm');
+      expect(sent.stages.map((s: { id: string }) => s.id)).toEqual([
+        'find',
+        'specify',
+        'implement',
+        'measure',
+        'compare',
+      ]);
+    });
+  });
+
+  it('asks for a verified implementation, not merely one that compiles', async () => {
+    // The distinction the whole chain rests on: timing unchecked code produces
+    // an accurate number for work nobody looked at.
+    render(<PipelineStudioPage />);
+    fireEvent.change(screen.getByLabelText('Start from a worked example'), {
+      target: { value: 'Reproduce a paper' },
+    });
+
+    await waitFor(() => {
+      const sent = apiClient.checkPipeline.mock.calls.at(-1)?.[0];
+      const implement = sent.stages.find((s: { id: string }) => s.id === 'implement');
+      expect(implement.contract.required_finding_types).toContain(
+        'implementation_verified',
+      );
+      // And it loops: writing an algorithm from prose does not work first try.
+      expect(implement.loop.max_iterations).toBeGreaterThan(1);
+    });
+  });
+});

@@ -5619,6 +5619,23 @@ export interface PipelineLaunch {
   checkpoints: string[];
 }
 
+export interface SavedPipeline {
+  id: string;
+  name: string;
+  description?: string | null;
+  spec: Record<string, any>;
+  /** What the checker said when it was last saved. A hint for the list, not
+   *  an answer — tools and costs change under a saved spec, so the studio
+   *  re-checks whatever it opens. */
+  last_check_valid?: 'valid' | 'invalid' | 'unknown' | null;
+  last_estimated_seconds?: number | null;
+  launch_count: number;
+  last_launched_at?: string | null;
+  last_job_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
 export interface PipelineBinding {
   name: string;
   chain_config: Record<string, any>;

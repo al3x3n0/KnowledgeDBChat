@@ -274,6 +274,7 @@ import {
   PipelineBinding,
   PipelineCheck,
   PipelineLaunch,
+  SavedPipeline,
   DocumentFolderItemsResult,
   DocumentFolderRef,
   DocumentFolderTree,
@@ -624,13 +625,49 @@ class ApiClient {
    *  edited since it was priced is rejected instead of quietly costing more. */
   async launchPipeline(
     spec: Record<string, any>,
-    options?: { budgetSeconds?: number; acknowledgedSeconds?: number }
+    options?: {
+      budgetSeconds?: number;
+      acknowledgedSeconds?: number;
+      /** The saved pipeline this run comes from, recorded on both sides. */
+      pipelineId?: string;
+    }
   ): Promise<PipelineLaunch> {
     const response = await this.client.post('/api/v1/agent-pipelines/launch', {
       spec,
       budget_seconds: options?.budgetSeconds,
       acknowledged_seconds: options?.acknowledgedSeconds,
+      pipeline_id: options?.pipelineId,
     });
+    return response.data;
+  }
+
+  /** This user's saved pipelines, most recently touched first. */
+  async listSavedPipelines(): Promise<SavedPipeline[]> {
+    const response = await this.client.get('/api/v1/agent-pipelines');
+    return response.data;
+  }
+
+  /** Save a pipeline. A spec that does not check is still saved — work in
+   *  progress is worth keeping — with the verdict recorded alongside it. */
+  async saveSavedPipeline(payload: {
+    name: string;
+    spec: Record<string, any>;
+    description?: string;
+  }): Promise<SavedPipeline> {
+    const response = await this.client.post('/api/v1/agent-pipelines', payload);
+    return response.data;
+  }
+
+  async updateSavedPipeline(
+    id: string,
+    payload: { name?: string; spec?: Record<string, any>; description?: string }
+  ): Promise<SavedPipeline> {
+    const response = await this.client.patch(`/api/v1/agent-pipelines/${id}`, payload);
+    return response.data;
+  }
+
+  async deleteSavedPipeline(id: string): Promise<{ deleted: string; name: string }> {
+    const response = await this.client.delete(`/api/v1/agent-pipelines/${id}`);
     return response.data;
   }
 

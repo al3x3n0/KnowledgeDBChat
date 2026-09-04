@@ -10,6 +10,7 @@ weaker one.
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
+from uuid import UUID
 
 from pydantic import BaseModel, Field
 
@@ -92,13 +93,68 @@ class PipelineLaunchRequest(PipelineSpecRequest):
         ge=0,
         description="The total the caller was shown when they checked",
     )
+    #: The saved pipeline this run came from, if any. Recorded on both sides so
+    #: a run can say which pipeline produced it and a pipeline can say what it
+    #: has produced — otherwise a launched spec is anonymous the moment the
+    #: editor is closed.
+    pipeline_id: Optional[UUID] = None
 
 
 class PipelineLaunchResponse(BaseModel):
     """What was started."""
 
     job_id: str
+    pipeline_id: Optional[str] = None
     name: str
     stages: List[str] = Field(default_factory=list)
     estimated_seconds: int = 0
     checkpoints: List[str] = Field(default_factory=list)
+
+
+class SavedPipelineCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    spec: Dict[str, Any]
+    description: Optional[str] = Field(None, max_length=2000)
+
+
+class SavedPipelineUpdate(BaseModel):
+    """Every field optional, so renaming does not require restating the spec."""
+
+    name: Optional[str] = Field(None, min_length=1, max_length=200)
+    spec: Optional[Dict[str, Any]] = None
+    description: Optional[str] = Field(None, max_length=2000)
+
+
+class SavedPipelineResponse(BaseModel):
+    id: str
+    name: str
+    description: Optional[str] = None
+    spec: Dict[str, Any]
+    #: What the checker said when it was last saved. A cache for the list, not
+    #: an answer: tools and their costs change underneath a saved spec, so the
+    #: studio re-checks whatever it opens.
+    last_check_valid: Optional[str] = None
+    last_estimated_seconds: Optional[int] = None
+    launch_count: int = 0
+    last_launched_at: Optional[str] = None
+    last_job_id: Optional[str] = None
+    created_at: Optional[str] = None
+    updated_at: Optional[str] = None
+
+    @classmethod
+    def of(cls, row: Any) -> "SavedPipelineResponse":
+        return cls(
+            id=str(row.id),
+            name=row.name,
+            description=row.description,
+            spec=row.spec or {},
+            last_check_valid=row.last_check_valid,
+            last_estimated_seconds=row.last_estimated_seconds,
+            launch_count=row.launch_count or 0,
+            last_launched_at=row.last_launched_at.isoformat()
+            if row.last_launched_at
+            else None,
+            last_job_id=str(row.last_job_id) if row.last_job_id else None,
+            created_at=row.created_at.isoformat() if row.created_at else None,
+            updated_at=row.updated_at.isoformat() if row.updated_at else None,
+        )

@@ -17,6 +17,13 @@ jest.mock('../../services/api', () => ({
     checkPipeline: jest.fn(),
     bindPipeline: jest.fn(),
     launchPipeline: jest.fn(),
+    // The library loads on mount. Unmocked it throws into a deliberately
+    // silent catch — the tests pass while the page errors on every render,
+    // which is worse than a failure because nothing says so.
+    listSavedPipelines: jest.fn(),
+    saveSavedPipeline: jest.fn(),
+    updateSavedPipeline: jest.fn(),
+    deleteSavedPipeline: jest.fn(),
   },
 }));
 
@@ -70,6 +77,7 @@ beforeEach(() => {
   jest.clearAllMocks();
   window.localStorage.clear();
   apiClient.checkPipeline.mockResolvedValue(okCheck);
+  apiClient.listSavedPipelines.mockResolvedValue([]);
 });
 
 const typeSpec = (text: string) =>
@@ -256,5 +264,78 @@ describe('launching', () => {
     // And it goes to the run it just started, rather than leaving the user on
     // an editor with no sign anything happened.
     await waitFor(() => expect(mockNavigate).toHaveBeenCalledWith('/autonomous-agents?job=job-9'));
+  });
+});
+
+
+describe('the library', () => {
+  const stored = {
+    id: 'p-1',
+    name: 'Attention survey',
+    spec: { name: 'attention-survey', stages: [{ id: 'gather', contract: {} }] },
+    last_check_valid: 'valid' as const,
+    last_estimated_seconds: 540,
+    launch_count: 3,
+    last_job_id: 'job-7',
+  };
+
+  it('lists what has been saved, with how often it has run', async () => {
+    apiClient.listSavedPipelines.mockResolvedValue([stored]);
+    render(<PipelineStudioPage />);
+
+    expect(await screen.findByText('Attention survey')).toBeInTheDocument();
+    expect(screen.getByText('×3')).toBeInTheDocument();
+  });
+
+  it('re-checks a pipeline it opens rather than trusting the stored verdict', async () => {
+    apiClient.listSavedPipelines.mockResolvedValue([stored]);
+    render(<PipelineStudioPage />);
+    fireEvent.click(await screen.findByText('Attention survey'));
+
+    // The saved verdict was 'valid' when it was saved. Tools and their costs
+    // move underneath a stored spec, so it is asked again.
+    await waitFor(() =>
+      expect(apiClient.checkPipeline).toHaveBeenCalledWith(
+        expect.objectContaining({ name: 'attention-survey' }),
+        undefined
+      )
+    );
+  });
+
+  it('records which saved pipeline a launch came from', async () => {
+    jest.spyOn(window, 'confirm').mockReturnValue(true);
+    apiClient.listSavedPipelines.mockResolvedValue([stored]);
+    apiClient.launchPipeline.mockResolvedValue({
+      job_id: 'job-9',
+      name: 'x',
+      stages: [],
+      estimated_seconds: 180,
+      checkpoints: [],
+    });
+    render(<PipelineStudioPage />);
+    fireEvent.click(await screen.findByText('Attention survey'));
+    await screen.findAllByText('profile_c_workload');
+
+    fireEvent.click(screen.getByRole('button', { name: /Launch/i }));
+
+    await waitFor(() =>
+      expect(apiClient.launchPipeline).toHaveBeenCalledWith(
+        expect.any(Object),
+        expect.objectContaining({ pipelineId: 'p-1' })
+      )
+    );
+  });
+
+  it('warns that deleting a pipeline keeps its runs', async () => {
+    const confirm = jest.spyOn(window, 'confirm').mockReturnValue(false);
+    apiClient.listSavedPipelines.mockResolvedValue([stored]);
+    render(<PipelineStudioPage />);
+    await screen.findByText('Attention survey');
+
+    fireEvent.click(screen.getByRole('button', { name: /Delete Attention survey/i }));
+
+    expect(confirm.mock.calls[0][0]).toContain('runs it started stay');
+    expect(apiClient.deleteSavedPipeline).not.toHaveBeenCalled();
+    confirm.mockRestore();
   });
 });

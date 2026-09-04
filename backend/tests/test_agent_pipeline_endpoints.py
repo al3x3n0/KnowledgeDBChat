@@ -415,3 +415,160 @@ class TestResearchWorkIsExpressible:
 
         assert body["valid"] is False
         assert "peer_review" in " ".join(body["problems"])
+
+
+SAVED = "/api/v1/agent-pipelines"
+
+
+class TestSavingOne:
+    """A pipeline that outlives the browser tab it was written in.
+
+    Until this existed a spec lived in one browser's localStorage: no library,
+    no reuse, and no record of which spec produced which run. Authoring a
+    five-stage survey and launching it left nothing behind to run again.
+    """
+
+    def _spec_ok(self):
+        return _spec(
+            _stage("measure", ["benchmark_measurement"]),
+            _stage(
+                "attribute",
+                ["bottleneck_attribution"],
+                depends_on=["measure"],
+                assumes=["benchmark_measurement"],
+            ),
+            name="int8-study",
+        )
+
+    def test_it_saves_and_comes_back(self, client, auth_headers):
+        created = client.post(
+            SAVED,
+            json={"name": "INT8 study", "spec": self._spec_ok()},
+            headers=auth_headers,
+        )
+        assert created.status_code == 201
+        body = created.json()
+        assert body["name"] == "INT8 study"
+        # The verdict is recorded alongside, so a list can say which of twenty
+        # pipelines are not ready without re-planning all twenty.
+        assert body["last_check_valid"] == "valid"
+        assert body["last_estimated_seconds"] > 0
+
+        listed = client.get(SAVED, headers=auth_headers).json()
+        assert [p["name"] for p in listed] == ["INT8 study"]
+
+    def test_a_half_written_pipeline_is_still_savable(self, client, auth_headers):
+        # Refusing to save an invalid spec would mean the only way to keep work
+        # in progress is to leave the tab open.
+        response = client.post(
+            SAVED,
+            json={
+                "name": "wip",
+                "spec": _spec(_stage("a", ["telepathy"])),
+            },
+            headers=auth_headers,
+        )
+        assert response.status_code == 201
+        assert response.json()["last_check_valid"] == "invalid"
+
+    def test_a_spec_that_is_barely_a_pipeline_is_still_savable(
+        self, client, auth_headers
+    ):
+        # `normalize` is lenient — `stages: "oops"` becomes no stages — so this
+        # records as invalid rather than unknown. Either way it saves: the
+        # point is that nothing about a spec prevents keeping it.
+        response = client.post(
+            SAVED,
+            json={"name": "rubble", "spec": {"stages": "not a list"}},
+            headers=auth_headers,
+        )
+        assert response.status_code == 201
+        assert response.json()["last_check_valid"] in ("invalid", "unknown")
+
+    def test_two_pipelines_cannot_share_a_name(self, client, auth_headers):
+        payload = {"name": "same", "spec": self._spec_ok()}
+        assert client.post(SAVED, json=payload, headers=auth_headers).status_code == 201
+        clash = client.post(SAVED, json=payload, headers=auth_headers)
+        assert clash.status_code == 409
+
+    def test_editing_the_spec_rechecks_it(self, client, auth_headers):
+        created = client.post(
+            SAVED,
+            json={"name": "evolving", "spec": self._spec_ok()},
+            headers=auth_headers,
+        ).json()
+        assert created["last_check_valid"] == "valid"
+
+        # The cached verdict must never be older than the spec it describes.
+        updated = client.patch(
+            f"{SAVED}/{created['id']}",
+            json={"spec": _spec(_stage("a", ["telepathy"]))},
+            headers=auth_headers,
+        ).json()
+        assert updated["last_check_valid"] == "invalid"
+
+    def test_renaming_leaves_the_spec_alone(self, client, auth_headers):
+        created = client.post(
+            SAVED,
+            json={"name": "before", "spec": self._spec_ok()},
+            headers=auth_headers,
+        ).json()
+
+        renamed = client.patch(
+            f"{SAVED}/{created['id']}", json={"name": "after"}, headers=auth_headers
+        ).json()
+        assert renamed["name"] == "after"
+        assert renamed["spec"] == created["spec"]
+
+    def test_someone_elses_pipeline_is_not_found(self, client, auth_headers):
+        import uuid as _uuid
+
+        response = client.get(f"{SAVED}/{_uuid.uuid4()}", headers=auth_headers)
+        assert response.status_code == 404
+
+    def test_launching_a_saved_pipeline_records_it_on_both_sides(
+        self, client, auth_headers
+    ):
+        saved = client.post(
+            SAVED,
+            json={"name": "provenance", "spec": self._spec_ok()},
+            headers=auth_headers,
+        ).json()
+
+        launched = client.post(
+            LAUNCH,
+            json={"spec": self._spec_ok(), "pipeline_id": saved["id"]},
+            headers=auth_headers,
+        )
+        assert launched.status_code == 201
+        assert launched.json()["pipeline_id"] == saved["id"]
+
+        # And the pipeline knows what it produced. Without this a launched spec
+        # is anonymous the moment the editor closes.
+        after = client.get(f"{SAVED}/{saved['id']}", headers=auth_headers).json()
+        assert after["launch_count"] == 1
+        assert after["last_job_id"] == launched.json()["job_id"]
+        assert after["last_launched_at"]
+
+    def test_deleting_a_pipeline_leaves_its_runs(self, client, auth_headers):
+        saved = client.post(
+            SAVED,
+            json={"name": "temporary", "spec": self._spec_ok()},
+            headers=auth_headers,
+        ).json()
+        launched = client.post(
+            LAUNCH,
+            json={"spec": self._spec_ok(), "pipeline_id": saved["id"]},
+            headers=auth_headers,
+        ).json()
+
+        assert (
+            client.delete(f"{SAVED}/{saved['id']}", headers=auth_headers).status_code
+            == 200
+        )
+        # The run outlives the recipe: deleting a pipeline must not delete the
+        # work it produced.
+        job = client.get(
+            f"/api/v1/agent-jobs/{launched['job_id']}", headers=auth_headers
+        )
+        assert job.status_code == 200

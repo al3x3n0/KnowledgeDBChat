@@ -18,11 +18,18 @@ launching stays with the existing chain endpoints, which already carry the
 authorisation and budget checks a launch needs.
 """
 
+from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.models.agent_pipeline import AgentPipeline
 from app.models.user import User
 from app.schemas.agent_job import AgentJobCreate
 from app.schemas.agent_pipeline import (
@@ -32,6 +39,9 @@ from app.schemas.agent_pipeline import (
     PipelineLaunchResponse,
     PipelinePlanResponse,
     PipelineSpecRequest,
+    SavedPipelineCreate,
+    SavedPipelineResponse,
+    SavedPipelineUpdate,
     StagePlanResponse,
 )
 from app.services import agent_pipeline_binding, agent_pipeline_spec
@@ -231,6 +241,12 @@ async def launch_pipeline(
             ),
         )
 
+    saved = None
+    if payload.pipeline_id is not None:
+        # Refuses a pipeline that is not this user's, the same as any other
+        # read of one.
+        saved = await _owned(db, current_user.id, payload.pipeline_id)
+
     root = bound.roots[0]
     chain_config = root.get("chain_config") or {}
     job = await agent_job_creation_service.create_from_request(
@@ -239,7 +255,12 @@ async def launch_pipeline(
             description=root.get("description"),
             goal=root.get("goal") or "",
             job_type=root.get("job_type") or "research",
-            config=root.get("config") or {},
+            config={
+                **(root.get("config") or {}),
+                # Carried in the job config so a running job can say which saved
+                # pipeline it came from, not only which pipeline by name.
+                **({"saved_pipeline_id": str(saved.id)} if saved else {}),
+            },
             chain_config=chain_config,
             max_iterations=root.get("max_iterations") or 100,
         ),
@@ -247,14 +268,160 @@ async def launch_pipeline(
         db=db,
     )
 
+    if saved is not None:
+        saved.launch_count = (saved.launch_count or 0) + 1
+        saved.last_launched_at = datetime.utcnow()
+        saved.last_job_id = job.id
+        await db.commit()
+
     logger.info(
         f"Launched pipeline '{pipeline.name}' as job {job.id} "
         f"({len(compiled.order)} stages, ~{compiled.total_seconds}s)"
     )
     return PipelineLaunchResponse(
         job_id=str(job.id),
+        pipeline_id=str(saved.id) if saved else None,
         name=pipeline.name,
         stages=list(compiled.order),
         estimated_seconds=compiled.total_seconds,
         checkpoints=list(compiled.checkpoints),
     )
+
+
+# ------------------------------------------------------------ saved pipelines
+
+
+async def _owned(db: AsyncSession, user_id, pipeline_id: UUID) -> AgentPipeline:
+    """Fetch a saved pipeline, or refuse.
+
+    404 rather than 403 for someone else's: whether a pipeline exists should
+    not be discoverable by asking for it.
+    """
+    row = (
+        await db.execute(
+            select(AgentPipeline).where(
+                AgentPipeline.id == pipeline_id, AgentPipeline.user_id == user_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return row
+
+
+@router.get("", response_model=list[SavedPipelineResponse])
+async def list_pipelines(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """This user's saved pipelines, most recently touched first."""
+    rows = (
+        (
+            await db.execute(
+                select(AgentPipeline)
+                .where(AgentPipeline.user_id == current_user.id)
+                .order_by(AgentPipeline.updated_at.desc().nullslast())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [SavedPipelineResponse.of(row) for row in rows]
+
+
+@router.post("", response_model=SavedPipelineResponse, status_code=201)
+async def save_pipeline(
+    payload: SavedPipelineCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save a pipeline, valid or not.
+
+    A spec that does not check is still worth keeping — it is work in
+    progress, and refusing to save it would mean the only way to keep a
+    half-written pipeline is to leave the tab open. What is recorded alongside
+    it is whether it checked, so a list can say which ones are not ready.
+    """
+    verdict, estimate = _verdict_for(payload.spec)
+
+    row = AgentPipeline(
+        user_id=current_user.id,
+        name=payload.name.strip(),
+        description=payload.description,
+        spec=payload.spec,
+        last_check_valid=verdict,
+        last_estimated_seconds=estimate,
+    )
+    db.add(row)
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="You already have a pipeline with that name"
+        ) from error
+    await db.refresh(row)
+    return SavedPipelineResponse.of(row)
+
+
+@router.get("/{pipeline_id}", response_model=SavedPipelineResponse)
+async def get_pipeline(
+    pipeline_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return SavedPipelineResponse.of(await _owned(db, current_user.id, pipeline_id))
+
+
+@router.patch("/{pipeline_id}", response_model=SavedPipelineResponse)
+async def update_pipeline(
+    pipeline_id: UUID,
+    payload: SavedPipelineUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await _owned(db, current_user.id, pipeline_id)
+    if payload.name is not None:
+        row.name = payload.name.strip()
+    if payload.description is not None:
+        row.description = payload.description or None
+    if payload.spec is not None:
+        row.spec = payload.spec
+        # Re-checked on every save of the spec, so the cached verdict is never
+        # older than the spec it describes.
+        row.last_check_valid, row.last_estimated_seconds = _verdict_for(payload.spec)
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="You already have a pipeline with that name"
+        ) from error
+    await db.refresh(row)
+    return SavedPipelineResponse.of(row)
+
+
+@router.delete("/{pipeline_id}")
+async def delete_pipeline(
+    pipeline_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a saved pipeline. The runs it launched are not touched."""
+    row = await _owned(db, current_user.id, pipeline_id)
+    name = row.name
+    await db.delete(row)
+    await db.commit()
+    return {"deleted": str(pipeline_id), "name": name}
+
+
+def _verdict_for(spec) -> tuple[Optional[str], Optional[int]]:
+    """Check a spec for the record, without letting a bad one block a save."""
+    try:
+        pipeline = agent_pipeline_spec.normalize(spec)
+        problems = agent_pipeline_spec.validate(pipeline)
+        if problems:
+            return "invalid", None
+        return "valid", agent_pipeline_spec.plan(pipeline).total_seconds
+    except Exception:  # noqa: BLE001 - a spec too broken to check is still savable
+        return "unknown", None

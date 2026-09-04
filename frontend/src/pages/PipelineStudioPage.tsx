@@ -31,6 +31,8 @@ import {
   Layers,
   PauseCircle,
   Play,
+  Save,
+  Trash2,
   Workflow,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useMemo, useState } from 'react';
@@ -40,7 +42,7 @@ import { useNavigate } from 'react-router-dom';
 import Button from '../components/common/Button';
 import PipelineGraph from '../components/pipelines/PipelineGraph';
 import { apiClient } from '../services/api';
-import type { PipelineCheck } from '../types';
+import type { PipelineCheck, SavedPipeline } from '../types';
 
 const STORAGE_KEY = 'pipeline_studio_draft_v1';
 
@@ -154,6 +156,77 @@ const PipelineStudioPage: React.FC = () => {
     }
   }, [parsed, budget]);
 
+  const [saved, setSaved] = useState<SavedPipeline[]>([]);
+  // Which saved pipeline the editor is currently showing. null means the
+  // draft has never been saved, which is why Save asks for a name and Update
+  // does not.
+  const [openId, setOpenId] = useState<string | null>(null);
+
+  const refreshSaved = useCallback(async () => {
+    try {
+      setSaved(await apiClient.listSavedPipelines());
+    } catch {
+      // A failure to list is not worth a toast on every mount; the editor
+      // works without the library.
+    }
+  }, []);
+
+  useEffect(() => {
+    refreshSaved();
+  }, [refreshSaved]);
+
+  const handleSave = useCallback(async () => {
+    if (!parsed.value) {
+      toast.error('Fix the JSON before saving');
+      return;
+    }
+    try {
+      if (openId) {
+        const updated = await apiClient.updateSavedPipeline(openId, {
+          spec: parsed.value,
+        });
+        toast.success(`Saved ${updated.name}`);
+      } else {
+        const name = window.prompt(
+          'Name this pipeline',
+          parsed.value.name || 'Untitled pipeline'
+        );
+        if (!name || !name.trim()) return;
+        const created = await apiClient.saveSavedPipeline({
+          name: name.trim(),
+          spec: parsed.value,
+        });
+        setOpenId(created.id);
+        toast.success(`Saved ${created.name}`);
+      }
+      refreshSaved();
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Could not save');
+    }
+  }, [parsed, openId, refreshSaved]);
+
+  const handleOpen = useCallback((pipeline: SavedPipeline) => {
+    setOpenId(pipeline.id);
+    setSource(JSON.stringify(pipeline.spec, null, 2));
+    // Whatever verdict was cached when it was saved is not re-used: tools and
+    // their costs move underneath a stored spec, so it is checked again.
+    setCheck(null);
+  }, []);
+
+  const handleDeleteSaved = useCallback(
+    async (pipeline: SavedPipeline) => {
+      if (!window.confirm(`Delete "${pipeline.name}"? The runs it started stay.`)) return;
+      try {
+        await apiClient.deleteSavedPipeline(pipeline.id);
+        if (openId === pipeline.id) setOpenId(null);
+        refreshSaved();
+      } catch (error: any) {
+        toast.error(error?.response?.data?.detail || 'Could not delete');
+      }
+    },
+    [openId, refreshSaved]
+  );
+
   // Check as you type, once you stop. 600ms is long enough that a half-typed
   // stage id does not produce a wall of problems you did not ask about.
   useEffect(() => {
@@ -194,15 +267,18 @@ const PipelineStudioPage: React.FC = () => {
         // spec changed since it was priced the server refuses rather than
         // running something nobody saw costed.
         acknowledgedSeconds: total,
+        pipelineId: openId || undefined,
       });
       toast.success(`Started ${started.name}`);
+      refreshSaved();
       navigate(`/autonomous-agents?job=${started.job_id}`);
     } catch (error: any) {
       toast.error(error?.response?.data?.detail || 'Could not start the pipeline');
     } finally {
       setLaunching(false);
     }
-  }, [canLaunch, parsed, check, budget, navigate]);
+    // openId so the run and the pipeline each know about the other.
+  }, [canLaunch, parsed, check, budget, navigate, openId, refreshSaved]);
 
   // The graph never holds a model of its own: it hands back a whole spec and
   // that is serialised straight into the text. Two views of one document
@@ -260,8 +336,12 @@ const PipelineStudioPage: React.FC = () => {
               </button>
             ))}
           </div>
-          <Button size="sm" variant="secondary" onClick={() => setSource(EXAMPLE)}>
-            Reset to example
+          <Button size="sm" variant="secondary" onClick={handleSave}>
+            <Save className="w-4 h-4 mr-1" />
+            {openId ? 'Save' : 'Save as…'}
+          </Button>
+          <Button size="sm" variant="ghost" onClick={() => { setOpenId(null); setSource(EXAMPLE); }}>
+            New
           </Button>
           <Button
             size="sm"
@@ -285,6 +365,57 @@ const PipelineStudioPage: React.FC = () => {
         run — those are derived from the contract. Everything below is decided
         before anything starts, and nothing here launches a run.
       </p>
+
+      {saved.length > 0 && (
+        <div className="flex-none flex flex-wrap gap-2" aria-label="Saved pipelines">
+          {saved.map((pipeline) => (
+            <div
+              key={pipeline.id}
+              className={`group flex items-center gap-2 pl-2.5 pr-1 py-1 rounded-full border text-xs
+                transition-all duration-fast ease-ui
+                ${
+                  openId === pipeline.id
+                    ? 'bg-primary-500/10 border-primary-500/60 text-primary-700'
+                    : 'bg-gray-100 border-gray-300 text-gray-700 hover:border-gray-400'
+                }`}
+            >
+              <button
+                type="button"
+                className="flex items-center gap-1.5"
+                onClick={() => handleOpen(pipeline)}
+                title={
+                  pipeline.launch_count
+                    ? `Run ${pipeline.launch_count} time(s)`
+                    : 'Never run'
+                }
+              >
+                {/* The verdict from when it was saved. A hint, not an answer:
+                    the studio re-checks whatever it opens, because tools and
+                    costs move underneath a stored spec. */}
+                {pipeline.last_check_valid === 'valid' ? (
+                  <CheckCircle2 className="w-3 h-3 text-primary-700" />
+                ) : (
+                  <AlertTriangle className="w-3 h-3 text-yellow-400" />
+                )}
+                {pipeline.name}
+                {pipeline.launch_count > 0 && (
+                  <span className="font-mono text-[10px] text-gray-500">
+                    ×{pipeline.launch_count}
+                  </span>
+                )}
+              </button>
+              <button
+                type="button"
+                aria-label={`Delete ${pipeline.name}`}
+                className="p-0.5 rounded opacity-0 group-hover:opacity-100 focus:opacity-100 text-gray-500 hover:text-red-300 transition-opacity duration-fast"
+                onClick={() => handleDeleteSaved(pipeline)}
+              >
+                <Trash2 className="w-3 h-3" />
+              </button>
+            </div>
+          ))}
+        </div>
+      )}
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4 flex-1 min-h-0">
         {/* The spec, as text and/or as a graph. Both edit the same document:

@@ -8,9 +8,16 @@ that a job could sit at iteration zero while its execution lease lapsed.
 Routing it to the "fast" tier was the obvious fix and made it worse, measured
 on the same ranking: deepseek-v4-flash spent 23,548 reasoning tokens and 291
 seconds where pro had averaged 39. Both DeepSeek models reason before
-answering, so there was no cheap tier to move it to. The mistake was using a
-language model at all -- relevance between a goal and a memory is a similarity
-question, and this codebase already answers those with embeddings.
+answering, so there was no cheap tier to move it to.
+
+Embedding the texts was fast -- 291s to 0.85s -- and cost 139 MB per process.
+The general worker forks four of them inside a 3 GiB container that already sat
+at 2.5, and it was OOM-killed mid-run, stalling a chained job for thirty-five
+minutes. A ranking that kills the worker is not an optimisation.
+
+So there is no model here at all: term overlap weighted by how rare each term
+is among the candidates. It cannot tell a synonym from a stranger, which an
+encoder can, and that is the trade.
 """
 
 import pytest
@@ -33,31 +40,8 @@ class _Job:
         self.job_type = job_type
 
 
-class _Embedder:
-    """Stands in for the ONNX encoder with a deterministic toy embedding.
-
-    Each text becomes a vector of term counts over a fixed vocabulary, which is
-    enough for cosine similarity to prefer the memory that shares words with
-    the goal -- and, unlike a mock returning canned scores, it exercises the
-    real normalisation and argsort.
-    """
-
-    VOCAB = ("benchmark", "kernel", "cake", "compiler", "recipe")
-
-    def encode(self, texts, show_progress_bar=False):
-        import numpy as np
-
-        rows = []
-        for text in texts:
-            lowered = (text or "").lower()
-            rows.append([float(lowered.count(word)) for word in self.VOCAB])
-        return np.asarray(rows, dtype="float32")
-
-
-def _service(embedder):
-    service = AgentJobMemoryService()
-    service._embedder = embedder
-    return service
+def _service(*_ignored):
+    return AgentJobMemoryService()
 
 
 class TestItRanksBySimilarity:
@@ -68,7 +52,7 @@ class TestItRanksBySimilarity:
             _Memory("m2", "benchmark the kernel with a compiler"),
             _Memory("m3", "an unrelated note"),
         ]
-        ranked = await _service(_Embedder())._rank_memories_by_relevance(
+        ranked = await _service()._rank_memories_by_relevance(
             _Job(), memories, "user", None, None
         )
         assert ranked[0].id == "m2"
@@ -78,7 +62,7 @@ class TestItRanksBySimilarity:
         # Ranking reorders; it must never drop one, or the caller's limit
         # silently selects from a smaller set than it thinks.
         memories = [_Memory(f"m{i}", f"note {i}") for i in range(8)]
-        ranked = await _service(_Embedder())._rank_memories_by_relevance(
+        ranked = await _service()._rank_memories_by_relevance(
             _Job(), memories, "user", None, None
         )
         assert sorted(m.id for m in ranked) == sorted(m.id for m in memories)
@@ -92,7 +76,7 @@ class TestItRanksBySimilarity:
             _Memory("m2", "cake recipe"),
             _Memory("m3", "compiler notes"),
         ]
-        service = _service(_Embedder())
+        service = _service()
         first = await service._rank_memories_by_relevance(
             _Job(), memories, "user", None, None
         )
@@ -109,7 +93,7 @@ class TestItRanksBySimilarity:
             _Memory("empty", ""),
             _Memory("relevant", "benchmark kernel benchmark kernel"),
         ]
-        ranked = await _service(_Embedder())._rank_memories_by_relevance(
+        ranked = await _service()._rank_memories_by_relevance(
             _Job(), memories, "user", None, None
         )
         assert ranked[0].id == "relevant"
@@ -118,29 +102,10 @@ class TestItRanksBySimilarity:
 
 class TestItDegradesRatherThanFails:
     @pytest.mark.asyncio
-    async def test_no_encoder_falls_back_to_the_given_order(self):
-        # Importance order, which is what the caller already used when the old
-        # ranking raised.
-        memories = [_Memory("m1", "a"), _Memory("m2", "b")]
-        service = AgentJobMemoryService()
-
-        async def _none():
-            return None
-
-        service._load_embedder = _none
-        ranked = await service._rank_memories_by_relevance(
-            _Job(), memories, "user", None, None
-        )
-        assert [m.id for m in ranked] == ["m1", "m2"]
-
-    @pytest.mark.asyncio
-    async def test_an_encoder_that_throws_does_not_end_memory_injection(self):
-        class _Broken:
-            def encode(self, texts, show_progress_bar=False):
-                raise RuntimeError("model file is corrupt")
-
-        memories = [_Memory("m1", "a"), _Memory("m2", "b")]
-        ranked = await _service(_Broken())._rank_memories_by_relevance(
+    async def test_memories_sharing_nothing_keep_their_given_order(self):
+        # Importance order is the caller's, and ties must not shuffle it.
+        memories = [_Memory("m1", "zzz"), _Memory("m2", "qqq")]
+        ranked = await _service()._rank_memories_by_relevance(
             _Job(), memories, "user", None, None
         )
         assert [m.id for m in ranked] == ["m1", "m2"]
@@ -148,13 +113,13 @@ class TestItDegradesRatherThanFails:
     @pytest.mark.asyncio
     async def test_a_job_with_no_goal_is_not_ranked_against_nothing(self):
         memories = [_Memory("m1", "a"), _Memory("m2", "b")]
-        ranked = await _service(_Embedder())._rank_memories_by_relevance(
+        ranked = await _service()._rank_memories_by_relevance(
             _Job(goal="", job_type=""), memories, "user", None, None
         )
         assert [m.id for m in ranked] == ["m1", "m2"]
 
 
-class TestItCostsNoTokens:
+class TestItCostsNothing:
     @pytest.mark.asyncio
     async def test_no_language_model_is_called(self):
         """The whole point. A service whose llm_service would explode proves
@@ -168,7 +133,7 @@ class TestItCostsNoTokens:
                     "reasoning tokens before the loop even starts"
                 )
 
-        service = _service(_Embedder())
+        service = _service()
         service.llm_service = _Explodes()
         memories = [_Memory("m1", "benchmark kernel"), _Memory("m2", "cake")]
         ranked = await service._rank_memories_by_relevance(

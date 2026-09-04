@@ -8,7 +8,7 @@ Integrates the memory system with autonomous agent jobs, enabling:
 - Memory sharing between jobs and chat sessions
 """
 
-import asyncio
+import math
 import re
 from collections import Counter
 from datetime import datetime
@@ -75,6 +75,26 @@ Memories:
 {memories}
 
 Output the IDs in order of relevance (most relevant first), one per line:"""
+
+
+def _terms(text: str) -> "Counter":
+    """Words worth matching on, lowercased, with the ubiquitous ones dropped.
+
+    Stopwords are removed rather than down-weighted: with fifty short
+    candidates they appear everywhere, contribute nothing to separating them,
+    and dominate a raw overlap count.
+    """
+    words = re.findall(r"[a-z0-9_]+", (text or "").lower())
+    return Counter(w for w in words if len(w) > 2 and w not in _STOPWORDS)
+
+
+_STOPWORDS = frozenset(
+    """the a an and or but if of to in on at by for with from as is are was
+    were be been being it its this that these those there here how what when
+    which who whom while into over under then than so such can could should
+    would will shall may might must do does did done have has had not no nor
+    you your they them their we our us he she his her""".split()
+)
 
 
 class AgentJobMemoryService:
@@ -1310,79 +1330,64 @@ class AgentJobMemoryService:
         """Order memories by how close they are to what this job is trying to do.
 
         This asked a language model to sort a list of UUIDs, and it was the
-        most expensive thing in a run by a wide margin: 245 calls in one day
-        for 646,989 reasoning tokens, 39s mean and 210s worst, every one of
-        them before the loop starts -- long enough that the execution lease
-        could lapse while a job sat at iteration zero.
+        most expensive thing in a run: 245 calls in one day for 646,989
+        reasoning tokens, 39s mean and 210s worst, all of it before the loop
+        starts -- long enough that a job could sit at iteration zero while its
+        execution lease lapsed underneath it.
 
-        Routing it to the "fast" tier was the obvious fix and made it worse,
-        measured: deepseek-v4-flash spent 23,548 reasoning tokens and 291
-        seconds on the same ranking that pro averaged 39s on. Both DeepSeek
-        models reason before answering, so there is no cheap tier to move this
-        to -- the mistake was using a language model for it at all.
+        Two fixes were tried and measured before this one.
 
-        Relevance between a goal and a memory is a similarity question, and
-        this codebase already answers those with embeddings: the same ONNX
-        encoder the vector store uses, on CPU, in milliseconds and no tokens.
-        The ordering is also deterministic, which the LLM's was not -- two
-        identical jobs could be given different memories and nothing recorded
-        why.
+        Routing it to the "fast" tier made it worse: deepseek-v4-flash spent
+        23,548 reasoning tokens and 291 seconds on the same ranking that pro
+        had averaged 39 on. Both DeepSeek models reason before answering, so
+        there is no cheap tier to move this to.
 
-        Falls back to the caller's importance ordering if the encoder is not
-        available, which is what the caller already did when this raised.
+        Embedding the texts with the ONNX encoder was fast -- 291s to 0.85s --
+        and cost 139 MB of resident memory per process. The general worker runs
+        a prefork pool of four in a 3 GiB container that already sat at 2.5,
+        and it was OOM-killed mid-run, which stalled a chained job for
+        thirty-five minutes. A ranking that kills the worker is not an
+        optimisation.
+
+        So: no model. Ranking fifty short strings against a goal is well served
+        by term overlap weighted by how rare each term is across the
+        candidates, which needs nothing but the standard library, is
+        deterministic, and takes microseconds. It cannot tell a synonym from a
+        stranger, which an encoder can; that is the trade, and it is worth it
+        for choosing ten memories out of fifty.
         """
-        embedder = await self._load_embedder()
-        if embedder is None:
-            logger.warning(
-                "No embedding model available to rank memories; "
-                "falling back to importance order"
-            )
+        query = f"{job.goal or ''} {job.job_type or ''}".strip()
+        if not query or not memories:
             return list(memories)
 
-        query = f"{job.goal or ''} ({job.job_type or 'general'})".strip()
-        if not query:
+        query_terms = _terms(query)
+        if not query_terms:
             return list(memories)
 
-        def _rank() -> List[ConversationMemory]:
-            import numpy as np
+        documents = [_terms((m.content or "")[:1000]) for m in memories]
+        # How rare each term is across the candidates. A term in every memory
+        # separates nothing; a term in one is what makes it the right one.
+        appearances: Counter = Counter()
+        for doc in documents:
+            appearances.update(set(doc))
+        total = len(documents)
 
-            texts = [(m.content or "")[:1000] for m in memories]
-            vectors = embedder.encode([query] + texts, show_progress_bar=False)
-            vectors = np.asarray(vectors, dtype="float32")
-            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
-            # A zero vector would divide to NaN and sort unpredictably; an
-            # empty memory should rank last, not randomly.
-            norms[norms == 0] = 1.0
-            unit = vectors / norms
-            scores = unit[1:] @ unit[0]
-            order = np.argsort(-scores)
-            return [memories[i] for i in order]
+        def score(doc: Counter) -> float:
+            if not doc:
+                return 0.0
+            hit = 0.0
+            for term in query_terms:
+                if term in doc:
+                    seen = appearances.get(term, 0) or 1
+                    hit += math.log(1 + total / seen)
+            # Divided by length so a long memory cannot win on volume alone.
+            return hit / math.sqrt(sum(doc.values()))
 
-        try:
-            loop = asyncio.get_event_loop()
-            return await loop.run_in_executor(None, _rank)
-        except Exception as exc:
-            # The encoder is CPU-bound and synchronous; a failure here is not
-            # worth ending memory injection over.
-            logger.warning(f"Embedding rank failed, using importance order: {exc}")
-            return list(memories)
-
-    async def _load_embedder(self) -> Any:
-        """The text encoder, shared with the vector store and loaded once."""
-        if getattr(self, "_embedder", None) is not None:
-            return self._embedder
-        try:
-            from app.core.config import settings
-            from app.services.onnx_embeddings import load_text_embedder
-
-            loop = asyncio.get_event_loop()
-            self._embedder = await loop.run_in_executor(
-                None, load_text_embedder, settings.EMBEDDING_MODEL
-            )
-        except Exception as exc:
-            logger.warning(f"Could not load the embedding model: {exc}")
-            self._embedder = None
-        return self._embedder
+        scored = [(score(doc), index) for index, doc in enumerate(documents)]
+        # The index is the tiebreak, so equal scores keep the order they
+        # arrived in rather than an arbitrary one.
+        scored.sort(key=lambda pair: (-pair[0], pair[1]))
+        return [memories[index] for _score, index in scored]
 
     async def _update_memory_access(
         self, memories: List[ConversationMemory], db: AsyncSession

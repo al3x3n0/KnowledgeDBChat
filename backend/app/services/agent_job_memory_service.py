@@ -8,6 +8,7 @@ Integrates the memory system with autonomous agent jobs, enabling:
 - Memory sharing between jobs and chat sessions
 """
 
+import asyncio
 import re
 from collections import Counter
 from datetime import datetime
@@ -1263,7 +1264,13 @@ class AgentJobMemoryService:
                     ConversationMemory.memory_type.in_(memory_types),
                 )
             )
-            .order_by(desc(ConversationMemory.importance_score))
+            # The id is a tiebreak, not decoration. Importance scores tie
+            # constantly, and `LIMIT 50` over an unstable order let Postgres
+            # return a different fifty each time -- so which memories a job was
+            # given varied between identical runs, with nothing recording that
+            # it had. The ranking below is deterministic; this is what makes
+            # the whole selection so.
+            .order_by(desc(ConversationMemory.importance_score), ConversationMemory.id)
             .limit(50)  # Get more than needed for ranking
         )
 
@@ -1300,63 +1307,82 @@ class AgentJobMemoryService:
         prefs: UserPreferences,
         db: AsyncSession,
     ) -> List[ConversationMemory]:
-        """Use LLM to rank memories by relevance to job."""
-        memory_texts = "\n".join(
-            [
-                f"ID: {m.id} | TYPE: {m.memory_type} | CONTENT: {m.content[:200]}"
-                for m in memories
-            ]
-        )
+        """Order memories by how close they are to what this job is trying to do.
 
-        prompt = RANK_MEMORIES_PROMPT.format(
-            goal=job.goal,
-            job_type=job.job_type,
-            memories=memory_texts,
-        )
+        This asked a language model to sort a list of UUIDs, and it was the
+        most expensive thing in a run by a wide margin: 245 calls in one day
+        for 646,989 reasoning tokens, 39s mean and 210s worst, every one of
+        them before the loop starts -- long enough that the execution lease
+        could lapse while a job sat at iteration zero.
 
-        llm_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
+        Routing it to the "fast" tier was the obvious fix and made it worse,
+        measured: deepseek-v4-flash spent 23,548 reasoning tokens and 291
+        seconds on the same ranking that pro averaged 39s on. Both DeepSeek
+        models reason before answering, so there is no cheap tier to move this
+        to -- the mistake was using a language model for it at all.
 
-        response = await self.llm_service.generate_response(
-            prompt=prompt,
-            system_prompt="You are ranking memories by relevance.",
-            user_id=user_id,
-            user_settings=llm_settings,
-            db=db,
-            # Ranking is a sorting task whose whole output is a list of ids in
-            # order, and it runs BEFORE the loop starts. Left on the default
-            # model it reached the reasoning tier and behaved accordingly:
-            # 245 calls in one day, 646,989 reasoning tokens, 39s mean and
-            # 210s worst, all spent deciding an order while the job sat at
-            # iteration zero and its lease ticked down. The fast tier is what
-            # this is for; balanced is the fallback so a provider outage
-            # degrades rather than fails.
-            routing={"llm_tier": "fast", "llm_fallback_tiers": ["balanced"]},
-            snapshot_context={
-                "job_id": str(getattr(job, "id", "") or "") or None,
-                "iteration": int(getattr(job, "iteration", 0) or 0),
-                "phase": "memory_ranking",
-            },
-        )
+        Relevance between a goal and a memory is a similarity question, and
+        this codebase already answers those with embeddings: the same ONNX
+        encoder the vector store uses, on CPU, in milliseconds and no tokens.
+        The ordering is also deterministic, which the LLM's was not -- two
+        identical jobs could be given different memories and nothing recorded
+        why.
 
-        # Parse ranked IDs
-        memory_map = {str(m.id): m for m in memories}
-        ranked = []
+        Falls back to the caller's importance ordering if the encoder is not
+        available, which is what the caller already did when this raised.
+        """
+        embedder = await self._load_embedder()
+        if embedder is None:
+            logger.warning(
+                "No embedding model available to rank memories; "
+                "falling back to importance order"
+            )
+            return list(memories)
 
-        for line in response.strip().split("\n"):
-            line = line.strip()
-            # Extract UUID from line
-            for mid in memory_map.keys():
-                if mid in line:
-                    if mid not in [str(m.id) for m in ranked]:
-                        ranked.append(memory_map[mid])
-                    break
+        query = f"{job.goal or ''} ({job.job_type or 'general'})".strip()
+        if not query:
+            return list(memories)
 
-        # Add any missing memories at the end
-        for memory in memories:
-            if memory not in ranked:
-                ranked.append(memory)
+        def _rank() -> List[ConversationMemory]:
+            import numpy as np
 
-        return ranked
+            texts = [(m.content or "")[:1000] for m in memories]
+            vectors = embedder.encode([query] + texts, show_progress_bar=False)
+            vectors = np.asarray(vectors, dtype="float32")
+            norms = np.linalg.norm(vectors, axis=1, keepdims=True)
+            # A zero vector would divide to NaN and sort unpredictably; an
+            # empty memory should rank last, not randomly.
+            norms[norms == 0] = 1.0
+            unit = vectors / norms
+            scores = unit[1:] @ unit[0]
+            order = np.argsort(-scores)
+            return [memories[i] for i in order]
+
+        try:
+            loop = asyncio.get_event_loop()
+            return await loop.run_in_executor(None, _rank)
+        except Exception as exc:
+            # The encoder is CPU-bound and synchronous; a failure here is not
+            # worth ending memory injection over.
+            logger.warning(f"Embedding rank failed, using importance order: {exc}")
+            return list(memories)
+
+    async def _load_embedder(self) -> Any:
+        """The text encoder, shared with the vector store and loaded once."""
+        if getattr(self, "_embedder", None) is not None:
+            return self._embedder
+        try:
+            from app.core.config import settings
+            from app.services.onnx_embeddings import load_text_embedder
+
+            loop = asyncio.get_event_loop()
+            self._embedder = await loop.run_in_executor(
+                None, load_text_embedder, settings.EMBEDDING_MODEL
+            )
+        except Exception as exc:
+            logger.warning(f"Could not load the embedding model: {exc}")
+            self._embedder = None
+        return self._embedder
 
     async def _update_memory_access(
         self, memories: List[ConversationMemory], db: AsyncSession

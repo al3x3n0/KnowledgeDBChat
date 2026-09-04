@@ -53,6 +53,21 @@ the image, and blanket-applying it is how a layering scheme makes things worse.
 
 ## Building
 
+`make sandbox-images` builds every image this repository can build, in order.
+`make sandbox-check` reports which ones exist locally and what the compiler
+image actually carries -- the toolchain versions and the crate count -- which
+is the fastest way to tell whether a rebuild is what a failing agent tool
+needs. The two that cannot be built from here have their own targets:
+`make sandbox-gem5` and `make sandbox-axis AXIS_PATH=...`.
+
+Keeping a rebuild reachable matters more than it looks. These images were
+built by hand and pushed, so nothing recorded which code needed which image:
+the Rust toolchain and the pinned crate set only work against an image built
+after they were added, and an older one gives `rustc: not found` or an
+unresolved-import error that reads like the model's mistake.
+
+The commands the targets run, and why the contexts differ:
+
 The base comes first, since the others are `FROM` it:
 
 ```bash

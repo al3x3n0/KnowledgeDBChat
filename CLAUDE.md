@@ -32,6 +32,19 @@ make doctor             # Validate env + health checks
 make download-models    # Download embedding + reranking models
 ```
 
+### Sandbox images
+```bash
+make sandbox-images     # every image this repo can build (base, compiler, profiling, microarch)
+make sandbox-check      # which exist locally, plus the compiler image's toolchains and crate count
+make sandbox-gem5       # arm64 only; --platform is not optional
+make sandbox-axis AXIS_PATH=/path/to/axis   # context is the AXIS repo, not this one
+```
+The images agent tools run submitted code in (`deploy/sandbox-images/`). They
+are coupled to the code: Rust support and the pinned crate set only work
+against a compiler-research image built after they were added, and an older one
+fails in ways that read as the model's mistake rather than a stale image —
+`make sandbox-check` is the quickest way to tell.
+
 ### Kubernetes / Helm
 ```bash
 make minikube-up        # Start minikube, build images into it, install the chart

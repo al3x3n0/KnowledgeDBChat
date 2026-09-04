@@ -14,7 +14,7 @@ help: ## Show this help message
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
 setup: ## Initial setup - create directories and copy env files
 	@echo "🚀 Setting up Knowledge Database Chat..."
@@ -245,3 +245,70 @@ k8s-uninstall: ## Uninstall the Helm release (PVCs are kept)
 
 helm-smoke: ## Install the chart on the current cluster and assert its wiring (needs a reachable cluster)
 	./deploy/smoke-test.sh
+
+# --- Sandbox images -----------------------------------------------------
+# The images agent tools run submitted code in. They were built by hand and
+# pushed, which is how the code and the image drift: Rust crates and the
+# rustc edition flag only work against an image built after they were added,
+# and nothing in the repo said so or could rebuild one.
+#
+# Contexts differ per image and the differences are not cosmetic --
+# compiler-research builds from the repository root because it compiles
+# tools/candidate-coster in a discarded stage, and gem5 must be arm64. Those
+# are encoded here rather than left in the README for someone to retype.
+SANDBOX_REGISTRY ?= ghcr.io/al3x3n0
+
+sandbox-base: ## Build the shared sandbox base image (clang, lld, python3)
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-sandbox-base:latest \
+	  deploy/sandbox-images/base
+
+sandbox-compiler: sandbox-base ## Build the compiler-research image (C + Rust + crates)
+	docker build -f deploy/sandbox-images/compiler-research/Dockerfile \
+	  -t $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest .
+
+sandbox-profiling: sandbox-base ## Build the profiling-research image
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-profiling-research:latest \
+	  deploy/sandbox-images/profiling-research
+
+sandbox-microarch: sandbox-base ## Build the microarch-research image
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-microarch-research:latest \
+	  deploy/sandbox-images/microarch-research
+
+sandbox-gem5: ## Build the gem5-research image (arm64 only -- see deploy/sandbox-images/README.md)
+	docker build --platform linux/arm64 \
+	  -t $(SANDBOX_REGISTRY)/kdbc-gem5-research:latest \
+	  deploy/sandbox-images/gem5-research
+
+sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
+	@test -n "$(AXIS_PATH)" || { \
+	  echo "AXIS_PATH is required: AXIS lives in its own repository and is the"; \
+	  echo "build context. e.g. make sandbox-axis AXIS_PATH=/path/to/KevinAI/axis"; \
+	  exit 1; }
+	docker build -f deploy/sandbox-images/axis-research/Dockerfile \
+	  -t $(SANDBOX_REGISTRY)/kdbc-axis-research:latest $(AXIS_PATH)
+
+sandbox-images: sandbox-compiler sandbox-profiling sandbox-microarch ## Build every sandbox image this repo can build
+	@echo "Built from this repository. gem5 (make sandbox-gem5, arm64) and"
+	@echo "axis (make sandbox-axis AXIS_PATH=...) are separate: see"
+	@echo "deploy/sandbox-images/README.md for why."
+
+sandbox-check: ## Report which sandbox images exist locally and what they carry
+	@for image in kdbc-sandbox-base kdbc-compiler-research kdbc-profiling-research \
+	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research; do \
+	  if docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1; then \
+	    printf '  %-28s %s\n' "$$image" \
+	      "$$(docker image ls --format '{{.Size}}' \
+	         $(SANDBOX_REGISTRY)/$$image:latest | head -1)"; \
+	  else \
+	    printf '  %-28s %s\n' "$$image" "MISSING"; \
+	  fi; \
+	done
+	@echo ""
+	@echo "Toolchains the compiler image must carry for the agent tools to work:"
+	@docker run --rm --entrypoint sh $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest \
+	  -lc 'printf "  clang  %s\n" "$$(clang --version | head -1)"; \
+	       printf "  rustc  %s\n" "$$(rustc --version 2>/dev/null || echo MISSING)"; \
+	       printf "  crates %s\n" "$$(test -f /opt/rust-deps/externs.txt \
+	         && grep -o -- "--extern [a-z_]*" /opt/rust-deps/externs.txt | wc -l | tr -d " " \
+	         || echo 0)"' 2>/dev/null \
+	  || echo "  (compiler-research image not built: run make sandbox-compiler)"

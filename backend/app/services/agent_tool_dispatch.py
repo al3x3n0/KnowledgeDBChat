@@ -4098,6 +4098,204 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         except Exception as exc:
             return {"error": f"Patch failed: {exc}"}
 
+    async def _run_repo_tests(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """Run the repository's tests and report what actually happened.
+
+        Distinct from `run_command` on purpose. A gate needs to know whether
+        the tests *ran*, and an exit code cannot say: a harness that failed to
+        start exits non-zero exactly like a failing test, and those call for
+        opposite responses.
+        """
+        import asyncio
+        import os
+
+        from app.core.config import settings as app_settings
+        from app.core.feature_flags import get_flag
+        from app.services.coding_test_gate import (
+            DEFAULT_TEST_COMMANDS,
+            read_test_output,
+        )
+
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
+        if ws is None:
+            return {"error": "No active coding workspace"}
+
+        enabled = await get_flag("unsafe_code_execution_enabled")
+        if not enabled and not bool(
+            getattr(app_settings, "ENABLE_UNSAFE_CODE_EXECUTION", False)
+        ):
+            return {
+                "error": (
+                    "Running tests requires unsafe_code_execution_enabled; "
+                    "the suite runs real processes in the workspace."
+                )
+            }
+
+        command = str(params.get("command") or "").strip()
+        inferred_from = ""
+        if not command:
+            # Pick by the marker file present, rather than guessing one
+            # ecosystem. A wrong default reports "no tests ran", which is at
+            # least honest, but naming the marker makes it fixable.
+            for marker, candidate in DEFAULT_TEST_COMMANDS:
+                if os.path.exists(os.path.join(str(ws.base_path), marker)):
+                    command, inferred_from = candidate, marker
+                    break
+        if not command:
+            return {
+                "error": (
+                    "No test command given and no marker file recognised "
+                    "(pytest.ini, pyproject.toml, package.json, go.mod, "
+                    "Cargo.toml). Pass `command` explicitly."
+                )
+            }
+
+        timeout = min(int(params.get("timeout_seconds", 300) or 300), 900)
+        try:
+            proc = await asyncio.wait_for(
+                asyncio.create_subprocess_shell(
+                    command,
+                    cwd=str(ws.base_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                ),
+                timeout=10,
+            )
+            stdout_bytes, stderr_bytes = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except asyncio.TimeoutError:
+            return {
+                "success": False,
+                "data": {
+                    "ran": False,
+                    "green": False,
+                    "note": f"Test run exceeded {timeout}s and was abandoned",
+                },
+            }
+        except Exception as exc:  # noqa: BLE001 - the command itself is user input
+            return {"error": f"Could not run the tests: {exc}"}
+
+        outcome = read_test_output(
+            stdout_bytes.decode("utf-8", errors="replace")[:20000],
+            stderr_bytes.decode("utf-8", errors="replace")[:20000],
+            proc.returncode,
+        )
+        evidence = outcome.as_evidence()
+        evidence["command"] = command
+        if inferred_from:
+            evidence["command_inferred_from"] = inferred_from
+
+        return {
+            # `success` is whether the tool worked, not whether the tests
+            # passed: a red suite is a successful measurement of a broken
+            # tree, and conflating them makes a gate impossible to write.
+            "success": True,
+            "data": evidence,
+            "findings": [
+                {
+                    "type": "test_result",
+                    "title": (
+                        f"{outcome.passed} passed, {outcome.failed} failed"
+                        if outcome.ran
+                        else "Tests did not run"
+                    ),
+                    **evidence,
+                }
+            ],
+        }
+
+    async def _propose_code_patch(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """Record the workspace's changes as a reviewable proposal.
+
+        Deliberately does not touch a repository or a remote. The proposal is
+        the artefact a person reads; opening anything against a remote stays
+        outside what a run can do on its own.
+        """
+        import asyncio
+
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        ws = executor.workspace_manager.get_or_default(
+            params.get("workspace_id"), state
+        )
+        if ws is None:
+            return {"error": "No active coding workspace"}
+
+        title = str(params.get("title") or "").strip()
+        if not title:
+            return {"error": "title is required"}
+
+        try:
+            proc = await asyncio.wait_for(
+                asyncio.create_subprocess_exec(
+                    "git",
+                    "diff",
+                    cwd=str(ws.base_path),
+                    stdout=asyncio.subprocess.PIPE,
+                    stderr=asyncio.subprocess.PIPE,
+                ),
+                timeout=10,
+            )
+            stdout_bytes, _ = await asyncio.wait_for(proc.communicate(), timeout=60)
+            diff = stdout_bytes.decode("utf-8", errors="replace")
+        except Exception as exc:  # noqa: BLE001
+            return {"error": f"Could not read the workspace diff: {exc}"}
+
+        if not diff.strip():
+            # A proposal with no diff is the shape of a run that believes it
+            # changed something and did not.
+            return {
+                "error": (
+                    "The workspace has no uncommitted changes, so there is "
+                    "nothing to propose."
+                )
+            }
+
+        files = [
+            line[len("+++ b/") :]
+            for line in diff.splitlines()
+            if line.startswith("+++ b/")
+        ]
+        proposal = {
+            "title": title,
+            "rationale": str(params.get("rationale") or ""),
+            "diff": diff[:200000],
+            "files": files,
+            "lines_added": sum(
+                1
+                for line in diff.splitlines()
+                if line.startswith("+") and not line.startswith("+++")
+            ),
+            "lines_removed": sum(
+                1
+                for line in diff.splitlines()
+                if line.startswith("-") and not line.startswith("---")
+            ),
+            "workspace_id": getattr(ws, "workspace_id", None),
+        }
+        state["code_patch_proposal"] = proposal
+
+        return {
+            "success": True,
+            "data": {k: v for k, v in proposal.items() if k != "diff"},
+            "findings": [
+                {
+                    "type": "code_patch_proposal",
+                    "title": title,
+                    "files": files,
+                    "lines_added": proposal["lines_added"],
+                    "lines_removed": proposal["lines_removed"],
+                }
+            ],
+        }
+
     async def _run_command(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -5348,6 +5546,8 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             "write_file": _write_file,
             "apply_patch": _apply_patch,
             "run_command": _run_command,
+            "run_repo_tests": _run_repo_tests,
+            "propose_code_patch": _propose_code_patch,
             "create_workspace_checkpoint": _create_workspace_checkpoint,
             "restore_workspace_checkpoint": _restore_workspace_checkpoint,
             "hydrate_candidate_snapshot": _hydrate_candidate_snapshot,

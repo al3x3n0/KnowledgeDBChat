@@ -330,6 +330,78 @@ SPECS: tuple[ToolSpec, ...] = (
         job_types=("analysis", "coding"),
     ),
     ToolSpec(
+        name="run_repo_tests",
+        produces=("test_result",),
+        # A suite that was green before the change says nothing about after it.
+        perishable=True,
+        requires=("clone_and_index_repo",),
+        typical_seconds=180,
+        consumes="A workspace id; runs the project's tests and reads the summary.",
+        description=(
+            "Run the repository's test suite in the coding workspace and return "
+            "a structured result: how many passed, how many failed, and which. "
+            "Use this rather than run_command when the outcome is a gate — an "
+            "exit code cannot distinguish a failing test from a harness that "
+            "never ran, and this reports those separately."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "workspace_id": {
+                    "type": "string",
+                    "description": "Workspace ID (optional if only one workspace)",
+                },
+                "command": {
+                    "type": "string",
+                    "description": (
+                        "Test command to run. Inferred from the project's marker "
+                        "files (pytest.ini, package.json, go.mod, Cargo.toml) "
+                        "when omitted."
+                    ),
+                },
+                "timeout_seconds": {
+                    "type": "integer",
+                    "description": "Seconds before the run is abandoned (default 300, max 900)",
+                },
+            },
+        },
+        effects="write",
+        job_types=("analysis", "coding"),
+    ),
+    ToolSpec(
+        name="propose_code_patch",
+        produces=("code_patch_proposal",),
+        requires=("clone_and_index_repo",),
+        typical_seconds=20,
+        consumes=(
+            "A workspace whose files have been changed; turns the diff into a "
+            "reviewable proposal."
+        ),
+        description=(
+            "Turn the current workspace changes into a reviewable patch "
+            "proposal. This does not touch the repository: it records the diff "
+            "so a person can read it before anything is opened against a "
+            "remote."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "workspace_id": {"type": "string", "description": "Workspace ID"},
+                "title": {
+                    "type": "string",
+                    "description": "One line saying what the change does",
+                },
+                "rationale": {
+                    "type": "string",
+                    "description": "Why this change, and what evidence supports it",
+                },
+            },
+            "required": ["title"],
+        },
+        effects="write",
+        job_types=("analysis", "coding"),
+    ),
+    ToolSpec(
         name="apply_patch",
         produces=("patch_applied",),
         requires=("clone_and_index_repo",),
@@ -358,6 +430,8 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="run_command",
         produces=("command_result",),
+        # Whatever a command reported described the workspace at that moment.
+        perishable=True,
         requires=("clone_and_index_repo",),
         typical_seconds=60,
         consumes="A workspace id and a shell command; gated by the unsafe-execution flag.",

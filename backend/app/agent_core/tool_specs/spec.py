@@ -41,6 +41,16 @@ class ToolSpec:
     # Only measurement tools carry these; an empty ``produces`` keeps the tool
     # out of the evidence map entirely, which is the honest default.
     produces: Tuple[str, ...] = ()
+    #: Evidence that describes the state of the world at a moment, and is
+    #: therefore invalidated by anything that changes it.
+    #:
+    #: A pipeline stage normally inherits what upstream produced, so the
+    #: planner does not charge twice for the same measurement. That is right
+    #: for a fact — a profile of a kernel stays true — and wrong for a test
+    #: run: a green suite from before the patch says nothing about after it,
+    #: and a verify stage that inherits it derives no tools and gates on
+    #: nothing. Perishable evidence is always re-taken.
+    perishable: bool = False
     requires: Tuple[str, ...] = ()
     typical_seconds: int = 0
     consumes: str = ""

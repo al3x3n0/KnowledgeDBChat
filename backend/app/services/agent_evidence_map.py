@@ -42,6 +42,9 @@ class ToolEvidence:
     #: case it was written for. Workload size sets the real cost and nothing
     #: here knows it, so these are order-of-magnitude and the check says so.
     typical_seconds: int = 0
+    #: See ToolSpec.perishable: evidence a later change invalidates, which is
+    #: therefore never inherited from an upstream stage.
+    perishable: bool = False
     # Said in the tool's own terms, because "pattern" and "the instructions the
     # pattern came from" are easy to confuse and the difference is three
     # wasted attempts.
@@ -60,6 +63,7 @@ EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = tuple(
         requires=spec.requires,
         typical_seconds=spec.typical_seconds,
         consumes=spec.consumes,
+        perishable=spec.perishable,
     )
     for spec in tool_specs.all_specs()
     if spec.produces

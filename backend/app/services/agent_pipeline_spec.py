@@ -354,6 +354,13 @@ def _incremental_chain(
         produces = set(entry.produces) if entry else set()
         # Keep a tool unless everything it makes is already in hand. A tool
         # that produces something new stays, even if it also repeats something.
+        #
+        # Perishable evidence is never in hand: a test result from before the
+        # patch describes a tree that no longer exists, so a verify stage that
+        # inherited it would derive no tools and gate on nothing.
+        if entry is not None and entry.perishable:
+            kept.append(tool)
+            continue
         if produces and produces <= have:
             continue
         kept.append(tool)

@@ -273,3 +273,117 @@ class TestDataAnalysisSchemasMatchTheirService:
         ):
             prop = by_name[tool].parameters["properties"][field]
             assert prop["type"] == "array", f"{tool}.{field} is {prop['type']!r}"
+
+
+class TestDeclaredEvidenceIsActuallyProduced:
+    """A tool that declares evidence it never emits is worse than one that
+    declares none.
+
+    The evidence map plans from `produces`: a contract asking for a finding
+    type gets that tool scheduled, the tool runs, succeeds, and the contract is
+    no closer to satisfied. The run then repeats until it exhausts its
+    iterations, and nothing anywhere says why.
+
+    Four tools were in that state, all of them declarations added by hand
+    without checking the handler: ingest_paper_by_id emitted `paper_ingested`
+    against a declared `papers_ingested`, find_related_papers emitted
+    `related_paper` against `related_paper_set`, summarize_document emitted the
+    generic `summary`, and create_document_from_text emitted an ARTIFACT and no
+    finding at all -- the last being the easiest to miss, because the handler
+    plainly returns a dict with a "type" in it.
+    """
+
+    @staticmethod
+    def _emitted_finding_types(body: str) -> set:
+        """Finding types a handler body emits.
+
+        Only inside a "findings" list. An "artifacts" entry also carries a
+        "type" and is not evidence -- conflating them is exactly how
+        create_document_from_text looked correct.
+        """
+        import re
+
+        types = set()
+        has_block = False
+        # A handler may attach findings as a dict literal ("findings": [...]),
+        # by assignment (result["findings"] = [...]) or via setdefault. All
+        # three reach the executor identically, so all three count here --
+        # a check that only recognised one spelling would report a tool as
+        # emitting nothing while it emitted correctly.
+        for match in re.finditer(r'"findings"\s*(?::|\]\s*=|,)\s*\[', body):
+            depth, index = 0, match.end() - 1
+            while index < len(body):
+                if body[index] == "[":
+                    depth += 1
+                elif body[index] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+            block = body[match.end() : index]
+            has_block = True
+            types.update(re.findall(r'"type"\s*:\s*"([a-z_0-9]+)"', block))
+        # The flag matters separately from the types. A handler may append a
+        # finding it built in a variable ("findings": [finding]), where the
+        # type is set at runtime and no static read can see it. That is not
+        # the failure this guards -- the tool does emit evidence -- so it is
+        # reported as "emits findings, type not statically visible" rather
+        # than as emitting nothing.
+        return types, has_block
+
+    def test_every_declared_evidence_type_is_emitted_somewhere(self):
+        import re
+        from pathlib import Path
+
+        from app.agent_core import tool_specs
+
+        source = Path("app/services/agent_tool_dispatch.py")
+        if not source.exists():  # pragma: no cover
+            source = (
+                Path(__file__).resolve().parents[1]
+                / "app"
+                / "services"
+                / "agent_tool_dispatch.py"
+            )
+        text = source.read_text()
+
+        bodies = {}
+        for match in re.finditer(r"    async def _([a-z_0-9]+)\(\s*\n?\s*params", text):
+            name = match.group(1)
+            nxt = text.find("\n    async def _", match.end())
+            body = text[match.start() : nxt if nxt > 0 else len(text)]
+            emitted, has_block = self._emitted_finding_types(body)
+            # Two providers define some handlers; keep whichever body actually
+            # emits findings so a thin delegating stub does not mask the real one.
+            if has_block or name not in bodies:
+                bodies[name] = (emitted, has_block, body)
+
+        problems = []
+        for spec in tool_specs.all_specs():
+            if not spec.produces:
+                continue
+            entry = bodies.get(spec.name)
+            if entry is None:
+                continue
+            emitted, has_block, body = entry
+            if has_block and not emitted:
+                # Findings are emitted from a variable; the type is decided at
+                # runtime and cannot be checked here.
+                continue
+            if not emitted:
+                # A handler that hands the call to a service builds no result
+                # of its own, so its findings are not visible here and this
+                # check has nothing to say about it. Only a handler that
+                # assembles its own return dict is in scope.
+                if "return await" in body or "return {" not in body:
+                    continue
+                problems.append(
+                    f"{spec.name} declares {sorted(spec.produces)}, builds its "
+                    "own result, and puts no findings in it"
+                )
+            elif not set(spec.produces) & emitted:
+                problems.append(
+                    f"{spec.name} declares {sorted(spec.produces)} but emits "
+                    f"{sorted(emitted)}"
+                )
+        assert not problems, "\n".join(problems)

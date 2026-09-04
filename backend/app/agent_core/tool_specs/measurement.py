@@ -1496,11 +1496,22 @@ SPECS: tuple[ToolSpec, ...] = (
                             "name": {"type": "string"},
                             "input": {
                                 "type": "string",
-                                "description": "Fed to the program on stdin",
+                                "description": (
+                                    "Fed to the program on stdin VERBATIM, so "
+                                    "write it in the form your program reads "
+                                    "-- '1000 7', not a JSON object. A paper's "
+                                    "worked example is usually structured; "
+                                    "converting it to your program's input "
+                                    "format is part of implementing it."
+                                ),
                             },
                             "expected_output": {
                                 "type": "string",
-                                "description": "What a correct program prints",
+                                "description": (
+                                    "Exactly what a correct program prints, as "
+                                    "text. Numbers are compared numerically "
+                                    "with a tolerance, so '6' matches '6.0'."
+                                ),
                             },
                         },
                         "required": ["expected_output"],

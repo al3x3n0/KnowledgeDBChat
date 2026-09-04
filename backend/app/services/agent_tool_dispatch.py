@@ -1083,7 +1083,7 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             "data": paper,
             "findings": [
                 {
-                    "type": "paper_ingested",
+                    "type": "papers_ingested",
                     "arxiv_id": arxiv_id,
                     "title": paper.get("title"),
                 }
@@ -1232,7 +1232,7 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
             "data": related,
             "findings": [
                 {
-                    "type": "related_paper",
+                    "type": "related_paper_set",
                     "title": paper.get("title"),
                     "arxiv_id": paper.get("id"),
                 }
@@ -1312,13 +1312,31 @@ Provide structured insights in JSON format:
         claimed number buried in prose gets remembered approximately and
         compared against generously.
         """
+        import json
+        from uuid import UUID
+
+        from app.models.document import Document
+
         job = getattr(ctx, "job", None)
-        executor = ctx.executor
+        # `executor` is the closure argument of this provider builder, not a
+        # field on the context -- AgentToolExecutionContext has no such
+        # attribute, and reading one raised AttributeError on the first real
+        # call. The sibling paper tools rely on the same closure.
         doc_id = str(params.get("document_id") or "").strip()
         if not doc_id:
             return {"error": "document_id is required"}
 
-        doc_result = await ctx.db.execute(select(Document).where(Document.id == doc_id))
+        # The id is a UUID column; comparing it against a bare string is the
+        # sibling tool's mistake to avoid, and the import has to be local
+        # because this closure has no module-level Document in scope.
+        try:
+            doc_uuid = UUID(doc_id)
+        except (ValueError, AttributeError, TypeError):
+            return {"error": f"document_id is not a UUID: {doc_id!r}"}
+
+        doc_result = await ctx.db.execute(
+            select(Document).where(Document.id == doc_uuid)
+        )
         doc = doc_result.scalar_one_or_none()
         if not doc or not doc.content:
             return {"error": "Document not found or has no content"}
@@ -1541,7 +1559,11 @@ not know what they are choosing cannot say why their number differs."""
         if payload is None:
             return {"error": "The model did not return a usable comparison"}
         payload["documents_compared"] = [str(d.id) for d in documents]
-        return {"success": True, "data": payload}
+        return {
+            "success": True,
+            "data": payload,
+            "findings": [{"type": "methodology_comparison", **(payload or {})}],
+        }
 
     async def _identify_research_gaps(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -1589,7 +1611,11 @@ not know what they are choosing cannot say why their number differs."""
             return {"error": "The model did not return a usable gap analysis"}
         payload["findings_analyzed"] = len(findings)
         payload["topic"] = topic
-        return {"success": True, "data": payload}
+        return {
+            "success": True,
+            "data": payload,
+            "findings": [{"type": "research_gap", **(payload or {})}],
+        }
 
     async def _add_to_reading_list(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -1928,6 +1954,14 @@ Suggest the single best next action and explain why."""
                 "topic": job_record.topic,
                 "slides": slide_count,
             },
+            "findings": [
+                {
+                    "type": "research_presentation",
+                    "presentation_job_id": str(job_record.id),
+                    "title": job_record.title,
+                    "slides": slide_count,
+                }
+            ],
         }
 
     async def _analyze_document_cluster(
@@ -1958,7 +1992,11 @@ Suggest the single best next action and explain why."""
         if payload is None:
             return {"error": "The model did not return a usable cluster analysis"}
         payload["documents_analyzed"] = [str(d.id) for d in documents]
-        return {"success": True, "data": payload}
+        return {
+            "success": True,
+            "data": payload,
+            "findings": [{"type": "document_cluster", **(payload or {})}],
+        }
 
     return FunctionToolProvider(
         name="autonomous_research_tools",
@@ -3576,6 +3614,14 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
                     "baseline_checkpoint": baseline_checkpoint,
                     "restored_durable_checkpoint": restored_durable_checkpoint,
                 },
+                "findings": [
+                    {
+                        "type": "repo_workspace",
+                        "workspace_id": ws.workspace_id,
+                        "files_count": len(ws.original_hashes),
+                        "source": "kb_source" if source_id else "git_clone",
+                    }
+                ],
             }
         except Exception as exc:
             return {"error": f"Failed to create workspace: {exc}"}
@@ -3597,7 +3643,17 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
             glob_pattern=params.get("glob_pattern"),
             max_results=min(int(params.get("max_results", 200) or 200), 500),
         )
-        return {"success": True, "data": {"files": entries, "count": len(entries)}}
+        return {
+            "success": True,
+            "data": {"files": entries, "count": len(entries)},
+            "findings": [
+                {
+                    "type": "repo_listing",
+                    "count": len(entries),
+                    "files": entries[:50],
+                }
+            ],
+        }
 
     async def _read_file(params: Dict[str, Any], ctx: AgentToolExecutionContext) -> Any:
         state = ctx.state if isinstance(ctx.state, dict) else {}
@@ -3643,7 +3699,17 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
             max_results=min(int(params.get("max_results", 50) or 50), 200),
             context_lines=min(int(params.get("context_lines", 2) or 2), 10),
         )
-        return {"success": True, "data": {"matches": matches, "count": len(matches)}}
+        return {
+            "success": True,
+            "data": {"matches": matches, "count": len(matches)},
+            "findings": [
+                {
+                    "type": "code_search_result",
+                    "count": len(matches),
+                    "matches": matches[:25],
+                }
+            ],
+        }
 
     async def _get_workspace_status(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
@@ -4216,6 +4282,15 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     "dry_run": dry_run,
                     "files_count": len(applied_files),
                 },
+                "findings": [
+                    {
+                        "type": "patch_applied",
+                        "applied_files": applied_files[:50],
+                        "files_count": len(applied_files),
+                        "dry_run": dry_run,
+                        "errors": errors[:10],
+                    }
+                ],
             }
         except Exception as exc:
             return {"error": f"Patch failed: {exc}"}
@@ -4527,6 +4602,26 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                         result["data"]["durable_checkpoint_error"] = str(
                             checkpoint_exc
                         )[:500]
+            # The declared evidence has to actually be emitted: a contract
+            # asking for command_result plans this tool, and without a finding
+            # the tool runs, succeeds, and leaves the contract exactly as
+            # unsatisfied as before.
+            if isinstance(result, dict) and not result.get("error"):
+                payload = (
+                    result.get("data") if isinstance(result.get("data"), dict) else {}
+                )
+                result.setdefault(
+                    "findings",
+                    [
+                        {
+                            "type": "command_result",
+                            "command": command[:200],
+                            "exit_code": payload.get("exit_code"),
+                            "stdout": str(payload.get("stdout") or "")[:2000],
+                            "stderr": str(payload.get("stderr") or "")[:2000],
+                        }
+                    ],
+                )
             return result
         except asyncio.TimeoutError:
             return {"error": f"Command timed out after {timeout}s"}
@@ -5841,7 +5936,20 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
                             str(s.get("path", "")).endswith(ext) for ext in allowed_exts
                         )
                     ]
-            return {"success": True, "data": retrieve_result}
+            return {
+                "success": True,
+                "data": retrieve_result,
+                "findings": [
+                    {
+                        "type": "symbol_index",
+                        "summary": {
+                            k: v
+                            for k, v in (retrieve_result or {}).items()
+                            if isinstance(v, (int, float, str, bool))
+                        },
+                    }
+                ],
+            }
         except Exception as exc:
             return {"error": f"Symbol retrieval failed: {exc}"}
 
@@ -5896,6 +6004,16 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
                     "related_symbols": related,
                     "file_path": file_path_param,
                 },
+                "findings": [
+                    {
+                        "type": "symbol_context",
+                        "symbol": target,
+                        "file_path": file_path_param,
+                        "related_symbols": related[:20]
+                        if isinstance(related, list)
+                        else related,
+                    }
+                ],
             }
         except Exception as exc:
             return {"error": f"Symbol context retrieval failed: {exc}"}
@@ -5941,6 +6059,14 @@ def build_autonomous_symbol_retrieval_provider(executor: Any) -> FunctionToolPro
                     "count": len(test_matches[:20]),
                     "symbol_searched": symbol_name,
                 },
+                "findings": [
+                    {
+                        "type": "test_targets",
+                        "symbol": symbol_name,
+                        "tests": test_matches[:20],
+                        "count": len(test_matches[:20]),
+                    }
+                ],
             }
         except Exception as exc:
             return {"error": f"Test search failed: {exc}"}
@@ -8115,6 +8241,14 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 "relationships_found": relationships_found,
                 "failed_documents": failures[:5],
             },
+            "findings": [
+                {
+                    "type": "research_graph",
+                    "documents_analyzed": len(documents),
+                    "entities_found": entities_found,
+                    "relationships_found": relationships_found,
+                }
+            ],
         }
 
     async def _link_entities(
@@ -8233,6 +8367,14 @@ def build_autonomous_kg_provider(executor: Any) -> FunctionToolProvider:
                 "title": note.title,
                 "type": entry_type or None,
             },
+            "findings": [
+                {
+                    "type": "kb_entry",
+                    "research_note_id": str(note.id),
+                    "title": note.title,
+                    "entry_type": entry_type or None,
+                }
+            ],
         }
 
     async def _compare_documents(
@@ -8947,6 +9089,16 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
                 "documents_found": snapshot["documents_found"],
                 "total_snapshots": len(snapshots),
             },
+            "findings": [
+                {
+                    "type": "workspace_snapshot",
+                    "name": snap_name,
+                    "iteration": snapshot["iteration"],
+                    "findings_count": snapshot["findings_count"],
+                    "actions_count": snapshot["actions_count"],
+                    "goal_progress": snapshot["goal_progress"],
+                }
+            ],
         }
 
     async def _compare_snapshots(
@@ -9021,6 +9173,15 @@ def build_autonomous_snapshot_provider(executor: Any) -> FunctionToolProvider:
                 "snapshot_a_iteration": iter_a,
                 "snapshot_b_iteration": iter_b,
             },
+            "findings": [
+                {
+                    "type": "snapshot_diff",
+                    "summary": " ".join(summary_parts),
+                    "snapshot_a_iteration": iter_a,
+                    "snapshot_b_iteration": iter_b,
+                    "diff": diff,
+                }
+            ],
         }
 
     async def _detect_drift(
@@ -9468,7 +9629,7 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
                 "data": {"summary": doc.summary},
                 "findings": [
                     {
-                        "type": "summary",
+                        "type": "document_summary",
                         "document_id": doc_id,
                         "content": doc.summary[:500],
                         "source_id": str(doc.source_id)
@@ -9651,6 +9812,19 @@ def build_autonomous_document_provider(executor: Any) -> FunctionToolProvider:
                 {
                     "type": "document",
                     "id": str(doc.id),
+                    "title": doc.title,
+                    "source_scope_id": source_scope_id,
+                }
+            ],
+            # An artifact is what the run produced; a finding is what the run
+            # established. Only the second satisfies a goal contract, and this
+            # tool emitted the artifact alone -- so a stage asking for
+            # documents_ingested planned this tool, ran it successfully, and
+            # was never any closer to its contract.
+            "findings": [
+                {
+                    "type": "documents_ingested",
+                    "document_id": str(doc.id),
                     "title": doc.title,
                     "source_scope_id": source_scope_id,
                 }

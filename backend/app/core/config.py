@@ -85,8 +85,13 @@ class Settings(BaseSettings):
     DEEPSEEK_TIMEOUT_SECONDS: int = 120
     # These models reason before answering and charge it to max_tokens, so
     # this has to fit the thinking as well as the answer. At 2000 an agent
-    # decision came back empty once the prompt grew.
-    DEEPSEEK_MAX_RESPONSE_TOKENS: int = 8000
+    # decision came back empty once the prompt grew. At 8000 the same thing
+    # happened again on a research job: six calls in one run came back with
+    # finish_reason='length' and completion_tokens exactly 8000, having spent
+    # the whole budget reasoning and emitted no answer at all -- the thinking
+    # phase, the decision, and the memory ranker each failed that way, so the
+    # job could not advance past iteration zero.
+    DEEPSEEK_MAX_RESPONSE_TOKENS: int = 16000
     # A floor under whatever a caller asks for. Call sites across this
     # codebase name budgets between 200 and 4096, all written when a model
     # emitted its answer directly. These models reason first and charge it

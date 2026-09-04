@@ -269,7 +269,14 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="save_research_finding",
-        produces=("research_finding",),
+        # No `produces`: this tool records a finding under whatever type the
+        # CALLER names, and records None when the caller names nothing --
+        # deliberately, because a guessed type is silently miscategorised
+        # evidence and every validity predicate keys off the type. The
+        # evidence map can only promise a type a tool always emits, so
+        # promising `research_finding` here was a declaration the handler
+        # did not honour. A contract wanting a specific type should require
+        # that type; the run satisfies it by naming it in finding_type.
         typical_seconds=0,
         consumes="One finding, with the evidence it rests on.",
         description="Save a research finding or insight discovered during analysis. Findings are stored for later synthesis and reporting.",

@@ -9,8 +9,9 @@ Handles background execution of autonomous agent jobs, including:
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
-from typing import Optional
+from typing import Any, Awaitable, Callable, Optional
 from uuid import UUID, uuid4
 
 from celery import current_task
@@ -29,6 +30,75 @@ from app.services.agent_execution_lease_service import (
 )
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
+
+
+async def run_execution_lease_heartbeat(
+    *,
+    job_id: str,
+    fence: Any,
+    renew: Callable[[], Awaitable[Any]],
+    interval: float,
+    ttl_seconds: int,
+    stop: asyncio.Event,
+    lease_lost: asyncio.Event,
+) -> None:
+    """Keep a running job's lease alive until the run ends or the lease is gone.
+
+    Extracted from the task so it can be driven directly. It was a closure, and
+    the only tests that could reach it were replicas of its control flow --
+    which pass just as happily when the real loop drifts away from them.
+
+    Two behaviours pull in opposite directions and the TTL is the line between
+    them. A renewal can fail for reasons that have nothing to do with ownership
+    -- a saturated pool, a dropped connection, a database restart -- and
+    surrendering a running job to one of those throws away everything it has
+    done, so those are retried. But a lease that has not been renewed for
+    longer than its TTL has certainly expired, and another worker is entitled
+    to take it; continuing past that point is two workers on one job.
+
+    Before this was guarded at all, the first such failure raised out of the
+    coroutine and ended the heartbeat. `asyncio.create_task` holds that
+    exception until someone retrieves it, and the only retrieval ran after the
+    job had finished, so renewals stopped in silence: the lease lapsed, the
+    stalled-job sweep declared the job an orphan, another worker took it, and
+    this one found out at commit time -- reported as "Execution lease lost at
+    fence 3", two takeovers after the fact, blaming the job.
+    """
+    last_renewed = time.monotonic()
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            renewed = await renew()
+        except asyncio.CancelledError:
+            raise
+        except Exception as renew_error:
+            stale_for = time.monotonic() - last_renewed
+            if stale_for >= ttl_seconds:
+                lease_lost.set()
+                logger.error(
+                    f"Execution lease for job {job_id} has not been renewed "
+                    f"for {stale_for:.0f}s (ttl {ttl_seconds}s); it has "
+                    f"expired and another worker may already hold it: "
+                    f"{renew_error}"
+                )
+                return
+            logger.warning(
+                f"Execution lease renewal failed for job {job_id} "
+                f"({stale_for:.0f}s since the last success, ttl "
+                f"{ttl_seconds}s); retrying: {renew_error}"
+            )
+            continue
+        if renewed is None:
+            lease_lost.set()
+            logger.error(
+                f"Execution lease heartbeat lost for job {job_id} at fence {fence}"
+            )
+            return
+        last_renewed = time.monotonic()
 
 
 def _scheduler_state(job: AgentJob) -> dict:
@@ -229,30 +299,27 @@ async def _execute_agent_job_async(
             agent_execution_lease_service.normalize_ttl(lease_ttl) // 3,
         )
 
+        lease_ttl_seconds = agent_execution_lease_service.normalize_ttl(lease_ttl)
+
+        async def _renew_once() -> Any:
+            heartbeat_session_factory = create_celery_session()
+            async with heartbeat_session_factory() as heartbeat_db:
+                return await agent_execution_lease_service.renew(
+                    db=heartbeat_db,
+                    lease=lease,
+                    ttl_seconds=lease_ttl,
+                )
+
         async def _heartbeat_execution_lease() -> None:
-            while not heartbeat_stop.is_set():
-                try:
-                    await asyncio.wait_for(
-                        heartbeat_stop.wait(),
-                        timeout=heartbeat_interval,
-                    )
-                    return
-                except asyncio.TimeoutError:
-                    pass
-                heartbeat_session_factory = create_celery_session()
-                async with heartbeat_session_factory() as heartbeat_db:
-                    renewed = await agent_execution_lease_service.renew(
-                        db=heartbeat_db,
-                        lease=lease,
-                        ttl_seconds=lease_ttl,
-                    )
-                if renewed is None:
-                    lease_lost.set()
-                    logger.error(
-                        f"Execution lease heartbeat lost for job {job_id} "
-                        f"at fence {lease.fence}"
-                    )
-                    return
+            await run_execution_lease_heartbeat(
+                job_id=job_id,
+                fence=lease.fence,
+                renew=_renew_once,
+                interval=heartbeat_interval,
+                ttl_seconds=lease_ttl_seconds,
+                stop=heartbeat_stop,
+                lease_lost=lease_lost,
+            )
 
         heartbeat_task = asyncio.create_task(_heartbeat_execution_lease())
 
@@ -398,6 +465,14 @@ async def _execute_agent_job_async(
                 await heartbeat_task
             except asyncio.CancelledError:
                 pass
+            except Exception as heartbeat_error:
+                # Catching only CancelledError here meant a heartbeat that had
+                # died of anything else re-raised from the cleanup path and
+                # replaced whatever the job was actually reporting.
+                logger.error(
+                    f"Execution lease heartbeat for job {job_id} died: "
+                    f"{heartbeat_error}"
+                )
             try:
                 await agent_execution_lease_service.release(db=db, lease=lease)
             except Exception as release_error:

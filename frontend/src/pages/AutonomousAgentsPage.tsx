@@ -19,12 +19,14 @@ import {
   Clock,
   Download,
   Eye,
+  FileCheck,
   FileDown,
   FileText,
   GitBranch,
   Inbox,
   Layers,
   Link2,
+  ListChecks,
   Loader2,
   Map as MapIcon,
   PanelRightClose,
@@ -38,6 +40,7 @@ import {
   Sparkles,
   ThumbsDown,
   ThumbsUp,
+  Users,
   XCircle,
   Zap,
 } from 'lucide-react';
@@ -126,7 +129,11 @@ import QuickStartDomainResearchModal from '../components/agent/QuickStartDomainR
 import CreateJobModal from '../components/agent/CreateJobModal';
 import StartChainModal from '../components/agent/StartChainModal';
 import TemplateCard from '../components/agent/TemplateCard';
-import { JOB_TYPE_CONFIG, STATUS_CONFIG } from '../components/agent/jobConfig';
+import {
+  JOB_TYPE_CONFIG,
+  STATUS_CONFIG,
+  type AgentJobsTab,
+} from '../components/agent/jobConfig';
 import { getLatestExperimentRun } from '../components/agent/jobFields';
 import JobCard from '../components/agent/JobCard';
 import JobDetailPanel from '../components/agent/JobDetailPanel';
@@ -1060,6 +1067,67 @@ const buildScientificSandboxProfileDraft = (profile?: ScientificSandboxProfile |
   is_default: Boolean(profile?.is_default ?? false),
 });
 
+/**
+ * The tabs, grouped by the activity they belong to.
+ *
+ * Thirteen flat tabs asked the user to hold the whole taxonomy in their head:
+ * "Swarm Review" and "Swarm Outcomes" and "Swarm Profiles" sat adjacent and
+ * are three different activities — approving something, reading what happened,
+ * and configuring for next time.
+ *
+ * `urgent` marks the groups whose counts mean "this is waiting for you", which
+ * is the only kind of count worth colouring.
+ */
+const TAB_GROUPS: Array<{
+  name: string;
+  tabs: Array<{
+    id: AgentJobsTab;
+    label: string;
+    icon: React.ComponentType<{ className?: string }>;
+    urgent?: boolean;
+  }>;
+}> = [
+  {
+    name: 'Work',
+    tabs: [
+      { id: 'jobs', label: 'My Jobs', icon: Bot },
+      { id: 'chains', label: 'Job Chains', icon: GitBranch },
+      { id: 'templates', label: 'Templates', icon: FileCheck },
+    ],
+  },
+  {
+    name: 'Needs you',
+    tabs: [
+      { id: 'queue', label: 'Checkpoints', icon: AlertCircle, urgent: true },
+      { id: 'inbox', label: 'Inbox', icon: Inbox, urgent: true },
+      { id: 'swarm', label: 'Swarm Review', icon: Users, urgent: true },
+    ],
+  },
+  {
+    name: 'What happened',
+    tabs: [
+      { id: 'trace', label: 'Decision Trace', icon: Clock },
+      { id: 'health', label: 'Autonomy Health', icon: Activity },
+      { id: 'outcomes', label: 'Swarm Outcomes', icon: BarChart3 },
+    ],
+  },
+  {
+    name: 'Portfolios',
+    tabs: [
+      { id: 'fleet', label: 'Research Fleet', icon: Sparkles },
+      { id: 'backlog', label: 'Coding Backlog', icon: ListChecks },
+    ],
+  },
+  {
+    name: 'Setup',
+    tabs: [
+      { id: 'profiles', label: 'Swarm Profiles', icon: Settings },
+      { id: 'domain', label: 'Domain Profiles', icon: Brain },
+    ],
+  },
+];
+
+
 const AutonomousAgentsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'queue' | 'trace' | 'health' | 'jobs' | 'swarm' | 'outcomes' | 'profiles' | 'templates' | 'chains' | 'inbox' | 'backlog' | 'domain' | 'fleet' | 'create'>('jobs');
   const [showSystemMap, setShowSystemMap] = useState(false);
@@ -1623,8 +1691,12 @@ const AutonomousAgentsPage: React.FC = () => {
       offset: 0,
     }),
     {
-      enabled: activeTab === 'queue',
-      refetchInterval: 10000,
+      // Loaded whether or not this tab is open: the badge exists to answer
+      // "is anything waiting for me?" from wherever you are, and a count that
+      // only appears once you have clicked the tab cannot do that. Polled
+      // slowly when you are elsewhere.
+      enabled: true,
+      refetchInterval: activeTab === 'queue' ? 10000 : 60000,
     }
   );
 
@@ -7107,6 +7179,15 @@ const AutonomousAgentsPage: React.FC = () => {
     });
   }, [swarmReviewJobs, swarmReviewPresetFilter, swarmReviewStateFilter, swarmReviewConfidenceBand, swarmReviewBacklogFilter, swarmReviewAssignmentFilter, backlogBySwarmJobId, user]);
 
+  // Every badge in the tab bar, resolved once. A count that only exists when
+  // its own tab is open cannot answer "is anything waiting for me?", which is
+  // the question the bar is there to answer.
+  const tabCounts: Partial<Record<AgentJobsTab, number>> = {
+    queue: checkpointQueueData?.total || 0,
+    trace: decisionTraceData?.total || 0,
+    inbox: inboxStats?.new || 0,
+  };
+
   const jobCountSummary = useMemo(() => {
     const allJobs = Array.isArray((jobsData as any)?.jobs) ? ((jobsData as any).jobs as AgentJob[]) : [];
     const allCount = allJobs.length;
@@ -7722,177 +7803,71 @@ const AutonomousAgentsPage: React.FC = () => {
       )}
 
       {/* Tabs */}
-      <div className="flex gap-4 mb-4 border-b border-gray-200">
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'queue'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('queue')}
-        >
-          <AlertCircle className="w-4 h-4" />
-          Checkpoint Queue
-          {checkpointQueueData?.total ? (
-            <span className="ml-1 text-xs bg-amber-100 text-amber-700 px-1.5 py-0.5 rounded">
-              {checkpointQueueData.total}
-            </span>
-          ) : null}
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'trace'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('trace')}
-        >
-          <Clock className="w-4 h-4" />
-          Decision Trace
-          {decisionTraceData?.total ? (
-            <span className="ml-1 text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
-              {decisionTraceData.total}
-            </span>
-          ) : null}
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium ${
-            activeTab === 'health'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('health')}
-        >
-          Autonomy Health
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium ${
-            activeTab === 'jobs'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('jobs')}
-        >
-          My Jobs
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'swarm'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('swarm')}
-        >
-          <GitBranch className="w-4 h-4" />
-          Swarm Review
-          {swarmReviewJobs.length > 0 ? (
-            <span className="ml-1 text-xs bg-rose-100 text-rose-700 px-1.5 py-0.5 rounded">
-              {swarmReviewJobs.length}
-            </span>
-          ) : null}
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'outcomes'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('outcomes')}
-        >
-          <BarChart3 className="w-4 h-4" />
-          Swarm Outcomes
-          {Number((swarmOutcomeAnalyticsData as any)?.totals?.verified_fix_runs || 0) > 0 ? (
-            <span className="ml-1 text-xs bg-emerald-100 text-emerald-700 px-1.5 py-0.5 rounded">
-              {Number((swarmOutcomeAnalyticsData as any)?.totals?.verified_fix_runs || 0)}
-            </span>
-          ) : null}
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'profiles'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('profiles')}
-        >
-          <Settings className="w-4 h-4" />
-          Swarm Profiles
-          {codingSwarmProfiles.length > 0 ? (
-            <span className="ml-1 text-xs bg-gray-200 text-gray-700 px-1.5 py-0.5 rounded">
-              {codingSwarmProfiles.length}
-            </span>
-          ) : null}
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium ${
-            activeTab === 'backlog'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('backlog')}
-        >
-          Coding Backlog
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'domain'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('domain')}
-        >
-          <Brain className="w-4 h-4" />
-          Domain Profiles
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'fleet'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('fleet')}
-        >
-          <Sparkles className="w-4 h-4" />
-          Research Fleet
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'inbox'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('inbox')}
-        >
-          <Inbox className="w-4 h-4" />
-          Research Inbox
-          {inboxStats?.new ? (
-            <span className="ml-1 text-xs bg-primary-100 text-primary-700 px-1.5 py-0.5 rounded">
-              {inboxStats.new}
-            </span>
-          ) : null}
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium ${
-            activeTab === 'templates'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('templates')}
-        >
-          Templates
-        </button>
-        <button
-          className={`pb-2 px-1 text-sm font-medium flex items-center gap-1 ${
-            activeTab === 'chains'
-              ? 'text-primary-600 border-b-2 border-primary-600'
-              : 'text-gray-500 hover:text-gray-700'
-          }`}
-          onClick={() => setActiveTab('chains')}
-        >
-          <GitBranch className="w-4 h-4" />
-          Job Chains
-        </button>
-      </div>
+        {/* The tabs, grouped by what you are doing.
+            Thirteen of them in one flat row mixed four different activities:
+            work to start, work waiting on you, understanding a run that
+            happened, and configuration. That is the same flat-list problem the
+            navigation had at thirty-one destinations — the grouping existed
+            and was invisible.
+
+            The counts also used to load only once you were already on the tab,
+            so "is anything waiting for me?" could not be answered without
+            clicking three of them. They load regardless now, slowly when you
+            are elsewhere. */}
+        <div className="mb-4 border-b border-gray-200">
+          <div className="flex flex-wrap items-end gap-x-5 gap-y-1">
+            {TAB_GROUPS.map((group, groupIndex) => (
+              <div key={group.name} className="flex items-end gap-1">
+                {groupIndex > 0 && (
+                  <span
+                    className="mx-1 mb-2 h-4 w-px bg-gray-300"
+                    aria-hidden="true"
+                  />
+                )}
+                <div className="flex flex-col">
+                  <span className="px-1 text-[10px] font-semibold uppercase tracking-wide text-gray-500">
+                    {group.name}
+                  </span>
+                  <div className="flex gap-1">
+                    {group.tabs.map((tab) => {
+                      const Icon = tab.icon;
+                      const count = tabCounts[tab.id] || 0;
+                      const active = activeTab === tab.id;
+                      return (
+                        <button
+                          key={tab.id}
+                          type="button"
+                          aria-current={active ? 'page' : undefined}
+                          className={`pb-2 px-2 text-sm font-medium flex items-center gap-1.5 border-b-2
+                            transition-colors duration-fast ${
+                              active
+                                ? 'text-primary-600 border-primary-600'
+                                : 'text-gray-500 border-transparent hover:text-gray-700'
+                            }`}
+                          onClick={() => setActiveTab(tab.id)}
+                        >
+                          <Icon className="w-4 h-4" />
+                          {tab.label}
+                          {count > 0 && (
+                            <span
+                              className={`ml-0.5 px-1.5 py-0.5 rounded-full text-[10px] font-mono ${
+                                tab.urgent
+                                  ? 'bg-primary-500/20 text-primary-700'
+                                  : 'bg-gray-200 text-gray-600'
+                              }`}
+                            >
+                              {count}
+                            </span>
+                          )}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        </div>
 
       {/* Content */}
       <div className="flex-1 flex gap-6 min-h-0">

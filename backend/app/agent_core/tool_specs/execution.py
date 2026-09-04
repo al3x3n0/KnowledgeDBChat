@@ -12,12 +12,12 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="create_custom_tool",
         description="Create a reusable custom tool for later use by you, by workflows, "
-            "or by future jobs. Use it when you find yourself repeating the "
-            "same shaped work. The tool is owned by this user and persists "
-            "after the job ends. Types: transform (Jinja2/JSONPath over "
-            "inputs), llm_prompt (templated model call), webhook (HTTP call to "
-            "an external API), python (sandboxed, no subprocess/filesystem/"
-            "network).",
+        "or by future jobs. Use it when you find yourself repeating the "
+        "same shaped work. The tool is owned by this user and persists "
+        "after the job ends. Types: transform (Jinja2/JSONPath over "
+        "inputs), llm_prompt (templated model call), webhook (HTTP call to "
+        "an external API), python (sandboxed, no subprocess/filesystem/"
+        "network).",
         parameters={
             "type": "object",
             "properties": {
@@ -120,10 +120,10 @@ SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
         name="execute_python",
         description="Run Python code in a RestrictedPython sandbox. Output via the "
-            "'result' variable. Only whitelisted pure-Python modules are "
-            "importable: there is no subprocess, no filesystem and no network, "
-            "so this CANNOT compile code or invoke a toolchain. Use "
-            "compile_c_snippet or benchmark_c_snippet for compiler work.",
+        "'result' variable. Only whitelisted pure-Python modules are "
+        "importable: there is no subprocess, no filesystem and no network, "
+        "so this CANNOT compile code or invoke a toolchain. Use "
+        "compile_c_snippet or benchmark_c_snippet for compiler work.",
         parameters={
             "type": "object",
             "properties": {
@@ -168,7 +168,7 @@ SPECS: tuple[ToolSpec, ...] = (
         effects="write",
         cost_tier="high",
         pii_risk="medium",
-        job_types=('data_analysis',),
+        job_types=("data_analysis",),
     ),
     ToolSpec(
         name="write_and_run_script",
@@ -208,10 +208,13 @@ SPECS: tuple[ToolSpec, ...] = (
         effects="write",
         cost_tier="high",
         pii_risk="high",
-        job_types=('data_analysis',),
+        job_types=("data_analysis",),
     ),
     ToolSpec(
         name="clone_and_index_repo",
+        produces=("repo_workspace",),
+        typical_seconds=90,
+        consumes="A document source pointing at a git repo; returns the workspace every other coding tool needs.",
         description="Clone a git repository into a temporary coding workspace and index its file tree. Returns a workspace_id for subsequent file operations.",
         parameters={
             "type": "object",
@@ -233,10 +236,14 @@ SPECS: tuple[ToolSpec, ...] = (
         },
         network="egress",
         cost_tier="medium",
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="browse_repo_files",
+        produces=("repo_listing",),
+        requires=("clone_and_index_repo",),
+        typical_seconds=5,
+        consumes="A workspace id and a path.",
         description="List files and directories in the coding workspace with optional glob filtering.",
         parameters={
             "type": "object",
@@ -262,7 +269,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="read_file",
@@ -294,7 +301,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["path"],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="write_file",
@@ -320,10 +327,14 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["path", "content"],
         },
         effects="write",
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="apply_patch",
+        produces=("patch_applied",),
+        requires=("clone_and_index_repo",),
+        typical_seconds=15,
+        consumes="A workspace id and a unified diff.",
         description="Apply a unified diff to files in the coding workspace. Supports fuzzy hunk matching.",
         parameters={
             "type": "object",
@@ -342,10 +353,14 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["diff"],
         },
         effects="write",
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="run_command",
+        produces=("command_result",),
+        requires=("clone_and_index_repo",),
+        typical_seconds=60,
+        consumes="A workspace id and a shell command; gated by the unsafe-execution flag.",
         description="Run a shell command in the coding workspace. Gated by unsafe_code_execution_enabled feature flag.",
         parameters={
             "type": "object",
@@ -373,10 +388,14 @@ SPECS: tuple[ToolSpec, ...] = (
         effects="write",
         cost_tier="high",
         pii_risk="medium",
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="search_code",
+        produces=("code_search_result",),
+        requires=("clone_and_index_repo",),
+        typical_seconds=10,
+        consumes="A workspace id and a regex.",
         description="Search for text patterns in workspace files using regex (grep-like).",
         parameters={
             "type": "object",
@@ -412,7 +431,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "required": ["pattern"],
         },
         pii_risk="medium",
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="get_workspace_status",
@@ -432,7 +451,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="create_workspace_checkpoint",
@@ -451,7 +470,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="list_workspace_checkpoints",
@@ -466,7 +485,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="restore_workspace_checkpoint",
@@ -490,7 +509,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["checkpoint_id"],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="hydrate_candidate_snapshot",
@@ -509,7 +528,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="persist_durable_workspace_checkpoint",
@@ -528,7 +547,7 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": [],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="list_durable_workspace_checkpoints",
@@ -538,7 +557,7 @@ SPECS: tuple[ToolSpec, ...] = (
             "properties": {},
             "required": [],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="restore_durable_workspace_checkpoint",
@@ -553,10 +572,14 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["checkpoint_id"],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="retrieve_repo_symbols",
+        produces=("symbol_index",),
+        requires=("clone_and_index_repo",),
+        typical_seconds=45,
+        consumes="A workspace id; indexes the symbols the repo defines.",
         description="Search for code symbols (functions, classes, methods) in the coding workspace. Returns ranked matches with file locations and line numbers.",
         parameters={
             "type": "object",
@@ -581,10 +604,14 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["query"],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="get_symbol_context",
+        produces=("symbol_context",),
+        requires=("retrieve_repo_symbols",),
+        typical_seconds=10,
+        consumes="A symbol name already in the index.",
         description="Get a symbol's full definition, surrounding code context, and related symbols in the same file.",
         parameters={
             "type": "object",
@@ -604,10 +631,14 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["symbol_name", "file_path"],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="find_tests_for_symbol",
+        produces=("test_targets",),
+        requires=("retrieve_repo_symbols",),
+        typical_seconds=20,
+        consumes="A symbol name; finds the tests that cover it.",
         description="Find test files and test functions that reference or cover a given code symbol.",
         parameters={
             "type": "object",
@@ -623,10 +654,14 @@ SPECS: tuple[ToolSpec, ...] = (
             },
             "required": ["symbol_name"],
         },
-        job_types=('analysis', 'coding'),
+        job_types=("analysis", "coding"),
     ),
     ToolSpec(
         name="capture_snapshot",
+        produces=("workspace_snapshot",),
+        requires=("clone_and_index_repo",),
+        typical_seconds=10,
+        consumes="A workspace id; records its state for comparison.",
         description="Capture a named snapshot of current workspace state metrics (findings count, progress, tool stats, etc.) for later comparison or drift detection.",
         parameters={
             "type": "object",
@@ -646,6 +681,10 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="compare_snapshots",
+        produces=("snapshot_diff",),
+        requires=("capture_snapshot",),
+        typical_seconds=10,
+        consumes="Two snapshot ids taken of the same workspace.",
         description="Compare two named snapshots and return a structured diff showing what changed between them (findings delta, progress change, new tools used, etc.).",
         parameters={
             "type": "object",

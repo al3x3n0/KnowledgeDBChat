@@ -572,3 +572,97 @@ class TestSavingOne:
             f"/api/v1/agent-jobs/{launched['job_id']}", headers=auth_headers
         )
         assert job.status_code == 200
+
+
+class TestCodingWorkIsExpressible:
+    """A coding agent's workflow as a pipeline.
+
+    The coding tools existed and declared no evidence, so the planner could not
+    reach them: a run could clone a repo and patch it, but only as a black box
+    a deterministic runner drove. Nothing could state "clone, locate, test,
+    patch, verify" and be told beforehand that it would not work.
+
+    `requires` is real on this side, unlike the research tools. Every coding
+    tool takes a workspace_id and only the clone produces one, so an ordering
+    mistake here is a stage that cannot run at all.
+    """
+
+    def test_a_fix_workflow_compiles_from_its_contracts(self, client, auth_headers):
+        payload = {
+            "spec": _spec(
+                _stage("clone", ["repo_workspace"]),
+                _stage(
+                    "locate",
+                    ["symbol_index"],
+                    depends_on=["clone"],
+                    assumes=["repo_workspace"],
+                ),
+                _stage(
+                    "tests",
+                    ["test_targets"],
+                    depends_on=["locate"],
+                    assumes=["symbol_index"],
+                ),
+                _stage(
+                    "patch",
+                    ["patch_applied"],
+                    depends_on=["tests"],
+                    assumes=["test_targets"],
+                    checkpoint=True,
+                ),
+                _stage(
+                    "verify",
+                    ["command_result"],
+                    depends_on=["patch"],
+                    assumes=["patch_applied"],
+                    loop={"max_iterations": 3},
+                ),
+                name="fix-the-off-by-one",
+            )
+        }
+        body = client.post(CHECK, json=payload, headers=auth_headers).json()
+
+        assert body["valid"] is True, body["problems"]
+        assert body["expressible"] is True
+        tools = {s["stage_id"]: s["tools"] for s in body["plan"]["stages"]}
+        assert "clone_and_index_repo" in tools["clone"]
+        assert "retrieve_repo_symbols" in tools["locate"]
+        assert "apply_patch" in tools["patch"]
+        # A patch nobody has looked at should not reach a repository.
+        assert body["plan"]["checkpoints"] == ["patch"]
+
+    def test_patching_a_repo_nothing_cloned_is_refused(self, client, auth_headers):
+        # The coding version of the failure the checker exists for, and a hard
+        # one: apply_patch takes a workspace_id that only the clone returns, so
+        # this stage could not run however well the model behaved.
+        payload = {
+            "spec": _spec(
+                _stage("patch", ["patch_applied"], assumes=["repo_workspace"])
+            )
+        }
+        body = client.post(CHECK, json=payload, headers=auth_headers).json()
+
+        assert body["valid"] is False
+        assert "repo_workspace" in " ".join(body["problems"])
+
+    def test_the_toolchain_carries_its_own_prerequisites(self, client, auth_headers):
+        # Finding tests for a symbol needs the symbol index, which needs the
+        # clone. The planner derives that chain rather than the author stating
+        # it, which is the point of deriving tools from contracts at all.
+        payload = {
+            "spec": _spec(
+                _stage("clone", ["repo_workspace"]),
+                _stage(
+                    "tests",
+                    ["test_targets"],
+                    depends_on=["clone"],
+                    assumes=["repo_workspace"],
+                ),
+            )
+        }
+        body = client.post(CHECK, json=payload, headers=auth_headers).json()
+
+        assert body["valid"] is True, body["problems"]
+        tools = {s["stage_id"]: s["tools"] for s in body["plan"]["stages"]}
+        assert "retrieve_repo_symbols" in tools["tests"]
+        assert "find_tests_for_symbol" in tools["tests"]

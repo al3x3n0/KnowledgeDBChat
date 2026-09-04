@@ -3413,7 +3413,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Compiler follow-up source')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Target' }));
 
@@ -3456,7 +3456,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Fleet follow-up source')).toBeInTheDocument();
     fireEvent.click(screen.getByRole('button', { name: 'Open Target' }));
 
@@ -3495,7 +3495,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Detached follow-up source')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Open Target' })).not.toBeInTheDocument();
     expect(screen.getByRole('button', { name: 'Open Follow-up' })).toBeInTheDocument();
@@ -3565,7 +3565,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Queued compiler follow-up')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Inbox follow-up note for Queued compiler follow-up'), {
       target: { value: 'Looks safe to launch' },
@@ -3650,7 +3650,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Risky compiler follow-up')).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText('Inbox follow-up note for Risky compiler follow-up'), {
       target: { value: 'Need stronger evidence' },
@@ -3699,7 +3699,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Completed compiler follow-up')).toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Approve Follow-up' })).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: 'Reject Follow-up' })).not.toBeInTheDocument();
@@ -3799,7 +3799,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Queued compiler follow-up A')).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('checkbox')[1]);
     fireEvent.click(screen.getAllByRole('checkbox')[2]);
@@ -3884,7 +3884,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Queued fleet follow-up A')).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('checkbox')[1]);
     fireEvent.click(screen.getAllByRole('checkbox')[2]);
@@ -3960,7 +3960,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Queued domain follow-up')).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('checkbox')[1]);
     fireEvent.click(screen.getAllByRole('checkbox')[2]);
@@ -4031,7 +4031,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Failed follow-up A')).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('checkbox')[1]);
     fireEvent.click(screen.getAllByRole('checkbox')[2]);
@@ -4098,7 +4098,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents', { documentSources: defaultDocumentSources });
 
-    fireEvent.click(screen.getByText('Research Inbox'));
+    fireEvent.click(screen.getByRole('button', { name: /^Inbox/ }));
     expect(await screen.findByText('Failed follow-up')).toBeInTheDocument();
     fireEvent.click(screen.getAllByRole('checkbox')[1]);
     fireEvent.click(screen.getAllByRole('checkbox')[2]);
@@ -5454,7 +5454,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents');
 
-    fireEvent.click(await screen.findByText('Checkpoint Queue'));
+    fireEvent.click(await screen.findByRole('button', { name: /^Checkpoints/ }));
     expect(await screen.findByText('Queue compiler follow-up A')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('Select queue item Queue compiler follow-up A'));
@@ -5534,7 +5534,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents');
 
-    fireEvent.click(await screen.findByText('Checkpoint Queue'));
+    fireEvent.click(await screen.findByRole('button', { name: /^Checkpoints/ }));
     expect(await screen.findByText('Queue fleet follow-up A')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('Select queue item Queue fleet follow-up A'));
@@ -5601,7 +5601,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents');
 
-    fireEvent.click(await screen.findByText('Checkpoint Queue'));
+    fireEvent.click(await screen.findByRole('button', { name: /^Checkpoints/ }));
     expect(await screen.findByText('Queue compiler follow-up')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('Select queue item Queue compiler follow-up'));
@@ -5668,7 +5668,7 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await renderWithProviders('/autonomous-agents');
 
-    fireEvent.click(await screen.findByText('Checkpoint Queue'));
+    fireEvent.click(await screen.findByRole('button', { name: /^Checkpoints/ }));
     expect(await screen.findByText('Queue compiler follow-up A')).toBeInTheDocument();
 
     fireEvent.click(screen.getByLabelText('Select queue item Queue compiler follow-up A'));

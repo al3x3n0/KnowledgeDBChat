@@ -355,3 +355,62 @@ def test_an_affordable_job_is_not_warned():
     prompt = AutonomousAgentExecutor()._build_thinking_prompt_stable(job, None, {})
 
     assert "BUDGET WARNING" not in prompt
+
+
+class TestSeveralRoutesToOneFact:
+    """Two tools may yield the same evidence; neither may vanish because of it.
+
+    `_BY_EVIDENCE` used to be a dict comprehension, so a second tool declaring
+    an existing evidence type silently replaced the first as its producer.
+    Nothing warned. Three pairs already existed -- a paper can be ingested by
+    arXiv search or by id -- and in each case one route was invisible to
+    planning: `producer_of` named one tool and `describe_chain` told the model
+    about that one only.
+
+    Found while adding Rust: a `benchmark_rust_snippet` producing
+    `benchmark_measurement` would have quietly hijacked every pipeline that
+    asks for a timing. That is why the language became a parameter of the
+    existing benchmark tool rather than a second tool.
+    """
+
+    def test_every_route_is_reachable(self):
+        from app.services import agent_evidence_map as em
+
+        # Two ways to get a paper in, and the map knows both.
+        producers = em.producers_of("papers_ingested")
+        assert "ingest_arxiv_papers" in producers
+        assert "ingest_paper_by_id" in producers
+
+    def test_the_planned_tool_is_the_first_declared_not_the_last(self):
+        # Either is arbitrary; a dict comprehension made it the last one
+        # *accidentally*, so reordering two specs in a file would have changed
+        # what every pipeline planned with nothing to notice it.
+        from app.services import agent_evidence_map as em
+
+        for finding_type in (
+            "papers_ingested",
+            "documents_ingested",
+            "literature_review",
+        ):
+            assert em.producer_of(finding_type) == em.producers_of(finding_type)[0]
+
+    def test_a_single_producer_still_reads_as_one(self):
+        from app.services import agent_evidence_map as em
+
+        assert em.producers_of("reproduction_verdict") == ["compare_to_claim"]
+        assert em.producer_of("reproduction_verdict") == "compare_to_claim"
+
+    def test_unknown_evidence_has_no_producers(self):
+        from app.services import agent_evidence_map as em
+
+        assert em.producers_of("nothing_produces_this") == []
+        assert em.producer_of("nothing_produces_this") == ""
+
+    def test_the_guidance_names_the_alternative(self):
+        # Otherwise the second route is unreachable in practice: nothing the
+        # model reads would ever mention it.
+        from app.services import agent_evidence_map as em
+
+        line = " ".join(em.describe_chain(["papers_ingested"]))
+        assert "ingest_arxiv_papers" in line
+        assert "ingest_paper_by_id" in line

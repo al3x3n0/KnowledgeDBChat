@@ -141,7 +141,7 @@ class TestTheSandboxPath:
     @pytest.mark.asyncio
     async def test_no_usable_cases_never_reaches_the_sandbox(self):
         # And says why, rather than reporting a mysterious pass.
-        check = await impl.check_c_implementation(code="int main(){}", cases=[])
+        check = await impl.check_implementation(code="int main(){}", cases=[])
         assert check.verified is False
         assert check.ran is False
         assert "vacuously" in check.note
@@ -152,10 +152,76 @@ class TestTheSandboxPath:
 
         monkeypatch.setattr(sandbox, "_execution_enabled", lambda: True)
         monkeypatch.setattr(sandbox, "_allowed_images", lambda: {sandbox.DEFAULT_IMAGE})
-        check = await impl.check_c_implementation(
+        check = await impl.check_implementation(
             code="int main(){return 0;}",
             cases=[{"expected_output": "0"}],
             flags="-O2; rm -rf /",
         )
         assert check.ran is False
         assert "unsupported characters" in check.note
+
+
+class TestLanguages:
+    """Rust is a first-class implementation language, not a translation step."""
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_language_is_refused_rather_than_built_as_c(self):
+        check = await impl.check_implementation(
+            code="package main",
+            cases=[{"expected_output": "1"}],
+            language="go",
+        )
+        assert check.ran is False
+        assert check.verified is False
+        assert "Unsupported language" in check.note
+
+    @pytest.mark.asyncio
+    async def test_the_language_rides_on_the_evidence(self, monkeypatch):
+        # A later stage reading "verified" has to know what was verified: a
+        # Rust implementation and a C one are different programs, and a
+        # benchmark stage that assumes the wrong one compiles the source with
+        # the wrong compiler.
+        from app.services import agent_compiler_sandbox as sandbox
+
+        monkeypatch.setattr(sandbox, "_execution_enabled", lambda: True)
+        monkeypatch.setattr(sandbox, "_allowed_images", lambda: {sandbox.DEFAULT_IMAGE})
+
+        captured = {}
+
+        async def fake_run(script, workdir, *, image, timeout_seconds):
+            captured["script"] = script
+            return 0, "__case_begin__ 0\n42\n__case_exit__ 0 0\n", ""
+
+        monkeypatch.setattr(sandbox, "_run", fake_run)
+        check = await impl.check_implementation(
+            code='fn main(){println!("42");}',
+            cases=[{"expected_output": "42"}],
+            language="rust",
+        )
+        assert check.verified is True
+        assert check.as_evidence()["language"] == "rust"
+        # And it really built it as Rust.
+        assert "rustc" in captured["script"]
+        assert "prog.rs" in captured["script"]
+
+    @pytest.mark.asyncio
+    async def test_rust_gets_its_own_default_flags(self, monkeypatch):
+        # Passing C's -O2 to rustc fails outright, so the default cannot be
+        # shared between languages.
+        from app.services import agent_compiler_sandbox as sandbox
+
+        monkeypatch.setattr(sandbox, "_execution_enabled", lambda: True)
+        monkeypatch.setattr(sandbox, "_allowed_images", lambda: {sandbox.DEFAULT_IMAGE})
+
+        captured = {}
+
+        async def fake_run(script, workdir, *, image, timeout_seconds):
+            captured["script"] = script
+            return 0, "__case_begin__ 0\n1\n__case_exit__ 0 0\n", ""
+
+        monkeypatch.setattr(sandbox, "_run", fake_run)
+        await impl.check_implementation(
+            code="fn main(){}", cases=[{"expected_output": "1"}], language="rust"
+        )
+        assert "-O2" not in captured["script"]
+        assert "-C linker=clang" in captured["script"]

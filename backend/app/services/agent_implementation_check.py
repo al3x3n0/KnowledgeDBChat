@@ -40,6 +40,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence
 
+from app.services import agent_toolchains
+
 logger = logging.getLogger(__name__)
 
 #: How far a numeric output may drift from the reference and still be the same
@@ -77,6 +79,12 @@ class ImplementationCheck:
     cases: List[CaseResult] = field(default_factory=list)
     compile_error: str = ""
     note: str = ""
+    #: Which toolchain built it. Carried into the evidence because a later
+    #: stage reading "verified" needs to know what was verified: a Rust
+    #: implementation and a C one are different programs with different
+    #: performance, and a benchmark stage that assumes the wrong one compiles
+    #: the source as the wrong language.
+    language: str = agent_toolchains.DEFAULT_LANGUAGE
 
     @property
     def cases_run(self) -> int:
@@ -107,6 +115,7 @@ class ImplementationCheck:
         return {
             "verified": self.verified,
             "ran": self.ran,
+            "language": self.language,
             "cases_run": self.cases_run,
             "cases_passed": self.cases_passed,
             "failing": [
@@ -229,23 +238,35 @@ def normalize_cases(cases: Any) -> List[Dict[str, str]]:
     return out
 
 
-async def check_c_implementation(
+async def check_implementation(
     *,
     code: str,
     cases: Sequence[Dict[str, str]],
-    flags: str = "-O2",
+    language: str = agent_toolchains.DEFAULT_LANGUAGE,
+    flags: str = "",
     tolerance: float = DEFAULT_TOLERANCE,
     image: Optional[str] = None,
     timeout_seconds: Optional[int] = None,
 ) -> ImplementationCheck:
-    """Compile a C program once and run it against every reference case.
+    """Compile a program once and run it against every reference case.
 
     The source checked here is the source that gets benchmarked: verifying one
     program and timing a different one proves nothing about the number, and
     keeping them the same string is the only way to know they are the same
-    program.
+    program. The build recipe comes from `agent_toolchains` for the same
+    reason -- the checker and the benchmark have to compile it identically, or
+    the binary that was verified is not the binary that was timed.
     """
     from app.services import agent_compiler_sandbox as sandbox
+
+    chain = agent_toolchains.resolve(language)
+    if chain is None:
+        # Not a fallback to C. Compiling Rust as C yields a wall of syntax
+        # errors that read as the model having written bad code, and the run
+        # then spends its iterations rewriting source that was already correct.
+        return ImplementationCheck(
+            ran=False, note=agent_toolchains.unsupported_language(language)
+        )
 
     resolved_image = image or sandbox.DEFAULT_IMAGE
     resolved_timeout = timeout_seconds or sandbox.DEFAULT_TIMEOUT_SECONDS
@@ -254,6 +275,7 @@ async def check_c_implementation(
     if not normalized:
         return ImplementationCheck(
             ran=False,
+            language=chain.language,
             note=(
                 "No usable reference cases were supplied. A correctness check "
                 "with no cases passes vacuously, so this reports as unverified "
@@ -266,20 +288,24 @@ async def check_c_implementation(
     blocked = sandbox._preflight(code, resolved_image)
     if blocked:
         return ImplementationCheck(
-            ran=False, note=str(blocked.get("error") or "sandbox unavailable")
+            ran=False,
+            language=chain.language,
+            note=str(blocked.get("error") or "sandbox unavailable"),
         )
 
-    safe_flags = sandbox._clean_flags(flags)
+    safe_flags = sandbox._clean_flags(flags or chain.default_flags)
     if safe_flags is None:
         return ImplementationCheck(
-            ran=False, note=f"flags contain unsupported characters: {flags!r}"
+            ran=False,
+            language=chain.language,
+            note=f"flags contain unsupported characters: {flags!r}",
         )
 
     with tempfile.TemporaryDirectory(prefix="impl_check_") as workdir:
-        Path(workdir, "impl.c").write_text(code, encoding="utf-8")
+        Path(workdir, chain.source_file).write_text(code, encoding="utf-8")
+        build = agent_toolchains.compile_command(chain, safe_flags)
         script_parts = [
-            f"clang {safe_flags} -o impl impl.c 2>compile_err.txt || "
-            "{ cat compile_err.txt >&2; exit 90; }"
+            f"{build} 2>compile_err.txt || " "{ cat compile_err.txt >&2; exit 90; }"
         ]
         for index, case in enumerate(normalized):
             Path(workdir, f"case_{index}.in").write_text(
@@ -290,7 +316,7 @@ async def check_c_implementation(
             # while still attributing every line to the case that produced it.
             script_parts.append(
                 f'echo "__case_begin__ {index}"; '
-                f"./impl <case_{index}.in; "
+                f"./prog <case_{index}.in; "
                 f'echo "__case_exit__ {index} $?"'
             )
         script = "; ".join(script_parts)
@@ -300,12 +326,15 @@ async def check_c_implementation(
                 script, workdir, image=resolved_image, timeout_seconds=resolved_timeout
             )
         except Exception as exc:
-            logger.warning(f"check_c_implementation failed: {exc}")
-            return ImplementationCheck(ran=False, note=f"Check failed: {exc}")
+            logger.warning(f"check_implementation failed: {exc}")
+            return ImplementationCheck(
+                ran=False, language=chain.language, note=f"Check failed: {exc}"
+            )
 
     if returncode == 90:
         return ImplementationCheck(
             ran=False,
+            language=chain.language,
             compile_error=sandbox.explain_compiler_failure(stderr),
             note=(
                 "The implementation did not compile, so its correctness is "
@@ -345,7 +374,7 @@ async def check_c_implementation(
         outcome.name = case["name"]
         results.append(outcome)
 
-    return ImplementationCheck(ran=True, cases=results)
+    return ImplementationCheck(ran=True, cases=results, language=chain.language)
 
 
 def _split_case_output(stdout: str, expected_cases: int):

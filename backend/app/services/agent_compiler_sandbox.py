@@ -24,7 +24,7 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from app.services import agent_sandbox_runtime
+from app.services import agent_sandbox_runtime, agent_toolchains
 
 DEFAULT_IMAGE = "ghcr.io/al3x3n0/kdbc-compiler-research:latest"
 MAX_CODE_CHARS = 20000
@@ -248,6 +248,14 @@ async def _run(script: str, workdir: str, *, image: str, timeout_seconds: int):
     )
 
 
+#: Rust function declarations, which the C pattern above cannot see.
+_RUST_FN = re.compile(
+    r"^\s*(?:pub\s+)?(?:const\s+)?(?:async\s+)?(?:unsafe\s+)?"
+    r"(?:extern\s+\"[^\"]*\"\s+)?fn\s+([A-Za-z_]\w*)",
+    re.MULTILINE,
+)
+
+
 def describe_subject(code: str, label: str = "") -> str:
     """Name what was compiled, for the finding this run will record.
 
@@ -259,6 +267,24 @@ def describe_subject(code: str, label: str = "") -> str:
     explicit = (label or "").strip()
     if explicit:
         return explicit[:80]
+
+    # Rust is tried first, and the order is load-bearing. The C pattern below
+    # happily matches `fn main() {`, so a Rust snippet resolved to "main" --
+    # its harness -- while the function actually being measured went unnamed.
+    # A `fn <name>` line start does not occur in C, so trying it first costs
+    # the C path nothing.
+    #
+    # `main` is dropped when anything else is present: in a benchmark it is
+    # always the harness, never the subject. The C branch deliberately keeps
+    # its existing behaviour instead of gaining the same rule, because the
+    # labels it has already produced are recorded on findings that runs have
+    # compared against each other, and changing them now would silently split
+    # one subject into two.
+    rust_names = list(dict.fromkeys(_RUST_FN.findall(code or "")))
+    if rust_names:
+        interesting = [n for n in rust_names if n != "main"] or rust_names
+        return ", ".join(interesting[:3])
+
     # Fall back to the function names the snippet defines.
     names = re.findall(
         r"^\s*(?:static\s+|inline\s+)*[A-Za-z_][\w\s\*]*?([A-Za-z_]\w*)\s*\([^;{]*\)\s*\{",
@@ -469,31 +495,45 @@ def measurement_quality(
 async def benchmark_c_snippet(
     *,
     code: str,
-    flags: str = "-O2",
+    flags: str = "",
     repeat: int = 3,
     label: str = "",
+    language: str = agent_toolchains.DEFAULT_LANGUAGE,
     image: str = DEFAULT_IMAGE,
     timeout_seconds: int = DEFAULT_TIMEOUT_SECONDS,
 ) -> Dict[str, Any]:
-    """Compile and run a self-contained C program, reporting its fastest trial."""
+    """Compile and run a self-contained program, reporting its fastest trial.
+
+    The build recipe comes from `agent_toolchains` rather than being spelled
+    out here, because `check_implementation` has to compile the same source the
+    same way. If the two diverged -- a different optimisation level, say -- the
+    binary that was verified would not be the binary that was timed, and the
+    correctness check would be certifying a different program.
+    """
+    chain = agent_toolchains.resolve(language)
+    if chain is None:
+        return {"error": agent_toolchains.unsupported_language(language)}
+
     blocked = _preflight(code, image)
     if blocked:
         return blocked
 
     repeat = max(1, min(int(repeat or 3), 10))
+    flags = flags or chain.default_flags
     safe_flags = _clean_flags(flags)
     if safe_flags is None:
         return {"error": f"flags contain unsupported characters: {flags!r}"}
 
     with tempfile.TemporaryDirectory(prefix="bench_snippet_") as workdir:
-        Path(workdir, "snippet.c").write_text(code, encoding="utf-8")
+        Path(workdir, chain.source_file).write_text(code, encoding="utf-8")
+        build = agent_toolchains.compile_command(chain, safe_flags)
         # sh needs "{ ...; }" with single braces; "{{" is not grouping and made
         # the exit-90 branch fire even when the compile had succeeded.
         script = (
-            f"clang {safe_flags} -o bench snippet.c 2>compile_err.txt || "
+            f"{build} 2>compile_err.txt || "
             "{ cat compile_err.txt >&2; exit 90; }; "
             f"for i in $(seq 1 {repeat}); do "
-            "  s=$(date +%s%N); ./bench; rc=$?; e=$(date +%s%N); "
+            "  s=$(date +%s%N); ./prog; rc=$?; e=$(date +%s%N); "
             # Without this the loop's exit status is echo's, so a program that
             # failed would be reported as a successful benchmark.
             '  if [ $rc -ne 0 ]; then echo "program exited $rc" >&2; exit 91; fi; '
@@ -577,6 +617,7 @@ async def benchmark_c_snippet(
         "success": True,
         "data": {
             "image": image,
+            "language": chain.language,
             "flags": flags,
             "repeat": repeat,
             # The fastest trial is the least contaminated by scheduling noise.
@@ -601,12 +642,17 @@ async def benchmark_c_snippet(
                 "type": "benchmark_measurement",
                 "subject": describe_subject(code, label),
                 "title": (
-                    f"{describe_subject(code, label)} @ clang {flags}: fastest "
-                    f"{min(timings)} ms of {len(timings)} trials"
+                    f"{describe_subject(code, label)} @ {chain.language} "
+                    f"{flags}: fastest {min(timings)} ms of {len(timings)} "
+                    "trials"
                     if timings
-                    else f"{describe_subject(code, label)} @ clang {flags}: "
-                    "ran with no timing recorded"
+                    else f"{describe_subject(code, label)} @ {chain.language} "
+                    f"{flags}: ran with no timing recorded"
                 ),
+                # On the finding because a timing is only comparable with
+                # another taken the same way, and two languages are not the
+                # same way.
+                "language": chain.language,
                 "flags": flags,
                 "fastest_ms": min(timings) if timings else None,
                 "all_ms": timings,

@@ -311,11 +311,15 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="benchmark_c_snippet",
-        description="Compile and run a self-contained C program in the compiler "
-        "research sandbox, returning its stdout and wall-clock time over "
-        "repeated trials (minimum reported). The program must print its "
-        "own measurements; there are no performance counters in the "
-        "sandbox, and there is no network.",
+        description="Compile and run a self-contained C or Rust program in the "
+        "compiler research sandbox, returning its stdout and wall-clock "
+        "time over repeated trials (minimum reported). Set `language` "
+        "for Rust; it defaults to C, and the name of this tool is "
+        "historical. The program must print its own measurements; there "
+        "are no performance counters in the sandbox, and there is no "
+        "network. Benchmark the SAME source you passed to "
+        "check_implementation -- a timing of code that was never checked "
+        "is an accurate number for work nobody looked at.",
         parameters={
             "type": "object",
             "properties": {
@@ -323,11 +327,25 @@ SPECS: tuple[ToolSpec, ...] = (
                     "type": "string",
                     "description": "Self-contained C program including main()",
                 },
+                "language": {
+                    "type": "string",
+                    "enum": ["c", "rust"],
+                    "description": (
+                        "Which toolchain builds it (default 'c'). Rust is "
+                        "compiled with rustc as a single file: there is no "
+                        "network in the sandbox, so no crate dependencies are "
+                        "available -- std only."
+                    ),
+                },
                 "flags": {
                     "type": "string",
                     "description": (
-                        "Compiler flags. The sandbox targets aarch64: use "
-                        "'-mcpu=native', not '-march=native'."
+                        "Compiler flags, defaulting per language ('-O2' for C, "
+                        "'-O' for Rust). The sandbox targets aarch64: for C use "
+                        "'-mcpu=native', not '-march=native'. rustc REJECTS "
+                        "'-O2' -- use '-O' or '-C opt-level=3', and note that "
+                        "its default build is unoptimised, which times the "
+                        "debug binary rather than the algorithm."
                     ),
                 },
                 "repeat": {
@@ -1437,9 +1455,19 @@ SPECS: tuple[ToolSpec, ...] = (
                 "code": {
                     "type": "string",
                     "description": (
-                        "Self-contained C program including main(). It should "
+                        "Self-contained program including main(). It should "
                         "read its input from stdin and print its result to "
                         "stdout."
+                    ),
+                },
+                "language": {
+                    "type": "string",
+                    "enum": ["c", "rust"],
+                    "description": (
+                        "Which toolchain builds it (default 'c'). Use the same "
+                        "language and the same source when you benchmark it, "
+                        "or the program that was checked is not the program "
+                        "that was timed."
                     ),
                 },
                 "cases": {
@@ -1468,8 +1496,8 @@ SPECS: tuple[ToolSpec, ...] = (
                 "flags": {
                     "type": "string",
                     "description": (
-                        "Compiler flags. The sandbox targets aarch64: use "
-                        "'-mcpu=native', not '-march=native'."
+                        "Compiler flags, defaulting per language ('-O2' for C, "
+                        "'-O' for Rust). rustc rejects '-O2'."
                     ),
                 },
                 "tolerance": {
@@ -1496,7 +1524,7 @@ SPECS: tuple[ToolSpec, ...] = (
         # earned before the edit -- a gate that inherits its own answer is not
         # a gate.
         perishable=True,
-        consumes="the C source to be timed, and reference cases from the paper.",
+        consumes="the source to be timed (C or Rust), and reference cases from the paper.",
     ),
     ToolSpec(
         name="compare_to_claim",

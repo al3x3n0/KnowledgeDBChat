@@ -5449,9 +5449,12 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
         return await agent_compiler_sandbox.benchmark_c_snippet(
             code=str(params.get("code") or ""),
-            flags=str(params.get("flags") or "-O2"),
+            # No "-O2" default here any more: it is wrong for Rust, which
+            # rejects the flag outright. The toolchain supplies its own.
+            flags=str(params.get("flags") or ""),
             repeat=int(params.get("repeat") or 3),
             label=str(params.get("label") or ""),
+            language=str(params.get("language") or ""),
         )
 
     async def _check_implementation(
@@ -5460,10 +5463,11 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
         """Establish that the code about to be timed computes the right answer."""
         from app.services import agent_implementation_check as impl
 
-        outcome = await impl.check_c_implementation(
+        outcome = await impl.check_implementation(
             code=str(params.get("code") or ""),
             cases=params.get("cases") or [],
-            flags=str(params.get("flags") or "-O2"),
+            flags=str(params.get("flags") or ""),
+            language=str(params.get("language") or ""),
             tolerance=float(params.get("tolerance") or impl.DEFAULT_TOLERANCE),
         )
         evidence = outcome.as_evidence()

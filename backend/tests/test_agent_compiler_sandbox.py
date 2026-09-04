@@ -452,3 +452,80 @@ def test_x86_idioms_are_named_as_such_on_this_aarch64_sandbox():
         "snippet.c:10:42: warning: implicitly declaring library function 'sqrtf'"
     )
     assert "math.h" in libm and "-lm" in libm
+
+
+class TestRustIsAFirstClassLanguage:
+    """An algorithm implemented in Rust must be timed by the same image that
+    checked it. Verifying Rust and benchmarking a C translation of it would
+    defeat the correctness check entirely."""
+
+    def test_subject_naming_sees_rust_functions(self):
+        # The C pattern cannot match `fn dot(..) -> f64 {`: a return type sits
+        # between the parameter list and the brace. Every Rust measurement came
+        # back named after its harness, which is precisely the failure
+        # describe_subject exists to prevent.
+        code = (
+            "fn dot_product(a: &[f64], b: &[f64]) -> f64 {\n"
+            "    a.iter().zip(b).map(|(x, y)| x * y).sum()\n"
+            "}\n"
+            'fn main() { println!("{}", dot_product(&[1.0], &[2.0])); }\n'
+        )
+        assert sandbox.describe_subject(code) == "dot_product"
+
+    def test_main_is_the_harness_not_the_subject(self):
+        assert sandbox.describe_subject("fn main() { }") == "main"
+        assert (
+            sandbox.describe_subject("pub fn kernel(x: u64) -> u64 { x }\nfn main(){}")
+            == "kernel"
+        )
+
+    def test_an_explicit_label_still_wins(self):
+        assert (
+            sandbox.describe_subject("fn kernel() {}", "blocked GEMM") == "blocked GEMM"
+        )
+
+    @pytest.mark.asyncio
+    async def test_a_rust_benchmark_builds_with_rustc(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "_execution_enabled", lambda: True)
+        monkeypatch.setattr(sandbox, "_allowed_images", lambda: {sandbox.DEFAULT_IMAGE})
+        captured = {}
+
+        async def fake_run(script, workdir, *, image, timeout_seconds):
+            captured["script"] = script
+            return 0, "__elapsed_ms__ 12\n__loadavg__ 0.5\n__cpus__ 8\n", ""
+
+        monkeypatch.setattr(sandbox, "_run", fake_run)
+        result = await sandbox.benchmark_c_snippet(
+            code="fn main(){}", language="rust", label="k"
+        )
+        assert result["success"] is True
+        assert "rustc" in captured["script"]
+        assert "clang" not in captured["script"].split("2>compile_err")[0].replace(
+            "-C linker=clang", ""
+        )
+        # The language rides on the finding: a timing is only comparable with
+        # another taken the same way, and two languages are not the same way.
+        assert result["findings"][0]["language"] == "rust"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_language_is_refused(self, monkeypatch):
+        monkeypatch.setattr(sandbox, "_execution_enabled", lambda: True)
+        result = await sandbox.benchmark_c_snippet(code="x", language="go")
+        assert "Unsupported language" in result["error"]
+
+    @pytest.mark.asyncio
+    async def test_c_keeps_working_with_no_language_named(self, monkeypatch):
+        # Every existing caller passes no language at all.
+        monkeypatch.setattr(sandbox, "_execution_enabled", lambda: True)
+        monkeypatch.setattr(sandbox, "_allowed_images", lambda: {sandbox.DEFAULT_IMAGE})
+        captured = {}
+
+        async def fake_run(script, workdir, *, image, timeout_seconds):
+            captured["script"] = script
+            return 0, "__elapsed_ms__ 9\n", ""
+
+        monkeypatch.setattr(sandbox, "_run", fake_run)
+        result = await sandbox.benchmark_c_snippet(code="int main(){return 0;}")
+        assert result["success"] is True
+        assert "clang -O2" in captured["script"]
+        assert result["findings"][0]["language"] == "c"

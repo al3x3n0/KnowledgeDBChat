@@ -40,8 +40,8 @@ REPRODUCE_PAPER = {
         {
             "id": "implement",
             "goal": (
-                "Write the algorithm in C and establish that it computes the "
-                "paper's worked examples"
+                "Implement the algorithm in C or Rust and establish that it "
+                "computes the paper's worked examples"
             ),
             "depends_on": ["specify"],
             "assumes": ["algorithm_spec"],

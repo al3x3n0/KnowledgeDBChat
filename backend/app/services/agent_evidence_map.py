@@ -70,9 +70,20 @@ EVIDENCE_TOOLS: Tuple[ToolEvidence, ...] = tuple(
 )
 
 _BY_TOOL: Dict[str, ToolEvidence] = {entry.tool: entry for entry in EVIDENCE_TOOLS}
-_BY_EVIDENCE: Dict[str, ToolEvidence] = {
-    produced: entry for entry in EVIDENCE_TOOLS for produced in entry.produces
-}
+
+#: Every tool that yields each evidence type, in declaration order.
+#:
+#: More than one is normal and legitimate: a paper can be ingested by arXiv
+#: search or by id, and both give `papers_ingested`. What is not acceptable is
+#: what a plain dict did here -- `{produced: entry for ...}` kept whichever
+#: tool came last and dropped the rest without a word, so `producer_of` named
+#: one route and the others were invisible to planning. A run was then told to
+#: obtain evidence with a tool that may not suit it, while the tool that did
+#: was never mentioned.
+_PRODUCERS: Dict[str, List[ToolEvidence]] = {}
+for _entry in EVIDENCE_TOOLS:
+    for _produced in _entry.produces:
+        _PRODUCERS.setdefault(_produced, []).append(_entry)
 
 
 def entry_for(tool: str) -> Optional[ToolEvidence]:
@@ -80,10 +91,26 @@ def entry_for(tool: str) -> Optional[ToolEvidence]:
     return _BY_TOOL.get(str(tool or "").strip())
 
 
+def producers_of(finding_type: str) -> List[str]:
+    """Every tool that yields this evidence, in declaration order.
+
+    Plural because several routes to one fact is the normal case, and a
+    planner that knows only one of them sends a run down it even when another
+    fits the job better.
+    """
+    return [entry.tool for entry in _PRODUCERS.get(str(finding_type).strip(), [])]
+
+
 def producer_of(finding_type: str) -> str:
-    """The tool that yields this kind of evidence, or empty if none does."""
-    entry = _BY_EVIDENCE.get(str(finding_type).strip())
-    return entry.tool if entry else ""
+    """The tool a chain will plan for this evidence, or empty if none does.
+
+    The FIRST declared, not the last. Either is arbitrary, but a dict
+    comprehension made it the last silently and therefore accidentally --
+    reordering two specs in a file would have changed which tool every
+    pipeline planned, with nothing to notice it.
+    """
+    producers = _PRODUCERS.get(str(finding_type).strip())
+    return producers[0].tool if producers else ""
 
 
 def chain_for(required: Iterable[str]) -> List[str]:
@@ -122,7 +149,20 @@ def describe_chain(required: Sequence[str]) -> List[str]:
         produced = ", ".join(entry.produces)
         after = f" after {', '.join(entry.requires)}" if entry.requires else ""
         detail = f" Takes {entry.consumes}" if entry.consumes else ""
-        lines.append(f"{tool} yields {produced}{after}.{detail}")
+        # Name the alternatives, so a run whose situation does not suit the
+        # planned tool knows another exists rather than forcing the one it was
+        # given. Without this the second route to a fact is unreachable in
+        # practice: nothing in the prompt ever mentions it.
+        alternatives = [
+            other
+            for produced_type in entry.produces
+            for other in producers_of(produced_type)
+            if other != tool
+        ]
+        instead = (
+            f" (or {', '.join(dict.fromkeys(alternatives))})" if alternatives else ""
+        )
+        lines.append(f"{tool}{instead} yields {produced}{after}.{detail}")
     return lines
 
 

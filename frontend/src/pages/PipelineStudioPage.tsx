@@ -99,7 +99,7 @@ const REPRODUCE_PAPER = `{
     },
     {
       "id": "implement",
-      "goal": "Write the algorithm in C and establish that it computes the paper's worked examples",
+      "goal": "Implement the algorithm in C or Rust and establish that it computes the paper's worked examples",
       "depends_on": ["specify"],
       "assumes": ["algorithm_spec"],
       "loop": { "max_iterations": 6, "until": "contract_satisfied" },

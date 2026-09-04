@@ -40,10 +40,11 @@ from app.services import (
     agent_decision_parser,
     agent_execution_graph,
     agent_failure_diagnosis,
-    agent_repeated_success,
+    agent_loop_policy,
     agent_method_record,
     agent_plan_normalization,
     agent_prompt_sections,
+    agent_repeated_success,
     agent_tool_scoring,
 )
 from app.services.agent_action_service import AgentActionService
@@ -182,6 +183,17 @@ class _AutonomousRuntimeAdapter:
     async def can_continue(self) -> bool:
         if not self.job.can_continue():
             return False
+
+        # A looping stage may declare when to stop beyond running out of
+        # iterations. `loop_until` and `loop_dry_rounds` were written into the
+        # job config by the pipeline binding and read by nothing, so an author
+        # who asked for `no_new_findings` got a run that ignored it silently.
+        stop, reason = agent_loop_policy.should_stop(self.job.config, self.state)
+        if stop:
+            logger.info(f"Job {self.job.id} stopping: {reason}")
+            self.job.add_log_entry({"phase": "loop_policy_stop", "reason": reason})
+            return False
+
         if datetime.utcnow() - self.start_time > self.max_runtime:
             logger.info(f"Job {self.job.id} hit runtime limit")
             self.job.add_log_entry(
@@ -201,6 +213,18 @@ class _AutonomousRuntimeAdapter:
     async def on_iteration_start(self) -> None:
         self.job.iteration += 1
         self.job.last_activity_at = datetime.utcnow()
+        # Snapshot what the run had established before this round, so a policy
+        # looking back over several rounds can tell a productive one from a
+        # round that only re-read what it already knew.
+        findings = self.state.get("findings")
+        agent_loop_policy.record_round(
+            self.state, len(findings) if isinstance(findings, list) else 0
+        )
+        warning = agent_loop_policy.policy_warning(self.job.config)
+        if warning and not self.state.get("loop_policy_warned"):
+            self.state["loop_policy_warned"] = True
+            logger.warning(f"Job {self.job.id}: {warning}")
+            self.job.add_log_entry({"phase": "loop_policy_unknown", "reason": warning})
 
     async def observe_phase(self) -> Dict[str, Any]:
         observation = await self.executor.observation_service.observe(

@@ -4253,6 +4253,23 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
 
             svc = CodePatchApplyService()
             file_diffs = svc.parse(diff_text)
+            if not file_diffs:
+                # A diff that parses to no file changes is a malformed diff,
+                # not an applied patch. Reported as an error so that repeating
+                # it escalates, and so a contract requiring `patch_applied`
+                # cannot be satisfied by one.
+                return {
+                    "error": (
+                        "The diff parsed to no file changes, so nothing was "
+                        "applied. A unified diff needs a file header and a "
+                        "hunk header with line numbers:\n"
+                        "  --- a/path/to/file\n"
+                        "  +++ b/path/to/file\n"
+                        "  @@ -12,7 +12,7 @@\n"
+                        "then context lines, and ' -' / ' +' for the change. "
+                        "A bare '@@' with no line numbers parses to nothing."
+                    )
+                }
             applied_files = []
             errors = []
             for file_diff in file_diffs:
@@ -4274,6 +4291,25 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
                     if file_path not in modified:
                         modified.append(file_path)
                 state["coding_modified_files"] = modified[-200:]
+            if not applied_files:
+                # Every hunk failed. Reporting success here was the worst of
+                # the possible answers: a coding loop whose contract requires
+                # `patch_applied` was satisfied by a patch that changed
+                # nothing, so the run believed it had fixed the code while the
+                # tests went on failing for the original reason.
+                return {
+                    "error": (
+                        "No file was changed by this patch. "
+                        + (
+                            "; ".join(str(e) for e in errors[:5])
+                            if errors
+                            else "Every hunk failed to apply -- the context "
+                            "lines probably do not match the file as it "
+                            "stands. Read the file first and quote it exactly."
+                        )
+                    ),
+                    "data": {"applied_files": [], "errors": errors},
+                }
             return {
                 "success": True,
                 "data": {

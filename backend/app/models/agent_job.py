@@ -289,6 +289,19 @@ class AgentJob(Base):
             return ChainTriggerCondition(condition)
         return ChainTriggerCondition.ON_COMPLETE
 
+    def goal_contract_satisfied(self) -> bool:
+        """Whether this run met the contract it declared, if it declared one.
+
+        True when no contract was in force: a run with nothing to prove has
+        nothing outstanding, and treating that as a failure would stop every
+        chain that never used contracts.
+        """
+        results = self.results if isinstance(self.results, dict) else {}
+        contract = results.get("goal_contract")
+        if not isinstance(contract, dict) or not contract.get("enabled"):
+            return True
+        return bool(contract.get("satisfied"))
+
     def should_trigger_chain(self, event: str, value: int = 0) -> bool:
         """
         Check if chained jobs should be triggered based on an event.
@@ -313,6 +326,20 @@ class AgentJob(Base):
             ChainTriggerCondition.ON_COMPLETE,
             ChainTriggerCondition.ON_ANY_END,
         ]:
+            # ON_ANY_END means exactly that, and fires either way. ON_COMPLETE
+            # is a claim about the outcome, so a run that ended with its goal
+            # contract unsatisfied does not satisfy it.
+            #
+            # A run that exhausts its iterations is still marked completed --
+            # deliberately, since nothing failed -- and that made the next
+            # stage start on premises nobody had established. Seen end to end:
+            # a measure stage spent its whole budget getting an implementation
+            # right, never benchmarked, reported completed at 49% progress
+            # with `benchmark_measurement` and `reproduction_verdict` missing,
+            # and the compare stage duly began scoring a measurement that did
+            # not exist.
+            if condition == ChainTriggerCondition.ON_COMPLETE:
+                return self.goal_contract_satisfied()
             return True
 
         if event == "fail" and condition in [

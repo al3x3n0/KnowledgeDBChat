@@ -79,6 +79,11 @@ class ImplementationCheck:
     cases: List[CaseResult] = field(default_factory=list)
     compile_error: str = ""
     note: str = ""
+    #: Which kind of not-run this was, so a caller can tell a mistake it made
+    #: from a fact about the code. "no_cases" is the caller supplying nothing
+    #: to check against; "compile_error" and "sandbox" are not its fault, and
+    #: the first is a real finding about the implementation.
+    reason: str = ""
     #: Which toolchain built it. Carried into the evidence because a later
     #: stage reading "verified" needs to know what was verified: a Rust
     #: implementation and a C one are different programs with different
@@ -129,6 +134,7 @@ class ImplementationCheck:
                 if not c.passed
             ][:10],
             "compile_error": self.compile_error[:2000],
+            "reason": self.reason,
             "note": self.note,
         }
 
@@ -265,7 +271,9 @@ async def check_implementation(
         # errors that read as the model having written bad code, and the run
         # then spends its iterations rewriting source that was already correct.
         return ImplementationCheck(
-            ran=False, note=agent_toolchains.unsupported_language(language)
+            ran=False,
+            reason="bad_language",
+            note=agent_toolchains.unsupported_language(language),
         )
 
     resolved_image = image or sandbox.DEFAULT_IMAGE
@@ -276,6 +284,7 @@ async def check_implementation(
         return ImplementationCheck(
             ran=False,
             language=chain.language,
+            reason="no_cases",
             note=(
                 "No usable reference cases were supplied. A correctness check "
                 "with no cases passes vacuously, so this reports as unverified "
@@ -290,6 +299,7 @@ async def check_implementation(
         return ImplementationCheck(
             ran=False,
             language=chain.language,
+            reason="sandbox",
             note=str(blocked.get("error") or "sandbox unavailable"),
         )
 
@@ -298,6 +308,7 @@ async def check_implementation(
         return ImplementationCheck(
             ran=False,
             language=chain.language,
+            reason="bad_flags",
             note=f"flags contain unsupported characters: {flags!r}",
         )
     # After sanitising, never before: what is added here is ours and known
@@ -338,6 +349,7 @@ async def check_implementation(
         return ImplementationCheck(
             ran=False,
             language=chain.language,
+            reason="compile_error",
             compile_error=sandbox.explain_compiler_failure(stderr),
             note=(
                 "The implementation did not compile, so its correctness is "

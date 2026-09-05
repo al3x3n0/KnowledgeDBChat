@@ -225,3 +225,50 @@ class TestLanguages:
         )
         assert "-O2" not in captured["script"]
         assert "-C linker=clang" in captured["script"]
+
+
+class TestAMistakeInTheCallIsReportedAsOne:
+    """The difference between "you called this wrong" and "your code is wrong".
+
+    A check reporting `verified: false` is a SUCCESSFUL tool call, and the
+    repeat-failure diagnosis only looks at failures. So an agent that called
+    the gate with no reference cases got a polite note and no escalation, and
+    one run made that identical mistake three times running -- three
+    iterations of its budget spent on a correction nothing was pressing it to
+    make.
+
+    Supplying nothing to check against is a mistake in the call. Cases that
+    ran and failed are a fact about the implementation, and must stay a
+    success, or the gate would hide the very thing it exists to report.
+    """
+
+    @pytest.mark.asyncio
+    async def test_the_reason_says_which_kind_of_not_run_it_was(self):
+        check = await impl.check_implementation(code="int main(){}", cases=[])
+        assert check.reason == "no_cases"
+        assert check.as_evidence()["reason"] == "no_cases"
+
+    @pytest.mark.asyncio
+    async def test_an_unknown_language_is_also_a_call_mistake(self):
+        check = await impl.check_implementation(
+            code="x", cases=[{"expected_output": "1"}], language="go"
+        )
+        assert check.reason == "bad_language"
+
+    def test_a_failing_case_is_not_a_call_mistake(self):
+        # It ran. The answer was wrong, which is a result, not a misuse.
+        check = impl.ImplementationCheck(
+            ran=True,
+            cases=[impl.CaseResult(name="a", passed=False, detail="wrong")],
+        )
+        assert check.reason == ""
+        assert check.verified is False
+
+    def test_the_repeat_detector_can_see_a_no_cases_call(self):
+        """The behaviour that makes escalation possible at all."""
+        from app.services import agent_failure_diagnosis
+
+        as_error = {"error": "No usable reference cases were supplied.", "data": {}}
+        as_result = {"success": True, "data": {"verified": False}}
+        assert agent_failure_diagnosis._failed(as_error) is True
+        assert agent_failure_diagnosis._failed(as_result) is False

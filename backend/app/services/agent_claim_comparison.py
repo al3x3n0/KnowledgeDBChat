@@ -149,6 +149,85 @@ class ClaimComparison:
         }
 
 
+#: Above this, repeated trials of the same program disagree so much that no
+#: single figure represents them. Half again as long as the fastest is already
+#: a different measurement.
+UNSTABLE_SPREAD = 0.5
+
+#: The same test applied to the numbers the program printed about itself. A
+#: metric whose largest reading is more than twice its smallest was not
+#: measuring the code.
+UNSTABLE_METRIC_RATIO = 2.0
+
+
+def measurement_concerns(benchmark: Optional[Dict[str, Any]]) -> List[str]:
+    """Reasons a benchmark's numbers cannot settle anything.
+
+    The benchmark tool already reports how busy the host was and how far the
+    trials spread, precisely so an unusable timing can be recognised -- and
+    nothing read it back when the number was scored. A run produced these two
+    benchmarks minutes apart:
+
+        fastmod [1.248]                        baseline [3.049]
+        fastmod [7.4, 2.3, 17.7, 6.8, 14.1]    baseline [25.5, 1.7, 2.0, 35.5, 4.7]
+
+    and scored them as `reproduced` (2.44x) and `not_reproduced` (0.72x). The
+    second is not a disagreement with the paper; it is a machine that was too
+    busy to measure anything, and reporting it as a refutation claims a
+    finding the run did not earn -- the same mistake `incomparable` exists to
+    prevent on the other axis.
+
+    A single trial is NOT listed here. One reading is a weaker measurement
+    than several, but it is not a corrupted one, and refusing every
+    single-trial benchmark would reject sound numbers along with the noise.
+    """
+    if not isinstance(benchmark, dict):
+        return []
+    concerns: List[str] = []
+
+    environment = str(benchmark.get("measurement_environment") or "")
+    if environment in ("busy", "saturated"):
+        load = benchmark.get("load_per_cpu")
+        concerns.append(
+            f"The host was {environment} while this was measured"
+            + (f" ({load} runnable tasks per CPU)" if load is not None else "")
+            + ": the timing reflects competition for the machine as much as "
+            "the code, and cannot settle a claim about the code."
+        )
+
+    spread = benchmark.get("trial_spread")
+    try:
+        if spread is not None and float(spread) > UNSTABLE_SPREAD:
+            concerns.append(
+                f"The trials spread {float(spread):.0%} between fastest and "
+                "slowest; repeated runs of one program disagreeing that much "
+                "leaves no single figure to compare."
+            )
+    except (TypeError, ValueError):
+        pass
+
+    reported = benchmark.get("reported_metrics")
+    if isinstance(reported, dict):
+        for name, values in reported.items():
+            if not isinstance(values, list) or len(values) < 2:
+                continue
+            try:
+                numbers = [float(v) for v in values]
+            except (TypeError, ValueError):
+                continue
+            low = min(numbers)
+            if low <= 0:
+                continue
+            if max(numbers) / low > UNSTABLE_METRIC_RATIO:
+                concerns.append(
+                    f"The program's own {name} readings range "
+                    f"{low:g} to {max(numbers):g} -- more than a factor of "
+                    f"{UNSTABLE_METRIC_RATIO:g} apart, so the figure derived "
+                    "from them is not a property of the code."
+                )
+    return concerns
+
+
 def normalize_unit(unit: Optional[str]) -> str:
     """Reduce a unit to a comparable token.
 

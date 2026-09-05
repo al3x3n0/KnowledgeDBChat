@@ -5566,6 +5566,22 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             tolerance=float(params.get("tolerance") or impl.DEFAULT_TOLERANCE),
         )
         evidence = outcome.as_evidence()
+
+        # A call that supplied nothing to check against is a mistake in the
+        # call, not a fact about the code, and it is reported as an error so
+        # that repeating it escalates. That matters: a check reporting
+        # `verified: false` is a SUCCESSFUL tool call, so the repeat-failure
+        # diagnosis never saw it, and one run made this identical mistake
+        # three times in a row -- three iterations of its budget spent on a
+        # correction nothing was pressing it to make.
+        #
+        # A check whose cases ran and failed stays a success with
+        # verified=false: that is a real result about the implementation, and
+        # turning it into an error would hide the thing the gate exists to
+        # report.
+        if outcome.reason in ("no_cases", "bad_language", "bad_flags"):
+            return {"error": outcome.note, "data": evidence}
+
         return {
             "success": True,
             "data": evidence,
@@ -5618,6 +5634,25 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             measured_conditions=params.get("measured_conditions"),
             tolerance=_as_float(params.get("tolerance")),
         )
+
+        # A number the machine was too busy to take cannot settle a claim
+        # either, and the benchmark already reported how busy it was. The most
+        # recent measurement is the one being scored.
+        benchmarks = [
+            f
+            for f in findings
+            if isinstance(f, dict)
+            and str(f.get("type") or "") == "benchmark_measurement"
+        ]
+        concerns = claims.measurement_concerns(benchmarks[-1]) if benchmarks else []
+        for concern in concerns:
+            comparison.blockers.append(concern)
+        if concerns:
+            comparison.verdict = claims.VERDICT_INCOMPARABLE
+            comparison.summary = (
+                "Not comparable: the measurement itself is not trustworthy. "
+                + concerns[0]
+            )
 
         if not verified:
             reason = (

@@ -159,3 +159,85 @@ class TestWhatTheVerdictCarries:
         assert evidence["ratio"] == pytest.approx(1.0333, abs=1e-3)
         assert evidence["tolerance"] == claims.DEFAULT_TOLERANCE
         assert evidence["unit_kind"] == "relative"
+
+
+class TestAnUntrustworthyMeasurementSettlesNothing:
+    """The other way a comparison can be wrong: the number itself.
+
+    The benchmark tool already reports how busy the host was and how far the
+    trials spread, and nothing read it back when the number was scored. One
+    run produced these two benchmarks minutes apart and scored them as
+    `reproduced` (2.44x) and `not_reproduced` (0.72x):
+
+        fastmod [1.248]                      baseline [3.049]
+        fastmod [7.4, 2.3, 17.7, 6.8, 14.1]  baseline [25.5, 1.7, 2.0, 35.5, 4.7]
+
+    The second is not a disagreement with the paper. It is a machine too busy
+    to measure anything, and calling it a refutation claims a finding the run
+    did not earn.
+    """
+
+    def test_the_readings_from_that_run_are_refused(self):
+        concerns = claims.measurement_concerns(
+            {
+                "reported_metrics": {
+                    "fastmod_ns_per_op": [7.428964, 2.325733, 17.688632, 6.846945],
+                    "baseline_ns_per_op": [25.476773, 1.676083, 1.985749, 35.515865],
+                }
+            }
+        )
+        assert concerns, "the unstable readings were accepted"
+        assert "fastmod_ns_per_op" in " ".join(concerns)
+
+    def test_the_clean_reading_from_that_run_is_accepted(self):
+        # The same run's good benchmark must still score, or the check would
+        # cost more than it saves.
+        assert (
+            claims.measurement_concerns(
+                {
+                    "measurement_environment": "quiet",
+                    "reported_metrics": {
+                        "fastmod_ns_per_op": [1.248],
+                        "baseline_ns_per_op": [3.049],
+                    },
+                }
+            )
+            == []
+        )
+
+    def test_a_busy_host_is_a_concern(self):
+        concerns = claims.measurement_concerns(
+            {"measurement_environment": "busy", "load_per_cpu": 4.2}
+        )
+        assert concerns and "busy" in concerns[0]
+        assert "4.2" in concerns[0]
+
+    def test_a_saturated_host_is_a_concern(self):
+        assert claims.measurement_concerns({"measurement_environment": "saturated"})
+
+    def test_a_quiet_host_is_not(self):
+        assert claims.measurement_concerns({"measurement_environment": "quiet"}) == []
+
+    def test_wide_trial_spread_is_a_concern(self):
+        assert claims.measurement_concerns({"trial_spread": 1.4})
+
+    def test_a_tight_spread_is_not(self):
+        assert claims.measurement_concerns({"trial_spread": 0.05}) == []
+
+    def test_a_single_trial_is_weaker_but_not_corrupted(self):
+        # One reading is a weaker measurement than several and not a wrong
+        # one; refusing it would reject sound numbers along with the noise.
+        assert claims.measurement_concerns({"single_trial": True}) == []
+
+    def test_nonsense_input_is_not_treated_as_evidence_of_anything(self):
+        assert claims.measurement_concerns(None) == []
+        assert claims.measurement_concerns({}) == []
+        assert claims.measurement_concerns({"trial_spread": "wide"}) == []
+        assert (
+            claims.measurement_concerns({"reported_metrics": {"x": ["a", "b"]}}) == []
+        )
+
+    def test_a_metric_that_touches_zero_is_not_divided_by(self):
+        assert (
+            claims.measurement_concerns({"reported_metrics": {"x": [0.0, 5.0]}}) == []
+        )

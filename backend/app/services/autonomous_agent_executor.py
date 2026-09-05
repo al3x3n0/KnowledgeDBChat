@@ -284,6 +284,26 @@ class _AutonomousRuntimeAdapter:
             logger.warning(f"Job {self.job.id}: {warning}")
             self.job.add_log_entry({"phase": "loop_policy_unknown", "reason": warning})
 
+        # Committed here, before the phases begin, and this is not tidiness.
+        # These writes take a row lock on agent_jobs, and the phases that
+        # follow await a language model for minutes. Holding the lock across
+        # that made the row unwritable by anyone else -- including the
+        # execution-lease heartbeat, whose whole job is to UPDATE this row
+        # every forty seconds. Observed in pg_stat_activity: the executor
+        # `idle in transaction` with its transaction ageing past 140s, and the
+        # heartbeat's UPDATE blocked on Lock:transactionid for 103s of it. The
+        # lease then expired under a job that was working perfectly well, and
+        # the run was killed at its next ownership check.
+        try:
+            await self.db.commit()
+        except Exception as exc:
+            # Never fatal: the iteration can proceed on an uncommitted row,
+            # and failing the run over a bookkeeping commit would trade a
+            # slow heartbeat for a dead job.
+            logger.warning(
+                f"Job {self.job.id}: could not commit iteration start: {exc}"
+            )
+
     async def observe_phase(self) -> Dict[str, Any]:
         observation = await self.executor.observation_service.observe(
             self.executor,

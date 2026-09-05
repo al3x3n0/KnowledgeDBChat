@@ -11,7 +11,7 @@ import asyncio
 import json
 import time
 from datetime import datetime, timedelta
-from typing import Any, Awaitable, Callable, Optional
+from typing import Any, Awaitable, Callable, Dict, Optional
 from uuid import UUID, uuid4
 
 from celery import current_task
@@ -72,7 +72,20 @@ async def run_execution_lease_heartbeat(
         except asyncio.TimeoutError:
             pass
         try:
-            renewed = await renew()
+            # Bounded, because an unbounded renewal is not a heartbeat. The
+            # renewal opens its own session -- a fresh engine and connection
+            # every tick -- and if that blocks on a saturated pool the loop
+            # simply stops: timestamps frozen, no exception raised, nothing
+            # logged, and the lease quietly expires under a job that is still
+            # working. Observed exactly so: heartbeat age climbing 28s, 55s,
+            # 85s, 113s while the run went on making API calls, until the
+            # lease went negative and the commit was refused.
+            #
+            # A renewal slower than the interval is useless even if it
+            # succeeds, so the timeout is a fraction of it, and a timeout is
+            # handled as the failed renewal it is: retried, and given up on
+            # only once the TTL says the lease cannot still be held.
+            renewed = await asyncio.wait_for(renew(), timeout=max(5.0, interval * 0.8))
         except asyncio.CancelledError:
             raise
         except Exception as renew_error:
@@ -301,14 +314,38 @@ async def _execute_agent_job_async(
 
         lease_ttl_seconds = agent_execution_lease_service.normalize_ttl(lease_ttl)
 
+        # One session for the life of the run, not one per tick. Building a
+        # fresh engine and checking out a new connection every forty seconds
+        # is what made the renewal hang: the running job holds the database
+        # concurrency it needs, the heartbeat waits behind it, and the wait is
+        # unbounded. Measured before this: the renewal timed out at 32s, then
+        # again, and the lease expired under a job that was still working.
+        #
+        # The connection is used for one small UPDATE every forty seconds,
+        # which also keeps it from going idle.
+        heartbeat_session_factory = create_celery_session()
+        heartbeat_session_holder: Dict[str, Any] = {}
+
         async def _renew_once() -> Any:
-            heartbeat_session_factory = create_celery_session()
-            async with heartbeat_session_factory() as heartbeat_db:
+            session = heartbeat_session_holder.get("session")
+            if session is None:
+                session = heartbeat_session_factory()
+                heartbeat_session_holder["session"] = session
+            try:
                 return await agent_execution_lease_service.renew(
-                    db=heartbeat_db,
+                    db=session,
                     lease=lease,
                     ttl_seconds=lease_ttl,
                 )
+            except Exception:
+                # A poisoned session stays poisoned; drop it so the next tick
+                # starts clean rather than failing for ever on the same one.
+                heartbeat_session_holder.pop("session", None)
+                try:
+                    await session.close()
+                except Exception:
+                    pass
+                raise
 
         async def _heartbeat_execution_lease() -> None:
             await run_execution_lease_heartbeat(
@@ -461,6 +498,12 @@ async def _execute_agent_job_async(
         finally:
             heartbeat_stop.set()
             heartbeat_task.cancel()
+            _hb_session = heartbeat_session_holder.pop("session", None)
+            if _hb_session is not None:
+                try:
+                    await _hb_session.close()
+                except Exception:
+                    pass
             try:
                 await heartbeat_task
             except asyncio.CancelledError:

@@ -155,3 +155,75 @@ class TestTheTaskStillReportsADeadHeartbeat:
         text = source.read_text()
         teardown = text[text.index("heartbeat_task.cancel()") :][:700]
         assert "except Exception as heartbeat_error" in teardown
+
+
+class TestAHangingRenewalCannotStallTheHeartbeat:
+    """The failure this was hardest to see, because it produces no evidence.
+
+    The renewal opens its own session -- a fresh engine and connection every
+    tick -- and if that blocks, the loop stops without raising: timestamps
+    frozen, nothing logged, and the lease quietly expiring under a job that is
+    still working. Observed on a real run, the heartbeat age climbing 28s,
+    55s, 85s, 113s while the job went on making API calls, until the lease
+    went negative and its commit was refused at fence 1 -- no takeover, just
+    expiry, and no error anywhere to say why.
+    """
+
+    @pytest.mark.asyncio
+    async def test_a_renewal_that_never_returns_is_abandoned(self):
+        started = asyncio.Event()
+
+        async def renew():
+            started.set()
+            await asyncio.sleep(3600)  # never returns
+
+        task, stop, lease_lost = await _beat(
+            renew, ttl_seconds=0, interval=0.01, run_for=None
+        )
+        # ttl_seconds=0 means the first failed renewal is already past the TTL,
+        # so the loop must conclude the lease is gone rather than hang with it.
+        await asyncio.wait_for(task, timeout=15)
+        assert started.is_set(), "the renewal was never attempted"
+        assert lease_lost.is_set(), "a hanging renewal left the loop running"
+
+    @pytest.mark.asyncio
+    async def test_a_slow_renewal_is_retried_while_the_lease_could_still_hold(self):
+        # Slow but not fatal: within the TTL the loop keeps trying, because
+        # surrendering a running job to a slow database throws away its work.
+        calls = {"n": 0}
+
+        async def renew():
+            calls["n"] += 1
+            if calls["n"] == 1:
+                await asyncio.sleep(3600)
+            return object()
+
+        # The bound has a 5s floor, so the wait has to outlast it: at a tiny
+        # interval the floor is what actually cuts the hanging renewal off.
+        task, stop, lease_lost = await _beat(
+            renew, ttl_seconds=9999, interval=0.01, run_for=6.5
+        )
+        stop.set()
+        await asyncio.wait_for(task, timeout=15)
+        assert calls["n"] > 1, "it never retried after the slow renewal"
+        assert not lease_lost.is_set()
+
+    @pytest.mark.asyncio
+    async def test_the_bound_is_shorter_than_the_interval(self):
+        """A renewal slower than the interval is useless even when it succeeds:
+        the next tick is already due before the answer arrives."""
+        from pathlib import Path
+
+        source = Path("app/tasks/agent_job_tasks.py")
+        if not source.exists():  # pragma: no cover
+            source = (
+                Path(__file__).resolve().parents[1]
+                / "app"
+                / "tasks"
+                / "agent_job_tasks.py"
+            )
+        text = source.read_text()
+        start = text.index("async def run_execution_lease_heartbeat")
+        body = text[start : text.index("def _scheduler_state")]
+        assert "asyncio.wait_for(" in body, "the renewal is unbounded"
+        assert "interval * 0.8" in body, "the bound is not tied to the interval"

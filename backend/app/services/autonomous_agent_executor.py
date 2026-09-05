@@ -40,6 +40,7 @@ from app.services import (
     agent_decision_parser,
     agent_execution_graph,
     agent_failure_diagnosis,
+    agent_evidence_map,
     agent_loop_policy,
     agent_method_record,
     agent_plan_normalization,
@@ -3143,6 +3144,8 @@ class AutonomousAgentExecutor:
         if checkpoint:
             logger.info(f"Resuming job {job.id} from iteration {checkpoint.iteration}")
         state = initialize_runtime_state(checkpoint.state if checkpoint else None)
+        if not checkpoint:
+            await self._inherit_assumed_findings(job, state, db)
         recovered_completion = agent_execution_journal_service.recover_completed_action(
             state=state
         )
@@ -3514,6 +3517,96 @@ class AutonomousAgentExecutor:
             progress_callback=progress_callback,
         )
         return await AgentRuntimeRunner().run(adapter)
+
+    async def _inherit_assumed_findings(
+        self, job: AgentJob, state: Dict[str, Any], db: AsyncSession
+    ) -> None:
+        """Carry the evidence a pipeline stage was told it could assume.
+
+        A stage declares `assumes: [...]`, the binding writes it to the job
+        config as `pipeline_assumes`, and until now nothing read it -- the same
+        shape of bug as `loop_until`: a documented option that silently did
+        nothing. Each stage runs as its own job with its own empty state, so
+        evidence produced upstream was invisible downstream. A compare stage
+        that assumed an implementation had been verified found no such finding
+        in its own run and refused to score anything, which is the right
+        refusal from the tool and the wrong situation to put it in.
+
+        Perishable evidence is deliberately NOT inherited. A correctness check
+        or a test run describes a tree as it stood; a later stage that edits or
+        rebuilds the code must establish it again, which is the same rule the
+        planner already applies when deciding which tools a stage needs. So a
+        specification or an ingested paper crosses the boundary and a passing
+        check does not.
+
+        Inherited findings are marked, because "this run measured it" and "an
+        earlier stage did" are different claims and a run should not be able to
+        report the second as the first.
+        """
+        config = job.config if isinstance(job.config, dict) else {}
+        assumed = config.get("pipeline_assumes")
+        if not isinstance(assumed, list) or not assumed:
+            return
+        parent_id = getattr(job, "parent_job_id", None)
+        if not parent_id:
+            return
+
+        wanted = {str(a).strip() for a in assumed if str(a).strip()}
+        durable = {a for a in wanted if not agent_evidence_map.is_perishable(a)}
+        skipped = sorted(wanted - durable)
+        if not durable:
+            if skipped:
+                job.add_log_entry(
+                    {
+                        "phase": "assumed_evidence_not_inherited",
+                        "types": skipped,
+                        "reason": "perishable: must be established in this stage",
+                    }
+                )
+            return
+
+        # Walk up the chain: a stage may assume evidence from further back than
+        # its immediate parent.
+        inherited: List[Dict[str, Any]] = []
+        seen_jobs = 0
+        current_id = parent_id
+        while current_id is not None and seen_jobs < 10:
+            seen_jobs += 1
+            ancestor = (
+                await db.execute(select(AgentJob).where(AgentJob.id == current_id))
+            ).scalar_one_or_none()
+            if ancestor is None:
+                break
+            results = ancestor.results if isinstance(ancestor.results, dict) else {}
+            for finding in results.get("findings") or []:
+                if not isinstance(finding, dict):
+                    continue
+                if str(finding.get("type") or "") not in durable:
+                    continue
+                carried = dict(finding)
+                carried["inherited_from_job_id"] = str(ancestor.id)
+                carried["inherited"] = True
+                inherited.append(carried)
+            current_id = getattr(ancestor, "parent_job_id", None)
+
+        if inherited:
+            findings = state.get("findings")
+            if not isinstance(findings, list):
+                findings = []
+                state["findings"] = findings
+            findings.extend(inherited)
+        job.add_log_entry(
+            {
+                "phase": "assumed_evidence_inherited",
+                "inherited": len(inherited),
+                "types": sorted({str(f.get("type")) for f in inherited}),
+                "not_inherited_perishable": skipped,
+            }
+        )
+        logger.info(
+            f"Job {job.id} inherited {len(inherited)} assumed findings "
+            f"from its chain; {len(skipped)} perishable types must be re-earned"
+        )
 
     async def _observe(
         self,

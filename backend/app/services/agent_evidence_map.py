@@ -85,6 +85,12 @@ for _entry in EVIDENCE_TOOLS:
     for _produced in _entry.produces:
         _PRODUCERS.setdefault(_produced, []).append(_entry)
 
+#: The first tool declared for each evidence type, for questions about the
+#: evidence itself rather than about which tool to plan.
+_BY_EVIDENCE_FIRST: Dict[str, ToolEvidence] = {
+    produced: entries[0] for produced, entries in _PRODUCERS.items()
+}
+
 
 def entry_for(tool: str) -> Optional[ToolEvidence]:
     """What this tool costs and produces, or None if it is not an evidence tool."""
@@ -111,6 +117,22 @@ def producer_of(finding_type: str) -> str:
     """
     producers = _PRODUCERS.get(str(finding_type).strip())
     return producers[0].tool if producers else ""
+
+
+def is_perishable(finding_type: str) -> bool:
+    """Whether this evidence goes stale the moment anything changes.
+
+    A test run and a correctness check describe a tree that no longer exists
+    once it is edited; a paper's contents and an extracted specification do
+    not. The planner already refuses to inherit perishable evidence between
+    stages, and the same answer decides whether a chained job may start with
+    it in hand.
+
+    Unknown types are treated as durable. Guessing the other way would make
+    every stage re-derive evidence nothing said was fragile.
+    """
+    entry = _BY_EVIDENCE_FIRST.get(str(finding_type or "").strip())
+    return bool(entry and entry.perishable)
 
 
 def chain_for(required: Iterable[str]) -> List[str]:

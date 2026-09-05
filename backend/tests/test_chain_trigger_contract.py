@@ -109,3 +109,45 @@ class TestTheHelperOnItsOwn:
         for results in (None, {}, {"goal_contract": None}, {"goal_contract": "no"}):
             job.results = results
             assert job.goal_contract_satisfied() is True
+
+
+class TestProgressIsNotEvidence:
+    """A contract also requires progress>=100, which is the agent's own report.
+
+    A run can deliver every finding the next stage needs and never declare
+    itself finished. Observed: a scoring run produced implementation_verified,
+    two benchmark_measurements and a reproduction_verdict, and its contract
+    still read unsatisfied with `progress>=100` the only thing missing.
+    Blocking the chain there would gate on a self-assessment rather than on
+    anything downstream actually lacks.
+    """
+
+    def test_only_progress_missing_still_chains(self):
+        job = _job(
+            condition=ChainTriggerCondition.ON_COMPLETE,
+            contract={
+                "enabled": True,
+                "satisfied": False,
+                "missing": ["progress>=100"],
+            },
+        )
+        assert job.should_trigger_chain("complete") is True
+
+    def test_missing_evidence_still_blocks(self):
+        job = _job(
+            condition=ChainTriggerCondition.ON_COMPLETE,
+            contract={
+                "enabled": True,
+                "satisfied": False,
+                "missing": ["progress>=100", "finding_type:benchmark_measurement"],
+            },
+        )
+        assert job.should_trigger_chain("complete") is False
+
+    def test_an_unsatisfied_contract_that_says_nothing_is_not_trusted(self):
+        # No list to inspect: treat it as unmet rather than assume it was fine.
+        job = _job(
+            condition=ChainTriggerCondition.ON_COMPLETE,
+            contract={"enabled": True, "satisfied": False},
+        )
+        assert job.should_trigger_chain("complete") is False

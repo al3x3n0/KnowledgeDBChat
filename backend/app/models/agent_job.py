@@ -300,7 +300,27 @@ class AgentJob(Base):
         contract = results.get("goal_contract")
         if not isinstance(contract, dict) or not contract.get("enabled"):
             return True
-        return bool(contract.get("satisfied"))
+        if contract.get("satisfied"):
+            return True
+
+        # Only the EVIDENCE requirements gate the chain. A contract also
+        # requires progress>=100, which is the agent's own report of how far
+        # it thinks it got -- and a run can produce every finding the next
+        # stage needs while never declaring itself finished. Seen exactly so:
+        # a scoring run delivered implementation_verified, two
+        # benchmark_measurements and a reproduction_verdict, and its contract
+        # still read unsatisfied with `progress>=100` the only thing missing.
+        # Gating on that would stop chains for a self-assessment rather than
+        # for anything the downstream stage actually lacks.
+        missing = contract.get("missing")
+        if not isinstance(missing, list):
+            return False
+        substantive = [
+            str(item)
+            for item in missing
+            if not str(item).strip().lower().startswith("progress")
+        ]
+        return not substantive
 
     def should_trigger_chain(self, event: str, value: int = 0) -> bool:
         """

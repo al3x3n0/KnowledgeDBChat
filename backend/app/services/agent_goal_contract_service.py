@@ -111,7 +111,9 @@ class AgentGoalContractService:
         # opposite of what the contract said: a job asking for no progress
         # minimum -- because its real requirement is the measurement types
         # below -- was held to progress>=100 and could never satisfy its
-        # contract, however much it measured.
+        # contract, however much it measured. The default that reaches here is
+        # decided by the normaliser, which drops the progress floor entirely
+        # for a contract that names the evidence it wants.
         min_progress = _as_threshold(contract.get("min_progress"), 100)
         min_findings = _as_threshold(contract.get("min_findings"), 0)
         min_artifacts = _as_threshold(contract.get("min_artifacts"), 0)

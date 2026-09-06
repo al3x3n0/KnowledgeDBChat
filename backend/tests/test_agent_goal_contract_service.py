@@ -188,3 +188,81 @@ def test_a_list_of_required_types_still_means_one_of_each():
 
     state["findings"].append({"type": "codegen_measurement"})
     assert service.evaluate_goal_contract(executor, job, state)["satisfied"] is True
+
+
+class TestEvidenceIsTheCompletionCriterion:
+    """A contract that names its evidence should not also need a percentage.
+
+    `min_progress` defaulted to 100, so a run could produce every finding its
+    contract asked for and still be recorded as falling short on the progress
+    number alone. Measured across this deployment's 70 completed contracted
+    runs: 17 of them -- a quarter -- were unsatisfied on `progress>=100` and
+    nothing else, and only 23 ever reached 100 at all.
+
+    It costs iterations too. A coding run declared success at iteration 7 with
+    the suite green and every required finding in hand, was blocked for the
+    progress number, and spent three more iterations arriving back where it
+    already was.
+
+    So when a contract names evidence, the evidence is the criterion. An
+    author who wants a progress bar can still ask for one, and a contract that
+    names no evidence keeps the old default -- there, the percentage is the
+    only thing it has to go on.
+    """
+
+    def _evaluate(self, config, state):
+        executor = AutonomousAgentExecutor()
+        return AgentGoalContractService().evaluate_goal_contract(
+            executor, _make_job(config), state
+        )
+
+    def test_required_findings_alone_can_satisfy_a_contract(self):
+        result = self._evaluate(
+            {
+                "goal_contract_enabled": True,
+                "goal_contract_required_finding_types": ["test_result"],
+            },
+            {
+                "goal_progress": 40,
+                "findings": [{"type": "test_result"}],
+                "artifacts": [],
+            },
+        )
+        assert result["satisfied"] is True, result["missing"]
+
+    def test_the_evidence_is_still_required(self):
+        # Dropping the progress floor must not drop the point of the contract.
+        result = self._evaluate(
+            {
+                "goal_contract_enabled": True,
+                "goal_contract_required_finding_types": ["test_result"],
+            },
+            {"goal_progress": 100, "findings": [{"type": "document"}], "artifacts": []},
+        )
+        assert result["satisfied"] is False
+        assert any("test_result" in m for m in result["missing"])
+
+    def test_an_explicit_progress_floor_is_still_honoured(self):
+        result = self._evaluate(
+            {
+                "goal_contract_enabled": True,
+                "goal_contract_min_progress": 90,
+                "goal_contract_required_finding_types": ["test_result"],
+            },
+            {
+                "goal_progress": 40,
+                "findings": [{"type": "test_result"}],
+                "artifacts": [],
+            },
+        )
+        assert result["satisfied"] is False
+        assert any("progress" in m for m in result["missing"])
+
+    def test_a_contract_naming_no_evidence_keeps_the_old_default(self):
+        # With nothing else to judge, the percentage is the whole contract.
+        result = self._evaluate(
+            {"goal_contract_enabled": True, "goal_contract_min_findings": 1},
+            {"goal_progress": 50, "findings": [{"type": "document"}], "artifacts": []},
+        )
+        assert result["satisfied"] is False
+        assert any("progress" in m for m in result["missing"])

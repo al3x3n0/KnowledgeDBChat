@@ -8255,11 +8255,33 @@ RESPONSE FORMAT:
             )
         )
 
+        # When a contract names the evidence it wants, that evidence IS the
+        # completion criterion, and a self-reported percentage on top of it is
+        # redundant. Measured across 70 completed contracted runs here: 17 --
+        # a quarter -- had produced every finding their contract asked for and
+        # were still recorded as falling short on `progress>=100` alone, and
+        # only 23 ever reached 100 at all. It costs iterations too: a coding
+        # run declared success at iteration 7 with the suite green and every
+        # required finding in hand, was blocked for the number, and spent
+        # three more iterations arriving back where it already was.
+        #
+        # A contract naming no evidence keeps the old floor, because there the
+        # percentage is the only thing it has to judge; an author who wants a
+        # progress bar can still set one explicitly.
+        names_evidence = bool(
+            required_finding_type_counts
+            or required_artifact_type_counts
+            or required_result_keys
+        )
+        default_min_progress = 0 if names_evidence else 100
         return {
             "enabled": bool(enabled),
             "min_progress": _as_int(
-                raw.get("min_progress", cfg.get("goal_contract_min_progress", 100)),
-                100,
+                raw.get(
+                    "min_progress",
+                    cfg.get("goal_contract_min_progress", default_min_progress),
+                ),
+                default_min_progress,
                 0,
                 100,
             ),

@@ -25,6 +25,19 @@ def _stage(stage_id, types, **over):
     return spec
 
 
+def _coding_stage(stage_id, types, **over):
+    """A stage that may actually call the coding tools.
+
+    Every coding tool is restricted to the `analysis` and `coding` job types,
+    so a coding stage left at the default `research` is planned with tools the
+    runtime then hides from it. Watched live: such a stage spent eight
+    iterations calling search_documents while its plan named
+    clone_and_index_repo, apply_patch and run_repo_tests.
+    """
+    over.setdefault("job_type", "coding")
+    return _stage(stage_id, types, **over)
+
+
 def _spec(*stages, name="study"):
     return {"name": name, "stages": list(stages)}
 
@@ -590,27 +603,27 @@ class TestCodingWorkIsExpressible:
     def test_a_fix_workflow_compiles_from_its_contracts(self, client, auth_headers):
         payload = {
             "spec": _spec(
-                _stage("clone", ["repo_workspace"]),
-                _stage(
+                _coding_stage("clone", ["repo_workspace"]),
+                _coding_stage(
                     "locate",
                     ["symbol_index"],
                     depends_on=["clone"],
                     assumes=["repo_workspace"],
                 ),
-                _stage(
+                _coding_stage(
                     "tests",
                     ["test_targets"],
                     depends_on=["locate"],
                     assumes=["symbol_index"],
                 ),
-                _stage(
+                _coding_stage(
                     "patch",
                     ["patch_applied"],
                     depends_on=["tests"],
                     assumes=["test_targets"],
                     checkpoint=True,
                 ),
-                _stage(
+                _coding_stage(
                     "verify",
                     ["command_result"],
                     depends_on=["patch"],
@@ -637,7 +650,7 @@ class TestCodingWorkIsExpressible:
         # this stage could not run however well the model behaved.
         payload = {
             "spec": _spec(
-                _stage("patch", ["patch_applied"], assumes=["repo_workspace"])
+                _coding_stage("patch", ["patch_applied"], assumes=["repo_workspace"])
             )
         }
         body = client.post(CHECK, json=payload, headers=auth_headers).json()
@@ -645,14 +658,41 @@ class TestCodingWorkIsExpressible:
         assert body["valid"] is False
         assert "repo_workspace" in " ".join(body["problems"])
 
+    def test_a_coding_stage_at_the_default_job_type_is_refused(
+        self, client, auth_headers
+    ):
+        """The failure that made this class's pipelines a fiction.
+
+        Every coding tool is restricted to `analysis` and `coding`, and the
+        default job type is `research`. Such a stage validated, planned as
+        `clone_and_index_repo, apply_patch, run_repo_tests`, started -- and
+        then could not see one of them. Watched live: eight iterations of
+        search_documents and save_research_finding while the plan promised a
+        repository fix.
+
+        A plan naming tools the runtime forbids is the same failure as
+        evidence declared but never emitted: a statement about the system that
+        nothing checked against the system.
+        """
+        payload = {
+            "spec": _spec(_stage("clone", ["repo_workspace"]))  # default research
+        }
+        body = client.post(CHECK, json=payload, headers=auth_headers).json()
+
+        assert body["valid"] is False
+        problems = " ".join(body["problems"])
+        assert "clone_and_index_repo" in problems
+        # And says what to change, not merely that something is wrong.
+        assert "job_type" in problems and "coding" in problems
+
     def test_the_toolchain_carries_its_own_prerequisites(self, client, auth_headers):
         # Finding tests for a symbol needs the symbol index, which needs the
         # clone. The planner derives that chain rather than the author stating
         # it, which is the point of deriving tools from contracts at all.
         payload = {
             "spec": _spec(
-                _stage("clone", ["repo_workspace"]),
-                _stage(
+                _coding_stage("clone", ["repo_workspace"]),
+                _coding_stage(
                     "tests",
                     ["test_targets"],
                     depends_on=["clone"],

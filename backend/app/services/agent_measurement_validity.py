@@ -35,6 +35,7 @@ The vocabulary a contract may use, under `contract["validity"]`:
 from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
+from app.services import agent_evidence_map
 
 #: Every boolean predicate a contract may declare. This is the ONE place they
 #: are registered: the job-config normaliser imports it rather than keeping its
@@ -268,10 +269,32 @@ def evaluate(contract: Mapping[str, Any], state: Mapping[str, Any]) -> Dict[str,
             if not field:
                 continue
             low, high = _as_number(rule.get("min")), _as_number(rule.get("max"))
+
+            matching = [
+                finding
+                for finding in findings
+                if str(finding.get("type") or "").strip() == str(type_name).strip()
+            ]
+            # Perishable evidence is checked on its LAST occurrence only.
+            # An earlier one describes a state that no longer exists -- a test
+            # run against a tree that has since been patched -- so holding the
+            # run to it makes the bound unsatisfiable by construction. Without
+            # this a coding contract could not say "end with the tests
+            # passing": requiring failed==0 of every test_result is violated
+            # for ever by the baseline run that found the bug, and requiring
+            # only that a test_result exists is satisfied by a red one. Neither
+            # is the thing anybody wants to ask.
+            #
+            # A rule may say `"latest": false` to check every occurrence, which
+            # is right for a durable type where each reading stands on its own.
+            latest_only = rule.get("latest")
+            if latest_only is None:
+                latest_only = agent_evidence_map.is_perishable(str(type_name))
+            if latest_only and matching:
+                matching = matching[-1:]
+
             offenders: List[Any] = []
-            for finding in findings:
-                if str(finding.get("type") or "").strip() != str(type_name).strip():
-                    continue
+            for finding in matching:
                 value = _find_number(finding, field)
                 if value is None:
                     continue

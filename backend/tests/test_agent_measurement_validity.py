@@ -548,3 +548,81 @@ def test_a_run_with_no_findings_adds_no_evidence_section():
     prompt = _executor()._build_thinking_prompt_volatile(_Job({}), {"findings": []})
 
     assert "EVIDENCE RECORDED SO FAR" not in prompt
+
+
+class TestPerishableBoundsCheckTheLatestReading:
+    """ "End with the tests passing" was inexpressible before this.
+
+    A bound applied to every finding of a type. For a perishable type that is
+    unsatisfiable by construction: the baseline test run that finds the bug is
+    red by definition, so `failed == 0` could never hold -- while requiring
+    only that a `test_result` exists is satisfied by a red one. Neither is what
+    anybody wants to ask of a coding stage.
+
+    An earlier reading of a perishable type describes a state that no longer
+    exists: a test run against a tree that has since been patched. So only the
+    last is checked. Durable types keep the old behaviour, where each reading
+    stands on its own and an impossible one is a fault wherever it appears.
+    """
+
+    def test_a_red_baseline_does_not_doom_a_green_finish(self):
+        result = validity.evaluate(
+            {"validity": {"bounds": {"test_result": {"field": "failed", "max": 0}}}},
+            {
+                "findings": [
+                    {"type": "test_result", "failed": 1, "passed": 5},
+                    {"type": "test_result", "failed": 0, "passed": 6},
+                ]
+            },
+        )
+        assert result["missing"] == []
+
+    def test_a_red_finish_still_fails(self):
+        result = validity.evaluate(
+            {"validity": {"bounds": {"test_result": {"field": "failed", "max": 0}}}},
+            {
+                "findings": [
+                    {"type": "test_result", "failed": 0, "passed": 6},
+                    {"type": "test_result", "failed": 2, "passed": 4},
+                ]
+            },
+        )
+        assert any("test_result" in m for m in result["missing"])
+
+    def test_a_durable_type_is_still_checked_throughout(self):
+        # benchmark_measurement is not perishable: an impossible reading is a
+        # fault wherever it appears, not something a later one excuses.
+        result = validity.evaluate(
+            {
+                "validity": {
+                    "bounds": {
+                        "benchmark_measurement": {"field": "fastest_ms", "min": 0}
+                    }
+                }
+            },
+            {
+                "findings": [
+                    {"type": "benchmark_measurement", "fastest_ms": -5},
+                    {"type": "benchmark_measurement", "fastest_ms": 10},
+                ]
+            },
+        )
+        assert any("benchmark_measurement" in m for m in result["missing"])
+
+    def test_a_rule_may_ask_for_every_occurrence(self):
+        result = validity.evaluate(
+            {
+                "validity": {
+                    "bounds": {
+                        "test_result": {"field": "failed", "max": 0, "latest": False}
+                    }
+                }
+            },
+            {
+                "findings": [
+                    {"type": "test_result", "failed": 1},
+                    {"type": "test_result", "failed": 0},
+                ]
+            },
+        )
+        assert any("test_result" in m for m in result["missing"])

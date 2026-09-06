@@ -36,6 +36,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
+from app.services import agent_evidence_map
 from app.services import agent_evidence_map as evidence
 
 #: How a loop is allowed to decide it is finished.
@@ -170,6 +171,34 @@ def _as_int(value: Any, default: int) -> int:
         return default
 
 
+def _tools_the_job_type_cannot_call(stage: PipelineStage) -> List[Tuple[str, str]]:
+    """Planned tools this stage's job type is not allowed to use.
+
+    A tool may restrict itself to certain job types, and the runtime hides the
+    rest. Nothing checked that against the tools a stage's contract actually
+    implies, so a stage could validate, plan, and start with none of the tools
+    it needed: a coding stage left at the default job type `research` was
+    planned as `clone_and_index_repo, apply_patch, run_repo_tests` and then ran
+    for eight iterations searching documents, because all three are restricted
+    to `analysis` and `coding` and it could not see one of them.
+
+    Returns (tool, allowed job types) pairs so the message can say what to
+    change rather than only that something is wrong.
+    """
+    from app.agent_core import tool_specs
+
+    by_name = {spec.name: spec for spec in tool_specs.all_specs()}
+    blocked: List[Tuple[str, str]] = []
+    for tool in agent_evidence_map.chain_for(_required_types(stage.contract)):
+        spec = by_name.get(tool)
+        allowed = getattr(spec, "job_types", None) if spec else None
+        if not allowed:
+            continue
+        if stage.job_type not in allowed:
+            blocked.append((tool, ", ".join(allowed)))
+    return blocked
+
+
 def validate(pipeline: Pipeline) -> List[str]:
     """Everything wrong with this pipeline that is decidable without running it.
 
@@ -208,6 +237,13 @@ def validate(pipeline: Pipeline) -> List[str]:
 
 def _stage_problems(stage: PipelineStage, pipeline: Pipeline) -> List[str]:
     problems: List[str] = []
+
+    for tool, allowed in _tools_the_job_type_cannot_call(stage):
+        problems.append(
+            f"{stage.id}: needs {tool}, which job_type {stage.job_type!r} may "
+            f"not call (allowed: {allowed}). Set the stage's job_type."
+        )
+
     required = stage.required_finding_types()
     if not required and not stage.runner and not stage.checkpoint:
         # A stage with nothing to satisfy always passes, which makes the

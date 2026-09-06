@@ -128,11 +128,13 @@ class TestPerishableEvidenceIsRetaken:
                     {
                         "id": "clone",
                         "goal": "c",
+                        "job_type": "coding",
                         "contract": {"required_finding_types": ["repo_workspace"]},
                     },
                     {
                         "id": "baseline",
                         "goal": "b",
+                        "job_type": "coding",
                         "depends_on": ["clone"],
                         "assumes": ["repo_workspace"],
                         "contract": {"required_finding_types": ["test_result"]},
@@ -140,6 +142,7 @@ class TestPerishableEvidenceIsRetaken:
                     {
                         "id": "fix",
                         "goal": "f",
+                        "job_type": "coding",
                         "depends_on": ["baseline"],
                         "assumes": ["repo_workspace"],
                         "contract": {"required_finding_types": ["patch_applied"]},
@@ -147,6 +150,7 @@ class TestPerishableEvidenceIsRetaken:
                     {
                         "id": "verify",
                         "goal": "v",
+                        "job_type": "coding",
                         "depends_on": ["fix"],
                         "assumes": ["patch_applied"],
                         "contract": {"required_finding_types": ["test_result"]},
@@ -177,11 +181,13 @@ class TestPerishableEvidenceIsRetaken:
                     {
                         "id": "clone",
                         "goal": "c",
+                        "job_type": "coding",
                         "contract": {"required_finding_types": ["repo_workspace"]},
                     },
                     {
                         "id": "search",
                         "goal": "s",
+                        "job_type": "coding",
                         "depends_on": ["clone"],
                         "assumes": ["repo_workspace"],
                         "contract": {"required_finding_types": ["code_search_result"]},

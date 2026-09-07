@@ -163,7 +163,33 @@ def _job_spec(stage: PipelineStage, pipeline: Pipeline) -> Dict[str, Any]:
         config["loop_until"] = stage.loop.until
         if stage.loop.until == "no_new_findings":
             config["loop_dry_rounds"] = stage.loop.dry_rounds
+    else:
+        # A stage that declares no loop still needs to be able to notice it is
+        # stuck. Without this it inherits the 100-iteration default and no stop
+        # condition at all, so a stage that cannot make progress spends the
+        # whole budget failing to.
+        #
+        # Measured: a `specify` stage was told by a lying ingestion tool that a
+        # paper was in the corpus. It searched for that paper, searched again,
+        # re-ran the ingestion, searched by title, searched by arXiv id, and
+        # was still going at iteration 9 of 100 -- correctly refusing to invent
+        # a specification, and with nothing to notice that no round had
+        # produced anything new since the first.
+        #
+        # Safe to default because giving up is no longer terminal: a stage that
+        # stops with its contract unmet pauses as `blocked_needs_input` and can
+        # be resumed with a correction, so the cost of stopping a stage that
+        # was merely slow is a person saying "keep going" rather than a lost
+        # run. An author who wants patience says so with an explicit `loop`.
+        config.setdefault("loop_until", "no_new_findings")
+        config.setdefault("loop_dry_rounds", DEFAULT_STAGE_DRY_ROUNDS)
     return job
+
+
+#: Rounds a stage may produce nothing new before it is treated as stuck. Three,
+#: not the executor's default of two: a pipeline stage often reads before it
+#: records, and one extra round is cheap against cutting off patient work.
+DEFAULT_STAGE_DRY_ROUNDS = 3
 
 
 def bind(pipeline: Pipeline) -> BoundPipeline:

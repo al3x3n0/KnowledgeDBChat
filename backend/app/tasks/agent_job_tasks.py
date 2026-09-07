@@ -38,6 +38,53 @@ from app.services.research_inbox_follow_up_service import sync_follow_up_outcome
 WAITING_ON_A_PERSON = frozenset({"awaiting_approval", "blocked_needs_input"})
 
 
+async def renew_lease_on_a_recycled_session(
+    *,
+    session_holder: Dict[str, Any],
+    session_factory: Any,
+    lease: Any,
+    ttl_seconds: int,
+) -> Any:
+    """Renew the lease, discarding the session if the attempt fails at all.
+
+    The session is reused between ticks so the renewal is one small UPDATE on a
+    warm connection rather than a fresh engine every forty seconds. That makes
+    discarding it on failure essential: a session whose statement was
+    interrupted stays in a failed transaction, and every later renewal on it
+    dies with "Can't reconnect until invalid transaction is rolled back".
+
+    `BaseException`, not `Exception`, and that distinction is the whole bug.
+    The caller bounds each renewal with `asyncio.wait_for`, which CANCELS this
+    coroutine when it times out -- and `CancelledError` does not inherit from
+    `Exception`, so the one failure mode the bound exists to produce was the
+    one that skipped this cleanup. Measured live: a renewal timed out, the
+    half-used session stayed in the holder, every subsequent tick failed on it,
+    and 120s later a healthy job died with "Execution lease lost at fence 2" at
+    iteration 25 -- blaming the lease, two layers from the cause.
+
+    The holder is cleared BEFORE the close is attempted, because closing a
+    cancelled session can itself fail: what matters is that the next tick does
+    not find this one.
+    """
+    session = session_holder.get("session")
+    if session is None:
+        session = session_factory()
+        session_holder["session"] = session
+    try:
+        return await agent_execution_lease_service.renew(
+            db=session,
+            lease=lease,
+            ttl_seconds=ttl_seconds,
+        )
+    except BaseException:
+        session_holder.pop("session", None)
+        try:
+            await session.close()
+        except BaseException:
+            pass
+        raise
+
+
 async def run_execution_lease_heartbeat(
     *,
     job_id: str,
@@ -333,25 +380,12 @@ async def _execute_agent_job_async(
         heartbeat_session_holder: Dict[str, Any] = {}
 
         async def _renew_once() -> Any:
-            session = heartbeat_session_holder.get("session")
-            if session is None:
-                session = heartbeat_session_factory()
-                heartbeat_session_holder["session"] = session
-            try:
-                return await agent_execution_lease_service.renew(
-                    db=session,
-                    lease=lease,
-                    ttl_seconds=lease_ttl,
-                )
-            except Exception:
-                # A poisoned session stays poisoned; drop it so the next tick
-                # starts clean rather than failing for ever on the same one.
-                heartbeat_session_holder.pop("session", None)
-                try:
-                    await session.close()
-                except Exception:
-                    pass
-                raise
+            return await renew_lease_on_a_recycled_session(
+                session_holder=heartbeat_session_holder,
+                session_factory=heartbeat_session_factory,
+                lease=lease,
+                ttl_seconds=lease_ttl,
+            )
 
         async def _heartbeat_execution_lease() -> None:
             await run_execution_lease_heartbeat(

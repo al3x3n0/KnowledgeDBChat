@@ -963,6 +963,79 @@ def _tool_snapshot_context(ctx: Any, tool: str) -> Dict[str, Any]:
     }
 
 
+#: How long to wait for a queued arXiv ingestion to produce a readable
+#: document. Ingestion runs in a Celery worker, so the tool that started it
+#: cannot know it finished without looking. Long enough for one paper to be
+#: fetched and stored; short enough that a dead worker is reported as a failure
+#: within an iteration rather than hanging the run.
+INGEST_WAIT_SECONDS = 90
+_INGEST_POLL_SECONDS = 3
+
+
+async def _wait_for_ingested_documents(source_id: str) -> List[str]:
+    """Document ids that actually landed for this source, or an empty list.
+
+    Empty is a real answer and the caller must treat it as failure. The whole
+    reason this exists is that "ingestion started" and "the paper is readable"
+    are different facts, and only the second one lets the next stage do its
+    job.
+
+    Polls on a session of its OWN, never the caller's, for two reasons that
+    each burned a day in this project already:
+
+    * `await db.rollback()` on a borrowed AsyncSession expires every ORM object
+      in it -- `expire_on_commit=False` does not cover rollbacks -- so the
+      executor's next attribute read becomes IO and raises MissingGreenlet from
+      somewhere unrelated. A rollback in a loop that then continues is the
+      exact dangerous shape.
+    * Holding the caller's session in an open transaction for up to a minute
+      and a half is what left the executor idle-in-transaction on the
+      `agent_jobs` row while the lease heartbeat's UPDATE blocked behind it.
+
+    Neither is needed anyway: the connection runs at READ COMMITTED, so each
+    statement takes a fresh snapshot and sees rows the ingestion worker
+    committed after this loop began.
+    """
+    import asyncio as _asyncio
+
+    from app.core.database import create_celery_session
+    from app.models.document import Document
+
+    loop = _asyncio.get_event_loop()
+    deadline = loop.time() + INGEST_WAIT_SECONDS
+    session_factory = create_celery_session()
+    # That builds a fresh engine, and unless CELERY_DB_USE_NULLPOOL is set it
+    # is a QueuePool holding real connections. A Celery task creates one per
+    # invocation and lives with it; a TOOL can be called many times inside one
+    # job, so an undisposed engine per call would walk the worker into
+    # connection exhaustion.
+    engine = getattr(session_factory, "kw", {}).get("bind")
+    try:
+        while True:
+            try:
+                async with session_factory() as poll_db:
+                    rows = await poll_db.execute(
+                        select(Document.id).where(Document.source_id == source_id)
+                    )
+                    found = [str(value) for value in rows.scalars().all()]
+            except Exception:  # pragma: no cover - defensive
+                # An unreadable poll is not an ingestion that succeeded.
+                # Returning empty makes the caller report failure, which is the
+                # honest reading of "I could not tell".
+                return []
+            if found:
+                return found
+            if loop.time() >= deadline:
+                return []
+            await _asyncio.sleep(_INGEST_POLL_SECONDS)
+    finally:
+        if engine is not None:
+            try:
+                await engine.dispose()
+            except Exception:  # pragma: no cover - defensive
+                pass
+
+
 def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     """Research-family tools for AutonomousAgentExecutor."""
 
@@ -1071,21 +1144,91 @@ def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     async def _ingest_paper_by_id(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
-        arxiv_id = params.get("arxiv_id")
+        """Put the paper in the corpus, then say so -- in that order.
+
+        This used to run an arXiv search, return the metadata, store nothing,
+        and emit a `papers_ingested` finding anyway. Measured live: a
+        reproduction pipeline's first stage completed at 100% with its contract
+        satisfied while `research_papers` held zero rows and no document
+        existed. The next stage then searched the corpus for the paper, found a
+        DIFFERENT paper by the same author left over from earlier work, and was
+        one call away from writing a specification for the wrong algorithm --
+        which the stages after it would have implemented, measured and scored
+        against a claim it was never about.
+
+        So it delegates to the real ingestion path and waits for the documents
+        to land. Waiting is the point: `papers_ingested` has to mean the paper
+        is readable, because the next stage's first act is to read it. A
+        finding that means "ingestion was queued" is one a downstream stage can
+        satisfy its own contract against while the corpus is still empty.
+        """
+        arxiv_id = str(params.get("arxiv_id") or "").strip()
         if not arxiv_id:
             return {"error": "Missing required parameter: arxiv_id"}
+
         papers = await _arxiv_search(query=f"id:{arxiv_id}", max_results=1)
         if not papers:
             return {"error": f"Paper {arxiv_id} not found"}
         paper = papers[0]
+
+        # This builder is given the executor, not the AgentService that owns
+        # the real ingestion path, so it is constructed here. Imported inside
+        # the function: agent_service imports this module's siblings, and a
+        # module-level import closes the cycle.
+        from app.services.agent_service import AgentService
+
+        started = await AgentService()._tool_ingest_arxiv_papers(
+            {
+                "name": f"arXiv {arxiv_id}",
+                "paper_ids": [arxiv_id],
+                "max_results": 1,
+                "auto_sync": True,
+                # The caller's word for it. Ignored entirely before now, along
+                # with add_to_reading_list -- both accepted, neither used.
+                "auto_summarize": bool(params.get("extract_insights", True)),
+            },
+            ctx.user_id,
+            ctx.db,
+        )
+        source_id = (started or {}).get("source_id")
+        if not source_id:
+            return {
+                "error": (
+                    f"Could not start ingestion for {arxiv_id}: no document "
+                    "source was created."
+                )
+            }
+
+        landed = await _wait_for_ingested_documents(source_id)
+        if not landed:
+            # Not a success with a caveat. A stage whose contract is
+            # `papers_ingested` must not pass on a paper that is not there.
+            return {
+                "success": False,
+                "error": (
+                    f"Ingestion of {arxiv_id} was started (source {source_id}) "
+                    f"but no document had appeared after "
+                    f"{INGEST_WAIT_SECONDS}s. The paper is not readable yet, so "
+                    "nothing downstream can read it. Retry, or check the "
+                    "ingestion worker."
+                ),
+                "data": {"source_id": source_id, "arxiv_id": arxiv_id},
+            }
+
         return {
             "success": True,
-            "data": paper,
+            "data": {**paper, "source_id": source_id, "documents": landed},
             "findings": [
                 {
                     "type": "papers_ingested",
                     "arxiv_id": arxiv_id,
                     "title": paper.get("title"),
+                    # So a later stage reads THIS paper rather than whatever
+                    # a corpus search surfaces. The substitution that made this
+                    # necessary was silent precisely because the finding named
+                    # no document.
+                    "document_ids": landed,
+                    "source_id": source_id,
                 }
             ],
         }

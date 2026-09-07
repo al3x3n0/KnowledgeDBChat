@@ -46,6 +46,7 @@ from app.schemas.agent_pipeline import (
 )
 from app.services import agent_pipeline_binding, agent_pipeline_spec
 from app.services.agent_job_creation_service import agent_job_creation_service
+from app.tasks.agent_job_tasks import execute_agent_job_task
 from app.services.auth_service import get_current_user
 
 router = APIRouter()
@@ -274,9 +275,23 @@ async def launch_pipeline(
         saved.last_job_id = job.id
         await db.commit()
 
+    # Actually start it. Creating the head job is not launching a pipeline:
+    # nothing sweeps PENDING -- `process_scheduled_agent_jobs` only picks up
+    # jobs that carry a schedule_type and a next_run_at, and a pipeline head
+    # has neither -- so without this the job sits pending for ever while this
+    # endpoint returns 201 with a stage list and a cost estimate. Found with a
+    # pipeline that had been pending for three days, and the launch that
+    # created it had reported success.
+    #
+    # Dispatched after the commit above, and mirroring the job-creation route:
+    # a task that starts before its row is visible to the worker races the
+    # transaction that created it.
+    execute_agent_job_task.delay(str(job.id), str(current_user.id))
+    await agent_job_creation_service.mark_immediately_dispatched(job=job, db=db)
+
     logger.info(
         f"Launched pipeline '{pipeline.name}' as job {job.id} "
-        f"({len(compiled.order)} stages, ~{compiled.total_seconds}s)"
+        f"({len(compiled.order)} stages, ~{compiled.total_seconds}s), queued"
     )
     return PipelineLaunchResponse(
         job_id=str(job.id),

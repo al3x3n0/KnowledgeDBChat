@@ -691,18 +691,20 @@ SPECS: tuple[ToolSpec, ...] = (
         name="ingest_paper_by_id",
         produces=("papers_ingested",),
         typical_seconds=60,
-        consumes="One arXiv id; leaves that paper in the corpus.",
-        description="Ingest a specific paper into the knowledge base by its arXiv ID.",
+        consumes="One arXiv id; leaves that paper in the corpus, readable.",
+        description=(
+            "Ingest a specific paper into the knowledge base by its arXiv ID "
+            "and wait until it is readable. Returns the document_ids it "
+            "created -- read the paper by those ids rather than searching the "
+            "corpus for its title, which can surface a different paper by the "
+            "same author."
+        ),
         parameters={
             "type": "object",
             "properties": {
                 "arxiv_id": {
                     "type": "string",
                     "description": "arXiv paper ID (e.g., '2301.12345')",
-                },
-                "add_to_reading_list": {
-                    "type": "string",
-                    "description": "Name of reading list to add paper to (optional)",
                 },
                 "extract_insights": {
                     "type": "boolean",

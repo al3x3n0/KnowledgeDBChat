@@ -266,6 +266,10 @@ sandbox-compiler: sandbox-base ## Build the compiler-research image (C + Rust + 
 	docker build -f deploy/sandbox-images/compiler-research/Dockerfile \
 	  -t $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest .
 
+sandbox-polyglot: ## Build the polyglot-slim image (C + Rust + Python, no crates)
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-polyglot-slim:latest \
+	  deploy/sandbox-images/polyglot-slim
+
 sandbox-profiling: sandbox-base ## Build the profiling-research image
 	docker build -t $(SANDBOX_REGISTRY)/kdbc-profiling-research:latest \
 	  deploy/sandbox-images/profiling-research
@@ -287,13 +291,14 @@ sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
 	docker build -f deploy/sandbox-images/axis-research/Dockerfile \
 	  -t $(SANDBOX_REGISTRY)/kdbc-axis-research:latest $(AXIS_PATH)
 
-sandbox-images: sandbox-compiler sandbox-profiling sandbox-microarch ## Build every sandbox image this repo can build
+sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch ## Build every sandbox image this repo can build
 	@echo "Built from this repository. gem5 (make sandbox-gem5, arm64) and"
 	@echo "axis (make sandbox-axis AXIS_PATH=...) are separate: see"
 	@echo "deploy/sandbox-images/README.md for why."
 
 sandbox-check: ## Report which sandbox images exist locally and what they carry
-	@for image in kdbc-sandbox-base kdbc-compiler-research kdbc-profiling-research \
+	@for image in kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
+	              kdbc-profiling-research \
 	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research; do \
 	  if docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1; then \
 	    printf '  %-28s %s\n' "$$image" \
@@ -304,11 +309,20 @@ sandbox-check: ## Report which sandbox images exist locally and what they carry
 	  fi; \
 	done
 	@echo ""
-	@echo "Toolchains the compiler image must carry for the agent tools to work:"
-	@docker run --rm --entrypoint sh $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest \
-	  -lc 'printf "  clang  %s\n" "$$(clang --version | head -1)"; \
-	       printf "  rustc  %s\n" "$$(rustc --version 2>/dev/null || echo MISSING)"; \
-	       printf "  crates %s\n" "$$(test -f /opt/rust-deps/externs.txt \
-	         && grep -o -- "--extern [a-z_]*" /opt/rust-deps/externs.txt | wc -l | tr -d " " \
-	         || echo 0)"' 2>/dev/null \
+	@echo "Toolchains each image must carry for the agent tools to work."
+	@echo "Probed through /bin/sh -lc, the way the runner invokes them: a login"
+	@echo "shell resets PATH, and rustc has gone missing that way before."
+	@for image in kdbc-compiler-research kdbc-polyglot-slim; do \
+	  docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1 || continue; \
+	  echo "  $$image:"; \
+	  docker run --rm --entrypoint sh $(SANDBOX_REGISTRY)/$$image:latest \
+	    -lc 'printf "    clang   %s\n" "$$(clang --version 2>/dev/null | head -1 || echo MISSING)"; \
+	         printf "    rustc   %s\n" "$$(rustc --version 2>/dev/null || echo MISSING)"; \
+	         printf "    python3 %s\n" "$$(python3 -V 2>&1 || echo MISSING)"; \
+	         printf "    crates  %s\n" "$$(test -f /opt/rust-deps/externs.txt \
+	           && grep -o -- "--extern [a-z_]*" /opt/rust-deps/externs.txt | wc -l | tr -d " " \
+	           || echo 0)"' 2>/dev/null \
+	    || echo "    (probe failed)"; \
+	done
+	@docker image inspect $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest >/dev/null 2>&1 \
 	  || echo "  (compiler-research image not built: run make sandbox-compiler)"

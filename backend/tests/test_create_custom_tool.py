@@ -146,9 +146,7 @@ def _job_ctx(db, job):
 
 
 @pytest.mark.asyncio
-async def test_the_owner_comes_from_the_job_when_ctx_has_no_user(
-    db_session, test_user
-):
+async def test_the_owner_comes_from_the_job_when_ctx_has_no_user(db_session, test_user):
     """ctx.user_id is not populated in autonomous runs; a live job failed on a
     NOT NULL violation on user_id."""
     provider = build_autonomous_workspace_mutation_provider(object())

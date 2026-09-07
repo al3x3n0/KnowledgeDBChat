@@ -62,6 +62,13 @@ class Toolchain:
     #: user flags are sanitised to exclude every shell metacharacter, so
     #: nothing from a tool call can reach this.
     prelude: str = ""
+    #: For an INTERPRETED language, a command that runs an empty program in
+    #: the same image. Timing `./prog` times the whole process, so an
+    #: interpreted language pays a startup cost before a line of the algorithm
+    #: runs -- measured in this sandbox, CPython starts in 7-20 ms, which is
+    #: larger than many of the algorithms a paper reports. Left empty for a
+    #: compiled language, where exec costs nothing worth reporting.
+    startup_probe: str = ""
     #: (token, flag) pairs added only when `token` is absent from the flags in
     #: force. Not the template, and not the defaults, because neither works:
     #: the template would emit the flag twice when a caller passes their own
@@ -173,6 +180,45 @@ TOOLCHAINS: Tuple[Toolchain, ...] = (
             "the host with '-C target-cpu=native'."
         ),
         aliases=("rs", ".rs"),
+    ),
+    Toolchain(
+        language="python",
+        source_file="prog.py",
+        # There is nothing to compile, but there is something to CHECK, and it
+        # is the same check clang performs: does this source parse? Without it
+        # a syntax error surfaces as a failed benchmark run rather than as a
+        # compile error, and `check_implementation` -- whose whole job is to
+        # separate "the code is wrong" from "the code is slow" -- would report
+        # a broken program as a failed reference case.
+        #
+        # Then `./prog`, because everything downstream runs `./prog`: the
+        # benchmark's timing loop and the correctness check both do, and a
+        # language that needed to be launched differently would have to be
+        # special-cased in both. A two-line shim keeps them identical.
+        #
+        # Grouped in `{{ ...; }}` so the caller's `2>compile_err.txt` covers
+        # the parse, not just the chmod at the end of the chain. Doubled
+        # braces because this template goes through str.format.
+        compile_template=(
+            "{{ python3 -m py_compile prog.py && "
+            "printf '#!/bin/sh\\nexec python3 {flags} prog.py \"$@\"\\n' "
+            "> prog && chmod +x prog; }}"
+        ),
+        # Nothing. `-O` is the one flag that looks like an optimisation and is
+        # not: it strips `assert` statements, so a reference implementation
+        # that checks itself with asserts would silently stop checking, and
+        # the speedup is unmeasurable. A caller who wants it can still say so.
+        default_flags="",
+        startup_probe="python3 -c pass",
+        flags_hint=(
+            "python3 flags, and there is rarely a reason to pass any. There "
+            "is no optimisation flag: '-O' only strips assert statements and "
+            "does not make code faster. Timing includes interpreter startup "
+            "(7-20 ms here), reported as interpreter_startup_ms -- a result "
+            "close to that number is measuring CPython starting up, not the "
+            "algorithm, so give the program enough work to clear the floor."
+        ),
+        aliases=("py", ".py", "python3", "cpython"),
     ),
 )
 

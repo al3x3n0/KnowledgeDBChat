@@ -331,6 +331,7 @@ class Settings(BaseSettings):
     UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT: int = 128
     SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
         "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-polyglot-slim:latest,"
         "ghcr.io/al3x3n0/kdbc-microarch-research:latest,"
         "ghcr.io/al3x3n0/kdbc-axis-research:latest,"
         "ghcr.io/al3x3n0/kdbc-profiling-research:latest,"

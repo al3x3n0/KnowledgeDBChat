@@ -152,12 +152,33 @@ class ClaimComparison:
 #: Above this, repeated trials of the same program disagree so much that no
 #: single figure represents them. Half again as long as the fastest is already
 #: a different measurement.
+def _sandbox_startup_dominates() -> float:
+    """The benchmark module's threshold, read at import.
+
+    A local import because agent_compiler_sandbox imports this module's
+    siblings; taking the value through a function keeps the dependency at call
+    time and leaves a fallback if that ever becomes a cycle.
+    """
+    try:
+        from app.services.agent_compiler_sandbox import STARTUP_DOMINATES as value
+
+        return float(value)
+    except Exception:  # pragma: no cover - defensive
+        return 0.33
+
+
 UNSTABLE_SPREAD = 0.5
 
 #: The same test applied to the numbers the program printed about itself. A
 #: metric whose largest reading is more than twice its smallest was not
 #: measuring the code.
 UNSTABLE_METRIC_RATIO = 2.0
+
+
+#: Kept in step with the benchmark's own threshold by importing it, not by
+#: restating the number: two copies of a judgement call drift, and the drift
+#: shows up as a benchmark that warns while the comparison accepts it anyway.
+STARTUP_DOMINATES = _sandbox_startup_dominates()
 
 
 def measurement_concerns(benchmark: Optional[Dict[str, Any]]) -> List[str]:
@@ -202,6 +223,31 @@ def measurement_concerns(benchmark: Optional[Dict[str, Any]]) -> List[str]:
                 f"The trials spread {float(spread):.0%} between fastest and "
                 "slowest; repeated runs of one program disagreeing that much "
                 "leaves no single figure to compare."
+            )
+    except (TypeError, ValueError):
+        pass
+
+    # An interpreted language pays for its interpreter before the algorithm
+    # starts, and `./prog` is timed whole. A Python run that finishes near
+    # CPython's own startup has measured startup, so scoring it against a
+    # paper's number compares that paper's algorithm with this machine's
+    # process launch. The benchmark reports the floor for exactly this reason;
+    # this is the half that reads it back.
+    share = benchmark.get("startup_share")
+    try:
+        if share is not None and float(share) >= STARTUP_DOMINATES:
+            startup = benchmark.get("interpreter_startup_ms")
+            fastest = benchmark.get("fastest_ms")
+            concerns.append(
+                f"{float(share):.0%} of this timing is the interpreter "
+                "starting up"
+                + (
+                    f" ({startup} ms of {fastest} ms)"
+                    if startup is not None and fastest is not None
+                    else ""
+                )
+                + ", not the algorithm, so it cannot settle a claim about the "
+                "algorithm. Give the program enough work to clear that floor."
             )
     except (TypeError, ValueError):
         pass

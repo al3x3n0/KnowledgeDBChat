@@ -169,7 +169,9 @@ async def profile_c_workload(
         for directory in include_dirs or []:
             resolved = (root / str(directory)).resolve()
             if not str(resolved).startswith(str(root)):
-                return {"error": f"include_dirs path escapes the workspace: {directory!r}"}
+                return {
+                    "error": f"include_dirs path escapes the workspace: {directory!r}"
+                }
             include_flags += f"-I{Path(directory).as_posix()} "
 
         script = (

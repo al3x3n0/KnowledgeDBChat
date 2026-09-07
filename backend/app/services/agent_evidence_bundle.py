@@ -95,6 +95,10 @@ IMAGE_ORIGINS = {
         "dockerfile": "deploy/sandbox-images/compiler-research/Dockerfile",
         "context": "that directory",
     },
+    "kdbc-polyglot-slim": {
+        "dockerfile": "deploy/sandbox-images/polyglot-slim/Dockerfile",
+        "context": "that directory",
+    },
     "kdbc-microarch-research": {
         "dockerfile": "deploy/sandbox-images/microarch-research/Dockerfile",
         "context": "that directory",

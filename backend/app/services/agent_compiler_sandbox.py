@@ -425,18 +425,28 @@ LOAD_SATURATED = 1.5
 SPREAD_UNSTABLE = 0.25
 
 
+#: Above this share, the reported time is mostly the interpreter booting. A
+#: third is enough to distort any comparison between two implementations, long
+#: before it makes the number meaningless on its own.
+STARTUP_DOMINATES = 0.33
+
+
 def measurement_quality(
     load_average: Optional[float],
     cpu_count: Optional[int],
     timings: Optional[List[int]] = None,
+    startup_ms: Optional[int] = None,
 ) -> Dict[str, Any]:
     """Describe how trustworthy a wall-clock timing taken just now is.
 
-    Two independent signals, because each catches what the other misses: the
-    machine's load says whether something else was competing, and the spread
-    across trials says whether the result actually held still. A quiet machine
-    can still produce unstable timings, and a busy one can occasionally produce
-    tight ones by luck.
+    Three independent signals, because each catches what the others miss: the
+    machine's load says whether something else was competing, the spread across
+    trials says whether the result actually held still, and -- for an
+    interpreted language -- the interpreter's own startup says how much of the
+    number was paid before the algorithm began. A quiet machine can still
+    produce unstable timings, a busy one can occasionally produce tight ones by
+    luck, and a perfectly stable timing on an idle host can still be almost
+    entirely CPython starting up.
     """
     quality: Dict[str, Any] = {}
     if load_average is not None and cpu_count:
@@ -459,6 +469,18 @@ def measurement_quality(
         # run benchmarked once, was refused by a contract requiring error
         # bars, and had nothing in the tool's own output to tell it why.
         quality["single_trial"] = True
+
+    # What the process paid before reaching the first line of the algorithm.
+    # Measured for `python3 -c pass` in the same container, around the same
+    # trials, for the same reason the load average is: a floor read from
+    # somewhere else is not this run's floor.
+    if startup_ms is not None and startup_ms >= 0:
+        quality["interpreter_startup_ms"] = startup_ms
+        if timings:
+            fastest = min(timings)
+            quality["startup_share"] = (
+                round(min(1.0, startup_ms / fastest), 3) if fastest > 0 else 1.0
+            )
 
     environment = quality.get("measurement_environment")
     spread = quality.get("trial_spread")
@@ -486,6 +508,15 @@ def measurement_quality(
             f"Trials varied by {spread * 100:.0f}%, so any difference smaller "
             "than that is not evidence. Repeat on a quiet machine before "
             "concluding anything from it."
+        )
+    share = quality.get("startup_share")
+    if share is not None and share >= STARTUP_DOMINATES:
+        warnings.append(
+            f"{share * 100:.0f}% of this timing is the interpreter starting up "
+            f"({quality['interpreter_startup_ms']} ms of "
+            f"{min(timings or [0])} ms), not the algorithm. Give the program "
+            "enough work that the run clears that floor, or the number "
+            "compares startup costs rather than implementations."
         )
     if warnings:
         quality["measurement_warning"] = " ".join(warnings)
@@ -558,6 +589,19 @@ async def benchmark_c_snippet(
             ' || echo unknown)"; '
             'echo "__cpus__ $(nproc 2>/dev/null || echo unknown)"'
         )
+        # For an interpreted language, what an EMPTY program costs -- taken in
+        # the same container, right after the trials, exactly as the load
+        # average is. Timing `./prog` times the whole process, so a Python
+        # result carries a floor it did not earn: measured here, a 22 ms run
+        # was 9 ms of CPython starting up. Without this the number reads as the
+        # algorithm's cost and two implementations get compared on their
+        # shared startup.
+        if chain.startup_probe:
+            script += (
+                "; s=$(date +%s%N); " + chain.startup_probe + "; "
+                "e=$(date +%s%N); "
+                'echo "__startup_ms__ $(( (e - s) / 1000000 ))"'
+            )
         try:
             returncode, stdout, stderr = await _run(
                 script, workdir, image=image, timeout_seconds=timeout_seconds
@@ -593,6 +637,7 @@ async def benchmark_c_snippet(
     program_output: List[str] = []
     load_average: Optional[float] = None
     cpu_count: Optional[int] = None
+    startup_ms: Optional[int] = None
     for line in stdout.splitlines():
         if line.startswith("__elapsed_ms__ "):
             try:
@@ -609,10 +654,15 @@ async def benchmark_c_snippet(
                 cpu_count = int(line.split()[1])
             except (IndexError, ValueError):
                 continue
+        elif line.startswith("__startup_ms__ "):
+            try:
+                startup_ms = int(line.split()[1])
+            except (IndexError, ValueError):
+                continue
         else:
             program_output.append(line)
 
-    quality = measurement_quality(load_average, cpu_count, timings)
+    quality = measurement_quality(load_average, cpu_count, timings, startup_ms)
 
     reported_metrics = parse_reported_metrics("\n".join(program_output))
 

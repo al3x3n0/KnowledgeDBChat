@@ -20,11 +20,33 @@ An image must also be listed in `SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES`
 | Image | Tools | Contains |
 |---|---|---|
 | `sandbox-base` | (not run directly) | clang, lld, binutils, make, python3, time |
-| `compiler-research` | `compile_c_snippet`, `benchmark_c_snippet`, `analyze_snippet_cycles` | base + llvm (incl. `llvm-mca`), cmake, ninja, `candidate-coster` |
+| `compiler-research` | `compile_c_snippet`, `benchmark_c_snippet`, `analyze_snippet_cycles` | base + llvm (incl. `llvm-mca`), cmake, ninja, `candidate-coster`, prebuilt Rust crates |
+| `polyglot-slim` | `benchmark_c_snippet`, `check_implementation` | clang, rustc, python3 and nothing else |
 | `microarch-research` | scientific-validation runs | base + linux-perf, pytest |
 | `profiling-research` | `profile_c_workload` | base + valgrind (callgrind) |
 | `axis-research` | `axis_check`, `axis_emit`, `axis_prove` | the AXIS binary, z3, python3 |
 | `gem5-research` | `simulate_c_workload`, `sample_hardware_counters` | gem5 `build/ARM/gem5.opt` and `configs/`, gcc, g++, python3 |
+
+## polyglot-slim: the three languages and nothing else
+
+`compiler-research` can already build all three languages -- python3 comes from
+the base -- so this image is not about capability. It is what
+`agent_toolchains` requires and no more, for a deployment that reproduces
+algorithms and does no microarchitectural work: 1.42 GB against 1.78 GB.
+
+That saving is smaller than it looks and the floor is worth knowing. clang and
+rustc each ship their own copy of LLVM (98 MB and 153 MB), and the minimal
+rustup profile is another 535 MB, so **no C+Rust image gets much below 1.4 GB**.
+Two reductions were measured and rejected, and are recorded in the Dockerfile
+so nobody spends the afternoon again: stripping every `.so` and `.rlib` saves
+25 MB because they ship stripped, and swapping clang for gcc saves 270 MB but
+makes the C compiler a function of which image ran the build.
+
+**It is deliberately not the default.** It carries no prebuilt Rust crates, and
+the compile line degrades to no crates rather than failing, so `use rand::Rng;`
+resolves on `compiler-research` and does not resolve here -- verified both
+ways. It has no `llvm-mca` either, so `analyze_snippet_cycles` cannot run on it.
+Point a job at it explicitly when the work is single-file and stdlib-only.
 
 ## One base, several images
 
@@ -76,6 +98,15 @@ docker build -t ghcr.io/al3x3n0/kdbc-sandbox-base:latest \
 
 docker build -t ghcr.io/al3x3n0/kdbc-profiling-research:latest \
   deploy/sandbox-images/profiling-research
+```
+
+`polyglot-slim` is the exception that needs no base: it installs its own
+toolchains from `debian:bookworm-slim`, because basing it on an image carrying
+lld, make and time would defeat the only reason it exists.
+
+```bash
+docker build -t ghcr.io/al3x3n0/kdbc-polyglot-slim:latest \
+  deploy/sandbox-images/polyglot-slim
 ```
 
 `compiler-research` builds from the **repository root**, not from its own

@@ -34,7 +34,8 @@ class TestResolving:
         # that read as the model having written bad code, and the run then
         # burns its iterations rewriting source that was already correct.
         assert tc.resolve("go") is None
-        assert tc.resolve("python") is None
+        assert tc.resolve("fortran") is None
+        assert tc.resolve("java") is None
 
     def test_the_refusal_says_what_is_available(self):
         message = tc.unsupported_language("go")
@@ -68,12 +69,18 @@ class TestTheBuildLines:
         command = tc.compile_command(tc.resolve("rust"), "-C opt-level=3")
         assert "-C linker=clang" in command
 
-    def test_both_languages_produce_the_same_executable_name(self):
+    def test_every_language_produces_the_same_executable_name(self):
         # The run script says `./prog`; a language whose build wrote something
         # else would compile fine and then appear to produce no output.
+        #
+        # Checked as "names prog as its output", not as "-o prog": an
+        # interpreted language has no compiler to pass -o to, and writes the
+        # shim itself. The two spellings are the two ways a build can end up
+        # with a ./prog to run.
         for language in tc.SUPPORTED:
             chain = tc.resolve(language)
-            assert "-o prog " in tc.compile_command(chain, chain.default_flags)
+            command = tc.compile_command(chain, chain.default_flags)
+            assert "-o prog " in command or "> prog " in command, language
 
     def test_only_flags_are_substituted(self):
         # The template is not a general format string: a stray {} in a

@@ -7,13 +7,19 @@ registration went wrong most often, which is why they moved first.
 from __future__ import annotations
 
 from app.agent_core.tool_specs.spec import ToolSpec
-from app.services.agent_toolchains import describe_rust_crates
+from app.services.agent_toolchains import SUPPORTED, describe_rust_crates
 
 #: Named once and used in both tool descriptions, so the crate set a model is
 #: told about cannot differ between the tool that checks code and the tool that
 #: times it -- and so neither can drift from the image, which derives its
 #: manifest from the same list.
 _RUST_CRATES_HINT = describe_rust_crates()
+
+#: Read from the toolchain table, never restated. A language the table can
+#: build but the schema does not offer is unreachable -- the model is refused
+#: for naming it -- and a language the schema offers but the table cannot build
+#: fails at compile time with an error that blames the code.
+_LANGUAGES = list(SUPPORTED)
 
 SPECS: tuple[ToolSpec, ...] = (
     ToolSpec(
@@ -318,11 +324,13 @@ SPECS: tuple[ToolSpec, ...] = (
     ),
     ToolSpec(
         name="benchmark_c_snippet",
-        description="Compile and run a self-contained C or Rust program in the "
-        "compiler research sandbox, returning its stdout and wall-clock "
-        "time over repeated trials (minimum reported). Set `language` "
-        "for Rust; it defaults to C, and the name of this tool is "
-        "historical. The program must print its own measurements; there "
+        description="Compile and run a self-contained C, Rust or Python program "
+        "in the compiler research sandbox, returning its stdout and "
+        "wall-clock time over repeated trials (minimum reported). Set "
+        "`language`; it defaults to C, and the name of this tool is "
+        "historical. Python is timed as a whole process, so its result "
+        "includes interpreter startup, reported as interpreter_startup_ms "
+        "and warned about when it dominates. The program must print its own measurements; there "
         "are no performance counters in the sandbox, and there is no "
         "network. Benchmark the SAME source you passed to "
         "check_implementation -- a timing of code that was never checked "
@@ -336,7 +344,7 @@ SPECS: tuple[ToolSpec, ...] = (
                 },
                 "language": {
                     "type": "string",
-                    "enum": ["c", "rust"],
+                    "enum": _LANGUAGES,
                     "description": (
                         "Which toolchain builds it (default 'c'). Rust is one "
                         "self-contained .rs file compiled with rustc at "
@@ -346,6 +354,12 @@ SPECS: tuple[ToolSpec, ...] = (
                         "declaration; nothing outside that set can be fetched, "
                         "because the sandbox has no network. Available: "
                         + _RUST_CRATES_HINT
+                        + ". Python is one self-contained .py file run by "
+                        "CPython with only the standard library -- there is no "
+                        "network, so nothing can be pip-installed. Give a "
+                        "Python program real work to do: a run that finishes "
+                        "near the interpreter's own startup time has measured "
+                        "startup, not the algorithm."
                     ),
                 },
                 "flags": {
@@ -1473,7 +1487,7 @@ SPECS: tuple[ToolSpec, ...] = (
                 },
                 "language": {
                     "type": "string",
-                    "enum": ["c", "rust"],
+                    "enum": _LANGUAGES,
                     "description": (
                         "Which toolchain builds it (default 'c'). Use the same "
                         "language and the same source when you benchmark it, "
@@ -1481,6 +1495,10 @@ SPECS: tuple[ToolSpec, ...] = (
                         "that was timed. Rust is a single .rs file at edition "
                         "2021 with these crates prebuilt and in scope: "
                         + _RUST_CRATES_HINT
+                        + ". Python is a single .py file, standard library "
+                        "only; it is syntax-checked before the cases run, so a "
+                        "parse error reports as a build failure rather than as "
+                        "every case failing."
                     ),
                 },
                 "cases": {

@@ -38,6 +38,10 @@ from app.schemas.agent_pipeline import (
     PipelineLaunchRequest,
     PipelineLaunchResponse,
     PipelinePlanResponse,
+    PipelineRestartRequest,
+    PipelineRestartResponse,
+    PipelineRunStage,
+    PipelineRunStagesResponse,
     PipelineSpecRequest,
     SavedPipelineCreate,
     SavedPipelineResponse,
@@ -45,6 +49,7 @@ from app.schemas.agent_pipeline import (
     StagePlanResponse,
 )
 from app.services import agent_pipeline_binding, agent_pipeline_spec
+from app.services import agent_pipeline_restart
 from app.services.agent_job_creation_service import agent_job_creation_service
 from app.tasks.agent_job_tasks import execute_agent_job_task
 from app.services.auth_service import get_current_user
@@ -300,6 +305,86 @@ async def launch_pipeline(
         stages=list(compiled.order),
         estimated_seconds=compiled.total_seconds,
         checkpoints=list(compiled.checkpoints),
+    )
+
+
+@router.get("/runs/{root_job_id}/stages", response_model=PipelineRunStagesResponse)
+async def get_pipeline_run_stages(
+    root_job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """What a run's stages did, so a caller can choose where to restart.
+
+    Restarting from a stage you cannot see the state of is guesswork, and the
+    state that matters is not the status: a stage can complete without meeting
+    its contract, and that is precisely the one you must not build on.
+    """
+    stages = await agent_pipeline_restart.load_run(root_job_id, db)
+    if not stages:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    owner_ids = {str(stage.job.user_id) for stage in stages}
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    latest = agent_pipeline_restart.latest_per_stage(stages)
+    return PipelineRunStagesResponse(
+        root_job_id=str(root_job_id),
+        stages=[
+            PipelineRunStage(
+                stage=stage_id,
+                job_id=str(entry.job.id),
+                status=str(entry.job.status or ""),
+                iteration=int(entry.job.iteration or 0),
+                contract_satisfied=entry.contract_met,
+                restartable=entry.job.parent_job_id is not None,
+            )
+            for stage_id, entry in latest.items()
+        ],
+    )
+
+
+@router.post("/runs/{root_job_id}/restart", response_model=PipelineRestartResponse)
+async def restart_pipeline_run(
+    root_job_id: UUID,
+    payload: PipelineRestartRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run one stage again on the evidence the stages before it established.
+
+    Re-launching the whole pipeline to retry its last stage pays for every
+    earlier stage again and produces a different run, so the evidence the
+    retry builds on is not the evidence that was already established. This
+    re-fires the chain from the completed predecessor instead, which is the
+    same path that connected the stages the first time.
+    """
+    stages = await agent_pipeline_restart.load_run(root_job_id, db)
+    if not stages:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+    owner_ids = {str(stage.job.user_id) for stage in stages}
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    try:
+        child = await agent_pipeline_restart.restart_from_stage(
+            root_job_id=root_job_id,
+            stage_id=payload.stage,
+            executor=AutonomousAgentExecutor(),
+            db=db,
+            note=payload.note or "",
+        )
+    except agent_pipeline_restart.PipelineRestartError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail)
+
+    return PipelineRestartResponse(
+        root_job_id=str(root_job_id),
+        stage=payload.stage,
+        job_id=str(child.id),
+        note_attached=bool((payload.note or "").strip()),
     )
 
 

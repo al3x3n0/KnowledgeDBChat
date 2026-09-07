@@ -158,3 +158,44 @@ class SavedPipelineResponse(BaseModel):
             created_at=row.created_at.isoformat() if row.created_at else None,
             updated_at=row.updated_at.isoformat() if row.updated_at else None,
         )
+
+
+class PipelineRunStage(BaseModel):
+    """One stage of one run, as a caller choosing a restart point needs it."""
+
+    stage: str
+    job_id: str
+    status: str
+    iteration: int
+    #: Not the same question as `status`. A stage can complete without meeting
+    #: its contract -- out of iterations, or it gave up -- and that is exactly
+    #: the stage whose output nothing downstream should be built on.
+    contract_satisfied: bool
+    #: False for the head of the chain: there is no earlier evidence to restart
+    #: it on, so the answer there is to launch the pipeline again.
+    restartable: bool
+
+
+class PipelineRunStagesResponse(BaseModel):
+    root_job_id: str
+    stages: List[PipelineRunStage]
+
+
+class PipelineRestartRequest(BaseModel):
+    """Restart one stage of a run."""
+
+    stage: str = Field(..., min_length=1, description="The stage id to run again")
+    #: Attached as an operator correction the restarted stage actually reads,
+    #: through the same channel a resumed job uses. A restart with no note is a
+    #: stage repeating what it already did, and the reason it stopped is
+    #: usually something only a person knows.
+    note: Optional[str] = Field(
+        None, max_length=2000, description="A correction for the restarted stage"
+    )
+
+
+class PipelineRestartResponse(BaseModel):
+    root_job_id: str
+    stage: str
+    job_id: str
+    note_attached: bool

@@ -229,6 +229,12 @@ class _AutonomousRuntimeAdapter:
         if stop:
             logger.info(f"Job {self.job.id} stopping: {reason}")
             self.job.add_log_entry({"phase": "loop_policy_stop", "reason": reason})
+            # Recorded for the finaliser, which decides whether a run that
+            # stopped without finishing is done or stuck. A loop that ended
+            # because nothing new was found, with its contract still unmet,
+            # has not completed anything -- it is blocked, and someone may
+            # know the one thing that would unblock it.
+            self.state["loop_policy_stop_reason"] = reason
             return False
 
         if datetime.utcnow() - self.start_time > self.max_runtime:
@@ -602,6 +608,13 @@ class _AutonomousRuntimeAdapter:
                     # that the run stopped short so the outcome is not read as
                     # a run that met its requirements.
                     self.state["stopped_short_of_contract"] = True
+                    # Its own words for why. This is the run's diagnosis of
+                    # what defeated it, and it is the most useful thing to put
+                    # in front of the person who is asked to unblock it.
+                    self.state["stopped_short_reason"] = (
+                        str(decision.get("stop_reason") or "").strip()
+                        or "the run judged its goal unreachable"
+                    )
 
         return decision
 
@@ -3144,6 +3157,22 @@ class AutonomousAgentExecutor:
         if checkpoint:
             logger.info(f"Resuming job {job.id} from iteration {checkpoint.iteration}")
         state = initialize_runtime_state(checkpoint.state if checkpoint else None)
+        # Corrections an operator attached when resuming this run. They live on
+        # the job because a run that blocked early has no checkpoint to carry
+        # them, and they are merged rather than assigned so a clue already in
+        # the checkpoint is not duplicated.
+        pending_clues = (job.config or {}).get("operator_clues")
+        if isinstance(pending_clues, list) and pending_clues:
+            seen = {
+                str(c.get("note"))
+                for c in (state.get("operator_clues") or [])
+                if isinstance(c, dict)
+            }
+            merged = list(state.get("operator_clues") or [])
+            for clue in pending_clues:
+                if isinstance(clue, dict) and str(clue.get("note")) not in seen:
+                    merged.append(clue)
+            state["operator_clues"] = merged[-8:]
         if not checkpoint:
             await self._inherit_assumed_findings(job, state, db)
         recovered_completion = agent_execution_journal_service.recover_completed_action(
@@ -7623,6 +7652,41 @@ GOAL:
 {job.goal}
 
 """
+        # A person read this run and corrected it. This sits with the GOAL,
+        # not in the scrolling context below it, because that is what it is: an
+        # amendment to the premise. Measured -- a run blocked on a bad
+        # repository path was resumed with the right one in its volatile
+        # context, carried the clue for three iterations, and never acted on
+        # it: the goal statement in the system prompt still named the path it
+        # had already proved did not exist, and the correction read as one more
+        # detail under the history that proved it.
+        #
+        # Per-job and fixed for the rest of the run once attached, so the
+        # prompt stays byte-stable across iterations; a new correction is
+        # exactly the kind of change that should invalidate the cache.
+        clues = state.get("operator_clues")
+        if isinstance(clues, list) and clues:
+            rendered = []
+            for clue in clues[-4:]:
+                if isinstance(clue, dict):
+                    note = str(clue.get("note") or "").strip()
+                    if note:
+                        rendered.append(f"- {note}")
+            if rendered:
+                base_prompt += """OPERATOR CORRECTIONS TO THE GOAL ABOVE:
+{corrections}
+
+A person read this run and replied. These corrections OVERRIDE the goal
+statement wherever they conflict with it -- including a path, a name, or an
+assumption the goal states. Where a correction contradicts something you
+established earlier in this run, the correction is right and your earlier
+conclusion was based on the premise it just fixed. Act on it directly rather
+than re-deriving why the old premise failed.
+
+""".format(
+                    corrections="\n".join(rendered)
+                )
+
         # What was already established before this run started, when a caller
         # supplied it -- a chat answer and the sources it read, most often.
         # Without it a run launched from a question rediscovers what the corpus
@@ -7966,6 +8030,30 @@ RESPONSE FORMAT:
         prompt cache keyed on it) survives across iterations.
         """
         parts: List[str] = []
+
+        # A person answering a run that got stuck. This goes first and loudest:
+        # the run paused because it had concluded it could not proceed, so
+        # whatever it was reasoning from is what a clue exists to correct. A
+        # note buried under the history it already believed would be read as
+        # one more detail rather than as the thing that changed.
+        clues = state.get("operator_clues")
+        if isinstance(clues, list) and clues:
+            rendered = []
+            for clue in clues[-4:]:
+                if not isinstance(clue, dict):
+                    continue
+                text = str(clue.get("note") or "").strip()
+                if text:
+                    rendered.append(
+                        f"- (iteration {clue.get('iteration', '?')}) {text}"
+                    )
+            if rendered:
+                parts.append(
+                    "OPERATOR GUIDANCE -- a person read this run and replied. "
+                    "Treat it as correct where it contradicts your earlier "
+                    "conclusions, and say in your reasoning what it changes:\n"
+                    + "\n".join(rendered)
+                )
 
         compressed_history = state.get("compressed_history", "")
         if compressed_history:

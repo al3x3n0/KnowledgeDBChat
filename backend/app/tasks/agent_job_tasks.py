@@ -32,6 +32,12 @@ from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
 
 
+#: Phases that mean a run is waiting for a human, not idling. The stalled-job
+#: sweep must leave these alone: resuming a job paused for approval is not
+#: recovery, it is walking through the gate nobody opened.
+WAITING_ON_A_PERSON = frozenset({"awaiting_approval", "blocked_needs_input"})
+
+
 async def run_execution_lease_heartbeat(
     *,
     job_id: str,
@@ -768,7 +774,18 @@ def resume_paused_agent_jobs():
             paused_jobs = result.scalars().all()
 
             resumed_count = 0
+            waiting_count = 0
             for job in paused_jobs:
+                # A job waiting on a person is not idle, and resuming it is not
+                # recovery -- it is walking through the gate. This sweep filtered
+                # on status alone, so a stage paused for approval was resumed
+                # five minutes later without anyone approving anything, and a run
+                # that had correctly concluded it was blocked went straight back
+                # into the wall it had just described.
+                if str(job.current_phase or "") in WAITING_ON_A_PERSON:
+                    waiting_count += 1
+                    continue
+
                 # Paused jobs are not eligible for can_continue(); check resource limits directly.
                 is_limited, reason = job.is_resource_limited()
                 if is_limited:
@@ -786,7 +803,10 @@ def resume_paused_agent_jobs():
                 resumed_count += 1
 
             await db.commit()
-            logger.info(f"Resumed {resumed_count} paused agent jobs")
+            logger.info(
+                f"Resumed {resumed_count} paused agent jobs; "
+                f"{waiting_count} are waiting on a person and were left alone"
+            )
 
     asyncio.run(_check_paused())
 

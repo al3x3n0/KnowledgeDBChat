@@ -177,6 +177,35 @@ async def _record_what_the_run_established(
     job.results.setdefault("library_record", {})["document_id"] = str(doc.id)
 
 
+def _why_it_gave_up(job: AgentJob, state: Dict[str, Any]) -> str:
+    """The run's own account of why it stopped, or "" if it did not give up.
+
+    Only a run that ENDED ITSELF is stuck. One that ran out of iterations or
+    tool calls hit a budget, which is an ordinary ending -- pausing those would
+    put a person in the loop of every short run. The three ways a run ends
+    itself: its loop policy fires, it insists on stopping with the contract
+    unmet, or the stall detector stops it. The first live run to exercise this
+    took the second path while only the first was being checked, and was filed
+    `completed` with nothing measured.
+    """
+    reason = str(state.get("loop_policy_stop_reason") or "").strip()
+    if reason:
+        return reason
+
+    reason = str(state.get("stopped_short_reason") or "").strip()
+    if reason:
+        return reason
+
+    # The stall detector logs a voluntary stop without touching state.
+    for entry in reversed(list(getattr(job, "execution_log", None) or [])[-12:]):
+        if isinstance(entry, dict) and entry.get("phase") == "voluntary_stop":
+            return str(entry.get("reason") or "").strip() or "the run stopped itself"
+
+    if state.get("stopped_short_of_contract"):
+        return "the run stopped with its goal contract unmet"
+    return ""
+
+
 async def finalize_job(
     executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession
 ) -> Dict[str, Any]:
@@ -232,6 +261,7 @@ async def finalize_job(
     )
     # A run that errored its way to a stop is still a failure; an unmet
     # contract does not upgrade it to "completed with an unmet contract".
+    blocked_payload: Optional[Dict[str, Any]] = None
     if (
         contract_unmet
         and existing_status
@@ -242,20 +272,59 @@ async def finalize_job(
         and int(getattr(job, "error_count", 0) or 0) < 5
     ):
         missing = [str(x)[:80] for x in (contract_eval.get("missing") or [])[:6]]
-        job.status = AgentJobStatus.COMPLETED.value
-        job.add_log_entry(
-            {
-                "phase": "completed_contract_unmet",
-                "reason": (
-                    "The run ended with its goal contract unsatisfied: "
-                    + (", ".join(missing) or "requirements not met")
-                ),
+
+        # A loop that ended because nothing new was found, with its contract
+        # still unmet, has not completed anything. It is stuck, and often the
+        # run itself knows why: one pointed at a repository that does not
+        # exist diagnosed the git failure correctly, tried to stop, and was
+        # refused because its contract was unmet -- then spent its remaining
+        # rounds proving the same thing.
+        #
+        # So it pauses instead, saying what is missing and what it was doing
+        # when it gave up. A person can then supply the one thing it lacked --
+        # the right path, a credential, a corrected assumption -- and resume
+        # it from its checkpoint. `blocked_needs_input` keeps the stalled-job
+        # sweep from marching it back into the same wall.
+        stuck_reason = _why_it_gave_up(job, state)
+        if stuck_reason:
+            job.status = AgentJobStatus.PAUSED.value
+            job.current_phase = "blocked_needs_input"
+            job.phase_details = (
+                "Stopped without meeting its contract; a correction would let "
+                "it continue."
+            )
+            job.add_log_entry(
+                {
+                    "phase": "blocked_needs_input",
+                    "reason": stuck_reason,
+                    "missing": missing,
+                }
+            )
+            state["goal_progress"] = min(int(state.get("goal_progress", 0) or 0), 99)
+            # Attached after the results payload is built below -- that
+            # assignment replaces `job.results` wholesale, and a blocked run
+            # still did work worth compiling: its findings are most of what
+            # the person answering it needs to see.
+            blocked_payload = {
+                "reason": stuck_reason,
                 "missing": missing,
+                "resumable": True,
             }
-        )
-        # Not 100. The goal was not reached, and a progress bar that says it
-        # was is the part a reader believes without opening the results.
-        state["goal_progress"] = min(int(state.get("goal_progress", 0) or 0), 99)
+        else:
+            job.status = AgentJobStatus.COMPLETED.value
+            job.add_log_entry(
+                {
+                    "phase": "completed_contract_unmet",
+                    "reason": (
+                        "The run ended with its goal contract unsatisfied: "
+                        + (", ".join(missing) or "requirements not met")
+                    ),
+                    "missing": missing,
+                }
+            )
+            # Not 100. The goal was not reached, and a progress bar that says
+            # it was is the part a reader believes without opening the results.
+            state["goal_progress"] = min(int(state.get("goal_progress", 0) or 0), 99)
     elif existing_status == AgentJobStatus.PAUSED.value:
         job.status = AgentJobStatus.PAUSED.value
     elif existing_status == AgentJobStatus.CANCELLED.value:
@@ -350,6 +419,9 @@ async def finalize_job(
     formatted_outputs = state.get("formatted_outputs", [])
     if isinstance(formatted_outputs, list) and formatted_outputs:
         job.results["formatted_outputs"] = formatted_outputs[-20:]
+
+    if blocked_payload is not None:
+        job.results["blocked"] = blocked_payload
 
     job.results["goal_contract"] = {
         "enabled": bool(contract_eval.get("enabled", False)),

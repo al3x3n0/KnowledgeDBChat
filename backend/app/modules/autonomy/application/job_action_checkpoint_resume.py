@@ -4,6 +4,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services import agent_loop_policy
 from app.models.user import User
 from app.modules.autonomy.application.job_action_contracts import (
     JobActionDependencies,
@@ -102,6 +103,56 @@ async def perform_resume_action(
             state=state,
         )
         results_payload["approval_checkpoint"] = None
+
+    # The note is the whole point of resuming a run that stopped because it
+    # was stuck: it carries the correction -- the right path, a credential, an
+    # assumption the run got wrong. It was recorded in the audit trail and
+    # nowhere the agent reads, so a person could answer a blocked run and the
+    # run would resume from its checkpoint and repeat the same mistake.
+    note_text = str(checkpoint_note or "").strip()
+    if note_text:
+        clue = {
+            "note": note_text[:2000],
+            "iteration": int(state.get("iteration", 0) or 0),
+            "actor_user_id": str(current_user.id),
+        }
+
+        # The job config, not the checkpoint, is the durable home. A run that
+        # blocks early has no checkpoint at all -- the first live test of this
+        # had zero rows -- and a clue written only to a checkpoint row that
+        # does not exist is dropped in silence, which looks exactly like an
+        # agent that ignored the correction.
+        config = dict(job.config or {})
+        pending = config.get("operator_clues")
+        if not isinstance(pending, list):
+            pending = []
+        config["operator_clues"] = ([*pending, clue])[-8:]
+        job.config = config
+        flag_modified(job, "config")
+
+        if checkpoint_row is not None:
+            clues = state.get("operator_clues")
+            if not isinstance(clues, list):
+                clues = []
+            clues.append(clue)
+            state["operator_clues"] = clues[-8:]
+            # And drop the evidence that made it give up. The run stopped
+            # because of what it believed, and it has just been told that
+            # belief was wrong.
+            agent_loop_policy.clear_give_up_state(state)
+            # `state` is a copy of the row's dict, so assigning it is a real
+            # attribute set and SQLAlchemy marks the column dirty -- same as
+            # the approval branch above.
+            checkpoint_row.state = state
+            db.add(checkpoint_row)
+
+    # Whatever it was waiting for, it is no longer waiting: clearing the phase
+    # is what lets the stalled-job sweep look after this job again.
+    if str(job.current_phase or "") in ("blocked_needs_input", "awaiting_approval"):
+        job.current_phase = "resuming"
+        job.phase_details = "Resumed by an operator" + (
+            " with a note" if note_text else ""
+        )
 
     deps.append_operator_intervention(
         results_payload,

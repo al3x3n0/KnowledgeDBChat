@@ -113,3 +113,29 @@ def _as_int(value: Any, default: int) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+#: State a run accumulates as evidence that it should give up. A correction
+#: from an operator invalidates all of it: the run stopped because of what it
+#: believed, and it has just been told that belief was wrong.
+GIVE_UP_STATE_KEYS = (
+    "loop_finding_counts",
+    "loop_policy_stop_reason",
+    "stopped_short_of_contract",
+    "stopped_short_reason",
+    "stalled_iterations",
+)
+
+
+def clear_give_up_state(state: Dict[str, Any]) -> None:
+    """Let a corrected run start over on the question of whether it is stuck.
+
+    Without this, resuming with a clue is a no-op that looks like the agent
+    ignored it: the restored state still holds the dry-round history that made
+    `should_stop` fire, so the run does its setup, stops before its first
+    iteration, and blocks again on the same reason. Measured on a live run --
+    `resumed > skill_profile_resolved > ... > loop_policy_stop`, zero work
+    done in between.
+    """
+    for key in GIVE_UP_STATE_KEYS:
+        state.pop(key, None)

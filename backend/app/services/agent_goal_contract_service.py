@@ -42,6 +42,28 @@ def _as_threshold(value: Any, default: int) -> int:
         return default
 
 
+#: Categories a finding uses to say "this could not be established". A finding
+#: that self-declares one of these is a report about the work, not the work.
+_ABSENCE_CATEGORIES = frozenset({"gap", "blocker", "blocked", "limitation"})
+
+
+def _is_a_report_of_absence(finding: Dict[str, Any], ftype: str) -> bool:
+    """True when a finding says the thing it is typed as could not be produced.
+
+    Deliberately narrow: it fires on the finding's own self-declaration, never
+    on the prose. A run that measures something and calls the result
+    disappointing still measured it.
+    """
+    if str(finding.get("category") or "").strip().lower() in _ABSENCE_CATEGORIES:
+        return True
+    # An explicitly null metric under its own type name: the finding declared
+    # the number it exists to carry and then carried nothing.
+    metrics = finding.get("metrics")
+    if isinstance(metrics, dict) and ftype in metrics and metrics[ftype] is None:
+        return True
+    return False
+
+
 class AgentGoalContractService:
     """Evaluate deterministic completion contracts and build operator digests."""
 
@@ -95,8 +117,19 @@ class AgentGoalContractService:
             if finding.get("recalled"):
                 continue
             ftype = str(finding.get("type") or "").strip()
-            if ftype:
-                finding_types[ftype] = int(finding_types.get(ftype, 0) or 0) + 1
+            if not ftype:
+                continue
+            # A finding that reports the ABSENCE of the thing is not the thing.
+            # A live run asked for a throughput_bound from an actual benchmark,
+            # correctly established that the repository did not exist, and
+            # filed that conclusion honestly -- as a finding of type
+            # `throughput_bound`, category `gap`, with `metrics` null. Counting
+            # by type alone read it as the measurement and autocompleted the
+            # job at 100%. The run was not lying; the count could not tell a
+            # measurement from a note saying no measurement was possible.
+            if _is_a_report_of_absence(finding, ftype):
+                continue
+            finding_types[ftype] = int(finding_types.get(ftype, 0) or 0) + 1
 
         artifact_types: Dict[str, int] = {}
         for artifact in artifacts:

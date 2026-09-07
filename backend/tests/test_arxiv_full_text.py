@@ -154,3 +154,55 @@ class TestUnreadableBytesAreNotAnException:
         """The caller turns "" into a stated reason; a raise would fail the
         whole ingestion over one bad paper."""
         assert ArxivConnector._pdf_to_text(b"not a pdf at all") == ""
+
+
+class TestExtractedTextCanActuallyBeStored:
+    """A real arXiv PDF extracted to text containing NUL bytes.
+
+    PostgreSQL `text` cannot hold 0x00 at all: asyncpg raises
+    `invalid byte sequence for encoding "UTF8": 0x00` at INSERT, which poisons
+    the transaction, so the whole ingestion fails and no document lands. The
+    failure then surfaced three layers away as "the paper is not readable yet",
+    long after the extraction that caused it -- and unit tests that stub the
+    extractor never see it, because the bug is in what the extractor returns.
+    """
+
+    def test_nul_bytes_are_removed(self):
+        from app.services.connectors.arxiv_connector import _postgres_safe
+
+        assert "\x00" not in _postgres_safe("before\x00after")
+        assert _postgres_safe("before\x00after") == "beforeafter"
+
+    def test_layout_whitespace_survives(self):
+        """Tabs, newlines and carriage returns are the layout, not noise."""
+        from app.services.connectors.arxiv_connector import _postgres_safe
+
+        assert _postgres_safe("a\tb\nc\rd") == "a\tb\nc\rd"
+
+    def test_ordinary_text_is_untouched(self):
+        from app.services.connectors.arxiv_connector import _postgres_safe
+
+        prose = "We show that our approach is faster (s < 2^64), Lemire 2019."
+        assert _postgres_safe(prose) == prose
+
+    def test_other_control_characters_go_too(self):
+        from app.services.connectors.arxiv_connector import _postgres_safe
+
+        assert _postgres_safe("a\x01b\x1fc\x7fd") == "abcd"
+
+    def test_the_extractor_applies_it(self, monkeypatch):
+        """The control that ties the helper to the path that needed it."""
+        from app.services.connectors import arxiv_connector as mod
+
+        class _Page:
+            @staticmethod
+            def extract_text():
+                return "text with\x00a nul"
+
+        class _Reader:
+            def __init__(self, *args, **kwargs):
+                self.pages = [_Page()]
+
+        monkeypatch.setattr("pypdf.PdfReader", _Reader)
+
+        assert "\x00" not in mod.ArxivConnector._pdf_to_text(b"%PDF-1.4")

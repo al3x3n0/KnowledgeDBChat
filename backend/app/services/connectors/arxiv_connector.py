@@ -23,6 +23,29 @@ ABSTRACT_ONLY_HEADING = (
 )
 
 
+#: Control characters PostgreSQL will not accept in a text column, or that are
+#: noise in extracted prose. NUL is the one that matters and the one that bites:
+#: `text` columns cannot hold it at all, and asyncpg reports
+#: `invalid byte sequence for encoding "UTF8": 0x00` at INSERT -- which poisons
+#: the transaction, so the whole ingestion fails and no document lands.
+#: Measured: extracting a real arXiv PDF produced exactly this, and the failure
+#: surfaced as "the paper is not readable yet" three layers away, long after the
+#: extraction that caused it.
+_UNSTORABLE = dict.fromkeys(
+    [c for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)] + [0x7F]
+)
+
+
+def _postgres_safe(text: str) -> str:
+    """Extracted text with the bytes a text column cannot hold removed.
+
+    Stripped rather than replaced: these carry no meaning in a paper's prose,
+    and substituting a placeholder would put noise into the text a model reads.
+    Tabs, newlines and carriage returns are kept -- they are the layout.
+    """
+    return text.translate(_UNSTORABLE)
+
+
 class ArxivConnector(BaseConnector):
     """Connector that pulls paper metadata and abstracts from ArXiv."""
 
@@ -264,7 +287,8 @@ class ArxivConnector(BaseConnector):
                 except Exception:
                     # One unreadable page is not an unreadable paper.
                     continue
-            return "\n\n".join(part for part in pages if part.strip()).strip()
+            text = "\n\n".join(part for part in pages if part.strip()).strip()
+            return _postgres_safe(text)
         except Exception as exc:
             logger.warning(f"Could not extract text from an arXiv PDF: {exc}")
             return ""

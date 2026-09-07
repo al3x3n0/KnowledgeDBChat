@@ -340,9 +340,25 @@ async def check_implementation(
                 script, workdir, image=resolved_image, timeout_seconds=resolved_timeout
             )
         except Exception as exc:
-            logger.warning(f"check_implementation failed: {exc}")
+            # `str(exc)` is empty for several exceptions worth distinguishing --
+            # asyncio.TimeoutError most of all, which is what a sandbox run
+            # produces on a loaded machine. Measured live: this path reported
+            # `note="Check failed: "` with `reason=""` and `compile_error=""`,
+            # so a run had no way to tell a timeout from a broken toolchain
+            # from its own bad code. The class name is there even when the
+            # message is not.
+            detail = str(exc).strip() or exc.__class__.__name__
+            logger.warning(f"check_implementation failed: {detail}")
             return ImplementationCheck(
-                ran=False, language=chain.language, note=f"Check failed: {exc}"
+                ran=False,
+                language=chain.language,
+                reason="error",
+                note=(
+                    f"Check failed before any case ran ({detail}). That says "
+                    "nothing about the implementation -- the sandbox did not "
+                    "finish. Retry; if it fails the same way, the toolchain is "
+                    "the suspect rather than the code."
+                ),
             )
 
     if returncode == 90:

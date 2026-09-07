@@ -47,6 +47,15 @@ def _as_threshold(value: Any, default: int) -> int:
 _ABSENCE_CATEGORIES = frozenset({"gap", "blocker", "blocked", "limitation"})
 
 
+#: Fields by which a finding declares, in its own words, that the thing it is
+#: typed as did not happen. `verified` is `check_implementation`'s: it emits an
+#: `implementation_verified` finding whether or not the check passed, on
+#: purpose, so `compare_to_claim` can refuse to score unverified code. That
+#: design is right and this is its other half -- the finding must be readable
+#: downstream without also COUNTING as the evidence it reports the absence of.
+_SELF_DECLARED_FAILURE_FIELDS = ("verified", "succeeded", "passed")
+
+
 def _is_a_report_of_absence(finding: Dict[str, Any], ftype: str) -> bool:
     """True when a finding says the thing it is typed as could not be produced.
 
@@ -61,6 +70,16 @@ def _is_a_report_of_absence(finding: Dict[str, Any], ftype: str) -> bool:
     metrics = finding.get("metrics")
     if isinstance(metrics, dict) and ftype in metrics and metrics[ftype] is None:
         return True
+    # A finding that says outright that it failed. Measured live: a
+    # `check_implementation` whose sandbox run raised produced
+    # `{"type": "implementation_verified", "verified": false, "ran": false,
+    #   "cases_run": 0}` -- and that satisfied a contract requiring
+    # `implementation_verified` at 100%, which fired the chain and started the
+    # benchmark stage on code nothing had verified. The gate between "it works"
+    # and "time it" opened for a check that never ran.
+    for field in _SELF_DECLARED_FAILURE_FIELDS:
+        if finding.get(field) is False:
+            return True
     return False
 
 

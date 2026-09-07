@@ -329,6 +329,20 @@ class Settings(BaseSettings):
     UNSAFE_CODE_EXEC_DOCKER_IMAGE: str = "python:3.11-slim"
     UNSAFE_CODE_EXEC_DOCKER_CPUS: float = 1.0
     UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT: int = 128
+    # A paper's abstract is not a paper. Implementing an algorithm from one is
+    # not possible, and a specification produced from one is the model's recall
+    # dressed as reading -- which no contract counting `algorithm_spec` can
+    # tell from the real thing. Fetching the PDF is what makes the difference
+    # checkable.
+    #
+    # On by default, unlike the code-execution flags, because it is an outbound
+    # GET to a URL derived from an arXiv id on a fixed host: no user-supplied
+    # URL, nothing executed. The bounds below are the real protection.
+    ARXIV_FULL_TEXT_ENABLED: bool = True
+    ARXIV_FULL_TEXT_MAX_BYTES: int = 25_000_000
+    ARXIV_FULL_TEXT_MAX_CHARS: int = 400_000
+    ARXIV_FULL_TEXT_TIMEOUT_SECONDS: int = 90
+
     SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
         "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
         "ghcr.io/al3x3n0/kdbc-polyglot-slim:latest,"

@@ -216,6 +216,46 @@ def compare_output(
     )
 
 
+#: What a caller may call the expected output. `expected_output` is the name,
+#: and the rest are what callers actually write -- measured: a run supplied two
+#: cases keyed `expected`, had both dropped as unusable, and repeated the same
+#: call three times. The same vocabulary allowance `EMIT_ALIASES` makes for
+#: "assembly", for the same reason: rejecting a synonym costs an iteration to
+#: learn a naming difference, and teaches nothing about the code.
+EXPECTED_OUTPUT_KEYS = ("expected_output", "expected", "output", "expects")
+
+
+def _expected_of(case: Dict[str, Any]) -> Any:
+    for key in EXPECTED_OUTPUT_KEYS:
+        value = case.get(key)
+        if value is not None and str(value).strip():
+            return value
+    return None
+
+
+def describe_unusable_cases(cases: Any) -> str:
+    """Why the supplied cases could not be used, in terms of what was sent.
+
+    "No usable reference cases were supplied" is true and unhelpful when two
+    were: it names the key the tool wanted without naming the keys it got, so
+    the caller cannot see which half of the disagreement to change.
+    """
+    if not isinstance(cases, (list, tuple)) or not cases:
+        return ""
+    keys: List[str] = []
+    for case in cases:
+        if isinstance(case, dict):
+            keys.extend(str(k) for k in case.keys())
+    if not keys:
+        return f"{len(cases)} case(s) were supplied but none was an object."
+    seen = ", ".join(sorted(set(keys)))
+    return (
+        f"{len(cases)} case(s) were supplied and none carried a non-empty "
+        f"expected output. They had: {seen}. Name it one of: "
+        f"{', '.join(EXPECTED_OUTPUT_KEYS)}."
+    )
+
+
 def normalize_cases(cases: Any) -> List[Dict[str, str]]:
     """Read the cases a caller supplied, dropping any that cannot be a case.
 
@@ -229,8 +269,8 @@ def normalize_cases(cases: Any) -> List[Dict[str, str]]:
     for index, case in enumerate(cases):
         if not isinstance(case, dict):
             continue
-        expected = case.get("expected_output")
-        if expected is None or not str(expected).strip():
+        expected = _expected_of(case)
+        if expected is None:
             continue
         out.append(
             {
@@ -290,7 +330,9 @@ async def check_implementation(
                 "with no cases passes vacuously, so this reports as unverified "
                 "rather than letting untested code through. Give at least one "
                 "case with an expected_output, ideally a worked example from "
-                "the paper itself."
+                "the paper itself, or a program that asserts the properties "
+                "the paper states and prints one pass line."
+                + (f" {describe_unusable_cases(cases)}" if cases else "")
             ),
         )
 

@@ -38,6 +38,8 @@ from app.schemas.agent_pipeline import (
     PipelineLaunchRequest,
     PipelineLaunchResponse,
     PipelinePlanResponse,
+    PipelineInsertStageRequest,
+    PipelineInsertStageResponse,
     PipelineRestartRequest,
     PipelineRestartResponse,
     PipelineRunStage,
@@ -390,6 +392,60 @@ async def restart_pipeline_run(
         stage=payload.stage,
         job_id=str(child.id),
         note_attached=bool((payload.note or "").strip()),
+    )
+
+
+@router.post(
+    "/runs/{root_job_id}/insert-stage", response_model=PipelineInsertStageResponse
+)
+async def insert_pipeline_stage(
+    root_job_id: UUID,
+    payload: PipelineInsertStageRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a stage the plan did not have, without redoing the stages that worked.
+
+    A run stops for a reason belonging to one place, and the fix is often a step
+    nobody thought to include -- a finer profile, a conversion, a check. Both
+    other repairs are worse here: restarting the failed stage runs it again on
+    the same inputs that already defeated it, and relaunching pays for every
+    earlier stage to reach the same point in a different run.
+    """
+    stages = await agent_pipeline_restart.load_run(root_job_id, db)
+    if not stages:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+    owner_ids = {str(stage.job.user_id) for stage in stages}
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    try:
+        child = await agent_pipeline_restart.insert_stage_after(
+            root_job_id=root_job_id,
+            after_stage=payload.after,
+            stage=payload.stage,
+            executor=AutonomousAgentExecutor(),
+            db=db,
+            note=payload.note or "",
+        )
+    except agent_pipeline_restart.PipelineRestartError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail)
+
+    return PipelineInsertStageResponse(
+        root_job_id=str(root_job_id),
+        stage=str(payload.stage.get("id") or ""),
+        after=payload.after,
+        job_id=str(child.id),
+        # Read off the job the service just wrote, rather than recomputed
+        # here: two derivations of what was displaced would disagree the
+        # first time the rule changed.
+        displaced=[
+            str(d)
+            for d in (child.config or {}).get("displaced_stages", [])
+            if str(d).strip()
+        ],
     )
 
 

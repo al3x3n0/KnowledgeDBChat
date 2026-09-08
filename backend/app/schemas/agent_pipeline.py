@@ -201,3 +201,30 @@ class PipelineRestartResponse(BaseModel):
     stage: str
     job_id: str
     note_attached: bool
+
+
+class PipelineInsertStageRequest(BaseModel):
+    """Insert a stage between one that succeeded and whatever followed it.
+
+    The move a stuck run usually needs: the gap is between two stages, and
+    both restarting and relaunching redo work that was fine.
+    """
+
+    after: str = Field(..., min_length=1, description="Completed stage to insert after")
+    #: The stage itself, in the same shape a pipeline spec uses. It needs a
+    #: contract: a stage with nothing to satisfy cannot fail, so it cannot be
+    #: the fix for a stage that did.
+    stage: Dict[str, Any] = Field(..., description="id, goal, contract, job_type")
+    note: Optional[str] = Field(
+        None, max_length=2000, description="A correction the new stage reads"
+    )
+
+
+class PipelineInsertStageResponse(BaseModel):
+    root_job_id: str
+    stage: str
+    after: str
+    job_id: str
+    #: Stages that were going to run next and will now run beneath the new one
+    #: instead. Named because a caller should see what its insertion moved.
+    displaced: List[str]

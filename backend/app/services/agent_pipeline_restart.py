@@ -1,4 +1,13 @@
-"""Restart a pipeline run from one of its stages.
+"""Change a pipeline run in flight: restart a stage, or insert a new one.
+
+Two operations, one idea. A run that stops four stages in has usually stopped
+for a reason belonging to one place, and re-launching the whole pipeline pays
+for every earlier stage again to reach the same point -- in a DIFFERENT run, so
+the evidence the retry builds on is not the evidence that was established.
+
+Restarting runs an existing stage again. Inserting adds a stage that was not in
+the plan, between one that succeeded and one that could not, which is the only
+move that fixes a gap without redoing the work either side of it.
 
 A pipeline that stops four stages in has usually stopped for a reason that
 belongs to one stage. Re-launching the whole thing re-ingests the paper,
@@ -38,6 +47,7 @@ from typing import Any, Dict, List, Optional
 from loguru import logger
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 
@@ -296,5 +306,172 @@ async def restart_from_stage(
     logger.info(
         f"Restarted pipeline run {root_job_id} from stage {stage_id} "
         f"as job {child.id} (parent {parent.job.id})"
+    )
+    return child
+
+
+# --------------------------------------------------------------- insertion
+
+
+def _stage_ids(stages: List[StageJob]) -> set:
+    return {s.stage_id for s in stages}
+
+
+async def insert_stage_after(
+    *,
+    root_job_id: uuid.UUID,
+    after_stage: str,
+    stage: Dict[str, Any],
+    executor: Any,
+    db: AsyncSession,
+    note: str = "",
+) -> AgentJob:
+    """Add a stage between one that succeeded and whatever followed it.
+
+    The new stage takes over its parent's children, so everything downstream
+    re-derives beneath it rather than being rebuilt by hand: profile -> mine
+    becomes profile -> new -> mine, and `mine` runs again from the new stage's
+    evidence when it completes.
+
+    The refusals are the same ones a restart makes, for the same reason -- a
+    stage inserted on top of work that did not finish is built on nothing --
+    plus two of its own: the new stage needs a goal and a contract, because a
+    stage with no contract cannot fail and so cannot be the fix for anything;
+    and its id must be new, because reusing an existing one makes the run's own
+    history ambiguous about which stage a finding came from.
+    """
+    stages = await load_run(root_job_id, db)
+    if not stages:
+        raise PipelineRestartError(
+            f"No pipeline run found for job {root_job_id}", status_code=404
+        )
+
+    by_stage = latest_per_stage(stages)
+    parent = by_stage.get(after_stage)
+    if parent is None:
+        raise PipelineRestartError(
+            f"This run has no stage {after_stage!r}. Its stages are: "
+            + ", ".join(sorted(by_stage))
+        )
+    if not parent.completed:
+        raise PipelineRestartError(
+            f"Stage {after_stage!r} is {parent.job.status}, not completed. A "
+            "stage inserted after it would be built on work that has not "
+            "finished."
+        )
+    if not parent.contract_met:
+        raise PipelineRestartError(
+            f"Stage {after_stage!r} completed without meeting its contract, so "
+            "there is no established evidence to insert a stage on top of."
+        )
+
+    new_id = str(stage.get("id") or "").strip()
+    if not new_id:
+        raise PipelineRestartError("The new stage needs an id.")
+    if new_id in _stage_ids(stages):
+        raise PipelineRestartError(
+            f"This run already has a stage {new_id!r}. Give the new one a "
+            "different id, or restart the existing one instead -- reusing the "
+            "id would leave the run unable to say which stage a finding came "
+            "from."
+        )
+    goal = str(stage.get("goal") or "").strip()
+    if not goal:
+        raise PipelineRestartError("The new stage needs a goal.")
+    contract = stage.get("contract")
+    if not isinstance(contract, dict) or not contract:
+        raise PipelineRestartError(
+            "The new stage needs a contract. A stage with nothing to satisfy "
+            "cannot fail, so it cannot be the fix for a stage that did."
+        )
+
+    # Any stage that was going to run next is superseded by this one, and a
+    # stage still running would race it.
+    parent_chain = (
+        parent.job.chain_config if isinstance(parent.job.chain_config, dict) else {}
+    )
+    displaced = [
+        str((c.get("config") or {}).get("pipeline_stage") or "").strip()
+        for c in (parent_chain.get("child_jobs") or [])
+        if isinstance(c, dict)
+    ]
+    for stage_id in displaced:
+        existing = by_stage.get(stage_id)
+        if existing and str(existing.job.status or "") == AgentJobStatus.RUNNING.value:
+            raise PipelineRestartError(
+                f"Stage {stage_id!r} is running and would be superseded by this "
+                "insertion. Cancel it first."
+            )
+
+    config = {
+        **(stage.get("config") or {}),
+        "pipeline": (parent.job.config or {}).get("pipeline"),
+        "pipeline_stage": new_id,
+        "goal_contract": contract,
+        # What this insertion moved, recorded on the job itself so a caller
+        # reads it rather than deriving it a second time -- two derivations
+        # disagree the first time the rule changes.
+        "displaced_stages": [s for s in displaced if s],
+    }
+    if note.strip():
+        config["operator_clues"] = [{"note": note.strip()[:2000], "iteration": 0}]
+
+    child_config = {
+        "name": f"{(parent.job.config or {}).get('pipeline') or 'pipeline'}: {new_id}",
+        "goal": goal,
+        "job_type": str(stage.get("job_type") or parent.job.job_type or "research"),
+        "config": config,
+        "max_iterations": int(stage.get("max_iterations") or 6),
+        # The inserted stage takes over the parent's children, which is what
+        # makes the rest of the chain re-derive beneath it instead of being
+        # rebuilt by hand.
+        "chain_config": {
+            "trigger_condition": parent_chain.get("trigger_condition", "on_complete"),
+            "child_jobs": parent_chain.get("child_jobs") or [],
+        },
+    }
+
+    parent.job.chain_triggered = False
+    child = await executor.chain_orchestration_service.create_chained_job(
+        executor, parent.job, child_config, db
+    )
+    if child is None:
+        raise PipelineRestartError(
+            f"Could not create a job for stage {new_id!r}.", status_code=500
+        )
+
+    # The parent now points at the inserted stage alone; leaving the old
+    # children there would fire them again beside it.
+    parent.job.chain_config = {
+        **parent_chain,
+        "child_jobs": [child_config],
+    }
+
+    results = parent.job.results if isinstance(parent.job.results, dict) else {}
+    inserted = results.get("stage_insertions")
+    if not isinstance(inserted, list):
+        inserted = []
+    inserted.append(
+        {
+            "after": after_stage,
+            "stage": new_id,
+            "displaced": displaced,
+            "reason": note.strip()[:2000],
+        }
+    )
+    results["stage_insertions"] = inserted[-20:]
+    parent.job.results = results
+    flag_modified(parent.job, "results")
+    parent.job.add_log_entry(
+        {"phase": "stage_inserted", "stage": new_id, "after": after_stage}
+    )
+
+    await db.commit()
+    from app.tasks.agent_job_tasks import execute_agent_job_task
+
+    execute_agent_job_task.delay(str(child.id), str(child.user_id))
+    logger.info(
+        f"Inserted stage {new_id} after {after_stage} in run {root_job_id} "
+        f"as job {child.id}"
     )
     return child

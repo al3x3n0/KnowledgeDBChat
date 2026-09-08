@@ -62,6 +62,37 @@ _ERROR_CLASSES = (
 )
 
 
+#: A compiler diagnostic that names a place in the submitted source: a file and
+#: a line, or a column, or a caret. Deliberately about the SHAPE of the message
+#: rather than its words, so it holds for clang, rustc and CPython alike.
+_BLAMES_THE_SOURCE = re.compile(
+    r"(prog\.\w+|<stdin>|line)\s*[:,]?\s*\d+|:\d+:\d+:|SyntaxError|"
+    r"expected .*(before|token)|\^~*\s*$",
+    re.I | re.M,
+)
+
+
+def blames_the_submitted_code(error: Any) -> bool:
+    """True when a failure is the run's own code being wrong.
+
+    Writing code that does not compile, reading the diagnostic and fixing it is
+    the development loop, not a run going in circles -- and the escalation this
+    gates tells a run the opposite: that the tool is broken and no edit to the
+    input will help. Following that advice for a syntax error sends a run to
+    test the compiler instead of fixing line 12.
+
+    Narrow on purpose. `Compilation failed: clang: not found` is also a
+    `compilation` error and is NOT this: nothing about the submitted source is
+    wrong, the toolchain is missing, and that is exactly what the escalation
+    exists to surface. The difference is whether the compiler pointed at a
+    place in the code.
+    """
+    message = str(error or "")
+    if not message.strip():
+        return False
+    return bool(_BLAMES_THE_SOURCE.search(message))
+
+
 def classify_error(text: Any) -> str:
     """Bucket an error message by what kind of problem it describes.
 
@@ -195,7 +226,14 @@ def analyze(
         # The arguments changed, so this is not a verbatim retry -- but a run
         # that keeps rewriting its input and keeps hitting the same kind of
         # failure is not converging either, and nothing else would say so.
-        if class_attempt >= CLASS_ESCALATE_AFTER:
+        #
+        # Unless the failures are the code it wrote. A compiler pointing at a
+        # line is the loop working: write, read the diagnostic, fix, compile
+        # again. Counting those as evidence that the tool is broken tells a run
+        # to go and test the compiler, which is the one thing that cannot help.
+        if class_attempt >= CLASS_ESCALATE_AFTER and not blames_the_submitted_code(
+            error
+        ):
             return {
                 "signature": by_class,
                 "attempt": class_attempt,

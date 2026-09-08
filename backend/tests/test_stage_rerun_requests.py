@@ -50,12 +50,17 @@ class TestItRefusesWhatWouldBecomeALoop:
         results = {}
         for i in range(2):
             rerun.record(
-                results, from_stage="implement", to_stage="specify",
-                reason=GOOD_REASON, iteration=i,
+                results,
+                from_stage="implement",
+                to_stage="specify",
+                reason=GOOD_REASON,
+                iteration=i,
             )
 
         verdict = rerun.evaluate(
-            stage="specify", reason=GOOD_REASON, config=_config(budget=2),
+            stage="specify",
+            reason=GOOD_REASON,
+            config=_config(budget=2),
             results=results,
         )
 
@@ -63,7 +68,7 @@ class TestItRefusesWhatWouldBecomeALoop:
         assert "spent its backward-edge budget" in verdict.error
 
     def test_a_request_with_no_diagnosis(self):
-        """"Try again" asks for the same work done the same way."""
+        """ "Try again" asks for the same work done the same way."""
         verdict = rerun.evaluate(
             stage="specify", reason="try again", config=_config(), results={}
         )
@@ -88,13 +93,18 @@ class TestAValidRequestIsAllowed:
         tell them apart."""
         results = {}
         rerun.record(
-            results, from_stage="measure", to_stage="implement",
-            reason=GOOD_REASON, iteration=1,
+            results,
+            from_stage="measure",
+            to_stage="implement",
+            reason=GOOD_REASON,
+            iteration=1,
         )
 
         verdict = rerun.evaluate(
-            stage="specify", reason=GOOD_REASON,
-            config=_config(budget=1), results=results,
+            stage="specify",
+            reason=GOOD_REASON,
+            config=_config(budget=1),
+            results=results,
         )
 
         assert not verdict.ok, "a different stage still spends the same budget"
@@ -104,8 +114,11 @@ class TestTheLedgerRecordsTheDetour:
     def test_a_hop_is_written_with_its_reason(self):
         results = {}
         rerun.record(
-            results, from_stage="implement", to_stage="specify",
-            reason=GOOD_REASON, iteration=4,
+            results,
+            from_stage="implement",
+            to_stage="specify",
+            reason=GOOD_REASON,
+            iteration=4,
         )
 
         hop = results[rerun.REVISIT_LEDGER_KEY][0]
@@ -220,6 +233,78 @@ class TestTheFinaliserSendsItBackInsteadOfForward:
         assert handled is False
         phases = [e.get("phase") for e in job.execution_log]
         assert "stage_rerun_refused" in phases, (
-            "a run whose detour was refused must not look like one that never "
-            "asked"
+            "a run whose detour was refused must not look like one that never " "asked"
         )
+
+
+@pytest.mark.asyncio
+class TestAHandoffIsNotABackwardEdge:
+    """They look equivalent and are not.
+
+    Measured: a `mine` stage correctly judged its profile too coarse to mine --
+    exactly the condition its backward edge was declared for -- and created a
+    handoff job to re-profile instead. `request_stage_rerun` was in its 120
+    tools and its goal text said to send the work back. It chose the handoff.
+
+    The harm is not the extra job. A handoff carries no `pipeline_stage`, so
+    nothing re-derives the stages after it: the re-profile would have run and
+    produced evidence no contract could consume, while `mine` still lacked a
+    candidate.
+    """
+
+    @staticmethod
+    def _ctx(may_revisit):
+        import uuid as _uuid
+
+        from app.models.agent_job import AgentJob, AgentJobStatus
+
+        job = AgentJob(
+            id=_uuid.uuid4(),
+            name="p: mine",
+            goal="mine fusion candidates",
+            job_type="research",
+            status=AgentJobStatus.RUNNING.value,
+            iteration=2,
+            max_iterations=10,
+            config={"pipeline_stage": "mine", "may_revisit": may_revisit},
+            results={},
+            execution_log=[],
+        )
+        job.chain_depth = 0
+
+        class _Ctx:
+            pass
+
+        ctx = _Ctx()
+        ctx.job = job
+        ctx.state = {}
+        ctx.db = None
+        ctx.user_id = _uuid.uuid4()
+        return ctx
+
+    async def _handoff(self, ctx, goal="Re-profile the workload"):
+        from app.services import agent_tool_dispatch as dispatch
+
+        class _Executor:
+            pass
+
+        provider = dispatch.build_autonomous_output_state_provider(_Executor())
+        handler = provider._handlers["create_handoff"]
+        return await handler(
+            {"goal": goal, "expected_outputs": ["a finer profile"]}, ctx
+        )
+
+    async def test_a_stage_with_an_edge_is_pointed_at_it(self):
+        result = await self._handoff(self._ctx(["profile"]))
+
+        assert "request_stage_rerun" in result["error"]
+        assert "profile" in result["error"], "name the stage it may go back to"
+        # And why, so the refusal teaches rather than blocks.
+        assert "outside the pipeline" in result["error"]
+
+    async def test_a_stage_with_no_edge_may_still_hand_off(self):
+        """The control. Handoffs remain the right tool for genuinely new work,
+        and most jobs are not pipeline stages with backward edges at all."""
+        result = await self._handoff(self._ctx([]))
+
+        assert "request_stage_rerun" not in str(result.get("error") or "")

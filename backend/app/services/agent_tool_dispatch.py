@@ -7685,6 +7685,32 @@ def build_autonomous_output_state_provider(executor: Any) -> FunctionToolProvide
                 return {
                     "error": "expected_outputs must be a non-empty array of strings"
                 }
+            # A pipeline stage with a declared backward edge must use it rather
+            # than hand the work to a job outside the pipeline. Measured: a
+            # `mine` stage correctly judged its profile too coarse to mine and
+            # created a handoff to re-profile -- work that would have run, and
+            # produced evidence no stage could consume, because a handoff job
+            # carries no `pipeline_stage` and nothing re-derives the stages
+            # after it. The two look equivalent and are not.
+            #
+            # Steered rather than forbidden: a handoff to genuinely new work is
+            # still the right tool, and only the stages this one may revisit
+            # are named.
+            revisit_targets = (job.config or {}).get("may_revisit")
+            if isinstance(revisit_targets, list) and revisit_targets:
+                return {
+                    "error": (
+                        "This is a pipeline stage and it may send work back to "
+                        f"{', '.join(str(t) for t in revisit_targets)} with "
+                        "request_stage_rerun. Use that instead of a handoff if "
+                        "an earlier stage is what needs redoing: a handoff job "
+                        "runs outside the pipeline, so nothing re-derives the "
+                        "stages after it and its result reaches no contract. "
+                        "If the work is genuinely NEW rather than a redo, say "
+                        "so in the goal and it will be clear which you meant."
+                    )
+                }
+
             chain_depth = int(getattr(job, "chain_depth", 0) or 0)
             if chain_depth >= 3:
                 return {

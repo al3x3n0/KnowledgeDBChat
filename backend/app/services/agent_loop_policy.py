@@ -43,16 +43,62 @@ DEFAULT_DRY_ROUNDS = 2
 DECLARED_LOOP_DRY_ROUNDS = 5
 
 
+def distinct_findings(findings: Any) -> int:
+    """How many DIFFERENT things a run has established.
+
+    The raw count is what `record_round` used, and a run repeating one call
+    defeats it: `find_fusion_candidates` called four times appends the same
+    candidate four times, the count climbs 5, 6, 7, 8, 9, and the stall
+    detector reads growth as progress. Measured on a verdict stage that spent
+    half its budget re-mining a candidate it already had -- while
+    `agent_repeated_success` was separately telling it, in the result, that the
+    call was a repeat. Two mechanisms disagreeing, and the one that could have
+    stopped it was the one being fooled.
+
+    Identity is the type plus whatever the finding calls itself. Deliberately
+    coarse: two findings of one type with the same title are the same claim
+    however their bodies differ, and a run that genuinely re-measures something
+    gives its finding a different title or a different subject.
+    """
+    if not isinstance(findings, list):
+        return 0
+    seen = set()
+    for finding in findings:
+        if not isinstance(finding, dict):
+            continue
+        seen.add(
+            (
+                str(finding.get("type") or ""),
+                str(
+                    finding.get("title")
+                    or finding.get("subject")
+                    or finding.get("id")
+                    or ""
+                ),
+            )
+        )
+    return len(seen)
+
+
 def record_round(state: Dict[str, Any], finding_count: int) -> None:
-    """Note how many findings existed at the end of an iteration.
+    """Note how many DISTINCT findings existed at the end of an iteration.
 
     Kept as a running list rather than a single "last count" so the policy can
     look back over several rounds, which is what `dry_rounds` means.
+
+    The caller passes a raw length for compatibility; when the state carries
+    the findings themselves they are counted by identity instead, because a
+    repeated call appending a duplicate is not progress and must not read as
+    it.
     """
     history = state.get("loop_finding_counts")
     if not isinstance(history, list):
         history = []
-    history.append(int(finding_count))
+    counted = distinct_findings(state.get("findings"))
+    # The distinct count when the findings are there to count, the caller's
+    # number when they are not -- a state without them is a caller that knows
+    # something this function does not.
+    history.append(counted if counted else int(finding_count))
     # Only the recent tail matters, and an unbounded list rides in the job
     # state that gets serialised every iteration.
     state["loop_finding_counts"] = history[-20:]

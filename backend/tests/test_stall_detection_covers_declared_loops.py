@@ -87,3 +87,72 @@ class TestTheOriginalBehaviourIsIntact:
 
         assert policy.should_stop(config, _stuck(6))[0] is False
         assert policy.should_stop(config, _stuck(10))[0] is True
+
+
+class TestDuplicateFindingsAreNotProgress:
+    """A repeated call defeated the stall detector by inflating the count.
+
+    Measured on a verdict stage: it called `find_fusion_candidates` four times
+    with the same arguments, appending the same candidate each time, and the
+    round counts climbed 5, 6, 7, 8, 9. The detector read growth as progress
+    and let it spend half its budget re-mining a candidate it already had --
+    while `agent_repeated_success` was separately telling it, in the result,
+    that the call was a repeat. Two mechanisms disagreeing, and the one that
+    could have stopped it was the one being fooled.
+    """
+
+    def test_the_same_finding_twice_counts_once(self):
+        same = {"type": "fusion_candidate", "title": "fmadd fsqrt fcmp"}
+
+        assert policy.distinct_findings([same, dict(same), dict(same)]) == 1
+
+    def test_different_findings_of_one_type_both_count(self):
+        findings = [
+            {"type": "fusion_candidate", "title": "fmadd fsqrt fcmp"},
+            {"type": "fusion_candidate", "title": "ldr add str"},
+        ]
+
+        assert policy.distinct_findings(findings) == 2
+
+    def test_subject_identifies_a_finding_with_no_title(self):
+        findings = [
+            {"type": "benchmark_measurement", "subject": "kernel_a"},
+            {"type": "benchmark_measurement", "subject": "kernel_b"},
+            {"type": "benchmark_measurement", "subject": "kernel_a"},
+        ]
+
+        assert policy.distinct_findings(findings) == 2
+
+    def test_a_repeated_round_now_reads_as_dry(self):
+        """The behaviour that matters: four identical candidates in a row is a
+        stalled run, and the counts must say so."""
+        state = {"findings": []}
+        candidate = {"type": "fusion_candidate", "title": "fmadd fsqrt fcmp"}
+        for _ in range(5):
+            state["findings"].append(dict(candidate))
+            policy.record_round(state, len(state["findings"]))
+
+        assert state["loop_finding_counts"] == [1, 1, 1, 1, 1]
+        stop, reason = policy.should_stop(
+            {"loop_until": "no_new_findings", "loop_dry_rounds": 2}, state
+        )
+        assert stop is True
+
+    def test_real_progress_still_counts(self):
+        """The control. A run establishing different things each round must
+        never be stopped by this."""
+        state = {"findings": []}
+        for i in range(5):
+            state["findings"].append({"type": "fusion_candidate", "title": f"pair {i}"})
+            policy.record_round(state, len(state["findings"]))
+
+        assert state["loop_finding_counts"] == [1, 2, 3, 4, 5]
+        assert policy.should_stop({"loop_until": "no_new_findings"}, state)[0] is False
+
+    def test_a_state_with_no_findings_uses_the_callers_number(self):
+        """A caller that passes a count without findings in state knows
+        something this function does not; it is not overruled."""
+        state = {}
+        policy.record_round(state, 7)
+
+        assert state["loop_finding_counts"] == [7]

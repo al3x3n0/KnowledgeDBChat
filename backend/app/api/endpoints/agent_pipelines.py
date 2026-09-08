@@ -338,7 +338,12 @@ async def get_pipeline_run_stages(
                 status=str(entry.job.status or ""),
                 iteration=int(entry.job.iteration or 0),
                 contract_satisfied=entry.contract_met,
-                restartable=entry.job.parent_job_id is not None,
+                # Every stage is restartable now: one with a predecessor
+                # re-fires the chain from it, and the head is re-run from its
+                # own definition. This reported False for the head while the
+                # endpoint had just learned to do it -- a capability the API
+                # denied having.
+                restartable=True,
             )
             for stage_id, entry in latest.items()
         ],

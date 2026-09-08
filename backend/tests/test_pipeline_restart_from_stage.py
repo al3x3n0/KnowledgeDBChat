@@ -372,3 +372,17 @@ class TestTheHeadCanBeRerun:
         )
 
         assert "operator_clues" not in child.config
+
+
+class TestTheStagesViewDoesNotDenyWhatItCanDo:
+    def test_every_stage_reports_restartable(self):
+        """It reported False for the head while the endpoint had just learned
+        to re-run it -- an API denying a capability it has is the same class of
+        problem as one claiming a capability it lacks."""
+        import inspect
+
+        from app.api.endpoints import agent_pipelines
+
+        source = inspect.getsource(agent_pipelines.get_pipeline_run_stages)
+        assert "restartable=True" in source
+        assert "parent_job_id is not None" not in source

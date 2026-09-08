@@ -171,8 +171,10 @@ class PipelineRunStage(BaseModel):
     #: its contract -- out of iterations, or it gave up -- and that is exactly
     #: the stage whose output nothing downstream should be built on.
     contract_satisfied: bool
-    #: False for the head of the chain: there is no earlier evidence to restart
-    #: it on, so the answer there is to launch the pipeline again.
+    #: Whether this stage can be run again. A stage with a predecessor re-fires
+    #: the chain from it; the head is re-run from its own definition, since the
+    #: stage a run most often needs redone is the one that produced what
+    #: everything else derives from.
     restartable: bool
 
 

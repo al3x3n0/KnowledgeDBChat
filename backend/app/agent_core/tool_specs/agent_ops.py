@@ -533,6 +533,47 @@ SPECS: tuple[ToolSpec, ...] = (
         },
     ),
     ToolSpec(
+        name="request_stage_rerun",
+        description=(
+            "Send the work back to an EARLIER pipeline stage, when what that "
+            "stage produced is why this one cannot finish -- a specification "
+            "that left something unstated, an implementation that cannot be "
+            "measured meaningfully. This is not a retry of your own stage: the "
+            "earlier stage runs again on the correction you give, and "
+            "everything after it is re-derived, so use it only when redoing "
+            "your own work on the same inputs could not help. Available only "
+            "where the pipeline declares the edge, and the run shares one "
+            "small budget across all stages: going back twice is a pipeline "
+            "converging, going back repeatedly is a loop. If you cannot meet "
+            "your contract on what you were given and there is no edge back, "
+            "that is a real result -- record what was missing and let the run "
+            "end."
+        ),
+        parameters={
+            "type": "object",
+            "properties": {
+                "stage": {
+                    "type": "string",
+                    "description": "The earlier stage to run again",
+                },
+                "reason": {
+                    "type": "string",
+                    "description": (
+                        "What was wrong with that stage's output, concretely "
+                        "enough that redoing it can come out differently. It "
+                        "is given to that stage as a correction, so 'try "
+                        "again' produces the same work a second time."
+                    ),
+                },
+            },
+            "required": ["stage", "reason"],
+        },
+        effects="write",
+        cost_tier="low",
+        typical_seconds=1,
+        consumes="A declared backward edge and a diagnosis of the earlier output.",
+    ),
+    ToolSpec(
         name="check_goal_status",
         description="Get current job progress, iteration budget remaining, resource usage, and plan status. Use to decide whether to continue, wrap up, or change strategy.",
         parameters={"type": "object", "properties": {}, "required": []},

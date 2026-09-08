@@ -206,6 +206,68 @@ def _why_it_gave_up(job: AgentJob, state: Dict[str, Any]) -> str:
     return ""
 
 
+async def _send_the_work_back(
+    executor: Any, job: AgentJob, request: Dict[str, Any], db: AsyncSession
+) -> bool:
+    """Re-run an earlier stage on this stage's correction. True if it went.
+
+    Reuses the restart path rather than starting a job here: that path already
+    re-fires the chain from the target's completed predecessor, which is what
+    makes the earlier stage inherit the same evidence it had the first time,
+    and it already refuses to build on a predecessor whose contract went unmet.
+    A second way to start a stage would be a second definition of what a stage
+    inherits.
+
+    Returning False rather than raising when it cannot go: a stage that has
+    done its work and cannot get the detour it asked for should still finish
+    and record what it found, which is more than the run had before.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services import agent_pipeline_restart, agent_stage_rerun
+
+    target = str(request.get("stage") or "").strip()
+    reason = str(request.get("reason") or "").strip()
+    root_id = job.root_job_id or job.parent_job_id or job.id
+
+    try:
+        child = await agent_pipeline_restart.restart_from_stage(
+            root_job_id=root_id,
+            stage_id=target,
+            executor=executor,
+            db=db,
+            note=reason,
+        )
+    except agent_pipeline_restart.PipelineRestartError as error:
+        # The request was valid when the tool accepted it and is not now --
+        # the predecessor did not finish, most likely. Said in the log rather
+        # than swallowed: a run whose detour was refused looks identical to one
+        # that never asked.
+        job.add_log_entry(
+            {
+                "phase": "stage_rerun_refused",
+                "stage": target,
+                "reason": error.detail[:400],
+            }
+        )
+        return False
+
+    job.results = job.results if isinstance(job.results, dict) else {}
+    agent_stage_rerun.record(
+        job.results,
+        from_stage=str((job.config or {}).get("pipeline_stage") or job.name),
+        to_stage=target,
+        reason=reason,
+        iteration=int(request.get("iteration") or job.iteration or 0),
+    )
+    flag_modified(job, "results")
+    job.add_log_entry(
+        {"phase": "stage_rerun_requested", "stage": target, "job_id": str(child.id)}
+    )
+    logger.info(f"Job {job.id} sent the work back to stage {target} as job {child.id}")
+    return True
+
+
 async def finalize_job(
     executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession
 ) -> Dict[str, Any]:
@@ -1682,6 +1744,26 @@ async def finalize_job(
             "memories_injected": job.memory_injection_count or 0,
             "memories_created": job.memories_created_count or 0,
         }
+
+    # A stage that asked to go back goes back INSTEAD of forward. Both would
+    # be wrong: the next stage would start on the output this one just said was
+    # the problem, while the earlier stage redid it underneath -- two versions
+    # of the same evidence in one run, and nothing to say which the result came
+    # from.
+    rerun_request = state.get("stage_rerun_request")
+    if isinstance(rerun_request, dict) and rerun_request.get("stage"):
+        handled = await _send_the_work_back(executor, job, rerun_request, db)
+        if handled:
+            return {
+                "status": job.status,
+                "progress": job.progress,
+                "results": job.results,
+                "iterations": job.iteration,
+                "tool_calls": job.tool_calls_used,
+                "llm_calls": job.llm_calls_used,
+                "memories_injected": job.memory_injection_count or 0,
+                "memories_created": job.memories_created_count or 0,
+            }
 
     # Check if we should trigger chained jobs
     event = "complete" if job.status == AgentJobStatus.COMPLETED.value else "fail"

@@ -155,6 +155,13 @@ def _job_spec(stage: PipelineStage, pipeline: Pipeline) -> Dict[str, Any]:
         "job_type": stage.job_type,
         "config": config,
     }
+    # Carried into the job so the running stage knows which way back it has,
+    # and how much of the run's shared budget is left. Without both, the tool
+    # that requests a rerun has nothing to check a request against.
+    if stage.may_revisit:
+        config["may_revisit"] = list(stage.may_revisit)
+        config["revisit_budget"] = int(pipeline.revisit_budget)
+
     if stage.loop is not None:
         # A stage that repeats is a job allowed more iterations, which is the
         # loop the executor already runs. The bound is the author's, not a

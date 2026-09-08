@@ -7418,6 +7418,51 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             status["goal_contract_remedies"] = remedies[:4]
         return status
 
+    async def _request_stage_rerun(
+        params: Dict[str, Any], ctx: AgentToolExecutionContext
+    ) -> Any:
+        """Ask for an earlier stage to be redone on a stated correction.
+
+        Records the request rather than acting on it. The stage has to finish
+        the iteration it is in -- there is a checkpoint to write and a result
+        to return -- and the finaliser is the one place that already decides
+        what happens when a stage ends, so putting the decision anywhere else
+        would give a run two ways to end and one of them would drift.
+        """
+        from app.services import agent_stage_rerun
+
+        job = ctx.job
+        state = ctx.state if isinstance(ctx.state, dict) else {}
+        results = job.results if isinstance(job.results, dict) else {}
+
+        verdict = agent_stage_rerun.evaluate(
+            stage=str(params.get("stage") or ""),
+            reason=str(params.get("reason") or ""),
+            config=job.config,
+            results=results,
+        )
+        if not verdict.ok:
+            return {"error": verdict.error}
+
+        state["stage_rerun_request"] = {
+            "stage": verdict.stage,
+            "reason": verdict.reason,
+            "iteration": int(job.iteration or 0),
+        }
+        return {
+            "success": True,
+            "data": {
+                "stage": verdict.stage,
+                "queued": True,
+                "note": (
+                    f"This stage will end and {verdict.stage!r} will run again "
+                    "with your reason attached. Everything after it is "
+                    "re-derived, so do not keep working on the current "
+                    "attempt."
+                ),
+            },
+        }
+
     async def _check_goal_status(
         params: Dict[str, Any], ctx: AgentToolExecutionContext
     ) -> Any:
@@ -7613,6 +7658,7 @@ def build_autonomous_observability_provider(executor: Any) -> FunctionToolProvid
             "evaluate_condition": _evaluate_condition,
             "count_findings": _count_findings,
             "check_goal_status": _check_goal_status,
+            "request_stage_rerun": _request_stage_rerun,
             "compress_history": _compress_history,
             "summarize_findings": _summarize_findings,
         },

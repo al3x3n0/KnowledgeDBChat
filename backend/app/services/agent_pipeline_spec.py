@@ -54,6 +54,14 @@ LOOP_CONDITIONS = ("contract_satisfied", "no_new_findings")
 MAX_LOOP_ITERATIONS = 50
 
 
+#: Backward edges a run may take before it is stuck rather than converging.
+#: Two, because the first says the earlier stage got something wrong and the
+#: second says the correction was not enough -- and a third has never been the
+#: difference between a run that finishes and one that does not; it is the
+#: shape of a loop. A pipeline that genuinely needs more says so.
+DEFAULT_REVISIT_BUDGET = 2
+
+
 @dataclass(frozen=True)
 class LoopPolicy:
     """Why a stage repeats, and what stops it."""
@@ -86,6 +94,18 @@ class PipelineStage:
     #: Require a human decision before anything downstream starts. This is what
     #: makes a pipeline semi-autonomous rather than unattended.
     checkpoint: bool = False
+    #: Earlier stages this one may send the work back to, when it discovers
+    #: that what it was given is the problem. A BACKWARD edge, and deliberately
+    #: not a `depends_on`: dependencies define the order and are checked for
+    #: cycles, and a backward edge is a cycle by definition. Keeping them
+    #: separate is what lets the plan stay a DAG while the run may still go
+    #: back.
+    #:
+    #: Declared by the author, chosen by the run. An implement stage that finds
+    #: the specification underdetermined should be able to say so and have the
+    #: specification redone -- but only along an edge someone decided was
+    #: sensible, and only to a stage whose output it actually consumes.
+    may_revisit: Tuple[str, ...] = ()
 
     def required_finding_types(self) -> List[str]:
         """The finding types this stage's contract demands."""
@@ -99,9 +119,18 @@ class PipelineStage:
 class Pipeline:
     name: str
     stages: Tuple[PipelineStage, ...] = ()
+    #: How many times this RUN may go backwards in total, across every stage.
+    #: Per-run rather than per-edge: two stages that each send work back once
+    #: are a pipeline converging, and two stages sending it back and forth are
+    #: the same two stages doing it for ever. Only a shared budget can tell
+    #: those apart.
+    revisit_budget: int = DEFAULT_REVISIT_BUDGET
 
     def by_id(self) -> Dict[str, PipelineStage]:
         return {stage.id: stage for stage in self.stages}
+
+    def has_backward_edges(self) -> bool:
+        return any(stage.may_revisit for stage in self.stages)
 
 
 def _required_types(contract: Mapping[str, Any]) -> List[str]:
@@ -159,9 +188,16 @@ def normalize(spec: Mapping[str, Any]) -> Pipeline:
                 runner=str(raw.get("runner") or "").strip(),
                 loop=loop,
                 checkpoint=bool(raw.get("checkpoint")),
+                may_revisit=_as_tuple(raw.get("may_revisit")),
             )
         )
-    return Pipeline(name=str(spec.get("name") or "").strip(), stages=tuple(stages))
+    return Pipeline(
+        name=str(spec.get("name") or "").strip(),
+        stages=tuple(stages),
+        revisit_budget=max(
+            0, _as_int(spec.get("revisit_budget"), DEFAULT_REVISIT_BUDGET)
+        ),
+    )
 
 
 def _as_int(value: Any, default: int) -> int:
@@ -230,8 +266,58 @@ def validate(pipeline: Pipeline) -> List[str]:
     if cycle:
         problems.append("stages form a cycle: " + " -> ".join(cycle))
 
+    problems.extend(_revisit_problems(pipeline))
+
     for stage in pipeline.stages:
         problems.extend(_stage_problems(stage, pipeline))
+    return problems
+
+
+def _ancestors_of(stage_id: str, pipeline: Pipeline) -> set:
+    """Every stage `stage_id` transitively depends on."""
+    known = {s.id: s for s in pipeline.stages}
+    seen: set = set()
+    frontier = list(known.get(stage_id, PipelineStage(id="", goal="")).depends_on)
+    while frontier:
+        current = frontier.pop()
+        if current in seen or current not in known:
+            continue
+        seen.add(current)
+        frontier.extend(known[current].depends_on)
+    return seen
+
+
+def _revisit_problems(pipeline: Pipeline) -> List[str]:
+    """Refuse backward edges that are not backward, or not edges.
+
+    A `may_revisit` target has to be a stage this one transitively depends on.
+    Anything else is not a stage to go BACK to: a sibling has not run, a
+    descendant has not either, and a stage this one does not consume the output
+    of cannot be the reason this one is stuck. Allowing those would turn a
+    pipeline into arbitrary jumps, which is not a pipeline.
+    """
+    problems: List[str] = []
+    known = {s.id for s in pipeline.stages}
+    for stage in pipeline.stages:
+        for target in stage.may_revisit:
+            if target not in known:
+                problems.append(
+                    f"{stage.id}: may_revisit names unknown stage {target!r}"
+                )
+                continue
+            if target == stage.id:
+                problems.append(
+                    f"{stage.id}: may_revisit names itself; a stage that wants "
+                    "another attempt at its own goal has `loop`, which is "
+                    "bounded"
+                )
+                continue
+            if target not in _ancestors_of(stage.id, pipeline):
+                problems.append(
+                    f"{stage.id}: may_revisit names {target!r}, which it does "
+                    "not depend on. A backward edge goes back to work this "
+                    "stage was given, not sideways to work it never saw."
+                )
     return problems
 
 

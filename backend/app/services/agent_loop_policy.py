@@ -35,6 +35,13 @@ KNOWN_POLICIES = ("contract_satisfied", "no_new_findings")
 
 DEFAULT_DRY_ROUNDS = 2
 
+#: Rounds a stage that declared its own `until` may produce nothing new before
+#: it is treated as stuck. Higher than the default: its author chose a
+#: different success condition, so being stopped this way is not what they
+#: asked for, and a loop written on purpose is likelier to contain patient
+#: work that records nothing for a while.
+DECLARED_LOOP_DRY_ROUNDS = 5
+
 
 def record_round(state: Dict[str, Any], finding_count: int) -> None:
     """Note how many findings existed at the end of an iteration.
@@ -63,14 +70,30 @@ def should_stop(
     state = state if isinstance(state, dict) else {}
 
     policy = str(config.get("loop_until") or "").strip().lower()
-    if policy != "no_new_findings":
-        # contract_satisfied, unset, or something unrecognised: the executor's
-        # own contract handling decides, which is the right default.
-        return False, ""
 
+    # `until` and dry rounds answer different questions, so one must not
+    # silence the other. `until: contract_satisfied` says when the stage is
+    # DONE; dry rounds say when it is STUCK, and a stage going in circles is
+    # stuck whichever way its author wrote the success condition.
+    #
+    # Measured: an implement stage declaring `until: contract_satisfied` got a
+    # real diagnostic at iteration 4 and then spent iterations 5 to 10 reading
+    # documents and writing progress reports -- ten consecutive actions, no
+    # code, no checks, nothing new recorded, and nothing in place to notice.
+    # Before this, declaring any loop at all bought a stage out of stall
+    # detection entirely.
     dry_rounds = _as_int(config.get("loop_dry_rounds"), DEFAULT_DRY_ROUNDS)
     if dry_rounds < 1:
         dry_rounds = DEFAULT_DRY_ROUNDS
+    if policy != "no_new_findings":
+        # A stage that declared a different success condition is given more
+        # rope before being called stuck: it did not ask to be stopped this
+        # way, and patient work is likelier where an author wrote a loop on
+        # purpose.
+        dry_rounds = max(
+            dry_rounds,
+            _as_int(config.get("loop_dry_rounds"), 0) or DECLARED_LOOP_DRY_ROUNDS,
+        )
 
     history: List[int] = [
         int(n) for n in (state.get("loop_finding_counts") or []) if isinstance(n, int)
@@ -89,6 +112,12 @@ def should_stop(
         f"{dry_rounds} consecutive rounds produced no new findings "
         f"(still {window[-1]}); stopping rather than spending the remaining "
         "iterations the same way"
+        + (
+            f" (the stage asked to run until {policy}, which says when it is "
+            "done, not whether it is getting anywhere)"
+            if policy and policy != "no_new_findings"
+            else ""
+        )
     )
 
 

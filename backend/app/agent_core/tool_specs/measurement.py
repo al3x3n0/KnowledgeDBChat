@@ -45,7 +45,19 @@ SPECS: tuple[ToolSpec, ...] = (
                 },
                 "emit": {
                     "type": "string",
-                    "description": "'asm' (default) returns assembly, 'ir' returns LLVM IR",
+                    # Enumerated rather than described. The accepted set lived
+                    # only in the validator, so a caller could read the
+                    # description, pick a word that was not in it, and spend an
+                    # iteration finding out -- which is what happened with
+                    # 'counts', three times in one stage.
+                    "enum": ["asm", "ir"],
+                    "description": (
+                        "Which listing to return: 'asm' (default) for assembly, "
+                        "'ir' for LLVM IR. The codegen COUNTS -- vector ops, "
+                        "branches, conditional selects, calls -- come back on "
+                        "every call regardless; this only chooses the listing "
+                        "beside them."
+                    ),
                 },
                 "label": {
                     "type": "string",

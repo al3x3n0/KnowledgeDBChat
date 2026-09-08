@@ -71,7 +71,11 @@ async def test_oversized_code_is_refused(enabled):
 async def test_emit_rejects_a_value_it_cannot_map(enabled):
     result = await sandbox.compile_c_snippet(code="int main(){}", emit="binary")
 
-    assert "emit must be one of" in result["error"]
+    # Both halves, not the wording: the rejected value so the caller knows
+    # which argument was wrong, and the legal ones so it knows what to send.
+    # A run lost three iterations to a rejection that gave only the second.
+    assert "binary" in result["error"]
+    assert "asm" in result["error"]
 
 
 @pytest.mark.parametrize("alias", ["assembly", "ASM", " s ", "llvm-ir", "llvm"])

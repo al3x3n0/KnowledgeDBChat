@@ -339,10 +339,23 @@ async def compile_c_snippet(
 
     # Accept the obvious synonyms. A caller asking for "assembly" means "asm",
     # and rejecting it costs an iteration to learn a vocabulary difference.
-    emit = EMIT_ALIASES.get((emit or "asm").strip().lower())
+    requested_emit = (emit or "asm").strip()
+    emit = EMIT_ALIASES.get(requested_emit.lower())
     if emit is None:
+        # Say what was rejected, not only what is accepted. Measured live: a
+        # run asked for emit='counts' three times running, because counts are
+        # exactly what this tool returns -- they come back in every reply, and
+        # `emit` chooses the LISTING beside them. An error that lists the legal
+        # values without naming the illegal one leaves the caller to guess
+        # which of its arguments was wrong.
         return {
-            "error": ("emit must be one of: " f"{', '.join(sorted(set(EMIT_ALIASES)))}")
+            "error": (
+                f"emit={requested_emit!r} is not one of: "
+                f"{', '.join(sorted(set(EMIT_ALIASES)))}. "
+                "Note that the codegen counts (vector ops, branches, selects, "
+                "calls) are returned on every call whatever `emit` is -- it "
+                "only chooses which listing comes with them."
+            )
         }
     emit_flag = "-S" if emit == "asm" else "-S -emit-llvm"
     safe_flags = _clean_flags(flags)

@@ -101,6 +101,13 @@ def summarize_blocks(
     return described
 
 
+#: Hot blocks carried on the finding so a later STAGE can mine them. Bounded
+#: because a finding is serialised into every checkpoint of every stage that
+#: inherits it: the top few blocks are what mining uses, and a long tail would
+#: cost every downstream iteration to carry work nobody reads.
+MAX_CARRIED_BLOCKS = 12
+
+
 async def profile_c_workload(
     *,
     code: str,
@@ -277,6 +284,19 @@ async def profile_c_workload(
                 "hottest_function": hottest.get("function"),
                 "hottest_share": hottest.get("share"),
                 "hot_block_executions": blocks[0]["executions"] if blocks else None,
+                # The blocks themselves, not just a count of them. A finding is
+                # the unit that crosses a stage boundary -- the compacted
+                # action ledger a child inherits keeps a tool name and a
+                # success flag, not a result -- so evidence the next stage
+                # needs has to be ON the finding.
+                #
+                # Measured: a pipeline `mine` stage inherited this profile and
+                # got "No hot blocks to mine. Run profile_c_workload first",
+                # because find_fusion_candidates reads the blocks out of the
+                # producing job's own actions and a pipeline puts profile and
+                # mine in different jobs. The fusion chain worked only inside
+                # one job and nothing said so.
+                "hot_blocks": blocks[:MAX_CARRIED_BLOCKS],
             }
         ],
     }

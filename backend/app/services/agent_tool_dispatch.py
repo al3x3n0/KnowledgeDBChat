@@ -1036,6 +1036,42 @@ async def _wait_for_ingested_documents(source_id: str) -> List[str]:
                 pass
 
 
+def hot_blocks_from_findings(state: Any) -> Any:
+    """Hot blocks from a `dynamic_profile` finding, including an inherited one.
+
+    A pipeline puts profile and mine in different jobs, so the profile is not
+    in the mining job's actions at all -- it is in a finding that stage
+    inherited. Reading only the local history made the fusion chain work inside
+    one job and fail across a pipeline, with a message telling the run to do
+    the thing an earlier stage had already done.
+
+    Module level rather than a closure because it could not be tested
+    otherwise, and an untestable fallback is where the next gap hides.
+    """
+    if not isinstance(state, dict):
+        return None
+    findings = state.get("findings")
+    if not isinstance(findings, list):
+        return None
+
+    def _blocks_from(inherited: bool) -> Any:
+        for finding in reversed(findings):
+            if not isinstance(finding, dict):
+                continue
+            if str(finding.get("type") or "") != "dynamic_profile":
+                continue
+            if bool(finding.get("inherited")) is not inherited:
+                continue
+            blocks = finding.get("hot_blocks")
+            if isinstance(blocks, list) and blocks:
+                return blocks
+        return None
+
+    # A stage that profiled for itself should mine what it just took, so its
+    # own finding wins and the inherited one is the fallback.
+    return _blocks_from(False) or _blocks_from(True)
+
+
 def build_autonomous_research_provider(executor: Any) -> FunctionToolProvider:
     """Research-family tools for AutonomousAgentExecutor."""
 
@@ -5207,7 +5243,9 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
             blocks = data.get("hot_blocks")
             if isinstance(blocks, list) and blocks:
                 return blocks
-        return None
+        return hot_blocks_from_findings(state)
+
+        return hot_blocks_from_findings(state)
 
     async def _cost_fusion_candidate(
         params: Dict[str, Any], ctx: AgentToolExecutionContext

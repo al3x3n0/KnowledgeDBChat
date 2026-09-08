@@ -81,6 +81,13 @@ def _shape_hint(spec: Dict[str, Any]) -> str:
     return f" -- {clipped}"
 
 
+#: Parameters whose string value is itself a space-separated list of tokens,
+#: so a list of them has one exact reading. Compiler and linker flags only:
+#: they never contain spaces, and the tools that take them put the value
+#: straight onto a command line.
+SPACE_SEPARATED_STRING_FIELDS = frozenset({"flags", "compile_flags", "extra_flags"})
+
+
 def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List[str]:
     """Repair unambiguous shape mistakes in place, returning what was changed.
 
@@ -149,7 +156,27 @@ def coerce_tool_params(tool_name: str, params: Optional[Dict[str, Any]]) -> List
                 repaired.append(name)
             continue
 
+        # A field whose value IS a space-separated list of tokens. Joining is
+        # not a guess about the separator there -- it is the separator, in the
+        # schema's own example ('-O3 -ffast-math'), and on the command line the
+        # value ends up on. Measured: a run sent flags as ["-O2","-std=gnu11"]
+        # and lost the iteration to "field flags should be string, got list",
+        # having expressed exactly what it meant.
+        #
+        # Kept to a named set rather than applied to every string field,
+        # because for most of them a list IS a real mistake about what the tool
+        # does, and for argv-shaped fields a space join would be wrong the
+        # moment an argument contains a space.
         if (
+            name in SPACE_SEPARATED_STRING_FIELDS
+            and expected == "string"
+            and isinstance(value, list)
+            and value
+            and all(isinstance(item, str) and " " not in item for item in value)
+        ):
+            params[name] = " ".join(item.strip() for item in value if item.strip())
+            repaired.append(name)
+        elif (
             expected == "string"
             and isinstance(value, list)
             and len(value) == 1

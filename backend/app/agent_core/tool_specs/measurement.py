@@ -1506,7 +1506,16 @@ SPECS: tuple[ToolSpec, ...] = (
                     "description": (
                         "Reference cases. Take them from the paper's own "
                         "worked examples where it gives them: a case invented "
-                        "to match the implementation checks nothing."
+                        "to match the implementation checks nothing. Most "
+                        "algorithm papers give none -- then check the "
+                        "PROPERTIES the paper states instead (an output range, "
+                        "an invariant, a distribution, an equivalence with the "
+                        "baseline it replaces): write a program that asserts "
+                        "them over many inputs and prints one pass line, and "
+                        "check that. Deriving a property from the paper is "
+                        "reading it; inventing an input/output pair to match "
+                        "your code is not. An implementation with no way to be "
+                        "checked is one nobody may time."
                     ),
                     "items": {
                         "type": "object",

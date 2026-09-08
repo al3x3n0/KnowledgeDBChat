@@ -1490,11 +1490,33 @@ Provide structured insights in JSON format:
             if wanted
             else "If the paper describes several algorithms, take the main one."
         )
+        # Sized from settings, and the truncation is SAID rather than done
+        # quietly. "No worked examples in this paper" and "none in the third of
+        # it I was given" are different facts, and a specification that cannot
+        # tell them apart sends the implement stage looking for cases that were
+        # there all along, further down.
+        from app.core.config import settings as _settings
+
+        window = int(getattr(_settings, "SPEC_EXTRACTION_MAX_CHARS", 60000))
+        content = doc.content or ""
+        truncated = len(content) > window
+        seen = content[:window]
+        truncation_note = (
+            (
+                f"\n\nNOTE: this is the FIRST {window} characters of a "
+                f"{len(content)}-character paper, not all of it. Anything you "
+                "do not find may be in the part you were not given -- say so in "
+                "`unstated` rather than concluding the paper omits it."
+            )
+            if truncated
+            else ""
+        )
+
         prompt = f"""Read this paper into a specification precise enough to implement.
 {focus}
 
 Paper Title: {doc.title}
-Content: {doc.content[:12000]}
+Content: {seen}{truncation_note}
 
 Return JSON:
 {{
@@ -1508,6 +1530,10 @@ Return JSON:
     {{"name": "...", "input": "...", "expected_output": "...",
       "source": "where in the paper this worked example comes from"}}
   ],
+  "properties": [
+    {{"name": "...", "statement": "what must hold for ANY valid run",
+      "why": "the sentence or step in the paper it follows from"}}
+  ],
   "claims": [
     {{"metric": "speedup", "value": 3.0, "unit": "x",
       "conditions": {{"hardware": "...", "input_size": "...", "baseline": "..."}},
@@ -1518,9 +1544,21 @@ Return JSON:
 
 Rules: put a number in "claims" only if the paper states it -- do not
 estimate one. Leave "reference_cases" empty rather than inventing examples;
-a case you made up checks nothing. "unstated" is important: papers routinely
-omit initialisation, tie-breaking and precision, and an implementer who does
-not know what they are choosing cannot say why their number differs."""
+a case you made up checks nothing.
+
+"properties" is NOT the same thing and is not an exception to that rule. A
+worked example is a specific input the paper says produces a specific output.
+A property is something that must hold for EVERY run because the paper's own
+description says so -- an output range, an invariant preserved by a step, a
+distribution the method is defined to produce, an equivalence with the
+baseline it replaces. Deriving those from the text is reading; a made-up
+input/output pair is inventing. Most algorithm papers give no worked examples
+at all, and an implementation with no way to be checked is one nobody may
+time, so state the properties the paper does give you.
+
+"unstated" is important: papers routinely omit initialisation, tie-breaking
+and precision, and an implementer who does not know what they are choosing
+cannot say why their number differs."""
         response = ""
         try:
             response = await executor.llm_service.generate_response(
@@ -1537,19 +1575,69 @@ not know what they are choosing cannot say why their number differs."""
             )
             spec = json.loads(response)
         except Exception as exc:
-            return {
-                "error": (
-                    "Could not read a specification out of this paper: "
-                    f"{exc}. Raw response kept for inspection."
-                ),
-                "raw": (response or str(exc))[:2000],
-            }
+            # A response cut off by the output budget is a correct PREFIX, and
+            # closing its open braces recovers the fields the model had already
+            # written -- the same recovery the decision parser does, for the
+            # same reason: asking again spends another call re-deriving the
+            # answer on the budget that just proved too small. This extraction
+            # is long (steps, claims with quotes, properties) and hit it as
+            # soon as the input grew from an abstract to a paper.
+            spec = None
+            if response:
+                from app.services import llm_truncation
+
+                closed = llm_truncation.repair_truncated_json(response)
+                if closed:
+                    try:
+                        spec = json.loads(closed)
+                    except Exception:
+                        spec = None
+            if spec is None:
+                return {
+                    "error": (
+                        "Could not read a specification out of this paper: "
+                        f"{exc}. Raw response kept for inspection."
+                    ),
+                    "raw": (response or str(exc))[:2000],
+                }
+            # The recovery is recorded, not hidden. A specification closed from
+            # a truncated response is missing whatever came after the cut, and
+            # a run that cannot tell will read an absent field as the paper
+            # lacking it -- the same confusion the truncation note above exists
+            # to prevent on the input side.
+            spec["_recovered_from_truncated_response"] = True
 
         cases = spec.get("reference_cases")
         claims = spec.get("claims")
+        properties = spec.get("properties")
+        case_count = len(cases) if isinstance(cases, list) else 0
+        property_count = len(properties) if isinstance(properties, list) else 0
         return {
             "success": True,
             "data": spec,
+            # Said in the tool's own reply, because the next stage decides what
+            # to do from this. A run that reads "no worked examples" and does
+            # not read "but here are four properties" goes looking for cases
+            # that do not exist -- measured: six iterations of searching, no
+            # code written, and the stage ended unverified.
+            "note": (
+                f"{case_count} worked example(s) from the paper and "
+                f"{property_count} propert(ies) it states. "
+                + (
+                    "With no worked examples, check the implementation against "
+                    "the properties: a program that asserts them and prints a "
+                    "single pass line is a real check. What is forbidden is a "
+                    "case invented to match what you wrote."
+                    if case_count == 0 and property_count
+                    else ""
+                )
+                + (
+                    " The paper was TRUNCATED for this extraction, so anything "
+                    "absent here may simply be further down it."
+                    if truncated
+                    else ""
+                )
+            ).strip(),
             "findings": [
                 {
                     "type": "algorithm_spec",
@@ -1559,10 +1647,16 @@ not know what they are choosing cannot say why their number differs."""
                     # Surfaced separately because the two downstream tools each
                     # need one of them, and a run should be able to see it has
                     # a spec with no testable claim before it starts coding.
-                    "reference_case_count": len(cases)
-                    if isinstance(cases, list)
-                    else 0,
+                    "reference_case_count": case_count,
+                    "property_count": property_count,
                     "claim_count": len(claims) if isinstance(claims, list) else 0,
+                    # An empty `reference_cases` means two different things and
+                    # only this tells them apart: the paper gives no worked
+                    # examples, or the extractor was not shown the part that
+                    # does.
+                    "paper_truncated": bool(truncated),
+                    "paper_chars_read": len(seen),
+                    "paper_chars_total": len(content),
                 }
             ],
         }

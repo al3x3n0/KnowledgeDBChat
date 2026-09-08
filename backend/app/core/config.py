@@ -338,6 +338,15 @@ class Settings(BaseSettings):
     # On by default, unlike the code-execution flags, because it is an outbound
     # GET to a URL derived from an arXiv id on a fixed host: no user-supplied
     # URL, nothing executed. The bounds below are the real protection.
+    # How much of a paper `extract_algorithm_spec` reads. Sized at 12,000 when
+    # an ingested "paper" was its abstract, which made the cap generous; a real
+    # paper is several times that, and the window silently kept the first
+    # third. Measured: 12,000 of 36,886 characters, so the claims came from the
+    # abstract and introduction while the algorithm listings and benchmark
+    # tables -- the parts a specification and its worked examples live in --
+    # were never read.
+    SPEC_EXTRACTION_MAX_CHARS: int = 60000
+
     ARXIV_FULL_TEXT_ENABLED: bool = True
     ARXIV_FULL_TEXT_MAX_BYTES: int = 25_000_000
     ARXIV_FULL_TEXT_MAX_CHARS: int = 400_000

@@ -43,6 +43,44 @@ def execution_enabled() -> bool:
     return bool(getattr(settings, "ENABLE_UNSAFE_CODE_EXECUTION", False))
 
 
+#: `docker run` uses 125 for its own failure -- the container never started --
+#: as distinct from 126/127 (the command could not be run) and anything else
+#: (the program's own exit). The commonest cause here by far is an image that
+#: was never built on this machine.
+DOCKER_COULD_NOT_START = 125
+DOCKER_CANNOT_EXECUTE = (126, 127)
+
+
+def explain_sandbox_exit(returncode: int, stderr: str, image: str) -> str:
+    """A failure named by its cause rather than its number.
+
+    Measured: `profile_c_workload` returned "Profiling failed with exit code
+    125" for a whole run because kdbc-profiling-research had never been built
+    on the machine. 125 is docker's "I could not start the container", so the
+    number already said the container never ran -- but nothing the agent read
+    said so, and it spent iterations rewriting code that had never executed.
+    `make sandbox-check` reports a missing image, which is exactly the thing
+    to point at.
+    """
+    detail = (stderr or "").strip()
+    if returncode == DOCKER_COULD_NOT_START:
+        hint = (
+            f"Docker could not start the container for {image} (exit 125), so "
+            "the code never ran and nothing about it has been tested. The "
+            "usual cause is that this image is not built on this machine: "
+            "`make sandbox-check` lists which are, and `make sandbox-images` "
+            "builds them."
+        )
+        return f"{hint} Docker said: {detail[:400]}" if detail else hint
+    if returncode in DOCKER_CANNOT_EXECUTE:
+        return (
+            f"The sandbox could not execute the command in {image} (exit "
+            f"{returncode}); the image exists but the entrypoint or a tool it "
+            f"needs does not. Docker said: {detail[:400]}"
+        )
+    return ""
+
+
 def image_not_allowlisted(image: str) -> str:
     """Why this call cannot run, and why retrying it differently will not help.
 

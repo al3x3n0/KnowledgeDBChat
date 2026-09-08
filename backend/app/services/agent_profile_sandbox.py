@@ -218,9 +218,12 @@ async def profile_c_workload(
                 "stderr": stderr[:MAX_OUTPUT_CHARS],
             }
         if returncode != 0:
+            explained = agent_sandbox_runtime.explain_sandbox_exit(
+                returncode, stderr, image
+            )
             return {
                 "success": False,
-                "error": f"Profiling failed with exit code {returncode}",
+                "error": explained or f"Profiling failed with exit code {returncode}",
                 "stderr": stderr[:MAX_OUTPUT_CHARS],
             }
 

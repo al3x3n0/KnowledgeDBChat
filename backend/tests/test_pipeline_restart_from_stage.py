@@ -45,6 +45,9 @@ def _stage_job(stage, status, *, parent=None, root=None, contract=True, children
     job.parent_job_id = parent.id if parent else None
     job.root_job_id = root
     job.chain_triggered = True
+    # Every real job has an owner, and the head rerun clones it onto the new
+    # job; a helper that omits it hides a NOT NULL violation until then.
+    job.user_id = uuid.uuid4()
     return job
 
 
@@ -162,19 +165,33 @@ class TestItRefusesGroundThatIsNotThere:
         assert "without meeting its contract" in error.value.detail
         assert "Restart from that stage instead" in error.value.detail
 
-    async def test_the_head_of_the_chain_has_nothing_to_restart_on(
-        self, monkeypatch, db_session
+    async def test_the_head_is_re_run_rather_than_refused(
+        self, monkeypatch, db_session, test_user
     ):
+        """This asserted a refusal until the head turned out to be the stage a
+        run most often needs redone: a `mine` stage whose profile was too
+        coarse needs the profile again, and profile is the head. Refusing it
+        made `may_revisit: [<head>]` a promise the system could not keep -- the
+        spec validated the edge and the tool accepted the request, and only the
+        finaliser found out it could not act.
+        """
         root = uuid.uuid4()
-        found = _stage_job("find", AgentJobStatus.PAUSED.value, root=root)
+        found = _stage_job("find", AgentJobStatus.PAUSED.value)
+        found.id = root
+        found.user_id = test_user.id
+        found.root_job_id = None
         await self._run(monkeypatch, [restart.StageJob(stage_id="find", job=found)])
+        monkeypatch.setattr(
+            "app.tasks.agent_job_tasks.execute_agent_job_task.delay",
+            lambda job_id, user_id: None,
+        )
 
-        with pytest.raises(restart.PipelineRestartError) as error:
-            await restart.restart_from_stage(
-                root_job_id=root, stage_id="find", executor=_Executor(), db=db_session
-            )
+        child = await restart.restart_from_stage(
+            root_job_id=root, stage_id="find", executor=_Executor(), db=db_session
+        )
 
-        assert "head of this pipeline" in error.value.detail
+        assert child.id != found.id
+        assert child.goal == found.goal
 
 
 @pytest.mark.asyncio
@@ -274,3 +291,84 @@ class TestTheLatestAttemptIsTheOneThatCounts:
         )
 
         assert latest["compare"].job is second
+
+
+@pytest.mark.asyncio
+class TestTheHeadCanBeRerun:
+    """`may_revisit: [<head>]` was a promise the system could not keep.
+
+    Measured: a `mine` stage needed its PROFILE redone, and profile is the head
+    of that pipeline. The spec validated the edge -- profile is genuinely an
+    ancestor of mine -- and `request_stage_rerun` would have accepted the
+    request, and then the finaliser would have quietly logged that it could not
+    act, because the head has no predecessor to re-fire the chain from.
+
+    The head is the stage a run most often needs redone, so refusing it left
+    the feature useful mainly where it was least needed.
+    """
+
+    async def test_the_head_is_re_run_from_its_own_definition(
+        self, monkeypatch, db_session, test_user
+    ):
+        from app.services import agent_pipeline_restart as restart
+
+        root = uuid.uuid4()
+        head = _stage_job("profile", AgentJobStatus.COMPLETED.value, children=("mine",))
+        head.id = root
+        head.user_id = test_user.id
+        head.root_job_id = None
+
+        async def _load(root_job_id, db):
+            return [restart.StageJob(stage_id="profile", job=head)]
+
+        monkeypatch.setattr(restart, "load_run", _load)
+        dispatched = []
+        monkeypatch.setattr(
+            "app.tasks.agent_job_tasks.execute_agent_job_task.delay",
+            lambda job_id, user_id: dispatched.append(job_id),
+        )
+
+        child = await restart.restart_from_stage(
+            root_job_id=root,
+            stage_id="profile",
+            executor=object(),
+            db=db_session,
+            note="profile at instruction level: the block counts were too coarse",
+        )
+
+        assert child.id != head.id, "a clone, so the first attempt stays readable"
+        assert child.goal == head.goal
+        assert (
+            child.chain_config == head.chain_config
+        ), "the stages after it must re-derive exactly as they did before"
+        # The correction is the only new input, and it must be readable.
+        assert "instruction level" in child.config["operator_clues"][0]["note"]
+        # Same run, so the stage view and the ledger still see one pipeline.
+        assert child.root_job_id == root
+        assert dispatched == [str(child.id)], "a job never queued never runs"
+
+    async def test_a_head_rerun_with_no_note_carries_no_clue(
+        self, monkeypatch, db_session, test_user
+    ):
+        from app.services import agent_pipeline_restart as restart
+
+        root = uuid.uuid4()
+        head = _stage_job("profile", AgentJobStatus.COMPLETED.value)
+        head.id = root
+        head.user_id = test_user.id
+        head.root_job_id = None
+
+        async def _load(root_job_id, db):
+            return [restart.StageJob(stage_id="profile", job=head)]
+
+        monkeypatch.setattr(restart, "load_run", _load)
+        monkeypatch.setattr(
+            "app.tasks.agent_job_tasks.execute_agent_job_task.delay",
+            lambda job_id, user_id: None,
+        )
+
+        child = await restart.restart_from_stage(
+            root_job_id=root, stage_id="profile", executor=object(), db=db_session
+        )
+
+        assert "operator_clues" not in child.config

@@ -146,6 +146,57 @@ def _attach_correction(child_config: Dict[str, Any], note: str) -> None:
     config["operator_clues"] = clues[-8:]
 
 
+async def _rerun_the_head(
+    head: AgentJob, note: str, executor: Any, db: AsyncSession
+) -> AgentJob:
+    """Run the pipeline's first stage again, with a correction.
+
+    A clone rather than a reset of the original: the first attempt and what it
+    established stay readable, which is the same reason a restarted stage does
+    not overwrite the one it supersedes. The chain config is carried over
+    verbatim, so the stages after it re-derive exactly as they did the first
+    time.
+    """
+    config = dict(head.config or {})
+    if note.strip():
+        clues = config.get("operator_clues")
+        if not isinstance(clues, list):
+            clues = []
+        clues.append({"note": note.strip()[:2000], "iteration": 0})
+        config["operator_clues"] = clues[-8:]
+
+    child = AgentJob(
+        id=uuid.uuid4(),
+        name=head.name,
+        description=head.description,
+        goal=head.goal,
+        job_type=head.job_type,
+        status=AgentJobStatus.PENDING.value,
+        config=config,
+        chain_config=head.chain_config,
+        max_iterations=head.max_iterations,
+        max_tool_calls=head.max_tool_calls,
+        max_llm_calls=head.max_llm_calls,
+        max_runtime_minutes=head.max_runtime_minutes,
+        results={},
+        execution_log=[],
+        iteration=0,
+        error_count=0,
+    )
+    child.user_id = head.user_id
+    # The rerun belongs to the same run, so the ledger and the stage view still
+    # see one pipeline rather than two.
+    child.root_job_id = head.root_job_id or head.id
+    db.add(child)
+    await db.commit()
+
+    from app.tasks.agent_job_tasks import execute_agent_job_task
+
+    execute_agent_job_task.delay(str(child.id), str(child.user_id))
+    logger.info(f"Re-ran pipeline head {head.id} as job {child.id}")
+    return child
+
+
 async def restart_from_stage(
     *,
     root_job_id: uuid.UUID,
@@ -177,10 +228,17 @@ async def restart_from_stage(
 
     parent_id = target.job.parent_job_id
     if parent_id is None:
-        raise PipelineRestartError(
-            f"Stage {stage_id!r} is the head of this pipeline, so there is no "
-            "earlier evidence to restart it on. Launch the pipeline again."
-        )
+        # The head has no predecessor to re-fire from, but it is exactly the
+        # stage a run most often needs redone: a `mine` stage whose profile was
+        # too coarse needs the PROFILE again, and profile is the head.
+        # Refusing here made `may_revisit: [<head>]` a promise the system could
+        # not keep -- the spec validated it, the tool accepted the request, and
+        # the finaliser then quietly logged that it could not act.
+        #
+        # So the head is re-run from its own definition. Nothing is inherited
+        # because there is nothing upstream to inherit; the correction is the
+        # only new input, and the chain re-derives every stage after it.
+        return await _rerun_the_head(target.job, note, executor, db)
 
     parent = next((s for s in stages if s.job.id == parent_id), None)
     if parent is None:

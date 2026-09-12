@@ -460,3 +460,12 @@ export const executiveDigestOf = (job: AgentJob): Record<string, any> | null => 
 /** Whether the job is still running, as opposed to finished in any way. */
 export const isLiveRuntimeJob = (job: AgentJob): boolean =>
   !TERMINAL_JOB_STATUSES.has(String(job.status || '').toLowerCase());
+
+/** A trace enum as prose: `needs_review` -> `needs review`.
+ *
+ * Lived as a module-level helper inside AutonomousAgentsPage until a panel
+ * extracted from that page needed it too, and importing it back from the page
+ * would have made a cycle. It sits here with the other shared formatters.
+ */
+export const humanizeDecisionTraceValue = (value?: string | null): string =>
+  String(value || '').trim().replaceAll('_', ' ') || 'unknown';

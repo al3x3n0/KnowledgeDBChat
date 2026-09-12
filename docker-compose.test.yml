@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: test_user
       POSTGRES_PASSWORD: test_password
     ports:
-      - "5433:5432"
+      - "${KDBC_TEST_POSTGRES_PORT:-35432}:5432"
     volumes:
       - postgres_test_data:/var/lib/postgresql/data
     networks:
@@ -26,7 +26,7 @@ services:
     image: redis:7-alpine
     container_name: knowledge_db_redis_test
     ports:
-      - "6380:6379"
+      - "${KDBC_TEST_REDIS_PORT:-36379}:6379"
     volumes:
       - redis_test_data:/data
     command: redis-server --appendonly yes
@@ -43,7 +43,7 @@ services:
     image: qdrant/qdrant:latest
     container_name: knowledge_db_qdrant_test
     ports:
-      - "6334:6333"
+      - "${KDBC_TEST_QDRANT_PORT:-36333}:6333"
     volumes:
       - qdrant_test_data:/qdrant/storage
     networks:
@@ -66,7 +66,7 @@ services:
       - DEBUG=True
       - LOG_LEVEL=DEBUG
     ports:
-      - "8001:8000"
+      - "${KDBC_TEST_BACKEND_PORT:-38000}:8000"
     volumes:
       - ./data/test:/app/data
       - ./backend:/app

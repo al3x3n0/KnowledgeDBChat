@@ -105,7 +105,7 @@ To switch, set `VECTOR_STORE_PROVIDER=qdrant|chroma` in `backend/.env`.
 
 1. **Create GitLab Source**
    ```bash
-   curl -X POST "http://localhost:8000/api/v1/documents/sources/" \
+   curl -X POST "http://localhost:28000/api/v1/documents/sources/" \
      -H "Authorization: Bearer YOUR_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -123,7 +123,7 @@ To switch, set `VECTOR_STORE_PROVIDER=qdrant|chroma` in `backend/.env`.
 
 2. **Create Confluence Source**
    ```bash
-   curl -X POST "http://localhost:8000/api/v1/documents/sources/" \
+   curl -X POST "http://localhost:28000/api/v1/documents/sources/" \
      -H "Authorization: Bearer YOUR_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -140,7 +140,7 @@ To switch, set `VECTOR_STORE_PROVIDER=qdrant|chroma` in `backend/.env`.
 
 3. **Create Web Source**
    ```bash
-   curl -X POST "http://localhost:8000/api/v1/documents/sources/" \
+   curl -X POST "http://localhost:28000/api/v1/documents/sources/" \
      -H "Authorization: Bearer YOUR_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -156,7 +156,7 @@ To switch, set `VECTOR_STORE_PROVIDER=qdrant|chroma` in `backend/.env`.
 
 4. **Create ArXiv Source**
    ```bash
-   curl -X POST "http://localhost:8000/api/v1/documents/sources/" \
+   curl -X POST "http://localhost:28000/api/v1/documents/sources/" \
      -H "Authorization: Bearer YOUR_TOKEN" \
      -H "Content-Type: application/json" \
      -d '{
@@ -184,7 +184,7 @@ For one-off pages (wikis/portals) you can ingest a URL directly into the Knowled
 
 Example:
 ```bash
-curl -X POST "http://localhost:8000/api/v1/documents/ingest-url" \
+curl -X POST "http://localhost:28000/api/v1/documents/ingest-url" \
   -H "Authorization: Bearer YOUR_TOKEN" \
   -H "Content-Type: application/json" \
   -d '{
@@ -311,13 +311,13 @@ celery_app.conf.beat_schedule = {
 
 ### Sync All Sources
 ```bash
-curl -X POST "http://localhost:8000/api/v1/admin/sync/all" \
+curl -X POST "http://localhost:28000/api/v1/admin/sync/all" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
 ### Sync Specific Source
 ```bash
-curl -X POST "http://localhost:8000/api/v1/admin/sync/source/SOURCE_ID" \
+curl -X POST "http://localhost:28000/api/v1/admin/sync/source/SOURCE_ID" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
@@ -335,25 +335,25 @@ print(f'Task ID: {task.id}')
 
 ### Check System Health
 ```bash
-curl "http://localhost:8000/api/v1/admin/health" \
+curl "http://localhost:28000/api/v1/admin/health" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
 ### View System Statistics
 ```bash
-curl "http://localhost:8000/api/v1/admin/stats" \
+curl "http://localhost:28000/api/v1/admin/stats" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
 ### Check Task Status
 ```bash
-curl "http://localhost:8000/api/v1/admin/tasks/status" \
+curl "http://localhost:28000/api/v1/admin/tasks/status" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
 ### View Logs
 ```bash
-curl "http://localhost:8000/api/v1/admin/logs?lines=100" \
+curl "http://localhost:28000/api/v1/admin/logs?lines=100" \
   -H "Authorization: Bearer YOUR_ADMIN_TOKEN"
 ```
 
@@ -475,4 +475,4 @@ DELETE /api/v1/documents/sources/{source_id}
 POST /api/v1/documents/sources/{source_id}/sync
 ```
 
-For complete API documentation, visit: http://localhost:8000/docs
+For complete API documentation, visit: http://localhost:28000/docs

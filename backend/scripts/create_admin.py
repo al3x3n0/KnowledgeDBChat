@@ -203,7 +203,7 @@ async def create_admin_user():
             print(f"   User ID: {admin_user.id}")
             
             print("\n🚀 You can now login to the admin dashboard at:")
-            print("   http://localhost:3000/admin")
+            print("   http://localhost:23000/admin")
             
         except Exception as e:
             print(f"❌ Error creating admin user: {e}")
@@ -356,7 +356,7 @@ async def create_regular_user():
             print(f"   Verified: {'Yes' if user.is_verified else 'No'}")
             
             print("\n🚀 You can now login at:")
-            print("   http://localhost:3000/login")
+            print("   http://localhost:23000/login")
             
         except Exception as e:
             print(f"❌ Error creating user: {e}")

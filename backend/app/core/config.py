@@ -14,8 +14,8 @@ class Settings(BaseSettings):
     """Application settings."""
 
     # Database
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/knowledge_db"
-    REDIS_URL: str = "redis://localhost:6379/0"
+    DATABASE_URL: str = "postgresql://user:password@localhost:25432/knowledge_db"
+    REDIS_URL: str = "redis://localhost:26379/0"
 
     # Database pool tuning (async engine)
     DB_POOL_SIZE: int = 20
@@ -151,7 +151,7 @@ class Settings(BaseSettings):
     VECTOR_STORE_PROVIDER: str = "qdrant"
 
     # Qdrant (when VECTOR_STORE_PROVIDER="qdrant")
-    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_URL: str = "http://localhost:26333"
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_COLLECTION_NAME: str = "knowledge_base"
 
@@ -270,8 +270,8 @@ class Settings(BaseSettings):
     MAX_VIDEO_SIZE: int = 2000 * 1024 * 1024  # 2GB for videos specifically
 
     # Celery
-    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
+    CELERY_BROKER_URL: str = "redis://localhost:26379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:26379/0"
 
     # Logging
     LOG_LEVEL: str = "INFO"
@@ -402,7 +402,7 @@ class Settings(BaseSettings):
     )
 
     # Kroki (local diagram rendering)
-    KROKI_URL: str = "http://localhost:8001"  # Local Kroki Docker container
+    KROKI_URL: str = "http://localhost:28001"  # Local Kroki Docker container
     KROKI_FALLBACK_URL: str = "https://kroki.io"  # External fallback
     KROKI_USE_FALLBACK: bool = True  # Fall back to external if local fails
     # Whether KROKI_URL points at a Kroki *companion* (one renderer, raw POST
@@ -426,7 +426,7 @@ class Settings(BaseSettings):
     LATEX_COMPILER_JOB_RUNNING_STALE_SECONDS: int = 5 * 60
 
     # MinIO Object Storage
-    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ENDPOINT: str = "localhost:29000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET_NAME: str = "documents"
@@ -434,14 +434,35 @@ class Settings(BaseSettings):
     MINIO_PRESIGNED_URL_EXPIRY: int = 3600  # 1 hour in seconds
     MINIO_PROXY_BASE_URL: Optional[
         str
-    ] = None  # Base URL for nginx proxy (e.g., "http://localhost:3000/minio")
+    ] = None  # Base URL for nginx proxy (e.g., "http://localhost:23000/minio")
 
     # Secrets vault
     SECRETS_ENCRYPTION_KEY: Optional[
         str
     ] = None  # Optional Fernet key (urlsafe base64, 32 bytes)
 
+    #: Wall-clock measurement runs one at a time per host. A swarm fans its
+    #: roles out in parallel and two of them then time each other's CPU
+    #: contention: measured, both roles of one swarm started benchmarking in
+    #: the same second and each reported 130-142% trial spread on a host they
+    #: had themselves saturated. Only timing takes the lock; compiles and
+    #: correctness checks stay parallel.
+    AGENT_MEASUREMENT_LOCK_ENABLED: bool = True
+    #: How long a measurement waits for the one ahead of it before going ahead
+    #: unserialised. It never fails the work -- a timing with a caveat beats no
+    #: timing -- and the result records `serialized: false` when it happens.
+    AGENT_MEASUREMENT_LOCK_WAIT_SECONDS: int = 180
+
     # Agent governance
+    #: When a swarm's merged verdict stops for a person: `never`,
+    #: `on_dispute` (roles disagreed, could not resolve, did not all finish,
+    #: or cross-checked nothing), or `always`. Per-job override via the job
+    #: config key `swarm_review_gate`.
+    #:
+    #: Default is not `always` on purpose: a gate met on every clean run is one
+    #: people learn to approve without reading, which costs attention and
+    #: protects nothing.
+    AGENT_SWARM_REVIEW_GATE: str = "on_dispute"
     AGENT_REQUIRE_TOOL_APPROVAL: bool = True
     AGENT_DANGEROUS_TOOLS: List[str] = [
         "delete_document",
@@ -467,6 +488,32 @@ class Settings(BaseSettings):
     REPO_SYMBOL_RETRIEVAL_ENABLED: bool = False
     # If enabled, autonomous agent jobs may directly apply code patches to the KB (writes).
     # Strongly recommended to keep disabled and use PatchPR review/merge instead.
+    #: Where coding workspaces live. On the shared data volume rather than a
+    #: temp directory, because the API and the celery workers are different
+    #: containers: a workspace under /tmp exists only in the process that made
+    #: it, so nothing can inspect the environment a measurement was taken in
+    #: once the job ends. Both mount ./data at /app/data already.
+    CODING_WORKSPACE_ROOT: str = "/app/data/workspaces"
+
+    #: How long a workspace's files are kept after the job that made it ends.
+    #: The environment a measurement was taken in is part of the evidence, and
+    #: a benchmark whose workspace has been deleted is a number nobody can
+    #: re-derive -- but a workspace is up to 100 MB, so keeping every one for
+    #: ever is not an option either. Expired ones are swept as later jobs
+    #: finish. Set to 0 to delete immediately, which is what this did before
+    #: workspaces were addressable at all.
+    CODING_WORKSPACE_RETENTION_HOURS: int = 72
+
+    #: A ceiling on what retained workspaces may occupy, in megabytes.
+    #:
+    #: Age alone does not bound disk: "keep everything for three days" costs
+    #: however many jobs run in three days, times up to 100 MB each, and that
+    #: number is not knowable in advance. A byte budget is the guarantee an
+    #: operator actually wants, so when the total exceeds it the OLDEST
+    #: retained workspaces are released early -- before their window expires.
+    #: 0 disables the ceiling and leaves only the age rule.
+    CODING_WORKSPACE_MAX_TOTAL_MB: int = 4096
+
     AGENT_KB_PATCH_APPLY_ENABLED: bool = False
 
     # Custom tools
@@ -503,6 +550,26 @@ class Settings(BaseSettings):
     DATASET_MAX_SIZE_MB: int = 500
     DATASET_MAX_SAMPLES: int = 100000
     DATASET_MAX_TOKEN_COUNT: int = 50000000  # 50M tokens
+
+    #: Browser origins allowed to call the API cross-origin. The UI is served
+    #: same-origin through nginx, so this matters only for a browser pointed
+    #: straight at the API port (and for a frontend dev server run outside
+    #: Docker). Host ports are configurable -- see KDBC_UI_PORT in the compose
+    #: files -- so this list has to be configurable with them rather than
+    #: hardcoded, which is what pinned it to :3000 through the port move.
+    #: Comma-separated, and a plain str rather than List[str] on purpose:
+    #: pydantic-settings JSON-decodes complex types straight from the
+    #: environment *before* any validator runs, so a List[str] here could not
+    #: be set from an ordinary env var at all -- "a,b" raises SettingsError at
+    #: startup instead of parsing. Read it through `cors_allowed_origins`.
+    CORS_ALLOWED_ORIGINS: str = (
+        "http://localhost:23000,http://127.0.0.1:23000,"
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
+
+    @property
+    def cors_allowed_origins(self) -> List[str]:
+        return [o.strip() for o in self.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
 
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
@@ -554,7 +621,7 @@ class Settings(BaseSettings):
         env_val = os.getenv("CELERY_BROKER_URL")
         if env_val:
             return env_val
-        return os.getenv("REDIS_URL", v or "redis://localhost:6379/0")
+        return os.getenv("REDIS_URL", v or "redis://localhost:26379/0")
 
     @field_validator("CELERY_RESULT_BACKEND", mode="before")
     @classmethod
@@ -562,7 +629,7 @@ class Settings(BaseSettings):
         env_val = os.getenv("CELERY_RESULT_BACKEND")
         if env_val:
             return env_val
-        return os.getenv("REDIS_URL", v or "redis://localhost:6379/0")
+        return os.getenv("REDIS_URL", v or "redis://localhost:26379/0")
 
 
 # Global settings instance

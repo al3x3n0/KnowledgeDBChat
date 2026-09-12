@@ -176,11 +176,11 @@ docker compose exec backend alembic current
 
 Open:
 
-- Web application: <http://localhost:3000>
-- Backend API: <http://localhost:8000>
-- OpenAPI documentation: <http://localhost:8000/docs>
-- MinIO console: <http://localhost:9001>
-- Kroki diagram service: <http://localhost:8001>
+- Web application: <http://localhost:23000>
+- Backend API: <http://localhost:28000>
+- OpenAPI documentation: <http://localhost:28000/docs>
+- MinIO console: <http://localhost:29001>
+- Kroki diagram service: <http://localhost:28001>
 
 Check the environment and service health:
 

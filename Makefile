@@ -8,6 +8,15 @@ DC ?= $(shell command -v docker-compose >/dev/null 2>&1 && echo docker-compose |
 # Default Ollama model to pull (override with `make pull-model MODEL=...`).
 MODEL ?= llama3.2:1b
 
+# Host ports the stack publishes. These mirror the defaults in
+# docker-compose.yml; setting them in .env moves both together, so the stack
+# can sit beside another project without a port fight.
+kdbc_env = $(or $(shell [ -f .env ] && sed -n 's/^$(1)=\(.*\)/\1/p' .env 2>/dev/null),$(2))
+KDBC_UI_PORT      ?= $(call kdbc_env,KDBC_UI_PORT,23000)
+KDBC_BACKEND_PORT ?= $(call kdbc_env,KDBC_BACKEND_PORT,28000)
+KDBC_MINIO_PORT   ?= $(call kdbc_env,KDBC_MINIO_PORT,29000)
+KDBC_VIDEO_PORT   ?= $(call kdbc_env,KDBC_VIDEO_PORT,28080)
+
 help: ## Show this help message
 	@echo "Knowledge Database Chat - Makefile Commands"
 	@echo ""
@@ -156,13 +165,13 @@ health: ## Check health of all services
 	@echo "Checking service health..."
 	@echo ""
 	@echo "Backend API:"
-	@curl -s http://localhost:8000/health || echo "❌ Backend not responding"
+	@curl -s http://localhost:$(KDBC_BACKEND_PORT)/health || echo "❌ Backend not responding"
 	@echo ""
 	@echo "Nginx:"
-	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3000/health || echo "❌ Nginx not responding"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:$(KDBC_UI_PORT)/health || echo "❌ Nginx not responding"
 	@echo ""
 	@echo "Frontend:"
-	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3000 || echo "❌ Frontend not responding"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:$(KDBC_UI_PORT) || echo "❌ Frontend not responding"
 	@echo ""
 	@echo "PostgreSQL:"
 	@$(DC) exec -T postgres pg_isready -U user || echo "❌ PostgreSQL not ready"
@@ -171,10 +180,10 @@ health: ## Check health of all services
 	@$(DC) exec -T redis redis-cli ping || echo "❌ Redis not responding"
 	@echo ""
 	@echo "MinIO:"
-	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:9000/minio/health/live || echo "❌ MinIO not responding"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:$(KDBC_MINIO_PORT)/minio/health/live || echo "❌ MinIO not responding"
 	@echo ""
 	@echo "Video streamer:"
-	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:8080/health || echo "❌ Video streamer not responding"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:$(KDBC_VIDEO_PORT)/health || echo "❌ Video streamer not responding"
 	@echo ""
 
 dev-backend: ## Start backend in development mode (manual setup)

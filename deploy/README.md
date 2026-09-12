@@ -173,11 +173,11 @@ Two things must agree with how a user actually opens the app:
      --build-arg REACT_APP_VIDEO_STREAM_URL=https://kdbc.example.com/video
    ```
 
-   Unset, the bundle falls back to `http://localhost:8000` and every request from
+   Unset, the bundle falls back to `http://localhost:28000` and every request from
    a deployed page misses the gateway. `REACT_APP_VIDEO_STREAM_URL` is what makes
-   video work off-compose: `getDocumentDownloadUrl` otherwise infers the streamer
-   route by testing the API base URL for port 3000, which only matches the
-   docker-compose layout, and falls through to `http://localhost:8080/stream/...`.
+   video work off-compose: `getDocumentDownloadUrl` otherwise uses the page origin
+   only when the API base URL shares it, which a gateway install does not
+   guarantee, and falls through to `http://localhost:28080/stream/...`.
    `bootstrap.sh` sets all three from `APP_URL`. **An origin change means
    rebuilding the frontend image** — don't combine a new `APP_URL` with
    `SKIP_BUILD=1`.

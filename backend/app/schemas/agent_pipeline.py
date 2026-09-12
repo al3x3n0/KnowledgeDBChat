@@ -64,6 +64,51 @@ class PipelineCheckResponse(BaseModel):
     budget: Optional[Dict[str, Any]] = None
 
 
+class PipelineEvidenceType(BaseModel):
+    """One finding type an author may require."""
+
+    name: str
+    producers: List[str] = Field(default_factory=list)
+    typical_seconds: int = 0
+    #: Job types every producer permits. Empty means unrestricted. A stage
+    #: requiring this evidence under any other job type plans tools it cannot
+    #: then call.
+    job_types: List[str] = Field(default_factory=list)
+    perishable: bool = False
+    consumes: str = ""
+
+
+class PipelineVocabularyResponse(BaseModel):
+    """What a stage editor may offer, and a drafter may use.
+
+    Served rather than hardcoded in the frontend for the same reason the
+    backend derives it from the tool specs: a second list of finding types
+    drifts from the tools the first time one is added.
+    """
+
+    evidence_types: List[PipelineEvidenceType] = Field(default_factory=list)
+    job_types: List[str] = Field(default_factory=list)
+
+
+class PipelineDraftRequest(BaseModel):
+    """Draft a pipeline from a description of what someone wants done."""
+
+    description: str = Field(..., min_length=1, max_length=4000)
+    budget_seconds: Optional[int] = Field(
+        None, gt=0, description="Shape the draft to roughly fit this budget"
+    )
+
+
+class PipelineDraftResponse(BaseModel):
+    spec: Dict[str, Any]
+    #: What the checker still says about it. A draft is a starting point, not
+    #: a finished pipeline, and one that does not check is still worth having
+    #: in the editor -- so this is reported rather than raised.
+    problems: List[str] = Field(default_factory=list)
+    #: Whether the first attempt had to be repaired against the checker.
+    repaired: bool = False
+
+
 class PipelineBindResponse(BaseModel):
     """The chain a pipeline compiles to, without launching anything."""
 
@@ -164,7 +209,11 @@ class PipelineRunStage(BaseModel):
     """One stage of one run, as a caller choosing a restart point needs it."""
 
     stage: str
-    job_id: str
+    #: Empty for a stage the run has not reached. A planned stage is still part
+    #: of the run and has to be shown as one -- a progress view built only from
+    #: the stages that have jobs reports "2 stages" at stage two of six and
+    #: looks finished.
+    job_id: str = ""
     status: str
     iteration: int
     #: Not the same question as `status`. A stage can complete without meeting
@@ -174,13 +223,51 @@ class PipelineRunStage(BaseModel):
     #: Whether this stage can be run again. A stage with a predecessor re-fires
     #: the chain from it; the head is re-run from its own definition, since the
     #: stage a run most often needs redone is the one that produced what
-    #: everything else derives from.
+    #: everything else derives from. False for a stage that has not started --
+    #: there is nothing yet to run again -- and for one that is running, which
+    #: is the collision the execution lease exists to prevent.
     restartable: bool
+
+    #: What the stage was asked to establish. Carried so a run can be read
+    #: without the spec that produced it beside you; a stage id alone is a
+    #: label, not a description of the work.
+    goal: str = ""
+    #: A stage that holds the run until a person approves it. The next stage
+    #: does not start on completion, so "completed and nothing happening" is
+    #: the expected state rather than a stall.
+    checkpoint: bool = False
+    #: `current_phase` says the job is parked on a person rather than working.
+    #: Distinguished from a plain status because a waiting run and a dead run
+    #: look identical in `status` alone.
+    waiting_on_person: bool = False
+    #: How many jobs this stage has had. More than one means it was restarted;
+    #: the fields above describe the most recent attempt.
+    attempts: int = 1
+    #: A person rejected some of this stage's evidence. Advisory -- no verdict
+    #: changed -- but a stage resting on rejected evidence must not read as
+    #: clean.
+    disputed: bool = False
+    progress: int = 0
+    started_at: Optional[str] = None
+    completed_at: Optional[str] = None
+    error: Optional[str] = None
 
 
 class PipelineRunStagesResponse(BaseModel):
     root_job_id: str
     stages: List[PipelineRunStage]
+
+    #: The run as a whole, derived from its stages rather than stored: there is
+    #: no row for a run, only a chain of jobs, so the chain is the only thing
+    #: that knows.
+    pipeline: str = ""
+    saved_pipeline_id: Optional[str] = None
+    status: str = "pending"
+    total_stages: int = 0
+    completed_stages: int = 0
+    #: The stage the run is on, or the one it stopped at. None when every stage
+    #: is done.
+    current_stage: Optional[str] = None
 
 
 class PipelineRestartRequest(BaseModel):

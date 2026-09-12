@@ -168,11 +168,13 @@ async def _rerun_the_head(
     time.
     """
     config = dict(head.config or {})
-    if note.strip():
+    notes = [note.strip()] if note.strip() else []
+    notes.extend(clue["note"] for clue in await _disputes_as_clues(head, db))
+    if notes:
         clues = config.get("operator_clues")
         if not isinstance(clues, list):
             clues = []
-        clues.append({"note": note.strip()[:2000], "iteration": 0})
+        clues.extend({"note": n[:2000], "iteration": 0} for n in notes)
         config["operator_clues"] = clues[-8:]
 
     child = AgentJob(
@@ -205,6 +207,47 @@ async def _rerun_the_head(
     execute_agent_job_task.delay(str(child.id), str(child.user_id))
     logger.info(f"Re-ran pipeline head {head.id} as job {child.id}")
     return child
+
+
+async def _disputes_as_clues(job: AgentJob, db: AsyncSession) -> List[Dict[str, Any]]:
+    """The rejections a person recorded against this stage's evidence.
+
+    This is what makes an advisory rejection worth making. A dispute that only
+    annotates a screen is a note in a drawer: the stage restarts, does exactly
+    what it did before, and produces the same result nobody believed. Attached
+    as operator clues, the rerun begins knowing which of its own results was
+    rejected and why.
+
+    Failures are swallowed deliberately. A restart that cannot read the
+    disputes should still restart -- losing the correction is bad, refusing to
+    rerun the stage is worse.
+    """
+    try:
+        from app.services import agent_evidence_view, agent_retraction_service
+
+        disputes = await agent_retraction_service.disputed_findings(
+            db, user_id=job.user_id, job_id=job.id
+        )
+        if not disputes:
+            return []
+        built = agent_evidence_view.build(job, disputes)
+        by_index = {item["index"]: item for item in built.get("evidence", [])}
+        clues: List[Dict[str, Any]] = []
+        for index, reason in sorted(disputes.items()):
+            item = by_index.get(index) or {}
+            subject = str(item.get("title") or item.get("type") or f"finding {index}")
+            clues.append(
+                {
+                    "note": (f"A previous attempt's {subject} was rejected: {reason}")[
+                        :2000
+                    ],
+                    "iteration": 0,
+                }
+            )
+        return clues
+    except Exception as error:  # noqa: BLE001 - see the docstring
+        logger.warning(f"Could not read disputes for stage {job.id}: {error}")
+        return []
 
 
 async def restart_from_stage(
@@ -280,6 +323,11 @@ async def restart_from_stage(
     child_config = {**child_config, "config": dict(child_config.get("config") or {})}
     if note.strip():
         _attach_correction(child_config, note.strip())
+    # Rejections recorded against what the previous attempt produced. Attached
+    # after the operator's note so the note reads last, and the run sees the
+    # person's own instruction alongside what it got wrong.
+    for clue in await _disputes_as_clues(target.job, db):
+        _attach_correction(child_config, clue["note"])
 
     # The parent fired its chain once already; without this the orchestration
     # would treat the stage as started and do nothing, silently.
@@ -475,3 +523,130 @@ async def insert_stage_after(
         f"as job {child.id}"
     )
     return child
+
+
+# --------------------------------------------------------------- run progress
+
+
+#: A stage's job that is waiting for a person rather than making progress. The
+#: same set the task layer uses to decide a job is not stalled -- a run parked
+#: on a checkpoint is not a run that died, and a progress view that cannot tell
+#: those apart sends someone to look for a failure that never happened.
+WAITING_ON_A_PERSON = frozenset({"awaiting_approval", "blocked_needs_input"})
+
+
+@dataclass(frozen=True)
+class PlannedStage:
+    """A stage this run intends to do, whether or not it has started."""
+
+    stage_id: str
+    goal: str
+    checkpoint: bool
+
+
+def stage_plan(root: AgentJob, by_stage: Dict[str, StageJob]) -> List[PlannedStage]:
+    """Every stage of the run in bound order, including ones not yet started.
+
+    `load_run` can only see stages that already have a job, which is exactly
+    the wrong set for a progress view: at stage two of six it reports two
+    stages and looks finished. The remaining four are in the chain configs,
+    which is where the run records what it was asked to do.
+
+    Where a stage has a job, that job's chain is preferred over the spec it was
+    created from: a stage inserted into a running pipeline is recorded on its
+    new parent and appears nowhere in the plan the root was bound with, so
+    reading the root's copy would show the run that was planned rather than the
+    run that is happening.
+    """
+    ordered: List[PlannedStage] = []
+    seen: set = set()
+
+    def walk(stage_id: str, spec: Dict[str, Any]) -> None:
+        if not stage_id or stage_id in seen:
+            # Bounded by construction, but a chain config is stored JSON and a
+            # cycle in it would otherwise hang the request that reads it.
+            return
+        seen.add(stage_id)
+
+        entry = by_stage.get(stage_id)
+        chain = None
+        if entry is not None and isinstance(entry.job.chain_config, dict):
+            chain = entry.job.chain_config
+        elif isinstance(spec.get("chain_config"), dict):
+            chain = spec["chain_config"]
+        chain = chain or {}
+
+        ordered.append(
+            PlannedStage(
+                stage_id=stage_id,
+                goal=str(spec.get("goal") or "").strip(),
+                # A checkpoint stage's own chain waits for a person. A leaf
+                # checkpoint has no chain to say so, which costs nothing: there
+                # is no next stage for it to hold up.
+                checkpoint=str(chain.get("trigger_condition") or "") == "on_approval",
+            )
+        )
+
+        for child in chain.get("child_jobs") or []:
+            if not isinstance(child, dict):
+                continue
+            config = (
+                child.get("config") if isinstance(child.get("config"), dict) else {}
+            )
+            walk(str(config.get("pipeline_stage") or "").strip(), child)
+
+    walk(
+        stage_of(root),
+        {"goal": root.goal or "", "chain_config": root.chain_config},
+    )
+
+    # A stage with a job that the walk never reached is still part of this run.
+    # It should not happen; if it does, dropping it would hide the one stage
+    # someone is looking at the page to find.
+    for stage_id in by_stage:
+        if stage_id not in seen:
+            seen.add(stage_id)
+            ordered.append(
+                PlannedStage(
+                    stage_id=stage_id,
+                    goal=str(by_stage[stage_id].job.goal or "").strip(),
+                    checkpoint=False,
+                )
+            )
+    return ordered
+
+
+def run_status(stages: List[Dict[str, Any]]) -> str:
+    """One word for what the whole run is doing.
+
+    Derived from the stages rather than stored, because there is no row for a
+    run -- it is a chain of jobs, and the chain is the only thing that knows.
+    """
+    statuses = [str(s.get("status") or "") for s in stages]
+    if any(s.get("waiting_on_person") for s in stages):
+        return "waiting"
+    if AgentJobStatus.RUNNING.value in statuses:
+        return "running"
+    if AgentJobStatus.FAILED.value in statuses:
+        return "failed"
+    if AgentJobStatus.CANCELLED.value in statuses:
+        return "cancelled"
+    if all(s == AgentJobStatus.COMPLETED.value for s in statuses) and statuses:
+        # Completed stages that did not meet their contracts is not a finished
+        # run, and calling it one is how a pipeline reports success for
+        # evidence it never produced.
+        if not all(s.get("contract_satisfied") for s in stages):
+            return "completed_unmet"
+        # A run whose contracts were all met, on evidence a person rejected.
+        # The rejection is advisory -- nothing downstream was invalidated and
+        # no verdict changed -- but a run resting on it must not read as clean.
+        # Advisory does not mean invisible.
+        if any(s.get("disputed") for s in stages):
+            return "completed_disputed"
+        return "completed"
+    if AgentJobStatus.PAUSED.value in statuses:
+        return "paused"
+    if statuses and all(s == AgentJobStatus.PENDING.value for s in statuses):
+        # Every stage still unstarted, including the head: queued, not running.
+        return "pending"
+    return "running" if statuses else "pending"

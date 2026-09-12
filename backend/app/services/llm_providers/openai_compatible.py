@@ -31,6 +31,26 @@ from .base import (
 _CLIENT_CACHE: Dict[tuple, Any] = {}
 
 
+def _mentions_json(messages: List[Dict[str, Any]]) -> bool:
+    """Whether any message contains the word json, in any case.
+
+    The condition the OpenAI-compatible `json_object` response format imposes
+    on the request. Checked over the converted messages, which are what is
+    actually sent.
+    """
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str) and "json" in content.lower():
+            return True
+        if isinstance(content, list):
+            # Multimodal content arrives as parts; only the text ones count.
+            for part in content:
+                text = part.get("text") if isinstance(part, dict) else None
+                if isinstance(text, str) and "json" in text.lower():
+                    return True
+    return False
+
+
 class OpenAICompatibleProvider(BaseLLMProvider):
     name = "openai"
 
@@ -110,6 +130,23 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 # json_object mode guarantees valid JSON but not schema shape;
                 # callers keep validating the payload downstream.
                 kwargs["response_format"] = {"type": "json_object"}
+                # DeepSeek (and OpenAI itself) REJECT json_object mode with a
+                # bare 400 unless some message contains the word "json". The
+                # error names nothing, so a caller who did not know the rule
+                # sees only "deepseek API error: 400" and reasonably blames the
+                # schema, the model name, or their key. Measured: a pipeline
+                # drafter failed exactly this way, and the fix is a word.
+                #
+                # Guaranteed here rather than asked of every caller, because a
+                # requirement that is invisible until it fails is not one a
+                # caller can be expected to remember.
+                if not _mentions_json(kwargs["messages"]):
+                    kwargs["messages"] = list(kwargs["messages"]) + [
+                        {
+                            "role": "system",
+                            "content": "Reply with a single valid JSON object.",
+                        }
+                    ]
 
         client = self._get_client()
         if timeout_seconds:

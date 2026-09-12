@@ -324,6 +324,27 @@ def _revisit_problems(pipeline: Pipeline) -> List[str]:
 def _stage_problems(stage: PipelineStage, pipeline: Pipeline) -> List[str]:
     problems: List[str] = []
 
+    # A stage that only waits for a person does no work, so there is nothing
+    # to instruct it to do -- the same carve-out that lets it demand nothing.
+    # Every other stage runs, and the goal is what it is told to do.
+    a_pure_gate = (
+        stage.checkpoint and not stage.required_finding_types() and not stage.runner
+    )
+    if not stage.goal.strip() and not a_pure_gate:
+        # The goal is what the running stage is actually told to do; the
+        # contract only says when it may stop. A stage with a contract and no
+        # goal validated, planned, and started with nothing to work toward.
+        #
+        # Found by a drafted pipeline that scored zero problems: the model had
+        # put every goal inside `contract.goal`, where nothing reads it, and
+        # five well-formed stages each began with an empty instruction. A
+        # checker that cannot tell that from a real pipeline is measuring the
+        # shape and not the content.
+        problems.append(
+            f"{stage.id}: has no goal. The contract says when the stage may "
+            "stop; the goal says what it is for, and the run is given the goal."
+        )
+
     for tool, allowed in _tools_the_job_type_cannot_call(stage):
         problems.append(
             f"{stage.id}: needs {tool}, which job_type {stage.job_type!r} may "

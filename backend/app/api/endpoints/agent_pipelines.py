@@ -29,32 +29,42 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
+from app.models.agent_job import AgentJobStatus
 from app.models.agent_pipeline import AgentPipeline
 from app.models.user import User
 from app.schemas.agent_job import AgentJobCreate
 from app.schemas.agent_pipeline import (
     PipelineBindResponse,
     PipelineCheckResponse,
+    PipelineDraftRequest,
+    PipelineDraftResponse,
+    PipelineEvidenceType,
+    PipelineInsertStageRequest,
+    PipelineInsertStageResponse,
     PipelineLaunchRequest,
     PipelineLaunchResponse,
     PipelinePlanResponse,
-    PipelineInsertStageRequest,
-    PipelineInsertStageResponse,
     PipelineRestartRequest,
     PipelineRestartResponse,
     PipelineRunStage,
     PipelineRunStagesResponse,
     PipelineSpecRequest,
+    PipelineVocabularyResponse,
     SavedPipelineCreate,
     SavedPipelineResponse,
     SavedPipelineUpdate,
     StagePlanResponse,
 )
-from app.services import agent_pipeline_binding, agent_pipeline_spec
-from app.services import agent_pipeline_restart
+from app.services import (
+    agent_pipeline_binding,
+    agent_pipeline_draft,
+    agent_pipeline_restart,
+    agent_pipeline_spec,
+    agent_pipeline_vocabulary,
+)
 from app.services.agent_job_creation_service import agent_job_creation_service
-from app.tasks.agent_job_tasks import execute_agent_job_task
 from app.services.auth_service import get_current_user
+from app.tasks.agent_job_tasks import execute_agent_job_task
 
 router = APIRouter()
 
@@ -145,6 +155,59 @@ async def check_pipeline(
         plan=plan_response,
         budget=budget,
     )
+
+
+@router.get("/vocabulary", response_model=PipelineVocabularyResponse)
+async def get_pipeline_vocabulary(
+    current_user: User = Depends(get_current_user),
+):
+    """The finding types a contract may require, and the job types available.
+
+    Served rather than duplicated in the frontend: a stage editor that offers
+    a list of its own drifts from the tools the first time one is added, and
+    the failure it causes -- a contract asking for evidence nothing produces --
+    is the most common way an authored pipeline fails its own check.
+    """
+    vocabulary = agent_pipeline_vocabulary.as_dict()
+    return PipelineVocabularyResponse(
+        evidence_types=[
+            PipelineEvidenceType(**e) for e in vocabulary["evidence_types"]
+        ],
+        job_types=list(vocabulary["job_types"]),
+    )
+
+
+@router.post("/draft", response_model=PipelineDraftResponse)
+async def draft_pipeline(
+    payload: PipelineDraftRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Draft a pipeline from a description. Launches nothing.
+
+    The blank state of the studio is a JSON document in a format nobody knows,
+    and the worked examples only help an author whose question resembles one of
+    them. The draft lands in the editor and is checked there like anything
+    else -- this endpoint spends one LLM call and starts no run.
+    """
+    from app.services.llm_service import LLMService
+
+    try:
+        spec, problems, repaired = await agent_pipeline_draft.draft_pipeline(
+            description=payload.description,
+            llm_service=LLMService(),
+            user_id=current_user.id,
+            db=db,
+            budget_seconds=payload.budget_seconds,
+        )
+    except agent_pipeline_draft.PipelineDraftError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+    logger.info(
+        f"Drafted pipeline '{spec.get('name')}' with "
+        f"{len(spec.get('stages') or [])} stages, {len(problems)} problems"
+    )
+    return PipelineDraftResponse(spec=spec, problems=problems, repaired=repaired)
 
 
 @router.post("/bind", response_model=PipelineBindResponse)
@@ -331,24 +394,110 @@ async def get_pipeline_run_stages(
         raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
 
     latest = agent_pipeline_restart.latest_per_stage(stages)
+    # Rejections a person recorded against any stage of this run. One query
+    # for the whole run rather than one per stage: a six-stage pipeline should
+    # not cost six round trips to say nothing was rejected.
+    from app.models.agent_retraction import RetractionKind
+    from app.services import agent_retraction_service
+
+    disputed_jobs: set = set()
+    try:
+        rows = await agent_retraction_service.retractions(
+            db, user_id=stages[0].job.user_id, kind=RetractionKind.FINDING
+        )
+        disputed_jobs = {str(r.subject_ref).split("#", 1)[0] for r in rows}
+    except Exception as error:  # noqa: BLE001
+        # The stage view is how someone decides where to restart; losing the
+        # disputed marker is worse than nothing but far better than a 500.
+        logger.warning(f"Could not read disputes for run {root_job_id}: {error}")
+
+    attempts: dict = {}
+    for entry in stages:
+        attempts[entry.stage_id] = attempts.get(entry.stage_id, 0) + 1
+
+    # The head of the chain, which is the only job holding the run's identity:
+    # which pipeline it came from, and the plan it was bound with.
+    root = next((s.job for s in stages if s.job.id == root_job_id), None)
+    if root is None:
+        root = stages[0].job
+    root_config = root.config if isinstance(root.config, dict) else {}
+
+    rendered: list = []
+    for planned in agent_pipeline_restart.stage_plan(root, latest):
+        entry = latest.get(planned.stage_id)
+        if entry is None:
+            # Planned, not started. Reported rather than omitted: a run is six
+            # stages long from the moment it launches, and a view that only
+            # counts the started ones cannot say how far through it is.
+            rendered.append(
+                PipelineRunStage(
+                    stage=planned.stage_id,
+                    status=AgentJobStatus.PENDING.value,
+                    iteration=0,
+                    contract_satisfied=False,
+                    restartable=False,
+                    goal=planned.goal,
+                    checkpoint=planned.checkpoint,
+                    attempts=0,
+                )
+            )
+            continue
+
+        job = entry.job
+        status = str(job.status or "")
+        phase = str(job.current_phase or "")
+        rendered.append(
+            PipelineRunStage(
+                stage=planned.stage_id,
+                job_id=str(job.id),
+                status=status,
+                iteration=int(job.iteration or 0),
+                contract_satisfied=entry.contract_met,
+                # Every stage that has run is restartable: one with a
+                # predecessor re-fires the chain from it, and the head is
+                # re-run from its own definition. This reported False for the
+                # head while the endpoint had just learned to do it -- a
+                # capability the API denied having. A stage still running is
+                # not offered, because the service refuses it: two runners on
+                # one stage is what the execution lease exists to stop.
+                restartable=status != AgentJobStatus.RUNNING.value,
+                goal=planned.goal or str(job.goal or ""),
+                checkpoint=planned.checkpoint,
+                waiting_on_person=phase in agent_pipeline_restart.WAITING_ON_A_PERSON,
+                attempts=attempts.get(planned.stage_id, 1),
+                disputed=str(job.id) in disputed_jobs,
+                progress=int(job.progress or 0),
+                started_at=job.started_at.isoformat() if job.started_at else None,
+                completed_at=job.completed_at.isoformat() if job.completed_at else None,
+                error=str(job.error) if job.error else None,
+            )
+        )
+
+    as_dicts = [stage.model_dump() for stage in rendered]
+    completed = sum(
+        1 for s in as_dicts if s["status"] == AgentJobStatus.COMPLETED.value
+    )
+    # The stage the run is on: the first that is not finished. A run whose
+    # every stage completed has none, and saying so is the difference between
+    # "on the last stage" and "done".
+    current = next(
+        (s["stage"] for s in as_dicts if s["status"] != AgentJobStatus.COMPLETED.value),
+        None,
+    )
+
     return PipelineRunStagesResponse(
         root_job_id=str(root_job_id),
-        stages=[
-            PipelineRunStage(
-                stage=stage_id,
-                job_id=str(entry.job.id),
-                status=str(entry.job.status or ""),
-                iteration=int(entry.job.iteration or 0),
-                contract_satisfied=entry.contract_met,
-                # Every stage is restartable now: one with a predecessor
-                # re-fires the chain from it, and the head is re-run from its
-                # own definition. This reported False for the head while the
-                # endpoint had just learned to do it -- a capability the API
-                # denied having.
-                restartable=True,
-            )
-            for stage_id, entry in latest.items()
-        ],
+        stages=rendered,
+        pipeline=str(root_config.get("pipeline") or root.name or ""),
+        saved_pipeline_id=(
+            str(root_config.get("saved_pipeline_id"))
+            if root_config.get("saved_pipeline_id")
+            else None
+        ),
+        status=agent_pipeline_restart.run_status(as_dicts),
+        total_stages=len(rendered),
+        completed_stages=completed,
+        current_stage=current,
     )
 
 

@@ -18,7 +18,7 @@
  */
 
 import dagre from 'dagre';
-import { AlertTriangle, PauseCircle, Repeat } from 'lucide-react';
+import { AlertTriangle, PauseCircle, Plus, Repeat } from 'lucide-react';
 import React, { useCallback, useMemo } from 'react';
 import ReactFlow, {
   Background,
@@ -30,6 +30,7 @@ import ReactFlow, {
   Position,
   ReactFlowProvider,
   Connection,
+  Panel,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
 
@@ -273,6 +274,40 @@ const PipelineGraphInner: React.FC<PipelineGraphProps> = ({
     [stages, writeStages]
   );
 
+  /** A stage that did not exist before.
+   *
+   *  The graph could wire stages together and delete them but never make one,
+   *  so authoring still meant dropping into the JSON -- which is the thing a
+   *  visual editor exists to avoid. It lands wired under whatever is selected,
+   *  because a new stage almost always continues the one being looked at, and
+   *  an unwired stage is a second disconnected root the checker then refuses.
+   *
+   *  Its contract is deliberately EMPTY rather than guessed. A stage requiring
+   *  evidence nobody asked for would validate and then plan tools for work the
+   *  author never wanted; empty fails the check loudly, which is the correct
+   *  state for a stage nobody has finished writing.
+   */
+  const addStage = useCallback(() => {
+    const taken = new Set(stages.map((s) => s.id));
+    let n = stages.length + 1;
+    while (taken.has(`stage-${n}`)) n += 1;
+    const id = `stage-${n}`;
+    const parent =
+      selectedStageId && taken.has(selectedStageId)
+        ? selectedStageId
+        : stages.length
+          ? stages[stages.length - 1].id
+          : null;
+    const created: PipelineStageSpec = {
+      id,
+      goal: '',
+      ...(parent ? { depends_on: [parent] } : {}),
+      contract: { required_finding_types: [] },
+    };
+    writeStages([...stages, created]);
+    onSelectStage(id);
+  }, [stages, selectedStageId, writeStages, onSelectStage]);
+
   const onNodesDelete = useCallback(
     (removed: Node[]) => {
       const gone = new Set(removed.map((n) => n.id));
@@ -307,6 +342,23 @@ const PipelineGraphInner: React.FC<PipelineGraphProps> = ({
     >
       <Background color="rgba(159,178,172,0.10)" gap={20} />
       <Controls showInteractive={false} />
+      <Panel position="top-right">
+        <button
+          type="button"
+          onClick={addStage}
+          className="inline-flex items-center gap-1 px-2 py-1 rounded-md text-xs
+            bg-gray-100 border border-gray-300 text-gray-700
+            hover:border-primary-500 hover:text-primary-700 transition-colors duration-fast"
+          title={
+            selectedStageId
+              ? `Add a stage after ${selectedStageId}`
+              : 'Add a stage at the end'
+          }
+        >
+          <Plus className="w-3 h-3" />
+          Add stage
+        </button>
+      </Panel>
     </ReactFlow>
   );
 };

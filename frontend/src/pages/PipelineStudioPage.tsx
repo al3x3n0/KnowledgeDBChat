@@ -20,6 +20,11 @@
  * budget — and it names the price and the stopping points before it starts.
  * The estimate on screen is sent with the request, so a spec edited since it
  * was priced is refused by the server rather than quietly costing more.
+ *
+ * A pipeline that has run also shows its last run: how far it got, which stage
+ * it is on, and whether the stages that finished produced what they promised.
+ * That belongs beside the editor rather than only on the job page, because the
+ * question a spec raises after it has run once is what it did the last time.
  */
 
 import clsx from 'clsx';
@@ -32,6 +37,7 @@ import {
   PauseCircle,
   Play,
   Save,
+  Sparkles,
   Trash2,
   Workflow,
 } from 'lucide-react';
@@ -41,8 +47,10 @@ import { useNavigate } from 'react-router-dom';
 
 import Button from '../components/common/Button';
 import PipelineGraph from '../components/pipelines/PipelineGraph';
+import PipelineRunProgress from '../components/pipelines/PipelineRunProgress';
+import StageInspector from '../components/pipelines/StageInspector';
 import { apiClient } from '../services/api';
-import type { PipelineCheck, SavedPipeline } from '../types';
+import type { PipelineCheck, PipelineVocabulary, SavedPipeline } from '../types';
 
 const STORAGE_KEY = 'pipeline_studio_draft_v1';
 
@@ -219,6 +227,68 @@ const PipelineStudioPage: React.FC = () => {
   // does not.
   const [openId, setOpenId] = useState<string | null>(null);
 
+  /** The evidence types a contract may require, and the job types. Fetched
+   *  once: it is derived from the tool specs and does not change under a
+   *  session. Without it the stage editor would be a text box, and typing an
+   *  evidence type nothing produces is the most common way a pipeline fails
+   *  its own check. */
+  const [vocabulary, setVocabulary] = useState<PipelineVocabulary | null>(null);
+  useEffect(() => {
+    apiClient
+      .getPipelineVocabulary()
+      .then(setVocabulary)
+      // The editor still works without it -- the text view is untouched and
+      // the checker is the real authority -- so this is not worth a toast.
+      .catch(() => {});
+  }, []);
+
+  const [describing, setDescribing] = useState('');
+  const [drafting, setDrafting] = useState(false);
+
+  /** Describe what you want; get a pipeline to edit.
+   *
+   *  The blank state here is a JSON document in a format nobody knows, and the
+   *  worked examples only help someone whose question resembles one of them.
+   *  What comes back is a STARTING POINT: it lands in the editor and is
+   *  checked there like anything typed by hand, and nothing is launched. */
+  const handleDraft = useCallback(async () => {
+    const wanted = describing.trim();
+    if (!wanted) return;
+    setDrafting(true);
+    try {
+      const budgetSeconds = budget.trim() ? Number(budget.trim()) : undefined;
+      const result = await apiClient.draftPipeline(
+        wanted,
+        Number.isFinite(budgetSeconds) && budgetSeconds ? budgetSeconds : undefined
+      );
+      setOpenId(null);
+      setSource(JSON.stringify(result.spec, null, 2));
+      setDescribing('');
+      if (result.problems.length) {
+        // Said plainly rather than hidden: a draft that does not check is
+        // still worth having, and the author needs to know it is theirs to
+        // finish rather than ready to run.
+        toast(
+          `Drafted, with ${result.problems.length} thing(s) still to fix — see the checks.`,
+          { icon: '\u26a0\ufe0f' }
+        );
+      } else {
+        toast.success(result.repaired ? 'Drafted (repaired once)' : 'Drafted');
+      }
+    } catch (error: any) {
+      toast.error(error?.response?.data?.detail || 'Could not draft a pipeline');
+    } finally {
+      setDrafting(false);
+    }
+  }, [describing, budget]);
+
+  /** The saved pipeline currently in the editor, when there is one. Its last
+   *  run is the only thing on this page that already cost something. */
+  const openPipeline = useMemo(
+    () => (openId ? saved.find((p) => p.id === openId) || null : null),
+    [openId, saved]
+  );
+
   const refreshSaved = useCallback(async () => {
     try {
       setSaved(await apiClient.listSavedPipelines());
@@ -347,6 +417,17 @@ const PipelineStudioPage: React.FC = () => {
     []
   );
 
+  /** The stage the graph has selected, read out of the spec rather than
+   *  stored: the spec is the only source of truth, so a selection that
+   *  survived a rename or a delete would point at something gone. */
+  const selectedStageObject = useMemo(() => {
+    if (!selectedStage || !parsed.value) return null;
+    const found = (parsed.value.stages || []).find(
+      (st: any) => String(st.id) === selectedStage
+    );
+    return found || null;
+  }, [selectedStage, parsed]);
+
   const problems = check?.problems || [];
   const bindingProblems = check?.binding_problems || [];
   const plan = check?.plan;
@@ -434,9 +515,39 @@ const PipelineStudioPage: React.FC = () => {
 
       <p className="text-sm text-gray-500 flex-none max-w-3xl">
         A stage says what must be <em>true</em> when it is done, not which tools to
-        run — those are derived from the contract. Everything below is decided
-        before anything starts, and nothing here launches a run.
+        run — those are derived from the contract. The checks below are decided
+        before anything starts; the run panel is the one part of this page
+        showing work that already happened.
       </p>
+
+      {/* Say what you want. The other way into a format nobody knows: the
+          starters only help an author whose question resembles one of them. */}
+      <div className="flex-none flex items-center gap-2">
+        <Sparkles className="w-4 h-4 text-primary-600 flex-none" />
+        <input
+          aria-label="Describe the pipeline you want"
+          value={describing}
+          onChange={(e) => setDescribing(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter' && !drafting) handleDraft();
+          }}
+          placeholder="Describe what you want done — e.g. read the FlashAttention paper, implement it, and check the speedup reproduces"
+          className="flex-1 px-2.5 py-1.5 text-sm rounded-md bg-gray-50 border border-gray-300
+            text-gray-900 placeholder:text-gray-500
+            shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.35)]
+            focus:outline-none focus:border-primary-600 focus:shadow-accent-glow"
+        />
+        <Button
+          size="sm"
+          variant="secondary"
+          loading={drafting}
+          disabled={drafting || !describing.trim()}
+          onClick={handleDraft}
+          title="Draft a pipeline from this description. Launches nothing."
+        >
+          Draft it
+        </Button>
+      </div>
 
       {saved.length > 0 && (
         <div className="flex-none flex flex-wrap gap-2" aria-label="Saved pipelines">
@@ -544,6 +655,53 @@ const PipelineStudioPage: React.FC = () => {
 
         {/* What is wrong with it, and what it will cost */}
         <div className="flex flex-col min-h-0 overflow-y-auto scrollbar-thin space-y-3">
+          {/* The selected stage, editable. Selecting a node used to only
+              highlight it, so everything a stage SAYS could still be changed
+              only as JSON. Writes a whole new spec like every other gesture,
+              so the text view cannot disagree with it. */}
+          {selectedStageObject && (
+            <StageInspector
+              stage={selectedStageObject}
+              allStageIds={(parsed.value?.stages || []).map((st: any) => String(st.id))}
+              vocabulary={vocabulary}
+              onChange={(next) => {
+                const stages = (parsed.value?.stages || []).map((st: any) =>
+                  String(st.id) === selectedStage ? next : st
+                );
+                applySpecFromGraph({ ...(parsed.value || {}), stages });
+                // Renaming a stage moves the selection with it, or the panel
+                // would close on the first keystroke in the id field.
+                if (next.id !== selectedStage) setSelectedStage(next.id);
+              }}
+              onDelete={() => {
+                const stages = (parsed.value?.stages || [])
+                  .filter((st: any) => String(st.id) !== selectedStage)
+                  // A dependency on a deleted stage is a problem the author
+                  // did not create, so it goes with it.
+                  .map((st: any) => ({
+                    ...st,
+                    depends_on: (st.depends_on || []).filter(
+                      (d: string) => d !== selectedStage
+                    ),
+                  }));
+                applySpecFromGraph({ ...(parsed.value || {}), stages });
+                setSelectedStage(null);
+              }}
+              onClose={() => setSelectedStage(null)}
+            />
+          )}
+
+          {/* And, for one that has run, what happened. Everything above this
+              is decided before anything starts; the run is the only thing on
+              the page that already spent something, so it goes first. */}
+          {openPipeline?.last_job_id && (
+            <PipelineRunProgress
+              key={openPipeline.last_job_id}
+              rootJobId={openPipeline.last_job_id}
+              onOpenJob={(jobId) => navigate(`/autonomous-agents?job=${jobId}`)}
+            />
+          )}
+
           {parseError && (
             <div className="rounded-lg border border-red-500/60 bg-red-500/10 p-3">
               <h3 className="section-heading mb-1 text-red-300">Not valid JSON</h3>

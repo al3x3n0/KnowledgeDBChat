@@ -21,7 +21,6 @@ import {
   humanizeSwarmOutcome,
   swarmOutcomeBadgeClass,
 } from '../../utils/agentJobDetail';
-import { swarmQuickStartPreset } from './swarmQuickStarts';
 import type { SwarmOutcomesState } from './useSwarmOutcomes';
 
 export interface SwarmOutcomesPanelProps {

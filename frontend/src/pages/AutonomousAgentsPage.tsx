@@ -70,7 +70,6 @@ import type {
   AgentJobQuickStartFrontendRegressionSwarmRequest,
   AgentJobQuickStartRepoBugTriageRequest,
   AgentJobQuickStartRoleWorkflowRequest,
-  AgentJobSwarmOutcomeCase,
   CollaborationSummary,
   CodingBacklogItem,
   CodingBacklogItemCreate,
@@ -146,7 +145,6 @@ import {
   humanizeDecisionTraceValue,
   humanizeSwarmOutcome,
   summarizeSchedulerState,
-  swarmOutcomeBadgeClass,
 } from '../utils/agentJobDetail';
 import { swarmQuickStartPreset } from '../components/agent/swarmQuickStarts';
 import { copyText } from '../utils/clipboard';
@@ -1197,7 +1195,6 @@ const AutonomousAgentsPage: React.FC = () => {
   const [swarmReviewAssignmentFilter, setSwarmReviewAssignmentFilter] = useState<string>('');
   const swarmOutcomes = useSwarmOutcomes(activeTab);
   const {
-    swarmOutcomeCases,
     swarmOutcomeBySwarmJobId,
     swarmOutcomeByRepairJobId,
   } = swarmOutcomes;

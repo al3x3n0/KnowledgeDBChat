@@ -161,6 +161,12 @@ class AgentCodingRunnerService:
                     "base_path": str(ws.base_path),
                     "error": None,
                 }
+                # The other place a workspace is born. Registered here for the
+                # same reason as in tool dispatch: unregistered, it exists only
+                # in the worker that made it.
+                await executor.workspace_manager.persist_record(
+                    ws, db, user_id=job.user_id, job_id=job.id
+                )
             except Exception as exc:
                 workspace_meta["error"] = str(exc)
 

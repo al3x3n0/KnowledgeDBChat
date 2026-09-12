@@ -15,6 +15,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional
 from uuid import UUID, uuid4
 
 from celery import current_task
+from celery.exceptions import SoftTimeLimitExceeded
 from loguru import logger
 from sqlalchemy import and_, delete, or_, select
 from sqlalchemy.orm import selectinload
@@ -22,15 +23,12 @@ from sqlalchemy.orm import selectinload
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
-from celery.exceptions import SoftTimeLimitExceeded
-
 from app.services.agent_execution_lease_service import (
     ExecutionLeaseLostError,
     agent_execution_lease_service,
 )
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
-
 
 #: Phases that mean a run is waiting for a human, not idling. The stalled-job
 #: sweep must leave these alone: resuming a job paused for approval is not
@@ -1185,3 +1183,43 @@ def advance_research_campaigns(limit: int = 25):
             return {"advanced": len(steps), "launched": len(launched)}
 
     return asyncio.run(_advance())
+
+
+@celery_app.task
+def sweep_coding_workspaces():
+    """Release workspaces past their retention window or over the disk budget.
+
+    Retention was swept only when a job finished, which made the policy read
+    "at least 72 hours" rather than "72 hours": on a quiet system expired
+    workspaces sat until something else happened to run. That is the wrong way
+    round -- an idle system is exactly the one nobody is watching, and the one
+    where a forgotten campaign's workspaces would sit for a week.
+
+    Two rules, and they answer different questions. The age rule says how long
+    the environment a measurement was taken in is worth keeping. The budget
+    says how much disk that is allowed to cost, which age alone cannot bound:
+    three days of a quiet week and three days of a campaign are the same policy
+    and wildly different numbers.
+    """
+    from app.core.config import settings
+    from app.services.coding_workspace_manager import CodingWorkspaceManager
+
+    async def _sweep():
+        session_factory = create_celery_session()
+        async with session_factory() as db:
+            manager = CodingWorkspaceManager()
+            hours = int(getattr(settings, "CODING_WORKSPACE_RETENTION_HOURS", 0) or 0)
+            expired = 0
+            if hours > 0:
+                expired = await manager.sweep_expired(db, hours=hours)
+            over = await manager.sweep_over_budget(
+                db,
+                max_total_mb=int(
+                    getattr(settings, "CODING_WORKSPACE_MAX_TOTAL_MB", 0) or 0
+                ),
+            )
+            if expired or over:
+                logger.info(f"Workspace sweep: {expired} expired, {over} over budget")
+            return {"expired": expired, "over_budget": over}
+
+    return asyncio.run(_sweep())

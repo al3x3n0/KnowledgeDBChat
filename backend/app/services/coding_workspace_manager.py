@@ -55,8 +55,50 @@ def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _workspace_root() -> Path:
+    """Where new workspaces are made.
+
+    The shared data volume, not `/tmp`. The agent runs in a celery worker and
+    the API answers in a different container, so a workspace under the
+    worker's own `/tmp` cannot be read by anything that would show it -- and
+    for a research pipeline the environment a number was measured in is part
+    of the evidence.
+
+    Falls back to a temp directory if the volume is not writable, because a
+    misconfigured root must not stop the agent from working: losing the ability
+    to INSPECT a workspace is a smaller failure than losing the ability to make
+    one.
+    """
+    from app.core.config import settings
+
+    root = Path(getattr(settings, "CODING_WORKSPACE_ROOT", "") or "")
+    if not root:
+        return Path(tempfile.mkdtemp(prefix="agent_ws_root_"))
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    except OSError as error:
+        logger.warning(
+            f"Coding workspace root {root} is not usable ({error}); "
+            "falling back to a temp directory, which no other process can read"
+        )
+        return Path(tempfile.mkdtemp(prefix="agent_ws_root_"))
+
+
+def _new_workspace_dir(workspace_id: str) -> Path:
+    """A directory for one workspace, named by its id.
+
+    Named rather than randomised so the path can be derived from the id alone:
+    a reader with the id and the volume can find the files without consulting
+    anything.
+    """
+    path = _workspace_root() / workspace_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 class CodingWorkspaceManager:
-    """Manages temporary coding workspaces for agent jobs."""
+    """Manages coding workspaces for agent jobs."""
 
     def __init__(self) -> None:
         self._workspaces: Dict[str, CodingWorkspace] = {}
@@ -82,7 +124,7 @@ class CodingWorkspaceManager:
         from app.models.document import Document
 
         workspace_id = str(uuid.uuid4())
-        base_path = Path(tempfile.mkdtemp(prefix=f"agent_ws_{workspace_id[:8]}_"))
+        base_path = _new_workspace_dir(workspace_id)
 
         # Query code documents from the source.
         result = await db.execute(
@@ -154,7 +196,7 @@ class CodingWorkspaceManager:
         caller before invoking this method.
         """
         workspace_id = str(uuid.uuid4())
-        base_path = Path(tempfile.mkdtemp(prefix=f"agent_ws_{workspace_id[:8]}_"))
+        base_path = _new_workspace_dir(workspace_id)
 
         cmd = ["git", "clone", "--depth", "1"]
         if branch:
@@ -213,7 +255,133 @@ class CodingWorkspaceManager:
     # ------------------------------------------------------------------
 
     def get(self, workspace_id: str) -> Optional[CodingWorkspace]:
+        """The workspace, if this process made it.
+
+        Deliberately still synchronous and still process-local: this is the
+        agent's path, it always holds the workspace it is working in, and
+        making it async would ripple through every coding tool for no gain.
+        A reader in another process uses `load_record` instead.
+        """
         return self._workspaces.get(workspace_id)
+
+    # ------------------------------------------------------------------
+    # The registry: how a workspace is found from another process
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _record_state(workspace: CodingWorkspace) -> Dict[str, Any]:
+        """What reading the directory cannot recover.
+
+        Chiefly the hashes of the files it started with. Without those there
+        is no way to say what the run CHANGED, which is the question a reviewer
+        actually asks -- the directory alone shows only what it ends with.
+        """
+        return {
+            "original_hashes": dict(workspace.original_hashes or {}),
+            "checkpoints": {
+                str(k): v for k, v in (workspace.checkpoints or {}).items()
+            },
+            "checkpoint_root": (
+                str(workspace.checkpoint_root) if workspace.checkpoint_root else ""
+            ),
+            "session_id": workspace.session_id or "",
+        }
+
+    async def persist_record(
+        self,
+        workspace: CodingWorkspace,
+        db: Any,
+        *,
+        user_id: Any,
+        job_id: Any = None,
+        status: str = "active",
+    ) -> None:
+        """Record the workspace so another process can find it.
+
+        Best-effort on purpose. A workspace that cannot be registered is still
+        a workspace the agent can work in; refusing to run because the registry
+        write failed would trade a missing view for a missing capability.
+        """
+        try:
+            from sqlalchemy import select
+
+            from app.models.coding_workspace import CodingWorkspaceRecord
+
+            existing = (
+                await db.execute(
+                    select(CodingWorkspaceRecord).where(
+                        CodingWorkspaceRecord.id == uuid.UUID(workspace.workspace_id)
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if existing is None:
+                existing = CodingWorkspaceRecord(
+                    id=uuid.UUID(workspace.workspace_id),
+                    user_id=user_id,
+                    owner_job_id=job_id,
+                    base_path=str(workspace.base_path),
+                    source_id=workspace.source_id,
+                    repo_url=workspace.repo_url,
+                    branch=workspace.branch,
+                )
+                db.add(existing)
+
+            existing.state = self._record_state(workspace)
+            existing.status = status
+            existing.last_used_at = datetime.now(timezone.utc)
+            await db.commit()
+        except Exception as error:  # noqa: BLE001 - see the docstring
+            logger.warning(
+                f"Could not register workspace {workspace.workspace_id}: {error}"
+            )
+
+    async def load_record(
+        self, workspace_id: str, db: Any
+    ) -> Optional[CodingWorkspace]:
+        """Rebuild a workspace handle from the registry, for a reader.
+
+        Returns None when the row is missing OR when the directory it names is
+        gone: a handle onto files that no longer exist would fail on the first
+        read with a confusing error, and "the workspace was discarded" is a
+        different answer from "there is no such workspace".
+        """
+        try:
+            from sqlalchemy import select
+
+            from app.models.coding_workspace import CodingWorkspaceRecord
+
+            row = (
+                await db.execute(
+                    select(CodingWorkspaceRecord).where(
+                        CodingWorkspaceRecord.id == uuid.UUID(str(workspace_id))
+                    )
+                )
+            ).scalar_one_or_none()
+        except Exception as error:  # noqa: BLE001
+            logger.warning(f"Could not read workspace {workspace_id}: {error}")
+            return None
+
+        if row is None:
+            return None
+        base_path = Path(str(row.base_path))
+        if not base_path.is_dir():
+            return None
+
+        state = row.state if isinstance(row.state, dict) else {}
+        checkpoint_root = str(state.get("checkpoint_root") or "")
+        return CodingWorkspace(
+            workspace_id=str(row.id),
+            base_path=base_path,
+            source_id=row.source_id,
+            repo_url=row.repo_url,
+            branch=row.branch,
+            owner_job_id=str(row.owner_job_id) if row.owner_job_id else None,
+            session_id=str(state.get("session_id") or "") or None,
+            original_hashes=dict(state.get("original_hashes") or {}),
+            checkpoint_root=Path(checkpoint_root) if checkpoint_root else None,
+            checkpoints=dict(state.get("checkpoints") or {}),
+        )
 
     def get_or_default(
         self, workspace_id: Optional[str], state: Dict[str, Any]
@@ -277,9 +445,21 @@ class CodingWorkspaceManager:
 
         checkpoint_id = f"checkpoint-{uuid.uuid4().hex[:16]}"
         if workspace.checkpoint_root is None:
-            workspace.checkpoint_root = Path(
-                tempfile.mkdtemp(prefix=f"agent_cp_{workspace.workspace_id[:8]}_")
-            )
+            # Beside the workspace on the shared volume, not in the worker's
+            # /tmp. A checkpoint exists to be restored from after something
+            # went wrong, and the thing that most often goes wrong takes the
+            # worker with it -- which used to take every checkpoint too.
+            #
+            # `.checkpoints` is a sibling of the tree rather than inside it, so
+            # a checkpoint never contains the previous checkpoints.
+            root = workspace.base_path.parent / f"{workspace.workspace_id}.checkpoints"
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+                workspace.checkpoint_root = root
+            except OSError:
+                workspace.checkpoint_root = Path(
+                    tempfile.mkdtemp(prefix=f"agent_cp_{workspace.workspace_id[:8]}_")
+                )
         target_root = workspace.checkpoint_root / checkpoint_id
         target_root.mkdir(parents=True, exist_ok=False)
         total_files = 0
@@ -715,6 +895,51 @@ class CodingWorkspaceManager:
                         return results
         return results
 
+    async def unified_diff(
+        self, workspace: CodingWorkspace, path: str, timeout: int = 15
+    ) -> Optional[str]:
+        """The line-level change to one file, when the workspace has git.
+
+        A workspace cloned from a repository keeps its `.git` (the clone is
+        `--depth 1`, which is shallow in history, not in working tree), so the
+        real diff is already there and only needed asking for. A workspace
+        built from knowledge-base documents has no git and no stored originals,
+        and for those this returns None -- which the caller must present as
+        "the change cannot be shown" rather than "there was no change".
+
+        Read-only by construction. `git diff` alone: no `add -N` to pick up
+        untracked files, because that writes to the index, and a window that
+        quietly modifies the workspace it is showing you is not a window.
+        Untracked files are reported as added by `get_status`, and their whole
+        content is the change.
+        """
+        if not (workspace.base_path / ".git").is_dir():
+            return None
+        target = self.safe_resolve(workspace, path)
+        if target is None:
+            return None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "--no-pager",
+                "diff",
+                "--",
+                path,
+                cwd=str(workspace.base_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except (asyncio.TimeoutError, OSError) as error:
+            logger.warning(f"git diff failed in {workspace.workspace_id}: {error}")
+            return None
+        patch = stdout.decode("utf-8", errors="replace")
+        # An empty patch means git knows the file and it is unchanged. That is
+        # a real answer, and distinct from None, which means git cannot say.
+        return patch
+
     def get_status(self, workspace: CodingWorkspace) -> Dict[str, Any]:
         """Compare current workspace files against originals."""
         current_files: Dict[str, str] = {}
@@ -988,6 +1213,188 @@ class CodingWorkspaceManager:
             shutil.rmtree(ws.checkpoint_root, ignore_errors=True)
 
     def cleanup_all(self) -> None:
-        """Clean up all active workspaces."""
+        """Delete every workspace this process made, files and all.
+
+        Kept for callers that genuinely want the files gone now. The job
+        finaliser uses `release_all` instead, because deleting the workspace at
+        the end of the run is what made a measurement impossible to re-derive.
+        """
         for wid in list(self._workspaces):
             self.cleanup(wid)
+
+    async def release_all(self, db: Any, *, user_id: Any, job_id: Any = None) -> None:
+        """Finish with this process's workspaces without destroying them.
+
+        The old behaviour deleted every directory the moment the job ended,
+        which is why the environment a number was measured in could never be
+        inspected afterwards. Now the files are kept for
+        `CODING_WORKSPACE_RETENTION_HOURS` and the row says `retained`.
+
+        A retention window needs a sweep or it is just a slower leak, so
+        expired workspaces are removed here -- as later jobs finish, rather
+        than on a timer. That keeps the cost proportional to how much the
+        system is used and needs no new scheduled task.
+        """
+        from app.core.config import settings
+
+        hours = int(getattr(settings, "CODING_WORKSPACE_RETENTION_HOURS", 0) or 0)
+
+        if hours <= 0:
+            # Explicitly configured to keep nothing. Record that the files are
+            # gone rather than leaving rows that promise a directory which no
+            # longer exists.
+            for wid in list(self._workspaces):
+                workspace = self._workspaces.get(wid)
+                if workspace is not None:
+                    await self.persist_record(
+                        workspace,
+                        db,
+                        user_id=user_id,
+                        job_id=job_id,
+                        status="discarded",
+                    )
+            self.cleanup_all()
+            return
+
+        for wid in list(self._workspaces):
+            workspace = self._workspaces.get(wid)
+            if workspace is None:
+                continue
+            await self.persist_record(
+                workspace, db, user_id=user_id, job_id=job_id, status="retained"
+            )
+        # Dropped from this process's dict but left on disk: the agent is done
+        # with them and a reader finds them through the registry.
+        self._workspaces.clear()
+
+        await self.sweep_expired(db, hours=hours)
+        await self.sweep_over_budget(
+            db,
+            max_total_mb=int(
+                getattr(settings, "CODING_WORKSPACE_MAX_TOTAL_MB", 0) or 0
+            ),
+        )
+
+    @staticmethod
+    def _tree_bytes(path: Path) -> int:
+        """How much disk a workspace occupies. Missing is zero, not an error."""
+        total = 0
+        try:
+            for root, _dirs, files in os.walk(path):
+                for name in files:
+                    try:
+                        total += (Path(root) / name).stat().st_size
+                    except OSError:
+                        continue
+        except OSError:
+            return 0
+        return total
+
+    async def _discard(self, row: Any, db: Any) -> bool:
+        """Remove one workspace's files, keeping the row.
+
+        Knowing a workspace existed and its files are gone is different
+        information from never having heard of it, and a finding that cites it
+        should still be traceable.
+        """
+        path = Path(str(row.base_path))
+        try:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            checkpoints = path.parent / f"{row.id}.checkpoints"
+            if checkpoints.is_dir():
+                shutil.rmtree(checkpoints, ignore_errors=True)
+        except OSError as error:
+            logger.warning(f"Could not remove workspace {row.id}: {error}")
+            return False
+        row.status = "discarded"
+        return True
+
+    async def sweep_over_budget(self, db: Any, *, max_total_mb: int) -> int:
+        """Release the oldest retained workspaces until the total fits.
+
+        The age rule says how long evidence is worth keeping; this says how
+        much disk that is allowed to cost. Without it, retention is a promise
+        whose price nobody can predict -- three days of a quiet week and three
+        days of a campaign are the same policy and wildly different numbers.
+
+        Oldest first, because the least recently used workspace is the one
+        least likely to be the subject of a question someone is asking now.
+        """
+        if max_total_mb <= 0:
+            return 0
+        removed = 0
+        try:
+            from sqlalchemy import select
+
+            from app.models.coding_workspace import CodingWorkspaceRecord
+
+            rows = (
+                (
+                    await db.execute(
+                        select(CodingWorkspaceRecord)
+                        .where(CodingWorkspaceRecord.status == "retained")
+                        .order_by(CodingWorkspaceRecord.last_used_at.desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            budget = int(max_total_mb) * 1024 * 1024
+            used = 0
+            # Newest first: everything that fits under the budget is kept, and
+            # the tail that does not is released.
+            for row in rows:
+                size = self._tree_bytes(Path(str(row.base_path)))
+                if used + size <= budget:
+                    used += size
+                    continue
+                if await self._discard(row, db):
+                    removed += 1
+            if removed:
+                await db.commit()
+                logger.info(
+                    f"Released {removed} workspace(s) to stay under "
+                    f"{max_total_mb} MB"
+                )
+        except Exception as error:  # noqa: BLE001 - a sweep must not fail a job
+            logger.warning(f"Workspace budget sweep failed: {error}")
+        return removed
+
+    async def sweep_expired(self, db: Any, *, hours: int) -> int:
+        """Delete retained workspaces older than the retention window.
+
+        Best-effort, like registration: a sweep that fails must not fail the
+        job whose finaliser called it.
+        """
+        removed = 0
+        try:
+            from datetime import timedelta
+
+            from sqlalchemy import select
+
+            from app.models.coding_workspace import CodingWorkspaceRecord
+
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            rows = (
+                (
+                    await db.execute(
+                        select(CodingWorkspaceRecord)
+                        .where(CodingWorkspaceRecord.status == "retained")
+                        .where(CodingWorkspaceRecord.last_used_at < cutoff)
+                        .limit(50)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            for row in rows:
+                if await self._discard(row, db):
+                    removed += 1
+            if removed:
+                await db.commit()
+        except Exception as error:  # noqa: BLE001 - see the docstring
+            logger.warning(f"Workspace sweep failed: {error}")
+        return removed

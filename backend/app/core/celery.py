@@ -174,6 +174,17 @@ celery_app.conf.beat_schedule = {
         "task": "app.tasks.agent_job_tasks.advance_research_campaigns",
         "schedule": crontab(minute="*/5"),
     },
+    # Release coding workspaces past their retention window or over the disk
+    # budget (hourly).
+    #
+    # Also swept when a job finishes, which is cheaper and more timely -- but
+    # only when something runs. On an idle system that made retention mean "at
+    # least 72 hours", and an idle system is exactly the one nobody is
+    # watching.
+    "sweep-coding-workspaces": {
+        "task": "app.tasks.agent_job_tasks.sweep_coding_workspaces",
+        "schedule": crontab(minute="17"),
+    },
     # Resume paused agent jobs (every 15 minutes)
     "resume-paused-agent-jobs": {
         "task": "app.tasks.agent_job_tasks.resume_paused_agent_jobs",

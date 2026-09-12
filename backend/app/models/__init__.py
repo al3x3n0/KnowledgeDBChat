@@ -19,6 +19,7 @@ from .agent_job import (
     ChainTriggerCondition,
 )
 from .agent_method_outcome import AgentMethodOutcome
+from .agent_pipeline import AgentPipeline
 from .agent_prediction import AgentPrediction
 from .agent_retraction import AgentRetraction, RetractionKind
 from .agent_tool_prior import AgentToolPrior
@@ -37,12 +38,12 @@ from .chat import ChatMessage, ChatSession
 from .code_patch_proposal import CodePatchProposal
 from .coding_backlog import CodingBacklogItem
 from .coding_swarm_profile import CodingSwarmProfile
+from .coding_workspace import CodingWorkspaceRecord
 from .compops_evidence_subscription import (
     CompOpsEvidenceSubscription,
     CompOpsWebhookEvent,
 )
 from .document import Document, DocumentChunk, DocumentSource
-from .agent_pipeline import AgentPipeline
 from .document_folder import DocumentFolder, DocumentFolderItem
 from .domain_research_profile import DomainResearchProfile
 from .experiment import ExperimentPlan, ExperimentRun
@@ -216,6 +217,7 @@ __all__ = [
     "LatexProject",
     "LatexProjectFile",
     "CodingBacklogItem",
+    "CodingWorkspaceRecord",
     "CodingSwarmProfile",
     "CompOpsEvidenceSubscription",
     "CompOpsWebhookEvent",

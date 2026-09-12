@@ -136,6 +136,8 @@ export const JobCard: React.FC<JobCardProps> = ({
           : graphHealthStatus === 'ok'
             ? 'bg-emerald-50 text-emerald-700 border-emerald-100'
             : 'bg-gray-50 text-gray-700 border-gray-100';
+    const pipelineStage = String((job.config as any)?.pipeline_stage || '').trim();
+    const pipelineName = String((job.config as any)?.pipeline || '').trim();
     const launchMode = String((job as any)?.launch_mode || ((job.config as any)?.launch_mode || '')).toLowerCase();
     const relaunchFromJobId = String((job as any)?.relaunch_from_job_id || ((job.config as any)?.relaunch_from_job_id || '')).trim();
     const relaunchChildrenCount = Math.max(0, Number((job as any)?.relaunch_children_count || 0));
@@ -601,7 +603,14 @@ export const JobCard: React.FC<JobCardProps> = ({
           <div className="flex items-center gap-2 mt-2 pt-2 border-t border-gray-100">
             <GitBranch className="w-3 h-3 text-purple-500" />
             <span className="text-xs text-purple-600">
-              {job.parent_job_id ? `Step ${job.chain_depth + 1} in chain` : 'Chain root'}
+              {/* A pipeline stage knows the name of the thing it is a step of,
+                  and "Step 3 in chain" throws that away — which is the whole
+                  problem with reading a pipeline one job at a time. */}
+              {pipelineStage
+                ? `${pipelineName ? `${pipelineName} · ` : ''}${pipelineStage}`
+                : job.parent_job_id
+                  ? `Step ${job.chain_depth + 1} in chain`
+                  : 'Chain root'}
               {job.chain_triggered && ' • Children triggered'}
             </span>
             <button

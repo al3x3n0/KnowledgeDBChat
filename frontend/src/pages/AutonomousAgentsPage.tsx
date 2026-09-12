@@ -16,12 +16,15 @@ import {
   Brain,
   Bug,
   CheckCircle2,
+  ChevronDown,
+  ChevronUp,
   Clock,
   Download,
   Eye,
   FileCheck,
   FileDown,
   FileText,
+  Filter,
   GitBranch,
   Inbox,
   Layers,
@@ -137,7 +140,10 @@ import {
 import { getLatestExperimentRun } from '../components/agent/jobFields';
 import JobCard from '../components/agent/JobCard';
 import JobDetailPanel from '../components/agent/JobDetailPanel';
+import SwarmOutcomesPanel from '../components/agent/SwarmOutcomesPanel';
+import useSwarmOutcomes from '../components/agent/useSwarmOutcomes';
 import {
+  humanizeDecisionTraceValue,
   humanizeSwarmOutcome,
   summarizeSchedulerState,
   swarmOutcomeBadgeClass,
@@ -681,9 +687,6 @@ const scientificResearchPackBlueprint = (repoSourceIds: string[]) => {
 const humanizeScientificValidationReason = (value?: string | null) =>
   String(value || '').trim().replaceAll('_', ' ') || 'unknown reason';
 
-const humanizeDecisionTraceValue = (value?: string | null) =>
-  String(value || '').trim().replaceAll('_', ' ') || 'unknown';
-
 const decisionTraceSeverityClasses = (value?: string | null) => {
   const normalized = String(value || '').trim().toLowerCase();
   if (normalized === 'high') return 'bg-rose-100 text-rose-700';
@@ -1132,6 +1135,11 @@ const AutonomousAgentsPage: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'queue' | 'trace' | 'health' | 'jobs' | 'swarm' | 'outcomes' | 'profiles' | 'templates' | 'chains' | 'inbox' | 'backlog' | 'domain' | 'fleet' | 'create'>('jobs');
   const [showSystemMap, setShowSystemMap] = useState(false);
   const [selectedJob, setSelectedJob] = useState<AgentJob | null>(null);
+  // The jobs filter row holds twelve controls and is collapsed by default.
+  // Most visits to this page are "what is running", not "narrow this down",
+  // and twelve controls charged against every one of those visits is the bulk
+  // of why the page reads as cluttered.
+  const [showJobFilters, setShowJobFilters] = useState<boolean>(false);
   const [statusFilter, setStatusFilter] = useState<string>('');
   const [typeFilter, setTypeFilter] = useState<string>('');
   const [launchModeFilter, setLaunchModeFilter] = useState<string>('');
@@ -1187,11 +1195,12 @@ const AutonomousAgentsPage: React.FC = () => {
   const [swarmReviewBacklogFilter, setSwarmReviewBacklogFilter] = useState<string>('');
   const [swarmReviewVisibilityScope, setSwarmReviewVisibilityScope] = useState<'mine' | 'shared' | 'all'>('mine');
   const [swarmReviewAssignmentFilter, setSwarmReviewAssignmentFilter] = useState<string>('');
-  const [swarmOutcomePresetFilter, setSwarmOutcomePresetFilter] = useState<string>('');
-  const [swarmOutcomeTerminalFilter, setSwarmOutcomeTerminalFilter] = useState<string>('');
-  const [swarmOutcomePromotionFilter, setSwarmOutcomePromotionFilter] = useState<string>('');
-  const [swarmOutcomeDateRange, setSwarmOutcomeDateRange] = useState<string>('all');
-  const [swarmOutcomeVisibilityScope, setSwarmOutcomeVisibilityScope] = useState<'mine' | 'shared' | 'all'>('mine');
+  const swarmOutcomes = useSwarmOutcomes(activeTab);
+  const {
+    swarmOutcomeCases,
+    swarmOutcomeBySwarmJobId,
+    swarmOutcomeByRepairJobId,
+  } = swarmOutcomes;
   const [profilePresetFilter, setProfilePresetFilter] = useState<string>('');
   const [profileSourceFilter, setProfileSourceFilter] = useState<string>('');
   const [profileStatusFilter, setProfileStatusFilter] = useState<string>('');
@@ -2625,30 +2634,6 @@ const AutonomousAgentsPage: React.FC = () => {
     {
       enabled: activeTab === 'swarm',
       refetchInterval: 15000,
-    }
-  );
-  const swarmOutcomeDateFrom = useMemo(() => {
-    if (swarmOutcomeDateRange === '7d') {
-      return new Date(Date.now() - (7 * 24 * 60 * 60 * 1000)).toISOString();
-    }
-    if (swarmOutcomeDateRange === '30d') {
-      return new Date(Date.now() - (30 * 24 * 60 * 60 * 1000)).toISOString();
-    }
-    return undefined;
-  }, [swarmOutcomeDateRange]);
-  const { data: swarmOutcomeAnalyticsData, isLoading: swarmOutcomeAnalyticsLoading, refetch: refetchSwarmOutcomeAnalytics } = useQuery(
-    ['agent-job-swarm-outcomes', swarmOutcomePresetFilter, swarmOutcomeTerminalFilter, swarmOutcomePromotionFilter, swarmOutcomeDateFrom, swarmOutcomeVisibilityScope],
-    () =>
-      apiClient.getAgentJobSwarmOutcomeAnalytics({
-        preset_key: swarmOutcomePresetFilter || undefined,
-        terminal_outcome: swarmOutcomeTerminalFilter || undefined,
-        promotion_mode: swarmOutcomePromotionFilter || undefined,
-        visibility_scope: swarmOutcomeVisibilityScope,
-        date_from: swarmOutcomeDateFrom,
-      }),
-    {
-      enabled: ['outcomes', 'jobs', 'swarm', 'backlog'].includes(activeTab),
-      refetchInterval: activeTab === 'outcomes' ? 15000 : false,
     }
   );
   const { data: domainProfilesData, isLoading: domainProfilesLoading, refetch: refetchDomainProfiles } = useQuery(
@@ -7119,26 +7104,6 @@ const AutonomousAgentsPage: React.FC = () => {
     }
     return out;
   }, [backlogItems]);
-  const swarmOutcomeCases = useMemo(
-    () => ((((swarmOutcomeAnalyticsData as any)?.cases || []) as AgentJobSwarmOutcomeCase[])),
-    [swarmOutcomeAnalyticsData]
-  );
-  const swarmOutcomeBySwarmJobId = useMemo(() => {
-    const out: Record<string, AgentJobSwarmOutcomeCase> = {};
-    for (const item of swarmOutcomeCases) {
-      const key = String(item?.swarm_job_id || '').trim();
-      if (key) out[key] = item;
-    }
-    return out;
-  }, [swarmOutcomeCases]);
-  const swarmOutcomeByRepairJobId = useMemo(() => {
-    const out: Record<string, AgentJobSwarmOutcomeCase> = {};
-    for (const item of swarmOutcomeCases) {
-      const key = String(item?.repair_job_id || '').trim();
-      if (key) out[key] = item;
-    }
-    return out;
-  }, [swarmOutcomeCases]);
   const swarmReviewJobs = useMemo(() => {
     const base = Array.isArray((swarmReviewJobsData as any)?.jobs) ? ((swarmReviewJobsData as any).jobs as AgentJob[]) : [];
     return base.filter((job) => {
@@ -7187,6 +7152,46 @@ const AutonomousAgentsPage: React.FC = () => {
     trace: decisionTraceData?.total || 0,
     inbox: inboxStats?.new || 0,
   };
+
+  /** How many of the jobs-list filters are actually narrowing anything.
+   *
+   *  Shown on the collapsed disclosure so a hidden filter can never silently
+   *  shape the list: the reason to hide the controls is that they are usually
+   *  unused, and the moment one IS used it has to announce itself. A filtered
+   *  list that looks unfiltered is worse than a cluttered toolbar.
+   *
+   *  `graphSortBy` counts only when it is not 'none' -- a sort is not a filter,
+   *  but a non-default one still changes what you see first.
+   */
+  const activeJobFilterCount = useMemo(() => {
+    const values = [
+      statusFilter,
+      typeFilter,
+      launchModeFilter,
+      hasRelaunchChildrenFilter,
+      relaunchFromJobIdFilter,
+      graphHealthFilter,
+      dedupSkipFilter,
+      scopeGuardFilter,
+      experimentRecoveryFilter,
+    ];
+    let count = values.filter((v) => String(v || '').trim()).length;
+    if (swarmOnlyFilter) count += 1;
+    if (graphSortBy && graphSortBy !== 'none') count += 1;
+    return count;
+  }, [
+    statusFilter,
+    typeFilter,
+    launchModeFilter,
+    hasRelaunchChildrenFilter,
+    relaunchFromJobIdFilter,
+    graphHealthFilter,
+    dedupSkipFilter,
+    scopeGuardFilter,
+    experimentRecoveryFilter,
+    swarmOnlyFilter,
+    graphSortBy,
+  ]);
 
   const jobCountSummary = useMemo(() => {
     const allJobs = Array.isArray((jobsData as any)?.jobs) ? ((jobsData as any).jobs as AgentJob[]) : [];
@@ -12684,230 +12689,16 @@ const AutonomousAgentsPage: React.FC = () => {
         )}
 
         {activeTab === 'outcomes' && (
-          <div className="w-full flex flex-col min-h-0 gap-4">
-            <div className="flex items-center justify-between">
-              <div>
-                <h2 className="text-lg font-semibold text-gray-900">Swarm Outcomes</h2>
-                <p className="text-sm text-gray-500">
-                  Track the coding swarm funnel from promotion through repair, verification, and backlog routing.
-                </p>
-              </div>
-              <Button variant="ghost" size="sm" onClick={() => refetchSwarmOutcomeAnalytics()}>
-                <RefreshCw className="w-4 h-4 mr-1" />
-                Refresh outcomes
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-5 gap-3">
-              <div className="bg-white border border-gray-200 rounded-lg p-3">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Swarm roots</div>
-                <div className="mt-1 text-2xl font-semibold text-gray-900">
-                  {Number((swarmOutcomeAnalyticsData as any)?.totals?.total_swarm_roots || 0)}
-                </div>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-3">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Repair handoffs</div>
-                <div className="mt-1 text-2xl font-semibold text-cyan-700">
-                  {Number((swarmOutcomeAnalyticsData as any)?.totals?.repair_handoff_runs || 0)}
-                </div>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-3">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Verified fixes</div>
-                <div className="mt-1 text-2xl font-semibold text-emerald-700">
-                  {Number((swarmOutcomeAnalyticsData as any)?.totals?.verified_fix_runs || 0)}
-                </div>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-3">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Backlog routes</div>
-                <div className="mt-1 text-2xl font-semibold text-amber-700">
-                  {Number((swarmOutcomeAnalyticsData as any)?.totals?.backlog_routed_runs || 0)}
-                </div>
-              </div>
-              <div className="bg-white border border-gray-200 rounded-lg p-3">
-                <div className="text-xs uppercase tracking-wide text-gray-500">Avg handoff</div>
-                <div className="mt-1 text-2xl font-semibold text-violet-700">
-                  {typeof (swarmOutcomeAnalyticsData as any)?.totals?.avg_handoff_minutes === 'number'
-                    ? `${Number((swarmOutcomeAnalyticsData as any).totals.avg_handoff_minutes).toFixed(0)}m`
-                    : 'n/a'}
-                </div>
-              </div>
-            </div>
-
-            <div className="bg-white border border-gray-200 rounded-lg p-3">
-              <div className="flex flex-wrap gap-3 items-center">
-                <select
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={swarmOutcomeVisibilityScope}
-                  onChange={(e) => setSwarmOutcomeVisibilityScope(e.target.value as 'mine' | 'shared' | 'all')}
-                >
-                  <option value="mine">My items</option>
-                  <option value="shared">Shared with me</option>
-                  <option value="all">All visible</option>
-                </select>
-                <select
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={swarmOutcomePresetFilter}
-                  onChange={(e) => setSwarmOutcomePresetFilter(e.target.value)}
-                >
-                  <option value="">All presets</option>
-                  <option value="bug_triage_swarm">Bug Triage</option>
-                  <option value="build_break_swarm">Build Break</option>
-                  <option value="frontend_regression_swarm">Frontend Regression</option>
-                </select>
-                <select
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={swarmOutcomeTerminalFilter}
-                  onChange={(e) => setSwarmOutcomeTerminalFilter(e.target.value)}
-                >
-                  <option value="">All outcomes</option>
-                  <option value="verified_fix">Verified fix</option>
-                  <option value="repair_failed">Repair failed</option>
-                  <option value="backlog_routed">Backlog routed</option>
-                  <option value="needs_review">Needs review</option>
-                  <option value="stalled_after_handoff">Stalled after handoff</option>
-                </select>
-                <select
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={swarmOutcomePromotionFilter}
-                  onChange={(e) => setSwarmOutcomePromotionFilter(e.target.value)}
-                >
-                  <option value="">Any promotion mode</option>
-                  <option value="auto">Auto promotion</option>
-                  <option value="manual">Manual promotion</option>
-                  <option value="none">No promotion</option>
-                </select>
-                <select
-                  className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={swarmOutcomeDateRange}
-                  onChange={(e) => setSwarmOutcomeDateRange(e.target.value)}
-                >
-                  <option value="all">All time</option>
-                  <option value="30d">Last 30 days</option>
-                  <option value="7d">Last 7 days</option>
-                </select>
-                {(swarmOutcomePresetFilter || swarmOutcomeTerminalFilter || swarmOutcomePromotionFilter || swarmOutcomeDateRange !== 'all' || swarmOutcomeVisibilityScope !== 'mine') ? (
-                  <Button
-                    variant="ghost"
-                    size="sm"
-                    onClick={() => {
-                      setSwarmOutcomeVisibilityScope('mine');
-                      setSwarmOutcomePresetFilter('');
-                      setSwarmOutcomeTerminalFilter('');
-                      setSwarmOutcomePromotionFilter('');
-                      setSwarmOutcomeDateRange('all');
-                    }}
-                  >
-                    <XCircle className="w-4 h-4 mr-1" />
-                    Clear
-                  </Button>
-                ) : null}
-              </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-3 gap-3">
-              {(((swarmOutcomeAnalyticsData as any)?.preset_rows || []) as Array<Record<string, any>>).map((row) => (
-                <div key={String(row.preset_key || row.launch_mode)} className="bg-white border border-gray-200 rounded-lg p-3">
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="font-medium text-gray-900">{String(row.label || row.preset_key)}</div>
-                    <span className="text-xs bg-gray-200 text-gray-700 px-2 py-1 rounded">
-                      {Number(row.total_swarm_roots || 0)} roots
-                    </span>
-                  </div>
-                  <div className="mt-2 grid grid-cols-2 gap-2 text-xs">
-                    <span className="bg-emerald-50 text-emerald-700 px-2 py-1 rounded">Verified {Number(row.verified_fix_runs || 0)}</span>
-                    <span className="bg-cyan-50 text-cyan-700 px-2 py-1 rounded">Repair {Number(row.repair_handoff_runs || 0)}</span>
-                    <span className="bg-amber-50 text-amber-700 px-2 py-1 rounded">Backlog {Number(row.backlog_routed_runs || 0)}</span>
-                    <span className="bg-rose-50 text-rose-700 px-2 py-1 rounded">Failed {Number(row.repair_failed_runs || 0)}</span>
-                  </div>
-                  <div className="mt-2 text-xs text-gray-500">
-                    Auto {Number(row.auto_promoted_runs || 0)} · Manual {Number(row.manual_promoted_runs || 0)} · Review {Number(row.needs_review_runs || 0)}
-                  </div>
-                  <div className="mt-1 text-xs text-gray-500">
-                    Avg confidence {typeof row.avg_confidence === 'number' ? `${(Number(row.avg_confidence) * 100).toFixed(0)}%` : 'n/a'} · Avg handoff {typeof row.avg_handoff_minutes === 'number' ? `${Number(row.avg_handoff_minutes).toFixed(0)}m` : 'n/a'}
-                  </div>
-                  <div className="mt-1 text-xs text-gray-500">
-                    Auto backlog {Number(row.auto_backlog_routed_runs || 0)} · Manual backlog {Number(row.manual_backlog_routed_runs || 0)} · Suppressed {Number(row.backlog_auto_suppressed_runs || 0)}
-                  </div>
-                </div>
-              ))}
-            </div>
-
-            <div className="bg-white border border-gray-200 rounded-lg p-4 flex-1 min-h-0">
-              <div className="flex items-center justify-between mb-3">
-                <h3 className="section-heading">Recent Cases</h3>
-                <div className="text-xs text-gray-500">
-                  {swarmOutcomeCases.length} cases
-                </div>
-              </div>
-              {swarmOutcomeAnalyticsLoading ? (
-                <div className="flex justify-center items-center h-40"><LoadingSpinner /></div>
-              ) : swarmOutcomeCases.length === 0 ? (
-                <div className="text-sm text-gray-500">No coding swarm outcome cases match the current filters.</div>
-              ) : (
-                <div className="space-y-3 max-h-[42rem] overflow-y-auto pr-1">
-                  {swarmOutcomeCases.map((item) => {
-                    const collaborationSummary = ((item.collaboration_summary && typeof item.collaboration_summary === 'object')
-                      ? item.collaboration_summary
-                      : {}) as Record<string, any>;
-                    return (
-                    <div key={String(item.swarm_job_id)} className="border border-gray-200 rounded-lg p-3">
-                      <div className="flex items-start justify-between gap-4">
-                        <div className="min-w-0">
-                          <div className="flex flex-wrap items-center gap-2">
-                            <div className="font-medium text-gray-900">{String(item.swarm_job_name || item.swarm_job_id)}</div>
-                            <span className="text-xs px-2 py-1 rounded bg-gray-200 text-gray-700 border border-gray-200">
-                              {humanizeSwarmOutcome(item.preset_key)}
-                            </span>
-                            <span className={`text-xs px-2 py-1 rounded ${swarmOutcomeBadgeClass(item.terminal_outcome)}`}>
-                              {humanizeSwarmOutcome(item.terminal_outcome)}
-                            </span>
-                            <span className="text-xs px-2 py-1 rounded bg-violet-50 text-violet-700 border border-violet-100">
-                              Promotion {humanizeSwarmOutcome(item.promotion_mode)}
-                            </span>
-                          </div>
-                          <div className="mt-2 text-xs text-gray-500 flex flex-wrap gap-3">
-                            {item.source_label ? <span>Repo {String(item.source_label)}</span> : null}
-                            {item.owner_user_id ? <span>Owner {String(collaborationSummary.owner_label || userLabelById(String(item.owner_user_id)) || String(item.owner_user_id).slice(0, 8))}</span> : null}
-                            {item.assigned_user_id ? <span>Assignee {String(collaborationSummary.assignee_label || userLabelById(String(item.assigned_user_id)) || String(item.assigned_user_id).slice(0, 8))}</span> : null}
-                            <span>Visibility {humanizeDecisionTraceValue(String(collaborationSummary.visibility_scope || 'private'))}</span>
-                            {Number((collaborationSummary.shared_with_user_ids || []).length || 0) > 0 ? <span>Shared with {Number((collaborationSummary.shared_with_user_ids || []).length || 0)}</span> : null}
-                            {item.repair_job_id ? <span>Repair {String(item.repair_status || 'linked')}</span> : null}
-                            {item.verification_status ? <span>Verification {humanizeSwarmOutcome(item.verification_status)}</span> : null}
-                            {item.backlog_item_id ? <span>Backlog {String(item.backlog_route_mode || 'linked')} · {String(item.backlog_status || 'linked')}</span> : null}
-                            {typeof item.handoff_latency_minutes === 'number' ? <span>Handoff {Number(item.handoff_latency_minutes).toFixed(0)}m</span> : null}
-                          </div>
-                          {item.review_note ? (
-                            <div className="mt-1 text-xs text-gray-600">Note: {String(item.review_note)}</div>
-                          ) : null}
-                          {item.terminal_reason ? (
-                            <div className="mt-2 text-xs text-gray-600">{String(item.terminal_reason)}</div>
-                          ) : null}
-                          {item.review_reason ? (
-                            <div className="mt-1 text-xs text-gray-500">{String(item.review_reason)}</div>
-                          ) : null}
-                        </div>
-                        <div className="flex flex-wrap gap-2 shrink-0">
-                          <Button size="sm" variant="ghost" onClick={() => { setSelectedJob(null); navigate(buildAutonomousAgentsUrl(item.swarm_job_id)); setActiveTab('jobs'); }}>
-                            Open swarm
-                          </Button>
-                          {item.repair_job_id ? (
-                            <Button size="sm" variant="ghost" onClick={() => { setSelectedJob(null); navigate(buildAutonomousAgentsUrl(String(item.repair_job_id))); setActiveTab('jobs'); }}>
-                              Open repair
-                            </Button>
-                          ) : null}
-                          {item.backlog_item_id ? (
-                            <Button size="sm" variant="ghost" onClick={() => setActiveTab('backlog')}>
-                              Open backlog
-                            </Button>
-                          ) : null}
-                        </div>
-                      </div>
-                    </div>
-                  )})}
-                </div>
-              )}
-            </div>
-          </div>
+          <SwarmOutcomesPanel
+            outcomes={swarmOutcomes}
+            userLabelById={userLabelById}
+            onOpenJob={(jobId) => {
+              setSelectedJob(null);
+              navigate(buildAutonomousAgentsUrl(jobId));
+              setActiveTab('jobs');
+            }}
+            onOpenBacklog={() => setActiveTab('backlog')}
+          />
         )}
 
         {activeTab === 'profiles' && (
@@ -14129,8 +13920,60 @@ const AutonomousAgentsPage: React.FC = () => {
         <div className={activeTab === 'jobs' ? 'flex gap-4 flex-1 min-h-0' : 'hidden'}>
             {/* Jobs list */}
             <div className="w-2/3 flex flex-col">
-              {/* Filters */}
-              <div className="flex gap-3 mb-4">
+              {/* Filters, collapsed by default.
+                  Twelve controls in one row, and most visits to this page are
+                  "what is running" rather than "narrow this down". The toggle
+                  states how many are active, so a hidden filter can never
+                  shape the list without saying so. */}
+              <div className="flex items-center gap-2 mb-3">
+                <button
+                  type="button"
+                  aria-expanded={showJobFilters}
+                  onClick={() => setShowJobFilters((open) => !open)}
+                  className={`inline-flex items-center gap-1.5 px-2.5 py-1.5 text-sm rounded-lg border transition-colors duration-fast ${
+                    activeJobFilterCount > 0
+                      ? 'border-primary-500/60 bg-primary-500/10 text-primary-700'
+                      : 'border-gray-300 text-gray-600 hover:border-gray-400'
+                  }`}
+                >
+                  <Filter className="w-4 h-4" />
+                  Filters
+                  {activeJobFilterCount > 0 && (
+                    <span className="px-1.5 py-0.5 rounded-full bg-primary-500/20 text-[11px] font-medium">
+                      {activeJobFilterCount}
+                    </span>
+                  )}
+                  {showJobFilters ? (
+                    <ChevronUp className="w-3.5 h-3.5" />
+                  ) : (
+                    <ChevronDown className="w-3.5 h-3.5" />
+                  )}
+                </button>
+                {activeJobFilterCount > 0 && !showJobFilters && (
+                  // Reachable without expanding: the most likely thing you want
+                  // from a filter you did not mean to leave on is to remove it.
+                  <button
+                    type="button"
+                    className="text-xs text-gray-500 hover:text-gray-900 underline"
+                    onClick={() => {
+                      setStatusFilter('');
+                      setTypeFilter('');
+                      setLaunchModeFilter('');
+                      setHasRelaunchChildrenFilter('');
+                      setRelaunchFromJobIdFilter('');
+                      setGraphHealthFilter('');
+                      setDedupSkipFilter('');
+                      setScopeGuardFilter('');
+                      setExperimentRecoveryFilter('');
+                      setSwarmOnlyFilter(false);
+                      setGraphSortBy('none');
+                    }}
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div className={showJobFilters ? 'flex gap-3 mb-4 flex-wrap' : 'hidden'}>
                 <select
                   className="border border-gray-300 rounded-lg px-3 py-2 text-sm"
                   value={statusFilter}
@@ -14360,190 +14203,218 @@ const AutonomousAgentsPage: React.FC = () => {
                 >
                   Showing {jobCountSummary.shownCount} / {jobCountSummary.allCount}
                 </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    launchModeFilter === 'quick_start_claude_backend'
-                      ? 'border-indigo-300 bg-indigo-100 text-indigo-800'
-                      : 'border-indigo-100 bg-indigo-50 text-indigo-700'
-                  }`}
-                  onClick={() =>
-                    setLaunchModeFilter((prev) => (prev === 'quick_start_claude_backend' ? '' : 'quick_start_claude_backend'))
-                  }
-                  title="Toggle filter for Claude backend quick-start jobs"
-                >
-                  Claude quick-start {jobCountSummary.quick_start_claude_backend}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    launchModeFilter === 'quick_start_domain_research'
-                      ? 'border-cyan-300 bg-cyan-100 text-cyan-800'
-                      : 'border-cyan-100 bg-cyan-50 text-cyan-700'
-                  }`}
-                  onClick={() =>
-                    setLaunchModeFilter((prev) => (prev === 'quick_start_domain_research' ? '' : 'quick_start_domain_research'))
-                  }
-                  title="Toggle filter for domain research quick-start jobs"
-                >
-                  Domain quick-start {jobCountSummary.quick_start_domain_research}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    launchModeFilter === 'quick_start_bug_triage_swarm'
-                      ? 'border-rose-300 bg-rose-100 text-rose-800'
-                      : 'border-rose-100 bg-rose-50 text-rose-700'
-                  }`}
-                  onClick={() =>
-                    setLaunchModeFilter((prev) => (prev === 'quick_start_bug_triage_swarm' ? '' : 'quick_start_bug_triage_swarm'))
-                  }
-                  title="Toggle filter for bug triage swarm quick-start jobs"
-                >
-                  Bug swarm quick-start {jobCountSummary.quick_start_bug_triage_swarm}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    launchModeFilter === 'quick_start_build_break_swarm'
-                      ? 'border-amber-300 bg-amber-100 text-amber-800'
-                      : 'border-amber-100 bg-amber-50 text-amber-700'
-                  }`}
-                  onClick={() =>
-                    setLaunchModeFilter((prev) => (prev === 'quick_start_build_break_swarm' ? '' : 'quick_start_build_break_swarm'))
-                  }
-                  title="Toggle filter for build break swarm quick-start jobs"
-                >
-                  Build swarm quick-start {jobCountSummary.quick_start_build_break_swarm}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    launchModeFilter === 'quick_start_frontend_regression_swarm'
-                      ? 'border-cyan-300 bg-cyan-100 text-cyan-800'
-                      : 'border-cyan-100 bg-cyan-50 text-cyan-700'
-                  }`}
-                  onClick={() =>
-                    setLaunchModeFilter((prev) =>
-                      prev === 'quick_start_frontend_regression_swarm' ? '' : 'quick_start_frontend_regression_swarm'
-                    )
-                  }
-                  title="Toggle filter for frontend regression swarm quick-start jobs"
-                >
-                  Frontend swarm quick-start {jobCountSummary.quick_start_frontend_regression_swarm}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    launchModeFilter === 'quick_start_repo_bug_triage'
-                      ? 'border-amber-300 bg-amber-100 text-amber-800'
-                      : 'border-amber-100 bg-amber-50 text-amber-700'
-                  }`}
-                  onClick={() =>
-                    setLaunchModeFilter((prev) => (prev === 'quick_start_repo_bug_triage' ? '' : 'quick_start_repo_bug_triage'))
-                  }
-                  title="Toggle filter for repo bug triage quick-start jobs"
-                >
-                  Bug triage quick-start {jobCountSummary.quick_start_repo_bug_triage}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    launchModeFilter === 'quick_start_role_workflow'
-                      ? 'border-teal-300 bg-teal-100 text-teal-800'
-                      : 'border-teal-100 bg-teal-50 text-teal-700'
-                  }`}
-                  onClick={() =>
-                    setLaunchModeFilter((prev) => (prev === 'quick_start_role_workflow' ? '' : 'quick_start_role_workflow'))
-                  }
-                  title="Toggle filter for role-workflow quick-start jobs"
-                >
-                  Role quick-start {jobCountSummary.quick_start_role_workflow}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    graphHealthFilter === 'critical'
-                      ? 'border-red-300 bg-red-100 text-red-800'
-                      : 'border-red-100 bg-red-50 text-red-700'
-                  }`}
-                  onClick={() => setGraphHealthFilter('critical')}
-                  title="Filter to graph health critical"
-                >
-                  Critical {jobCountSummary.critical}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    graphHealthFilter === 'warning'
-                      ? 'border-amber-300 bg-amber-100 text-amber-800'
-                      : 'border-amber-100 bg-amber-50 text-amber-700'
-                  }`}
-                  onClick={() => setGraphHealthFilter('warning')}
-                  title="Filter to graph health warning"
-                >
-                  Warning {jobCountSummary.warning}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    graphHealthFilter === 'ok'
-                      ? 'border-emerald-300 bg-emerald-100 text-emerald-800'
-                      : 'border-emerald-100 bg-emerald-50 text-emerald-700'
-                  }`}
-                  onClick={() => setGraphHealthFilter('ok')}
-                  title="Filter to graph health ok"
-                >
-                  OK {jobCountSummary.ok}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    graphHealthFilter === 'unknown'
-                      ? 'border-gray-300 bg-gray-100 text-gray-800'
-                      : 'border-gray-100 bg-gray-50 text-gray-600'
-                  }`}
-                  onClick={() => setGraphHealthFilter('unknown')}
-                  title="Filter to graph health unknown"
-                >
-                  Unknown {jobCountSummary.unknown}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    dedupSkipFilter === 'gt0'
-                      ? 'border-indigo-300 bg-indigo-100 text-indigo-800'
-                      : 'border-indigo-100 bg-indigo-50 text-indigo-700'
-                  }`}
-                  onClick={() => setDedupSkipFilter((prev) => (prev === 'gt0' ? '' : 'gt0'))}
-                  title="Filter to jobs with any dedup-skipped memories"
-                >
-                  Dedup&gt;0 {jobCountSummary.dedup_gt0}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    dedupSkipFilter === 'gte3'
-                      ? 'border-violet-300 bg-violet-100 text-violet-800'
-                      : 'border-violet-100 bg-violet-50 text-violet-700'
-                  }`}
-                  onClick={() => setDedupSkipFilter((prev) => (prev === 'gte3' ? '' : 'gte3'))}
-                  title="Filter to jobs with high dedup-skipped memories"
-                >
-                  Dedup&ge;3 {jobCountSummary.dedup_gte3}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    scopeGuardFilter === 'blocked'
-                      ? 'border-rose-300 bg-rose-100 text-rose-800'
-                      : 'border-rose-100 bg-rose-50 text-rose-700'
-                  }`}
-                  onClick={() => setScopeGuardFilter((prev) => (prev === 'blocked' ? '' : 'blocked'))}
-                  title="Filter to jobs with scope guard blocks"
-                >
-                  Guard blocked {jobCountSummary.scope_guard_blocked}
-                </button>
+                {jobCountSummary.quick_start_claude_backend > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      launchModeFilter === 'quick_start_claude_backend'
+                        ? 'border-indigo-300 bg-indigo-100 text-indigo-800'
+                        : 'border-indigo-100 bg-indigo-50 text-indigo-700'
+                    }`}
+                    onClick={() =>
+                      setLaunchModeFilter((prev) => (prev === 'quick_start_claude_backend' ? '' : 'quick_start_claude_backend'))
+                    }
+                    title="Toggle filter for Claude backend quick-start jobs"
+                  >
+                    Claude quick-start {jobCountSummary.quick_start_claude_backend}
+                  </button>
+                )}
+                {jobCountSummary.quick_start_domain_research > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      launchModeFilter === 'quick_start_domain_research'
+                        ? 'border-cyan-300 bg-cyan-100 text-cyan-800'
+                        : 'border-cyan-100 bg-cyan-50 text-cyan-700'
+                    }`}
+                    onClick={() =>
+                      setLaunchModeFilter((prev) => (prev === 'quick_start_domain_research' ? '' : 'quick_start_domain_research'))
+                    }
+                    title="Toggle filter for domain research quick-start jobs"
+                  >
+                    Domain quick-start {jobCountSummary.quick_start_domain_research}
+                  </button>
+                )}
+                {jobCountSummary.quick_start_bug_triage_swarm > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      launchModeFilter === 'quick_start_bug_triage_swarm'
+                        ? 'border-rose-300 bg-rose-100 text-rose-800'
+                        : 'border-rose-100 bg-rose-50 text-rose-700'
+                    }`}
+                    onClick={() =>
+                      setLaunchModeFilter((prev) => (prev === 'quick_start_bug_triage_swarm' ? '' : 'quick_start_bug_triage_swarm'))
+                    }
+                    title="Toggle filter for bug triage swarm quick-start jobs"
+                  >
+                    Bug swarm quick-start {jobCountSummary.quick_start_bug_triage_swarm}
+                  </button>
+                )}
+                {jobCountSummary.quick_start_build_break_swarm > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      launchModeFilter === 'quick_start_build_break_swarm'
+                        ? 'border-amber-300 bg-amber-100 text-amber-800'
+                        : 'border-amber-100 bg-amber-50 text-amber-700'
+                    }`}
+                    onClick={() =>
+                      setLaunchModeFilter((prev) => (prev === 'quick_start_build_break_swarm' ? '' : 'quick_start_build_break_swarm'))
+                    }
+                    title="Toggle filter for build break swarm quick-start jobs"
+                  >
+                    Build swarm quick-start {jobCountSummary.quick_start_build_break_swarm}
+                  </button>
+                )}
+                {jobCountSummary.quick_start_frontend_regression_swarm > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      launchModeFilter === 'quick_start_frontend_regression_swarm'
+                        ? 'border-cyan-300 bg-cyan-100 text-cyan-800'
+                        : 'border-cyan-100 bg-cyan-50 text-cyan-700'
+                    }`}
+                    onClick={() =>
+                      setLaunchModeFilter((prev) =>
+                        prev === 'quick_start_frontend_regression_swarm' ? '' : 'quick_start_frontend_regression_swarm'
+                      )
+                    }
+                    title="Toggle filter for frontend regression swarm quick-start jobs"
+                  >
+                    Frontend swarm quick-start {jobCountSummary.quick_start_frontend_regression_swarm}
+                  </button>
+                )}
+                {jobCountSummary.quick_start_repo_bug_triage > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      launchModeFilter === 'quick_start_repo_bug_triage'
+                        ? 'border-amber-300 bg-amber-100 text-amber-800'
+                        : 'border-amber-100 bg-amber-50 text-amber-700'
+                    }`}
+                    onClick={() =>
+                      setLaunchModeFilter((prev) => (prev === 'quick_start_repo_bug_triage' ? '' : 'quick_start_repo_bug_triage'))
+                    }
+                    title="Toggle filter for repo bug triage quick-start jobs"
+                  >
+                    Bug triage quick-start {jobCountSummary.quick_start_repo_bug_triage}
+                  </button>
+                )}
+                {jobCountSummary.quick_start_role_workflow > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      launchModeFilter === 'quick_start_role_workflow'
+                        ? 'border-teal-300 bg-teal-100 text-teal-800'
+                        : 'border-teal-100 bg-teal-50 text-teal-700'
+                    }`}
+                    onClick={() =>
+                      setLaunchModeFilter((prev) => (prev === 'quick_start_role_workflow' ? '' : 'quick_start_role_workflow'))
+                    }
+                    title="Toggle filter for role-workflow quick-start jobs"
+                  >
+                    Role quick-start {jobCountSummary.quick_start_role_workflow}
+                  </button>
+                )}
+                {jobCountSummary.critical > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      graphHealthFilter === 'critical'
+                        ? 'border-red-300 bg-red-100 text-red-800'
+                        : 'border-red-100 bg-red-50 text-red-700'
+                    }`}
+                    onClick={() => setGraphHealthFilter('critical')}
+                    title="Filter to graph health critical"
+                  >
+                    Critical {jobCountSummary.critical}
+                  </button>
+                )}
+                {jobCountSummary.warning > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      graphHealthFilter === 'warning'
+                        ? 'border-amber-300 bg-amber-100 text-amber-800'
+                        : 'border-amber-100 bg-amber-50 text-amber-700'
+                    }`}
+                    onClick={() => setGraphHealthFilter('warning')}
+                    title="Filter to graph health warning"
+                  >
+                    Warning {jobCountSummary.warning}
+                  </button>
+                )}
+                {jobCountSummary.ok > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      graphHealthFilter === 'ok'
+                        ? 'border-emerald-300 bg-emerald-100 text-emerald-800'
+                        : 'border-emerald-100 bg-emerald-50 text-emerald-700'
+                    }`}
+                    onClick={() => setGraphHealthFilter('ok')}
+                    title="Filter to graph health ok"
+                  >
+                    OK {jobCountSummary.ok}
+                  </button>
+                )}
+                {jobCountSummary.unknown > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      graphHealthFilter === 'unknown'
+                        ? 'border-gray-300 bg-gray-100 text-gray-800'
+                        : 'border-gray-100 bg-gray-50 text-gray-600'
+                    }`}
+                    onClick={() => setGraphHealthFilter('unknown')}
+                    title="Filter to graph health unknown"
+                  >
+                    Unknown {jobCountSummary.unknown}
+                  </button>
+                )}
+                {jobCountSummary.dedup_gt0 > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      dedupSkipFilter === 'gt0'
+                        ? 'border-indigo-300 bg-indigo-100 text-indigo-800'
+                        : 'border-indigo-100 bg-indigo-50 text-indigo-700'
+                    }`}
+                    onClick={() => setDedupSkipFilter((prev) => (prev === 'gt0' ? '' : 'gt0'))}
+                    title="Filter to jobs with any dedup-skipped memories"
+                  >
+                    Dedup&gt;0 {jobCountSummary.dedup_gt0}
+                  </button>
+                )}
+                {jobCountSummary.dedup_gte3 > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      dedupSkipFilter === 'gte3'
+                        ? 'border-violet-300 bg-violet-100 text-violet-800'
+                        : 'border-violet-100 bg-violet-50 text-violet-700'
+                    }`}
+                    onClick={() => setDedupSkipFilter((prev) => (prev === 'gte3' ? '' : 'gte3'))}
+                    title="Filter to jobs with high dedup-skipped memories"
+                  >
+                    Dedup&ge;3 {jobCountSummary.dedup_gte3}
+                  </button>
+                )}
+                {jobCountSummary.scope_guard_blocked > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      scopeGuardFilter === 'blocked'
+                        ? 'border-rose-300 bg-rose-100 text-rose-800'
+                        : 'border-rose-100 bg-rose-50 text-rose-700'
+                    }`}
+                    onClick={() => setScopeGuardFilter((prev) => (prev === 'blocked' ? '' : 'blocked'))}
+                    title="Filter to jobs with scope guard blocks"
+                  >
+                    Guard blocked {jobCountSummary.scope_guard_blocked}
+                  </button>
+                )}
                 <button
                   type="button"
                   className={`px-2 py-1 rounded-full border ${
@@ -14556,42 +14427,48 @@ const AutonomousAgentsPage: React.FC = () => {
                 >
                   Guard clean {Math.max(0, jobCountSummary.shownCount - jobCountSummary.scope_guard_blocked)}
                 </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    experimentRecoveryFilter === 'bootstrap_recovered'
-                      ? 'border-blue-300 bg-blue-100 text-blue-800'
-                      : 'border-blue-100 bg-blue-50 text-blue-700'
-                  }`}
-                  onClick={() => setExperimentRecoveryFilter((prev) => (prev === 'bootstrap_recovered' ? '' : 'bootstrap_recovered'))}
-                  title="Filter to jobs whose latest experiment run recovered after bootstrap"
-                >
-                  Bootstrap recovered {jobCountSummary.bootstrap_recovered}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    experimentRecoveryFilter === 'fallback_attempted'
-                      ? 'border-indigo-300 bg-indigo-100 text-indigo-800'
-                      : 'border-indigo-100 bg-indigo-50 text-indigo-700'
-                  }`}
-                  onClick={() => setExperimentRecoveryFilter((prev) => (prev === 'fallback_attempted' ? '' : 'fallback_attempted'))}
-                  title="Filter to jobs whose latest experiment run attempted fallback verification"
-                >
-                  Fallback attempted {jobCountSummary.fallback_attempted}
-                </button>
-                <button
-                  type="button"
-                  className={`px-2 py-1 rounded-full border ${
-                    experimentRecoveryFilter === 'unresolved_recovery'
-                      ? 'border-rose-300 bg-rose-100 text-rose-800'
-                      : 'border-rose-100 bg-rose-50 text-rose-700'
-                  }`}
-                  onClick={() => setExperimentRecoveryFilter((prev) => (prev === 'unresolved_recovery' ? '' : 'unresolved_recovery'))}
-                  title="Filter to jobs whose latest fallback attempt remains unresolved"
-                >
-                  Open recovery jobs {jobCountSummary.unresolved_recovery_jobs}
-                </button>
+                {jobCountSummary.bootstrap_recovered > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      experimentRecoveryFilter === 'bootstrap_recovered'
+                        ? 'border-blue-300 bg-blue-100 text-blue-800'
+                        : 'border-blue-100 bg-blue-50 text-blue-700'
+                    }`}
+                    onClick={() => setExperimentRecoveryFilter((prev) => (prev === 'bootstrap_recovered' ? '' : 'bootstrap_recovered'))}
+                    title="Filter to jobs whose latest experiment run recovered after bootstrap"
+                  >
+                    Bootstrap recovered {jobCountSummary.bootstrap_recovered}
+                  </button>
+                )}
+                {jobCountSummary.fallback_attempted > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      experimentRecoveryFilter === 'fallback_attempted'
+                        ? 'border-indigo-300 bg-indigo-100 text-indigo-800'
+                        : 'border-indigo-100 bg-indigo-50 text-indigo-700'
+                    }`}
+                    onClick={() => setExperimentRecoveryFilter((prev) => (prev === 'fallback_attempted' ? '' : 'fallback_attempted'))}
+                    title="Filter to jobs whose latest experiment run attempted fallback verification"
+                  >
+                    Fallback attempted {jobCountSummary.fallback_attempted}
+                  </button>
+                )}
+                {jobCountSummary.unresolved_recovery_jobs > 0 && (
+                  <button
+                    type="button"
+                    className={`px-2 py-1 rounded-full border ${
+                      experimentRecoveryFilter === 'unresolved_recovery'
+                        ? 'border-rose-300 bg-rose-100 text-rose-800'
+                        : 'border-rose-100 bg-rose-50 text-rose-700'
+                    }`}
+                    onClick={() => setExperimentRecoveryFilter((prev) => (prev === 'unresolved_recovery' ? '' : 'unresolved_recovery'))}
+                    title="Filter to jobs whose latest fallback attempt remains unresolved"
+                  >
+                    Open recovery jobs {jobCountSummary.unresolved_recovery_jobs}
+                  </button>
+                )}
                 {(jobCountSummary.pinnedOutsideFilters || jobCountSummary.pinnedOutsideList) && (
                   <button
                     type="button"

@@ -271,9 +271,17 @@ import {
   LatexCompileJobCreateRequest,
   LatexCompileJobResponse,
   DocumentFolder,
+  AgentJobEvidence,
+  AgentJobWorkspace,
+  AgentJobWorkspaceFile,
   PipelineBinding,
   PipelineCheck,
+  PipelineDraft,
   PipelineLaunch,
+  PipelineRun,
+  PipelineStageInsertion,
+  PipelineStageRestart,
+  PipelineVocabulary,
   SavedPipeline,
   DocumentFolderItemsResult,
   DocumentFolderRef,
@@ -286,7 +294,7 @@ import {
 // browser and every build silently fell back to the defaults below --
 // REACT_APP_API_URL, REACT_APP_VIDEO_STREAM_URL and the build args that set
 // them in frontend/Dockerfile did nothing at all. Symptom: an app served from
-// any origin still called http://localhost:8000, cross-origin, instead of the
+// any origin still called http://localhost:28000, cross-origin, instead of the
 // same-origin path its reverse proxy provides.
 //
 // Each name has to be written out; `process.env[name]` is a dynamic lookup and
@@ -297,7 +305,7 @@ const runtimeEnv: Record<string, string | undefined> = {
   REACT_APP_VIDEO_STREAM_URL: process.env.REACT_APP_VIDEO_STREAM_URL,
 };
 
-const API_BASE_URL = runtimeEnv.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE_URL = runtimeEnv.REACT_APP_API_URL || 'http://localhost:28000';
 
 // API error response structure from backend
 interface ApiErrorResponse {
@@ -674,6 +682,128 @@ class ApiClient {
   /** The job chain a pipeline compiles to, returned rather than launched. */
   async bindPipeline(spec: Record<string, any>): Promise<PipelineBinding> {
     const response = await this.client.post('/api/v1/agent-pipelines/bind', { spec });
+    return response.data;
+  }
+
+  /** What a run found, and whether it is what was asked for.
+   *
+   *  Separate from the job record because evidence is large: a list of forty
+   *  runs should not carry forty sets of findings to show a count. */
+  async getJobEvidence(jobId: string): Promise<AgentJobEvidence> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/evidence`);
+    return response.data;
+  }
+
+  /** Reject one result, with the reason that makes the rejection useful.
+   *
+   *  Advisory by design: no verdict changes and nothing downstream is
+   *  invalidated. What it does is travel — a restart of the stage begins with
+   *  this as an operator correction. */
+  async disputeJobEvidence(
+    jobId: string,
+    index: number,
+    reason: string
+  ): Promise<{ job_id: string; index: number; reason: string; advisory: boolean }> {
+    const response = await this.client.post(
+      `/api/v1/agent-jobs/${jobId}/evidence/${index}/dispute`,
+      { reason }
+    );
+    return response.data;
+  }
+
+  /** Take a rejection back — a measurement re-taken and found good. */
+  async withdrawJobEvidenceDispute(
+    jobId: string,
+    index: number
+  ): Promise<{ job_id: string; index: number; withdrawn: number }> {
+    const response = await this.client.delete(
+      `/api/v1/agent-jobs/${jobId}/evidence/${index}/dispute`
+    );
+    return response.data;
+  }
+
+  /** The environment a run worked in, and what it changed.
+   *
+   *  Addressed through the job rather than by workspace id: this is "how did
+   *  this stage produce this result", not a repository browser. */
+  async getJobWorkspace(jobId: string, path = '.'): Promise<AgentJobWorkspace> {
+    const response = await this.client.get(
+      `/api/v1/agent-jobs/${jobId}/workspace`,
+      { params: { path } }
+    );
+    return response.data;
+  }
+
+  /** One file from that workspace, as it stands now. Read-only. */
+  async getJobWorkspaceFile(
+    jobId: string,
+    path: string
+  ): Promise<AgentJobWorkspaceFile> {
+    const response = await this.client.get(
+      `/api/v1/agent-jobs/${jobId}/workspace/file`,
+      { params: { path } }
+    );
+    return response.data;
+  }
+
+  /** The finding types a contract may require, and the job types available.
+   *  Fetched rather than hardcoded: it is derived from the tool specs, so a
+   *  list kept here would drift the first time a tool is added. */
+  async getPipelineVocabulary(): Promise<PipelineVocabulary> {
+    const response = await this.client.get('/api/v1/agent-pipelines/vocabulary');
+    return response.data;
+  }
+
+  /** Draft a pipeline from a description of what you want done. Spends one
+   *  LLM call and launches nothing — the draft lands in the editor and is
+   *  checked there like anything else. */
+  async draftPipeline(
+    description: string,
+    budgetSeconds?: number
+  ): Promise<PipelineDraft> {
+    const response = await this.client.post('/api/v1/agent-pipelines/draft', {
+      description,
+      budget_seconds: budgetSeconds,
+    });
+    return response.data;
+  }
+
+  /** How far a run got, stage by stage — including the stages it has not
+   *  reached yet, which is what makes it a progress view rather than a list of
+   *  what already happened. */
+  async getPipelineRun(rootJobId: string): Promise<PipelineRun> {
+    const response = await this.client.get(
+      `/api/v1/agent-pipelines/runs/${rootJobId}/stages`
+    );
+    return response.data;
+  }
+
+  /** Run one stage again on the evidence the stages before it established,
+   *  rather than paying for the whole pipeline to reach the same point in a
+   *  different run. `note` reaches the restarted stage as an operator
+   *  correction it actually reads — without one it usually repeats itself. */
+  async restartPipelineStage(
+    rootJobId: string,
+    stage: string,
+    note?: string
+  ): Promise<PipelineStageRestart> {
+    const response = await this.client.post(
+      `/api/v1/agent-pipelines/runs/${rootJobId}/restart`,
+      { stage, note }
+    );
+    return response.data;
+  }
+
+  /** Add a stage the plan did not have, between one that worked and one that
+   *  could not. Everything downstream re-derives beneath it. */
+  async insertPipelineStage(
+    rootJobId: string,
+    payload: { after: string; stage: Record<string, any>; note?: string }
+  ): Promise<PipelineStageInsertion> {
+    const response = await this.client.post(
+      `/api/v1/agent-pipelines/runs/${rootJobId}/insert-stage`,
+      payload
+    );
     return response.data;
   }
 
@@ -1656,25 +1786,24 @@ class ApiClient {
       baseUrl = baseUrl.replace(/\/$/, '');
       if (baseUrl.endsWith('/api')) baseUrl = baseUrl.slice(0, -4);
 
-      // If pointing to nginx (port 3000), use /video
-      if (/(:|\/)3000(\/|$)/.test(baseUrl)) {
-        const url = `${baseUrl}/video/${documentId}`;
-        console.log('Video streamer URL (nginx base):', url, 'for document:', documentId);
+      // If the API and the page share an origin, one reverse proxy serves both
+      // and its /video route is there to be used. This used to test the URL for
+      // port 3000, which tied video routing to one particular host port -- it
+      // stopped matching the moment the stack moved to :23000 (the "3000" in
+      // "23000" has no ":" or "/" before it), and it never told nginx apart
+      // from the CRA dev server, which listens on 3000 and proxies nothing.
+      const pageOrigin =
+        typeof window !== 'undefined' && window.location?.origin
+          ? window.location.origin.replace(/\/$/, '')
+          : '';
+      if (pageOrigin && (baseUrl === '' || baseUrl === pageOrigin)) {
+        const url = `${pageOrigin}/video/${documentId}`;
+        console.log('Video streamer URL (same-origin proxy):', url, 'for document:', documentId);
         return url;
       }
 
-      // 3) Try current page origin (useful when running behind nginx)
-      if (typeof window !== 'undefined' && window.location?.origin) {
-        const origin = window.location.origin.replace(/\/$/, '');
-        if (/(:|\/)3000(\/|$)/.test(origin)) {
-          const url = `${origin}/video/${documentId}`;
-          console.log('Video streamer URL (window origin):', url, 'for document:', documentId);
-          return url;
-        }
-      }
-
       // 4) Fallback to direct video-streamer (dev without nginx)
-      const fallback = `http://localhost:8080/stream/${documentId}`;
+      const fallback = `http://localhost:28080/stream/${documentId}`;
       console.log('Video streamer URL (fallback direct):', fallback, 'for document:', documentId);
       return fallback;
     }
@@ -2395,9 +2524,9 @@ class ApiClient {
     }
     
     // Use current window origin to avoid mixed content issues
-    // This ensures WebSocket URL matches the page origin (http://127.0.0.1:3000 or http://localhost:3000)
+    // This ensures WebSocket URL matches the page origin (http://127.0.0.1:23000 or http://localhost:23000)
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host; // Includes port (e.g., "127.0.0.1:3000" or "localhost:3000")
+    const host = window.location.host; // Includes port (e.g., "127.0.0.1:23000" or "localhost:23000")
     const wsUrl = `${protocol}//${host}/api/v1/chat/sessions/${sessionId}/ws?token=${encodeURIComponent(token)}`;
     
     console.log('Creating WebSocket connection to:', wsUrl);

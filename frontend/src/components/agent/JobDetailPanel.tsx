@@ -76,6 +76,10 @@ import Button from '../common/Button';
 import LoadingSpinner from '../common/LoadingSpinner';
 import AutonomousRndVerificationPanel from './AutonomousRndVerificationPanel';
 import JobExecutionGraphSection from './JobExecutionGraphSection';
+import EvidenceSection from './EvidenceSection';
+import SwarmConsensusSection from './SwarmConsensusSection';
+import WorkspaceSection from './WorkspaceSection';
+import PipelineRunProgress from '../pipelines/PipelineRunProgress';
 import RecoveryAuditPanel from './RecoveryAuditPanel';
 import {
   JOB_TYPE_CONFIG,
@@ -152,6 +156,15 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
   // One value left of the sixteen: the rest went to RunOutputSection, which
   // renders them and derives the view for itself.
   const { codePatchRecovery } = useMemo(() => codePatchView(job), [job]);
+
+  // The run this job belongs to, if it belongs to one. A pipeline stage is
+  // marked by the stage id its bound chain gave it; the head of the chain has
+  // no root_job_id because it does not point at itself.
+  const pipelineRootJobId = useMemo(() => {
+    const stage = String((job.config as any)?.pipeline_stage || '').trim();
+    if (!stage) return '';
+    return String(job.root_job_id || job.id);
+  }, [job]);
 
   const swarmSummary = useMemo(() => swarmSummaryOf(job), [job]);
   // latestExperimentRun and latestExperimentSummary are not destructured: the
@@ -1723,9 +1736,13 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                   <p className="text-sm text-gray-600 mb-2">{job.results.summary}</p>
                 )}
                 <div className="flex gap-4 text-sm text-gray-500">
-                  {job.results.findings_count !== undefined && (
-                    <span>Findings: {job.results.findings_count}</span>
-                  )}
+                  {/* The findings count used to sit here. It is gone rather
+                      than kept beside the Evidence section: a count says how
+                      many findings exist and nothing about whether any is
+                      worth believing, and two answers to "how much did this
+                      find" is one too many -- the reader has to work out which
+                      one to trust. Actions have no such richer view, so the
+                      count is still the best thing to say about them. */}
                   {job.results.actions_count !== undefined && (
                     <span>Actions: {job.results.actions_count}</span>
                   )}
@@ -2106,6 +2123,34 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
               </div>
             </div>
           )}
+
+          {/* A pipeline stage is a job like any other, and read on its own it
+              says nothing about the five stages around it. The run is the
+              thing being watched; this job is one step of it. */}
+          {pipelineRootJobId && (
+            <PipelineRunProgress
+              rootJobId={pipelineRootJobId}
+              currentJobId={String(job.id)}
+              onOpenJob={(jobId) => navigate(buildAutonomousAgentsUrl(jobId))}
+            />
+          )}
+
+          {/* What the run actually found, and whether it is what was asked
+              for. Above the execution graph because the evidence is the
+              product; the graph is how it was reached. */}
+          <EvidenceSection job={job} />
+
+          {/* And, for a swarm, what several agents made of that evidence
+              independently. Beside the findings rather than in a tab: a
+              swarm's product is a judgement ABOUT evidence, and separating the
+              two puts the finding and its corroboration on different screens. */}
+          <SwarmConsensusSection job={job} />
+
+          {/* And the environment those findings were produced in. After the
+              evidence because it is the supporting question: you come here
+              once a number looks wrong and you want to know what it was
+              measured on. */}
+          <WorkspaceSection job={job} />
 
           <JobExecutionGraphSection job={job} />
           {/* Swarm summary */}

@@ -22,8 +22,10 @@ from app.models.research_portfolio import ResearchPortfolio
 from app.models.user import User
 from app.modules.autonomy.api import ai_hub_feedback as ai_hub_feedback_routes
 from app.modules.autonomy.api import chain_definitions as chain_definition_routes
+from app.modules.autonomy.api import job_evidence as job_evidence_routes
 from app.modules.autonomy.api import job_feedback as job_feedback_routes
 from app.modules.autonomy.api import job_memories as job_memory_routes
+from app.modules.autonomy.api import job_workspace as job_workspace_routes
 from app.modules.autonomy.api import relaunch_lineage as relaunch_lineage_routes
 from app.modules.autonomy.api.chain_execution import build_chain_execution_api
 from app.modules.autonomy.api.checkpoint_follow_up_actions import (
@@ -1454,6 +1456,8 @@ _chain_definition_to_response = agent_chain_definition_service.to_response
 
 router.include_router(ai_hub_feedback_routes.router)
 router.include_router(chain_definition_routes.router)
+router.include_router(job_evidence_routes.router)
+router.include_router(job_workspace_routes.router)
 router.include_router(job_feedback_routes.router)
 router.include_router(job_memory_routes.router)
 router.include_router(relaunch_lineage_routes.router)

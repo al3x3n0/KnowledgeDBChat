@@ -1165,6 +1165,149 @@ class AgentJobListResponse(BaseModel):
     has_more: bool
 
 
+class AgentJobEvidenceValue(BaseModel):
+    """One field of a finding, rendered short."""
+
+    label: str
+    value: str
+
+
+class AgentJobEvidenceItem(BaseModel):
+    """One finding, as a reader needs it to judge whether it holds."""
+
+    index: int
+    type: str
+    title: str = ""
+    values: List[AgentJobEvidenceValue] = Field(default_factory=list)
+    #: Whether it reports a spread. Answered by the validity service, which is
+    #: the same authority `require_uncertainty` uses -- never a second one.
+    has_uncertainty: bool = False
+    #: quiet / busy / saturated. A wall-clock number taken on a saturated host
+    #: is not a measurement, and only the finding knows which it was.
+    measurement_environment: str = ""
+    warning: str = ""
+    #: Evidence a later change invalidates, so it is never inherited from an
+    #: upstream stage.
+    perishable: bool = False
+    #: A person rejected this result. Advisory: the contract's verdict is
+    #: unchanged and nothing downstream is invalidated. What it does is travel
+    #: into a restart of the stage, and into the prompt of a run that would
+    #: cite this evidence again.
+    disputed: bool = False
+    dispute_reason: str = ""
+
+
+class AgentJobEvidenceRequirement(BaseModel):
+    """One finding type the contract asked for, and what arrived."""
+
+    finding_type: str
+    satisfied: bool = False
+    #: Indices into `evidence`, so one finding is shown once however many
+    #: requirements it answers.
+    satisfied_by: List[int] = Field(default_factory=list)
+    uncertainty_required: bool = False
+    #: Findings that arrived without the spread they were required to carry.
+    missing_uncertainty: List[int] = Field(default_factory=list)
+
+
+class AgentJobEvidenceResponse(BaseModel):
+    """A run's evidence, and what it was asked for.
+
+    Replaces `findings_count`, which said how many findings existed and
+    nothing about whether any of them was worth believing.
+    """
+
+    job_id: str
+    evidence: List[AgentJobEvidenceItem] = Field(default_factory=list)
+    requirements: List[AgentJobEvidenceRequirement] = Field(default_factory=list)
+    #: Findings of a type nothing asked for. Not a fault -- a run records what
+    #: it learns -- but separated so the required evidence is findable, and
+    #: capped: this database holds thousands of them against a handful of
+    #: measurements.
+    unrequested: List[int] = Field(default_factory=list)
+    #: How many exist in total, so a page showing a sample can say so rather
+    #: than presenting it as the whole.
+    unrequested_total: int = 0
+    contract_enabled: bool = False
+    #: The contract's own verdict, carried through rather than recomputed.
+    contract_satisfied: bool = False
+    #: How many findings a person rejected. A run resting on rejected evidence
+    #: must not read as clean, even though its contract is unchanged.
+    disputed_count: int = 0
+    missing: List[str] = Field(default_factory=list)
+    #: Claims the run made and never settled with a measurement.
+    unsettled_predictions: List[str] = Field(default_factory=list)
+
+
+class AgentJobEvidenceDisputeRequest(BaseModel):
+    """Reject one result, with the reason that makes the rejection useful."""
+
+    #: Required, and deliberately so: a later run has to tell a result
+    #: rejected for a harness defect from one rejected because the question
+    #: changed, and only the reason distinguishes them.
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+class AgentJobEvidenceDisputeResponse(BaseModel):
+    job_id: str
+    index: int
+    reason: str
+    #: What this does NOT do, stated in the response because the caller is
+    #: about to tell someone: nothing downstream is invalidated and the
+    #: contract's verdict is unchanged.
+    advisory: bool = True
+
+
+class AgentJobWorkspaceEntry(BaseModel):
+    """One file or directory in the workspace as it stands now."""
+
+    path: str
+    is_dir: bool = False
+    size: int = 0
+    #: Whether the run added or modified it. Decided against the hashes of the
+    #: files the workspace started with -- the directory alone shows only what
+    #: it ends with.
+    changed: bool = False
+
+
+class AgentJobWorkspaceResponse(BaseModel):
+    """The environment a run worked in, and what it changed."""
+
+    job_id: str
+    workspace_id: str
+    #: active / retained / discarded.
+    status: str = ""
+    source_id: Optional[str] = None
+    repo_url: Optional[str] = None
+    branch: Optional[str] = None
+
+    path: str = "."
+    entries: List[AgentJobWorkspaceEntry] = Field(default_factory=list)
+    truncated: bool = False
+
+    #: What the run changed. Which files, not which lines: only the originals'
+    #: hashes are kept, and storing every original would multiply the disk cost
+    #: of a feature that already needs a retention window.
+    modified: List[str] = Field(default_factory=list)
+    added: List[str] = Field(default_factory=list)
+    deleted: List[str] = Field(default_factory=list)
+
+
+class AgentJobWorkspaceFileResponse(BaseModel):
+    job_id: str
+    workspace_id: str
+    path: str
+    content: str = ""
+    changed: bool = False
+    #: The line-level change, when the workspace has a git repository to answer
+    #: with. An empty string means git knows the file and it is unchanged.
+    diff: Optional[str] = None
+    #: Whether git could answer at all. False means the change cannot be shown
+    #: -- a workspace built from knowledge-base documents has no repository and
+    #: no stored originals -- which is not the same as nothing having changed.
+    diff_available: bool = False
+
+
 class AgentJobDetailResponse(AgentJobResponse):
     """Detailed response schema including execution log."""
 

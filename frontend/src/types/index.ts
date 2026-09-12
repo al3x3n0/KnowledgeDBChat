@@ -2926,6 +2926,115 @@ export interface AgentJob {
   executive_digest?: AgentJobExecutiveDigest;
 }
 
+/** One field of a finding, rendered short by the backend. */
+export interface AgentJobEvidenceValue {
+  label: string;
+  value: string;
+}
+
+/** One finding, as a reader needs it to judge whether it holds.
+ *
+ *  The three fields that a count destroys: whether it carries a spread, the
+ *  machine it was measured on, and whether it is the kind of evidence a later
+ *  change invalidates. */
+export interface AgentJobEvidenceItem {
+  index: number;
+  type: string;
+  title: string;
+  values: AgentJobEvidenceValue[];
+  has_uncertainty: boolean;
+  /** quiet | busy | saturated, where the producing tool recorded it. */
+  measurement_environment: string;
+  warning: string;
+  perishable: boolean;
+  /** A person rejected this result. Advisory: no verdict changed and nothing
+   *  downstream was invalidated. What it does is travel — into a restart of
+   *  the stage as an operator correction. */
+  disputed: boolean;
+  dispute_reason: string;
+}
+
+/** One finding type the contract asked for, and what arrived. */
+export interface AgentJobEvidenceRequirement {
+  finding_type: string;
+  satisfied: boolean;
+  /** Indices into `evidence`, so one finding renders once however many
+   *  requirements it answers. */
+  satisfied_by: number[];
+  uncertainty_required: boolean;
+  /** Arrived, but without the spread it was required to carry. */
+  missing_uncertainty: number[];
+}
+
+/** A run's evidence and what it was asked for. Replaces `findings_count`,
+ *  which said how many findings existed and nothing about whether any of them
+ *  was worth believing. */
+export interface AgentJobEvidence {
+  job_id: string;
+  evidence: AgentJobEvidenceItem[];
+  requirements: AgentJobEvidenceRequirement[];
+  /** Findings of a type nothing asked for — separated, not hidden, and
+   *  capped. Required evidence and rejected findings are never dropped. */
+  unrequested: number[];
+  /** How many exist in total. When it exceeds what arrived, the page is
+   *  showing a sample and says so. */
+  unrequested_total: number;
+  contract_enabled: boolean;
+  /** The contract's own verdict, carried through rather than recomputed. */
+  contract_satisfied: boolean;
+  /** How many findings a person rejected. A run resting on rejected evidence
+   *  must not read as clean. */
+  disputed_count: number;
+  missing: string[];
+  /** Claims the run made and never settled with a measurement. */
+  unsettled_predictions: string[];
+}
+
+/** One file or directory in a run's workspace, as it stands now. */
+export interface AgentJobWorkspaceEntry {
+  path: string;
+  is_dir: boolean;
+  size: number;
+  /** Whether the run added or modified it — decided against the hashes of the
+   *  files the workspace started with, since the directory alone shows only
+   *  what it ends with. */
+  changed: boolean;
+}
+
+/** The environment a run worked in, and what it changed.
+ *
+ *  `modified`/`added`/`deleted` say WHICH files the run touched, not WHAT
+ *  changed line by line: only the originals' hashes are kept. */
+export interface AgentJobWorkspace {
+  job_id: string;
+  workspace_id: string;
+  /** active | retained | discarded */
+  status: string;
+  source_id?: string | null;
+  repo_url?: string | null;
+  branch?: string | null;
+  path: string;
+  entries: AgentJobWorkspaceEntry[];
+  truncated: boolean;
+  modified: string[];
+  added: string[];
+  deleted: string[];
+}
+
+export interface AgentJobWorkspaceFile {
+  job_id: string;
+  workspace_id: string;
+  path: string;
+  content: string;
+  changed: boolean;
+  /** The line-level change, when the workspace has a git repository to answer
+   *  with. An empty string means git knows the file and it is unchanged. */
+  diff?: string | null;
+  /** Whether git could answer at all. False means the change cannot be shown —
+   *  not that nothing changed. */
+  diff_available: boolean;
+}
+
 export interface AgentJobListResponse {
   jobs: AgentJob[];
   total: number;
@@ -5642,4 +5751,119 @@ export interface PipelineBinding {
   deferred_edges: Array<{ after: string; launch: string; reason: string }>;
   checkpoints: string[];
   description: string[];
+}
+
+/** One stage of one run, in flight.
+ *
+ *  Two things here are deliberately not `status`, because a status alone
+ *  answers neither question a person actually has:
+ *
+ *  - `contract_satisfied` — a stage can complete without producing what it
+ *    promised, and that is precisely the stage nothing downstream should be
+ *    built on.
+ *  - `waiting_on_person` — a run parked on a checkpoint has the same status as
+ *    one whose worker died. */
+export interface PipelineRunStage {
+  stage: string;
+  /** Empty for a stage the run has not reached yet. */
+  job_id: string;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | string;
+  iteration: number;
+  contract_satisfied: boolean;
+  restartable: boolean;
+  goal: string;
+  checkpoint: boolean;
+  waiting_on_person: boolean;
+  /** More than one means the stage was restarted; every other field here
+   *  describes the most recent attempt. */
+  attempts: number;
+  /** A person rejected some of this stage's evidence. */
+  disputed: boolean;
+  progress: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
+}
+
+/** A whole run. Derived from its stages rather than stored — there is no row
+ *  for a run, only a chain of jobs. */
+export interface PipelineRun {
+  root_job_id: string;
+  stages: PipelineRunStage[];
+  pipeline: string;
+  saved_pipeline_id?: string | null;
+  status:
+    | 'pending'
+    | 'running'
+    | 'waiting'
+    | 'paused'
+    | 'failed'
+    | 'cancelled'
+    | 'completed'
+    /** Every stage finished, and at least one of them without the evidence it
+     *  promised. Not the same as completed, and calling it that is how a
+     *  pipeline reports success for work nobody produced. */
+    | 'completed_unmet'
+    /** Every contract met, on evidence a person rejected. Nothing was
+     *  invalidated — that is what advisory means — but it must not read as
+     *  clean. */
+    | 'completed_disputed'
+    | string;
+  total_stages: number;
+  completed_stages: number;
+  /** The stage the run is on, or the one it stopped at. Null when every stage
+   *  is done. */
+  current_stage?: string | null;
+}
+
+/** One finding type a contract may require.
+ *
+ *  Served from the backend rather than listed here, because a second list of
+ *  evidence types drifts from the tools the first time one is added — and the
+ *  failure that causes (a contract asking for evidence nothing produces) is
+ *  the most common way an authored pipeline fails its own check. */
+export interface PipelineEvidenceType {
+  name: string;
+  producers: string[];
+  /** The whole chain to obtain it, not just the last tool. */
+  typical_seconds: number;
+  /** Job types every producer permits. Empty means unrestricted; a stage set
+   *  to anything else plans tools it then cannot call. */
+  job_types: string[];
+  /** Never inherited from an upstream stage, so a looping stage cannot keep a
+   *  verdict it earned before its own edit. */
+  perishable: boolean;
+  consumes: string;
+}
+
+export interface PipelineVocabulary {
+  evidence_types: PipelineEvidenceType[];
+  job_types: string[];
+}
+
+/** A pipeline drafted from a description. A starting point for the editor —
+ *  it launches nothing, and one that still fails the check is returned anyway
+ *  with the problems attached. */
+export interface PipelineDraft {
+  spec: Record<string, any>;
+  problems: string[];
+  repaired: boolean;
+}
+
+export interface PipelineStageRestart {
+  root_job_id: string;
+  stage: string;
+  job_id: string;
+  note_attached: boolean;
+}
+
+export interface PipelineStageInsertion {
+  root_job_id: string;
+  stage: string;
+  after: string;
+  job_id: string;
+  /** Stages that now run beneath the inserted one instead of beneath its
+   *  parent. They re-derive there; nothing is lost, but the run's shape
+   *  changed and saying so is cheaper than letting someone discover it. */
+  displaced: string[];
 }

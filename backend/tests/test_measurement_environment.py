@@ -16,10 +16,22 @@ from app.services.agent_compiler_sandbox import measurement_quality
 
 
 def test_a_quiet_machine_produces_no_warning():
-    quality = measurement_quality(1.2, 8, [100, 101, 102])
+    # Five trials, not three: a sample too small to estimate a spread from now
+    # earns a warning of its own, and this test is about the environment not
+    # inventing one. Three trials was the default when this was written.
+    quality = measurement_quality(1.2, 8, [100, 101, 102, 103, 104])
 
     assert quality["measurement_environment"] == "quiet"
     assert "measurement_warning" not in quality
+
+
+def test_a_quiet_machine_with_too_few_trials_says_so_and_nothing_else():
+    """The spread is what is doubted here, not the machine."""
+    quality = measurement_quality(1.2, 8, [100, 101, 102])
+
+    assert quality["measurement_environment"] == "quiet"
+    assert "repeat=5" in quality["measurement_warning"]
+    assert "busy" not in quality["measurement_warning"]
 
 
 def test_a_busy_machine_is_reported_as_busy():

@@ -387,7 +387,7 @@ SPECS: tuple[ToolSpec, ...] = (
                 },
                 "repeat": {
                     "type": "integer",
-                    "description": "Trials to run, 1-10 (default 3); the fastest is reported",
+                    "description": "Trials to run, 1-10 (default 5); the fastest is reported. The slowest quarter are discarded before the spread is measured, so more trials buy a better precision estimate; the loop stops early if the trials would eat the timeout.",
                 },
                 "label": {
                     "type": "string",

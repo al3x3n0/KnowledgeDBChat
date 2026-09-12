@@ -24,12 +24,27 @@ from typing import Any, Dict, List, Optional
 
 from loguru import logger
 
-from app.services import agent_sandbox_runtime, agent_toolchains
+from app.core.config import settings
+from app.services import agent_measurement_lock, agent_sandbox_runtime, agent_toolchains
 
 DEFAULT_IMAGE = "ghcr.io/al3x3n0/kdbc-compiler-research:latest"
 MAX_CODE_CHARS = 20000
 MAX_OUTPUT_CHARS = 12000
 DEFAULT_TIMEOUT_SECONDS = 120
+
+#: Trials per benchmark. Three cannot support a dispersion estimate: one stall
+#: in three samples decided a live swarm's verdict. Five lets the slowest be
+#: discarded and still leaves four to measure with -- on the run that failed,
+#: `[46, 47, 48, 49, 110]` reads as 6% spread where `[61, 109, 46]` read as
+#: 137%. Safe to raise only because the trial loop also stops on a time
+#: budget, so a slow program takes fewer trials rather than timing out.
+DEFAULT_REPEAT = 5
+
+#: The share of the run's timeout the trials may consume. The rest is for
+#: compiling and the startup probe. Without this, raising DEFAULT_REPEAT would
+#: turn a program that took 30s a trial from a slow benchmark into a failed
+#: one.
+TRIAL_BUDGET_SHARE = 0.5
 
 # Counted off the generated assembly to describe what the compiler did.
 # aarch64 and x86-64 spellings both appear so the same tool works on either.
@@ -436,12 +451,78 @@ LOAD_SATURATED = 1.5
 # runs of the same benchmark on this host varied by up to 44%, which is larger
 # than most effects worth proposing an instruction for.
 SPREAD_UNSTABLE = 0.25
+#: How much wider the untrimmed spread must be before the run is told a
+#: trial stalled. Below this the two figures are the same measurement.
+OUTLIER_GAP = 0.25
+
+#: Below this, a wall-clock timing on a contended host is measuring the
+#: scheduler. Serialising the measurement, taking five trials and discarding
+#: the slowest all failed to stabilise a ~30 ms kernel here: spreads stayed
+#: above 100% and two roles that agreed exactly on 23 ms were still reported
+#: unresolvable. No statistic fixes a signal beneath the noise floor -- only a
+#: bigger workload does, which is the same lesson `startup_share` teaches for
+#: interpreted languages.
+NOISE_FLOOR_MS = 250
 
 
 #: Above this share, the reported time is mostly the interpreter booting. A
 #: third is enough to distort any comparison between two implementations, long
 #: before it makes the number meaningless on its own.
 STARTUP_DOMINATES = 0.33
+
+
+#: Trials dropped before measuring spread, as a fraction of the sample. Only
+#: the SLOWEST are dropped, and that asymmetry is the whole point: wall-clock
+#: interference can add time to a trial and can never subtract it, so the
+#: slowest sample is the most contaminated one by construction and the fastest
+#: is the cleanest. A dispersion measure that treats the maximum as signal is
+#: measuring the host's worst moment, not the code.
+TRIM_FRACTION = 0.25
+
+
+def robust_spread(timings: List[int]) -> Dict[str, Any]:
+    """How much this timing actually moved, with the host's hiccups removed.
+
+    `(max - min) / min` over three trials is one stall away from meaningless.
+    Measured, on a swarm role timing a 46 ms kernel: `all_ms=[61, 109, 46]`
+    reported 137% spread -- and the middle trial was the slow one, so it was
+    not even warm-up. Two trials agreed and one blip decided the number. That
+    spread then became the consensus tolerance, pushed the merge past the
+    50% ceiling, and summoned a person to look at a machine hiccup.
+
+    So the reported spread is taken over the sample with the slowest quarter
+    discarded, and the untrimmed figure is reported beside it. Nothing is
+    hidden: a big gap between the two IS the finding that the host stalled,
+    and it is surfaced as a warning rather than folded into the number.
+
+    `fastest_ms` is unaffected -- trimming only ever removes slow trials.
+    """
+    out: Dict[str, Any] = {}
+    values = sorted(int(t) for t in (timings or []) if t is not None)
+    if not values or values[0] <= 0:
+        return out
+    if len(values) == 1:
+        # One trial is a number, not a measurement.
+        out["single_trial"] = True
+        return out
+
+    raw = (values[-1] - values[0]) / values[0]
+    out["trial_spread_raw"] = round(raw, 3)
+
+    discard = max(1, int(len(values) * TRIM_FRACTION)) if len(values) >= 3 else 0
+    kept = values[: len(values) - discard] if discard else values
+    spread = (kept[-1] - kept[0]) / kept[0] if kept[0] > 0 and len(kept) > 1 else 0.0
+
+    out["trial_spread"] = round(spread, 3)
+    out["trials"] = len(values)
+    if discard:
+        out["trials_discarded"] = discard
+    if len(values) < 4:
+        # Two or three trials cannot support a dispersion estimate worth much,
+        # trimmed or not. Said out loud so a tight spread over three samples is
+        # not read as precision it has not earned.
+        out["few_trials"] = True
+    return out
 
 
 def measurement_quality(
@@ -474,14 +555,12 @@ def measurement_quality(
         else:
             quality["measurement_environment"] = "quiet"
 
-    if timings and len(timings) > 1 and min(timings) > 0:
-        spread = (max(timings) - min(timings)) / min(timings)
-        quality["trial_spread"] = round(spread, 3)
-    elif timings is not None and len(timings) == 1:
-        # One trial is a number, not a measurement. Said here because a live
-        # run benchmarked once, was refused by a contract requiring error
-        # bars, and had nothing in the tool's own output to tell it why.
-        quality["single_trial"] = True
+    if timings:
+        # Spread with the host's worst moments trimmed off; see robust_spread.
+        # `single_trial` still comes from here -- a live run benchmarked once,
+        # was refused by a contract requiring error bars, and had nothing in
+        # the tool's own output to tell it why.
+        quality.update(robust_spread(list(timings)))
 
     # What the process paid before reaching the first line of the algorithm.
     # Measured for `python3 -c pass` in the same container, around the same
@@ -516,6 +595,42 @@ def measurement_quality(
             "whether the number is stable. Pass repeat=5 or more; on this host "
             "repeated runs of the same benchmark have varied by up to 44%."
         )
+    # A big gap between the trimmed and untrimmed spread means one trial
+    # stalled. That is worth saying rather than hiding: the number is usable,
+    # and the host is not quiet. Surfaced as its own warning so a reader is
+    # never told a timing held still when one trial did not.
+    raw_spread = quality.get("trial_spread_raw")
+    if (
+        spread is not None
+        and raw_spread is not None
+        and raw_spread >= spread + OUTLIER_GAP
+    ):
+        dropped = int(quality.get("trials_discarded", 0) or 0)
+        warnings.append(
+            f"{dropped} of {int(quality.get('trials', 0) or 0)} trials stalled "
+            f"(all trials spanned {raw_spread * 100:.0f}%, the rest "
+            f"{spread * 100:.0f}%); the reported spread excludes the slowest, "
+            "which interference can only ever have made slower."
+        )
+    if quality.get("few_trials") and not quality.get("single_trial"):
+        warnings.append(
+            "Too few trials for the spread to mean much. Pass repeat=5 or more "
+            "before treating this spread as the measurement's precision."
+        )
+    fastest = min(timings) if timings else None
+    if (
+        fastest is not None
+        and fastest < NOISE_FLOOR_MS
+        and spread is not None
+        and spread >= SPREAD_UNSTABLE
+    ):
+        warnings.append(
+            f"At {fastest} ms this workload is too small to time reliably on "
+            f"this host: the trials still varied by {spread * 100:.0f}% after "
+            "discarding the slowest. Scale the work up until the fastest trial "
+            f"clears ~{NOISE_FLOOR_MS} ms; more trials cannot recover a signal "
+            "smaller than the scheduling noise around it."
+        )
     if spread is not None and spread >= SPREAD_UNSTABLE:
         warnings.append(
             f"Trials varied by {spread * 100:.0f}%, so any difference smaller "
@@ -540,7 +655,7 @@ async def benchmark_c_snippet(
     *,
     code: str,
     flags: str = "",
-    repeat: int = 3,
+    repeat: int = DEFAULT_REPEAT,
     label: str = "",
     language: str = agent_toolchains.DEFAULT_LANGUAGE,
     image: str = DEFAULT_IMAGE,
@@ -562,7 +677,7 @@ async def benchmark_c_snippet(
     if blocked:
         return blocked
 
-    repeat = max(1, min(int(repeat or 3), 10))
+    repeat = max(1, min(int(repeat or DEFAULT_REPEAT), 10))
     flags = flags or chain.default_flags
     safe_flags = _clean_flags(flags)
     if safe_flags is None:
@@ -579,12 +694,33 @@ async def benchmark_c_snippet(
         script = (
             f"{build} 2>compile_err.txt || "
             "{ cat compile_err.txt >&2; exit 90; }; "
+            # `repeat` is a maximum, not a promise. The loop also stops once
+            # the trials have eaten their share of the run's timeout, so a
+            # program that takes 30s a trial runs two of them instead of
+            # turning the whole measurement into a timeout with no result at
+            # all. A partial sample is still a measurement; a timeout is not.
+            f"__t0=$(date +%s%N); __budget={int(timeout_seconds * TRIAL_BUDGET_SHARE * 1000000000)}; "
+            # One untimed run before the clock starts. Standard hygiene on
+            # real hardware, where a cold page cache and an unwarmed CPU make
+            # the first trial the slowest.
+            #
+            # It is NOT what was wrong here, and the reported warmup_ms is how
+            # that was settled rather than assumed: on this host the warm-up
+            # run came back at 30 ms against a 29 ms fastest trial, and the
+            # timed trials then ASCENDED -- [29, 36, 40, 61, 78]. A descending
+            # sequence in an earlier run looked like warm-up and was
+            # coincidence. Kept because it costs one run in six and makes the
+            # question checkable; not kept as a fix for anything measured.
+            "__warm=$(date +%s%N); ./prog >/dev/null 2>&1; "
+            "__warm_end=$(date +%s%N); "
+            'echo "__warmup_ms__ $(( (__warm_end - __warm) / 1000000 ))"; '
             f"for i in $(seq 1 {repeat}); do "
             "  s=$(date +%s%N); ./prog; rc=$?; e=$(date +%s%N); "
             # Without this the loop's exit status is echo's, so a program that
             # failed would be reported as a successful benchmark.
             '  if [ $rc -ne 0 ]; then echo "program exited $rc" >&2; exit 91; fi; '
             '  echo "__elapsed_ms__ $(( (e - s) / 1000000 ))"; '
+            "  if [ $(( e - __t0 )) -ge $__budget ]; then break; fi; "
             "done; "
             # Sampled in the same container, around the same trials: a timing
             # taken while the machine is busy is not a property of the code,
@@ -615,10 +751,20 @@ async def benchmark_c_snippet(
                 "e=$(date +%s%N); "
                 'echo "__startup_ms__ $(( (e - s) / 1000000 ))"'
             )
+        # One timing at a time on this host. Two roles of the same swarm
+        # started benchmarking in the same second and timed each other's
+        # contention; see agent_measurement_lock for that measurement.
         try:
-            returncode, stdout, stderr = await _run(
-                script, workdir, image=image, timeout_seconds=timeout_seconds
-            )
+            async with agent_measurement_lock.exclusive_measurement(
+                wait_seconds=float(
+                    getattr(settings, "AGENT_MEASUREMENT_LOCK_WAIT_SECONDS", 180)
+                ),
+                ttl_seconds=agent_measurement_lock.ttl_for(timeout_seconds),
+                enabled=bool(getattr(settings, "AGENT_MEASUREMENT_LOCK_ENABLED", True)),
+            ) as lock_outcome:
+                returncode, stdout, stderr = await _run(
+                    script, workdir, image=image, timeout_seconds=timeout_seconds
+                )
         except asyncio.TimeoutError:
             return {"error": f"Benchmark timed out after {timeout_seconds}s"}
         except FileNotFoundError:
@@ -651,6 +797,7 @@ async def benchmark_c_snippet(
     load_average: Optional[float] = None
     cpu_count: Optional[int] = None
     startup_ms: Optional[int] = None
+    warmup_ms: Optional[int] = None
     for line in stdout.splitlines():
         if line.startswith("__elapsed_ms__ "):
             try:
@@ -672,10 +819,33 @@ async def benchmark_c_snippet(
                 startup_ms = int(line.split()[1])
             except (IndexError, ValueError):
                 continue
+        elif line.startswith("__warmup_ms__ "):
+            try:
+                warmup_ms = int(line.split()[1])
+            except (IndexError, ValueError):
+                continue
         else:
             program_output.append(line)
 
     quality = measurement_quality(load_average, cpu_count, timings, startup_ms)
+    # The discarded first run, reported rather than dropped silently. How much
+    # slower it was than the fastest trial is the size of the warm-up effect on
+    # this host, which is the evidence that discarding it was right -- and, if
+    # the two are close, the evidence that it was not needed.
+    if warmup_ms is not None and warmup_ms >= 0:
+        quality["warmup_ms"] = warmup_ms
+        quality["warmup_discarded"] = True
+    # Whether this timing had the machine to itself. Carried on the result so
+    # a reader -- and the swarm's consensus, which decides what "agree" means
+    # from exactly these fields -- can tell a serialised measurement from one
+    # that may have shared the CPU with another role's benchmark.
+    quality.update(lock_outcome.as_quality())
+    if not lock_outcome.held and lock_outcome.detail:
+        quality["measurement_warning"] = " ".join(
+            part
+            for part in (quality.get("measurement_warning"), lock_outcome.detail)
+            if part
+        )
 
     reported_metrics = parse_reported_metrics("\n".join(program_output))
 

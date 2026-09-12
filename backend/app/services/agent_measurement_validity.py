@@ -35,6 +35,7 @@ The vocabulary a contract may use, under `contract["validity"]`:
 from __future__ import annotations
 
 from typing import Any, Dict, List, Mapping, Optional, Sequence
+
 from app.services import agent_evidence_map
 
 #: Every boolean predicate a contract may declare. This is the ONE place they
@@ -138,6 +139,20 @@ def _has_uncertainty(finding: Mapping[str, Any]) -> bool:
             ):
                 return True
     return False
+
+
+def has_uncertainty(finding: Mapping[str, Any]) -> bool:
+    """Whether this finding reports a spread, publicly.
+
+    The same question `require_uncertainty` asks when deciding whether a
+    contract is satisfied, exposed so a reader can be shown the answer rather
+    than a second implementation of it. Two definitions of "carries error bars"
+    would disagree the first time a tool named its dispersion something new --
+    which has already happened once here, when `trial_spread` was missing from
+    the list and the one tool that reports dispersion could not satisfy a
+    contract asking for it.
+    """
+    return _has_uncertainty(finding)
 
 
 def unsettled_predictions(state: Mapping[str, Any]) -> List[str]:

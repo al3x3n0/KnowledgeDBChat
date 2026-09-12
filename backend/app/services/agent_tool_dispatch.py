@@ -3815,6 +3815,13 @@ def build_autonomous_workspace_read_provider(executor: Any) -> FunctionToolProvi
                 str((job.config or {}).get("coding_workspace_session_id") or "").strip()
                 or None
             )
+            # Register it now, while the provenance is in hand. Both branches
+            # above converge here, so a workspace cannot be created by this
+            # tool without being findable -- which is the whole point: the
+            # process that made it is not the process anyone will read it from.
+            await executor.workspace_manager.persist_record(
+                ws, ctx.db, user_id=job.user_id, job_id=job.id
+            )
             from app.services.agent_coding_harness_service import (
                 agent_coding_harness_service,
             )
@@ -5853,15 +5860,23 @@ def build_autonomous_workspace_mutation_provider(executor: Any) -> FunctionToolP
     ) -> Any:
         from app.services import agent_compiler_sandbox
 
-        return await agent_compiler_sandbox.benchmark_c_snippet(
-            code=str(params.get("code") or ""),
+        # `repeat` is forwarded only when the caller actually chose one. It
+        # used to be restated as `or 3` here, a second copy of a default that
+        # also lives on benchmark_c_snippet -- so raising the sandbox default
+        # to 5 changed nothing for agents, which reach the tool exclusively
+        # through this wrapper. Measured: a swarm launched after the change
+        # still took three trials, one of which stalled at 230 ms.
+        kwargs: Dict[str, Any] = {
+            "code": str(params.get("code") or ""),
             # No "-O2" default here any more: it is wrong for Rust, which
             # rejects the flag outright. The toolchain supplies its own.
-            flags=str(params.get("flags") or ""),
-            repeat=int(params.get("repeat") or 3),
-            label=str(params.get("label") or ""),
-            language=str(params.get("language") or ""),
-        )
+            "flags": str(params.get("flags") or ""),
+            "label": str(params.get("label") or ""),
+            "language": str(params.get("language") or ""),
+        }
+        if params.get("repeat"):
+            kwargs["repeat"] = int(params["repeat"])
+        return await agent_compiler_sandbox.benchmark_c_snippet(**kwargs)
 
     async def _check_implementation(
         params: Dict[str, Any], ctx: AgentToolExecutionContext

@@ -50,11 +50,78 @@ class AgentChainOrchestrationService:
             AgentJobStatus.CANCELLED.value,
         }
         total_siblings = len(siblings)
-        terminal_count = len([s for s in siblings if str(s.status) in terminal])
+
+        def _finished_its_work(sibling: Any, status: str) -> bool:
+            """Whether this role has nothing left to compute.
+
+            Terminal is the obvious case. The other is a role PAUSED at an
+            approval gate: it finished, and it is waiting for a person rather
+            than working. Those are different states, and counting the second
+            as unfinished is what would make approval-gated swarms deadlock --
+            every role pauses, none counts, the fan-in never reaches `ready`,
+            and approving changes nothing because the gate still sees zero
+            terminal siblings.
+
+            The same distinction the run view already draws between a pipeline
+            that is `waiting` and one that died.
+            """
+            if status in terminal:
+                return True
+            if status != AgentJobStatus.PAUSED.value:
+                return False
+            results = getattr(sibling, "results", None)
+            checkpoint = (
+                results.get("approval_checkpoint")
+                if isinstance(results, dict)
+                else None
+            )
+            return isinstance(checkpoint, dict) and bool(checkpoint)
+
+        # The asking job counts itself from its own in-memory status, not from
+        # whatever the query returned for it.
+        #
+        # This gate is evaluated DURING the asking job's finalisation, before
+        # its terminal status is visible to a fresh SELECT. So every sibling
+        # counted N-1 and deferred, including the last one -- and since a
+        # deferral schedules no retry, nobody ever fired. The fan-in was
+        # unreachable for any swarm of any size, which is why no job in this
+        # database has ever carried a swarm summary.
+        #
+        # Measured on the first swarm ever run here: the verifier finished
+        # last and recorded `swarm_fan_in_deferred terminal=1 expected=2`.
+        asking_id = getattr(parent_job, "id", None)
+        terminal_count = 0
+        for sibling in siblings:
+            status = str(sibling.status)
+            if asking_id is not None and getattr(sibling, "id", None) == asking_id:
+                # Prefer the live object: it knows it has finished.
+                status = str(parent_job.status)
+            if _finished_its_work(sibling, status):
+                terminal_count += 1
         expected = int(chain_data.get("swarm_fan_in_expected_siblings", 0) or 0)
         if expected <= 0:
             expected = total_siblings
         ready = bool(total_siblings >= expected and terminal_count >= expected)
+
+        # Serialise the check-and-create across siblings.
+        #
+        # Fixing the last-finisher race turned "nobody fires" into "everybody
+        # fires": both siblings now reach `ready` at the same moment, and
+        # neither sees the other's fan-in yet, so both create one. Measured on
+        # the first swarm where the fan-in worked at all -- two
+        # `Swarm Synthesis` jobs for one group.
+        #
+        # The lock is taken on the shared swarm parent and held until this
+        # transaction commits, which is after the fan-in row is written. The
+        # second sibling therefore blocks, then finds `already_exists` and
+        # stands down. A short critical section on one row, and the only place
+        # where two siblings can both be right.
+        if group_id and siblings:
+            await db.execute(
+                select(AgentJob.id)
+                .where(AgentJob.id == sibling_parent_id)
+                .with_for_update()
+            )
 
         already_exists = False
         if group_id and siblings:
@@ -87,8 +154,24 @@ class AgentChainOrchestrationService:
         parent_job: AgentJob,
         db: AsyncSession,
     ) -> Dict[str, Any]:
-        """Collect sibling job outputs for swarm fan-in aggregators."""
-        sibling_parent_id = parent_job.id
+        """Collect sibling job outputs for swarm fan-in aggregators.
+
+        Siblings are PEERS of the job firing the chain -- the other roles of
+        the same swarm -- so they are the children of its parent, not its own
+        children. Reading `parent_job.id` here looked for the firing role's
+        descendants, of which there are none but the aggregator itself, so this
+        returned `{}` and the `swarm` payload was never attached. The
+        aggregator then died with "Missing inherited swarm sibling data" every
+        time it ran, which is exactly what the first swarm to get this far did.
+
+        `evaluate_swarm_fan_in_gate` already used `parent_job.parent_job_id`
+        for the same question. Two halves of one feature disagreeing about what
+        a sibling is, and only the half that could refuse was right.
+
+        Falls back to the job's own id so a shape where the aggregator hangs
+        directly off the swarm parent still resolves.
+        """
+        sibling_parent_id = parent_job.parent_job_id or parent_job.id
         if not sibling_parent_id:
             return {}
         siblings_res = await db.execute(

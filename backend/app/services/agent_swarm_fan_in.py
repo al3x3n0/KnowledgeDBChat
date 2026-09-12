@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 from app.models.agent_job import AgentJobStatus
+from app.services import agent_swarm_consensus as swarm_consensus
 
 
 def normalize_role_token(value: Any) -> str:
@@ -316,6 +317,11 @@ def build_swarm_fan_in_result(
     role_summaries: List[Dict[str, Any]] = []
     sibling_status: List[Dict[str, Any]] = []
     roles_ordered: List[str] = []
+    #: Typed evidence per role, which is what agreement is actually decided
+    #: from. Keyed by normalised role rather than by job: two jobs running the
+    #: same role are one opinion, and the independence that makes agreement
+    #: meaningful comes from the roles differing.
+    findings_by_role: Dict[str, List[Dict[str, Any]]] = {}
     completed_count = 0
     failed_roles: List[str] = []
     ranked_candidates: List[Dict[str, Any]] = []
@@ -337,6 +343,14 @@ def build_swarm_fan_in_result(
             failed_roles.append(role or "unknown_role")
 
         row_results = row.get("results") if isinstance(row.get("results"), dict) else {}
+        # The typed evidence, kept beside the prose. Agreement is decided from
+        # this: see agent_swarm_consensus for why matching on titles could
+        # never work.
+        raw_findings = row_results.get("findings")
+        if isinstance(raw_findings, list) and normalized_role:
+            findings_by_role.setdefault(normalized_role, []).extend(
+                f for f in raw_findings if isinstance(f, dict)
+            )
         points = _extract_points(row_results)
         candidate_paths = _extract_paths(row_results)
         candidate_commands = _extract_commands(row_results)
@@ -444,6 +458,8 @@ def build_swarm_fan_in_result(
             slot["count"] = int(slot.get("count", 0) or 0) + 1
             support_map[k] = slot
 
+    typed = swarm_consensus.summarize(swarm_consensus.group_claims(findings_by_role))
+
     support_rows: List[Dict[str, Any]] = []
     for k, slot in support_map.items():
         roles = sorted([str(r) for r in slot.get("roles", set()) if str(r).strip()])
@@ -478,14 +494,58 @@ def build_swarm_fan_in_result(
                 "roles": failed_roles[:8],
             }
         )
-    if not consensus and len(roles_ordered) >= 2 and support_rows:
+    # Only when the TYPED comparison also found nothing corroborated. The prose
+    # rule below keys on the lowercased text of a finding's title, so it finds
+    # overlap only when two agents wrote byte-identical sentences -- which is
+    # to say almost never. Left to drive this on its own it declared "low
+    # alignment" on every swarm that ever ran, including ones whose roles
+    # agreed exactly.
+    if (
+        not consensus
+        and not typed["corroborated"]
+        and not typed["inconclusive"]
+        and len(roles_ordered) >= 2
+        and support_rows
+    ):
         conflicts.append(
             {
                 "type": "low_alignment",
-                "description": "Role outputs show low overlap; no repeated findings across roles.",
+                "description": (
+                    "No finding was produced by two roles about the same " "subject."
+                ),
                 "roles": roles_ordered[:8],
             }
         )
+
+    # A real disagreement: two roles measured the same thing and got
+    # materially different numbers. This is the output a swarm exists to
+    # produce, and the prose rule could not express it at all.
+    for group in typed["contested"][:5]:
+        conflicts.append(
+            {
+                "type": "contested_measurement",
+                "description": (
+                    f"{group['finding_type']} for {group['subject']}: "
+                    f"{group['detail']}"
+                ),
+                "roles": group["roles"][:8],
+            }
+        )
+    # Not a disagreement between roles -- a defect in what they measured with.
+    # Worth surfacing beside the conflicts because it is more actionable than
+    # most of them: rerun on a quiet machine and the answer may appear.
+    for group in typed["inconclusive"][:5]:
+        conflicts.append(
+            {
+                "type": "inconclusive_measurement",
+                "description": (
+                    f"{group['finding_type']} for {group['subject']}: "
+                    f"{group['detail']}"
+                ),
+                "roles": group["roles"][:8],
+            }
+        )
+
     if terminal_count < expected:
         conflicts.append(
             {
@@ -599,7 +659,13 @@ def build_swarm_fan_in_result(
         min(1.0, float(completed_count) / float(max(1, len(sibling_jobs))))
     )
     agreement = 0.0
-    if consensus:
+    if typed["agreement"] is not None:
+        # Computed over what was CHECKABLE -- the claims more than one role
+        # spoke to. The old score divided support by the number of siblings,
+        # so a finding two of four roles agreed on scored 0.5 as though the
+        # silent two had dissented. Silence is not dissent.
+        agreement = float(typed["agreement"])
+    elif consensus:
         agreement = float(
             sum(
                 min(
@@ -792,6 +858,22 @@ def build_swarm_fan_in_result(
             for r in consensus
         ],
         "conflicts": conflicts[:10],
+        # What the roles independently corroborated, contested, or spoke to
+        # alone -- decided from typed evidence rather than from the wording of
+        # a title. This is the swarm's actual product.
+        "corroborated": typed["corroborated"][:10],
+        "contested": typed["contested"][:10],
+        # Two roles spoke to the same thing through an instrument too
+        # imprecise to say whether they matched. Dropping these would hide the
+        # one thing the reader most needs: that the run established nothing.
+        "inconclusive": typed["inconclusive"][:10],
+        "uncorroborated": typed["uncorroborated"][:10],
+        "corroborated_count": typed["corroborated_count"],
+        "contested_count": typed["contested_count"],
+        "inconclusive_count": typed["inconclusive_count"],
+        # None when no two roles spoke to the same thing: nothing was checked,
+        # which is not the same as everything checked having disagreed.
+        "typed_agreement": typed["agreement"],
         "confidence": {
             "overall": round(overall, 4),
             "coverage": round(coverage, 4),

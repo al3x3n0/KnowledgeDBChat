@@ -175,7 +175,7 @@ def ensure_swarm_chain_config(
             "researcher": {
                 "name": "Researcher",
                 "job_type": "research",
-                "objective": "Gather high-signal evidence from papers and internal knowledge sources.",
+                "objective": "Produce the primary evidence the goal calls for, first-hand.",
                 "agent_role": "researcher",
                 "config": {
                     "prefer_sources": ["documents", "arxiv"],
@@ -208,21 +208,21 @@ def ensure_swarm_chain_config(
             "analyst": {
                 "name": "Analyst",
                 "job_type": "analysis",
-                "objective": "Compare sources, identify gaps/contradictions, and stress-test assumptions.",
+                "objective": "Stress-test the result: name the conditions under which it would not hold.",
                 "agent_role": "critic",
                 "config": {"prefer_sources": ["documents", "arxiv"]},
             },
             "critic": {
                 "name": "Critic",
                 "job_type": "analysis",
-                "objective": "Challenge assumptions and identify evidence gaps before synthesis.",
+                "objective": "Challenge the result and name what would have to be true for it to be wrong.",
                 "agent_role": "critic",
                 "config": {"prefer_sources": ["documents", "arxiv"]},
             },
             "synthesizer": {
                 "name": "Synthesizer",
                 "job_type": "synthesis",
-                "objective": "Produce concise synthesis with traceable evidence and clear next actions.",
+                "objective": "Reconcile what the other agents produced into one account, citing their evidence.",
                 "agent_role": "synthesizer",
                 "config": {"prefer_sources": ["documents"]},
             },
@@ -236,7 +236,7 @@ def ensure_swarm_chain_config(
             "verifier": {
                 "name": "Verifier",
                 "job_type": "analysis",
-                "objective": "Verify evidence quality, consistency, and confidence before final decisions.",
+                "objective": "Independently obtain the same result and report whether it holds.",
                 "agent_role": "verifier",
                 "config": {"prefer_sources": ["documents", "arxiv"]},
             },
@@ -419,7 +419,17 @@ def ensure_swarm_chain_config(
             )
             role_name = str(tpl.get("name") or "Researcher").strip()
             role_objective = str(tpl.get("objective") or "").strip()
-            role_job_type = str(tpl.get("job_type") or job.job_type).strip().lower()
+            # The parent's job type wins unless the parent never chose one.
+            #
+            # Job type decides which tools a run can see, and the templates all
+            # declare `research`. So an `analysis` swarm silently became a
+            # research swarm and lost the tools its goal depended on. A role is
+            # a perspective, not a licence to change what the agent can do.
+            parent_job_type = str(job.job_type or "").strip().lower()
+            if parent_job_type and parent_job_type not in {"research", "custom"}:
+                role_job_type = parent_job_type
+            else:
+                role_job_type = str(tpl.get("job_type") or job.job_type).strip().lower()
             role_agent_role = (
                 str(tpl.get("agent_role") or role_template_key).strip().lower()
             )
@@ -438,11 +448,28 @@ def ensure_swarm_chain_config(
         goal_prefix = str(
             swarm_cfg.get("goal_prefix", "Swarm role") or "Swarm role"
         ).strip()[:80]
+        # The TASK first, the role second.
+        #
+        # This read "Objective: <the role's generic purpose>" and only then
+        # "Parent goal: <what was actually asked>", so the role's boilerplate
+        # was the instruction and the real task was filed as background. A
+        # swarm told to benchmark one C kernel came back with ten
+        # knowledge-base documents -- exactly the `researcher` template's
+        # objective, and exactly its `max_documents: 10`.
+        #
+        # A role is a LENS on the task, not a different task. Agreement between
+        # roles is only evidence if they were answering the same question.
         role_goal = (
-            f"{goal_prefix}: {role_name}\n"
-            f"Objective: {role_objective}\n"
-            f"Parent goal: {parent_goal}\n\n"
-            "Deliver concise, evidence-backed findings specific to this role, then provide actionable next steps."
+            f"{parent_goal}\n\n"
+            f"You are one of several agents working on the goal above, "
+            f"independently.\n"
+            f"{goal_prefix} -- your perspective is {role_name}: "
+            f"{role_objective}\n"
+            "Apply that perspective TO THE GOAL ABOVE -- do not substitute "
+            "your own task for it. If the goal names a specific tool, label or "
+            "parameter, use exactly those so your result can be compared with "
+            "the other agents'. Deliver concise, evidence-backed findings, "
+            "then actionable next steps."
         )
         child_jobs.append(
             {
@@ -510,6 +537,15 @@ def ensure_swarm_chain_config(
                 "deterministic_runner": "swarm_fan_in_aggregate",
                 "swarm_fan_in_group_id": fan_in_group_id,
                 "swarm_parent_job_id": str(job.id),
+                # The review gate is a property of the swarm a person
+                # launched, not of the aggregator generated for it -- but the
+                # aggregator is the job that holds the verdict and therefore
+                # the only one that reads the policy. Chained children do not
+                # inherit config by default, so without this the documented
+                # per-job override `config.swarm_review_gate` silently never
+                # applied to the one place it exists for. None is fine: the
+                # gate falls back to the global setting.
+                "swarm_review_gate": cfg.get("swarm_review_gate"),
                 "swarm_role_count": len(child_jobs),
                 "coding_swarm_enabled": coding_swarm_enabled,
                 "coding_swarm_profile": coding_swarm_profile or None,

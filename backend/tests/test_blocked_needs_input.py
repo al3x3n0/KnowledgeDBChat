@@ -374,10 +374,7 @@ class TestAGapIsNotAMeasurement:
 
     @staticmethod
     def _evaluate(findings):
-        from app.services.agent_goal_contract_service import (
-            AgentGoalContractService,
-        )
-
+        from app.services.agent_goal_contract_service import AgentGoalContractService
         from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 
         job = _job(

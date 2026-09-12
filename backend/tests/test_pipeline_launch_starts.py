@@ -49,9 +49,7 @@ class TestNothingElseWouldStartIt:
 
 
 class TestLaunchQueuesTheHeadJob:
-    def test_it_dispatches_the_job_it_created(
-        self, client, auth_headers, monkeypatch
-    ):
+    def test_it_dispatches_the_job_it_created(self, client, auth_headers, monkeypatch):
         dispatched = []
 
         class _Task:
@@ -74,9 +72,7 @@ class TestLaunchQueuesTheHeadJob:
         assert dispatched, "a launched pipeline that is never queued never runs"
         assert dispatched[0][0] == job_id, "queued a different job than it reported"
 
-    def test_a_refused_pipeline_queues_nothing(
-        self, client, auth_headers, monkeypatch
-    ):
+    def test_a_refused_pipeline_queues_nothing(self, client, auth_headers, monkeypatch):
         """The control. Dispatching before validation would start work the
         endpoint is about to refuse."""
         dispatched = []
@@ -149,9 +145,7 @@ class TestAStageThatDeclaresNoLoopStillNoticesItIsStuck:
 
     def test_an_author_who_asks_for_patience_still_gets_it(self):
         """The control. The default must not override a declared loop."""
-        job = self._bind(
-            {"loop": {"max_iterations": 6, "until": "contract_satisfied"}}
-        )
+        job = self._bind({"loop": {"max_iterations": 6, "until": "contract_satisfied"}})
 
         assert job["config"]["loop_until"] == "contract_satisfied"
         assert job["max_iterations"] == 6

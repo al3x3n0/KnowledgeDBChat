@@ -114,8 +114,8 @@ class TestTheFailureNamesItself:
         """asyncio.TimeoutError stringifies to "", which produced
         `note="Check failed: "` -- a run could not tell a timeout from a broken
         toolchain from its own bad code."""
-        from app.services import agent_implementation_check as impl
         from app.services import agent_compiler_sandbox as sandbox
+        from app.services import agent_implementation_check as impl
 
         async def _timeout(*args, **kwargs):
             raise asyncio.TimeoutError()

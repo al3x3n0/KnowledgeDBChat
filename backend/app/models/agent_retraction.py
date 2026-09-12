@@ -39,17 +39,30 @@ from app.core.database import Base
 class RetractionKind:
     """What is being withdrawn.
 
-    Three, because the real cases differ in scope. A whole run can be bad (its
+    Four, because the real cases differ in scope. A whole run can be bad (its
     host was never verified). A *class* of measurement can be bad across every
-    run that took it, which is what happened to reciprocal throughput here. And
-    a recorded method can be bad on its own terms.
+    run that took it, which is what happened to reciprocal throughput here. A
+    recorded method can be bad on its own terms. And one particular result can
+    be bad while everything around it stands -- a single benchmark taken while
+    the machine was loaded, in a run whose other numbers are fine.
+
+    That last one is the case a person reviewing a run actually hits, and
+    neither of the coarser kinds expresses it: retracting the finding type
+    withdraws every measurement of that kind ever taken, and retracting the job
+    throws away the evidence that was good.
     """
 
     JOB = "job"
     FINDING_TYPE = "finding_type"
     METHOD = "method"
+    #: One finding in one run, addressed as ``<job_id>#<index>``. Findings
+    #: carry no stable id of their own -- most have no `id` field at all -- so
+    #: the run and the position in its findings list are the only address they
+    #: have. That address holds as long as the run's results are not rewritten,
+    #: which nothing does: a run's findings are appended to, never reordered.
+    FINDING = "finding"
 
-    ALL = (JOB, FINDING_TYPE, METHOD)
+    ALL = (JOB, FINDING_TYPE, METHOD, FINDING)
 
 
 class AgentRetraction(Base):

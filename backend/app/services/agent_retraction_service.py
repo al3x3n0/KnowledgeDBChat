@@ -71,6 +71,46 @@ async def retract(
     return row
 
 
+def finding_ref(job_id: Any, index: int) -> str:
+    """How one finding in one run is addressed.
+
+    Findings have no stable id of their own, so the run plus the position in
+    its findings list is the whole address. Built in one place because a
+    reader and a writer that disagree about the format would silently fail to
+    match -- the dispute would be recorded and never shown.
+    """
+    return f"{str(job_id)}#{int(index)}"
+
+
+async def disputed_findings(
+    db: AsyncSession, *, user_id: Any, job_id: Any
+) -> Dict[int, str]:
+    """Finding index -> reason, for the findings of this run a person rejected.
+
+    Read rather than stored on the run, for the same reason the rest of this
+    module computes propagation on read: a dispute can be withdrawn, and a
+    view that had rewritten the run would have no way back.
+    """
+    prefix = f"{str(job_id)}#"
+    rows = await db.execute(
+        select(AgentRetraction)
+        .where(AgentRetraction.user_id == user_id)
+        .where(AgentRetraction.subject_kind == RetractionKind.FINDING)
+        .where(AgentRetraction.subject_ref.like(f"{prefix}%"))
+        .order_by(AgentRetraction.created_at)
+    )
+    out: Dict[int, str] = {}
+    for row in rows.scalars().all():
+        suffix = str(row.subject_ref)[len(prefix) :]
+        try:
+            out[int(suffix)] = str(row.reason or "")
+        except ValueError:
+            # A ref that does not parse belongs to some other addressing
+            # scheme; skipping it is better than failing the whole view.
+            continue
+    return out
+
+
 async def withdraw(db: AsyncSession, retraction_id: Any) -> bool:
     """Undo a retraction -- the measurement was re-taken and held after all.
 

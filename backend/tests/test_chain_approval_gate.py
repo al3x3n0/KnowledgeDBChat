@@ -218,3 +218,63 @@ def _deps(requeued):
             pass
 
     return _Deps()
+
+
+class TestTheGateAlsoCoversDeterministicStages:
+    """A deterministic runner returns before `finalize_job`, which is the only
+    place the gate lived -- so a stage that asked to stop for a person ran
+    straight through whenever it happened to be deterministic. The setting was
+    accepted, stored, and dropped.
+
+    Found while fixing the same blind spot for swarm verdicts. No live job was
+    affected: every deterministic job on record had no chain at all, so this
+    makes a configuration that never worked start working rather than changing
+    what any running pipeline does.
+    """
+
+    def test_the_executor_applies_the_gate_on_that_path(self):
+        import inspect
+
+        from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+        source = inspect.getsource(AutonomousAgentExecutor.execute_job)
+        assert "hold_for_chain_approval(job)" in source
+
+    def test_a_held_stage_does_not_start_its_chain_there(self):
+        import inspect
+
+        from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+        source = inspect.getsource(AutonomousAgentExecutor.execute_job)
+        held = source.index("hold_for_chain_approval(job)")
+        guard = source.index("AgentJobStatus.PAUSED.value", held)
+        trigger = source.index("_trigger_chained_jobs", held)
+        assert guard < trigger
+
+    def test_a_deterministic_stage_with_an_approval_chain_pauses(self):
+        from app.services.agent_runtime_finalizer import hold_for_chain_approval
+
+        job = _job(config={"deterministic_runner": "experiment_runner"})
+        hold_for_chain_approval(job)
+        assert job.status == AgentJobStatus.PAUSED.value
+        assert job.results["approval_checkpoint"]["checkpoint_type"] == (
+            CHAIN_GATE_CHECKPOINT
+        )
+
+    def test_a_deterministic_stage_without_an_approval_chain_still_runs_through(
+        self,
+    ):
+        """The gate is opt-in. Only a chain that asked for approval stops."""
+        from app.services.agent_runtime_finalizer import hold_for_chain_approval
+
+        job = _job(
+            config={"deterministic_runner": "experiment_runner"},
+            chain_config={"child_jobs": [{"name": "next"}]},
+        )
+        hold_for_chain_approval(job)
+        assert job.status == AgentJobStatus.COMPLETED.value
+
+    def test_the_public_name_matches_the_old_private_one(self):
+        from app.services import agent_runtime_finalizer as fin
+
+        assert fin.hold_for_chain_approval is fin._hold_for_chain_approval

@@ -12,7 +12,9 @@ from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import settings
 from app.models.agent_job import AgentJob, AgentJobStatus, ChainTriggerCondition
+from app.services import agent_swarm_review_gate
 from app.services.agent_job_memory_service import agent_job_memory_service
 from app.services.agent_run_synthesis_service import synthesize_conclusion
 from app.services.autonomous_rnd_trajectory_service import (
@@ -24,8 +26,68 @@ from app.services.autonomous_rnd_trajectory_service import (
 #: instead of re-running a job that has already done its work.
 CHAIN_GATE_CHECKPOINT = "chain_gate"
 
+#: Marks the approval payload written when a swarm's merged verdict wants a
+#: person's eyes. Distinct from CHAIN_GATE_CHECKPOINT because the two release
+#: differently: a chain gate fires the chain on the `approval` event, which is
+#: the only event an ON_APPROVAL chain answers, while this one holds a job
+#: whose chain may be waiting on plain completion -- and firing the wrong
+#: event would leave those stages stranded with the parent marked done.
+SWARM_REVIEW_CHECKPOINT = "swarm_review"
 
-def _hold_for_chain_approval(job: AgentJob) -> None:
+
+def hold_for_swarm_review(job: AgentJob) -> None:
+    """Pause a finished swarm merge whose verdict a person should see.
+
+    A swarm costs several agents and produces one judgement. Completing
+    silently means the expensive part ran and the answer went unread -- which
+    is what happened to the first swarm whose roles both benchmarked: it
+    reported agreement over two measurements taken on a saturated host, and
+    only a hand-written SQL query ever looked at it.
+
+    Runs BEFORE `_hold_for_chain_approval`, which requires a COMPLETED job, so
+    at most one of the two holds. That ordering is deliberate rather than
+    incidental: one approval should release the run, not two in sequence.
+    """
+    if getattr(job, "status", None) != AgentJobStatus.COMPLETED.value:
+        return
+    raw_results = getattr(job, "results", None)
+    results = raw_results if isinstance(raw_results, dict) else {}
+    fan_in = results.get("swarm_fan_in")
+    if not isinstance(fan_in, dict) or not fan_in:
+        return  # not a swarm merge; there is no verdict to review
+
+    raw_config = getattr(job, "config", None)
+    config = raw_config if isinstance(raw_config, dict) else {}
+    policy = config.get("swarm_review_gate")
+    if policy is None:
+        policy = getattr(
+            settings, "AGENT_SWARM_REVIEW_GATE", agent_swarm_review_gate.ON_DISPUTE
+        )
+
+    decision = agent_swarm_review_gate.decide(fan_in, policy)
+    if not decision.hold:
+        return
+
+    results["approval_checkpoint"] = {
+        "checkpoint_type": SWARM_REVIEW_CHECKPOINT,
+        "message": (
+            "The swarm merged its roles and the verdict wants review: "
+            + "; ".join(decision.reasons)
+        )[:300],
+        "iteration": int(getattr(job, "iteration", 0) or 0),
+        "reasons": list(decision.reasons),
+        "policy": decision.policy,
+    }
+    job.results = results
+    job.status = AgentJobStatus.PAUSED.value
+    job.current_phase = "awaiting_approval"
+    job.phase_details = "Swarm verdict awaiting review."
+    log = getattr(job, "add_log_entry", None)
+    if callable(log):
+        log({"phase": "swarm_review_gate", "reasons": list(decision.reasons)})
+
+
+def hold_for_chain_approval(job: AgentJob) -> None:
     """Pause a completed job whose chain waits on a person.
 
     Writes the payload ``extract_approval_checkpoint`` reads, so the job
@@ -1731,7 +1793,11 @@ async def finalize_job(
     # completing so the existing checkpoint machinery -- the queue item, the
     # approve/reject actions, the resume path -- applies unchanged, and the
     # early return below carries it out.
-    _hold_for_chain_approval(job)
+    # A swarm merge worth a person's attention stops here too, and is checked
+    # first: both write the same checkpoint payload, and holding twice for one
+    # run would mean approving the same finished work in two places.
+    hold_for_swarm_review(job)
+    hold_for_chain_approval(job)
 
     if job.status == AgentJobStatus.PAUSED.value:
         return {
@@ -1779,3 +1845,8 @@ async def finalize_job(
         "memories_injected": job.memory_injection_count or 0,
         "memories_created": job.memories_created_count or 0,
     }
+
+
+#: Was private until the deterministic-runner path needed it too.
+_hold_for_swarm_review = hold_for_swarm_review
+_hold_for_chain_approval = hold_for_chain_approval

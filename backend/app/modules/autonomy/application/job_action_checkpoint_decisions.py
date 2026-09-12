@@ -11,7 +11,10 @@ from app.modules.autonomy.application.job_action_contracts import (
     JobActionError,
 )
 from app.schemas.agent_job import AgentJobActionRequest
-from app.services.agent_runtime_finalizer import CHAIN_GATE_CHECKPOINT
+from app.services.agent_runtime_finalizer import (
+    CHAIN_GATE_CHECKPOINT,
+    SWARM_REVIEW_CHECKPOINT,
+)
 
 CHECKPOINT_DECISION_ACTIONS = frozenset({"approve", "edit", "skip", "reject"})
 
@@ -82,6 +85,21 @@ async def perform_checkpoint_decision(
         except ValueError as exc:
             raise JobActionError(status_code=400, detail=str(exc))
 
+    if pending_checkpoint.get("checkpoint_type") == SWARM_REVIEW_CHECKPOINT:
+        return await _decide_swarm_review(
+            job,
+            action,
+            pending_checkpoint,
+            checkpoint_note,
+            results_payload,
+            approval_payload,
+            state,
+            checkpoint_row,
+            deps=deps,
+            db=db,
+            current_user=current_user,
+        )
+
     if pending_checkpoint.get("checkpoint_type") == CHAIN_GATE_CHECKPOINT:
         return await _decide_chain_gate(
             job,
@@ -139,6 +157,75 @@ async def perform_checkpoint_decision(
         db.add(checkpoint_row)
     if action != "reject":
         deps.execute_agent_job_task.delay(str(job.id), str(current_user.id))
+    return job
+
+
+async def _decide_swarm_review(
+    job: AgentJob,
+    action: str,
+    pending_checkpoint: dict,
+    checkpoint_note: str | None,
+    results_payload: dict,
+    approval_payload: dict,
+    state: dict,
+    checkpoint_row: Any,
+    *,
+    deps: JobActionDependencies,
+    db: AsyncSession,
+    current_user: User,
+) -> AgentJob:
+    """Decide a gate holding a swarm's merged verdict.
+
+    Like the chain gate, this job has already done its work -- the merge is in
+    its results, which is what the person just read -- so it is never
+    re-queued. Approving means "carry on as if it had completed".
+
+    Which is why the chain is triggered with `complete` and not `approval`.
+    An ON_APPROVAL chain answers only the `approval` event, and every other
+    chain answers only `complete`; this gate can hold a job with either kind,
+    since it fires on the verdict rather than on how the chain was configured.
+    Sending one event would strand the other's stages with their parent marked
+    done and nothing to restart them. `chain_triggered` makes the second call
+    a no-op when the first one fired, so trying both is safe.
+    """
+    _clear_pending_checkpoint(results_payload, approval_payload, state, deps=deps)
+    deps.append_approval_event(
+        approval_payload,
+        state,
+        {
+            "action": action,
+            "checkpoint_type": SWARM_REVIEW_CHECKPOINT,
+            "note": checkpoint_note,
+            "decided_by": str(getattr(current_user, "id", "") or ""),
+        },
+    )
+    job.results = results_payload
+    job.status = AgentJobStatus.COMPLETED.value
+    job.current_phase = "completed"
+
+    if action == "approve":
+        from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+        executor = AutonomousAgentExecutor()
+        triggered = list(await executor._trigger_chained_jobs(job, "approval", db))
+        if not triggered:
+            triggered = list(await executor._trigger_chained_jobs(job, "complete", db))
+        job.phase_details = (
+            f"Verdict reviewed; started {len(triggered)} next stage(s)."
+            if triggered
+            else "Verdict reviewed."
+        )
+    else:
+        job.chain_triggered = True
+        job.phase_details = f"Swarm verdict {action}ed; nothing downstream started."
+
+    job.add_log_entry(
+        {"phase": "swarm_review_decision", "action": action, "note": checkpoint_note}
+    )
+    if checkpoint_row:
+        checkpoint_row.state = state
+        db.add(checkpoint_row)
+    await db.commit()
     return job
 
 

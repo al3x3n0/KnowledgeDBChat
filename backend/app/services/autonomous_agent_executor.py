@@ -38,9 +38,9 @@ from app.models.agent_tool_prior import AgentToolPrior
 from app.models.memory import UserPreferences
 from app.services import (
     agent_decision_parser,
+    agent_evidence_map,
     agent_execution_graph,
     agent_failure_diagnosis,
-    agent_evidence_map,
     agent_loop_policy,
     agent_method_record,
     agent_plan_normalization,
@@ -84,7 +84,11 @@ from app.services.agent_progress_evaluation_service import (
     AgentProgressEvaluationService,
 )
 from app.services.agent_research_runner_service import AgentResearchRunnerService
-from app.services.agent_runtime_finalizer import finalize_job
+from app.services.agent_runtime_finalizer import (
+    finalize_job,
+    hold_for_chain_approval,
+    hold_for_swarm_review,
+)
 from app.services.agent_runtime_policy_service import AgentRuntimePolicyService
 from app.services.agent_runtime_state_service import initialize_runtime_state
 from app.services.agent_scientific_validation_service import (
@@ -1777,6 +1781,31 @@ class AutonomousAgentExecutor:
             )
 
             if handled:
+                # A deterministic runner returns here WITHOUT going through
+                # finalize_job, so anything that holds a finished job has to
+                # be applied on this path as well. The swarm fan-in aggregator
+                # is itself a deterministic runner, so its merged verdict --
+                # the one output a swarm exists to produce -- was the single
+                # job the review gate could never see. Found by running one:
+                # the merge landed `inconclusive`, which is exactly the case
+                # the gate holds for, and the job completed anyway.
+                hold_for_swarm_review(job)
+                # And the chain's own gate, for the same reason. A stage that
+                # asked to stop for a person before the next one starts was
+                # being run straight through whenever it happened to be
+                # deterministic -- the setting was accepted, stored, and
+                # silently dropped. No existing job was affected when this was
+                # fixed (every deterministic job on record had no chain at
+                # all), so this makes a configuration that never worked start
+                # working rather than changing what any live pipeline does.
+                hold_for_chain_approval(job)
+                if job.status == AgentJobStatus.PAUSED.value:
+                    # Held for a person. The chain starts on their decision,
+                    # not here, or the next stage would run on a verdict
+                    # nobody has accepted yet.
+                    await db.commit()
+                    return deterministic_result
+
                 # Ensure chained jobs trigger even for deterministic runners.
                 event = (
                     "complete"
@@ -1842,12 +1871,23 @@ class AutonomousAgentExecutor:
                 logger.warning(
                     f"Workspace persistence error for job {job_id}: {persist_err}"
                 )
-            # Clean up temp directories
+            # Finish with the workspaces without destroying them.
+            #
+            # This used to be `cleanup_all()`, which deleted every directory
+            # the moment the run ended. That is why the environment a number
+            # was measured in could never be inspected afterwards: for a
+            # research pipeline the environment is part of the evidence, and a
+            # benchmark whose workspace is gone is a number nobody can
+            # re-derive. Files are now kept for
+            # CODING_WORKSPACE_RETENTION_HOURS and expired ones are swept as
+            # later jobs finish, so the window does not become a leak.
             try:
-                self.workspace_manager.cleanup_all()
+                await self.workspace_manager.release_all(
+                    db, user_id=job.user_id, job_id=job.id
+                )
             except Exception as cleanup_err:
                 logger.warning(
-                    f"Workspace cleanup error for job {job_id}: {cleanup_err}"
+                    f"Workspace release error for job {job_id}: {cleanup_err}"
                 )
 
     async def _run_ai_hub_scientist(

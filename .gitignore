@@ -75,6 +75,20 @@ out/
 !/data/hf_cache/.gitkeep
 !/data/test/hf_cache/.gitkeep
 
+# Runtime output of the agent stack, not source: bundles and exports an agent
+# wrote, bias snapshots, and the coding workspaces the sweeper reaps. 1.6k
+# files and ~17 MB accumulated in one session.
+/data/agent-bundles/
+/data/agent-export/
+/data/bias/
+/data/workspaces/
+
+# Local stack overrides. Compose loads this file automatically, so committing
+# one would change every developer's stack -- and the one written here turns
+# ENABLE_UNSAFE_CODE_EXECUTION on, which this project deliberately defaults to
+# off. Keep it local; docker-compose.override.example.yml documents the shape.
+/docker-compose.override.yml
+
 # Docker runtime volumes and caches (never commit runtime state)
 /data/minio_data/
 /data/ollama_data/

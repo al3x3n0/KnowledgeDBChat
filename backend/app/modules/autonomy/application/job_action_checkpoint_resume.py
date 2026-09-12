@@ -4,12 +4,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services import agent_loop_policy
 from app.models.user import User
 from app.modules.autonomy.application.job_action_contracts import (
     JobActionDependencies,
     JobActionError,
 )
+from app.services import agent_loop_policy
 
 
 async def perform_resume_action(

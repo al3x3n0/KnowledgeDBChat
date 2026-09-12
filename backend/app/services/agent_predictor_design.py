@@ -45,11 +45,7 @@ from __future__ import annotations
 import random
 from typing import Any, Dict, List, Mapping, Sequence, Tuple
 
-from app.services.agent_predictability import (
-    DEFAULT_BINS,
-    MIN_PER_CELL,
-    discretize,
-)
+from app.services.agent_predictability import DEFAULT_BINS, MIN_PER_CELL, discretize
 
 #: Fraction of the trace that warms the tables. The rest is scored.
 DEFAULT_SPLIT = 0.5

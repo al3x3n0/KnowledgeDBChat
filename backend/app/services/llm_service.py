@@ -34,13 +34,13 @@ from tenacity import (
 
 from app.core.config import settings
 from app.models.llm_usage import LLMUsageEvent
+from app.services import llm_truncation
 from app.services.llm_routing import (
     coerce_routing_config,
     compute_attempt_tiers,
     resolve_tier_overrides,
 )
 from app.utils.exceptions import LLMServiceError
-from app.services import llm_truncation
 
 _LLM_SEMAPHORE = asyncio.Semaphore(settings.LLM_MAX_CONCURRENCY)
 

@@ -11,8 +11,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
-from app.services import llm_json
-from app.services import llm_truncation
+from app.services import llm_json, llm_truncation
 
 # ---------------------------------------------------------------------------
 # Pydantic models

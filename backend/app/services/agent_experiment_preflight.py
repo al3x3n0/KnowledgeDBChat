@@ -31,8 +31,8 @@ from typing import Any, Dict, List, Sequence
 
 from app.services.agent_gem5_sandbox import find_regime_change
 from app.services.agent_predictability import (
-    MIN_PER_CELL,
     DEFAULT_BINS,
+    MIN_PER_CELL,
     relative_spread,
 )
 

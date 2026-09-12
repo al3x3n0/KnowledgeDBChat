@@ -138,6 +138,49 @@ async def drop_tables():
         raise
 
 
+def _url_with_resolved_host(url: str) -> str:
+    """The same URL with its host replaced by a freshly resolved address.
+
+    Celery uses NullPool, so every database operation opens a new connection --
+    and therefore performs a new DNS lookup. An agent job does hundreds. Under
+    load, Docker's embedded resolver drops one, asyncpg raises
+    `[Errno -3] Temporary failure in name resolution`, SQLAlchemy poisons the
+    session, and the job dies far from the cause. Measured: 14 such failures in
+    celery against 0 in the API, which pools its connections and resolves once.
+
+    Resolving here moves that from once per OPERATION to once per TASK -- the
+    engine is already built fresh per task -- which is the same reduction a
+    pool would give without a pool to dispose of. Re-resolving each task also
+    keeps it correct across container restarts, which a cached address would
+    not.
+
+    Falls back to the original URL on any failure: a name we cannot resolve now
+    is one asyncpg should be allowed to try itself, with the resolver retries
+    configured in compose.
+    """
+    try:
+        from sqlalchemy.engine.url import make_url
+
+        parsed = make_url(url)
+        host = parsed.host
+        if not host or host in {"localhost", "127.0.0.1", "::1"}:
+            return url
+        import socket
+
+        resolved = socket.gethostbyname(host)
+        if not resolved or resolved == host:
+            return url
+        # render_as_string(hide_password=False), never str(url): SQLAlchemy's
+        # __str__ masks the password as "***", so a URL rebuilt with str()
+        # authenticates as the literal three asterisks. Every celery database
+        # connection failed with InvalidPasswordError until this line was
+        # right, and a test that accepted the masked form let it through.
+        return parsed.set(host=resolved).render_as_string(hide_password=False)
+    except Exception as error:  # noqa: BLE001 - see the docstring
+        logger.debug(f"Could not pre-resolve database host: {error}")
+        return url
+
+
 def create_celery_session():
     """
     Create a fresh async session for Celery tasks.
@@ -169,7 +212,11 @@ def create_celery_session():
             max_overflow=settings.CELERY_DB_MAX_OVERFLOW,
         )
 
-    fresh_engine = create_async_engine(async_database_url, **kwargs)
+    # One DNS lookup per task rather than one per operation. See
+    # `_url_with_resolved_host`.
+    fresh_engine = create_async_engine(
+        _url_with_resolved_host(async_database_url), **kwargs
+    )
     return sessionmaker(
         fresh_engine,
         class_=AsyncSession,

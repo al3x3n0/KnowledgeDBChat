@@ -10,7 +10,7 @@ All pure — no DB or request coupling.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.models.agent_job import AgentJob, AgentJobStatus
@@ -34,14 +34,37 @@ def parse_optional_datetime(raw: Any) -> Optional[datetime]:
         return None
 
 
+def _naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """The same instant with no tzinfo, so two of these can be subtracted.
+
+    Every timestamp column on a job is ``DateTime(timezone=True)`` while the
+    Python defaults are naive ``utcnow()``, so what goes in naive comes back
+    from Postgres AWARE. Anything comparing a stored timestamp against
+    ``utcnow()`` is therefore one row away from
+    ``TypeError: can't subtract offset-naive and offset-aware datetimes`` --
+    which is exactly how the control-plane run list started returning 500 as
+    soon as a job reached the checkpoint queue.
+
+    Normalising here rather than at each call site because this is the one
+    place the subtraction happens, and a rule applied in four places is a rule
+    that will be missed in the fifth.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def queue_age_minutes(
     created_at: Optional[datetime], *, now: Optional[datetime] = None
 ) -> int:
     """Whole minutes elapsed since ``created_at`` (clamped to >= 0)."""
     if created_at is None:
         return 0
-    reference = now or datetime.utcnow()
-    return max(0, int((reference - created_at).total_seconds() // 60))
+    reference = _naive_utc(now) or datetime.utcnow()
+    started = _naive_utc(created_at)
+    return max(0, int((reference - started).total_seconds() // 60))
 
 
 def extract_launch_mode(config: Optional[dict]) -> str:

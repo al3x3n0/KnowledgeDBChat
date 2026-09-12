@@ -41,6 +41,18 @@ jest.mock('../../services/api', () => ({
   apiClient: {
     listAgentJobs: jest.fn(),
     getAgentJob: jest.fn(),
+    // The job detail panel mounts an evidence section and a workspace window,
+    // and both fetch. Absent from this mock they are not stubs returning
+    // nothing -- they are `undefined`, and calling one throws. Inside a
+    // react-query `queryFn` that surfaces as a rejected query whose timing
+    // decides whether an assertion has already run, which is why leaving them
+    // out made the whole suite flaky rather than failing: three consecutive
+    // runs gave 0, 1 and 2 failures.
+    getJobEvidence: jest.fn(),
+    disputeJobEvidence: jest.fn(),
+    withdrawJobEvidenceDispute: jest.fn(),
+    getJobWorkspace: jest.fn(),
+    getJobWorkspaceFile: jest.fn(),
     getAutonomousRndJobOutcome: jest.fn(),
     launchAutonomousRndVerificationTask: jest.fn(),
     createAutonomousRndVerificationAuditSnapshot: jest.fn(),
@@ -368,6 +380,27 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
       subscriptions: [],
       total: 0,
     });
+    // Defaults meaning "there is nothing to show", so a panel that renders
+    // them stays quiet instead of erroring. Tests that care set their own.
+    // The full AgentJobEvidence shape, not a plausible subset. A partial one
+    // is worse than none: the component's `!data` guard let it through and it
+    // then crashed on `data.evidence.length`, turning 2 flaky failures into
+    // 126 real ones. An empty `evidence` AND `requirements` makes the section
+    // render nothing, which is what these tests expect.
+    apiClient.getJobEvidence.mockResolvedValue({
+      job_id: 'job-1',
+      evidence: [],
+      requirements: [],
+      unrequested: [],
+      unrequested_total: 0,
+      contract_enabled: false,
+      contract_satisfied: false,
+      disputed_count: 0,
+    });
+    apiClient.getJobWorkspace.mockRejectedValue({ response: { status: 404 } });
+    apiClient.getJobWorkspaceFile.mockRejectedValue({ response: { status: 404 } });
+    apiClient.disputeJobEvidence.mockResolvedValue({});
+    apiClient.withdrawJobEvidenceDispute.mockResolvedValue({});
     const cleanJob = makeJob({
       id: 'job-2',
       name: 'Clean Scope Job',

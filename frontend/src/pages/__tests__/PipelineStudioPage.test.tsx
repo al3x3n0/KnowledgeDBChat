@@ -7,10 +7,22 @@
  * unaffordable one.
  */
 
-import { fireEvent, render, screen, waitFor } from '@testing-library/react';
+import { fireEvent, render as rtlRender, screen, waitFor } from '@testing-library/react';
 import React from 'react';
+import { QueryClient, QueryClientProvider } from 'react-query';
 
 import PipelineStudioPage from '../PipelineStudioPage';
+
+// The page now shows the last run of whatever pipeline is open, and that
+// section fetches. Wrapping here rather than at twenty call sites.
+const render = (ui: React.ReactElement) =>
+  rtlRender(
+    <QueryClientProvider
+      client={new QueryClient({ defaultOptions: { queries: { retry: false } } })}
+    >
+      {ui}
+    </QueryClientProvider>
+  );
 
 jest.mock('../../services/api', () => ({
   apiClient: {
@@ -24,6 +36,14 @@ jest.mock('../../services/api', () => ({
     saveSavedPipeline: jest.fn(),
     updateSavedPipeline: jest.fn(),
     deleteSavedPipeline: jest.fn(),
+    getPipelineRun: jest.fn(),
+    // The stage inspector asks for the evidence vocabulary on mount. Left out
+    // of this mock it is not merely unstubbed but *undefined*, so the call
+    // throws a TypeError synchronously -- before any promise exists for the
+    // page's deliberate `.catch(() => {})` to absorb. Every test in the file
+    // died on render, which is exactly the shape the note above warns about,
+    // arriving from the other direction.
+    getPipelineVocabulary: jest.fn(),
   },
 }));
 
@@ -39,6 +59,29 @@ jest.mock('react-router-dom', () => ({
 }));
 
 const apiClient = require('../../services/api').apiClient;
+
+// Enough of the real vocabulary for the inspector to render its pickers. The
+// editor is deliberately usable without it, so no test here depends on the
+// contents -- only on the call not exploding.
+const vocabulary = {
+  evidence_types: [
+    {
+      name: 'benchmark_measurement',
+      producers: ['benchmark_c_snippet'],
+      typical_seconds: 120,
+      job_types: ['analysis', 'coding'],
+      perishable: true,
+    },
+    {
+      name: 'document',
+      producers: ['search_documents'],
+      typical_seconds: 20,
+      job_types: [],
+      perishable: false,
+    },
+  ],
+  job_types: ['research', 'analysis', 'coding'],
+};
 
 const okCheck = {
   valid: true,
@@ -78,6 +121,11 @@ beforeEach(() => {
   window.localStorage.clear();
   apiClient.checkPipeline.mockResolvedValue(okCheck);
   apiClient.listSavedPipelines.mockResolvedValue([]);
+  // A pipeline with a last run fetches it. Most of these tests are not about
+  // the run, and a query function returning undefined is an error rather than
+  // an empty answer.
+  apiClient.getPipelineRun.mockRejectedValue({ response: { status: 404 } });
+  apiClient.getPipelineVocabulary.mockResolvedValue(vocabulary);
 });
 
 const typeSpec = (text: string) =>

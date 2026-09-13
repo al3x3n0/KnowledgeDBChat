@@ -24,6 +24,15 @@ VALUES="${CHART_DIR}/ci/values-smoke.yaml"
 NAMESPACE="${NAMESPACE:-kdbc-smoke}"
 RELEASE="${RELEASE:-kdbc}"
 TIMEOUT="${TIMEOUT:-10m}"
+
+# The mc image this script runs its own verification pod with. Read from the
+# chart rather than repeated, because it was repeated: the chart moved to
+# quay.io when MinIO withdrew these images from Docker Hub, and the two copies
+# hardcoded here did not, so the pod never started and "documents bucket
+# exists" failed against an error message instead of a bucket listing.
+MC_IMAGE="$(awk '/^  mcImage:/{f=1} f&&/repository:/{r=$2} f&&/tag:/{print r":"$2; exit}' \
+  "$(dirname "$0")/helm/knowledgedbchat/values.yaml")"
+[[ -n "$MC_IMAGE" ]] || MC_IMAGE="quay.io/minio/mc:RELEASE.2025-08-13T08-35-41Z"
 FULLNAME="${RELEASE}-knowledgedbchat"
 
 # Must match ci/values-smoke.yaml.
@@ -119,8 +128,8 @@ assert_contains "Qdrant is reachable over its Service" "$QDRANT_OUT" "ready"
 
 step "MinIO bucket was created by the post-install hook"
 MC_OUT=$(kubectl -n "$NAMESPACE" run mc-smoke-$RANDOM --rm -i --restart=Never --quiet \
-  --image=minio/mc:RELEASE.2024-10-08T09-37-26Z \
-  --overrides="{\"spec\":{\"containers\":[{\"name\":\"mc\",\"image\":\"minio/mc:RELEASE.2024-10-08T09-37-26Z\",\"command\":[\"sh\",\"-c\",\"mc alias set k http://${FULLNAME}-minio:9000 ${MINIO_USER} ${MINIO_PASSWORD} >/dev/null && mc ls k\"],\"stdin\":false}]}}" 2>&1 || true)
+  --image="$MC_IMAGE" \
+  --overrides="{\"spec\":{\"containers\":[{\"name\":\"mc\",\"image\":\"${MC_IMAGE}\",\"command\":[\"sh\",\"-c\",\"mc alias set k http://${FULLNAME}-minio:9000 ${MINIO_USER} ${MINIO_PASSWORD} >/dev/null && mc ls k\"],\"stdin\":false}]}}" 2>&1 || true)
 assert_contains "documents bucket exists" "$MC_OUT" "documents"
 
 step "Gateway routing"

@@ -110,9 +110,7 @@ class TestAFailedCheckDoesNotCount:
 
 
 class TestTheFailureNamesItself:
-    def test_an_exception_with_no_message_still_reports_its_class(
-        self, monkeypatch
-    ):
+    def test_an_exception_with_no_message_still_reports_its_class(self, monkeypatch):
         """asyncio.TimeoutError stringifies to "", which produced
         `note="Check failed: "` -- a run could not tell a timeout from a broken
         toolchain from its own bad code."""

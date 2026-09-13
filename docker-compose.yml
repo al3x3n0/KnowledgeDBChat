@@ -49,7 +49,10 @@ services:
 
   # MinIO for object storage
   minio:
-    image: minio/minio:latest
+    # quay.io, and pinned: MinIO withdrew these images from Docker Hub, so
+    # `minio/minio:latest` resolves only on a machine that cached it before
+    # the removal. A fresh clone could not start the stack at all.
+    image: quay.io/minio/minio:RELEASE.2025-09-07T16-13-09Z
     container_name: knowledge_db_minio
     ports:
       - "${KDBC_MINIO_PORT:-29000}:9000"  # API

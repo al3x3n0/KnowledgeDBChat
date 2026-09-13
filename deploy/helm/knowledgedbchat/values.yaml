@@ -424,13 +424,18 @@ qdrant:
 
 minio:
   enabled: true
+  # quay.io, not Docker Hub. MinIO withdrew these images from Hub -- the
+  # `minio/minio` repository there now answers "object not found", and the
+  # smoke test's cluster reported `pull access denied, repository does not
+  # exist or may require authorization` for the tag pinned here. A locally
+  # cached copy hides this, which is why it surfaced only on a clean runner.
   image:
-    repository: minio/minio
-    tag: RELEASE.2024-10-13T13-34-11Z
+    repository: quay.io/minio/minio
+    tag: RELEASE.2025-09-07T16-13-09Z
     pullPolicy: IfNotPresent
   mcImage:
-    repository: minio/mc
-    tag: RELEASE.2024-10-08T09-37-26Z
+    repository: quay.io/minio/mc
+    tag: RELEASE.2025-08-13T08-35-41Z
     pullPolicy: IfNotPresent
   service:
     apiPort: 9000

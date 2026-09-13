@@ -110,7 +110,9 @@ class TestAFailedCheckDoesNotCount:
 
 
 class TestTheFailureNamesItself:
-    def test_an_exception_with_no_message_still_reports_its_class(self):
+    def test_an_exception_with_no_message_still_reports_its_class(
+        self, monkeypatch
+    ):
         """asyncio.TimeoutError stringifies to "", which produced
         `note="Check failed: "` -- a run could not tell a timeout from a broken
         toolchain from its own bad code."""
@@ -120,6 +122,10 @@ class TestTheFailureNamesItself:
         async def _timeout(*args, **kwargs):
             raise asyncio.TimeoutError()
 
+        # The guard runs before _run, so without this the stub below is never
+        # reached and the check reports "disabled" rather than the timeout it
+        # is about. Docker is not touched: _run is replaced.
+        monkeypatch.setattr(sandbox, "_execution_enabled", lambda: True)
         original = sandbox._run
         sandbox._run = _timeout
         try:

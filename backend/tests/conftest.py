@@ -28,6 +28,23 @@ os.environ.setdefault(
     "LOG_FILE", str(Path(tempfile.gettempdir()) / "kdbchat-tests" / "test.log")
 )
 
+# Celery's broker, before app.core.celery reads settings to build the app.
+#
+# The suite needs no Redis -- it runs on in-memory SQLite and stubs the heavy
+# optional dependencies -- but an endpoint that queues a job calls .delay(),
+# and kombu then opens a real socket. On a developer's machine the dev stack's
+# Redis is listening, so this passed; in CI, where no service is started,
+# six tests failed with "Connection refused" against whatever port
+# CELERY_BROKER_URL happened to name. The port in that message was a red
+# herring: the tests need a broker, not a particular one.
+#
+# kombu's in-memory transport makes .delay() succeed and enqueue nowhere, which
+# is what a test asserting "the endpoint queued the job" actually wants. Tests
+# that need to SEE the dispatch still monkeypatch .delay themselves, and that
+# keeps working.
+os.environ.setdefault("CELERY_BROKER_URL", "memory://")
+os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")
+
 from app.core.database import Base, get_db  # noqa: E402
 from app.models.user import User  # noqa: E402
 from app.services.auth_service import AuthService  # noqa: E402

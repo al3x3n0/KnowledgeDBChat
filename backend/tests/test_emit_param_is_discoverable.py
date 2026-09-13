@@ -50,8 +50,16 @@ class TestTheSchemaStatesTheAcceptedSet:
 
 @pytest.mark.asyncio
 class TestTheRejectionNamesTheValue:
-    async def test_it_quotes_what_was_passed(self):
+    async def test_it_quotes_what_was_passed(self, monkeypatch):
         from app.services import agent_compiler_sandbox as sandbox
+
+        # Past the preflight guard, which the suite otherwise leaves shut --
+        # every other sandbox test asserts the disabled message. Nothing is
+        # executed: an illegal `emit` is rejected before a container is spent,
+        # which is the whole point of the assertion below. Without this the
+        # test passed only where ENABLE_UNSAFE_CODE_EXECUTION happened to be
+        # on, which is a developer's stack and not CI.
+        monkeypatch.setattr(sandbox, "_execution_enabled", lambda: True)
 
         result = await sandbox.compile_c_snippet(
             code="int main(void){return 0;}", emit="counts"

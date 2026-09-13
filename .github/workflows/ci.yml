@@ -31,7 +31,12 @@ jobs:
           cache: pip
       - name: Install lint tools
         # Formatting and linting need no application dependencies.
-        run: pip install black==24.* isort==5.* flake8==7.*
+        # Pinned to backend/requirements.txt, which is what the container
+        # and every developer's `make fmt` actually run. They had drifted to
+        # different majors, so black 24's 2024 style rejected 127 files that
+        # black 23 had just formatted -- CI failing on code that passes the
+        # project's own formatter is worse than no check. Bump both together.
+        run: pip install black==23.11.0 isort==5.12.0 flake8==6.1.0
       # Gated on app/ and tests/, which are clean. alembic/, scripts/, and
       # seed_data/ carry ~80 unformatted files and ~195 flake8 findings that
       # predate this workflow; they are reported, not enforced, until someone
@@ -132,6 +137,9 @@ jobs:
           cache-dependency-path: frontend/package-lock.json
       - name: Install dependencies
         working-directory: frontend
+        # See frontend/.npmrc: react-scripts 5.0.1 declares peerOptional
+        # typescript ^3 || ^4 and this project is on 5.x, so strict resolution
+        # refuses to install at all.
         run: npm ci
       - name: Typecheck
         working-directory: frontend

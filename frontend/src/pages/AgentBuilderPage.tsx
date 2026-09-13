@@ -2,8 +2,8 @@
  * Agent Builder page for creating and managing custom agents.
  */
 
-import React, { useState, useEffect } from 'react';
-import { useMutation, useQuery, useQueryClient } from 'react-query';
+import React, { useState } from 'react';
+import { useMutation, useQuery } from 'react-query';
 import {
   Bot,
   Plus,
@@ -20,10 +20,7 @@ import {
   RefreshCw,
   Sparkles,
   BarChart3,
-  Settings,
   FileText,
-  Wrench,
-  Filter,
   AlertTriangle,
   Info,
   Zap,
@@ -45,7 +42,6 @@ type TabId = 'agents' | 'templates' | 'create';
 type AgentFilter = 'all' | 'active' | 'draft' | 'archived' | 'system' | 'mine';
 
 const AgentBuilderPage: React.FC = () => {
-  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState<TabId>('agents');
   const [selectedAgentId, setSelectedAgentId] = useState<string | null>(null);
   const [filter, setFilter] = useState<AgentFilter>('all');
@@ -347,11 +343,10 @@ const AgentDetailPanel: React.FC<{
   onClose: () => void;
   onRefresh: () => void;
 }> = ({ agentId, capabilities, tools, onClose, onRefresh }) => {
-  const queryClient = useQueryClient();
   const [activeSection, setActiveSection] = useState<'overview' | 'edit' | 'test' | 'analytics'>(
     'overview'
   );
-  const [isEditing, setIsEditing] = useState(false);
+  const [, setIsEditing] = useState(false);
 
   // Fetch full agent details
   const { data: agent, isLoading, refetch } = useQuery(
@@ -561,14 +556,6 @@ const AgentOverview: React.FC<{
     (acc, c) => ({ ...acc, [c.name]: c }),
     {} as Record<string, CapabilityInfo>
   );
-
-  const [routingDefaultsText, setRoutingDefaultsText] = useState<string>(() => {
-    try {
-      return agent.routing_defaults ? JSON.stringify(agent.routing_defaults, null, 2) : '';
-    } catch {
-      return '';
-    }
-  });
 
   return (
     <div className="space-y-6">

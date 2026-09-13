@@ -4,13 +4,13 @@ LangGraph-backed issue -> PR draft orchestration service.
 
 from __future__ import annotations
 
+import hashlib
 import json
 import re
-import hashlib
 import time
-from pathlib import Path
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, Set, Type, TypeVar, TypedDict
+from pathlib import Path
+from typing import Any, Dict, List, Optional, Set, Type, TypedDict, TypeVar
 from uuid import UUID
 
 from loguru import logger
@@ -173,12 +173,16 @@ class LangGraphIssuePrService:
             repo_context_summary=(
                 result.get("repo_context_summary")
                 if isinstance(result.get("repo_context_summary"), dict)
-                else self._build_repo_context_summary(state.get("repo_context_snapshot") or {})
+                else self._build_repo_context_summary(
+                    state.get("repo_context_snapshot") or {}
+                )
             ),
             confidence_breakdown=(
                 result.get("confidence_breakdown")
                 if isinstance(result.get("confidence_breakdown"), dict)
-                else self._build_confidence_breakdown(planner, researcher, executor, reviewer)
+                else self._build_confidence_breakdown(
+                    planner, researcher, executor, reviewer
+                )
             ),
             decision_trace=(
                 result.get("decision_trace")
@@ -205,11 +209,17 @@ class LangGraphIssuePrService:
             if prefs:
                 return UserLLMSettings.from_preferences(prefs)
         except Exception as exc:
-            logger.warning(f"Failed to load user LLM settings for issue-pr orchestration: {exc}")
+            logger.warning(
+                f"Failed to load user LLM settings for issue-pr orchestration: {exc}"
+            )
         return None
 
-    async def _resolve_use_symbol_retrieval(self, request: LangGraphIssuePrRequest) -> bool:
-        repo_ctx = request.repo_context if isinstance(request.repo_context, dict) else {}
+    async def _resolve_use_symbol_retrieval(
+        self, request: LangGraphIssuePrRequest
+    ) -> bool:
+        repo_ctx = (
+            request.repo_context if isinstance(request.repo_context, dict) else {}
+        )
         explicit = repo_ctx.get("use_symbol_retrieval")
         if isinstance(explicit, bool):
             return explicit
@@ -282,7 +292,9 @@ class LangGraphIssuePrService:
                 logger.warning(
                     f"LangGraph {agent_name} parse failure attempt {attempt}/{max_attempts}: {exc}"
                 )
-        raise ValueError(f"{agent_name} did not return valid structured output: {last_error or 'unknown'}")
+        raise ValueError(
+            f"{agent_name} did not return valid structured output: {last_error or 'unknown'}"
+        )
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
         cleaned = (text or "").strip()
@@ -294,7 +306,7 @@ class LangGraphIssuePrService:
         end = cleaned.rfind("}")
         if start == -1 or end == -1 or end <= start:
             raise ValueError("No JSON object found in LLM response")
-        return json.loads(cleaned[start:end + 1])
+        return json.loads(cleaned[start : end + 1])
 
     def _append_event(
         self,
@@ -337,7 +349,9 @@ class LangGraphIssuePrService:
                     rationale="Prevent recurrence and validate behavior.",
                 ),
             ],
-            acceptance_criteria=([f"Issue '{issue.title}' is resolved."] + request.constraints)[:12],
+            acceptance_criteria=(
+                [f"Issue '{issue.title}' is resolved."] + request.constraints
+            )[:12],
             test_plan=["Run focused unit tests for touched modules."],
             risks=[
                 {
@@ -349,8 +363,12 @@ class LangGraphIssuePrService:
             out_of_scope=["Broad refactors unrelated to issue acceptance criteria."],
         )
 
-    def _fallback_researcher(self, request: LangGraphIssuePrRequest) -> ResearcherOutput:
-        repo_snapshot = self._get_or_collect_repo_context(request, use_symbol_retrieval=False)
+    def _fallback_researcher(
+        self, request: LangGraphIssuePrRequest
+    ) -> ResearcherOutput:
+        repo_snapshot = self._get_or_collect_repo_context(
+            request, use_symbol_retrieval=False
+        )
         top_app_file = ""
         top_test_file = ""
         matched_files = repo_snapshot.get("matched_files")
@@ -374,7 +392,9 @@ class LangGraphIssuePrService:
                     "why": "Likely location for regression coverage based on issue keywords.",
                 }
             ],
-            unknowns=["Exact failing file requires stack trace or reproduction command."],
+            unknowns=[
+                "Exact failing file requires stack trace or reproduction command."
+            ],
             risk_flags=[],
         )
 
@@ -386,7 +406,11 @@ class LangGraphIssuePrService:
             if isinstance(repo_snapshot.get("suggested_test_commands"), list)
             else []
         )
-        test_cmd = str(suggested_commands[0]).strip() if suggested_commands else "pytest -q backend/tests"
+        test_cmd = (
+            str(suggested_commands[0]).strip()
+            if suggested_commands
+            else "pytest -q backend/tests"
+        )
         return ExecutorOutput(
             changes=[
                 {
@@ -439,14 +463,20 @@ class LangGraphIssuePrService:
         return {
             "planner": planner,
             "event_log": self._append_event(
-                state, agent="planner", action="plan", result=result_tag, ref=f"issue:{issue.id}"
+                state,
+                agent="planner",
+                action="plan",
+                result=result_tag,
+                ref=f"issue:{issue.id}",
             ),
         }
 
     async def _researcher_node(self, state: IssuePrState) -> Dict[str, Any]:
         request = state["request"]
         planner = state.get("planner") or self._fallback_planner(request)
-        repo_snapshot = state.get("repo_context_snapshot") or self._get_or_collect_repo_context(
+        repo_snapshot = state.get(
+            "repo_context_snapshot"
+        ) or self._get_or_collect_repo_context(
             request, use_symbol_retrieval=bool(state.get("use_symbol_retrieval", False))
         )
         prompt = (
@@ -474,7 +504,11 @@ class LangGraphIssuePrService:
         return {
             "researcher": researcher,
             "event_log": self._append_event(
-                state, agent="researcher", action="collect_evidence", result=result_tag, ref="repo_scan"
+                state,
+                agent="researcher",
+                action="collect_evidence",
+                result=result_tag,
+                ref="repo_scan",
             ),
         }
 
@@ -483,7 +517,9 @@ class LangGraphIssuePrService:
         planner = state.get("planner") or self._fallback_planner(request)
         researcher = state.get("researcher") or self._fallback_researcher(request)
         required_fixes = state.get("required_fixes") or []
-        repo_snapshot = state.get("repo_context_snapshot") or self._get_or_collect_repo_context(
+        repo_snapshot = state.get(
+            "repo_context_snapshot"
+        ) or self._get_or_collect_repo_context(
             request, use_symbol_retrieval=bool(state.get("use_symbol_retrieval", False))
         )
         prompt = (
@@ -513,7 +549,11 @@ class LangGraphIssuePrService:
         return {
             "executor": executor,
             "event_log": self._append_event(
-                state, agent="executor", action="implement", result=result_tag, ref=f"attempt:{attempt}"
+                state,
+                agent="executor",
+                action="implement",
+                result=result_tag,
+                ref=f"attempt:{attempt}",
             ),
         }
 
@@ -544,7 +584,9 @@ class LangGraphIssuePrService:
         planner = state.get("planner") or self._fallback_planner(request)
         researcher = state.get("researcher") or self._fallback_researcher(request)
         executor = state.get("executor") or self._fallback_executor(state)
-        repo_snapshot = state.get("repo_context_snapshot") or self._get_or_collect_repo_context(
+        repo_snapshot = state.get(
+            "repo_context_snapshot"
+        ) or self._get_or_collect_repo_context(
             request, use_symbol_retrieval=bool(state.get("use_symbol_retrieval", False))
         )
         min_conf = float(state.get("reviewer_min_confidence", 0.75))
@@ -675,9 +717,13 @@ class LangGraphIssuePrService:
                 body_sections={
                     "Summary": f"Fixes issue {request.issue.id}: {request.issue.title}",
                     "Root Cause": "Issue-specific mismatch identified in planning/research phases.",
-                    "Changes": "; ".join([item.summary for item in executor.changes]) or "Code changes applied.",
+                    "Changes": "; ".join([item.summary for item in executor.changes])
+                    or "Code changes applied.",
                     "Test Plan": "; ".join(planner.test_plan) or "Run targeted tests.",
-                    "Risks": "; ".join([str(r.get('risk') or '') for r in planner.risks]) or "No major risks.",
+                    "Risks": "; ".join(
+                        [str(r.get("risk") or "") for r in planner.risks]
+                    )
+                    or "No major risks.",
                     "Rollback": "Revert the patch commit if regressions appear.",
                 },
                 checklist={
@@ -729,20 +775,36 @@ class LangGraphIssuePrService:
                 needs_human=bool(status == "needs_human_review"),
             ),
             "event_log": self._append_event(
-                state, agent="orchestrator", action="finalize", result=status, ref=request.issue.id
+                state,
+                agent="orchestrator",
+                action="finalize",
+                result=status,
+                ref=request.issue.id,
             ),
         }
 
     def _build_repo_context_summary(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
         if not isinstance(snapshot, dict):
             return {}
-        matched_files = snapshot.get("matched_files") if isinstance(snapshot.get("matched_files"), list) else []
-        matched_tests = snapshot.get("matched_tests") if isinstance(snapshot.get("matched_tests"), list) else []
+        matched_files = (
+            snapshot.get("matched_files")
+            if isinstance(snapshot.get("matched_files"), list)
+            else []
+        )
+        matched_tests = (
+            snapshot.get("matched_tests")
+            if isinstance(snapshot.get("matched_tests"), list)
+            else []
+        )
         symbol_matches = (
-            snapshot.get("symbol_matches") if isinstance(snapshot.get("symbol_matches"), list) else []
+            snapshot.get("symbol_matches")
+            if isinstance(snapshot.get("symbol_matches"), list)
+            else []
         )
         snippet_matches = (
-            snapshot.get("snippet_matches") if isinstance(snapshot.get("snippet_matches"), list) else []
+            snapshot.get("snippet_matches")
+            if isinstance(snapshot.get("snippet_matches"), list)
+            else []
         )
         suggested = (
             snapshot.get("suggested_test_commands")
@@ -762,7 +824,9 @@ class LangGraphIssuePrService:
             "repo_root": str(snapshot.get("repo_root") or ""),
             "scanned_files": int(snapshot.get("scanned_files", 0) or 0),
             "symbol_scan_files": int(snapshot.get("symbol_scan_files", 0) or 0),
-            "symbol_retrieval_enabled": bool(snapshot.get("symbol_retrieval_enabled", False)),
+            "symbol_retrieval_enabled": bool(
+                snapshot.get("symbol_retrieval_enabled", False)
+            ),
             "keywords": [str(token) for token in (snapshot.get("keywords") or [])[:10]],
             "top_files": _top_paths(matched_files, 5),
             "top_tests": _top_paths(matched_tests, 5),
@@ -850,7 +914,9 @@ class LangGraphIssuePrService:
             )
         if reviewer.policy_checks:
             failed_policies = [
-                item.check for item in reviewer.policy_checks if str(item.status).lower() == "fail"
+                item.check
+                for item in reviewer.policy_checks
+                if str(item.status).lower() == "fail"
             ]
             if failed_policies:
                 trace.append(f"policy_failed:{';'.join(failed_policies[:3])[:180]}")
@@ -926,7 +992,9 @@ class LangGraphIssuePrService:
             self._repo_snapshot_cache.items(),
             key=lambda item: float(item[1].get("created_at", 0)),
         )
-        overflow = len(self._repo_snapshot_cache) - self._repo_snapshot_cache_max_entries
+        overflow = (
+            len(self._repo_snapshot_cache) - self._repo_snapshot_cache_max_entries
+        )
         for idx in range(max(0, overflow)):
             self._repo_snapshot_cache.pop(str(ordered[idx][0]), None)
 
@@ -984,15 +1052,23 @@ class LangGraphIssuePrService:
     def _collect_repo_context(
         self, request: LangGraphIssuePrRequest, *, use_symbol_retrieval: bool
     ) -> Dict[str, Any]:
-        repo_ctx = request.repo_context if isinstance(request.repo_context, dict) else {}
+        repo_ctx = (
+            request.repo_context if isinstance(request.repo_context, dict) else {}
+        )
         repo_root = str(repo_ctx.get("repo_root") or ".").strip() or "."
         include_paths = repo_ctx.get("include_paths")
-        include = [str(item).strip() for item in include_paths] if isinstance(include_paths, list) else []
+        include = (
+            [str(item).strip() for item in include_paths]
+            if isinstance(include_paths, list)
+            else []
+        )
         max_scan_files = int(repo_ctx.get("max_scan_files", 2000) or 2000)
         max_candidates = int(repo_ctx.get("max_candidates", 12) or 12)
         max_content_scan_files = int(repo_ctx.get("max_content_scan_files", 300) or 300)
         content_scan_bytes = int(repo_ctx.get("content_scan_bytes", 8192) or 8192)
-        max_file_size_bytes = int(repo_ctx.get("max_file_size_bytes", 512 * 1024) or (512 * 1024))
+        max_file_size_bytes = int(
+            repo_ctx.get("max_file_size_bytes", 512 * 1024) or (512 * 1024)
+        )
 
         keywords = self._extract_issue_keywords(request)
         root_path = Path(repo_root).resolve()
@@ -1016,7 +1092,9 @@ class LangGraphIssuePrService:
             if not file_path.is_file():
                 continue
             rel = file_path.relative_to(root_path).as_posix()
-            if include_prefixes and not any(rel.startswith(prefix) for prefix in include_prefixes):
+            if include_prefixes and not any(
+                rel.startswith(prefix) for prefix in include_prefixes
+            ):
                 continue
             ext = file_path.suffix.lower()
             if ext not in {".py", ".ts", ".tsx", ".js", ".go", ".md", ".yaml", ".yml"}:
@@ -1046,8 +1124,12 @@ class LangGraphIssuePrService:
             else:
                 app_candidates.append(item)
 
-        app_candidates.sort(key=lambda value: (-int(value.get("score", 0)), value.get("path", "")))
-        test_candidates.sort(key=lambda value: (-int(value.get("score", 0)), value.get("path", "")))
+        app_candidates.sort(
+            key=lambda value: (-int(value.get("score", 0)), value.get("path", ""))
+        )
+        test_candidates.sort(
+            key=lambda value: (-int(value.get("score", 0)), value.get("path", ""))
+        )
         top_tests = test_candidates[:max_candidates]
         suggested_test_commands = self._build_test_commands(top_tests)
         result: Dict[str, Any] = {
@@ -1072,7 +1154,9 @@ class LangGraphIssuePrService:
             result["symbol_matches"] = symbol_pack.get("symbol_matches", [])
             result["snippet_matches"] = symbol_pack.get("snippet_matches", [])
             result["related_symbol_tests"] = symbol_pack.get("related_tests", [])
-            result["symbol_scan_files"] = int(symbol_pack.get("symbol_scan_files", 0) or 0)
+            result["symbol_scan_files"] = int(
+                symbol_pack.get("symbol_scan_files", 0) or 0
+            )
         return result
 
     def _extract_issue_keywords(self, request: LangGraphIssuePrRequest) -> List[str]:
@@ -1182,7 +1266,9 @@ class LangGraphIssuePrService:
             cmd = ""
             if path_lower.endswith(".py"):
                 cmd = f"pytest -q {path}"
-            elif path_lower.endswith((".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx")):
+            elif path_lower.endswith(
+                (".test.ts", ".test.tsx", ".spec.ts", ".spec.tsx")
+            ):
                 cmd = f"cd frontend && npm test -- {path}"
             elif path_lower.endswith(".go"):
                 cmd = "go test ./..."

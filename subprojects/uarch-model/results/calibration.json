@@ -1,0 +1,180 @@
+{
+  "models": [
+    "O3CPU",
+    "NeoverseV2"
+  ],
+  "results": [
+    {
+      "cycles_large": 440031.0,
+      "cycles_small": 183583.0,
+      "instruction": "add",
+      "measured_cycles_per_op": 1.01,
+      "measured_spread": 0.188,
+      "model": "O3CPU",
+      "predicted_cycles_per_op": 1.002,
+      "relative_error": -0.008,
+      "within_noise": true
+    },
+    {
+      "cycles_large": 1207363.0,
+      "cycles_small": 439907.0,
+      "instruction": "mul",
+      "measured_cycles_per_op": 2.78,
+      "measured_spread": 0.173,
+      "model": "O3CPU",
+      "predicted_cycles_per_op": 2.998,
+      "relative_error": 0.078,
+      "within_noise": true
+    },
+    {
+      "cycles_large": 823271.0,
+      "cycles_small": 311393.0,
+      "instruction": "fadd_s",
+      "measured_cycles_per_op": 2.62,
+      "measured_spread": 0.439,
+      "model": "O3CPU",
+      "predicted_cycles_per_op": 2.0,
+      "relative_error": -0.237,
+      "within_noise": true
+    },
+    {
+      "cycles_large": 1591859.0,
+      "cycles_small": 567265.0,
+      "instruction": "fmul_s",
+      "measured_cycles_per_op": 3.75,
+      "measured_spread": 0.099,
+      "model": "O3CPU",
+      "predicted_cycles_per_op": 4.002,
+      "relative_error": 0.067,
+      "within_noise": true
+    },
+    {
+      "cycles_large": 1975089.0,
+      "cycles_small": 695279.0,
+      "instruction": "fmadd_s",
+      "measured_cycles_per_op": 4.14,
+      "measured_spread": 0.089,
+      "model": "O3CPU",
+      "predicted_cycles_per_op": 4.999,
+      "relative_error": 0.207,
+      "within_noise": false
+    },
+    {
+      "cycles_large": 4662979.0,
+      "cycles_small": 1591381.0,
+      "instruction": "fdiv_s",
+      "measured_cycles_per_op": 8.0,
+      "measured_spread": 0.12,
+      "model": "O3CPU",
+      "predicted_cycles_per_op": 11.998,
+      "relative_error": 0.5,
+      "within_noise": false
+    },
+    {
+      "cycles_large": 9270887.0,
+      "cycles_small": 3126787.0,
+      "instruction": "fsqrt_s",
+      "measured_cycles_per_op": 10.14,
+      "measured_spread": 0.125,
+      "model": "O3CPU",
+      "predicted_cycles_per_op": 24.0,
+      "relative_error": 1.367,
+      "within_noise": false
+    },
+    {
+      "cycles_large": 440031.0,
+      "cycles_small": 183583.0,
+      "instruction": "fmla_v",
+      "measured_cycles_per_op": 4.29,
+      "measured_spread": 0.189,
+      "model": "O3CPU",
+      "predicted_cycles_per_op": 1.002,
+      "relative_error": -0.766,
+      "within_noise": false
+    },
+    {
+      "cycles_large": 824009.0,
+      "cycles_small": 312499.0,
+      "instruction": "add",
+      "measured_cycles_per_op": 1.01,
+      "measured_spread": 0.188,
+      "model": "NeoverseV2",
+      "predicted_cycles_per_op": 1.998,
+      "relative_error": 0.978,
+      "within_noise": false
+    },
+    {
+      "cycles_large": 1592297.0,
+      "cycles_small": 567989.0,
+      "instruction": "mul",
+      "measured_cycles_per_op": 2.78,
+      "measured_spread": 0.173,
+      "model": "NeoverseV2",
+      "predicted_cycles_per_op": 4.001,
+      "relative_error": 0.439,
+      "within_noise": false
+    },
+    {
+      "cycles_large": 824155.0,
+      "cycles_small": 312645.0,
+      "instruction": "fadd_s",
+      "measured_cycles_per_op": 2.62,
+      "measured_spread": 0.439,
+      "model": "NeoverseV2",
+      "predicted_cycles_per_op": 1.998,
+      "relative_error": -0.237,
+      "within_noise": true
+    },
+    {
+      "cycles_large": 1207975.0,
+      "cycles_small": 439949.0,
+      "instruction": "fmul_s",
+      "measured_cycles_per_op": 3.75,
+      "measured_spread": 0.099,
+      "model": "NeoverseV2",
+      "predicted_cycles_per_op": 3.0,
+      "relative_error": -0.2,
+      "within_noise": false
+    },
+    {
+      "error": "The compiled binary contains a scalar fused multiply-add, and the NeoverseV2 model in this gem5 build has no functional unit for it (its pool declares SimdFloat",
+      "instruction": "fmadd_s",
+      "measured_cycles_per_op": 4.14,
+      "measured_spread": 0.089,
+      "model": "NeoverseV2"
+    },
+    {
+      "cycles_large": 4663331.0,
+      "cycles_small": 1591909.0,
+      "instruction": "fdiv_s",
+      "measured_cycles_per_op": 8.0,
+      "measured_spread": 0.12,
+      "model": "NeoverseV2",
+      "predicted_cycles_per_op": 11.998,
+      "relative_error": 0.5,
+      "within_noise": false
+    },
+    {
+      "cycles_large": 12726378.0,
+      "cycles_small": 4278384.0,
+      "instruction": "fsqrt_s",
+      "measured_cycles_per_op": 10.14,
+      "measured_spread": 0.125,
+      "model": "NeoverseV2",
+      "predicted_cycles_per_op": 33.0,
+      "relative_error": 2.254,
+      "within_noise": false
+    },
+    {
+      "cycles_large": 440273.0,
+      "cycles_small": 184273.0,
+      "instruction": "fmla_v",
+      "measured_cycles_per_op": 4.29,
+      "measured_spread": 0.189,
+      "model": "NeoverseV2",
+      "predicted_cycles_per_op": 1.0,
+      "relative_error": -0.767,
+      "within_noise": false
+    }
+  ]
+}

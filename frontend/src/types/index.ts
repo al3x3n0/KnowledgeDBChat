@@ -1120,6 +1120,7 @@ export type NotificationType =
   | 'summarization_complete'
   | 'research_note_citation_issue'
   | 'experiment_run_update'
+  | 'autonomous_rnd_verification_update'
   | 'hypothesis_reevaluation_update'
   | 'queue_urgency_alert'
   | 'follow_up_outcome_alert'
@@ -2925,12 +2926,293 @@ export interface AgentJob {
   executive_digest?: AgentJobExecutiveDigest;
 }
 
+/** One field of a finding, rendered short by the backend. */
+export interface AgentJobEvidenceValue {
+  label: string;
+  value: string;
+}
+
+/** One finding, as a reader needs it to judge whether it holds.
+ *
+ *  The three fields that a count destroys: whether it carries a spread, the
+ *  machine it was measured on, and whether it is the kind of evidence a later
+ *  change invalidates. */
+export interface AgentJobEvidenceItem {
+  index: number;
+  type: string;
+  title: string;
+  values: AgentJobEvidenceValue[];
+  has_uncertainty: boolean;
+  /** quiet | busy | saturated, where the producing tool recorded it. */
+  measurement_environment: string;
+  warning: string;
+  perishable: boolean;
+  /** A person rejected this result. Advisory: no verdict changed and nothing
+   *  downstream was invalidated. What it does is travel — into a restart of
+   *  the stage as an operator correction. */
+  disputed: boolean;
+  dispute_reason: string;
+}
+
+/** One finding type the contract asked for, and what arrived. */
+export interface AgentJobEvidenceRequirement {
+  finding_type: string;
+  satisfied: boolean;
+  /** Indices into `evidence`, so one finding renders once however many
+   *  requirements it answers. */
+  satisfied_by: number[];
+  uncertainty_required: boolean;
+  /** Arrived, but without the spread it was required to carry. */
+  missing_uncertainty: number[];
+}
+
+/** A run's evidence and what it was asked for. Replaces `findings_count`,
+ *  which said how many findings existed and nothing about whether any of them
+ *  was worth believing. */
+export interface AgentJobEvidence {
+  job_id: string;
+  evidence: AgentJobEvidenceItem[];
+  requirements: AgentJobEvidenceRequirement[];
+  /** Findings of a type nothing asked for — separated, not hidden, and
+   *  capped. Required evidence and rejected findings are never dropped. */
+  unrequested: number[];
+  /** How many exist in total. When it exceeds what arrived, the page is
+   *  showing a sample and says so. */
+  unrequested_total: number;
+  contract_enabled: boolean;
+  /** The contract's own verdict, carried through rather than recomputed. */
+  contract_satisfied: boolean;
+  /** How many findings a person rejected. A run resting on rejected evidence
+   *  must not read as clean. */
+  disputed_count: number;
+  missing: string[];
+  /** Claims the run made and never settled with a measurement. */
+  unsettled_predictions: string[];
+}
+
+/** One file or directory in a run's workspace, as it stands now. */
+export interface AgentJobWorkspaceEntry {
+  path: string;
+  is_dir: boolean;
+  size: number;
+  /** Whether the run added or modified it — decided against the hashes of the
+   *  files the workspace started with, since the directory alone shows only
+   *  what it ends with. */
+  changed: boolean;
+}
+
+/** The environment a run worked in, and what it changed.
+ *
+ *  `modified`/`added`/`deleted` say WHICH files the run touched, not WHAT
+ *  changed line by line: only the originals' hashes are kept. */
+export interface AgentJobWorkspace {
+  job_id: string;
+  workspace_id: string;
+  /** active | retained | discarded */
+  status: string;
+  source_id?: string | null;
+  repo_url?: string | null;
+  branch?: string | null;
+  path: string;
+  entries: AgentJobWorkspaceEntry[];
+  truncated: boolean;
+  modified: string[];
+  added: string[];
+  deleted: string[];
+}
+
+export interface AgentJobWorkspaceFile {
+  job_id: string;
+  workspace_id: string;
+  path: string;
+  content: string;
+  changed: boolean;
+  /** The line-level change, when the workspace has a git repository to answer
+   *  with. An empty string means git knows the file and it is unchanged. */
+  diff?: string | null;
+  /** Whether git could answer at all. False means the change cannot be shown —
+   *  not that nothing changed. */
+  diff_available: boolean;
+}
+
 export interface AgentJobListResponse {
   jobs: AgentJob[];
   total: number;
   page: number;
   page_size: number;
   has_more: boolean;
+}
+
+export interface AutonomousRndVerificationBudget {
+  repeat_count?: number;
+  timeout_seconds?: number;
+  max_runtime_minutes?: number;
+  budget_limit?: number;
+}
+
+export interface AutonomousRndVerificationTask {
+  task_id: string;
+  evidence_id?: string | null;
+  evidence_status?: string | null;
+  priority?: string | null;
+  priority_score?: number | null;
+  required_checks: string[];
+  launch_status: string;
+  job_status?: string | null;
+  approval_status?: string | null;
+  reconciliation_status?: string | null;
+  reconciliation_recorded_at?: string | null;
+  experiment_plan_id?: string | null;
+  experiment_run_id?: string | null;
+  agent_job_id?: string | null;
+  audit_id?: string | null;
+  budget: AutonomousRndVerificationBudget;
+}
+
+export interface AutonomousRndVerificationTimelineEvent {
+  event_id: string;
+  task_id: string;
+  event_type: string;
+  at: string;
+  actor: string;
+  label: string;
+  status?: string | null;
+  entity_type?: string | null;
+  entity_id?: string | null;
+}
+
+export interface AutonomousRndVerificationLifecycle {
+  task_count: number;
+  launch_status_counts: Record<string, number>;
+  evidence_status_counts: Record<string, number>;
+  tasks: AutonomousRndVerificationTask[];
+  timeline: AutonomousRndVerificationTimelineEvent[];
+}
+
+export interface AutonomousRndJobOutcomeResponse {
+  job_id: string;
+  job_status: string;
+  outcome: Record<string, any>;
+  verification_lifecycle: AutonomousRndVerificationLifecycle;
+}
+
+export interface AutonomousRndVerificationLaunchRequest {
+  approval_confirmed: true;
+  approval_note: string;
+  research_note_id: string;
+  source_id: string;
+  sandbox_profile_id: string;
+  commands: string[];
+  repeat_count: number;
+  timeout_seconds: number;
+  max_runtime_minutes: number;
+  budget_limit: number;
+  start_immediately: boolean;
+}
+
+export interface AutonomousRndVerificationLaunchResponse {
+  created: boolean;
+  queued: boolean;
+  experiment_plan_id: string;
+  experiment_run_id: string;
+  agent_job_id: string;
+  audit_id: string;
+  status: string;
+  budget: AutonomousRndVerificationBudget;
+}
+
+export interface AutonomousRndVerificationAuditEnvelope {
+  snapshot: Record<string, any>;
+  integrity: {
+    canonicalization: string;
+    sha256: string;
+    signature_algorithm?: string;
+    signature_encoding?: string;
+    signature?: string;
+    key_id?: string;
+    public_key?: string;
+  };
+}
+
+export interface ExternalAgentConnection {
+  id: string;
+  name: string;
+  description?: string | null;
+  provider_type: 'generic_agent' | 'compops' | 'mlflow';
+  endpoint_url: string;
+  capabilities: string[];
+  auth_type: 'none' | 'bearer' | 'api_key' | 'basic' | string;
+  secret_id?: string | null;
+  auth_header_name?: string | null;
+  timeout_seconds: number;
+  is_enabled: boolean;
+  version: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ExternalAgentConnectionList {
+  agents: ExternalAgentConnection[];
+  total: number;
+}
+
+export interface ExternalAgentInvokeResult {
+  status: 'completed' | 'requires_approval' | 'failed';
+  audit_id: string;
+  output?: Record<string, any> | null;
+  error?: string | null;
+  evidence_linked?: boolean;
+}
+
+export interface CompOpsEvidenceSubscription {
+  id: string;
+  user_id: string;
+  job_id: string;
+  tool_id: string;
+  capability: string;
+  remote_id: string;
+  payload: Record<string, any>;
+  interval_minutes: number;
+  is_enabled: boolean;
+  status: string;
+  last_response_sha256?: string | null;
+  last_audit_id?: string | null;
+  last_attempt_at?: string | null;
+  last_success_at?: string | null;
+  next_sync_at?: string | null;
+  last_error?: string | null;
+  webhook_enabled: boolean;
+  last_webhook_at?: string | null;
+  last_webhook_event_id?: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface CompOpsEvidenceSubscriptionList {
+  subscriptions: CompOpsEvidenceSubscription[];
+  total: number;
+}
+
+export interface CompOpsEvidenceSyncResult {
+  subscription: CompOpsEvidenceSubscription;
+  evidence_changed: boolean;
+}
+
+export interface CompOpsWebhookSetup {
+  subscription: CompOpsEvidenceSubscription;
+  callback_path: string;
+  signing_secret: string;
+  signature_header: string;
+  timestamp_header: string;
+  event_id_header: string;
+  signing_format: string;
+}
+
+export interface SecretSummary {
+  id: string;
+  name: string;
+  created_at: string;
+  updated_at: string;
 }
 
 export interface AgentCheckpointQueueAction {
@@ -4483,6 +4765,8 @@ export interface SynthesisJob {
   description?: string;
   document_ids: string[];
   paper_ids?: string[];
+  /** Autonomous runs whose findings were used as source material. */
+  agent_job_ids?: string[];
   research_note_id?: string;
   source_id?: string;
   search_query?: string;
@@ -5337,4 +5621,249 @@ export interface TrainingEvalRunResponse {
   avg_score: number;
   num_cases: number;
   results: Array<Record<string, any>>;
+}
+
+// ---------------------------------------------------------------- Document folders
+
+/** A node in the document folder tree.
+ *
+ *  `key` is the whole addressing story and the only thing the documents list
+ *  needs: 'all' | 'unfiled' | 'user:<id>' | 'source:<id>' | 'type:<ext>' |
+ *  'recent:today|week|month' | 'tag:<t>'. System nodes have no `id`, which is
+ *  why the key rather than the id is what gets passed around.
+ */
+export interface DocumentFolderNode {
+  key: string;
+  name: string;
+  /** 'user' can be edited and filled; 'system' is computed and read-only;
+   *  'group' is a heading that holds system nodes and selects nothing. */
+  kind: 'user' | 'system' | 'group';
+  document_count: number;
+  subtree_count: number;
+  children: DocumentFolderNode[];
+  id?: string | null;
+  description?: string | null;
+  color?: string | null;
+  icon?: string | null;
+  position?: number | null;
+}
+
+export interface DocumentFolderTree {
+  system: DocumentFolderNode[];
+  folders: DocumentFolderNode[];
+}
+
+export interface DocumentFolderRef {
+  key: string;
+  id: string;
+  name: string;
+  color?: string | null;
+}
+
+export interface DocumentFolder {
+  id: string;
+  name: string;
+  key: string;
+  parent_id?: string | null;
+  description?: string | null;
+  color?: string | null;
+  position: number;
+}
+
+export interface DocumentFolderItemsResult {
+  added: number;
+  already_present: number;
+  not_found: number;
+  removed: number;
+}
+
+// ------------------------------------------------------------ Agent pipelines
+
+/** One stage's compiled plan: the tools derived from its contract, and cost. */
+export interface PipelineStagePlan {
+  stage_id: string;
+  tools: string[];
+  iterations: number;
+  seconds: number;
+  checkpoint: boolean;
+  /** Tools with no recorded cost. Counted as zero because nothing knows
+   *  better, which is not the same as being free. */
+  unpriced: string[];
+}
+
+export interface PipelinePlan {
+  order: string[];
+  stages: PipelineStagePlan[];
+  total_seconds: number;
+  critical_path_seconds: number;
+  checkpoints: string[];
+}
+
+/** What is wrong with a pipeline, decided before anything expensive runs.
+ *
+ *  Three separate answers on purpose: a pipeline can be valid, compile to a
+ *  chain, and still be unaffordable. */
+export interface PipelineCheck {
+  valid: boolean;
+  problems: string[];
+  expressible: boolean;
+  binding_problems: string[];
+  description: string[];
+  plan?: PipelinePlan | null;
+  budget?: {
+    affordable: boolean;
+    budget_seconds: number;
+    estimated_seconds: number;
+    critical_path_seconds: number;
+    unpriced_tools: string[];
+    caveat?: string;
+  } | null;
+}
+
+export interface PipelineLaunch {
+  job_id: string;
+  name: string;
+  stages: string[];
+  estimated_seconds: number;
+  checkpoints: string[];
+}
+
+export interface SavedPipeline {
+  id: string;
+  name: string;
+  description?: string | null;
+  spec: Record<string, any>;
+  /** What the checker said when it was last saved. A hint for the list, not
+   *  an answer — tools and costs change under a saved spec, so the studio
+   *  re-checks whatever it opens. */
+  last_check_valid?: 'valid' | 'invalid' | 'unknown' | null;
+  last_estimated_seconds?: number | null;
+  launch_count: number;
+  last_launched_at?: string | null;
+  last_job_id?: string | null;
+  created_at?: string | null;
+  updated_at?: string | null;
+}
+
+export interface PipelineBinding {
+  name: string;
+  chain_config: Record<string, any>;
+  deferred_edges: Array<{ after: string; launch: string; reason: string }>;
+  checkpoints: string[];
+  description: string[];
+}
+
+/** One stage of one run, in flight.
+ *
+ *  Two things here are deliberately not `status`, because a status alone
+ *  answers neither question a person actually has:
+ *
+ *  - `contract_satisfied` — a stage can complete without producing what it
+ *    promised, and that is precisely the stage nothing downstream should be
+ *    built on.
+ *  - `waiting_on_person` — a run parked on a checkpoint has the same status as
+ *    one whose worker died. */
+export interface PipelineRunStage {
+  stage: string;
+  /** Empty for a stage the run has not reached yet. */
+  job_id: string;
+  status: 'pending' | 'running' | 'paused' | 'completed' | 'failed' | 'cancelled' | string;
+  iteration: number;
+  contract_satisfied: boolean;
+  restartable: boolean;
+  goal: string;
+  checkpoint: boolean;
+  waiting_on_person: boolean;
+  /** More than one means the stage was restarted; every other field here
+   *  describes the most recent attempt. */
+  attempts: number;
+  /** A person rejected some of this stage's evidence. */
+  disputed: boolean;
+  progress: number;
+  started_at?: string | null;
+  completed_at?: string | null;
+  error?: string | null;
+}
+
+/** A whole run. Derived from its stages rather than stored — there is no row
+ *  for a run, only a chain of jobs. */
+export interface PipelineRun {
+  root_job_id: string;
+  stages: PipelineRunStage[];
+  pipeline: string;
+  saved_pipeline_id?: string | null;
+  status:
+    | 'pending'
+    | 'running'
+    | 'waiting'
+    | 'paused'
+    | 'failed'
+    | 'cancelled'
+    | 'completed'
+    /** Every stage finished, and at least one of them without the evidence it
+     *  promised. Not the same as completed, and calling it that is how a
+     *  pipeline reports success for work nobody produced. */
+    | 'completed_unmet'
+    /** Every contract met, on evidence a person rejected. Nothing was
+     *  invalidated — that is what advisory means — but it must not read as
+     *  clean. */
+    | 'completed_disputed'
+    | string;
+  total_stages: number;
+  completed_stages: number;
+  /** The stage the run is on, or the one it stopped at. Null when every stage
+   *  is done. */
+  current_stage?: string | null;
+}
+
+/** One finding type a contract may require.
+ *
+ *  Served from the backend rather than listed here, because a second list of
+ *  evidence types drifts from the tools the first time one is added — and the
+ *  failure that causes (a contract asking for evidence nothing produces) is
+ *  the most common way an authored pipeline fails its own check. */
+export interface PipelineEvidenceType {
+  name: string;
+  producers: string[];
+  /** The whole chain to obtain it, not just the last tool. */
+  typical_seconds: number;
+  /** Job types every producer permits. Empty means unrestricted; a stage set
+   *  to anything else plans tools it then cannot call. */
+  job_types: string[];
+  /** Never inherited from an upstream stage, so a looping stage cannot keep a
+   *  verdict it earned before its own edit. */
+  perishable: boolean;
+  consumes: string;
+}
+
+export interface PipelineVocabulary {
+  evidence_types: PipelineEvidenceType[];
+  job_types: string[];
+}
+
+/** A pipeline drafted from a description. A starting point for the editor —
+ *  it launches nothing, and one that still fails the check is returned anyway
+ *  with the problems attached. */
+export interface PipelineDraft {
+  spec: Record<string, any>;
+  problems: string[];
+  repaired: boolean;
+}
+
+export interface PipelineStageRestart {
+  root_job_id: string;
+  stage: string;
+  job_id: string;
+  note_attached: boolean;
+}
+
+export interface PipelineStageInsertion {
+  root_job_id: string;
+  stage: string;
+  after: string;
+  job_id: string;
+  /** Stages that now run beneath the inserted one instead of beneath its
+   *  parent. They re-derive there; nothing is lost, but the run's shape
+   *  changed and saying so is cheaper than letting someone discover it. */
+  displaced: string[];
 }

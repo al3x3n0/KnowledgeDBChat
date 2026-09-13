@@ -3,31 +3,36 @@ API endpoints for repository report and presentation generation.
 """
 
 import re
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, status, Query, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
-from sqlalchemy.orm import selectinload
 from loguru import logger
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.api.endpoints.users import get_current_user
-from app.models.user import User
-from app.models.repo_report import RepoReportJob
+from app.core.database import get_db
 from app.models.document import DocumentSource
+from app.models.repo_report import RepoReportJob
+from app.models.user import User
 from app.schemas.repo_report import (
+    AvailableSectionsResponse,
     RepoReportJobCreate,
-    RepoReportJobResponse,
     RepoReportJobListItem,
     RepoReportJobListResponse,
-    AvailableSectionsResponse,
-    AVAILABLE_SECTIONS,
+    RepoReportJobResponse,
 )
 from app.services.storage_service import StorageService
-
 
 router = APIRouter()
 
@@ -72,11 +77,13 @@ async def list_available_sections():
     return AvailableSectionsResponse()
 
 
-@router.post("", response_model=RepoReportJobResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "", response_model=RepoReportJobResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_repo_report(
     request: RepoReportJobCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Create a new repository report or presentation generation job.
@@ -101,15 +108,14 @@ async def create_repo_report(
         source = result.scalar_one_or_none()
         if not source:
             raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail="DocumentSource not found"
+                status_code=status.HTTP_404_NOT_FOUND, detail="DocumentSource not found"
             )
 
         source_type = source.source_type.lower()
         if source_type not in ("github", "gitlab"):
             raise HTTPException(
                 status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Source type '{source_type}' is not supported. Only 'github' and 'gitlab' sources are supported."
+                detail=f"Source type '{source_type}' is not supported. Only 'github' and 'gitlab' sources are supported.",
             )
 
         config = source.config or {}
@@ -140,20 +146,19 @@ async def create_repo_report(
 
     elif request.repo_url:
         try:
-            logger.info(f"Parsing repo URL: '{request.repo_url}' (len={len(request.repo_url)})")
+            logger.info(
+                f"Parsing repo URL: '{request.repo_url}' (len={len(request.repo_url)})"
+            )
             repo_type, owner, repo = _parse_repo_url(request.repo_url)
             logger.info(f"Parsed: type={repo_type}, owner={owner}, repo={repo}")
             repo_name = f"{owner}/{repo}"
             repo_url = request.repo_url
         except ValueError as e:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=str(e)
-            )
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(e))
     else:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail="Either source_id or repo_url must be provided"
+            detail="Either source_id or repo_url must be provided",
         )
 
     # Determine title
@@ -174,7 +179,9 @@ async def create_repo_report(
         slide_count=request.slide_count if request.output_format == "pptx" else None,
         include_diagrams=request.include_diagrams,
         style=request.style,
-        custom_theme=request.custom_theme.model_dump() if request.custom_theme else None,
+        custom_theme=request.custom_theme.model_dump()
+        if request.custom_theme
+        else None,
         status="pending",
         progress=0,
     )
@@ -185,9 +192,12 @@ async def create_repo_report(
 
     # Dispatch Celery task
     from app.tasks.repo_report_tasks import generate_repo_report_task
+
     generate_repo_report_task.delay(str(job.id), str(current_user.id))
 
-    logger.info(f"Created repo report job {job.id} for user {current_user.id}, repo: {repo_name}")
+    logger.info(
+        f"Created repo report job {job.id} for user {current_user.id}, repo: {repo_name}"
+    )
 
     return _job_to_response(job)
 
@@ -199,7 +209,7 @@ async def list_repo_reports(
     status_filter: Optional[str] = Query(None, description="Filter by status"),
     output_format: Optional[str] = Query(None, description="Filter by output format"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     List user's repository report generation jobs.
@@ -207,9 +217,7 @@ async def list_repo_reports(
     Results are ordered by creation date (newest first).
     """
     # Build query
-    query = select(RepoReportJob).where(
-        RepoReportJob.user_id == current_user.id
-    )
+    query = select(RepoReportJob).where(RepoReportJob.user_id == current_user.id)
 
     if status_filter:
         query = query.where(RepoReportJob.status == status_filter)
@@ -229,8 +237,7 @@ async def list_repo_reports(
     jobs = result.scalars().all()
 
     return RepoReportJobListResponse(
-        jobs=[_job_to_list_item(job) for job in jobs],
-        total=total
+        jobs=[_job_to_list_item(job) for job in jobs], total=total
     )
 
 
@@ -239,7 +246,7 @@ async def get_repo_report(
     job_id: UUID,
     include_analysis: bool = Query(False, description="Include cached analysis data"),
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get details of a repository report job.
@@ -254,7 +261,7 @@ async def get_repo_report(
 async def download_repo_report(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Download the generated report or presentation.
@@ -266,13 +273,12 @@ async def download_repo_report(
     if job.status != "completed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Report is not ready. Current status: {job.status}"
+            detail=f"Report is not ready. Current status: {job.status}",
         )
 
     if not job.file_path:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report file not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Report file not found"
         )
 
     # Get file from MinIO
@@ -301,18 +307,18 @@ async def download_repo_report(
             headers={
                 "Content-Disposition": f'attachment; filename="{filename}"',
                 "Content-Length": str(len(content)),
-            }
+            },
         )
     except FileNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Report file not found in storage"
+            detail="Report file not found in storage",
         )
     except Exception as e:
         logger.error(f"Failed to download report for job {job_id}: {e}")
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to download report"
+            detail="Failed to download report",
         )
 
 
@@ -320,7 +326,7 @@ async def download_repo_report(
 async def delete_repo_report(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Delete a repository report job and its associated file.
@@ -347,7 +353,7 @@ async def delete_repo_report(
 async def cancel_repo_report(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Cancel a pending or in-progress report generation job.
@@ -357,7 +363,7 @@ async def cancel_repo_report(
     if job.status in ("completed", "failed", "cancelled"):
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Cannot cancel job with status: {job.status}"
+            detail=f"Cannot cancel job with status: {job.status}",
         )
 
     job.status = "cancelled"
@@ -392,6 +398,7 @@ async def repo_report_progress(
 
     # Verify job exists
     from app.core.database import AsyncSessionLocal
+
     async with AsyncSessionLocal() as db:
         result = await db.execute(
             select(RepoReportJob).where(RepoReportJob.id == job_id)
@@ -403,6 +410,7 @@ async def repo_report_progress(
         return
 
     import redis.asyncio as redis
+
     from app.core.config import settings
 
     try:
@@ -413,12 +421,14 @@ async def repo_report_progress(
         await pubsub.subscribe(channel)
 
         # Send initial status
-        await websocket.send_json({
-            "type": "progress",
-            "progress": job.progress,
-            "stage": job.current_stage or "pending",
-            "status": job.status,
-        })
+        await websocket.send_json(
+            {
+                "type": "progress",
+                "progress": job.progress,
+                "stage": job.current_stage or "pending",
+                "status": job.status,
+            }
+        )
 
         # If already completed/failed, close immediately
         if job.status in ("completed", "failed", "cancelled"):
@@ -429,6 +439,7 @@ async def repo_report_progress(
         async for message in pubsub.listen():
             if message["type"] == "message":
                 import json
+
                 data = json.loads(message["data"])
                 await websocket.send_json(data)
 
@@ -454,16 +465,12 @@ async def repo_report_progress(
 # Helper Functions
 # =============================================================================
 
-async def _get_user_job(
-    job_id: UUID,
-    user_id: UUID,
-    db: AsyncSession
-) -> RepoReportJob:
+
+async def _get_user_job(job_id: UUID, user_id: UUID, db: AsyncSession) -> RepoReportJob:
     """Get a job ensuring it belongs to the user."""
     result = await db.execute(
         select(RepoReportJob).where(
-            RepoReportJob.id == job_id,
-            RepoReportJob.user_id == user_id
+            RepoReportJob.id == job_id, RepoReportJob.user_id == user_id
         )
     )
     job = result.scalar_one_or_none()
@@ -471,13 +478,15 @@ async def _get_user_job(
     if not job:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Repository report job not found"
+            detail="Repository report job not found",
         )
 
     return job
 
 
-def _job_to_response(job: RepoReportJob, include_analysis: bool = False) -> RepoReportJobResponse:
+def _job_to_response(
+    job: RepoReportJob, include_analysis: bool = False
+) -> RepoReportJobResponse:
     """Convert database model to response schema."""
     from app.schemas.repo_report import RepoAnalysisResult
 

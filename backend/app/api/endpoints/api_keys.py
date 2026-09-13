@@ -4,29 +4,31 @@ API Key management endpoints.
 Allows users to create, list, and revoke API keys for external tool access.
 """
 
-from typing import List
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.user import User
-from app.services.auth_service import get_current_user, require_admin
-from app.services.api_key_service import api_key_service
 from app.schemas.api_key import (
     APIKeyCreate,
-    APIKeyUpdate,
-    APIKeyResponse,
     APIKeyCreateResponse,
     APIKeyListResponse,
+    APIKeyResponse,
+    APIKeyUpdate,
     APIKeyUsageStats,
 )
+from app.services.api_key_service import api_key_service
+from app.services.auth_service import get_current_user, require_admin
 
 router = APIRouter()
 
 
-@router.post("/", response_model=APIKeyCreateResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/", response_model=APIKeyCreateResponse, status_code=status.HTTP_201_CREATED
+)
 async def create_api_key(
     request: APIKeyCreate,
     current_user: User = Depends(get_current_user),
@@ -220,6 +222,7 @@ async def admin_list_all_api_keys(
     [Admin] List all API keys in the system.
     """
     from sqlalchemy import select
+
     from app.models.api_key import APIKey
 
     query = select(APIKey)

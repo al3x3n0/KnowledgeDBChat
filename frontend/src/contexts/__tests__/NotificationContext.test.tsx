@@ -229,8 +229,8 @@ describe('NotificationContext', () => {
 
     await waitFor(() => {
       expect(screen.getByTestId('unread-count')).toHaveTextContent('1');
-      expect(screen.getByTestId('notification-count')).toHaveTextContent('1');
     });
+    expect(screen.getByTestId('notification-count')).toHaveTextContent('1');
 
     expect(toast).toHaveBeenCalledWith(
       expect.stringContaining('Experiment run failed'),
@@ -273,9 +273,9 @@ describe('NotificationContext', () => {
 
     await waitFor(() => {
       expect(((toast as any).custom as jest.Mock)).toHaveBeenCalled();
-      expect(screen.getByTestId('unread-count')).toHaveTextContent('1');
-      expect(screen.getByTestId('notification-count')).toHaveTextContent('1');
     });
+    expect(screen.getByTestId('unread-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('notification-count')).toHaveTextContent('1');
 
     const renderToast = ((toast as any).custom as jest.Mock).mock.calls[0]?.[0] as () => React.ReactElement;
     render(renderToast());
@@ -313,10 +313,10 @@ describe('NotificationContext', () => {
 
     await waitFor(() => {
       expect(mockMarkNotificationRead).toHaveBeenCalledWith('notif-follow-up-1');
-      expect(window.location.assign).toHaveBeenCalledWith(
-        '/autonomous-agents?tab=domain&profileId=profile-1&opportunityId=opp-profile-1'
-      );
     });
+    expect(window.location.assign).toHaveBeenCalledWith(
+      '/autonomous-agents?tab=domain&profileId=profile-1&opportunityId=opp-profile-1'
+    );
   });
 
   it('relaunches a failed live follow-up outcome from the custom toast', async () => {
@@ -345,9 +345,9 @@ describe('NotificationContext', () => {
 
     await waitFor(() => {
       expect(mockMarkNotificationRead).toHaveBeenCalledWith('notif-follow-up-1');
-      expect(mockRelaunchInboxFollowUp).toHaveBeenCalledWith('inbox-1', {});
-      expect(((toast as any).success as jest.Mock)).toHaveBeenCalledWith('Follow-up relaunched');
     });
+    expect(mockRelaunchInboxFollowUp).toHaveBeenCalledWith('inbox-1', {});
+    expect(((toast as any).success as jest.Mock)).toHaveBeenCalledWith('Follow-up relaunched');
   });
 
   it('does not render relaunch for completed live follow-up outcomes', async () => {
@@ -407,9 +407,9 @@ describe('NotificationContext', () => {
 
     await waitFor(() => {
       expect(((toast as any).custom as jest.Mock)).toHaveBeenCalled();
-      expect(screen.getByTestId('unread-count')).toHaveTextContent('1');
-      expect(screen.getByTestId('notification-count')).toHaveTextContent('1');
     });
+    expect(screen.getByTestId('unread-count')).toHaveTextContent('1');
+    expect(screen.getByTestId('notification-count')).toHaveTextContent('1');
 
     const renderToast = ((toast as any).custom as jest.Mock).mock.calls[0]?.[0] as () => React.ReactElement;
     render(renderToast());
@@ -446,8 +446,8 @@ describe('NotificationContext', () => {
 
     await waitFor(() => {
       expect(mockMarkNotificationRead).toHaveBeenCalledWith('notif-reeval-1');
-      expect(window.location.assign).toHaveBeenCalledWith('/research-notes?note=note-2');
     });
+    expect(window.location.assign).toHaveBeenCalledWith('/research-notes?note=note-2');
   });
 
   it('restarts a failed live reevaluation from the custom toast', async () => {
@@ -494,8 +494,8 @@ describe('NotificationContext', () => {
         output_format: 'markdown',
         output_style: 'technical',
       });
-      expect(((toast as any).success as jest.Mock)).toHaveBeenCalledWith('Hypothesis reevaluation started');
     });
+    expect(((toast as any).success as jest.Mock)).toHaveBeenCalledWith('Hypothesis reevaluation started');
   });
 
   it('dismisses a reevaluation toast when a refresh shows the notification was resolved', async () => {

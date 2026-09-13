@@ -1,0 +1,85 @@
+{{- if .Values.migrations.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-migrate" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "migrate") | nindent 4 }}
+  annotations:
+    {{- if .Values.postgres.enabled }}
+    # The chart owns the database, and Helm creates every normal resource only
+    # after pre-install hooks finish - so a pre-install migration would wait for
+    # a Postgres that cannot exist yet and deadlock until its deadline. On
+    # install it therefore runs post-install (schema lands seconds after the API
+    # starts, which is safe: /health is dependency-free and the database is
+    # empty anyway). On upgrade it stays pre-upgrade, which is the case that
+    # matters - the schema must lead the code that reads it.
+    "helm.sh/hook": post-install,pre-upgrade
+    {{- else }}
+    # External database: it already exists, so migrations can and should gate
+    # the very first install too.
+    "helm.sh/hook": pre-install,pre-upgrade
+    {{- end }}
+    # Lower weight than the MinIO bucket job, so the schema lands first.
+    "helm.sh/hook-weight": "0"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: {{ .Values.migrations.backoffLimit }}
+  activeDeadlineSeconds: {{ .Values.migrations.activeDeadlineSeconds }}
+  template:
+    metadata:
+      labels:
+        {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "migrate") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- if not .Values.serviceAccount.create }}
+      # Only reference a ServiceAccount the chart does not create. As a
+      # pre-install hook this Job runs before the chart's own ServiceAccount
+      # exists, and naming a missing one makes pod creation forbidden - the Job
+      # then hangs until its deadline instead of failing fast. It needs no API
+      # access; for cloud IAM auth (IRSA/Workload Identity) set
+      # serviceAccount.create=false and serviceAccount.name to an account you
+      # manage, which exists independently of the release.
+      serviceAccountName: {{ include "kdbc.serviceAccountName" . }}
+      {{- end }}
+      {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
+      initContainers:
+        - name: wait-for-postgres
+          image: "{{ .Values.postgres.image.repository }}:{{ .Values.postgres.image.tag }}"
+          command:
+            - sh
+            - -c
+            - |
+              until pg_isready -h "{{ include "kdbc.postgres.host" . }}" -p "{{ include "kdbc.postgres.port" . }}" -U "{{ include "kdbc.postgres.username" . }}"; do
+                echo "waiting for postgres..."
+                sleep 2
+              done
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+      containers:
+        - name: alembic
+          image: "{{ default .Values.image.backend.repository .Values.migrations.image.repository }}:{{ default .Values.image.backend.tag .Values.migrations.image.tag }}"
+          imagePullPolicy: {{ .Values.image.backend.pullPolicy }}
+          # Bypass the image entrypoint: this Job *is* the migration step.
+          command:
+            {{- if .Values.migrations.command }}
+            {{- toYaml .Values.migrations.command | nindent 12 }}
+            {{- else }}
+            - alembic
+            - -c
+            - /app/alembic.ini
+            - upgrade
+            - head
+            {{- end }}
+          env:
+            {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            {{- with .Values.global.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            {{- include "kdbc.appEnvFrom" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.migrations.resources | nindent 12 }}
+{{- end }}

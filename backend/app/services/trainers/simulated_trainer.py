@@ -30,7 +30,9 @@ class SimulatedTrainer(BaseTrainer):
         return True
 
     def get_device_info(self) -> DeviceInfo:
-        return DeviceInfo(device="cpu", device_name="Simulated CPU", memory_total_gb=None)
+        return DeviceInfo(
+            device="cpu", device_name="Simulated CPU", memory_total_gb=None
+        )
 
     async def cancel(self, job_id: UUID) -> bool:
         self._cancelled_jobs.add(str(job_id))
@@ -91,13 +93,19 @@ class SimulatedTrainer(BaseTrainer):
 
             # Make loss decay smoothly + a tiny bit of noise.
             progress_frac = step / total_steps
-            loss = max(0.05, 6.0 * (1.0 - progress_frac) + 0.2 * (0.5 - (step % 10) / 10.0))
+            loss = max(
+                0.05, 6.0 * (1.0 - progress_frac) + 0.2 * (0.5 - (step % 10) / 10.0)
+            )
             best_loss = min(best_loss, loss)
 
             epoch = max(1, int((step - 1) / max(1, total_steps / num_epochs)) + 1)
             eta = int((total_steps - step) * 0.15)
 
-            if progress_callback and (step == 1 or step == total_steps or step % max(1, total_steps // 50) == 0):
+            if progress_callback and (
+                step == 1
+                or step == total_steps
+                or step % max(1, total_steps // 50) == 0
+            ):
                 progress_callback(
                     TrainingProgress(
                         job_id=job_id_str,
@@ -107,7 +115,9 @@ class SimulatedTrainer(BaseTrainer):
                         total_epochs=num_epochs,
                         loss=float(loss),
                         learning_rate=learning_rate,
-                        samples_processed=min(total_samples * num_epochs, step * batch_size),
+                        samples_processed=min(
+                            total_samples * num_epochs, step * batch_size
+                        ),
                         eta_seconds=eta,
                         metrics={"best_loss": float(best_loss)},
                         message="Simulated training step",
@@ -133,7 +143,9 @@ class SimulatedTrainer(BaseTrainer):
             json.dump(artifact, f, indent=2)
 
         with open(adapter_dir / "README.txt", "w", encoding="utf-8") as f:
-            f.write("Simulated AI Hub adapter artifact. No real weights were produced.\n")
+            f.write(
+                "Simulated AI Hub adapter artifact. No real weights were produced.\n"
+            )
 
         adapter_size = 0
         try:

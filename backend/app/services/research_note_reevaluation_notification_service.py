@@ -33,14 +33,20 @@ def _clean_string_list(value: Any, *, limit: int = 8) -> list[str]:
 
 
 def _iter_autonomous_origins(payload: dict[str, Any]) -> list[dict[str, str]]:
-    hypotheses = payload.get("hypotheses") if isinstance(payload.get("hypotheses"), list) else []
+    hypotheses = (
+        payload.get("hypotheses") if isinstance(payload.get("hypotheses"), list) else []
+    )
     seen: set[tuple[str, str, str]] = set()
     origins: list[dict[str, str]] = []
     for hypothesis in hypotheses:
         if not isinstance(hypothesis, dict):
             continue
         candidates = [hypothesis.get("autonomous_origin")]
-        evidence = hypothesis.get("experiment_evidence") if isinstance(hypothesis.get("experiment_evidence"), list) else []
+        evidence = (
+            hypothesis.get("experiment_evidence")
+            if isinstance(hypothesis.get("experiment_evidence"), list)
+            else []
+        )
         for item in evidence:
             if isinstance(item, dict):
                 candidates.append(item.get("autonomous_origin"))
@@ -50,7 +56,11 @@ def _iter_autonomous_origins(payload: dict[str, Any]) -> list[dict[str, str]]:
             source_kind = _text(candidate.get("source_kind")).lower()
             source_id = _text(candidate.get("source_id"))
             opportunity_id = _text(candidate.get("opportunity_id"))
-            if source_kind not in {"profile", "portfolio"} or not source_id or not opportunity_id:
+            if (
+                source_kind not in {"profile", "portfolio"}
+                or not source_id
+                or not opportunity_id
+            ):
                 continue
             key = (source_kind, source_id, opportunity_id)
             if key in seen:
@@ -71,7 +81,9 @@ def _primary_origin(payload: dict[str, Any]) -> Optional[dict[str, str]]:
     return origins[0] if origins else None
 
 
-def _build_action_url(*, status: str, note_id: str, reevaluation_job_id: str) -> Optional[str]:
+def _build_action_url(
+    *, status: str, note_id: str, reevaluation_job_id: str
+) -> Optional[str]:
     if status == "failed" and reevaluation_job_id:
         return f"/synthesis?job={reevaluation_job_id}"
     if note_id:
@@ -112,7 +124,8 @@ def _build_notification_content(
     if status == "stale":
         return (
             f"Reevaluation stale: {label}",
-            summary_text or "A queued reevaluation draft is stale because newer experiment evidence arrived.",
+            summary_text
+            or "A queued reevaluation draft is stale because newer experiment evidence arrived.",
             "high",
         )
     return (
@@ -133,7 +146,8 @@ async def _notification_exists(
     result = await db.execute(
         select(Notification).where(
             Notification.user_id == user_id,
-            Notification.notification_type == NotificationType.HYPOTHESIS_REEVALUATION_UPDATE,
+            Notification.notification_type
+            == NotificationType.HYPOTHESIS_REEVALUATION_UPDATE,
             Notification.related_entity_type == "research_note",
             Notification.related_entity_id == note_id,
         )
@@ -165,7 +179,10 @@ async def maybe_emit_reevaluation_notification(
 ) -> Optional[Notification]:
     normalized_status = _text(status).lower()
     normalized_job_id = _text(reevaluation_job_id)
-    if normalized_status not in {"completed", "failed", "stale"} or not normalized_job_id:
+    if (
+        normalized_status not in {"completed", "failed", "stale"}
+        or not normalized_job_id
+    ):
         return None
 
     if await _notification_exists(
@@ -177,16 +194,25 @@ async def maybe_emit_reevaluation_notification(
     ):
         return None
 
-    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    payload = (
+        note.structured_payload if isinstance(note.structured_payload, dict) else {}
+    )
     origin = _primary_origin(payload)
-    run_ids = _clean_string_list(source_run_ids if source_run_ids is not None else payload.get("pending_reevaluation_source_run_ids"))
+    run_ids = _clean_string_list(
+        source_run_ids
+        if source_run_ids is not None
+        else payload.get("pending_reevaluation_source_run_ids")
+    )
     message_summary = _text(summary)
     if normalized_status == "failed":
         message_summary = _text(error) or message_summary
     elif normalized_status == "stale" and not message_summary:
         message_summary = "Newer experiment evidence arrived after the queued reevaluation draft was created."
     elif normalized_status == "completed" and not message_summary:
-        message_summary = _text(payload.get("reprioritization_summary")) or "Evidence-aware hypothesis reevaluation finished and is ready to review."
+        message_summary = (
+            _text(payload.get("reprioritization_summary"))
+            or "Evidence-aware hypothesis reevaluation finished and is ready to review."
+        )
 
     title, message, priority = _build_notification_content(
         note_title=_text(note.title),
@@ -250,7 +276,8 @@ async def resolve_reevaluation_notifications(
 
     query = select(Notification).where(
         Notification.user_id == user_id,
-        Notification.notification_type == NotificationType.HYPOTHESIS_REEVALUATION_UPDATE,
+        Notification.notification_type
+        == NotificationType.HYPOTHESIS_REEVALUATION_UPDATE,
     )
     if note_id is not None:
         query = query.where(

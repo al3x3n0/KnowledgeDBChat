@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import List, Optional
 
 from loguru import logger
 
@@ -32,7 +32,10 @@ class AIHubDatasetPresetService:
         self._dir = (
             Path(settings.AI_HUB_DATASET_PRESETS_DIR)
             if getattr(settings, "AI_HUB_DATASET_PRESETS_DIR", None)
-            else Path(__file__).resolve().parents[1] / "plugins" / "ai_hub" / "dataset_presets"
+            else Path(__file__).resolve().parents[1]
+            / "plugins"
+            / "ai_hub"
+            / "dataset_presets"
         )
 
     def list_presets(self) -> List[DatasetPreset]:

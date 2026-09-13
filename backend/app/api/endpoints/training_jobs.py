@@ -5,22 +5,30 @@ API endpoints for training jobs.
 from typing import Optional
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect, status
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Query,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
 from app.models.user import User
 from app.schemas.training import (
-    TrainingJobCreate,
-    TrainingJobUpdate,
-    TrainingJobResponse,
-    TrainingJobListResponse,
-    TrainingJobDetailResponse,
-    TrainingJobActionRequest,
-    TrainingCheckpointResponse,
-    TrainingStatsResponse,
     BaseModelInfo,
+    TrainingCheckpointResponse,
+    TrainingJobActionRequest,
+    TrainingJobCreate,
+    TrainingJobDetailResponse,
+    TrainingJobListResponse,
+    TrainingJobResponse,
+    TrainingJobUpdate,
+    TrainingStatsResponse,
 )
 from app.services.training_service import training_service
 
@@ -85,7 +93,9 @@ async def create_training_job(
 
 @router.get("", response_model=TrainingJobListResponse)
 async def list_training_jobs(
-    status_filter: Optional[str] = Query(None, alias="status", description="Filter by status"),
+    status_filter: Optional[str] = Query(
+        None, alias="status", description="Filter by status"
+    ),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
     db: AsyncSession = Depends(get_db),
@@ -123,7 +133,7 @@ async def get_training_stats(
         completed_jobs=stats.get("completed_jobs", 0),
         failed_jobs=stats.get("failed_jobs", 0),
         total_training_hours=0.0,  # TODO: Calculate from completed jobs
-        total_samples_trained=0,   # TODO: Calculate from completed jobs
+        total_samples_trained=0,  # TODO: Calculate from completed jobs
         avg_final_loss=None,
     )
 
@@ -362,8 +372,9 @@ async def training_progress_websocket(
 ):
     """WebSocket endpoint for real-time training progress updates."""
     import json
+
     import redis.asyncio as redis
-    from sqlalchemy import select, and_
+    from sqlalchemy import and_, select
 
     from app.core.config import settings
     from app.core.database import AsyncSessionLocal
@@ -387,7 +398,9 @@ async def training_progress_websocket(
 
     if not job:
         try:
-            await websocket.send_json({"type": "error", "error": "Training job not found"})
+            await websocket.send_json(
+                {"type": "error", "error": "Training job not found"}
+            )
         except Exception:
             pass
         await websocket.close(code=4004, reason="Training job not found")

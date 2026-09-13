@@ -6,18 +6,17 @@ for the autonomous agent executor. Extracts structured decisions from
 free-form LLM output using Pydantic validation with graceful fallbacks.
 """
 
-import json
-import re
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
 from loguru import logger
 from pydantic import BaseModel, Field, field_validator
 
+from app.services import llm_json, llm_truncation
 
 # ---------------------------------------------------------------------------
 # Pydantic models
 # ---------------------------------------------------------------------------
+
 
 class AgentActionDecision(BaseModel):
     """Validated action payload from an LLM decision."""
@@ -92,66 +91,14 @@ class AgentDecision(BaseModel):
 # JSON extraction helpers (extracted from executor)
 # ---------------------------------------------------------------------------
 
+
 def extract_first_json_object(text: str) -> Optional[Dict[str, Any]]:
-    """Extract the first valid JSON object from plain text or fenced markdown."""
-    if not text:
-        return None
+    """Extract the first JSON object from model output.
 
-    stripped = text.strip()
-    try:
-        parsed = json.loads(stripped)
-        if isinstance(parsed, dict):
-            return parsed
-    except Exception:
-        pass
-
-    fence_match = re.search(
-        r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL
-    )
-    if fence_match:
-        fenced = fence_match.group(1).strip()
-        try:
-            parsed = json.loads(fenced)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-
-    # Balanced-brace extraction for responses with commentary before/after JSON.
-    for start in [i for i, ch in enumerate(text) if ch == "{"]:
-        depth = 0
-        in_string = False
-        escaped = False
-        for idx in range(start, len(text)):
-            ch = text[idx]
-            if in_string:
-                if escaped:
-                    escaped = False
-                elif ch == "\\":
-                    escaped = True
-                elif ch == '"':
-                    in_string = False
-                continue
-
-            if ch == '"':
-                in_string = True
-            elif ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start : idx + 1]
-                    try:
-                        parsed = json.loads(candidate)
-                        if isinstance(parsed, dict):
-                            return parsed
-                    except Exception:
-                        break
-        # Only try the first opening brace that doesn't parse; skip the rest
-        # to avoid wasting time on large texts.
-        if depth != 0:
-            continue
-    return None
+    Kept as the decision-parsing entry point; the implementation lives in
+    ``llm_json`` so every subsystem parses model output the same way.
+    """
+    return llm_json.extract_json_object(text)
 
 
 # ---------------------------------------------------------------------------
@@ -179,6 +126,46 @@ Set "action" to null if goal_achieved or should_stop is true."""
 # Parser
 # ---------------------------------------------------------------------------
 
+
+def normalize_decision_action(
+    action: Any,
+    available_tools: List[str],
+) -> Optional[Dict[str, Any]]:
+    """Normalize an action payload and reject tools the job cannot use."""
+    if action is None:
+        return None
+    if isinstance(action, str):
+        action = {"tool": action, "params": {}}
+    if not isinstance(action, dict):
+        return None
+
+    tool = str(action.get("tool") or "").strip()
+    if not tool or tool not in set(available_tools):
+        return None
+
+    params = action.get("params")
+    if not isinstance(params, dict):
+        params = {}
+
+    purpose = str(action.get("purpose") or "").strip()
+    return {"tool": tool, "params": params, "purpose": purpose[:300]}
+
+
+def coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce flexible model output to a boolean."""
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "1", "y"}:
+            return True
+        if lowered in {"false", "no", "0", "n"}:
+            return False
+    return default
+
+
 class AgentDecisionParser:
     """Parse, validate, retry, and repair LLM decision responses."""
 
@@ -188,6 +175,11 @@ class AgentDecisionParser:
             "parse_success": 0,
             "parse_retry": 0,
             "parse_repair": 0,
+            # Counted separately from parse_repair: one is a response the
+            # budget cut off and we closed for free, the other is a response
+            # the model got wrong and we paid a call to fix. Collapsing them
+            # would hide which of the two a run is actually suffering.
+            "truncation_repair": 0,
             "parse_failure": 0,
         }
 
@@ -247,6 +239,7 @@ class AgentDecisionParser:
         user_message: str,
         routing: Optional[Dict[str, Any]] = None,
         max_retries: int = 2,
+        db: Optional[Any] = None,
     ) -> Optional[AgentDecision]:
         """
         Parse with up to *max_retries* attempts.
@@ -279,6 +272,12 @@ class AgentDecisionParser:
                         user_message=correction_msg,
                         user_settings=user_settings,
                         routing=routing,
+                        db=db,
+                        snapshot_context={
+                            "job_id": str(getattr(job, "id", "") or "") or None,
+                            "iteration": int(getattr(job, "iteration", 0) or 0),
+                            "phase": "decision_retry",
+                        },
                     )
                     decision, error = self.parse(str(response or ""), available_tools)
                     if decision is not None:
@@ -288,9 +287,35 @@ class AgentDecisionParser:
                     logger.error(f"LLM retry call failed: {exc}")
 
             elif attempt == 2:
+                # Closing a truncated response comes first, because it costs
+                # nothing and answers a different failure. A response cut off
+                # by the budget is a correct PREFIX: closing its open braces
+                # recovers the decision the model had already made, while
+                # asking again spends another call re-deriving it on the same
+                # budget that just proved too small.
+                closed = llm_truncation.repair_truncated_json(raw_response)
+                if closed:
+                    decision, error = self.parse(closed, available_tools)
+                    if decision is not None:
+                        self._metrics["truncation_repair"] += 1
+                        logger.info(
+                            "Recovered a truncated decision by closing it; "
+                            "no repair call needed"
+                        )
+                        return decision
+
                 # Retry 2: LLM-assisted JSON repair
                 repaired = await self.repair_json(
-                    raw_response, error, user_settings, routing
+                    raw_response,
+                    error,
+                    user_settings,
+                    routing,
+                    db=db,
+                    snapshot_context={
+                        "job_id": str(getattr(job, "id", "") or "") or None,
+                        "iteration": int(getattr(job, "iteration", 0) or 0),
+                        "phase": "decision_repair",
+                    },
                 )
                 if repaired:
                     decision, error = self.parse(repaired, available_tools)
@@ -311,6 +336,8 @@ class AgentDecisionParser:
         error_message: str,
         user_settings: Any,
         routing: Optional[Dict[str, Any]] = None,
+        db: Optional[Any] = None,
+        snapshot_context: Optional[Dict[str, Any]] = None,
     ) -> Optional[str]:
         """
         Use a fast LLM call to fix almost-valid JSON.
@@ -335,6 +362,8 @@ class AgentDecisionParser:
                 user_message=repair_prompt,
                 user_settings=user_settings,
                 routing=repair_routing,
+                db=db,
+                snapshot_context=snapshot_context,
             )
             return str(response or "")
         except Exception as exc:

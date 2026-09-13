@@ -2,63 +2,84 @@
 Admin API endpoints for system management.
 """
 
-from typing import List, Dict, Any
-from uuid import UUID, uuid4
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
-
-from app.core.database import get_db
-from app.core.logging import log_error
-from app.core.config import settings
-from app.models.user import User
-from app.services.auth_service import require_admin
-from app.tasks.sync_tasks import sync_all_sources, ingest_from_source
-from app.tasks.ingestion_tasks import dry_run_source as dry_run_task
-from app.core.celery import celery_app
-from celery.result import AsyncResult
-from croniter import croniter
-from datetime import datetime, timedelta
-from app.tasks.monitoring_tasks import health_check, generate_stats, _async_generate_stats
-from app.utils.ingestion_state import (
-    set_ingestion_task_mapping,
-    get_ingestion_task_mapping,
-    set_ingestion_cancel_flag,
-    set_force_full_flag,
-)
-from app.services.vector_store import vector_store_service
-from app.schemas.admin import (
-    SystemStatsResponse,
-    HealthCheckResponse,
-    TaskTriggerResponse,
-    IngestionStatusResponse,
-    IngestionDBStatusResponse,
-    IngestionVectorStoreStatusResponse,
-    IngestionSourceStatusResponse,
-)
-from app.core.feature_flags import get_flags as get_feature_flags, set_flag as set_feature_flag, set_str as set_feature_str, get_str as get_feature_str
-from app.core.cache import cache_service
-from app.services.llm_service import LLMService
-from fastapi import WebSocket, WebSocketDisconnect
-from pathlib import Path
 import json
 import re
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict
+from uuid import UUID, uuid4
 
-from app.schemas.ai_hub_plugins import CreateAIHubPluginRequest, CreateAIHubPluginResponse
+from celery.result import AsyncResult
+from croniter import croniter
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    HTTPException,
+    WebSocket,
+    WebSocketDisconnect,
+)
+from loguru import logger
+from sqlalchemy import case, delete, func, select, update
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.cache import cache_service
+from app.core.celery import celery_app
+from app.core.config import settings
+from app.core.database import get_db
+from app.core.feature_flags import get_flags as get_feature_flags
+from app.core.feature_flags import get_str as get_feature_str
+from app.core.feature_flags import set_flag as set_feature_flag
+from app.core.feature_flags import set_str as set_feature_str
+from app.core.logging import log_error
+from app.models.ai_hub_recommendation_feedback import AIHubRecommendationFeedback
+from app.models.user import User
+from app.schemas.admin import (
+    HealthCheckResponse,
+    IngestionDBStatusResponse,
+    IngestionSourceStatusResponse,
+    IngestionStatusResponse,
+    IngestionVectorStoreStatusResponse,
+    SystemStatsResponse,
+    TaskTriggerResponse,
+)
+from app.schemas.ai_hub_feedback_admin import (
+    AIHubFeedbackBackfillResponse,
+    AIHubFeedbackStatsResponse,
+    AIHubFeedbackStatsRow,
+)
+from app.schemas.ai_hub_plugins import (
+    CreateAIHubPluginRequest,
+    CreateAIHubPluginResponse,
+)
 from app.schemas.customer_profile import (
     CustomerProfile,
     CustomerProfileGetResponse,
     CustomerProfileSetRequest,
     CustomerProfileSetResponse,
 )
-from app.models.ai_hub_recommendation_feedback import AIHubRecommendationFeedback
-from sqlalchemy import delete, select, func, update, case
-from app.schemas.ai_hub_feedback_admin import (
-    AIHubFeedbackStatsResponse,
-    AIHubFeedbackStatsRow,
-    AIHubFeedbackBackfillResponse,
+from app.schemas.ldap import (
+    LdapImportRequest,
+    LdapImportResponse,
+    LdapImportUserRow,
+    LdapStatusResponse,
 )
-from app.schemas.ldap import LdapStatusResponse, LdapImportRequest, LdapImportResponse, LdapImportUserRow
+from app.services.auth_service import require_admin
+from app.services.llm_service import LLMService
+from app.services.vector_store import vector_store_service
+from app.tasks.ingestion_tasks import dry_run_source as dry_run_task
+from app.tasks.monitoring_tasks import (
+    _async_generate_stats,
+    generate_stats,
+    health_check,
+)
+from app.tasks.sync_tasks import ingest_from_source, sync_all_sources
+from app.utils.ingestion_state import (
+    get_ingestion_task_mapping,
+    set_force_full_flag,
+    set_ingestion_cancel_flag,
+    set_ingestion_task_mapping,
+)
 
 router = APIRouter()
 
@@ -79,15 +100,19 @@ async def get_whisper_status(current_user: User = Depends(require_admin)):
     """
     from app.services.transcription_service import (
         TRANSCRIPTION_AVAILABLE,
-        get_transcription_service,
         get_transcription_runtime_config,
+        get_transcription_service,
     )
 
     allowed_sizes = ["tiny", "base", "small", "medium", "large"]
     allowed_devices = ["auto", "cpu", "cuda"]
 
-    selected_model_size = (await get_feature_str("whisper_model_size")) or getattr(settings, "WHISPER_MODEL_SIZE", "small")
-    selected_device = (await get_feature_str("whisper_device")) or getattr(settings, "WHISPER_DEVICE", "auto")
+    selected_model_size = (await get_feature_str("whisper_model_size")) or getattr(
+        settings, "WHISPER_MODEL_SIZE", "small"
+    )
+    selected_device = (await get_feature_str("whisper_device")) or getattr(
+        settings, "WHISPER_DEVICE", "auto"
+    )
     selected_model_size = str(selected_model_size or "small").strip().lower()
     selected_device = str(selected_device or "auto").strip().lower()
     if selected_model_size not in allowed_sizes:
@@ -117,7 +142,9 @@ async def get_whisper_status(current_user: User = Depends(require_admin)):
 
     runtime_cfg = get_transcription_runtime_config()
     svc = get_transcription_service() if TRANSCRIPTION_AVAILABLE else None
-    initialized = bool(getattr(svc, "_initialized", False)) if svc is not None else False
+    initialized = (
+        bool(getattr(svc, "_initialized", False)) if svc is not None else False
+    )
     loaded_model_size = getattr(svc, "model_size", None) if svc is not None else None
     loaded_device = getattr(svc, "device", None) if svc is not None else None
 
@@ -146,7 +173,9 @@ async def ldap_status(current_user: User = Depends(require_admin)):
         uri=getattr(settings, "LDAP_URI", None),
         base_dn=getattr(settings, "LDAP_BASE_DN", None),
         start_tls=bool(getattr(settings, "LDAP_START_TLS", False)),
-        insecure_skip_tls_verify=bool(getattr(settings, "LDAP_INSECURE_SKIP_TLS_VERIFY", False)),
+        insecure_skip_tls_verify=bool(
+            getattr(settings, "LDAP_INSECURE_SKIP_TLS_VERIFY", False)
+        ),
     )
 
 
@@ -161,16 +190,22 @@ async def ldap_import_users(
 
     This does not import passwords. LDAP users must still authenticate via LDAP login.
     """
-    from app.services.ldap_service import ldap_service
-    from app.services.auth_service import auth_service
     from sqlalchemy import select
+
+    from app.services.auth_service import auth_service
+    from app.services.ldap_service import ldap_service
 
     if not ldap_service.enabled or not ldap_service.is_configured():
         raise HTTPException(status_code=400, detail="LDAP is not enabled/configured")
 
-    search_filter = (payload.search_filter or getattr(settings, "LDAP_IMPORT_FILTER", "") or "").strip()
+    search_filter = (
+        payload.search_filter or getattr(settings, "LDAP_IMPORT_FILTER", "") or ""
+    ).strip()
     if not search_filter:
-        raise HTTPException(status_code=400, detail="search_filter is required (LDAP_IMPORT_FILTER is empty)")
+        raise HTTPException(
+            status_code=400,
+            detail="search_filter is required (LDAP_IMPORT_FILTER is empty)",
+        )
 
     limit = int(payload.limit)
     ldap_users = ldap_service.search_users(search_filter=search_filter, limit=limit)
@@ -180,7 +215,10 @@ async def ldap_import_users(
 
     for u in ldap_users:
         try:
-            role = ldap_service.map_role(getattr(u, "groups", None)) or payload.default_role
+            role = (
+                ldap_service.map_role(getattr(u, "groups", None))
+                or payload.default_role
+            )
 
             # Find by username, then email.
             existing = None
@@ -292,7 +330,9 @@ async def ldap_import_users(
 
 
 @router.post("/whisper/config")
-async def set_whisper_config(payload: dict, current_user: User = Depends(require_admin)):
+async def set_whisper_config(
+    payload: dict, current_user: User = Depends(require_admin)
+):
     """
     Admin: set Whisper runtime config (model size / device).
     Stored in feature flags and applied as runtime override immediately.
@@ -302,14 +342,38 @@ async def set_whisper_config(payload: dict, current_user: User = Depends(require
     allowed_sizes = {"tiny", "base", "small", "medium", "large"}
     allowed_devices = {"auto", "cpu", "cuda"}
 
-    model_size = str(payload.get("model_size") or "").strip().lower() if isinstance(payload, dict) else ""
-    device = str(payload.get("device") or "").strip().lower() if isinstance(payload, dict) else ""
-    reinitialize = bool(payload.get("reinitialize", True)) if isinstance(payload, dict) else True
+    model_size = (
+        str(payload.get("model_size") or "").strip().lower()
+        if isinstance(payload, dict)
+        else ""
+    )
+    device = (
+        str(payload.get("device") or "").strip().lower()
+        if isinstance(payload, dict)
+        else ""
+    )
+    reinitialize = (
+        bool(payload.get("reinitialize", True)) if isinstance(payload, dict) else True
+    )
 
     if not model_size:
-        model_size = str((await get_feature_str("whisper_model_size")) or getattr(settings, "WHISPER_MODEL_SIZE", "small")).strip().lower()
+        model_size = (
+            str(
+                (await get_feature_str("whisper_model_size"))
+                or getattr(settings, "WHISPER_MODEL_SIZE", "small")
+            )
+            .strip()
+            .lower()
+        )
     if not device:
-        device = str((await get_feature_str("whisper_device")) or getattr(settings, "WHISPER_DEVICE", "auto")).strip().lower()
+        device = (
+            str(
+                (await get_feature_str("whisper_device"))
+                or getattr(settings, "WHISPER_DEVICE", "auto")
+            )
+            .strip()
+            .lower()
+        )
 
     if model_size not in allowed_sizes:
         raise HTTPException(status_code=400, detail="Invalid whisper model_size")
@@ -319,7 +383,9 @@ async def set_whisper_config(payload: dict, current_user: User = Depends(require
     ok1 = await set_feature_str("whisper_model_size", model_size)
     ok2 = await set_feature_str("whisper_device", device)
 
-    set_transcription_runtime_config(model_size=model_size, device=device, reinitialize=reinitialize)
+    set_transcription_runtime_config(
+        model_size=model_size, device=device, reinitialize=reinitialize
+    )
     return {
         "updated": {"model_size": bool(ok1), "device": bool(ok2)},
         "effective": {"model_size": model_size, "device": device},
@@ -328,22 +394,51 @@ async def set_whisper_config(payload: dict, current_user: User = Depends(require
 
 
 @router.post("/whisper/download")
-async def download_whisper_model(payload: dict, current_user: User = Depends(require_admin)):
+async def download_whisper_model(
+    payload: dict, current_user: User = Depends(require_admin)
+):
     """
     Admin: force download/init for selected Whisper model now.
     """
-    from app.services.transcription_service import TranscriptionService, TRANSCRIPTION_AVAILABLE
+    from app.services.transcription_service import (
+        TRANSCRIPTION_AVAILABLE,
+        TranscriptionService,
+    )
 
     if not TRANSCRIPTION_AVAILABLE:
-        raise HTTPException(status_code=400, detail="Transcription module not available on server")
+        raise HTTPException(
+            status_code=400, detail="Transcription module not available on server"
+        )
 
-    model_size = str(payload.get("model_size") or "").strip().lower() if isinstance(payload, dict) else ""
-    device = str(payload.get("device") or "").strip().lower() if isinstance(payload, dict) else ""
+    model_size = (
+        str(payload.get("model_size") or "").strip().lower()
+        if isinstance(payload, dict)
+        else ""
+    )
+    device = (
+        str(payload.get("device") or "").strip().lower()
+        if isinstance(payload, dict)
+        else ""
+    )
 
     if not model_size:
-        model_size = str((await get_feature_str("whisper_model_size")) or getattr(settings, "WHISPER_MODEL_SIZE", "small")).strip().lower()
+        model_size = (
+            str(
+                (await get_feature_str("whisper_model_size"))
+                or getattr(settings, "WHISPER_MODEL_SIZE", "small")
+            )
+            .strip()
+            .lower()
+        )
     if not device:
-        device = str((await get_feature_str("whisper_device")) or getattr(settings, "WHISPER_DEVICE", "auto")).strip().lower()
+        device = (
+            str(
+                (await get_feature_str("whisper_device"))
+                or getattr(settings, "WHISPER_DEVICE", "auto")
+            )
+            .strip()
+            .lower()
+        )
 
     if model_size not in {"tiny", "base", "small", "medium", "large"}:
         raise HTTPException(status_code=400, detail="Invalid whisper model_size")
@@ -361,27 +456,59 @@ async def download_whisper_model(payload: dict, current_user: User = Depends(req
             "message": "Whisper model is ready",
         }
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to download/initialize Whisper model: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to download/initialize Whisper model: {e}"
+        )
 
 
 @router.post("/whisper/download/start")
-async def start_whisper_download(payload: dict, current_user: User = Depends(require_admin)):
+async def start_whisper_download(
+    payload: dict, current_user: User = Depends(require_admin)
+):
     """
     Admin: start Whisper download/init in background and return a task id for progress polling.
     """
     import asyncio
     import threading
-    from app.services.transcription_service import TranscriptionService, TRANSCRIPTION_AVAILABLE
+
+    from app.services.transcription_service import (
+        TRANSCRIPTION_AVAILABLE,
+        TranscriptionService,
+    )
 
     if not TRANSCRIPTION_AVAILABLE:
-        raise HTTPException(status_code=400, detail="Transcription module not available on server")
+        raise HTTPException(
+            status_code=400, detail="Transcription module not available on server"
+        )
 
-    model_size = str(payload.get("model_size") or "").strip().lower() if isinstance(payload, dict) else ""
-    device = str(payload.get("device") or "").strip().lower() if isinstance(payload, dict) else ""
+    model_size = (
+        str(payload.get("model_size") or "").strip().lower()
+        if isinstance(payload, dict)
+        else ""
+    )
+    device = (
+        str(payload.get("device") or "").strip().lower()
+        if isinstance(payload, dict)
+        else ""
+    )
     if not model_size:
-        model_size = str((await get_feature_str("whisper_model_size")) or getattr(settings, "WHISPER_MODEL_SIZE", "small")).strip().lower()
+        model_size = (
+            str(
+                (await get_feature_str("whisper_model_size"))
+                or getattr(settings, "WHISPER_MODEL_SIZE", "small")
+            )
+            .strip()
+            .lower()
+        )
     if not device:
-        device = str((await get_feature_str("whisper_device")) or getattr(settings, "WHISPER_DEVICE", "auto")).strip().lower()
+        device = (
+            str(
+                (await get_feature_str("whisper_device"))
+                or getattr(settings, "WHISPER_DEVICE", "auto")
+            )
+            .strip()
+            .lower()
+        )
     if model_size not in {"tiny", "base", "small", "medium", "large"}:
         raise HTTPException(status_code=400, detail="Invalid whisper model_size")
     if device not in {"auto", "cpu", "cuda"}:
@@ -403,7 +530,13 @@ async def start_whisper_download(payload: dict, current_user: User = Depends(req
     )
 
     async def _worker():
-        expected_mb = {"tiny": 39, "base": 74, "small": 244, "medium": 769, "large": 1550}
+        expected_mb = {
+            "tiny": 39,
+            "base": 74,
+            "small": 244,
+            "medium": 769,
+            "large": 1550,
+        }
         cache_dir = Path.home() / ".cache" / "knowledge_db_transcriber" / "whisper"
         cache_dir.mkdir(parents=True, exist_ok=True)
 
@@ -447,7 +580,9 @@ async def start_whisper_download(payload: dict, current_user: User = Depends(req
                 except Exception:
                     pass
             if current_bytes > 0:
-                pct = min(95, max(10, int((current_bytes / max(expected_bytes, 1)) * 100)))
+                pct = min(
+                    95, max(10, int((current_bytes / max(expected_bytes, 1)) * 100))
+                )
                 msg = f"Downloading Whisper {model_size}..."
             else:
                 pct = 15
@@ -502,11 +637,14 @@ async def start_whisper_download(payload: dict, current_user: User = Depends(req
 
 
 @router.get("/whisper/download/{task_id}")
-async def get_whisper_download_status(task_id: str, current_user: User = Depends(require_admin)):
+async def get_whisper_download_status(
+    task_id: str, current_user: User = Depends(require_admin)
+):
     data = await _get_download_task(task_id)
     if not data or data.get("kind") != "whisper":
         raise HTTPException(status_code=404, detail="Task not found")
     return data
+
 
 @router.get("/ingestion/status", response_model=IngestionStatusResponse)
 async def get_ingestion_status(
@@ -520,33 +658,86 @@ async def get_ingestion_status(
     without requiring embedding models to be loaded.
     """
     from datetime import datetime
+
     from sqlalchemy import and_
 
-    from app.models.document import Document, DocumentChunk, DocumentSource, DocumentSourceSyncLog
+    from app.models.document import (
+        Document,
+        DocumentChunk,
+        DocumentSource,
+        DocumentSourceSyncLog,
+    )
 
     ts = datetime.utcnow().isoformat()
 
     # DB aggregates
     docs_total = int((await db.execute(select(func.count(Document.id)))).scalar() or 0)
-    docs_processed = int((await db.execute(select(func.count(Document.id)).where(Document.is_processed.is_(True)))).scalar() or 0)
-    docs_failed = int((await db.execute(select(func.count(Document.id)).where(Document.processing_error.isnot(None)))).scalar() or 0)
+    docs_processed = int(
+        (
+            await db.execute(
+                select(func.count(Document.id)).where(Document.is_processed.is_(True))
+            )
+        ).scalar()
+        or 0
+    )
+    docs_failed = int(
+        (
+            await db.execute(
+                select(func.count(Document.id)).where(
+                    Document.processing_error.isnot(None)
+                )
+            )
+        ).scalar()
+        or 0
+    )
     docs_pending = int(
-        (await db.execute(
-            select(func.count(Document.id)).where(and_(Document.is_processed.is_(False), Document.processing_error.is_(None)))
-        )).scalar() or 0
+        (
+            await db.execute(
+                select(func.count(Document.id)).where(
+                    and_(
+                        Document.is_processed.is_(False),
+                        Document.processing_error.is_(None),
+                    )
+                )
+            )
+        ).scalar()
+        or 0
     )
 
-    chunks_total = int((await db.execute(select(func.count(DocumentChunk.id)))).scalar() or 0)
-    chunks_embedded = int((await db.execute(select(func.count(DocumentChunk.id)).where(DocumentChunk.embedding_id.isnot(None)))).scalar() or 0)
-    chunks_missing = int((await db.execute(select(func.count(DocumentChunk.id)).where(DocumentChunk.embedding_id.is_(None)))).scalar() or 0)
+    chunks_total = int(
+        (await db.execute(select(func.count(DocumentChunk.id)))).scalar() or 0
+    )
+    chunks_embedded = int(
+        (
+            await db.execute(
+                select(func.count(DocumentChunk.id)).where(
+                    DocumentChunk.embedding_id.isnot(None)
+                )
+            )
+        ).scalar()
+        or 0
+    )
+    chunks_missing = int(
+        (
+            await db.execute(
+                select(func.count(DocumentChunk.id)).where(
+                    DocumentChunk.embedding_id.is_(None)
+                )
+            )
+        ).scalar()
+        or 0
+    )
 
     # Docs with no chunks: left join chunks, count where none
     docs_without_chunks = int(
-        (await db.execute(
-            select(func.count(Document.id))
-            .outerjoin(DocumentChunk, DocumentChunk.document_id == Document.id)
-            .where(DocumentChunk.id.is_(None))
-        )).scalar() or 0
+        (
+            await db.execute(
+                select(func.count(Document.id))
+                .outerjoin(DocumentChunk, DocumentChunk.document_id == Document.id)
+                .where(DocumentChunk.id.is_(None))
+            )
+        ).scalar()
+        or 0
     )
 
     db_status = IngestionDBStatusResponse(
@@ -561,12 +752,20 @@ async def get_ingestion_status(
     )
 
     # Recent doc processing errors (sample)
-    recent_errors_rows = (await db.execute(
-        select(Document.id, Document.title, Document.source_id, Document.updated_at, Document.processing_error)
-        .where(Document.processing_error.isnot(None))
-        .order_by(Document.updated_at.desc())
-        .limit(25)
-    )).all()
+    recent_errors_rows = (
+        await db.execute(
+            select(
+                Document.id,
+                Document.title,
+                Document.source_id,
+                Document.updated_at,
+                Document.processing_error,
+            )
+            .where(Document.processing_error.isnot(None))
+            .order_by(Document.updated_at.desc())
+            .limit(25)
+        )
+    ).all()
     recent_errors = [
         {
             "document_id": str(r[0]),
@@ -579,13 +778,19 @@ async def get_ingestion_status(
     ]
 
     # Vector store view (best-effort, no embedding model load)
-    provider = str(getattr(settings, "VECTOR_STORE_PROVIDER", "chroma") or "chroma").strip().lower()
+    provider = (
+        str(getattr(settings, "VECTOR_STORE_PROVIDER", "chroma") or "chroma")
+        .strip()
+        .lower()
+    )
     vs = IngestionVectorStoreStatusResponse(provider=provider)
     if provider == "qdrant":
         try:
             from qdrant_client import QdrantClient  # type: ignore
 
-            client = QdrantClient(url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY)
+            client = QdrantClient(
+                url=settings.QDRANT_URL, api_key=settings.QDRANT_API_KEY
+            )
             collection = settings.QDRANT_COLLECTION_NAME
             vs.collection_name = collection
 
@@ -610,56 +815,113 @@ async def get_ingestion_status(
     sources = (await db.execute(select(DocumentSource))).scalars().all()
 
     # Docs per source
-    docs_by_source_rows = (await db.execute(
-        select(
-            Document.source_id,
-            func.count(Document.id).label("total"),
-            func.count(Document.id).filter(Document.is_processed.is_(True)).label("processed"),
-            func.count(Document.id).filter(and_(Document.is_processed.is_(False), Document.processing_error.is_(None))).label("pending"),
-            func.count(Document.id).filter(Document.processing_error.isnot(None)).label("failed"),
-        ).group_by(Document.source_id)
-    )).all()
-    docs_by_source = {str(r[0]): {"total": int(r[1] or 0), "processed": int(r[2] or 0), "pending": int(r[3] or 0), "failed": int(r[4] or 0)} for r in docs_by_source_rows}
-
-    chunks_by_source_rows = (await db.execute(
-        select(
-            Document.source_id,
-            func.count(DocumentChunk.id).label("chunks_total"),
-            func.count(DocumentChunk.id).filter(DocumentChunk.embedding_id.isnot(None)).label("chunks_embedded"),
-            func.count(DocumentChunk.id).filter(DocumentChunk.embedding_id.is_(None)).label("chunks_missing"),
+    docs_by_source_rows = (
+        await db.execute(
+            select(
+                Document.source_id,
+                func.count(Document.id).label("total"),
+                func.count(Document.id)
+                .filter(Document.is_processed.is_(True))
+                .label("processed"),
+                func.count(Document.id)
+                .filter(
+                    and_(
+                        Document.is_processed.is_(False),
+                        Document.processing_error.is_(None),
+                    )
+                )
+                .label("pending"),
+                func.count(Document.id)
+                .filter(Document.processing_error.isnot(None))
+                .label("failed"),
+            ).group_by(Document.source_id)
         )
-        .join(DocumentChunk, DocumentChunk.document_id == Document.id)
-        .group_by(Document.source_id)
-    )).all()
-    chunks_by_source = {str(r[0]): {"chunks_total": int(r[1] or 0), "chunks_embedded": int(r[2] or 0), "chunks_missing": int(r[3] or 0)} for r in chunks_by_source_rows}
+    ).all()
+    docs_by_source = {
+        str(r[0]): {
+            "total": int(r[1] or 0),
+            "processed": int(r[2] or 0),
+            "pending": int(r[3] or 0),
+            "failed": int(r[4] or 0),
+        }
+        for r in docs_by_source_rows
+    }
+
+    chunks_by_source_rows = (
+        await db.execute(
+            select(
+                Document.source_id,
+                func.count(DocumentChunk.id).label("chunks_total"),
+                func.count(DocumentChunk.id)
+                .filter(DocumentChunk.embedding_id.isnot(None))
+                .label("chunks_embedded"),
+                func.count(DocumentChunk.id)
+                .filter(DocumentChunk.embedding_id.is_(None))
+                .label("chunks_missing"),
+            )
+            .join(DocumentChunk, DocumentChunk.document_id == Document.id)
+            .group_by(Document.source_id)
+        )
+    ).all()
+    chunks_by_source = {
+        str(r[0]): {
+            "chunks_total": int(r[1] or 0),
+            "chunks_embedded": int(r[2] or 0),
+            "chunks_missing": int(r[3] or 0),
+        }
+        for r in chunks_by_source_rows
+    }
 
     # Latest sync log per source (Postgres DISTINCT ON)
-    last_logs = (await db.execute(
-        select(DocumentSourceSyncLog)
-        .distinct(DocumentSourceSyncLog.source_id)
-        .order_by(DocumentSourceSyncLog.source_id, DocumentSourceSyncLog.started_at.desc())
-    )).scalars().all()
-    last_log_by_source = {str(l.source_id): l for l in last_logs}
+    last_logs = (
+        (
+            await db.execute(
+                select(DocumentSourceSyncLog)
+                .distinct(DocumentSourceSyncLog.source_id)
+                .order_by(
+                    DocumentSourceSyncLog.source_id,
+                    DocumentSourceSyncLog.started_at.desc(),
+                )
+            )
+        )
+        .scalars()
+        .all()
+    )
+    last_log_by_source = {str(sync_log.source_id): sync_log for sync_log in last_logs}
 
     source_statuses: list[IngestionSourceStatusResponse] = []
     for s in sources:
         sid = str(s.id)
-        d = docs_by_source.get(sid, {"total": 0, "processed": 0, "pending": 0, "failed": 0})
-        c = chunks_by_source.get(sid, {"chunks_total": 0, "chunks_embedded": 0, "chunks_missing": 0})
-        l = last_log_by_source.get(sid)
+        d = docs_by_source.get(
+            sid, {"total": 0, "processed": 0, "pending": 0, "failed": 0}
+        )
+        c = chunks_by_source.get(
+            sid, {"chunks_total": 0, "chunks_embedded": 0, "chunks_missing": 0}
+        )
+        sync_log = last_log_by_source.get(sid)
 
         last_sync_log = None
-        if l is not None:
+        if sync_log is not None:
             last_sync_log = {
-                "status": getattr(l, "status", None),
-                "started_at": getattr(l, "started_at", None).isoformat() if getattr(l, "started_at", None) else None,
-                "finished_at": getattr(l, "finished_at", None).isoformat() if getattr(l, "finished_at", None) else None,
-                "total_documents": getattr(l, "total_documents", None),
-                "processed": getattr(l, "processed", None),
-                "created": getattr(l, "created", None),
-                "updated": getattr(l, "updated", None),
-                "errors": getattr(l, "errors", None),
-                "error_message": (str(getattr(l, "error_message", None) or "")[:500] or None),
+                "status": getattr(sync_log, "status", None),
+                "started_at": (
+                    getattr(sync_log, "started_at", None).isoformat()
+                    if getattr(sync_log, "started_at", None)
+                    else None
+                ),
+                "finished_at": (
+                    getattr(sync_log, "finished_at", None).isoformat()
+                    if getattr(sync_log, "finished_at", None)
+                    else None
+                ),
+                "total_documents": getattr(sync_log, "total_documents", None),
+                "processed": getattr(sync_log, "processed", None),
+                "created": getattr(sync_log, "created", None),
+                "updated": getattr(sync_log, "updated", None),
+                "errors": getattr(sync_log, "errors", None),
+                "error_message": (
+                    str(getattr(sync_log, "error_message", None) or "")[:500] or None
+                ),
             }
 
         source_statuses.append(
@@ -669,7 +931,11 @@ async def get_ingestion_status(
                 source_type=str(getattr(s, "source_type", "") or ""),
                 is_active=bool(getattr(s, "is_active", False)),
                 is_syncing=bool(getattr(s, "is_syncing", False)),
-                last_sync=(getattr(s, "last_sync", None).isoformat() if getattr(s, "last_sync", None) else None),
+                last_sync=(
+                    getattr(s, "last_sync", None).isoformat()
+                    if getattr(s, "last_sync", None)
+                    else None
+                ),
                 last_error=(str(getattr(s, "last_error", None) or "")[:500] or None),
                 docs_total=d["total"],
                 docs_processed=d["processed"],
@@ -683,7 +949,13 @@ async def get_ingestion_status(
         )
 
     # Sort: most problematic first
-    source_statuses.sort(key=lambda x: (-(x.docs_failed or 0), -(x.docs_pending or 0), -(x.docs_total or 0)))
+    source_statuses.sort(
+        key=lambda x: (
+            -(x.docs_failed or 0),
+            -(x.docs_pending or 0),
+            -(x.docs_total or 0),
+        )
+    )
 
     return IngestionStatusResponse(
         timestamp=ts,
@@ -695,31 +967,29 @@ async def get_ingestion_status(
 
 
 @router.get("/health", response_model=HealthCheckResponse)
-async def get_system_health(
-    current_user: User = Depends(require_admin)
-):
+async def get_system_health(current_user: User = Depends(require_admin)):
     """
     Get comprehensive system health status.
-    
+
     Checks the health of all system components:
     - Database connectivity
     - Celery worker status
     - Vector store status
     - LLM service availability
-    
+
     Args:
         current_user: Current authenticated admin user
-        
+
     Returns:
         HealthCheckResponse with status of all services
-        
+
     Raises:
         HTTPException: 500 if health check fails
     """
     try:
         # Trigger health check task
         task = health_check.delay()
-        
+
         # Wait for result with timeout
         try:
             # Keep this very short; UI should load even if Celery/LLM are still warming up.
@@ -728,9 +998,10 @@ async def get_system_health(
         except Exception as task_error:
             # If task fails or times out, return basic health check
             logger.warning(f"Health check task failed or timed out: {task_error}")
-            
+
             # Perform basic health checks directly
             from datetime import datetime
+
             basic_health = {
                 "timestamp": datetime.utcnow().isoformat(),
                 "overall_status": "degraded",
@@ -740,55 +1011,54 @@ async def get_system_health(
                         "error": "Health check task failed or timed out",
                         "task_id": getattr(task, "id", None),
                     }
-                }
+                },
             }
-            
+
             # Try to check database directly
             try:
+                from sqlalchemy import func, select
+
                 from app.core.database import AsyncSessionLocal
-                from sqlalchemy import select, func
                 from app.models.document import DocumentSource
-                
+
                 async with AsyncSessionLocal() as db:
                     result = await db.execute(select(func.count(DocumentSource.id)))
                     source_count = result.scalar()
                     basic_health["services"]["database"] = {
                         "status": "healthy",
-                        "message": f"Connected successfully, {source_count} sources configured"
+                        "message": f"Connected successfully, {source_count} sources configured",
                     }
             except Exception as db_error:
                 basic_health["services"]["database"] = {
                     "status": "unhealthy",
-                    "error": str(db_error)
+                    "error": str(db_error),
                 }
                 basic_health["overall_status"] = "unhealthy"
-            
+
             return HealthCheckResponse(**basic_health)
-    
+
     except Exception as e:
         log_error(e, context={"endpoint": "health_check"})
         raise HTTPException(status_code=500, detail="Failed to get system health")
 
 
 @router.get("/stats", response_model=SystemStatsResponse)
-async def get_system_stats(
-    current_user: User = Depends(require_admin)
-):
+async def get_system_stats(current_user: User = Depends(require_admin)):
     """
     Get comprehensive system statistics.
-    
+
     Returns statistics about:
     - Total documents and sources
     - User counts
     - Chat session statistics
     - Vector store statistics
-    
+
     Args:
         current_user: Current authenticated admin user
-        
+
     Returns:
         SystemStatsResponse with system statistics
-        
+
     Raises:
         HTTPException: 500 if stats generation fails
     """
@@ -800,15 +1070,19 @@ async def get_system_stats(
             result = task.get(timeout=2)  # Wait up to 2 seconds
             return SystemStatsResponse(**result)
         except Exception as task_error:
-            logger.warning(f"Stat task failed or timed out, falling back to direct computation: {task_error}")
+            logger.warning(
+                f"Stat task failed or timed out, falling back to direct computation: {task_error}"
+            )
             # Fallback: compute stats directly to avoid total failure when Celery unavailable
             try:
                 fallback_result = await _async_generate_stats()
                 return SystemStatsResponse(**fallback_result)
             except Exception as fallback_error:
                 log_error(fallback_error, context={"endpoint": "system_stats_fallback"})
-                raise HTTPException(status_code=500, detail="Failed to generate system statistics")
-    
+                raise HTTPException(
+                    status_code=500, detail="Failed to generate system statistics"
+                )
+
     except HTTPException:
         raise
     except Exception as e:
@@ -827,10 +1101,7 @@ async def get_flags(current_user: User = Depends(require_admin)):
 
 
 @router.post("/flags")
-async def update_flags(
-    flags: dict,
-    current_user: User = Depends(require_admin)
-):
+async def update_flags(flags: dict, current_user: User = Depends(require_admin)):
     """Update runtime feature flags (admin)."""
     try:
         updated = {}
@@ -864,7 +1135,9 @@ async def get_unsafe_exec_status(current_user: User = Depends(require_admin)):
 
     flags = await get_feature_flags()
     enabled = bool(flags.get("unsafe_code_execution_enabled", False))
-    backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess")
+    backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(
+        settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess"
+    )
     backend = str(backend or "subprocess").strip().lower()
     if backend not in {"subprocess", "docker"}:
         backend = "subprocess"
@@ -885,16 +1158,22 @@ async def get_unsafe_exec_status(current_user: User = Depends(require_admin)):
         return await asyncio.wait_for(asyncio.to_thread(_do), timeout=timeout)
 
     try:
-        code, out, err = await _run(["docker", "version", "--format", "{{.Server.Version}}"], timeout=2.0)
+        code, out, err = await _run(
+            ["docker", "version", "--format", "{{.Server.Version}}"], timeout=2.0
+        )
         docker_available = code == 0
-        docker_version = (out.strip() or err.strip() or None) if docker_available else None
+        docker_version = (
+            (out.strip() or err.strip() or None) if docker_available else None
+        )
     except Exception:
         docker_available = False
         docker_version = None
 
     if docker_available:
         try:
-            code, _out, _err = await _run(["docker", "image", "inspect", docker_image], timeout=2.0)
+            code, _out, _err = await _run(
+                ["docker", "image", "inspect", docker_image], timeout=2.0
+            )
             docker_image_present = code == 0
         except Exception:
             docker_image_present = None
@@ -909,10 +1188,18 @@ async def get_unsafe_exec_status(current_user: User = Depends(require_admin)):
             "image_present": docker_image_present,
         },
         "limits": {
-            "timeout_seconds": int(getattr(settings, "UNSAFE_CODE_EXEC_TIMEOUT_SECONDS", 10)),
-            "max_memory_mb": int(getattr(settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)),
-            "docker_cpus": float(getattr(settings, "UNSAFE_CODE_EXEC_DOCKER_CPUS", 1.0)),
-            "docker_pids_limit": int(getattr(settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128)),
+            "timeout_seconds": int(
+                getattr(settings, "UNSAFE_CODE_EXEC_TIMEOUT_SECONDS", 10)
+            ),
+            "max_memory_mb": int(
+                getattr(settings, "UNSAFE_CODE_EXEC_MAX_MEMORY_MB", 512)
+            ),
+            "docker_cpus": float(
+                getattr(settings, "UNSAFE_CODE_EXEC_DOCKER_CPUS", 1.0)
+            ),
+            "docker_pids_limit": int(
+                getattr(settings, "UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT", 128)
+            ),
         },
         "notes": [
             "Unsafe execution is disabled by default.",
@@ -922,7 +1209,9 @@ async def get_unsafe_exec_status(current_user: User = Depends(require_admin)):
 
 
 @router.post("/unsafe-exec/config")
-async def set_unsafe_exec_config(payload: dict, current_user: User = Depends(require_admin)):
+async def set_unsafe_exec_config(
+    payload: dict, current_user: User = Depends(require_admin)
+):
     """
     Admin: set Redis-backed runtime overrides for unsafe execution.
 
@@ -934,7 +1223,9 @@ async def set_unsafe_exec_config(payload: dict, current_user: User = Depends(req
     try:
         updated: dict[str, bool] = {}
         if "enabled" in payload:
-            ok = await set_feature_flag("unsafe_code_execution_enabled", bool(payload.get("enabled")))
+            ok = await set_feature_flag(
+                "unsafe_code_execution_enabled", bool(payload.get("enabled"))
+            )
             updated["enabled"] = bool(ok)
         if "backend" in payload:
             backend = str(payload.get("backend") or "").strip().lower()
@@ -945,7 +1236,9 @@ async def set_unsafe_exec_config(payload: dict, current_user: User = Depends(req
         if "docker_image" in payload:
             image = str(payload.get("docker_image") or "").strip()
             if not image:
-                raise HTTPException(status_code=400, detail="docker_image cannot be empty")
+                raise HTTPException(
+                    status_code=400, detail="docker_image cannot be empty"
+                )
             ok = await set_feature_str("unsafe_code_exec_docker_image", image)
             updated["docker_image"] = bool(ok)
         return {"updated": updated}
@@ -953,11 +1246,15 @@ async def set_unsafe_exec_config(payload: dict, current_user: User = Depends(req
         raise
     except Exception as e:
         logger.error(f"Error updating unsafe exec config: {e}")
-        raise HTTPException(status_code=500, detail="Failed to update unsafe exec config")
+        raise HTTPException(
+            status_code=500, detail="Failed to update unsafe exec config"
+        )
 
 
 @router.post("/unsafe-exec/docker-pull")
-async def pull_unsafe_exec_docker_image(payload: dict, current_user: User = Depends(require_admin)):
+async def pull_unsafe_exec_docker_image(
+    payload: dict, current_user: User = Depends(require_admin)
+):
     """
     Admin: pull the configured Docker image used for unsafe demo runs.
 
@@ -970,12 +1267,18 @@ async def pull_unsafe_exec_docker_image(payload: dict, current_user: User = Depe
     from app.core.config import settings
 
     try:
-        backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess")
+        backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(
+            settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess"
+        )
         backend = str(backend or "subprocess").strip().lower()
         if backend != "docker":
-            raise HTTPException(status_code=400, detail="Unsafe exec backend is not set to docker")
+            raise HTTPException(
+                status_code=400, detail="Unsafe exec backend is not set to docker"
+            )
 
-        image = str(payload.get("image") or "").strip() if isinstance(payload, dict) else ""
+        image = (
+            str(payload.get("image") or "").strip() if isinstance(payload, dict) else ""
+        )
         if not image:
             image = (await get_feature_str("unsafe_code_exec_docker_image")) or getattr(
                 settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim"
@@ -985,14 +1288,24 @@ async def pull_unsafe_exec_docker_image(payload: dict, current_user: User = Depe
             raise HTTPException(status_code=400, detail="Docker image cannot be empty")
 
         def _pull():
-            return subprocess.run(["docker", "pull", image], capture_output=True, text=True)
+            return subprocess.run(
+                ["docker", "pull", image], capture_output=True, text=True
+            )
 
         try:
             proc = await asyncio.wait_for(asyncio.to_thread(_pull), timeout=180.0)
         except asyncio.TimeoutError:
-            return {"image": image, "status": "timeout", "stdout": "", "stderr": "", "exit_code": None}
+            return {
+                "image": image,
+                "status": "timeout",
+                "stdout": "",
+                "stderr": "",
+                "exit_code": None,
+            }
         except FileNotFoundError:
-            raise HTTPException(status_code=400, detail="Docker is not available on this server")
+            raise HTTPException(
+                status_code=400, detail="Docker is not available on this server"
+            )
 
         stdout = (proc.stdout or "")[-20000:]
         stderr = (proc.stderr or "")[-20000:]
@@ -1011,7 +1324,9 @@ async def pull_unsafe_exec_docker_image(payload: dict, current_user: User = Depe
 
 
 @router.post("/unsafe-exec/docker-check")
-async def check_unsafe_exec_docker_sandbox(payload: dict, current_user: User = Depends(require_admin)):
+async def check_unsafe_exec_docker_sandbox(
+    payload: dict, current_user: User = Depends(require_admin)
+):
     """
     Admin: run a short sandboxed docker command to validate the configured image can execute python.
 
@@ -1026,12 +1341,18 @@ async def check_unsafe_exec_docker_sandbox(payload: dict, current_user: User = D
     from app.core.config import settings
 
     try:
-        backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess")
+        backend = (await get_feature_str("unsafe_code_exec_backend")) or getattr(
+            settings, "UNSAFE_CODE_EXEC_BACKEND", "subprocess"
+        )
         backend = str(backend or "subprocess").strip().lower()
         if backend != "docker":
-            raise HTTPException(status_code=400, detail="Unsafe exec backend is not set to docker")
+            raise HTTPException(
+                status_code=400, detail="Unsafe exec backend is not set to docker"
+            )
 
-        image = str(payload.get("image") or "").strip() if isinstance(payload, dict) else ""
+        image = (
+            str(payload.get("image") or "").strip() if isinstance(payload, dict) else ""
+        )
         if not image:
             image = (await get_feature_str("unsafe_code_exec_docker_image")) or getattr(
                 settings, "UNSAFE_CODE_EXEC_DOCKER_IMAGE", "python:3.11-slim"
@@ -1082,9 +1403,17 @@ async def check_unsafe_exec_docker_sandbox(payload: dict, current_user: User = D
             try:
                 proc = await asyncio.wait_for(asyncio.to_thread(_run), timeout=20.0)
             except asyncio.TimeoutError:
-                return {"image": image, "status": "timeout", "stdout": "", "stderr": "", "exit_code": None}
+                return {
+                    "image": image,
+                    "status": "timeout",
+                    "stdout": "",
+                    "stderr": "",
+                    "exit_code": None,
+                }
             except FileNotFoundError:
-                raise HTTPException(status_code=400, detail="Docker is not available on this server")
+                raise HTTPException(
+                    status_code=400, detail="Docker is not available on this server"
+                )
 
         stdout = (proc.stdout or "")[-5000:]
         stderr = (proc.stderr or "")[-5000:]
@@ -1109,7 +1438,7 @@ async def list_llm_models(current_user: User = Depends(require_admin)):
         svc = LLMService()
         models = await svc.list_available_models()
         # Extract names for brevity
-        names = [m.get('name') for m in models if isinstance(m, dict)]
+        names = [m.get("name") for m in models if isinstance(m, dict)]
         return {"models": names, "default_model": svc.default_model}
     except Exception as e:
         logger.error(f"Error listing LLM models: {e}")
@@ -1117,7 +1446,9 @@ async def list_llm_models(current_user: User = Depends(require_admin)):
 
 
 @router.post("/llm/switch-model")
-async def switch_llm_model(model_name: str, current_user: User = Depends(require_admin)):
+async def switch_llm_model(
+    model_name: str, current_user: User = Depends(require_admin)
+):
     """Switch the default LLM model (runtime flag)."""
     try:
         # Save to feature flags; LLMService reads this at call time
@@ -1139,7 +1470,11 @@ async def start_ollama_pull(payload: dict, current_user: User = Depends(require_
     """
     import asyncio
 
-    model_name = str(payload.get("model_name") or "").strip() if isinstance(payload, dict) else ""
+    model_name = (
+        str(payload.get("model_name") or "").strip()
+        if isinstance(payload, dict)
+        else ""
+    )
     if not model_name:
         raise HTTPException(status_code=400, detail="model_name is required")
 
@@ -1286,7 +1621,9 @@ async def start_ollama_pull(payload: dict, current_user: User = Depends(require_
 
 
 @router.get("/llm/ollama-pull/{task_id}")
-async def get_ollama_pull_status(task_id: str, current_user: User = Depends(require_admin)):
+async def get_ollama_pull_status(
+    task_id: str, current_user: User = Depends(require_admin)
+):
     data = await _get_download_task(task_id)
     if not data or data.get("kind") != "ollama_pull":
         raise HTTPException(status_code=404, detail="Task not found")
@@ -1315,7 +1652,9 @@ async def get_llm_routing_settings(current_user: User = Depends(require_admin)):
 
 
 @router.post("/llm/routing")
-async def set_llm_routing_settings(payload: dict, current_user: User = Depends(require_admin)):
+async def set_llm_routing_settings(
+    payload: dict, current_user: User = Depends(require_admin)
+):
     """Set tier routing settings (runtime feature strings)."""
     allowed = {
         "llm_default_model",
@@ -1339,7 +1678,9 @@ async def set_llm_routing_settings(payload: dict, current_user: User = Depends(r
 
 
 @router.get("/ai-hub/evals/enabled")
-async def get_enabled_ai_hub_eval_templates(current_user: User = Depends(require_admin)):
+async def get_enabled_ai_hub_eval_templates(
+    current_user: User = Depends(require_admin),
+):
     """
     Get the enabled AI Hub eval template IDs (admin).
     Stored in Redis feature flag key `ai_hub_enabled_eval_templates` as CSV.
@@ -1381,7 +1722,9 @@ async def set_enabled_ai_hub_eval_templates(
 
 
 @router.get("/ai-hub/datasets/presets/enabled")
-async def get_enabled_ai_hub_dataset_presets(current_user: User = Depends(require_admin)):
+async def get_enabled_ai_hub_dataset_presets(
+    current_user: User = Depends(require_admin),
+):
     """
     Get the enabled AI Hub dataset preset IDs (admin).
     Stored in Redis feature flag key `ai_hub_enabled_dataset_presets` as CSV.
@@ -1420,6 +1763,7 @@ async def set_enabled_ai_hub_dataset_presets(
     if not ok:
         raise HTTPException(status_code=400, detail="Failed to update setting")
     return {"ok": True, "enabled": [x for x in (raw or "").split(",") if x]}
+
 
 def _normalize_profile_keywords(keywords: list[str]) -> list[str]:
     out: list[str] = []
@@ -1491,14 +1835,18 @@ async def clear_ai_hub_recommendation_feedback(
     This is useful during pilots/experiments when you want to reset the learning loop.
     """
     res = await db.execute(
-        delete(AIHubRecommendationFeedback).where(AIHubRecommendationFeedback.customer_profile_id == profile_id)
+        delete(AIHubRecommendationFeedback).where(
+            AIHubRecommendationFeedback.customer_profile_id == profile_id
+        )
     )
     await db.commit()
     deleted = int(getattr(res, "rowcount", 0) or 0)
     return {"ok": True, "deleted": deleted}
 
 
-@router.get("/ai-hub/recommendation-feedback/stats", response_model=AIHubFeedbackStatsResponse)
+@router.get(
+    "/ai-hub/recommendation-feedback/stats", response_model=AIHubFeedbackStatsResponse
+)
 async def get_ai_hub_recommendation_feedback_stats(
     profile_id: UUID,
     limit: int = 50,
@@ -1513,15 +1861,25 @@ async def get_ai_hub_recommendation_feedback_stats(
         select(
             AIHubRecommendationFeedback.item_type,
             AIHubRecommendationFeedback.item_id,
-            func.sum(case((AIHubRecommendationFeedback.decision == "accept", 1), else_=0)).label("accepts"),
-            func.sum(case((AIHubRecommendationFeedback.decision == "reject", 1), else_=0)).label("rejects"),
+            func.sum(
+                case((AIHubRecommendationFeedback.decision == "accept", 1), else_=0)
+            ).label("accepts"),
+            func.sum(
+                case((AIHubRecommendationFeedback.decision == "reject", 1), else_=0)
+            ).label("rejects"),
         )
         .where(AIHubRecommendationFeedback.customer_profile_id == profile_id)
-        .group_by(AIHubRecommendationFeedback.item_type, AIHubRecommendationFeedback.item_id)
+        .group_by(
+            AIHubRecommendationFeedback.item_type, AIHubRecommendationFeedback.item_id
+        )
         .order_by(
             (
-                func.sum(case((AIHubRecommendationFeedback.decision == "accept", 1), else_=0))
-                - func.sum(case((AIHubRecommendationFeedback.decision == "reject", 1), else_=0))
+                func.sum(
+                    case((AIHubRecommendationFeedback.decision == "accept", 1), else_=0)
+                )
+                - func.sum(
+                    case((AIHubRecommendationFeedback.decision == "reject", 1), else_=0)
+                )
             ).desc()
         )
         .limit(limit)
@@ -1530,11 +1888,18 @@ async def get_ai_hub_recommendation_feedback_stats(
     for item_type, item_id, accepts, rejects in res.all():
         a = int(accepts or 0)
         r = int(rejects or 0)
-        rows.append(AIHubFeedbackStatsRow(item_type=item_type, item_id=item_id, accepts=a, rejects=r, net=a - r))
+        rows.append(
+            AIHubFeedbackStatsRow(
+                item_type=item_type, item_id=item_id, accepts=a, rejects=r, net=a - r
+            )
+        )
     return AIHubFeedbackStatsResponse(profile_id=profile_id, rows=rows)
 
 
-@router.post("/ai-hub/recommendation-feedback/backfill-profile-id", response_model=AIHubFeedbackBackfillResponse)
+@router.post(
+    "/ai-hub/recommendation-feedback/backfill-profile-id",
+    response_model=AIHubFeedbackBackfillResponse,
+)
 async def backfill_ai_hub_feedback_profile_id(
     profile_id: UUID,
     profile_name: str,
@@ -1558,7 +1923,9 @@ async def backfill_ai_hub_feedback_profile_id(
         .values(customer_profile_id=profile_id)
     )
     await db.commit()
-    return AIHubFeedbackBackfillResponse(ok=True, profile_id=profile_id, updated=int(getattr(res, "rowcount", 0) or 0))
+    return AIHubFeedbackBackfillResponse(
+        ok=True, profile_id=profile_id, updated=int(getattr(res, "rowcount", 0) or 0)
+    )
 
 
 def _safe_plugin_id(raw: str) -> str:
@@ -1592,23 +1959,38 @@ async def create_ai_hub_plugin(
         required = ["id", "name", "description", "dataset_type", "generation_prompt"]
         missing = [k for k in required if not plugin.get(k)]
         if missing:
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {', '.join(missing)}")
+            raise HTTPException(
+                status_code=400, detail=f"Missing required fields: {', '.join(missing)}"
+            )
         base_dir = (
             Path(settings.AI_HUB_DATASET_PRESETS_DIR)
             if getattr(settings, "AI_HUB_DATASET_PRESETS_DIR", None)
-            else Path(__file__).resolve().parents[2] / "plugins" / "ai_hub" / "dataset_presets"
+            else Path(__file__).resolve().parents[2]
+            / "plugins"
+            / "ai_hub"
+            / "dataset_presets"
         )
     else:
         required = ["id", "name", "description", "version", "rubric", "cases"]
         missing = [k for k in required if plugin.get(k) is None]
         if missing:
-            raise HTTPException(status_code=400, detail=f"Missing required fields: {', '.join(missing)}")
-        if not isinstance(plugin.get("cases"), list) or len(plugin.get("cases") or []) == 0:
-            warnings.append("Eval template has no cases; add at least 1 case for useful scoring.")
+            raise HTTPException(
+                status_code=400, detail=f"Missing required fields: {', '.join(missing)}"
+            )
+        if (
+            not isinstance(plugin.get("cases"), list)
+            or len(plugin.get("cases") or []) == 0
+        ):
+            warnings.append(
+                "Eval template has no cases; add at least 1 case for useful scoring."
+            )
         base_dir = (
             Path(settings.AI_HUB_EVAL_TEMPLATES_DIR)
             if getattr(settings, "AI_HUB_EVAL_TEMPLATES_DIR", None)
-            else Path(__file__).resolve().parents[2] / "plugins" / "ai_hub" / "eval_templates"
+            else Path(__file__).resolve().parents[2]
+            / "plugins"
+            / "ai_hub"
+            / "eval_templates"
         )
 
     base_dir.mkdir(parents=True, exist_ok=True)
@@ -1617,7 +1999,10 @@ async def create_ai_hub_plugin(
     overwritten = False
     if path.exists():
         if not payload.overwrite:
-            raise HTTPException(status_code=409, detail="Plugin already exists (set overwrite=true to replace)")
+            raise HTTPException(
+                status_code=409,
+                detail="Plugin already exists (set overwrite=true to replace)",
+            )
         overwritten = True
 
     # Enforce that the filename is derived from the plugin id to prevent path traversal.
@@ -1640,20 +2025,17 @@ async def create_ai_hub_plugin(
 
 @router.post("/sync/all", response_model=TaskTriggerResponse)
 async def trigger_full_sync(
-    background_tasks: BackgroundTasks,
-    current_user: User = Depends(require_admin)
+    background_tasks: BackgroundTasks, current_user: User = Depends(require_admin)
 ):
     """Trigger synchronization of all data sources."""
     try:
         # Trigger sync task
         task = sync_all_sources.delay()
-        
+
         return TaskTriggerResponse(
-            task_id=task.id,
-            message="Full synchronization started",
-            status="triggered"
+            task_id=task.id, message="Full synchronization started", status="triggered"
         )
-    
+
     except Exception as e:
         logger.error(f"Error triggering full sync: {e}")
         raise HTTPException(status_code=500, detail="Failed to trigger synchronization")
@@ -1675,16 +2057,18 @@ async def trigger_source_sync(
         task = ingest_from_source.delay(str(source_id))
         # Map source->task for cancellation
         await set_ingestion_task_mapping(str(source_id), task.id, ttl=3600)
-        
+
         return TaskTriggerResponse(
             task_id=task.id,
             message=f"Source synchronization started for {source_id}",
-            status="triggered"
+            status="triggered",
         )
-    
+
     except Exception as e:
         logger.error(f"Error triggering source sync: {e}")
-        raise HTTPException(status_code=500, detail="Failed to trigger source synchronization")
+        raise HTTPException(
+            status_code=500, detail="Failed to trigger source synchronization"
+        )
 
 
 @router.websocket("/sources/{source_id}/ingestion-progress")
@@ -1692,6 +2076,7 @@ async def ingestion_progress_websocket(websocket: WebSocket, source_id: UUID):
     """WebSocket endpoint for real-time ingestion progress updates (admin only)."""
     from app.utils.websocket_auth import require_websocket_auth
     from app.utils.websocket_manager import websocket_manager
+
     try:
         user = await require_websocket_auth(websocket)
         if not user.is_admin():
@@ -1719,12 +2104,14 @@ async def ingestion_progress_websocket(websocket: WebSocket, source_id: UUID):
 async def clear_source_error(
     source_id: UUID,
     current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Clear last_error for a document source (admin)."""
     try:
         from sqlalchemy import select
+
         from app.models.document import DocumentSource as _DS
+
         result = await db.execute(select(_DS).where(_DS.id == source_id))
         src = result.scalar_one_or_none()
         if not src:
@@ -1757,8 +2144,7 @@ async def dry_run_source(
 
 @router.post("/sources/{source_id}/cancel")
 async def cancel_source_sync(
-    source_id: UUID,
-    current_user: User = Depends(require_admin)
+    source_id: UUID, current_user: User = Depends(require_admin)
 ):
     """Cancel an active ingestion task for a source (best-effort)."""
     try:
@@ -1779,25 +2165,26 @@ async def cancel_source_sync(
 
 @router.get("/sources/next-run")
 async def get_sources_next_run(
-    current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
     """Return next scheduled run time for all active sources based on config (cron or interval)."""
     try:
         from sqlalchemy import select
+
         from app.models.document import DocumentSource as _DS
-        res = await db.execute(select(_DS).where(_DS.is_active == True))
+
+        res = await db.execute(select(_DS).where(_DS.is_active.is_(True)))
         sources = res.scalars().all()
         now = datetime.utcnow()
         items = []
         for s in sources:
             cfg = s.config or {}
-            if not cfg.get('auto_sync'):
+            if not cfg.get("auto_sync"):
                 items.append({"source_id": str(s.id), "next_run": None})
                 continue
             next_run = None
-            cron_expr = cfg.get('cron')
-            interval_min = int(cfg.get('sync_interval_minutes', 0) or 0)
+            cron_expr = cfg.get("cron")
+            interval_min = int(cfg.get("sync_interval_minutes", 0) or 0)
             try:
                 if cron_expr:
                     it = croniter(cron_expr, now)
@@ -1837,12 +2224,14 @@ async def get_source_sync_logs(
     limit: int = 20,
     offset: int = 0,
     current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Return recent sync logs for a source."""
     try:
-        from sqlalchemy import select, desc
+        from sqlalchemy import desc, select
+
         from app.models.document import DocumentSourceSyncLog as _Log
+
         limit = max(1, min(200, limit))
         offset = max(0, offset)
         res = await db.execute(
@@ -1854,20 +2243,28 @@ async def get_source_sync_logs(
         )
         logs = res.scalars().all()
         items = []
-        for l in logs:
-            items.append({
-                "id": str(l.id),
-                "status": l.status,
-                "task_id": l.task_id,
-                "started_at": l.started_at.isoformat() if l.started_at else None,
-                "finished_at": l.finished_at.isoformat() if l.finished_at else None,
-                "total_documents": l.total_documents,
-                "processed": l.processed,
-                "created": l.created,
-                "updated": l.updated,
-                "errors": l.errors,
-                "error_message": l.error_message,
-            })
+        for sync_log in logs:
+            items.append(
+                {
+                    "id": str(sync_log.id),
+                    "status": sync_log.status,
+                    "task_id": sync_log.task_id,
+                    "started_at": (
+                        sync_log.started_at.isoformat() if sync_log.started_at else None
+                    ),
+                    "finished_at": (
+                        sync_log.finished_at.isoformat()
+                        if sync_log.finished_at
+                        else None
+                    ),
+                    "total_documents": sync_log.total_documents,
+                    "processed": sync_log.processed,
+                    "created": sync_log.created,
+                    "updated": sync_log.updated,
+                    "errors": sync_log.errors,
+                    "error_message": sync_log.error_message,
+                }
+            )
         return {"items": items}
     except Exception as e:
         logger.error(f"Get sync logs failed: {e}")
@@ -1880,12 +2277,14 @@ async def export_source_sync_logs_csv(
     limit: int = 1000,
     offset: int = 0,
     current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Export sync logs as CSV for a source."""
     try:
-        from sqlalchemy import select, desc
+        from sqlalchemy import desc, select
+
         from app.models.document import DocumentSourceSyncLog as _Log
+
         limit = max(1, min(5000, limit))
         offset = max(0, offset)
         res = await db.execute(
@@ -1898,31 +2297,49 @@ async def export_source_sync_logs_csv(
         logs = res.scalars().all()
         import csv
         import io
+
         buf = io.StringIO()
         writer = csv.writer(buf)
-        writer.writerow([
-            'id','task_id','status','started_at','finished_at','total_documents','processed','created','updated','errors','error_message'
-        ])
-        for l in logs:
-            writer.writerow([
-                str(l.id),
-                l.task_id or '',
-                l.status or '',
-                (l.started_at.isoformat() if l.started_at else ''),
-                (l.finished_at.isoformat() if l.finished_at else ''),
-                l.total_documents or 0,
-                l.processed or 0,
-                l.created or 0,
-                l.updated or 0,
-                l.errors or 0,
-                (l.error_message or '').replace('\n',' ').replace('\r',' '),
-            ])
+        writer.writerow(
+            [
+                "id",
+                "task_id",
+                "status",
+                "started_at",
+                "finished_at",
+                "total_documents",
+                "processed",
+                "created",
+                "updated",
+                "errors",
+                "error_message",
+            ]
+        )
+        for sync_log in logs:
+            writer.writerow(
+                [
+                    str(sync_log.id),
+                    sync_log.task_id or "",
+                    sync_log.status or "",
+                    (sync_log.started_at.isoformat() if sync_log.started_at else ""),
+                    (sync_log.finished_at.isoformat() if sync_log.finished_at else ""),
+                    sync_log.total_documents or 0,
+                    sync_log.processed or 0,
+                    sync_log.created or 0,
+                    sync_log.updated or 0,
+                    sync_log.errors or 0,
+                    (sync_log.error_message or "")
+                    .replace("\n", " ")
+                    .replace("\r", " "),
+                ]
+            )
         from fastapi import Response
+
         csv_data = buf.getvalue()
         headers = {
-            'Content-Disposition': f'attachment; filename="sync_logs_{source_id}.csv"'
+            "Content-Disposition": f'attachment; filename="sync_logs_{source_id}.csv"'
         }
-        return Response(content=csv_data, media_type='text/csv', headers=headers)
+        return Response(content=csv_data, media_type="text/csv", headers=headers)
     except Exception as e:
         logger.error(f"Export sync logs CSV failed: {e}")
         raise HTTPException(status_code=500, detail="Failed to export CSV")
@@ -1930,43 +2347,38 @@ async def export_source_sync_logs_csv(
 
 @router.post("/vector-store/reset")
 async def reset_vector_store(
-    current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
     """Reset the vector store (delete all embeddings)."""
     try:
         await vector_store_service.initialize()
-         
+
         await vector_store_service.reset_collection()
-        
+
         # Reset processing status for all documents
         from sqlalchemy import update
+
         from app.models.document import Document
-        
+
         await db.execute(
-            update(Document).values(
-                is_processed=False,
-                processing_error=None
-            )
+            update(Document).values(is_processed=False, processing_error=None)
         )
         await db.commit()
-        
+
         logger.warning("Vector store reset by admin user")
-        
+
         return {"message": "Vector store reset successfully"}
-    
+
     except Exception as e:
         logger.error(f"Error resetting vector store: {e}")
         raise HTTPException(status_code=500, detail="Failed to reset vector store")
 
 
 @router.get("/vector-store/stats")
-async def get_vector_store_stats(
-    current_user: User = Depends(require_admin)
-):
+async def get_vector_store_stats(current_user: User = Depends(require_admin)):
     """
     Get vector store statistics.
-    
+
     Returns:
         Dictionary with vector store statistics including:
         - total_chunks: Number of chunks in the collection
@@ -1976,135 +2388,142 @@ async def get_vector_store_stats(
     """
     try:
         await vector_store_service.initialize()
-         
+
         stats = await vector_store_service.get_collection_stats()
         return stats
-    
+
     except Exception as e:
         log_error(e, context={"endpoint": "vector_store_stats"})
-        raise HTTPException(status_code=500, detail="Failed to get vector store statistics")
+        raise HTTPException(
+            status_code=500, detail="Failed to get vector store statistics"
+        )
 
 
 @router.post("/vector-store/switch-model")
 async def switch_embedding_model(
-    model_name: str,
-    current_user: User = Depends(require_admin)
+    model_name: str, current_user: User = Depends(require_admin)
 ):
     """
     Switch the embedding model (admin only).
-    
+
     Args:
         model_name: Name of the embedding model to switch to
         current_user: Current authenticated admin user
-        
+
     Returns:
         Success message with model information
-        
+
     Note:
         Changing models requires reprocessing all documents for best results.
     """
     try:
         await vector_store_service.initialize()
-         
+
         success = await vector_store_service.switch_embedding_model(model_name)
-         
+
         if success:
             return {
                 "message": f"Switched to embedding model: {model_name}",
                 "current_model": vector_store_service.get_current_model(),
-                "warning": "Existing documents should be reprocessed for consistency"
+                "warning": "Existing documents should be reprocessed for consistency",
             }
         else:
             raise HTTPException(
                 status_code=400,
-                detail=f"Failed to switch model. Available models: {settings.EMBEDDING_MODEL_OPTIONS}"
+                detail=f"Failed to switch model. Available models: {settings.EMBEDDING_MODEL_OPTIONS}",
             )
-    
+
     except HTTPException:
         raise
     except Exception as e:
-        log_error(e, context={"endpoint": "switch_embedding_model", "model": model_name})
+        log_error(
+            e, context={"endpoint": "switch_embedding_model", "model": model_name}
+        )
         raise HTTPException(status_code=500, detail="Failed to switch embedding model")
 
 
 @router.get("/tasks/status")
 async def get_task_status(
-    current_user: User = Depends(require_admin),
-    db: AsyncSession = Depends(get_db)
+    current_user: User = Depends(require_admin), db: AsyncSession = Depends(get_db)
 ):
     """Get status of background tasks including ingestion tasks."""
     try:
-        from app.core.celery import celery_app
         from sqlalchemy import select
+
+        from app.core.celery import celery_app
         from app.models.document import DocumentSource as _DocumentSource
-        
+
         # Get active tasks (returns None if no workers available)
         active_tasks = celery_app.control.inspect().active()
         if active_tasks is None:
             active_tasks = {}
-        
+
         # Get scheduled tasks (returns None if no workers available)
         scheduled_tasks = celery_app.control.inspect().scheduled()
         if scheduled_tasks is None:
             scheduled_tasks = {}
-        
+
         # Get reserved tasks (returns None if no workers available)
         reserved_tasks = celery_app.control.inspect().reserved()
         if reserved_tasks is None:
             reserved_tasks = {}
-        
+
         # Also get active ingestion tasks from sources
         ingestion_tasks = []
         try:
-            stmt = select(_DocumentSource).where(_DocumentSource.is_syncing == True)
+            stmt = select(_DocumentSource).where(_DocumentSource.is_syncing.is_(True))
             result = await db.execute(stmt)
             syncing_sources = result.scalars().all()
-            
+
             for source in syncing_sources:
                 task_id = None
                 try:
                     task_id = await get_ingestion_task_mapping(str(source.id))
                 except Exception:
                     pass
-                
-                ingestion_tasks.append({
-                    "source_id": str(source.id),
-                    "source_name": source.name,
-                    "source_type": source.source_type,
-                    "task_id": task_id,
-                    "status": "syncing"
-                })
-            
+
+                ingestion_tasks.append(
+                    {
+                        "source_id": str(source.id),
+                        "source_name": source.name,
+                        "source_type": source.source_type,
+                        "task_id": task_id,
+                        "status": "syncing",
+                    }
+                )
+
             # Also check for pending tasks (have task_id but not syncing yet)
             all_sources_stmt = select(_DocumentSource)
             all_result = await db.execute(all_sources_stmt)
             all_sources = all_result.scalars().all()
-            
+
             for source in all_sources:
                 if source.is_syncing:
                     continue  # Already included above
                 try:
                     task_id = await get_ingestion_task_mapping(str(source.id))
                     if task_id:
-                        ingestion_tasks.append({
-                            "source_id": str(source.id),
-                            "source_name": source.name,
-                            "source_type": source.source_type,
-                            "task_id": task_id,
-                            "status": "pending"
-                        })
+                        ingestion_tasks.append(
+                            {
+                                "source_id": str(source.id),
+                                "source_name": source.name,
+                                "source_type": source.source_type,
+                                "task_id": task_id,
+                                "status": "pending",
+                            }
+                        )
                 except Exception:
                     pass
         except Exception as ing_err:
             logger.warning(f"Error getting ingestion tasks: {ing_err}")
-        
+
         return {
             "active_tasks": active_tasks,
             "scheduled_tasks": scheduled_tasks,
             "reserved_tasks": reserved_tasks,
-            "ingestion_tasks": ingestion_tasks
+            "ingestion_tasks": ingestion_tasks,
         }
-    
+
     except Exception as e:
         logger.error(f"Error getting task status: {e}")
         # Return empty dicts on error instead of raising exception
@@ -2112,25 +2531,23 @@ async def get_task_status(
             "active_tasks": {},
             "scheduled_tasks": {},
             "reserved_tasks": {},
-            "ingestion_tasks": []
+            "ingestion_tasks": [],
         }
 
 
 @router.post("/tasks/purge")
-async def purge_tasks(
-    current_user: User = Depends(require_admin)
-):
+async def purge_tasks(current_user: User = Depends(require_admin)):
     """Purge all pending tasks."""
     try:
         from app.core.celery import celery_app
-        
+
         # Purge all tasks
         celery_app.control.purge()
-        
+
         logger.warning("All pending tasks purged by admin user")
-        
+
         return {"message": "All pending tasks purged"}
-    
+
     except Exception as e:
         logger.error(f"Error purging tasks: {e}")
         raise HTTPException(status_code=500, detail="Failed to purge tasks")
@@ -2138,32 +2555,32 @@ async def purge_tasks(
 
 @router.get("/logs")
 async def get_system_logs(
-    lines: int = 100,
-    current_user: User = Depends(require_admin)
+    lines: int = 100, current_user: User = Depends(require_admin)
 ):
     """Get recent system logs."""
     try:
         import os
+
         from app.core.config import settings
-        
+
         log_file = settings.LOG_FILE
-        
+
         if not os.path.exists(log_file):
             return {"logs": [], "message": "Log file not found"}
-        
+
         # Read last N lines
-        with open(log_file, 'r') as f:
+        with open(log_file, "r") as f:
             log_lines = f.readlines()
-        
+
         # Get last 'lines' number of lines
         recent_logs = log_lines[-lines:] if len(log_lines) > lines else log_lines
-        
+
         return {
             "logs": [line.strip() for line in recent_logs],
             "total_lines": len(log_lines),
-            "returned_lines": len(recent_logs)
+            "returned_lines": len(recent_logs),
         }
-    
+
     except Exception as e:
         logger.error(f"Error getting system logs: {e}")
         raise HTTPException(status_code=500, detail="Failed to get system logs")

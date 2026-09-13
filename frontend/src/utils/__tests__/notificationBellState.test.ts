@@ -124,6 +124,23 @@ describe('notificationBellState', () => {
     expect(getNotificationBellFilterLabel('recovery_open')).toBe('Open recovery');
   });
 
+  it('groups R&D verification updates with experiment notifications', () => {
+    const notification: Notification = {
+      id: 'verification-notification',
+      notification_type: 'autonomous_rnd_verification_update',
+      title: 'R&D evidence verified',
+      message: 'Local verification completed.',
+      priority: 'normal',
+      is_read: false,
+      created_at: '2026-03-11T13:00:00Z',
+    };
+
+    expect(getNotificationBellCounts([notification]).experimentRuns).toBe(1);
+    expect(getVisibleNotificationsForBell([notification], 'experiment_runs')).toEqual([
+      notification,
+    ]);
+  });
+
   it('ranks unread recovery notifications ahead of other items', () => {
     const notifications = makeNotifications();
     expect(getNotificationBellRank(notifications.find((notification) => notification.id === 'notif-1')!)).toBe(0);

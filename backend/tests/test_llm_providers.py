@@ -7,10 +7,11 @@ stubbed payloads — no network and no provider SDK imports required.
 import json
 from types import SimpleNamespace
 
-import pytest
-
 from app.services.llm_providers import build_provider, try_parse_json_object
-from app.services.llm_providers.anthropic_sdk import STRUCTURED_OUTPUT_TOOL, AnthropicProvider
+from app.services.llm_providers.anthropic_sdk import (
+    STRUCTURED_OUTPUT_TOOL,
+    AnthropicProvider,
+)
 from app.services.llm_providers.base import to_anthropic_tools, to_openai_tools
 from app.services.llm_providers.ollama import OllamaProvider
 from app.services.llm_providers.openai_compatible import OpenAICompatibleProvider
@@ -65,7 +66,12 @@ class TestOllamaProvider:
             "message": {
                 "content": "",
                 "tool_calls": [
-                    {"function": {"name": "search_documents", "arguments": {"query": "x"}}}
+                    {
+                        "function": {
+                            "name": "search_documents",
+                            "arguments": {"query": "x"},
+                        }
+                    }
                 ],
             },
             "done_reason": "stop",
@@ -192,7 +198,10 @@ class TestAnthropicProvider:
             content=[
                 SimpleNamespace(type="text", text="checking"),
                 SimpleNamespace(
-                    type="tool_use", id="tu_9", name="search_documents", input={"query": "x"}
+                    type="tool_use",
+                    id="tu_9",
+                    name="search_documents",
+                    input={"query": "x"},
                 ),
             ],
             usage=SimpleNamespace(
@@ -272,7 +281,9 @@ class TestAnthropicPromptCaching:
         ]
 
     def test_system_param_without_cache(self):
-        assert AnthropicProvider._system_param("stable prefix", False) == "stable prefix"
+        assert (
+            AnthropicProvider._system_param("stable prefix", False) == "stable prefix"
+        )
 
     def test_mark_last_message_string_content(self):
         converted = [

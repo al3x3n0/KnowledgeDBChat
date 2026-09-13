@@ -6,8 +6,6 @@ Dependencies are optional and loaded lazily.
 """
 
 import asyncio
-import json
-import os
 import time
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional
@@ -16,6 +14,7 @@ from uuid import UUID
 from loguru import logger
 
 from app.core.config import settings
+
 from .base_trainer import BaseTrainer, DeviceInfo, TrainingProgress, TrainingResult
 
 
@@ -44,19 +43,22 @@ class LocalTrainer(BaseTrainer):
         """Check for optional training dependencies."""
         try:
             import torch
+
             self._torch_available = True
             self._torch = torch
         except ImportError:
             logger.warning("PyTorch not available for local training")
 
         try:
-            import peft
+            import peft  # noqa: F401 - optional dependency availability probe
+
             self._peft_available = True
         except ImportError:
             logger.warning("PEFT not available for local training")
 
         try:
-            import transformers
+            import transformers  # noqa: F401 - optional dependency availability probe
+
             self._transformers_available = True
         except ImportError:
             logger.warning("transformers not available for local training")
@@ -64,9 +66,9 @@ class LocalTrainer(BaseTrainer):
     def is_available(self) -> bool:
         """Check if local training is available."""
         return (
-            self._torch_available and
-            self._peft_available and
-            self._transformers_available
+            self._torch_available
+            and self._peft_available
+            and self._transformers_available
         )
 
     def get_device_info(self) -> DeviceInfo:
@@ -79,10 +81,12 @@ class LocalTrainer(BaseTrainer):
         # Check for CUDA
         if torch.cuda.is_available():
             device_name = torch.cuda.get_device_name(0)
-            memory_total = torch.cuda.get_device_properties(0).total_memory / (1024**3)
+            memory_total = torch.cuda.get_device_properties(0).total_memory / (
+                1024**3
+            )
             memory_free = (
-                torch.cuda.get_device_properties(0).total_memory -
-                torch.cuda.memory_allocated(0)
+                torch.cuda.get_device_properties(0).total_memory
+                - torch.cuda.memory_allocated(0)
             ) / (1024**3)
 
             cuda_version = torch.version.cuda
@@ -215,15 +219,15 @@ class LocalTrainer(BaseTrainer):
         """
         # Late imports to avoid loading heavy libraries until needed
         import torch
+        from datasets import load_dataset
+        from peft import LoraConfig, TaskType, get_peft_model
         from transformers import (
             AutoModelForCausalLM,
             AutoTokenizer,
-            TrainingArguments,
-            Trainer,
             DataCollatorForSeq2Seq,
+            Trainer,
+            TrainingArguments,
         )
-        from peft import LoraConfig, get_peft_model, TaskType
-        from datasets import load_dataset
 
         # Determine device
         device_config = hyperparameters.get("device", settings.TRAINING_LOCAL_DEVICE)
@@ -272,6 +276,7 @@ class LocalTrainer(BaseTrainer):
 
         if training_method == "qlora" and device == "cuda":
             from transformers import BitsAndBytesConfig
+
             load_kwargs["quantization_config"] = BitsAndBytesConfig(
                 load_in_4bit=True,
                 bnb_4bit_quant_type="nf4",
@@ -305,13 +310,17 @@ class LocalTrainer(BaseTrainer):
             prompts = []
             for i in range(len(examples["instruction"])):
                 instruction = examples["instruction"][i]
-                input_text = examples.get("input", [""] * len(examples["instruction"]))[i]
+                input_text = examples.get("input", [""] * len(examples["instruction"]))[
+                    i
+                ]
                 output = examples["output"][i]
 
                 if input_text:
                     prompt = f"### Instruction:\n{instruction}\n\n### Input:\n{input_text}\n\n### Response:\n{output}"
                 else:
-                    prompt = f"### Instruction:\n{instruction}\n\n### Response:\n{output}"
+                    prompt = (
+                        f"### Instruction:\n{instruction}\n\n### Response:\n{output}"
+                    )
                 prompts.append(prompt)
 
             tokenized = tokenizer(
@@ -375,7 +384,9 @@ class LocalTrainer(BaseTrainer):
                             total_epochs=num_epochs,
                             loss=logs["loss"],
                             learning_rate=logs.get("learning_rate", 0),
-                            samples_processed=state.global_step * batch_size * gradient_accumulation,
+                            samples_processed=state.global_step
+                            * batch_size
+                            * gradient_accumulation,
                             metrics={"loss": logs["loss"]},
                         )
                         self.progress_callback(progress)
@@ -386,7 +397,9 @@ class LocalTrainer(BaseTrainer):
                     logger.info("Training cancelled by user")
 
         # Calculate total steps
-        total_steps = (len(tokenized_dataset) // (batch_size * gradient_accumulation)) * num_epochs
+        total_steps = (
+            len(tokenized_dataset) // (batch_size * gradient_accumulation)
+        ) * num_epochs
 
         # Data collator
         data_collator = DataCollatorForSeq2Seq(
@@ -434,7 +447,9 @@ class LocalTrainer(BaseTrainer):
             metrics={
                 "training_loss": final_loss,
                 "runtime": train_result.metrics.get("train_runtime", 0),
-                "samples_per_second": train_result.metrics.get("train_samples_per_second", 0),
+                "samples_per_second": train_result.metrics.get(
+                    "train_samples_per_second", 0
+                ),
             },
         )
 

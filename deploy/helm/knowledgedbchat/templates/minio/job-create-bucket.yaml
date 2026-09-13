@@ -1,0 +1,53 @@
+{{- if and .Values.minio.enabled .Values.minio.createBucket }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ printf "%s-minio-bucket" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "minio-bucket") | nindent 4 }}
+  annotations:
+    # post-install/post-upgrade: MinIO must already be serving. Idempotent, so
+    # re-running on every upgrade is harmless.
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "5"
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  backoffLimit: 5
+  template:
+    metadata:
+      labels:
+        {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "minio-bucket") | nindent 8 }}
+    spec:
+      restartPolicy: Never
+      {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: mc
+          image: "{{ .Values.minio.mcImage.repository }}:{{ .Values.minio.mcImage.tag }}"
+          imagePullPolicy: {{ .Values.minio.mcImage.pullPolicy }}
+          env:
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kdbc.secretName" . }}
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kdbc.secretName" . }}
+                  key: MINIO_SECRET_KEY
+          command:
+            - sh
+            - -c
+            - |
+              set -e
+              until mc alias set kdbc "http://{{ include "kdbc.minio.endpoint" . }}" "$MINIO_ACCESS_KEY" "$MINIO_SECRET_KEY"; do
+                echo "waiting for minio..."
+                sleep 3
+              done
+              mc mb --ignore-existing "kdbc/{{ .Values.config.minioBucketName }}"
+              echo "bucket {{ .Values.config.minioBucketName }} ready"
+          resources:
+            requests:
+              cpu: 10m
+              memory: 64Mi
+{{- end }}

@@ -1,5 +1,11 @@
 /**
- * Reusable progress bar component
+ * The app's progress bar.
+ *
+ * The track is a well and the fill sits in it, lit from its own colour — on a
+ * dark ground a flat bar reads as a painted rectangle, and the faint glow is
+ * what makes it read as filled instead. The fill also carries a highlight
+ * along its top edge, which is the same trick the surfaces use: light falls
+ * from above, so the top of a raised thing catches it.
  */
 
 import React from 'react';
@@ -42,6 +48,15 @@ const ProgressBar: React.FC<ProgressBarProps> = ({
     danger: 'bg-red-600',
   };
 
+  // Each fill lights its own track slightly. Kept faint on purpose: a
+  // progress bar reports, it does not announce.
+  const glowClasses = {
+    primary: 'shadow-[0_0_8px_-1px_rgb(24_161_97_/_0.6)]',
+    success: 'shadow-[0_0_8px_-1px_rgb(22_163_74_/_0.6)]',
+    warning: 'shadow-[0_0_8px_-1px_rgb(202_138_4_/_0.6)]',
+    danger: 'shadow-[0_0_8px_-1px_rgb(220_38_38_/_0.6)]',
+  };
+
   return (
     <div className={clsx('w-full', className)}>
       {(showLabel || label) && (
@@ -53,7 +68,8 @@ const ProgressBar: React.FC<ProgressBarProps> = ({
       )}
       <div
         className={clsx(
-          'w-full bg-gray-200 rounded-full overflow-hidden',
+          'w-full rounded-full overflow-hidden bg-gray-200 border border-gray-300/60',
+          'shadow-[inset_0_1px_2px_0_rgb(0_0_0_/_0.4)]',
           sizeClasses[size]
         )}
         role="progressbar"
@@ -64,8 +80,12 @@ const ProgressBar: React.FC<ProgressBarProps> = ({
       >
         <div
           className={clsx(
-            'h-full rounded-full transition-all duration-300 ease-out',
+            'h-full rounded-full transition-all duration-slow ease-enter relative',
+            // The top-edge highlight, and a glow in the fill's own colour.
+            'after:absolute after:inset-x-0 after:top-0 after:h-px',
+            'after:bg-white/25 after:rounded-full',
             variantClasses[variant],
+            glowClasses[variant],
             indeterminate && 'animate-pulse'
           )}
           style={

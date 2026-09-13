@@ -4,7 +4,7 @@ Tool registry and per-user tool policies.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
@@ -14,10 +14,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.tool_policy import ToolPolicy
 from app.models.user import User
-from app.schemas.tool_policy import ToolPolicyCreate, ToolPolicyEvaluateRequest, ToolPolicyEvaluateResponse, ToolPolicyResponse
+from app.schemas.tool_policy import (
+    ToolPolicyCreate,
+    ToolPolicyEvaluateRequest,
+    ToolPolicyEvaluateResponse,
+    ToolPolicyResponse,
+)
 from app.services.auth_service import get_current_user
 from app.services.tool_registry import iter_builtin_tools
-
 
 router = APIRouter()
 
@@ -46,7 +50,17 @@ async def list_tool_registry(
     # Add MCP-only fallbacks (ensure discoverable)
     from app.services.tool_registry import get_tool_metadata
 
-    for extra in ["search", "list_documents", "get_document", "list_sources", "chat", "create_presentation", "create_repo_report", "get_job_status", "list_jobs"]:
+    for extra in [
+        "search",
+        "list_documents",
+        "get_document",
+        "list_sources",
+        "chat",
+        "create_presentation",
+        "create_repo_report",
+        "get_job_status",
+        "list_jobs",
+    ]:
         m = get_tool_metadata(f"mcp:{extra}")
         if m and not any(x["name"] == m.name for x in tools):
             tools.append(
@@ -67,10 +81,14 @@ async def list_tool_registry(
         from app.models.workflow import UserTool
 
         res = await db.execute(
-            select(UserTool).where(UserTool.user_id == current_user.id, UserTool.is_enabled == True).order_by(UserTool.name.asc())
+            select(UserTool)
+            .where(UserTool.user_id == current_user.id, UserTool.is_enabled.is_(True))
+            .order_by(UserTool.name.asc())
         )
         for ut in res.scalars().all():
-            schema = ut.parameters_schema if isinstance(ut.parameters_schema, dict) else {}
+            schema = (
+                ut.parameters_schema if isinstance(ut.parameters_schema, dict) else {}
+            )
             tools.append(
                 {
                     "name": f"user_tool:{ut.id}",
@@ -78,8 +96,18 @@ async def list_tool_registry(
                     "kind": "custom_tool",
                     "description": ut.description or "",
                     "input_schema": schema,
-                    "effects": "write" if ut.tool_type in {"webhook", "docker_container", "workflow_runner"} else "read",
-                    "network": "egress" if ut.tool_type in {"webhook", "docker_container"} else "none",
+                    "effects": "write"
+                    if ut.tool_type
+                    in {
+                        "webhook",
+                        "external_agent",
+                        "docker_container",
+                        "workflow_runner",
+                    }
+                    else "read",
+                    "network": "egress"
+                    if ut.tool_type in {"webhook", "external_agent", "docker_container"}
+                    else "none",
                     "cost_tier": "low",
                     "pii_risk": "medium",
                     "tool_type": ut.tool_type,
@@ -92,7 +120,9 @@ async def list_tool_registry(
         from app.services.tool_policy_engine import evaluate_tool_policy
 
         for tool in tools:
-            decision = await evaluate_tool_policy(db=db, tool_name=tool["name"], tool_args=None, user=current_user)
+            decision = await evaluate_tool_policy(
+                db=db, tool_name=tool["name"], tool_args=None, user=current_user
+            )
             tool["allowed"] = bool(decision.allowed)
             tool["require_approval"] = bool(decision.require_approval)
     except Exception:
@@ -103,6 +133,7 @@ async def list_tool_registry(
     tools.sort(key=lambda x: x["name"])
     return {"tools": tools, "total": len(tools)}
 
+
 @router.post("/evaluate", response_model=ToolPolicyEvaluateResponse)
 async def evaluate_tool_policy_endpoint(
     payload: ToolPolicyEvaluateRequest,
@@ -110,8 +141,13 @@ async def evaluate_tool_policy_endpoint(
     db: AsyncSession = Depends(get_db),
 ):
     # For safety, only admins can evaluate policies in other security contexts.
-    if (payload.agent_definition_id or payload.api_key_id) and str(current_user.role).lower() != "admin":
-        raise HTTPException(status_code=403, detail="Only admins can evaluate with agent_definition_id/api_key_id")
+    if (payload.agent_definition_id or payload.api_key_id) and str(
+        current_user.role
+    ).lower() != "admin":
+        raise HTTPException(
+            status_code=403,
+            detail="Only admins can evaluate with agent_definition_id/api_key_id",
+        )
 
     from app.services.tool_policy_engine import evaluate_tool_policy
 
@@ -138,7 +174,9 @@ async def list_my_tool_policies(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    clauses = [(ToolPolicy.subject_type == "user") & (ToolPolicy.subject_id == current_user.id)]
+    clauses = [
+        (ToolPolicy.subject_type == "user") & (ToolPolicy.subject_id == current_user.id)
+    ]
     if include_global:
         clauses.append(ToolPolicy.subject_type == "global")
 
@@ -180,7 +218,13 @@ async def delete_my_tool_policy(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = delete(ToolPolicy).where(and_(ToolPolicy.id == policy_id, ToolPolicy.subject_type == "user", ToolPolicy.subject_id == current_user.id))
+    stmt = delete(ToolPolicy).where(
+        and_(
+            ToolPolicy.id == policy_id,
+            ToolPolicy.subject_type == "user",
+            ToolPolicy.subject_id == current_user.id,
+        )
+    )
     res = await db.execute(stmt)
     if res.rowcount == 0:
         raise HTTPException(status_code=404, detail="Not found")

@@ -2,13 +2,8 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from datetime import datetime, timedelta
-from typing import Any, Dict, List, Optional
-from uuid import UUID
+from typing import Any, Optional
 
-from loguru import logger
-from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
@@ -40,8 +35,12 @@ class AgentFollowUpJobService:
     ) -> Optional[AgentJob]:
         idea_title = str(top_idea.get("title") or "").strip() or domain
         idea_hypothesis = str(top_idea.get("hypothesis") or "").strip()
-        normalized_automation_profile = str(automation_profile or "").strip().lower() or "balanced"
-        normalized_automation_policy = dict(automation_policy) if isinstance(automation_policy, dict) else {}
+        normalized_automation_profile = (
+            str(automation_profile or "").strip().lower() or "balanced"
+        )
+        normalized_automation_policy = (
+            dict(automation_policy) if isinstance(automation_policy, dict) else {}
+        )
         normalized_sandbox_profile_id = str(sandbox_profile_id or "").strip() or None
         normalized_profile_id = str(profile_id or "").strip() or None
         child = AgentJob(
@@ -65,14 +64,20 @@ class AgentFollowUpJobService:
                 "monitor_queries": [idea_title][:4],
                 "benchmark_queries": benchmark_queries[:8],
                 "repo_source_ids": repo_source_ids[:24],
-                "prefer_sources": ["documents", "arxiv", "repo"] if source_scope == "kb_plus_arxiv_plus_repo" else ["documents", "arxiv"],
+                "prefer_sources": ["documents", "arxiv", "repo"]
+                if source_scope == "kb_plus_arxiv_plus_repo"
+                else ["documents", "arxiv"],
                 "max_documents": max(4, min(len(docs), 8)) or 6,
-                "max_repo_documents": max(2, min(len(repo_documents), 8)) if repo_documents else 0,
+                "max_repo_documents": max(2, min(len(repo_documents), 8))
+                if repo_documents
+                else 0,
                 "max_papers": max(2, min(len(papers), 6)) or 4,
                 "sandbox_profile_id": normalized_sandbox_profile_id,
                 "automation_profile": normalized_automation_profile,
                 "automation_policy": normalized_automation_policy,
-                "validation_policy": build_domain_profile_compat_policy(normalized_automation_policy),
+                "validation_policy": build_domain_profile_compat_policy(
+                    normalized_automation_policy
+                ),
                 "domain_research_follow_up": {
                     "idea": top_idea,
                     "parent_job_id": str(job.id),

@@ -1,0 +1,119 @@
+# Local minikube profile: single replicas, small requests, NodePort entry point,
+# no ingress controller required.
+#
+#   helm upgrade --install kdbc deploy/helm/knowledgedbchat \
+#     -n knowledgedbchat --create-namespace \
+#     -f deploy/helm/knowledgedbchat/values-minikube.yaml
+
+global:
+  storageClass: standard   # minikube's default provisioner
+
+backend:
+  replicaCount: 1
+  workers: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 3Gi
+  persistence:
+    # minikube's "standard" hostPath provisioner supports RWX on a single node.
+    accessMode: ReadWriteMany
+    size: 10Gi
+
+celery:
+  replicaCount: 1
+  concurrency: 2
+  resources:
+    requests:
+      cpu: 100m
+      memory: 512Mi
+    limits:
+      memory: 3Gi
+
+celeryBeat:
+  enabled: true
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+celeryLatex:
+  enabled: false
+
+frontend:
+  replicaCount: 1
+
+gateway:
+  replicaCount: 1
+  service:
+    type: NodePort
+    nodePort: 30080
+
+ingress:
+  enabled: false
+
+videoStreamer:
+  replicaCount: 1
+
+postgres:
+  persistence:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+redis:
+  persistence:
+    size: 2Gi
+
+qdrant:
+  persistence:
+    size: 5Gi
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 2Gi
+
+minio:
+  persistence:
+    size: 10Gi
+  resources:
+    requests:
+      cpu: 50m
+      memory: 256Mi
+    limits:
+      memory: 1Gi
+
+# Off by default: a 4GB+ model cache rarely fits alongside everything else in a
+# dev cluster. Enable it (and raise `minikube start --memory`) or point
+# ollama.external.url at an Ollama on the host:
+#   ollama.external.url: "http://host.minikube.internal:11434"
+ollama:
+  enabled: false
+  external:
+    url: "http://host.minikube.internal:11434"
+
+kroki:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 128Mi
+    limits:
+      memory: 512Mi
+
+config:
+  logLevel: INFO
+  # Must match the origin the browser uses. bootstrap.sh overrides this from
+  # APP_URL (default http://localhost:8080, i.e. the port-forward it prints).
+  # The NodePort above is an alternative entry point, but it is not routable
+  # from the host on minikube's Docker driver.
+  minioProxyBaseUrl: "http://localhost:8080/minio"

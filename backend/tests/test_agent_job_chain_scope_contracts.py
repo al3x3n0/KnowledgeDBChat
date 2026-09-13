@@ -30,7 +30,9 @@ def _assert_no_target_source_id(value):
 
 
 @pytest.mark.asyncio
-async def test_chain_definition_create_get_list_normalize_scope_keys(db_session, test_user):
+async def test_chain_definition_create_get_list_normalize_scope_keys(
+    db_session, test_user
+):
     chain_name = f"chain_scope_{uuid4().hex[:8]}"
     payload = AgentJobChainDefinitionCreate(
         name=chain_name,
@@ -51,7 +53,9 @@ async def test_chain_definition_create_get_list_normalize_scope_keys(db_session,
         },
     )
 
-    created = await create_chain_definition(payload, db=db_session, current_user=test_user)
+    created = await create_chain_definition(
+        payload, db=db_session, current_user=test_user
+    )
     assert created.default_settings is not None
     assert created.default_settings["source_id"] == "default-src"
     assert created.chain_steps[0]["config"]["source_id"] == "step-src"
@@ -71,7 +75,9 @@ async def test_chain_definition_create_get_list_normalize_scope_keys(db_session,
 
     row = (
         await db_session.execute(
-            select(AgentJobChainDefinition).where(AgentJobChainDefinition.id == created.id)
+            select(AgentJobChainDefinition).where(
+                AgentJobChainDefinition.id == created.id
+            )
         )
     ).scalar_one()
     _assert_no_target_source_id(row.default_settings)
@@ -120,7 +126,9 @@ async def test_chain_definition_update_normalizes_scope_keys(db_session, test_us
 
 
 @pytest.mark.asyncio
-async def test_save_job_as_chain_definition_brands_failed_job_as_recovery_playbook(db_session, test_user):
+async def test_save_job_as_chain_definition_brands_failed_job_as_recovery_playbook(
+    db_session, test_user
+):
     job = AgentJob(
         name="Failed Recovery Job",
         goal="Capture the failed run as a reusable recovery playbook",

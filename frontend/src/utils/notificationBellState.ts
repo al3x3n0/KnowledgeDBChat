@@ -50,6 +50,11 @@ function isRecoveryOpen(notification: Notification): boolean {
   return Boolean((notification.data as any)?.recovery_open);
 }
 
+function isExperimentNotification(notification: Notification): boolean {
+  return notification.notification_type === 'experiment_run_update'
+    || notification.notification_type === 'autonomous_rnd_verification_update';
+}
+
 export function getNotificationBellRank(notification: Notification): number {
   const recoveryOpen = isRecoveryOpen(notification);
   if (recoveryOpen && !notification.is_read) return 0;
@@ -64,7 +69,7 @@ export function getNotificationBellCounts(notifications: Notification[]): Notifi
       if (!notification.is_read) {
         counts.unread += 1;
       }
-      if (notification.notification_type === 'experiment_run_update') {
+      if (isExperimentNotification(notification)) {
         counts.experimentRuns += 1;
       }
       if (notification.notification_type === 'hypothesis_reevaluation_update') {
@@ -124,7 +129,7 @@ export function getVisibleNotificationsForBell(
         return !notification.is_read;
       }
       if (filterMode === 'experiment_runs') {
-        return notification.notification_type === 'experiment_run_update';
+        return isExperimentNotification(notification);
       }
       if (filterMode === 'reevaluations') {
         return notification.notification_type === 'hypothesis_reevaluation_update';

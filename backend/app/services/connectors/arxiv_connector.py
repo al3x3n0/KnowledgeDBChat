@@ -4,14 +4,46 @@ Connector for ingesting content from the ArXiv API.
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from datetime import datetime
 from typing import Any, Dict, List, Optional
-import httpx
-import xml.etree.ElementTree as ET
 
+import httpx
 from loguru import logger
 
+from app.core.config import settings
+
 from .base_connector import BaseConnector
+
+#: Said in the document itself so a reader can tell a paper from a summary of
+#: one. Downstream tools read content, not ingestion logs.
+FULL_TEXT_HEADING = "Full text (extracted from the arXiv PDF):"
+ABSTRACT_ONLY_HEADING = (
+    "Full text: NOT AVAILABLE -- this document is the abstract only."
+)
+
+
+#: Control characters PostgreSQL will not accept in a text column, or that are
+#: noise in extracted prose. NUL is the one that matters and the one that bites:
+#: `text` columns cannot hold it at all, and asyncpg reports
+#: `invalid byte sequence for encoding "UTF8": 0x00` at INSERT -- which poisons
+#: the transaction, so the whole ingestion fails and no document lands.
+#: Measured: extracting a real arXiv PDF produced exactly this, and the failure
+#: surfaced as "the paper is not readable yet" three layers away, long after the
+#: extraction that caused it.
+_UNSTORABLE = dict.fromkeys(
+    [c for c in range(0x20) if c not in (0x09, 0x0A, 0x0D)] + [0x7F]
+)
+
+
+def _postgres_safe(text: str) -> str:
+    """Extracted text with the bytes a text column cannot hold removed.
+
+    Stripped rather than replaced: these carry no meaning in a paper's prose,
+    and substituting a placeholder would put noise into the text a model reads.
+    Tabs, newlines and carriage returns are kept -- they are the layout.
+    """
+    return text.translate(_UNSTORABLE)
 
 
 class ArxivConnector(BaseConnector):
@@ -33,10 +65,24 @@ class ArxivConnector(BaseConnector):
         try:
             cfg = config or {}
             self.api_url = (cfg.get("api_url") or self.api_url).rstrip("/")
-            self.queries = [q.strip() for q in (cfg.get("queries") or []) if isinstance(q, str) and q.strip()]
-            categories = [c.strip() for c in (cfg.get("categories") or []) if isinstance(c, str) and c.strip()]
-            self.paper_ids = [self._normalize_id(pid) for pid in (cfg.get("paper_ids") or []) if isinstance(pid, str) and pid.strip()]
-            self.max_results = int(max(1, min(int(cfg.get("max_results", self.max_results)), 200)))
+            self.queries = [
+                q.strip()
+                for q in (cfg.get("queries") or [])
+                if isinstance(q, str) and q.strip()
+            ]
+            categories = [
+                c.strip()
+                for c in (cfg.get("categories") or [])
+                if isinstance(c, str) and c.strip()
+            ]
+            self.paper_ids = [
+                self._normalize_id(pid)
+                for pid in (cfg.get("paper_ids") or [])
+                if isinstance(pid, str) and pid.strip()
+            ]
+            self.max_results = int(
+                max(1, min(int(cfg.get("max_results", self.max_results)), 200))
+            )
             self.start = int(max(0, min(int(cfg.get("start", self.start)), 1000)))
             self.sort_by = cfg.get("sort_by", self.sort_by)
             self.sort_order = cfg.get("sort_order", self.sort_order)
@@ -46,7 +92,9 @@ class ArxivConnector(BaseConnector):
                 self.queries = [combined]
 
             if not self.queries and not self.paper_ids:
-                raise ValueError("ArXiv connector requires at least one search query or paper id.")
+                raise ValueError(
+                    "ArXiv connector requires at least one search query or paper id."
+                )
 
             self.session = httpx.AsyncClient(
                 headers={"User-Agent": "KnowledgeDBChat-ArxivConnector"},
@@ -133,9 +181,15 @@ class ArxivConnector(BaseConnector):
 
         sections = [
             entry.get("title"),
-            f"Authors: {', '.join(entry.get('authors', []))}" if entry.get("authors") else None,
-            f"Categories: {', '.join(entry.get('categories', []))}" if entry.get("categories") else None,
-            f"Primary Category: {entry.get('primary_category')}" if entry.get("primary_category") else None,
+            f"Authors: {', '.join(entry.get('authors', []))}"
+            if entry.get("authors")
+            else None,
+            f"Categories: {', '.join(entry.get('categories', []))}"
+            if entry.get("categories")
+            else None,
+            f"Primary Category: {entry.get('primary_category')}"
+            if entry.get("primary_category")
+            else None,
             f"DOI: {entry.get('doi')}" if entry.get("doi") else None,
             f"Comments: {entry.get('comments')}" if entry.get("comments") else None,
             "Abstract:",
@@ -144,7 +198,100 @@ class ArxivConnector(BaseConnector):
             f"Link: {entry.get('entry_url')}" if entry.get("entry_url") else None,
         ]
         content = "\n".join([part for part in sections if part])
+
+        # The abstract alone cannot be implemented from, and a specification
+        # written out of one is recall wearing the paper's name. Whether the
+        # full text made it in is stated IN the document, not inferred from its
+        # length: a reader that cannot tell an abstract from a paper will treat
+        # a summary as the source, and a contract counting `algorithm_spec`
+        # certainly cannot tell them apart.
+        full_text, note = await self._fetch_full_text(entry)
+        if full_text:
+            content = f"{content}\n\n{FULL_TEXT_HEADING}\n{full_text}"
+        else:
+            content = f"{content}\n\n{ABSTRACT_ONLY_HEADING}\n{note}"
         return content.strip()
+
+    async def _fetch_full_text(
+        self, entry: Dict[str, Any]
+    ) -> tuple[Optional[str], str]:
+        """The paper's text from its PDF, or None and the reason why not.
+
+        Returns the reason rather than logging it, because the reason belongs in
+        the document: a run that finds only an abstract needs to know that the
+        paper was unavailable rather than that this is all the paper says.
+        """
+        if not getattr(settings, "ARXIV_FULL_TEXT_ENABLED", True):
+            return None, "Full-text fetching is disabled (ARXIV_FULL_TEXT_ENABLED)."
+
+        pdf_url = entry.get("pdf_url")
+        if not pdf_url:
+            return None, "arXiv listed no PDF for this entry."
+        if not self.session:
+            return None, "No HTTP session was available to fetch the PDF."
+
+        max_bytes = int(getattr(settings, "ARXIV_FULL_TEXT_MAX_BYTES", 25_000_000))
+        max_chars = int(getattr(settings, "ARXIV_FULL_TEXT_MAX_CHARS", 400_000))
+        timeout = float(getattr(settings, "ARXIV_FULL_TEXT_TIMEOUT_SECONDS", 90))
+
+        try:
+            # Streamed and capped rather than read whole: the size is the
+            # remote server's to decide, and a paper with a hundred megabytes
+            # of figures should not become this process's memory problem.
+            data = bytearray()
+            async with self.session.stream(
+                "GET", pdf_url, timeout=timeout, follow_redirects=True
+            ) as response:
+                response.raise_for_status()
+                async for chunk in response.aiter_bytes():
+                    data.extend(chunk)
+                    if len(data) > max_bytes:
+                        return None, (
+                            f"The PDF exceeded {max_bytes} bytes and was not "
+                            "downloaded; only the abstract is present."
+                        )
+        except Exception as exc:
+            return None, (
+                f"The PDF at {pdf_url} could not be fetched ({exc}); only the "
+                "abstract is present."
+            )
+
+        text = self._pdf_to_text(bytes(data))
+        if not text:
+            return None, (
+                "The PDF was downloaded but no text could be extracted from it "
+                "-- a scanned or image-only paper reads this way."
+            )
+        if len(text) > max_chars:
+            text = text[:max_chars] + "\n[truncated]"
+        return text, ""
+
+    @staticmethod
+    def _pdf_to_text(data: bytes) -> str:
+        """Text from PDF bytes, or "" when it cannot be read.
+
+        Empty is a real answer: a scanned paper has no text layer, and
+        returning "" lets the caller say so rather than storing a blank
+        document that looks like a successful extraction.
+        """
+        try:
+            import io
+
+            from pypdf import PdfReader
+
+            reader = PdfReader(io.BytesIO(data))
+            pages = []
+            for page in reader.pages:
+                try:
+                    pages.append(page.extract_text() or "")
+                except Exception:
+                    # One unreadable page is not an unreadable paper.
+                    continue
+            text = "\n\n".join(part for part in pages if part.strip()).strip()
+            return _postgres_safe(text)
+        except Exception as exc:
+            logger.warning(f"Could not extract text from an arXiv PDF: {exc}")
+            return ""
 
     async def get_document_metadata(self, identifier: str) -> Dict[str, Any]:
         entry = self.entry_cache.get(identifier)
@@ -203,25 +350,38 @@ class ArxivConnector(BaseConnector):
             identifier = entry.findtext("atom:id", default="", namespaces=ns)
             if not identifier:
                 continue
-            title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
-            summary = (entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
-            published_text = entry.findtext("atom:published", default="", namespaces=ns) or ""
-            updated_text = entry.findtext("atom:updated", default="", namespaces=ns) or ""
+            title = (
+                entry.findtext("atom:title", default="", namespaces=ns) or ""
+            ).strip()
+            summary = (
+                entry.findtext("atom:summary", default="", namespaces=ns) or ""
+            ).strip()
+            published_text = (
+                entry.findtext("atom:published", default="", namespaces=ns) or ""
+            )
+            updated_text = (
+                entry.findtext("atom:updated", default="", namespaces=ns) or ""
+            )
             published = self._parse_datetime(updated_text or published_text)
             authors = [
                 (author.findtext("atom:name", default="", namespaces=ns) or "").strip()
                 for author in entry.findall("atom:author", ns)
             ]
             categories = [
-                cat.get("term") for cat in entry.findall("atom:category", ns)
+                cat.get("term")
+                for cat in entry.findall("atom:category", ns)
                 if cat.get("term")
             ]
             pdf_url = None
             for link in entry.findall("atom:link", ns):
                 if link.get("title") == "pdf" or link.get("type") == "application/pdf":
                     pdf_url = link.get("href")
-            doi = (entry.findtext("arxiv:doi", default="", namespaces=ns) or "").strip() or None
-            comments = (entry.findtext("arxiv:comment", default="", namespaces=ns) or "").strip() or None
+            doi = (
+                entry.findtext("arxiv:doi", default="", namespaces=ns) or ""
+            ).strip() or None
+            comments = (
+                entry.findtext("arxiv:comment", default="", namespaces=ns) or ""
+            ).strip() or None
             primary_cat = None
             primary_node = entry.find("arxiv:primary_category", ns)
             if primary_node is not None:
@@ -238,7 +398,7 @@ class ArxivConnector(BaseConnector):
                     "categories": categories,
                     "primary_category": primary_cat,
                     "doi": doi,
-                }
+                },
             }
             entries.append(doc)
             self.entry_cache[identifier] = {

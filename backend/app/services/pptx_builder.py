@@ -4,34 +4,33 @@ PowerPoint presentation builder service.
 Creates PPTX files from presentation outlines using python-pptx.
 """
 
-from io import BytesIO
-from typing import Dict, Optional, Any
 import os
-from loguru import logger
+from io import BytesIO
+from typing import Any, Dict, Optional
 
+from loguru import logger
 from pptx import Presentation
-from pptx.util import Inches, Pt
 from pptx.dml.color import RGBColor
-from pptx.enum.text import PP_ALIGN, MSO_ANCHOR
 from pptx.enum.shapes import MSO_SHAPE
+from pptx.enum.text import PP_ALIGN
+from pptx.util import Inches, Pt
 
 from app.schemas.presentation import PresentationOutline, SlideContent
-
 
 # Mapping from our slide types to standard PowerPoint layout indices
 # These are the default indices for layouts in a standard PPTX template
 LAYOUT_MAPPING = {
-    "title": 0,       # Title Slide
-    "content": 1,     # Title and Content
+    "title": 0,  # Title Slide
+    "content": 1,  # Title and Content
     "two_column": 3,  # Two Content
-    "diagram": 6,     # Blank (for custom placement)
-    "summary": 1,     # Title and Content
+    "diagram": 6,  # Blank (for custom placement)
+    "summary": 1,  # Title and Content
 }
 
 
 def hex_to_rgb(hex_color: str) -> RGBColor:
     """Convert hex color string to RGBColor."""
-    hex_color = hex_color.lstrip('#')
+    hex_color = hex_color.lstrip("#")
     r = int(hex_color[0:2], 16)
     g = int(hex_color[2:4], 16)
     b = int(hex_color[4:6], 16)
@@ -52,10 +51,10 @@ class PPTXBuilder:
     # Built-in style definitions
     STYLES = {
         "professional": {
-            "title_color": RGBColor(0x1a, 0x36, 0x5d),      # Dark blue
-            "accent_color": RGBColor(0x2e, 0x86, 0xab),      # Light blue
-            "text_color": RGBColor(0x33, 0x33, 0x33),        # Dark gray
-            "bg_color": RGBColor(0xff, 0xff, 0xff),          # White
+            "title_color": RGBColor(0x1A, 0x36, 0x5D),  # Dark blue
+            "accent_color": RGBColor(0x2E, 0x86, 0xAB),  # Light blue
+            "text_color": RGBColor(0x33, 0x33, 0x33),  # Dark gray
+            "bg_color": RGBColor(0xFF, 0xFF, 0xFF),  # White
             "title_font": "Calibri",
             "body_font": "Calibri",
             "title_size": Pt(44),
@@ -65,10 +64,10 @@ class PPTXBuilder:
             "bullet_size": Pt(18),
         },
         "casual": {
-            "title_color": RGBColor(0x4a, 0x90, 0xd9),      # Sky blue
-            "accent_color": RGBColor(0xff, 0x6b, 0x6b),      # Coral
-            "text_color": RGBColor(0x2d, 0x3a, 0x4a),        # Dark slate
-            "bg_color": RGBColor(0xf8, 0xf9, 0xfa),          # Light gray
+            "title_color": RGBColor(0x4A, 0x90, 0xD9),  # Sky blue
+            "accent_color": RGBColor(0xFF, 0x6B, 0x6B),  # Coral
+            "text_color": RGBColor(0x2D, 0x3A, 0x4A),  # Dark slate
+            "bg_color": RGBColor(0xF8, 0xF9, 0xFA),  # Light gray
             "title_font": "Arial Rounded MT Bold",
             "body_font": "Arial",
             "title_size": Pt(48),
@@ -78,10 +77,10 @@ class PPTXBuilder:
             "bullet_size": Pt(20),
         },
         "technical": {
-            "title_color": RGBColor(0x00, 0x7a, 0xcc),      # Tech blue
-            "accent_color": RGBColor(0x28, 0xa7, 0x45),      # Green
-            "text_color": RGBColor(0x24, 0x29, 0x2e),        # GitHub dark
-            "bg_color": RGBColor(0xff, 0xff, 0xff),          # White
+            "title_color": RGBColor(0x00, 0x7A, 0xCC),  # Tech blue
+            "accent_color": RGBColor(0x28, 0xA7, 0x45),  # Green
+            "text_color": RGBColor(0x24, 0x29, 0x2E),  # GitHub dark
+            "bg_color": RGBColor(0xFF, 0xFF, 0xFF),  # White
             "title_font": "Consolas",
             "body_font": "Segoe UI",
             "title_size": Pt(40),
@@ -91,10 +90,10 @@ class PPTXBuilder:
             "bullet_size": Pt(16),
         },
         "modern": {
-            "title_color": RGBColor(0x2c, 0x3e, 0x50),      # Midnight blue
-            "accent_color": RGBColor(0xe7, 0x4c, 0x3c),      # Red
-            "text_color": RGBColor(0x34, 0x49, 0x5e),        # Wet asphalt
-            "bg_color": RGBColor(0xec, 0xf0, 0xf1),          # Clouds
+            "title_color": RGBColor(0x2C, 0x3E, 0x50),  # Midnight blue
+            "accent_color": RGBColor(0xE7, 0x4C, 0x3C),  # Red
+            "text_color": RGBColor(0x34, 0x49, 0x5E),  # Wet asphalt
+            "bg_color": RGBColor(0xEC, 0xF0, 0xF1),  # Clouds
             "title_font": "Segoe UI",
             "body_font": "Segoe UI",
             "title_size": Pt(46),
@@ -104,10 +103,10 @@ class PPTXBuilder:
             "bullet_size": Pt(18),
         },
         "minimal": {
-            "title_color": RGBColor(0x00, 0x00, 0x00),      # Black
-            "accent_color": RGBColor(0x95, 0xa5, 0xa6),      # Gray
-            "text_color": RGBColor(0x2c, 0x3e, 0x50),        # Dark blue-gray
-            "bg_color": RGBColor(0xff, 0xff, 0xff),          # White
+            "title_color": RGBColor(0x00, 0x00, 0x00),  # Black
+            "accent_color": RGBColor(0x95, 0xA5, 0xA6),  # Gray
+            "text_color": RGBColor(0x2C, 0x3E, 0x50),  # Dark blue-gray
+            "bg_color": RGBColor(0xFF, 0xFF, 0xFF),  # White
             "title_font": "Helvetica",
             "body_font": "Helvetica",
             "title_size": Pt(42),
@@ -117,10 +116,10 @@ class PPTXBuilder:
             "bullet_size": Pt(16),
         },
         "corporate": {
-            "title_color": RGBColor(0x00, 0x3d, 0x7a),      # Corporate blue
-            "accent_color": RGBColor(0xf5, 0xa6, 0x23),      # Orange
-            "text_color": RGBColor(0x33, 0x33, 0x33),        # Dark gray
-            "bg_color": RGBColor(0xff, 0xff, 0xff),          # White
+            "title_color": RGBColor(0x00, 0x3D, 0x7A),  # Corporate blue
+            "accent_color": RGBColor(0xF5, 0xA6, 0x23),  # Orange
+            "text_color": RGBColor(0x33, 0x33, 0x33),  # Dark gray
+            "bg_color": RGBColor(0xFF, 0xFF, 0xFF),  # White
             "title_font": "Arial",
             "body_font": "Arial",
             "title_size": Pt(44),
@@ -130,10 +129,10 @@ class PPTXBuilder:
             "bullet_size": Pt(18),
         },
         "creative": {
-            "title_color": RGBColor(0x9b, 0x59, 0xb6),      # Purple
-            "accent_color": RGBColor(0x1a, 0xbc, 0x9c),      # Turquoise
-            "text_color": RGBColor(0x2c, 0x3e, 0x50),        # Dark
-            "bg_color": RGBColor(0xfd, 0xfb, 0xf7),          # Off-white
+            "title_color": RGBColor(0x9B, 0x59, 0xB6),  # Purple
+            "accent_color": RGBColor(0x1A, 0xBC, 0x9C),  # Turquoise
+            "text_color": RGBColor(0x2C, 0x3E, 0x50),  # Dark
+            "bg_color": RGBColor(0xFD, 0xFB, 0xF7),  # Off-white
             "title_font": "Georgia",
             "body_font": "Verdana",
             "title_size": Pt(48),
@@ -143,10 +142,10 @@ class PPTXBuilder:
             "bullet_size": Pt(18),
         },
         "dark": {
-            "title_color": RGBColor(0xff, 0xff, 0xff),      # White
-            "accent_color": RGBColor(0x3d, 0xb9, 0xd3),      # Cyan
-            "text_color": RGBColor(0xe0, 0xe0, 0xe0),        # Light gray
-            "bg_color": RGBColor(0x1e, 0x1e, 0x2e),          # Dark background
+            "title_color": RGBColor(0xFF, 0xFF, 0xFF),  # White
+            "accent_color": RGBColor(0x3D, 0xB9, 0xD3),  # Cyan
+            "text_color": RGBColor(0xE0, 0xE0, 0xE0),  # Light gray
+            "bg_color": RGBColor(0x1E, 0x1E, 0x2E),  # Dark background
             "title_font": "Segoe UI",
             "body_font": "Segoe UI",
             "title_size": Pt(44),
@@ -161,7 +160,7 @@ class PPTXBuilder:
         self,
         style: str = "professional",
         custom_theme: Optional[Dict[str, Any]] = None,
-        template_path: Optional[str] = None
+        template_path: Optional[str] = None,
     ):
         """
         Initialize the builder with a style, custom theme, or template file.
@@ -182,7 +181,9 @@ class PPTXBuilder:
                 test_prs = Presentation(template_path)
                 self._use_template = True
                 self._template_layout_count = len(test_prs.slide_layouts)
-                logger.info(f"Using PPTX template with {self._template_layout_count} layouts")
+                logger.info(
+                    f"Using PPTX template with {self._template_layout_count} layouts"
+                )
             except Exception as e:
                 logger.warning(f"Failed to load template, falling back to default: {e}")
                 self._use_template = False
@@ -299,9 +300,7 @@ class PPTXBuilder:
         }
 
     def build(
-        self,
-        outline: PresentationOutline,
-        diagrams: Optional[Dict[int, bytes]] = None
+        self, outline: PresentationOutline, diagrams: Optional[Dict[int, bytes]] = None
     ) -> bytes:
         """
         Build a PowerPoint presentation from an outline.
@@ -381,10 +380,7 @@ class PPTXBuilder:
             return prs.slide_layouts[0] if len(prs.slide_layouts) > 0 else None
 
     def _add_slide_from_template(
-        self,
-        prs: Presentation,
-        content: SlideContent,
-        diagrams: Dict[int, bytes]
+        self, prs: Presentation, content: SlideContent, diagrams: Dict[int, bytes]
     ):
         """
         Add a slide using the template's layouts.
@@ -434,7 +430,9 @@ class PPTXBuilder:
                 img_left = Inches(1.5)
                 img_top = Inches(1.8)
                 img_width = Inches(10)
-                slide.shapes.add_picture(image_stream, img_left, img_top, width=img_width)
+                slide.shapes.add_picture(
+                    image_stream, img_left, img_top, width=img_width
+                )
 
         # Add speaker notes
         if content.notes:
@@ -472,8 +470,7 @@ class PPTXBuilder:
 
         # Add decorative line
         line = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            Inches(4), Inches(4.0), Inches(5.333), Inches(0.05)
+            MSO_SHAPE.RECTANGLE, Inches(4), Inches(4.0), Inches(5.333), Inches(0.05)
         )
         line.fill.solid()
         line.fill.fore_color.rgb = self.style_config["accent_color"]
@@ -501,8 +498,7 @@ class PPTXBuilder:
 
         # Add underline accent
         line = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            Inches(0.5), Inches(1.2), Inches(2), Inches(0.04)
+            MSO_SHAPE.RECTANGLE, Inches(0.5), Inches(1.2), Inches(2), Inches(0.04)
         )
         line.fill.solid()
         line.fill.fore_color.rgb = self.style_config["accent_color"]
@@ -537,7 +533,7 @@ class PPTXBuilder:
         self,
         prs: Presentation,
         content: SlideContent,
-        diagram_png: Optional[bytes] = None
+        diagram_png: Optional[bytes] = None,
     ):
         """Add a slide with a diagram image."""
         blank_layout = prs.slide_layouts[6]
@@ -562,12 +558,7 @@ class PPTXBuilder:
             img_top = Inches(1.3)
             img_width = Inches(10)
 
-            slide.shapes.add_picture(
-                image_stream,
-                img_left,
-                img_top,
-                width=img_width
-            )
+            slide.shapes.add_picture(image_stream, img_left, img_top, width=img_width)
         else:
             # Placeholder if no diagram available
             placeholder_box = slide.shapes.add_textbox(
@@ -586,7 +577,9 @@ class PPTXBuilder:
                     Inches(2), Inches(4), Inches(9), Inches(2)
                 )
                 desc_frame = desc_box.text_frame
-                desc_frame.paragraphs[0].text = f"Description: {content.diagram_description}"
+                desc_frame.paragraphs[
+                    0
+                ].text = f"Description: {content.diagram_description}"
                 desc_frame.paragraphs[0].font.size = Pt(14)
                 desc_frame.paragraphs[0].font.color.rgb = RGBColor(0x66, 0x66, 0x66)
                 desc_frame.paragraphs[0].alignment = PP_ALIGN.CENTER
@@ -613,8 +606,7 @@ class PPTXBuilder:
 
         # Add accent bar
         bar = slide.shapes.add_shape(
-            MSO_SHAPE.RECTANGLE,
-            Inches(0), Inches(1.1), Inches(13.333), Inches(0.08)
+            MSO_SHAPE.RECTANGLE, Inches(0), Inches(1.1), Inches(13.333), Inches(0.08)
         )
         bar.fill.solid()
         bar.fill.fore_color.rgb = self.style_config["accent_color"]

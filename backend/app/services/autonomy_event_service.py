@@ -16,7 +16,6 @@ from app.models.autonomy_decision_event import AutonomyDecisionEvent
 from app.models.notification import Notification, NotificationType
 from app.services.notification_service import notification_service
 
-
 HIGH_SIGNAL_EVENT_NOTIFICATIONS: dict[str, tuple[str, str, str]] = {
     "validation_blocked": (
         NotificationType.QUEUE_URGENCY_ALERT,
@@ -120,12 +119,14 @@ def _extract_scheduler_state(metadata: Any) -> Optional[dict[str, Any]]:
     return extracted or None
 
 
-def _extract_trace_context(metadata: Any, *, reason_code: Any = None) -> tuple[Optional[str], Optional[dict[str, Any]]]:
+def _extract_trace_context(
+    metadata: Any, *, reason_code: Any = None
+) -> tuple[Optional[str], Optional[dict[str, Any]]]:
     if not isinstance(metadata, dict):
         return _trace_reason_label(reason_code), None
-    reason_label = _clean_text(metadata.get("reason_label"), limit=255) or _trace_reason_label(
-        metadata.get("queue_reason") or reason_code
-    )
+    reason_label = _clean_text(
+        metadata.get("reason_label"), limit=255
+    ) or _trace_reason_label(metadata.get("queue_reason") or reason_code)
     scheduler_state = _extract_scheduler_state(metadata)
     return reason_label, scheduler_state
 
@@ -138,12 +139,21 @@ def _normalize_trace_metadata(
     scheduler_state: Any = None,
 ) -> Optional[dict[str, Any]]:
     normalized = _clean_json(metadata) or {}
-    if not normalized and not reason_label and scheduler_state is None and not reason_code:
+    if (
+        not normalized
+        and not reason_label
+        and scheduler_state is None
+        and not reason_code
+    ):
         return None
 
-    extracted_reason_label, extracted_scheduler_state = _extract_trace_context(normalized, reason_code=reason_code)
+    extracted_reason_label, extracted_scheduler_state = _extract_trace_context(
+        normalized, reason_code=reason_code
+    )
     next_reason_label = _clean_text(reason_label, limit=255) or extracted_reason_label
-    next_scheduler_state = _normalize_scheduler_state(scheduler_state) or extracted_scheduler_state
+    next_scheduler_state = (
+        _normalize_scheduler_state(scheduler_state) or extracted_scheduler_state
+    )
 
     if next_reason_label:
         normalized["reason_label"] = next_reason_label
@@ -163,9 +173,15 @@ def _normalize_scheduler_state(value: Any) -> Optional[dict[str, Any]]:
 
 
 def event_to_trace_payload(event: AutonomyDecisionEvent) -> dict[str, Any]:
-    escalation_state, escalation_reason, escalated_at = compute_decision_trace_escalation(event)
+    (
+        escalation_state,
+        escalation_reason,
+        escalated_at,
+    ) = compute_decision_trace_escalation(event)
     metadata = _clean_json(event.event_metadata)
-    reason_label, scheduler_state = _extract_trace_context(metadata, reason_code=event.reason_code)
+    reason_label, scheduler_state = _extract_trace_context(
+        metadata, reason_code=event.reason_code
+    )
     return {
         "event_id": str(event.id),
         "event_type": str(event.event_type or "").strip(),
@@ -234,28 +250,45 @@ async def _maybe_create_event_notification(
 
     notification_type, priority, title = rule
     existing_notification = (
-        await db.execute(
-            select(Notification).where(
-                Notification.user_id == target_user_id,
-                Notification.related_entity_type == "autonomy_decision_event",
-                Notification.related_entity_id == event.id,
+        (
+            await db.execute(
+                select(Notification).where(
+                    Notification.user_id == target_user_id,
+                    Notification.related_entity_type == "autonomy_decision_event",
+                    Notification.related_entity_id == event.id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     if existing_notification is not None and not force:
         return
     if existing_notification is not None and force:
-        existing_state = str((existing_notification.data or {}).get("escalation_state") or "").strip().lower()
-        if existing_state == escalation_state and existing_notification.notification_type == rule[0]:
+        existing_state = (
+            str((existing_notification.data or {}).get("escalation_state") or "")
+            .strip()
+            .lower()
+        )
+        if (
+            existing_state == escalation_state
+            and existing_notification.notification_type == rule[0]
+        ):
             return
 
     action_url = f"/autonomous-agents?tab=trace&trace_event={event.id}"
     message = str(event.summary or "").strip()[:2000] or title
     if escalation_state in {"warning", "escalated"}:
         reason_suffix = f" ({escalation_reason})" if escalation_reason else ""
-        title = "Decision trace escalated" if escalation_state == "escalated" else "Decision trace warning"
+        title = (
+            "Decision trace escalated"
+            if escalation_state == "escalated"
+            else "Decision trace warning"
+        )
         message = f"{message}{reason_suffix}".strip()
-    reason_label, scheduler_state = _extract_trace_context(event.event_metadata, reason_code=event.reason_code)
+    reason_label, scheduler_state = _extract_trace_context(
+        event.event_metadata, reason_code=event.reason_code
+    )
     await notification_service.create_notification(
         db=db,
         user_id=target_user_id,
@@ -288,7 +321,9 @@ def derive_trace_team_bucket(source_kind: Any) -> str:
     return TRACE_TEAM_BUCKETS.get(str(source_kind or "").strip().lower(), "jobs")
 
 
-def compute_decision_trace_escalation(event: AutonomyDecisionEvent, *, now: Optional[datetime] = None) -> tuple[str, Optional[str], Optional[datetime]]:
+def compute_decision_trace_escalation(
+    event: AutonomyDecisionEvent, *, now: Optional[datetime] = None
+) -> tuple[str, Optional[str], Optional[datetime]]:
     now = now or datetime.utcnow()
     if not _is_unresolved(event):
         return "none", None, None
@@ -302,23 +337,45 @@ def compute_decision_trace_escalation(event: AutonomyDecisionEvent, *, now: Opti
     severity = str(event.severity or "").strip().lower()
     triage_status = str(event.triage_status or "new").strip().lower()
 
-    if triage_status == "investigating" and age >= timedelta(hours=ESCALATION_RULES["investigating_escalated_hours"]):
-        escalated_at = event_time + timedelta(hours=ESCALATION_RULES["investigating_escalated_hours"])
+    if triage_status == "investigating" and age >= timedelta(
+        hours=ESCALATION_RULES["investigating_escalated_hours"]
+    ):
+        escalated_at = event_time + timedelta(
+            hours=ESCALATION_RULES["investigating_escalated_hours"]
+        )
         return "escalated", "investigation_stale", escalated_at
-    if severity in {"high", "urgent"} and age >= timedelta(hours=ESCALATION_RULES["high_escalated_hours"]):
-        escalated_at = event_time + timedelta(hours=ESCALATION_RULES["high_escalated_hours"])
+    if severity in {"high", "urgent"} and age >= timedelta(
+        hours=ESCALATION_RULES["high_escalated_hours"]
+    ):
+        escalated_at = event_time + timedelta(
+            hours=ESCALATION_RULES["high_escalated_hours"]
+        )
         return "escalated", "high_severity_stale", escalated_at
-    if bool(event.pinned) and age >= timedelta(hours=ESCALATION_RULES["pinned_warning_hours"]):
-        escalated_at = event_time + timedelta(hours=ESCALATION_RULES["pinned_warning_hours"])
+    if bool(event.pinned) and age >= timedelta(
+        hours=ESCALATION_RULES["pinned_warning_hours"]
+    ):
+        escalated_at = event_time + timedelta(
+            hours=ESCALATION_RULES["pinned_warning_hours"]
+        )
         return "warning", "pinned_stale", escalated_at
-    if severity in {"high", "urgent"} and age >= timedelta(hours=ESCALATION_RULES["high_warning_hours"]):
-        escalated_at = event_time + timedelta(hours=ESCALATION_RULES["high_warning_hours"])
+    if severity in {"high", "urgent"} and age >= timedelta(
+        hours=ESCALATION_RULES["high_warning_hours"]
+    ):
+        escalated_at = event_time + timedelta(
+            hours=ESCALATION_RULES["high_warning_hours"]
+        )
         return "warning", "high_severity_warning", escalated_at
     return "none", None, None
 
 
-def apply_decision_trace_escalation(event: AutonomyDecisionEvent, *, now: Optional[datetime] = None) -> str:
-    escalation_state, escalation_reason, escalated_at = compute_decision_trace_escalation(event, now=now)
+def apply_decision_trace_escalation(
+    event: AutonomyDecisionEvent, *, now: Optional[datetime] = None
+) -> str:
+    (
+        escalation_state,
+        escalation_reason,
+        escalated_at,
+    ) = compute_decision_trace_escalation(event, now=now)
     event.escalation_state = escalation_state
     event.escalation_reason = escalation_reason
     event.escalated_at = escalated_at
@@ -394,7 +451,9 @@ async def record_autonomy_decision_event(
     return row
 
 
-async def maybe_reopen_event_notification(db: AsyncSession, event: AutonomyDecisionEvent) -> None:
+async def maybe_reopen_event_notification(
+    db: AsyncSession, event: AutonomyDecisionEvent
+) -> None:
     if not hasattr(db, "execute"):
         return
     await _maybe_create_event_notification(db, event, force=True)

@@ -25,6 +25,7 @@ async def _load_user_settings(db, user_id: Optional[str]) -> Optional[UserLLMSet
         return None
     try:
         from app.models.memory import UserPreferences
+
         result = await db.execute(
             select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
         )
@@ -37,11 +38,15 @@ async def _load_user_settings(db, user_id: Optional[str]) -> Optional[UserLLMSet
 
 
 @celery_app.task(bind=True, name="app.tasks.research_tasks.generate_literature_review")
-def generate_literature_review(self, source_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+def generate_literature_review(
+    self, source_id: str, user_id: Optional[str] = None
+) -> Dict[str, Any]:
     return asyncio.run(_async_generate_literature_review(self, source_id, user_id))
 
 
-async def _async_generate_literature_review(task, source_id: str, user_id: Optional[str] = None) -> Dict[str, Any]:
+async def _async_generate_literature_review(
+    task, source_id: str, user_id: Optional[str] = None
+) -> Dict[str, Any]:
     async with create_celery_session()() as db:
         try:
             # Load user settings for LLM provider preference
@@ -53,10 +58,18 @@ async def _async_generate_literature_review(task, source_id: str, user_id: Optio
             if src.source_type != "arxiv":
                 raise ValueError("Literature review only supported for arXiv sources")
 
-            result = await db.execute(select(Document).where(Document.source_id == src.id).order_by(Document.created_at.desc()))
+            result = await db.execute(
+                select(Document)
+                .where(Document.source_id == src.id)
+                .order_by(Document.created_at.desc())
+            )
             docs = list(result.scalars().all())
             if not docs:
-                return {"success": False, "source_id": source_id, "error": "No documents found for source"}
+                return {
+                    "success": False,
+                    "source_id": source_id,
+                    "error": "No documents found for source",
+                }
 
             cfg = src.config or {}
             topic = None
@@ -69,7 +82,9 @@ async def _async_generate_literature_review(task, source_id: str, user_id: Optio
             papers: List[Dict[str, Any]] = []
             for d in docs[:25]:
                 meta = d.extra_metadata or {}
-                insights = meta.get("paper_insights") if isinstance(meta, dict) else None
+                insights = (
+                    meta.get("paper_insights") if isinstance(meta, dict) else None
+                )
                 papers.append(
                     {
                         "title": d.title,
@@ -78,7 +93,9 @@ async def _async_generate_literature_review(task, source_id: str, user_id: Optio
                         "summary": d.summary,
                         "abstract": (d.content or "")[:2000],
                         "insights": insights,
-                        "arxiv_id": d.source_identifier.split("/")[-1] if d.source_identifier else None,
+                        "arxiv_id": d.source_identifier.split("/")[-1]
+                        if d.source_identifier
+                        else None,
                     }
                 )
 
@@ -132,7 +149,12 @@ async def _async_generate_literature_review(task, source_id: str, user_id: Optio
 
             process_uploaded_document.delay(str(review_doc.id))
 
-            return {"success": True, "source_id": source_id, "document_id": str(review_doc.id), "title": title}
+            return {
+                "success": True,
+                "source_id": source_id,
+                "document_id": str(review_doc.id),
+                "title": title,
+            }
         except Exception as e:
             logger.error(f"Literature review generation failed for {source_id}: {e}")
             return {"success": False, "source_id": source_id, "error": str(e)}

@@ -5,27 +5,51 @@ Converts autonomous agent job results into documents (DOCX/PDF) or presentations
 Supports optional LLM-enhanced content generation for executive summaries and insights.
 """
 
+import re
 from datetime import datetime
-from io import BytesIO
-from typing import Dict, List, Any, Optional, Literal, TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Dict, List, Literal, Optional
 from uuid import UUID
-import json
-import asyncio
 
 from loguru import logger
 
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services.docx_builder import DOCXBuilder
-from app.services.operator_interventions import derive_operator_interventions_with_outcomes
-from app.services.pdf_builder import PDFBuilder
-from app.services.pptx_builder import PPTXBuilder
 from app.schemas.presentation import PresentationOutline, SlideContent
+from app.services.agent_job_transcript_service import summarize_tool_log
+from app.services.docx_builder import DOCXBuilder
+from app.services.operator_interventions import (
+    derive_operator_interventions_with_outcomes,
+)
+from app.services.pdf_builder import PDFBuilder
 
 if TYPE_CHECKING:
     from app.services.llm_service import UserLLMSettings
 
 
 ExportFormat = Literal["docx", "pdf", "pptx"]
+
+
+def _used_of(used: Any, limit: Any) -> str:
+    """A count against its limit, without printing Python's None into a report.
+
+    A budget is optional: a job may run with no iteration cap at all, and the
+    exporter rendered that as "11/None" -- the repr of a missing value, in a
+    document handed to somebody. An absent limit means the count stands alone;
+    an absent count is genuinely unknown and says so, the way the timestamps
+    beside it already do.
+    """
+    if used is None:
+        return "N/A"
+    if limit is None:
+        return str(used)
+    return f"{used}/{limit}"
+
+
+# A long run can take hundreds of tool calls. Cap the chronological table, and
+# say how many were left out — a table that stops without saying so reads as
+# the whole run.
+MAX_TOOL_LOG_ROWS = 120
+MAX_TOOL_LOG_PURPOSE_CHARS = 160
+MAX_TOOL_LOG_FAILURES = 15
 
 
 # Prompts for LLM-enhanced content generation
@@ -91,6 +115,73 @@ Finding:
 Write the bullet points:"""
 
 
+# The LLM answers in markdown by default, and the DOCX/PDF/PPTX builders render
+# text literally, so "**Executive Summary**" reached the page with its asterisks
+# intact. Strip the emphasis rather than teach three builders to parse markdown.
+_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s*", re.MULTILINE)
+# Only asterisks. Underscores are markdown italics too, but stripping them
+# mangles snake_case: integer_sum_reduction_O3 came out as
+# integersumreduction_O3, silently renaming the labels findings are
+# identified by.
+_MD_BOLD_ITALIC = re.compile(r"(\*{1,3})(?=\S)(.+?)(?<=\S)\1", re.DOTALL)
+_MD_STRAY_MARKS = re.compile(r"(?<![\w*])\*{1,3}(?![\w*])")
+_MD_BULLET = re.compile(r"^\s{0,3}[-*+]\s+", re.MULTILINE)
+
+
+def markdown_to_plain(text: Any) -> str:
+    """Render model markdown as plain prose for a document builder."""
+    out = str(text or "")
+    out = _MD_HEADING.sub("", out)
+    out = _MD_BOLD_ITALIC.sub(r"\2", out)
+    out = _MD_STRAY_MARKS.sub("", out)
+    out = _MD_BULLET.sub("", out)
+    out = out.replace("`", "")
+    return out.strip()
+
+
+def _conclusion_content(job: Any) -> list:
+    """Render a run's conclusion, or say plainly that it has none.
+
+    An absent section would read as a report whose author had nothing to add,
+    rather than a run that could not answer its own goal.
+    """
+    results = job.results if isinstance(getattr(job, "results", None), dict) else {}
+    conclusion = results.get("conclusion")
+    if not isinstance(conclusion, dict):
+        return []
+
+    blocks: list = [{"type": "heading", "level": 2, "text": "Conclusion"}]
+    answer = str(conclusion.get("answer") or "").strip()
+    if answer:
+        blocks.append({"type": "paragraph", "text": answer})
+        confidence = str(conclusion.get("confidence") or "").strip()
+        if confidence:
+            blocks.append({"type": "paragraph", "text": f"Confidence: {confidence}"})
+    else:
+        gaps = [str(g) for g in (conclusion.get("gaps") or []) if str(g).strip()]
+        blocks.append(
+            {
+                "type": "paragraph",
+                "text": (
+                    "This run did not reach a conclusion. "
+                    + (gaps[0] if gaps else "No reason was recorded.")
+                ),
+            }
+        )
+
+    evidence = [str(e) for e in (conclusion.get("evidence") or []) if str(e).strip()]
+    if evidence:
+        blocks.append({"type": "heading", "level": 3, "text": "Evidence"})
+        blocks.append({"type": "bullet_list", "items": evidence[:10]})
+
+    gaps = [str(g) for g in (conclusion.get("gaps") or []) if str(g).strip()]
+    if gaps and answer:
+        blocks.append({"type": "heading", "level": 3, "text": "Not established"})
+        blocks.append({"type": "bullet_list", "items": gaps[:10]})
+
+    return blocks
+
+
 class JobResultsExporter:
     """
     Exports agent job results to various document formats.
@@ -112,6 +203,7 @@ class JobResultsExporter:
         """Lazy load LLM service."""
         if self._llm_service is None:
             from app.services.llm_service import LLMService
+
             self._llm_service = LLMService()
         return self._llm_service
 
@@ -121,6 +213,7 @@ class JobResultsExporter:
         format: ExportFormat,
         include_log: bool = False,
         include_metadata: bool = True,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """
         Export job results to the specified format (synchronous, no LLM enhancement).
@@ -130,16 +223,17 @@ class JobResultsExporter:
             format: Output format (docx, pdf, pptx)
             include_log: Whether to include execution log
             include_metadata: Whether to include job metadata
+            tool_log: Rows from ``build_tool_log``; None leaves the section out
 
         Returns:
             File content as bytes
         """
         if format == "docx":
-            return self._export_to_docx(job, include_log, include_metadata)
+            return self._export_to_docx(job, include_log, include_metadata, tool_log)
         elif format == "pdf":
-            return self._export_to_pdf(job, include_log, include_metadata)
+            return self._export_to_pdf(job, include_log, include_metadata, tool_log)
         elif format == "pptx":
-            return self._export_to_pptx(job, include_log, include_metadata)
+            return self._export_to_pptx(job, include_log, include_metadata, tool_log)
         else:
             raise ValueError(f"Unsupported format: {format}")
 
@@ -151,6 +245,7 @@ class JobResultsExporter:
         include_metadata: bool = True,
         user_id: Optional[UUID] = None,
         user_settings: Optional["UserLLMSettings"] = None,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """
         Export job results with LLM-enhanced content (async).
@@ -167,19 +262,28 @@ class JobResultsExporter:
             include_log: Whether to include execution log
             include_metadata: Whether to include job metadata
             user_id: Optional user ID for LLM settings
+            tool_log: Rows from ``build_tool_log``; None leaves the section out
 
         Returns:
             File content as bytes
         """
         # Generate LLM-enhanced content
-        enhanced_content = await self._generate_enhanced_content(job, user_id, user_settings=user_settings)
+        enhanced_content = await self._generate_enhanced_content(
+            job, user_id, user_settings=user_settings
+        )
 
         if format == "docx":
-            return self._export_to_docx_enhanced(job, enhanced_content, include_log, include_metadata)
+            return self._export_to_docx_enhanced(
+                job, enhanced_content, include_log, include_metadata, tool_log
+            )
         elif format == "pdf":
-            return self._export_to_pdf_enhanced(job, enhanced_content, include_log, include_metadata)
+            return self._export_to_pdf_enhanced(
+                job, enhanced_content, include_log, include_metadata, tool_log
+            )
         elif format == "pptx":
-            return self._export_to_pptx_enhanced(job, enhanced_content, include_log, include_metadata)
+            return self._export_to_pptx_enhanced(
+                job, enhanced_content, include_log, include_metadata, tool_log
+            )
         else:
             raise ValueError(f"Unsupported format: {format}")
 
@@ -206,6 +310,12 @@ class JobResultsExporter:
             "key_insights": None,
             "recommendations": None,
             "enhanced_findings": [],
+            # Sections the model failed to produce. A report that drops one
+            # silently looks finished, and the reader has no way to tell the
+            # difference between "nothing to say" and "the call came back
+            # empty" -- which is what a token budget too small for a reasoning
+            # model does.
+            "failed_sections": [],
         }
 
         # Prepare context from job results
@@ -238,6 +348,7 @@ class JobResultsExporter:
         except Exception as e:
             logger.warning(f"Failed to generate executive summary: {e}")
             enhanced["executive_summary"] = None
+            enhanced["failed_sections"].append(("Executive Summary", str(e)[:200]))
 
         try:
             # Generate key insights
@@ -259,6 +370,7 @@ class JobResultsExporter:
         except Exception as e:
             logger.warning(f"Failed to generate key insights: {e}")
             enhanced["key_insights"] = None
+            enhanced["failed_sections"].append(("Key Insights", str(e)[:200]))
 
         try:
             # Generate recommendations
@@ -281,6 +393,7 @@ class JobResultsExporter:
         except Exception as e:
             logger.warning(f"Failed to generate recommendations: {e}")
             enhanced["recommendations"] = None
+            enhanced["failed_sections"].append(("Recommendations", str(e)[:200]))
 
         return enhanced
 
@@ -350,10 +463,13 @@ class JobResultsExporter:
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to DOCX format."""
         builder = DOCXBuilder(style=self.style)
-        content_items = self._build_document_content(job, include_log, include_metadata)
+        content_items = self._build_document_content(
+            job, include_log, include_metadata, tool_log
+        )
 
         return builder.build(
             title=f"Agent Job Report: {job.name}",
@@ -368,11 +484,12 @@ class JobResultsExporter:
         enhanced_content: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to DOCX format with LLM-enhanced content."""
         builder = DOCXBuilder(style=self.style)
         content_items = self._build_document_content_enhanced(
-            job, enhanced_content, include_log, include_metadata
+            job, enhanced_content, include_log, include_metadata, tool_log
         )
 
         return builder.build(
@@ -387,10 +504,13 @@ class JobResultsExporter:
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PDF format."""
         builder = PDFBuilder(style=self.style)
-        content_items = self._build_document_content(job, include_log, include_metadata)
+        content_items = self._build_document_content(
+            job, include_log, include_metadata, tool_log
+        )
 
         return builder.build(
             title=f"Agent Job Report: {job.name}",
@@ -404,11 +524,12 @@ class JobResultsExporter:
         enhanced_content: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PDF format with LLM-enhanced content."""
         builder = PDFBuilder(style=self.style)
         content_items = self._build_document_content_enhanced(
-            job, enhanced_content, include_log, include_metadata
+            job, enhanced_content, include_log, include_metadata, tool_log
         )
 
         return builder.build(
@@ -422,10 +543,19 @@ class JobResultsExporter:
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PPTX format."""
+        # Imported here rather than at module scope: pptx_builder needs
+        # python-pptx, and importing it up top made a missing PowerPoint
+        # library break PDF and DOCX export too -- three formats sharing one
+        # optional dependency none of the other two use.
+        from app.services.pptx_builder import PPTXBuilder
+
         builder = PPTXBuilder(style=self.style)
-        outline = self._build_presentation_outline(job, include_log, include_metadata)
+        outline = self._build_presentation_outline(
+            job, include_log, include_metadata, tool_log
+        )
 
         return builder.build(outline=outline)
 
@@ -435,11 +565,18 @@ class JobResultsExporter:
         enhanced_content: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> bytes:
         """Export to PPTX format with LLM-enhanced content."""
+        # Imported here rather than at module scope: pptx_builder needs
+        # python-pptx, and importing it up top made a missing PowerPoint
+        # library break PDF and DOCX export too -- three formats sharing one
+        # optional dependency none of the other two use.
+        from app.services.pptx_builder import PPTXBuilder
+
         builder = PPTXBuilder(style=self.style)
         outline = self._build_presentation_outline_enhanced(
-            job, enhanced_content, include_log, include_metadata
+            job, enhanced_content, include_log, include_metadata, tool_log
         )
 
         return builder.build(outline=outline)
@@ -450,24 +587,45 @@ class JobResultsExporter:
         enhanced: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build content items for DOCX/PDF export with LLM enhancement.
         """
         content: List[Dict[str, Any]] = []
 
+        # Say what is missing, in the document rather than only in a log. A
+        # report whose insights section is absent because a call returned
+        # nothing is indistinguishable, to its reader, from one that had no
+        # insights to offer.
+        failed = enhanced.get("failed_sections") or []
+        if failed:
+            content.append({"type": "heading", "level": 1, "text": "Incomplete Report"})
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": (
+                        "The following section(s) could not be generated and are "
+                        "missing from this report: "
+                        + "; ".join(f"{name} ({why})" for name, why in failed)
+                    ),
+                }
+            )
+
         # Executive Summary (LLM-generated)
         content.append({"type": "heading", "level": 1, "text": "Executive Summary"})
         if enhanced.get("executive_summary"):
             # Split into paragraphs
-            for para in enhanced["executive_summary"].split("\n\n"):
+            for para in markdown_to_plain(enhanced["executive_summary"]).split("\n\n"):
                 if para.strip():
                     content.append({"type": "paragraph", "text": para.strip()})
         else:
-            content.append({
-                "type": "paragraph",
-                "text": f"This report summarizes the results of the autonomous agent job '{job.name}'."
-            })
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": f"This report summarizes the results of the autonomous agent job '{job.name}'.",
+                }
+            )
 
         # Status badge
         status_text = f"Status: {job.status.upper()} ({job.progress}% complete)"
@@ -481,7 +639,7 @@ class JobResultsExporter:
         if enhanced.get("key_insights"):
             content.append({"type": "heading", "level": 1, "text": "Key Insights"})
             # Parse insights into bullet points
-            insights_text = enhanced["key_insights"]
+            insights_text = markdown_to_plain(enhanced["key_insights"])
             # Try to extract numbered items
             insight_items = self._parse_numbered_list(insights_text)
             if insight_items:
@@ -499,68 +657,132 @@ class JobResultsExporter:
                 ["Job Type", job.job_type],
                 ["Status", job.status],
                 ["Progress", f"{job.progress}%"],
-                ["Iterations", f"{job.iteration}/{job.max_iterations}"],
-                ["Tool Calls", f"{job.tool_calls_used}/{job.max_tool_calls}"],
-                ["LLM Calls", f"{job.llm_calls_used}/{job.max_llm_calls}"],
-                ["Created", job.created_at.strftime("%Y-%m-%d %H:%M:%S") if job.created_at else "N/A"],
-                ["Started", job.started_at.strftime("%Y-%m-%d %H:%M:%S") if job.started_at else "N/A"],
-                ["Completed", job.completed_at.strftime("%Y-%m-%d %H:%M:%S") if job.completed_at else "N/A"],
+                ["Iterations", _used_of(job.iteration, job.max_iterations)],
+                ["Tool Calls", _used_of(job.tool_calls_used, job.max_tool_calls)],
+                ["LLM Calls", _used_of(job.llm_calls_used, job.max_llm_calls)],
+                [
+                    "Created",
+                    job.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if job.created_at
+                    else "N/A",
+                ],
+                [
+                    "Started",
+                    job.started_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if job.started_at
+                    else "N/A",
+                ],
+                [
+                    "Completed",
+                    job.completed_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if job.completed_at
+                    else "N/A",
+                ],
             ]
             if extraction.get("status"):
-                metadata_rows.extend([
-                    ["Memory Extraction", str(extraction.get("status") or "").upper()],
-                    ["Memories Created", str(extraction.get("created_count", 0))],
-                    ["Duplicates Skipped", str(extraction.get("skipped_duplicates", 0))],
-                    ["Parsed Candidates", str(extraction.get("parsed_count", 0))],
-                ])
+                metadata_rows.extend(
+                    [
+                        [
+                            "Memory Extraction",
+                            str(extraction.get("status") or "").upper(),
+                        ],
+                        ["Memories Created", str(extraction.get("created_count", 0))],
+                        [
+                            "Duplicates Skipped",
+                            str(extraction.get("skipped_duplicates", 0)),
+                        ],
+                        ["Parsed Candidates", str(extraction.get("parsed_count", 0))],
+                    ]
+                )
                 if extraction.get("is_relaunch_chain"):
                     metadata_rows.append(["Relaunch Dedup Scope", "Enabled"])
                 if extraction.get("relaunch_root_job_id"):
-                    metadata_rows.append(["Relaunch Root Job", str(extraction.get("relaunch_root_job_id"))])
+                    metadata_rows.append(
+                        [
+                            "Relaunch Root Job",
+                            str(extraction.get("relaunch_root_job_id")),
+                        ]
+                    )
             if experiment.get("final_phase"):
-                metadata_rows.append(["Experiment Final Phase", str(experiment.get("final_phase"))])
+                metadata_rows.append(
+                    ["Experiment Final Phase", str(experiment.get("final_phase"))]
+                )
             if experiment.get("source_name"):
-                metadata_rows.append(["Experiment Source", str(experiment.get("source_name"))])
+                metadata_rows.append(
+                    ["Experiment Source", str(experiment.get("source_name"))]
+                )
             if experiment.get("source_id"):
-                metadata_rows.append(["Experiment Source ID", str(experiment.get("source_id"))])
+                metadata_rows.append(
+                    ["Experiment Source ID", str(experiment.get("source_id"))]
+                )
             if experiment.get("bootstrap_attempted"):
-                metadata_rows.append([
-                    "Experiment Bootstrap",
-                    "OK" if experiment.get("bootstrap_ok") is True else "ATTEMPTED",
-                ])
+                metadata_rows.append(
+                    [
+                        "Experiment Bootstrap",
+                        "OK" if experiment.get("bootstrap_ok") is True else "ATTEMPTED",
+                    ]
+                )
             if experiment.get("fallback_attempted"):
-                metadata_rows.append([
-                    "Experiment Fallback",
-                    "OK" if experiment.get("fallback_ok") is True else "ATTEMPTED",
-                ])
+                metadata_rows.append(
+                    [
+                        "Experiment Fallback",
+                        "OK" if experiment.get("fallback_ok") is True else "ATTEMPTED",
+                    ]
+                )
             if experiment.get("recovery_open"):
                 metadata_rows.append(["Experiment Recovery", "OPEN"])
             if experiment.get("reason"):
                 metadata_rows.append(["Recovery Reason", str(experiment.get("reason"))])
             if experiment.get("recommended_action"):
-                metadata_rows.append(["Recovery Next Action", str(experiment.get("recommended_action"))])
+                metadata_rows.append(
+                    ["Recovery Next Action", str(experiment.get("recommended_action"))]
+                )
             if interventions.get("count"):
-                metadata_rows.append(["Operator Interventions", str(interventions.get("count"))])
+                metadata_rows.append(
+                    ["Operator Interventions", str(interventions.get("count"))]
+                )
             if interventions.get("latest_action"):
-                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
-                latest_before = str(interventions.get("latest_status_before") or "").strip()
-                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_action = str(interventions.get("latest_action") or "").replace(
+                    "_", " "
+                )
+                latest_before = str(
+                    interventions.get("latest_status_before") or ""
+                ).strip()
+                latest_after = str(
+                    interventions.get("latest_status_after") or ""
+                ).strip()
                 latest_value = latest_action
                 if latest_before or latest_after:
-                    latest_value += f" ({latest_before or '?'} -> {latest_after or '?'})"
+                    latest_value += (
+                        f" ({latest_before or '?'} -> {latest_after or '?'})"
+                    )
                 metadata_rows.append(["Latest Intervention", latest_value])
             if interventions.get("latest_outcome"):
-                metadata_rows.append(["Latest Intervention Outcome", str(interventions.get("latest_outcome")).upper()])
+                metadata_rows.append(
+                    [
+                        "Latest Intervention Outcome",
+                        str(interventions.get("latest_outcome")).upper(),
+                    ]
+                )
             if interventions.get("latest_outcome_reason"):
-                metadata_rows.append(["Latest Intervention Outcome Reason", str(interventions.get("latest_outcome_reason"))])
+                metadata_rows.append(
+                    [
+                        "Latest Intervention Outcome Reason",
+                        str(interventions.get("latest_outcome_reason")),
+                    ]
+                )
             if interventions.get("latest_note"):
-                metadata_rows.append(["Latest Intervention Note", str(interventions.get("latest_note"))])
+                metadata_rows.append(
+                    ["Latest Intervention Note", str(interventions.get("latest_note"))]
+                )
             content.append({"type": "heading", "level": 1, "text": "Job Details"})
-            content.append({
-                "type": "table",
-                "headers": ["Property", "Value"],
-                "rows": metadata_rows
-            })
+            content.append(
+                {
+                    "type": "table",
+                    "headers": ["Property", "Value"],
+                    "rows": metadata_rows,
+                }
+            )
 
         # Results section
         if job.results:
@@ -587,7 +809,9 @@ class JobResultsExporter:
                     f"dedup skipped {int(extraction.get('skipped_duplicates', 0) or 0)})"
                 )
             if experiment.get("final_phase"):
-                stats_items.append(f"Experiment final phase: {experiment['final_phase']}")
+                stats_items.append(
+                    f"Experiment final phase: {experiment['final_phase']}"
+                )
             if experiment.get("recovery_open"):
                 stats_items.append(
                     f"Experiment recovery: OPEN ({int(experiment.get('failed_command_count', 0) or 0)} failed commands)"
@@ -599,57 +823,92 @@ class JobResultsExporter:
             if experiment.get("reason"):
                 stats_items.append(f"Recovery reason: {experiment['reason']}")
             if experiment.get("recommended_action"):
-                stats_items.append(f"Recovery next action: {experiment['recommended_action']}")
+                stats_items.append(
+                    f"Recovery next action: {experiment['recommended_action']}"
+                )
             if interventions.get("count"):
-                stats_items.append(f"Operator interventions: {int(interventions.get('count', 0) or 0)}")
+                stats_items.append(
+                    f"Operator interventions: {int(interventions.get('count', 0) or 0)}"
+                )
             if interventions.get("latest_action"):
-                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
-                latest_before = str(interventions.get("latest_status_before") or "").strip()
-                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_action = str(interventions.get("latest_action") or "").replace(
+                    "_", " "
+                )
+                latest_before = str(
+                    interventions.get("latest_status_before") or ""
+                ).strip()
+                latest_after = str(
+                    interventions.get("latest_status_after") or ""
+                ).strip()
                 latest_line = f"Latest intervention: {latest_action}"
                 if latest_before or latest_after:
                     latest_line += f" ({latest_before or '?'} -> {latest_after or '?'})"
                 stats_items.append(latest_line)
             if interventions.get("latest_outcome"):
-                stats_items.append(f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}")
+                stats_items.append(
+                    f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}"
+                )
             if interventions.get("latest_outcome_reason"):
-                stats_items.append(f"Intervention outcome reason: {interventions['latest_outcome_reason']}")
+                stats_items.append(
+                    f"Intervention outcome reason: {interventions['latest_outcome_reason']}"
+                )
 
             if stats_items:
                 content.append({"type": "heading", "level": 2, "text": "Statistics"})
                 content.append({"type": "bullet_list", "items": stats_items})
             if interventions.get("recent_items"):
-                content.append({"type": "heading", "level": 2, "text": "Recent Operator Interventions"})
-                content.append({"type": "bullet_list", "items": list(interventions.get("recent_items") or [])})
+                content.append(
+                    {
+                        "type": "heading",
+                        "level": 2,
+                        "text": "Recent Operator Interventions",
+                    }
+                )
+                content.append(
+                    {
+                        "type": "bullet_list",
+                        "items": list(interventions.get("recent_items") or []),
+                    }
+                )
 
             # Key findings
             findings = job.results.get("findings", [])
             if findings:
-                content.append({"type": "heading", "level": 2, "text": "Detailed Findings"})
+                content.append(
+                    {"type": "heading", "level": 2, "text": "Detailed Findings"}
+                )
 
                 for i, finding in enumerate(findings[:15], 1):
-                    content.append({
-                        "type": "heading",
-                        "level": 3,
-                        "text": f"Finding {i}"
-                    })
+                    content.append(
+                        {"type": "heading", "level": 3, "text": f"Finding {i}"}
+                    )
 
                     if isinstance(finding, dict):
                         if finding.get("title"):
-                            content.append({
-                                "type": "paragraph",
-                                "text": f"**{finding['title']}**"
-                            })
+                            content.append(
+                                {
+                                    "type": "paragraph",
+                                    # The builders render text literally, so
+                                    # markdown emphasis here reached the page
+                                    # as asterisks around every finding title.
+                                    "text": markdown_to_plain(finding["title"]),
+                                }
+                            )
                         if finding.get("summary") or finding.get("description"):
-                            content.append({
-                                "type": "paragraph",
-                                "text": finding.get("summary") or finding.get("description")
-                            })
+                            content.append(
+                                {
+                                    "type": "paragraph",
+                                    "text": finding.get("summary")
+                                    or finding.get("description"),
+                                }
+                            )
                         if finding.get("source"):
-                            content.append({
-                                "type": "paragraph",
-                                "text": f"Source: {finding['source']}"
-                            })
+                            content.append(
+                                {
+                                    "type": "paragraph",
+                                    "text": f"Source: {finding['source']}",
+                                }
+                            )
                     else:
                         content.append({"type": "paragraph", "text": str(finding)})
 
@@ -657,11 +916,18 @@ class JobResultsExporter:
         if enhanced.get("recommendations"):
             content.append({"type": "page_break"})
             content.append({"type": "heading", "level": 1, "text": "Recommendations"})
-            rec_items = self._parse_numbered_list(enhanced["recommendations"])
+            rec_items = self._parse_numbered_list(
+                markdown_to_plain(enhanced["recommendations"])
+            )
             if rec_items:
                 content.append({"type": "numbered_list", "items": rec_items})
             else:
-                content.append({"type": "paragraph", "text": enhanced["recommendations"]})
+                content.append(
+                    {
+                        "type": "paragraph",
+                        "text": markdown_to_plain(enhanced["recommendations"]),
+                    }
+                )
 
         # Output artifacts
         if job.output_artifacts:
@@ -669,17 +935,25 @@ class JobResultsExporter:
             artifacts_data = []
             for artifact in job.output_artifacts:
                 if isinstance(artifact, dict):
-                    artifacts_data.append([
-                        artifact.get("type", "Unknown"),
-                        artifact.get("title", artifact.get("id", "N/A")),
-                        artifact.get("id", "N/A")
-                    ])
+                    artifacts_data.append(
+                        [
+                            artifact.get("type", "Unknown"),
+                            artifact.get("title", artifact.get("id", "N/A")),
+                            artifact.get("id", "N/A"),
+                        ]
+                    )
             if artifacts_data:
-                content.append({
-                    "type": "table",
-                    "headers": ["Type", "Title", "ID"],
-                    "rows": artifacts_data
-                })
+                content.append(
+                    {
+                        "type": "table",
+                        "headers": ["Type", "Title", "ID"],
+                        "rows": artifacts_data,
+                    }
+                )
+
+        # Tool execution log
+        if tool_log is not None:
+            content.extend(self._build_tool_log_content(tool_log))
 
         # Execution log
         if include_log and job.execution_log:
@@ -700,17 +974,21 @@ class JobResultsExporter:
         # Error section
         if job.error:
             content.append({"type": "heading", "level": 1, "text": "Error Information"})
-            content.append({
-                "type": "paragraph",
-                "text": f"The job encountered an error: {job.error}"
-            })
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": f"The job encountered an error: {job.error}",
+                }
+            )
 
         # Footer
         content.append({"type": "horizontal_rule"})
-        content.append({
-            "type": "paragraph",
-            "text": f"Generated on {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} by Knowledge DB Agent System (AI-Enhanced Report)"
-        })
+        content.append(
+            {
+                "type": "paragraph",
+                "text": f"Generated on {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} by Knowledge DB Agent System (AI-Enhanced Report)",
+            }
+        )
 
         return content
 
@@ -720,6 +998,7 @@ class JobResultsExporter:
         enhanced: Dict[str, Any],
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> PresentationOutline:
         """
         Build presentation outline for PPTX export with LLM enhancement.
@@ -728,53 +1007,60 @@ class JobResultsExporter:
         slide_num = 1
 
         # Title slide
-        slides.append(SlideContent(
-            slide_number=slide_num,
-            slide_type="title",
-            title=job.name,
-            subtitle=f"Agent Job Report - {job.job_type.title()}",
-            content=[
-                f"Status: {job.status.upper()}",
-                f"Progress: {job.progress}%"
-            ],
-            notes=job.description or job.goal[:200],
-        ))
+        slides.append(
+            SlideContent(
+                slide_number=slide_num,
+                slide_type="title",
+                title=job.name,
+                subtitle=f"Agent Job Report - {job.job_type.title()}",
+                content=[f"Status: {job.status.upper()}", f"Progress: {job.progress}%"],
+                notes=job.description or job.goal[:200],
+            )
+        )
         slide_num += 1
 
         # Executive Summary slide (LLM-generated)
         if enhanced.get("executive_summary"):
             # Split into bullet points
-            summary_points = self._split_into_bullets(enhanced["executive_summary"], max_points=5)
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Executive Summary",
-                content=summary_points,
-                notes="AI-generated executive summary of the job results.",
-            ))
+            summary_points = self._split_into_bullets(
+                markdown_to_plain(enhanced["executive_summary"]), max_points=5
+            )
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Executive Summary",
+                    content=summary_points,
+                    notes="AI-generated executive summary of the job results.",
+                )
+            )
             slide_num += 1
 
         # Goal slide
-        slides.append(SlideContent(
-            slide_number=slide_num,
-            slide_type="content",
-            title="Objective",
-            content=[job.goal],
-            notes="The primary objective this agent was working toward.",
-        ))
+        slides.append(
+            SlideContent(
+                slide_number=slide_num,
+                slide_type="content",
+                title="Objective",
+                content=[job.goal],
+                notes="The primary objective this agent was working toward.",
+            )
+        )
         slide_num += 1
 
         # Key Insights slide (LLM-generated)
         if enhanced.get("key_insights"):
             insight_points = self._parse_numbered_list(enhanced["key_insights"])[:5]
             if insight_points:
-                slides.append(SlideContent(
-                    slide_number=slide_num,
-                    slide_type="content",
-                    title="Key Insights",
-                    content=insight_points,
-                    notes="AI-identified key insights from the findings.",
-                ))
+                slides.append(
+                    SlideContent(
+                        slide_number=slide_num,
+                        slide_type="content",
+                        title="Key Insights",
+                        content=insight_points,
+                        notes="AI-identified key insights from the findings.",
+                    )
+                )
                 slide_num += 1
 
         # Statistics slide
@@ -784,9 +1070,9 @@ class JobResultsExporter:
             interventions = self._get_operator_intervention_summary(job)
             stat_content = [
                 f"Job Type: {job.job_type}",
-                f"Iterations: {job.iteration}/{job.max_iterations}",
-                f"Tool Calls: {job.tool_calls_used}/{job.max_tool_calls}",
-                f"LLM Calls: {job.llm_calls_used}/{job.max_llm_calls}",
+                f"Iterations: {_used_of(job.iteration, job.max_iterations)}",
+                f"Tool Calls: {_used_of(job.tool_calls_used, job.max_tool_calls)}",
+                f"LLM Calls: {_used_of(job.llm_calls_used, job.max_llm_calls)}",
                 f"Duration: {self._calculate_duration(job)}",
             ]
             if extraction.get("status"):
@@ -796,7 +1082,9 @@ class JobResultsExporter:
                     f"dedup skipped {int(extraction.get('skipped_duplicates', 0) or 0)})"
                 )
             if experiment.get("final_phase"):
-                stat_content.append(f"Experiment final phase: {experiment['final_phase']}")
+                stat_content.append(
+                    f"Experiment final phase: {experiment['final_phase']}"
+                )
             if experiment.get("recovery_open"):
                 stat_content.append(
                     f"Experiment recovery: OPEN ({int(experiment.get('failed_command_count', 0) or 0)} failed commands)"
@@ -808,30 +1096,46 @@ class JobResultsExporter:
             if experiment.get("reason"):
                 stat_content.append(f"Recovery reason: {experiment['reason']}")
             if experiment.get("recommended_action"):
-                stat_content.append(f"Recovery next action: {experiment['recommended_action']}")
+                stat_content.append(
+                    f"Recovery next action: {experiment['recommended_action']}"
+                )
             if interventions.get("count"):
-                stat_content.append(f"Operator interventions: {int(interventions.get('count', 0) or 0)}")
+                stat_content.append(
+                    f"Operator interventions: {int(interventions.get('count', 0) or 0)}"
+                )
             if interventions.get("latest_action"):
-                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
-                latest_before = str(interventions.get("latest_status_before") or "").strip()
-                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_action = str(interventions.get("latest_action") or "").replace(
+                    "_", " "
+                )
+                latest_before = str(
+                    interventions.get("latest_status_before") or ""
+                ).strip()
+                latest_after = str(
+                    interventions.get("latest_status_after") or ""
+                ).strip()
                 latest_line = f"Latest intervention: {latest_action}"
                 if latest_before or latest_after:
                     latest_line += f" ({latest_before or '?'} -> {latest_after or '?'})"
                 stat_content.append(latest_line)
             if interventions.get("latest_outcome"):
-                stat_content.append(f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}")
+                stat_content.append(
+                    f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}"
+                )
             if interventions.get("latest_outcome_reason"):
-                stat_content.append(f"Intervention outcome reason: {interventions['latest_outcome_reason']}")
+                stat_content.append(
+                    f"Intervention outcome reason: {interventions['latest_outcome_reason']}"
+                )
             for item in list(interventions.get("recent_items") or [])[:3]:
                 stat_content.append(f"Intervention timeline: {str(item)}")
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Job Statistics",
-                content=stat_content,
-                notes="Resource usage and execution statistics.",
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Job Statistics",
+                    content=stat_content,
+                    notes="Resource usage and execution statistics.",
+                )
+            )
             slide_num += 1
 
         # Results slides
@@ -839,20 +1143,24 @@ class JobResultsExporter:
             # Results overview
             results_content = []
             if "findings_count" in job.results:
-                results_content.append(f"Total findings: {job.results['findings_count']}")
+                results_content.append(
+                    f"Total findings: {job.results['findings_count']}"
+                )
             if "actions_count" in job.results:
                 results_content.append(f"Actions taken: {job.results['actions_count']}")
             if "papers_found" in job.results:
                 results_content.append(f"Papers found: {job.results['papers_found']}")
 
             if results_content:
-                slides.append(SlideContent(
-                    slide_number=slide_num,
-                    slide_type="content",
-                    title="Results Overview",
-                    content=results_content,
-                    notes="High-level summary of job results.",
-                ))
+                slides.append(
+                    SlideContent(
+                        slide_number=slide_num,
+                        slide_type="content",
+                        title="Results Overview",
+                        content=results_content,
+                        notes="High-level summary of job results.",
+                    )
+                )
                 slide_num += 1
 
             # Key findings slides
@@ -860,50 +1168,63 @@ class JobResultsExporter:
             if findings:
                 findings_per_slide = 3
                 for i in range(0, min(len(findings), 12), findings_per_slide):
-                    slide_findings = findings[i:i + findings_per_slide]
+                    slide_findings = findings[i : i + findings_per_slide]
                     finding_content = []
 
                     for finding in slide_findings:
                         if isinstance(finding, dict):
-                            title = finding.get("title", finding.get("summary", "Finding"))[:80]
+                            title = finding.get(
+                                "title", finding.get("summary", "Finding")
+                            )[:80]
                             finding_content.append(f"• {title}")
                         else:
                             finding_content.append(f"• {str(finding)[:100]}")
 
-                    slides.append(SlideContent(
-                        slide_number=slide_num,
-                        slide_type="content",
-                        title=f"Key Findings ({i + 1}-{i + len(slide_findings)})",
-                        content=finding_content,
-                        notes=f"Findings {i + 1} through {i + len(slide_findings)}.",
-                    ))
+                    slides.append(
+                        SlideContent(
+                            slide_number=slide_num,
+                            slide_type="content",
+                            title=f"Key Findings ({i + 1}-{i + len(slide_findings)})",
+                            content=finding_content,
+                            notes=f"Findings {i + 1} through {i + len(slide_findings)}.",
+                        )
+                    )
                     slide_num += 1
 
         # Recommendations slide (LLM-generated)
         if enhanced.get("recommendations"):
             rec_points = self._parse_numbered_list(enhanced["recommendations"])[:5]
             if rec_points:
-                slides.append(SlideContent(
-                    slide_number=slide_num,
-                    slide_type="content",
-                    title="Recommendations",
-                    content=rec_points,
-                    notes="AI-generated recommendations based on findings.",
-                ))
+                slides.append(
+                    SlideContent(
+                        slide_number=slide_num,
+                        slide_type="content",
+                        title="Recommendations",
+                        content=rec_points,
+                        notes="AI-generated recommendations based on findings.",
+                    )
+                )
                 slide_num += 1
 
         # Error slide (if applicable)
         if job.error:
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Issues Encountered",
-                content=[
-                    f"Error: {job.error[:150]}",
-                    f"Error count: {job.error_count}",
-                ],
-                notes="The job encountered errors during execution.",
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Issues Encountered",
+                    content=[
+                        f"Error: {job.error[:150]}",
+                        f"Error count: {job.error_count}",
+                    ],
+                    notes="The job encountered errors during execution.",
+                )
+            )
+            slide_num += 1
+
+        # Tools used
+        if tool_log:
+            slides.append(self._build_tool_log_slide(tool_log, slide_num))
             slide_num += 1
 
         # Summary slide
@@ -917,13 +1238,15 @@ class JobResultsExporter:
         summary_content.append(f"Generated: {datetime.utcnow().strftime('%Y-%m-%d')}")
         summary_content.append("AI-Enhanced Report")
 
-        slides.append(SlideContent(
-            slide_number=slide_num,
-            slide_type="summary",
-            title="Summary",
-            content=summary_content,
-            notes="Final summary of the agent job results.",
-        ))
+        slides.append(
+            SlideContent(
+                slide_number=slide_num,
+                slide_type="summary",
+                title="Summary",
+                content=summary_content,
+                notes="Final summary of the agent job results.",
+            )
+        )
 
         return PresentationOutline(
             title=job.name,
@@ -945,10 +1268,25 @@ class JobResultsExporter:
                 continue
 
             # Remove common prefixes
-            for prefix in ["1.", "2.", "3.", "4.", "5.", "6.", "7.", "8.", "9.", "10.",
-                          "-", "•", "*", "→", ">"]:
+            for prefix in [
+                "1.",
+                "2.",
+                "3.",
+                "4.",
+                "5.",
+                "6.",
+                "7.",
+                "8.",
+                "9.",
+                "10.",
+                "-",
+                "•",
+                "*",
+                "→",
+                ">",
+            ]:
                 if line.startswith(prefix):
-                    line = line[len(prefix):].strip()
+                    line = line[len(prefix) :].strip()
                     break
 
             if line and len(line) > 5:  # Skip very short lines
@@ -1005,28 +1343,52 @@ class JobResultsExporter:
             "parsed_count": int(extraction.get("parsed_count", 0) or 0),
             "candidate_count": int(extraction.get("candidate_count", 0) or 0),
             "is_relaunch_chain": bool(extraction.get("is_relaunch_chain", False)),
-            "relaunch_root_job_id": str(extraction.get("relaunch_root_job_id") or "").strip(),
+            "relaunch_root_job_id": str(
+                extraction.get("relaunch_root_job_id") or ""
+            ).strip(),
         }
 
     def _get_experiment_run_summary(self, job: AgentJob) -> Dict[str, Any]:
         """Extract normalized experiment-run recovery summary from job results."""
         results = job.results if isinstance(job.results, dict) else {}
-        experiment = results.get("experiment_run") if isinstance(results.get("experiment_run"), dict) else {}
+        experiment = (
+            results.get("experiment_run")
+            if isinstance(results.get("experiment_run"), dict)
+            else {}
+        )
         if not experiment:
             return {}
 
-        execution = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
-        execution_graph = (
-            execution.get("execution_graph") if isinstance(execution.get("execution_graph"), dict) else {}
+        execution = (
+            results.get("execution_strategy")
+            if isinstance(results.get("execution_strategy"), dict)
+            else {}
         )
-        graph_health = execution_graph.get("graph_health") if isinstance(execution_graph.get("graph_health"), dict) else {}
-        reasons = graph_health.get("reasons") if isinstance(graph_health.get("reasons"), list) else []
+        execution_graph = (
+            execution.get("execution_graph")
+            if isinstance(execution.get("execution_graph"), dict)
+            else {}
+        )
+        graph_health = (
+            execution_graph.get("graph_health")
+            if isinstance(execution_graph.get("graph_health"), dict)
+            else {}
+        )
+        reasons = (
+            graph_health.get("reasons")
+            if isinstance(graph_health.get("reasons"), list)
+            else []
+        )
         recommended_actions = (
             execution_graph.get("recommended_actions")
             if isinstance(execution_graph.get("recommended_actions"), list)
             else []
         )
-        failed_commands = experiment.get("failed_commands") if isinstance(experiment.get("failed_commands"), list) else []
+        failed_commands = (
+            experiment.get("failed_commands")
+            if isinstance(experiment.get("failed_commands"), list)
+            else []
+        )
         verification_commands = (
             experiment.get("verification_commands")
             if isinstance(experiment.get("verification_commands"), list)
@@ -1034,7 +1396,9 @@ class JobResultsExporter:
         )
         fallback_attempted = bool(experiment.get("fallback_attempted"))
         fallback_ok = experiment.get("fallback_ok")
-        recovery_open = bool(fallback_attempted and failed_commands and fallback_ok is not True)
+        recovery_open = bool(
+            fallback_attempted and failed_commands and fallback_ok is not True
+        )
 
         return {
             "final_phase": str(experiment.get("final_phase") or "").strip(),
@@ -1047,9 +1411,15 @@ class JobResultsExporter:
             "failed_command_count": len(failed_commands),
             "verification_command_count": len(verification_commands),
             "recovery_open": recovery_open,
-            "reason": next((str(item).strip() for item in reasons if str(item).strip()), ""),
+            "reason": next(
+                (str(item).strip() for item in reasons if str(item).strip()), ""
+            ),
             "recommended_action": next(
-                (str(item).strip() for item in recommended_actions if str(item).strip()),
+                (
+                    str(item).strip()
+                    for item in recommended_actions
+                    if str(item).strip()
+                ),
                 "",
             ),
         }
@@ -1097,15 +1467,21 @@ class JobResultsExporter:
                 line += f" ({before or '?'} -> {after or '?'})"
             if note:
                 line += f": {note}"
-            outcome = str(row.get("outcome_status") or "").strip().lower().replace("_", " ")
+            outcome = (
+                str(row.get("outcome_status") or "").strip().lower().replace("_", " ")
+            )
             if outcome:
                 line += f" [{outcome}]"
             recent_items.append(line)
         return {
             "count": len(entries),
             "latest_action": str(latest.get("action") or "").strip().lower(),
-            "latest_status_before": str(latest.get("job_status_before") or "").strip().lower(),
-            "latest_status_after": str(latest.get("job_status_after") or "").strip().lower(),
+            "latest_status_before": str(latest.get("job_status_before") or "")
+            .strip()
+            .lower(),
+            "latest_status_after": str(latest.get("job_status_after") or "")
+            .strip()
+            .lower(),
             "latest_note": str(latest.get("note") or "").strip(),
             "latest_outcome": str(latest.get("outcome_status") or "").strip().lower(),
             "latest_outcome_reason": str(latest.get("outcome_reason") or "").strip(),
@@ -1114,11 +1490,155 @@ class JobResultsExporter:
             "recent_items": recent_items,
         }
 
+    def _build_tool_log_content(
+        self, tool_log: List[Dict[str, Any]]
+    ) -> List[Dict[str, Any]]:
+        """Render the tools a job ran as a report section.
+
+        Findings on their own cannot be checked: the reader cannot see which
+        tool produced a number, nor that the decisive call failed and the run
+        carried on around it. This section is that record.
+        """
+        content: List[Dict[str, Any]] = [
+            {"type": "page_break"},
+            {"type": "heading", "level": 1, "text": "Tool Execution Log"},
+        ]
+        if not tool_log:
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": (
+                        "No tool calls were recorded for this run. A job driven by "
+                        "a deterministic runner, or one that stopped before acting, "
+                        "records none."
+                    ),
+                }
+            )
+            return content
+
+        summary = summarize_tool_log(tool_log)
+        headline = (
+            f"The agent ran {summary['total']} tool call(s): "
+            f"{summary['succeeded']} succeeded, {summary['failed']} failed"
+        )
+        if summary["unknown"]:
+            headline += f", {summary['unknown']} reported no status"
+        headline += "."
+        if summary["substituted"]:
+            headline += (
+                f" {summary['substituted']} call(s) ran a substitute tool after the "
+                "requested one failed."
+            )
+        content.append({"type": "paragraph", "text": headline})
+
+        content.append({"type": "heading", "level": 2, "text": "Tools Used"})
+        content.append(
+            {
+                "type": "table",
+                "headers": ["Tool", "Calls", "Succeeded", "Failed"],
+                "rows": [
+                    [
+                        row["tool"],
+                        str(row["calls"]),
+                        str(row["ok"]),
+                        str(row["failed"]),
+                    ]
+                    for row in summary["per_tool"]
+                ],
+            }
+        )
+
+        content.append({"type": "heading", "level": 2, "text": "Chronological Record"})
+        rows = []
+        for entry in tool_log[:MAX_TOOL_LOG_ROWS]:
+            success = entry.get("success")
+            outcome = "OK" if success is True else "FAILED" if success is False else "-"
+            tool_name = str(entry.get("tool") or "unknown")
+            if entry.get("substituted") and entry.get("executed_tool"):
+                tool_name += f" -> {entry['executed_tool']}"
+            purpose = markdown_to_plain(entry.get("purpose") or "")
+            rows.append(
+                [
+                    str(entry.get("index", "")),
+                    str(entry.get("iteration", "")),
+                    tool_name,
+                    outcome,
+                    purpose[:MAX_TOOL_LOG_PURPOSE_CHARS] or "-",
+                ]
+            )
+        content.append(
+            {
+                "type": "table",
+                "headers": ["#", "Iteration", "Tool", "Result", "Purpose"],
+                "rows": rows,
+            }
+        )
+        omitted = len(tool_log) - len(rows)
+        if omitted > 0:
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": (
+                        f"{omitted} further tool call(s) are not listed here; the "
+                        "full record is available from the job transcript export."
+                    ),
+                }
+            )
+
+        failures = summary["failures"]
+        if failures:
+            content.append({"type": "heading", "level": 2, "text": "Failed Calls"})
+            for entry in failures[:MAX_TOOL_LOG_FAILURES]:
+                content.append(
+                    {
+                        "type": "paragraph",
+                        "text": (
+                            f"[{entry.get('index')}] {entry.get('tool')} "
+                            f"(iteration {entry.get('iteration')}): "
+                            f"{entry.get('error') or 'no reason recorded'}"
+                        ),
+                    }
+                )
+            if len(failures) > MAX_TOOL_LOG_FAILURES:
+                content.append(
+                    {
+                        "type": "paragraph",
+                        "text": (
+                            f"{len(failures) - MAX_TOOL_LOG_FAILURES} further failed "
+                            "call(s) are not detailed here."
+                        ),
+                    }
+                )
+        return content
+
+    def _build_tool_log_slide(
+        self, tool_log: List[Dict[str, Any]], slide_number: int
+    ) -> SlideContent:
+        """Summarize the tool log as one slide."""
+        summary = summarize_tool_log(tool_log)
+        body = [
+            f"{summary['total']} tool calls: {summary['succeeded']} succeeded, "
+            f"{summary['failed']} failed"
+        ]
+        for row in summary["per_tool"][:6]:
+            line = f"{row['tool']}: {row['calls']} call(s)"
+            if row["failed"]:
+                line += f", {row['failed']} failed"
+            body.append(line)
+        return SlideContent(
+            slide_number=slide_number,
+            slide_type="content",
+            title="Tools Used",
+            content=body,
+            notes="Which tools the agent ran, and how they fared.",
+        )
+
     def _build_document_content(
         self,
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> List[Dict[str, Any]]:
         """
         Build content items for DOCX/PDF export (non-enhanced version).
@@ -1127,10 +1647,12 @@ class JobResultsExporter:
 
         # Executive summary
         content.append({"type": "heading", "level": 1, "text": "Executive Summary"})
-        content.append({
-            "type": "paragraph",
-            "text": f"This report summarizes the results of the autonomous agent job '{job.name}'."
-        })
+        content.append(
+            {
+                "type": "paragraph",
+                "text": f"This report summarizes the results of the autonomous agent job '{job.name}'.",
+            }
+        )
 
         if job.description:
             content.append({"type": "paragraph", "text": job.description})
@@ -1154,68 +1676,132 @@ class JobResultsExporter:
                 ["Job Type", job.job_type],
                 ["Status", job.status],
                 ["Progress", f"{job.progress}%"],
-                ["Iterations", f"{job.iteration}/{job.max_iterations}"],
-                ["Tool Calls", f"{job.tool_calls_used}/{job.max_tool_calls}"],
-                ["LLM Calls", f"{job.llm_calls_used}/{job.max_llm_calls}"],
-                ["Created", job.created_at.strftime("%Y-%m-%d %H:%M:%S") if job.created_at else "N/A"],
-                ["Started", job.started_at.strftime("%Y-%m-%d %H:%M:%S") if job.started_at else "N/A"],
-                ["Completed", job.completed_at.strftime("%Y-%m-%d %H:%M:%S") if job.completed_at else "N/A"],
+                ["Iterations", _used_of(job.iteration, job.max_iterations)],
+                ["Tool Calls", _used_of(job.tool_calls_used, job.max_tool_calls)],
+                ["LLM Calls", _used_of(job.llm_calls_used, job.max_llm_calls)],
+                [
+                    "Created",
+                    job.created_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if job.created_at
+                    else "N/A",
+                ],
+                [
+                    "Started",
+                    job.started_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if job.started_at
+                    else "N/A",
+                ],
+                [
+                    "Completed",
+                    job.completed_at.strftime("%Y-%m-%d %H:%M:%S")
+                    if job.completed_at
+                    else "N/A",
+                ],
             ]
             if extraction.get("status"):
-                metadata_rows.extend([
-                    ["Memory Extraction", str(extraction.get("status") or "").upper()],
-                    ["Memories Created", str(extraction.get("created_count", 0))],
-                    ["Duplicates Skipped", str(extraction.get("skipped_duplicates", 0))],
-                    ["Parsed Candidates", str(extraction.get("parsed_count", 0))],
-                ])
+                metadata_rows.extend(
+                    [
+                        [
+                            "Memory Extraction",
+                            str(extraction.get("status") or "").upper(),
+                        ],
+                        ["Memories Created", str(extraction.get("created_count", 0))],
+                        [
+                            "Duplicates Skipped",
+                            str(extraction.get("skipped_duplicates", 0)),
+                        ],
+                        ["Parsed Candidates", str(extraction.get("parsed_count", 0))],
+                    ]
+                )
                 if extraction.get("is_relaunch_chain"):
                     metadata_rows.append(["Relaunch Dedup Scope", "Enabled"])
                 if extraction.get("relaunch_root_job_id"):
-                    metadata_rows.append(["Relaunch Root Job", str(extraction.get("relaunch_root_job_id"))])
+                    metadata_rows.append(
+                        [
+                            "Relaunch Root Job",
+                            str(extraction.get("relaunch_root_job_id")),
+                        ]
+                    )
             if experiment.get("final_phase"):
-                metadata_rows.append(["Experiment Final Phase", str(experiment.get("final_phase"))])
+                metadata_rows.append(
+                    ["Experiment Final Phase", str(experiment.get("final_phase"))]
+                )
             if experiment.get("source_name"):
-                metadata_rows.append(["Experiment Source", str(experiment.get("source_name"))])
+                metadata_rows.append(
+                    ["Experiment Source", str(experiment.get("source_name"))]
+                )
             if experiment.get("source_id"):
-                metadata_rows.append(["Experiment Source ID", str(experiment.get("source_id"))])
+                metadata_rows.append(
+                    ["Experiment Source ID", str(experiment.get("source_id"))]
+                )
             if experiment.get("bootstrap_attempted"):
-                metadata_rows.append([
-                    "Experiment Bootstrap",
-                    "OK" if experiment.get("bootstrap_ok") is True else "ATTEMPTED",
-                ])
+                metadata_rows.append(
+                    [
+                        "Experiment Bootstrap",
+                        "OK" if experiment.get("bootstrap_ok") is True else "ATTEMPTED",
+                    ]
+                )
             if experiment.get("fallback_attempted"):
-                metadata_rows.append([
-                    "Experiment Fallback",
-                    "OK" if experiment.get("fallback_ok") is True else "ATTEMPTED",
-                ])
+                metadata_rows.append(
+                    [
+                        "Experiment Fallback",
+                        "OK" if experiment.get("fallback_ok") is True else "ATTEMPTED",
+                    ]
+                )
             if experiment.get("recovery_open"):
                 metadata_rows.append(["Experiment Recovery", "OPEN"])
             if experiment.get("reason"):
                 metadata_rows.append(["Recovery Reason", str(experiment.get("reason"))])
             if experiment.get("recommended_action"):
-                metadata_rows.append(["Recovery Next Action", str(experiment.get("recommended_action"))])
+                metadata_rows.append(
+                    ["Recovery Next Action", str(experiment.get("recommended_action"))]
+                )
             if interventions.get("count"):
-                metadata_rows.append(["Operator Interventions", str(interventions.get("count"))])
+                metadata_rows.append(
+                    ["Operator Interventions", str(interventions.get("count"))]
+                )
             if interventions.get("latest_action"):
-                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
-                latest_before = str(interventions.get("latest_status_before") or "").strip()
-                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_action = str(interventions.get("latest_action") or "").replace(
+                    "_", " "
+                )
+                latest_before = str(
+                    interventions.get("latest_status_before") or ""
+                ).strip()
+                latest_after = str(
+                    interventions.get("latest_status_after") or ""
+                ).strip()
                 latest_value = latest_action
                 if latest_before or latest_after:
-                    latest_value += f" ({latest_before or '?'} -> {latest_after or '?'})"
+                    latest_value += (
+                        f" ({latest_before or '?'} -> {latest_after or '?'})"
+                    )
                 metadata_rows.append(["Latest Intervention", latest_value])
             if interventions.get("latest_outcome"):
-                metadata_rows.append(["Latest Intervention Outcome", str(interventions.get("latest_outcome")).upper()])
+                metadata_rows.append(
+                    [
+                        "Latest Intervention Outcome",
+                        str(interventions.get("latest_outcome")).upper(),
+                    ]
+                )
             if interventions.get("latest_outcome_reason"):
-                metadata_rows.append(["Latest Intervention Outcome Reason", str(interventions.get("latest_outcome_reason"))])
+                metadata_rows.append(
+                    [
+                        "Latest Intervention Outcome Reason",
+                        str(interventions.get("latest_outcome_reason")),
+                    ]
+                )
             if interventions.get("latest_note"):
-                metadata_rows.append(["Latest Intervention Note", str(interventions.get("latest_note"))])
+                metadata_rows.append(
+                    ["Latest Intervention Note", str(interventions.get("latest_note"))]
+                )
             content.append({"type": "heading", "level": 1, "text": "Job Details"})
-            content.append({
-                "type": "table",
-                "headers": ["Property", "Value"],
-                "rows": metadata_rows
-            })
+            content.append(
+                {
+                    "type": "table",
+                    "headers": ["Property", "Value"],
+                    "rows": metadata_rows,
+                }
+            )
 
         # Results section
         if job.results:
@@ -1240,7 +1826,9 @@ class JobResultsExporter:
                     f"dedup skipped {int(extraction.get('skipped_duplicates', 0) or 0)})"
                 )
             if experiment.get("final_phase"):
-                stats_items.append(f"Experiment final phase: {experiment['final_phase']}")
+                stats_items.append(
+                    f"Experiment final phase: {experiment['final_phase']}"
+                )
             if experiment.get("recovery_open"):
                 stats_items.append(
                     f"Experiment recovery: OPEN ({int(experiment.get('failed_command_count', 0) or 0)} failed commands)"
@@ -1252,41 +1840,91 @@ class JobResultsExporter:
             if experiment.get("reason"):
                 stats_items.append(f"Recovery reason: {experiment['reason']}")
             if experiment.get("recommended_action"):
-                stats_items.append(f"Recovery next action: {experiment['recommended_action']}")
+                stats_items.append(
+                    f"Recovery next action: {experiment['recommended_action']}"
+                )
             if interventions.get("count"):
-                stats_items.append(f"Operator interventions: {int(interventions.get('count', 0) or 0)}")
+                stats_items.append(
+                    f"Operator interventions: {int(interventions.get('count', 0) or 0)}"
+                )
             if interventions.get("latest_action"):
-                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
-                latest_before = str(interventions.get("latest_status_before") or "").strip()
-                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_action = str(interventions.get("latest_action") or "").replace(
+                    "_", " "
+                )
+                latest_before = str(
+                    interventions.get("latest_status_before") or ""
+                ).strip()
+                latest_after = str(
+                    interventions.get("latest_status_after") or ""
+                ).strip()
                 latest_line = f"Latest intervention: {latest_action}"
                 if latest_before or latest_after:
                     latest_line += f" ({latest_before or '?'} -> {latest_after or '?'})"
                 stats_items.append(latest_line)
             if interventions.get("latest_outcome"):
-                stats_items.append(f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}")
+                stats_items.append(
+                    f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}"
+                )
             if interventions.get("latest_outcome_reason"):
-                stats_items.append(f"Intervention outcome reason: {interventions['latest_outcome_reason']}")
+                stats_items.append(
+                    f"Intervention outcome reason: {interventions['latest_outcome_reason']}"
+                )
 
             if stats_items:
                 content.append({"type": "heading", "level": 2, "text": "Statistics"})
                 content.append({"type": "bullet_list", "items": stats_items})
             if interventions.get("recent_items"):
-                content.append({"type": "heading", "level": 2, "text": "Recent Operator Interventions"})
-                content.append({"type": "bullet_list", "items": list(interventions.get("recent_items") or [])})
+                content.append(
+                    {
+                        "type": "heading",
+                        "level": 2,
+                        "text": "Recent Operator Interventions",
+                    }
+                )
+                content.append(
+                    {
+                        "type": "bullet_list",
+                        "items": list(interventions.get("recent_items") or []),
+                    }
+                )
+
+            # The conclusion leads: a reader wants the answer before the
+            # measurements it rests on. Reports previously listed findings and
+            # left the reader to work out what they meant.
+            content.extend(_conclusion_content(job))
 
             findings = job.results.get("findings", [])
             if findings:
                 content.append({"type": "heading", "level": 2, "text": "Key Findings"})
                 for i, finding in enumerate(findings[:20], 1):
-                    content.append({"type": "heading", "level": 3, "text": f"Finding {i}"})
+                    content.append(
+                        {"type": "heading", "level": 3, "text": f"Finding {i}"}
+                    )
                     if isinstance(finding, dict):
                         if finding.get("title"):
-                            content.append({"type": "paragraph", "text": f"**{finding['title']}**"})
+                            content.append(
+                                {
+                                    "type": "paragraph",
+                                    # The builders render text literally, so
+                                    # markdown emphasis here reached the page
+                                    # as asterisks around every finding title.
+                                    "text": markdown_to_plain(finding["title"]),
+                                }
+                            )
                         if finding.get("summary") or finding.get("description"):
-                            content.append({"type": "paragraph", "text": finding.get("summary") or finding.get("description")})
+                            content.append(
+                                {
+                                    "type": "paragraph",
+                                    "text": finding.get("summary")
+                                    or finding.get("description"),
+                                }
+                            )
                     else:
                         content.append({"type": "paragraph", "text": str(finding)})
+
+        # Tool execution log
+        if tool_log is not None:
+            content.extend(self._build_tool_log_content(tool_log))
 
         # Execution log
         if include_log and job.execution_log:
@@ -1302,14 +1940,21 @@ class JobResultsExporter:
         # Error section
         if job.error:
             content.append({"type": "heading", "level": 1, "text": "Error Information"})
-            content.append({"type": "paragraph", "text": f"The job encountered an error: {job.error}"})
+            content.append(
+                {
+                    "type": "paragraph",
+                    "text": f"The job encountered an error: {job.error}",
+                }
+            )
 
         # Footer
         content.append({"type": "horizontal_rule"})
-        content.append({
-            "type": "paragraph",
-            "text": f"Generated on {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} by Knowledge DB Agent System"
-        })
+        content.append(
+            {
+                "type": "paragraph",
+                "text": f"Generated on {datetime.utcnow().strftime('%Y-%m-%d %H:%M:%S UTC')} by Knowledge DB Agent System",
+            }
+        )
 
         return content
 
@@ -1318,31 +1963,67 @@ class JobResultsExporter:
         job: AgentJob,
         include_log: bool,
         include_metadata: bool,
+        tool_log: Optional[List[Dict[str, Any]]] = None,
     ) -> PresentationOutline:
         """Build presentation outline for PPTX export (non-enhanced version)."""
         slides: List[SlideContent] = []
         slide_num = 1
 
         # Title slide
-        slides.append(SlideContent(
-            slide_number=slide_num,
-            slide_type="title",
-            title=job.name,
-            subtitle=f"Agent Job Report - {job.job_type.title()}",
-            content=[f"Status: {job.status.upper()}", f"Progress: {job.progress}%"],
-            notes=job.description or job.goal[:200],
-        ))
+        slides.append(
+            SlideContent(
+                slide_number=slide_num,
+                slide_type="title",
+                title=job.name,
+                subtitle=f"Agent Job Report - {job.job_type.title()}",
+                content=[f"Status: {job.status.upper()}", f"Progress: {job.progress}%"],
+                notes=job.description or job.goal[:200],
+            )
+        )
         slide_num += 1
 
         # Goal slide
-        slides.append(SlideContent(
-            slide_number=slide_num,
-            slide_type="content",
-            title="Goal",
-            content=[job.goal],
-            notes="The primary objective.",
-        ))
+        slides.append(
+            SlideContent(
+                slide_number=slide_num,
+                slide_type="content",
+                title="Goal",
+                content=[job.goal],
+                notes="The primary objective.",
+            )
+        )
         slide_num += 1
+
+        # Conclusion slide, straight after the goal: the answer belongs next to
+        # the question, not after the statistics.
+        conclusion = (job.results or {}).get("conclusion")
+        if isinstance(conclusion, dict):
+            answer = str(conclusion.get("answer") or "").strip()
+            if answer:
+                body = [answer]
+                confidence = str(conclusion.get("confidence") or "").strip()
+                if confidence:
+                    body.append(f"Confidence: {confidence}")
+                for item in (conclusion.get("evidence") or [])[:4]:
+                    body.append(f"Evidence: {str(item)[:160]}")
+            else:
+                gaps = [
+                    str(g) for g in (conclusion.get("gaps") or []) if str(g).strip()
+                ]
+                body = [
+                    "This run did not reach a conclusion.",
+                    *(gaps[:3] or ["No reason was recorded."]),
+                ]
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Conclusion",
+                    content=body,
+                    notes="Answer to the goal, drawn from the recorded findings.",
+                )
+            )
+            slide_num += 1
 
         # Metadata slide
         if include_metadata:
@@ -1351,8 +2032,8 @@ class JobResultsExporter:
             interventions = self._get_operator_intervention_summary(job)
             stat_content = [
                 f"Job Type: {job.job_type}",
-                f"Iterations: {job.iteration}/{job.max_iterations}",
-                f"Tool Calls: {job.tool_calls_used}/{job.max_tool_calls}",
+                f"Iterations: {_used_of(job.iteration, job.max_iterations)}",
+                f"Tool Calls: {_used_of(job.tool_calls_used, job.max_tool_calls)}",
                 f"Duration: {self._calculate_duration(job)}",
             ]
             if extraction.get("status"):
@@ -1362,7 +2043,9 @@ class JobResultsExporter:
                     f"dedup skipped {int(extraction.get('skipped_duplicates', 0) or 0)})"
                 )
             if experiment.get("final_phase"):
-                stat_content.append(f"Experiment final phase: {experiment['final_phase']}")
+                stat_content.append(
+                    f"Experiment final phase: {experiment['final_phase']}"
+                )
             if experiment.get("recovery_open"):
                 stat_content.append(
                     f"Experiment recovery: OPEN ({int(experiment.get('failed_command_count', 0) or 0)} failed commands)"
@@ -1374,29 +2057,45 @@ class JobResultsExporter:
             if experiment.get("reason"):
                 stat_content.append(f"Recovery reason: {experiment['reason']}")
             if experiment.get("recommended_action"):
-                stat_content.append(f"Recovery next action: {experiment['recommended_action']}")
+                stat_content.append(
+                    f"Recovery next action: {experiment['recommended_action']}"
+                )
             if interventions.get("count"):
-                stat_content.append(f"Operator interventions: {int(interventions.get('count', 0) or 0)}")
+                stat_content.append(
+                    f"Operator interventions: {int(interventions.get('count', 0) or 0)}"
+                )
             if interventions.get("latest_action"):
-                latest_action = str(interventions.get("latest_action") or "").replace("_", " ")
-                latest_before = str(interventions.get("latest_status_before") or "").strip()
-                latest_after = str(interventions.get("latest_status_after") or "").strip()
+                latest_action = str(interventions.get("latest_action") or "").replace(
+                    "_", " "
+                )
+                latest_before = str(
+                    interventions.get("latest_status_before") or ""
+                ).strip()
+                latest_after = str(
+                    interventions.get("latest_status_after") or ""
+                ).strip()
                 latest_line = f"Latest intervention: {latest_action}"
                 if latest_before or latest_after:
                     latest_line += f" ({latest_before or '?'} -> {latest_after or '?'})"
                 stat_content.append(latest_line)
             if interventions.get("latest_outcome"):
-                stat_content.append(f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}")
+                stat_content.append(
+                    f"Latest intervention outcome: {str(interventions.get('latest_outcome') or '').upper()}"
+                )
             if interventions.get("latest_outcome_reason"):
-                stat_content.append(f"Intervention outcome reason: {interventions['latest_outcome_reason']}")
+                stat_content.append(
+                    f"Intervention outcome reason: {interventions['latest_outcome_reason']}"
+                )
             for item in list(interventions.get("recent_items") or [])[:3]:
                 stat_content.append(f"Intervention timeline: {str(item)}")
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Job Statistics",
-                content=stat_content,
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Job Statistics",
+                    content=stat_content,
+                )
+            )
             slide_num += 1
 
         # Results
@@ -1404,35 +2103,46 @@ class JobResultsExporter:
             findings = job.results.get("findings", [])
             if findings:
                 for i in range(0, min(len(findings), 12), 3):
-                    slide_findings = findings[i:i + 3]
+                    slide_findings = findings[i : i + 3]
                     content = []
                     for f in slide_findings:
                         if isinstance(f, dict):
                             content.append(f"• {f.get('title', str(f))[:100]}")
                         else:
                             content.append(f"• {str(f)[:100]}")
-                    slides.append(SlideContent(
-                        slide_number=slide_num,
-                        slide_type="content",
-                        title=f"Findings ({i+1}-{i+len(slide_findings)})",
-                        content=content,
-                    ))
+                    slides.append(
+                        SlideContent(
+                            slide_number=slide_num,
+                            slide_type="content",
+                            title=f"Findings ({i+1}-{i+len(slide_findings)})",
+                            content=content,
+                        )
+                    )
                     slide_num += 1
 
-        # Summary
-        slides.append(SlideContent(
-            slide_number=slide_num,
-            slide_type="summary",
-            title="Summary",
-            content=[
-                f"Job: {job.name}",
-                f"Status: {job.status.upper()}",
-                f"Progress: {job.progress}%",
-                f"Generated: {datetime.utcnow().strftime('%Y-%m-%d')}",
-            ],
-        ))
+        # Tools used
+        if tool_log:
+            slides.append(self._build_tool_log_slide(tool_log, slide_num))
+            slide_num += 1
 
-        return PresentationOutline(title=job.name, subtitle="Agent Job Report", slides=slides)
+        # Summary
+        slides.append(
+            SlideContent(
+                slide_number=slide_num,
+                slide_type="summary",
+                title="Summary",
+                content=[
+                    f"Job: {job.name}",
+                    f"Status: {job.status.upper()}",
+                    f"Progress: {job.progress}%",
+                    f"Generated: {datetime.utcnow().strftime('%Y-%m-%d')}",
+                ],
+            )
+        )
+
+        return PresentationOutline(
+            title=job.name, subtitle="Agent Job Report", slides=slides
+        )
 
     def _calculate_duration(self, job: AgentJob) -> str:
         """Calculate job duration as a human-readable string."""
@@ -1460,7 +2170,9 @@ async def export_job_results_enhanced(
 ) -> bytes:
     """Export agent job results with LLM enhancement."""
     exporter = JobResultsExporter(style=style)
-    return await exporter.export_enhanced(job, format, include_log, include_metadata, user_id)
+    return await exporter.export_enhanced(
+        job, format, include_log, include_metadata, user_id
+    )
 
 
 def export_job_results(

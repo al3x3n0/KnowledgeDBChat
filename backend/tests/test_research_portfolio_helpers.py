@@ -1,7 +1,10 @@
 from uuid import UUID
 
-from app.services.autonomy_service import build_autonomy_summary, resolve_monitor_automation_contract
 from app.schemas.research_portfolio import ResearchPortfolioCreate
+from app.services.autonomy_service import (
+    build_autonomy_summary,
+    resolve_monitor_automation_contract,
+)
 
 
 def test_research_portfolio_create_normalizes_defaults():
@@ -85,7 +88,10 @@ def test_build_autonomy_summary_populates_canonical_fields():
             }
         ],
         automation_profile="max_autonomy",
-        effective_policy={"follow_up_review_mode": "queue_for_approval", "confidence_threshold": 0.68},
+        effective_policy={
+            "follow_up_review_mode": "queue_for_approval",
+            "confidence_threshold": 0.68,
+        },
         sandbox_profile_id="scientific-generic-sandbox",
         config_revision_key="portfolio_config_revision",
     )
@@ -112,4 +118,6 @@ def test_resolve_monitor_automation_contract_keeps_compatibility_mirror():
     assert payload["automation_profile"] == "balanced"
     assert payload["effective_policy"]["follow_up_review_mode"] == "queue_for_approval"
     assert payload["follow_up_autonomy"]["mode"] == "queue_for_approval"
-    assert payload["follow_up_autonomy"]["allowed_recommendations"] == ["single_research_job"]
+    assert payload["follow_up_autonomy"]["allowed_recommendations"] == [
+        "single_research_job"
+    ]

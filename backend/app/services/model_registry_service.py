@@ -4,20 +4,18 @@ Model Registry Service for AI Hub.
 Manages trained model adapters: listing, deployment to Ollama, and inference.
 """
 
-import asyncio
-import httpx
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+import httpx
 from loguru import logger
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy.orm import selectinload
 
 from app.core.config import settings
-from app.models.model_registry import ModelAdapter, AdapterStatus
-from app.schemas.training import ModelAdapterUpdate, DeployAdapterRequest
+from app.models.model_registry import AdapterStatus, ModelAdapter
+from app.schemas.training import DeployAdapterRequest, ModelAdapterUpdate
 from app.services.storage_service import storage_service
 
 
@@ -39,7 +37,7 @@ class ModelRegistryService:
 
         if user_id:
             query = query.where(
-                (ModelAdapter.user_id == user_id) | (ModelAdapter.is_public == True)
+                (ModelAdapter.user_id == user_id) | (ModelAdapter.is_public.is_(True))
             )
 
         result = await db.execute(query)
@@ -59,7 +57,9 @@ class ModelRegistryService:
         """List adapters for a user."""
         # Build base query
         if include_public:
-            base_filter = (ModelAdapter.user_id == user_id) | (ModelAdapter.is_public == True)
+            base_filter = (ModelAdapter.user_id == user_id) | (
+                ModelAdapter.is_public.is_(True)
+            )
         else:
             base_filter = ModelAdapter.user_id == user_id
 
@@ -159,7 +159,8 @@ class ModelRegistryService:
 
         # Determine model name
         model_name = (
-            request.ollama_model_name if request and request.ollama_model_name
+            request.ollama_model_name
+            if request and request.ollama_model_name
             else adapter.name
         )
 
@@ -317,6 +318,7 @@ PARAMETER top_p 0.9
             raise ValueError("No Ollama model name configured")
 
         import time
+
         start_time = time.time()
 
         # Generate with Ollama
@@ -367,11 +369,13 @@ PARAMETER top_p 0.9
                 if response.status_code == 200:
                     data = response.json()
                     for model in data.get("models", []):
-                        models.append({
-                            "name": model["name"],
-                            "size": model.get("size", 0),
-                            "modified_at": model.get("modified_at"),
-                        })
+                        models.append(
+                            {
+                                "name": model["name"],
+                                "size": model.get("size", 0),
+                                "modified_at": model.get("modified_at"),
+                            }
+                        )
 
         except Exception as e:
             logger.warning(f"Failed to fetch Ollama models: {e}")
@@ -387,9 +391,9 @@ PARAMETER top_p 0.9
         result = await db.execute(
             select(
                 func.count(ModelAdapter.id).label("total"),
-                func.count(ModelAdapter.id).filter(
-                    ModelAdapter.is_deployed == True
-                ).label("deployed"),
+                func.count(ModelAdapter.id)
+                .filter(ModelAdapter.is_deployed.is_(True))
+                .label("deployed"),
                 func.sum(ModelAdapter.usage_count).label("total_usage"),
             ).where(ModelAdapter.user_id == user_id)
         )

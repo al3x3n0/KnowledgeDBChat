@@ -1,9 +1,5 @@
 """Tests for data visualization tools (create_chart, render_diagram)."""
 
-import base64
-
-import pytest
-
 
 class TestCreateChart:
     """Tests for create_chart tool logic."""
@@ -88,7 +84,7 @@ class TestCreateChart:
                 "url": "https://minio.local/agent_artifacts/j-1/charts/abc.png",
                 "format": "png",
                 "size_bytes": 45000,
-            }
+            },
         }
         assert result["data"]["chart_type"] == "bar"
         assert result["data"]["url"].endswith(".png")
@@ -96,6 +92,7 @@ class TestCreateChart:
 
     def test_object_path_format(self):
         import uuid
+
         job_id = uuid.uuid4()
         chart_id = uuid.uuid4()
         fmt = "png"
@@ -164,7 +161,7 @@ class TestRenderDiagram:
                 "diagram_type": "mermaid",
                 "format": "svg",
                 "size_bytes": 12000,
-            }
+            },
         }
         assert result["data"]["diagram_type"] == "mermaid"
         assert result["data"]["format"] == "svg"
@@ -172,6 +169,7 @@ class TestRenderDiagram:
 
     def test_object_path_format(self):
         import uuid
+
         job_id = uuid.uuid4()
         diag_id = uuid.uuid4()
         fmt = "svg"
@@ -191,12 +189,14 @@ class TestVisualizationToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "create_chart" in names
         assert "render_diagram" in names
 
     def test_create_chart_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("create_chart")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -205,6 +205,7 @@ class TestVisualizationToolSchemas:
 
     def test_render_diagram_requires_code(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("render_diagram")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -212,11 +213,13 @@ class TestVisualizationToolSchemas:
 
     def test_create_chart_has_format_param(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("create_chart")
         assert "format" in tool["parameters"]["properties"]
 
     def test_render_diagram_has_diagram_type_param(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("render_diagram")
         assert "diagram_type" in tool["parameters"]["properties"]
 
@@ -226,24 +229,121 @@ class TestVisualizationToolRegistry:
 
     def test_create_chart_is_write_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("create_chart")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_render_diagram_is_write_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("render_diagram")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_create_chart_is_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("create_chart")
         assert meta is not None
         assert meta.cost_tier == "medium"
 
     def test_render_diagram_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("render_diagram")
         assert meta is not None
         assert meta.network == "egress"
+
+
+class TestNormalizeChartData:
+    """The shapes the create_chart schema advertises must actually chart.
+
+    Each of these raised "All arrays must be of the same length" before the
+    normalizer existed, so a caller following the tool schema could not produce
+    a chart at all.
+    """
+
+    def _normalize(self, data):
+        from app.services.visualization_service import normalize_chart_data
+
+        return normalize_chart_data(data)
+
+    def test_labels_and_values_become_x_and_y_columns(self):
+        frame = self._normalize({"labels": ["-O2", "-O3"], "values": [1.63, 1.69]})
+
+        assert list(frame.columns) == ["label", "value"]
+        assert list(frame["label"]) == ["-O2", "-O3"]
+        assert list(frame["value"]) == [1.63, 1.69]
+
+    def test_datasets_become_one_column_per_series(self):
+        frame = self._normalize(
+            {
+                "labels": ["-O2", "-O3"],
+                "datasets": [
+                    {"label": "GFLOP/s", "values": [1.63, 1.69]},
+                    {"label": "ms", "values": [126, 122]},
+                ],
+            }
+        )
+
+        assert list(frame.columns) == ["label", "GFLOP/s", "ms"]
+        assert list(frame["GFLOP/s"]) == [1.63, 1.69]
+
+    def test_a_dataset_written_chart_js_style_is_read_the_same_way(self):
+        """Models send `data` for the series as often as `values`."""
+        frame = self._normalize(
+            {"labels": ["a", "b"], "datasets": [{"label": "s", "data": [1, 2]}]}
+        )
+
+        assert list(frame["s"]) == [1, 2]
+
+    def test_a_mismatched_series_says_which_one_is_wrong(self):
+        import pytest
+
+        with pytest.raises(ValueError) as error:
+            self._normalize(
+                {"labels": ["a", "b", "c"], "datasets": [{"label": "s", "values": [1]}]}
+            )
+
+        assert "'s' has 1 values but there are 3 labels" in str(error.value)
+
+    def test_points_become_x_and_y_columns(self):
+        frame = self._normalize({"points": [{"x": 1, "y": 2}, {"x": 3, "y": 4}]})
+
+        assert list(frame.columns) == ["x", "y"]
+        assert list(frame["y"]) == [2, 4]
+
+    def test_matrix_keeps_its_labels(self):
+        frame = self._normalize({"labels": ["a", "b"], "matrix": [[1, 2], [3, 4]]})
+
+        assert list(frame.columns) == ["a", "b"]
+        assert list(frame.index) == ["a", "b"]
+
+    def test_a_plain_column_mapping_is_left_alone(self):
+        frame = self._normalize({"flags": ["-O2", "-O3"], "gflops": [1.63, 1.69]})
+
+        assert list(frame.columns) == ["flags", "gflops"]
+
+
+class TestChartRendersFromSchemaShape:
+    def test_bar_chart_renders_from_labels_and_datasets(self):
+        import pytest
+
+        from app.services.visualization_service import VisualizationService
+
+        service = VisualizationService()
+        if not service._enabled:
+            pytest.skip("matplotlib/pandas not installed")
+
+        result = service.create_chart(
+            chart_type="bar",
+            data={
+                "labels": ["-O2", "-O3"],
+                "datasets": [{"label": "GFLOP/s", "data": [1.63, 1.69]}],
+            },
+            config={"title": "Throughput", "format": "png"},
+        )
+
+        assert result["mime_type"] == "image/png"
+        assert len(result["image_base64"]) > 1000

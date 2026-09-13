@@ -1,9 +1,5 @@
 """Tests for document authoring tool handler logic (plan_document, write_section, etc.)."""
 
-import pytest
-import uuid
-from copy import deepcopy
-
 
 def _make_state():
     """Create a minimal agent state dict for document authoring tools."""
@@ -17,7 +13,11 @@ def _make_plan(title="Test Document", sections=None):
     if sections is None:
         sections = [
             {"id": "intro", "title": "Introduction", "description": "Opening section"},
-            {"id": "methods", "title": "Methods", "description": "Methodology overview"},
+            {
+                "id": "methods",
+                "title": "Methods",
+                "description": "Methodology overview",
+            },
             {"id": "results", "title": "Results", "description": "Key findings"},
         ]
     return {
@@ -58,10 +58,12 @@ class TestPlanDocument:
 
     def test_plan_has_all_sections(self):
         state = _make_state()
-        state["document_workspace"] = _make_plan(sections=[
-            {"id": "s1", "title": "S1", "description": "First"},
-            {"id": "s2", "title": "S2", "description": "Second"},
-        ])
+        state["document_workspace"] = _make_plan(
+            sections=[
+                {"id": "s1", "title": "S1", "description": "First"},
+                {"id": "s2", "title": "S2", "description": "Second"},
+            ]
+        )
         sections = state["document_workspace"]["plan"]["sections"]
         assert len(sections) == 2
         assert sections[0]["id"] == "s1"
@@ -101,7 +103,12 @@ class TestWriteSection:
         sections = state["document_workspace"]["plan"]["sections"]
         target = next(s for s in sections if s["id"] == "methods")
         citations = [
-            {"ref_id": "ref1", "document_id": "doc-123", "title": "Paper A", "excerpt": "Relevant text"},
+            {
+                "ref_id": "ref1",
+                "document_id": "doc-123",
+                "title": "Paper A",
+                "excerpt": "Relevant text",
+            },
         ]
         target["content"] = "We use method X [ref1]."
         target["citations"] = citations
@@ -158,7 +165,10 @@ class TestAssembleDocument:
         for sec in ws["plan"]["sections"]:
             sec["content"] = f"Content of {sec['title']}."
         ws["citations_registry"]["ref1"] = {
-            "ref_id": "ref1", "document_id": "d1", "title": "Source Paper", "excerpt": "key finding",
+            "ref_id": "ref1",
+            "document_id": "d1",
+            "title": "Source Paper",
+            "excerpt": "key finding",
         }
         ws["plan"]["sections"][0]["citations"] = [{"ref_id": "ref1"}]
         return state
@@ -275,10 +285,12 @@ class TestInsertFigure:
         sections = state["document_workspace"]["plan"]["sections"]
         target = next(s for s in sections if s["id"] == "results")
         for i in range(3):
-            target["figures"].append({
-                "figure_type": "chart",
-                "caption": f"Figure {i + 1}",
-            })
+            target["figures"].append(
+                {
+                    "figure_type": "chart",
+                    "caption": f"Figure {i + 1}",
+                }
+            )
         assert len(target["figures"]) == 3
 
 
@@ -287,6 +299,7 @@ class TestDocumentWorkspaceState:
 
     def test_state_serializable(self):
         import json
+
         state = _make_state()
         state["document_workspace"] = _make_plan()
         # Should not raise

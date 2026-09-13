@@ -5,11 +5,10 @@ Schemas for AI Hub recommendation feedback (learning loop).
 from __future__ import annotations
 
 from datetime import datetime
-from typing import List, Optional, Literal
+from typing import List, Literal, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
-
+from pydantic import BaseModel, ConfigDict, Field
 
 WorkflowId = Literal["triage", "extraction", "literature"]
 ItemType = Literal["dataset_preset", "eval_template"]
@@ -36,11 +35,9 @@ class AIHubRecommendationFeedbackResponse(BaseModel):
     decision: Decision
     reason: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AIHubRecommendationFeedbackListResponse(BaseModel):
     items: List[AIHubRecommendationFeedbackResponse]
     total: int
-

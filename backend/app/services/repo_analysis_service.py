@@ -6,23 +6,24 @@ Aggregates repository data from GitHub/GitLab connectors into structured analysi
 
 import re
 from datetime import datetime
-from typing import Dict, Any, Optional, List
+from typing import Any, Dict, List, Optional
 from uuid import UUID
+
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import DocumentSource
 from app.schemas.repo_report import (
-    RepoInfo,
     CommitInfo,
-    IssueInfo,
-    PullRequestInfo,
     ContributorInfo,
-    LanguageStats,
     FileTreeNode,
-    RepoInsights,
+    IssueInfo,
+    LanguageStats,
+    PullRequestInfo,
     RepoAnalysisResult,
+    RepoInfo,
+    RepoInsights,
 )
 from app.services.connectors.github_connector import GitHubConnector
 from app.services.connectors.gitlab_connector import GitLabConnector
@@ -115,10 +116,7 @@ class RepoAnalysisService:
         repo_type, owner, repo = self._parse_repo_url(repo_url)
 
         if repo_type == "github":
-            config = {
-                "token": token,
-                "repos": [f"{owner}/{repo}"]
-            }
+            config = {"token": token, "repos": [f"{owner}/{repo}"]}
             return await self._analyze_github(
                 config=config,
                 sections=sections,
@@ -135,7 +133,7 @@ class RepoAnalysisService:
             config = {
                 "gitlab_url": gitlab_base,
                 "token": token,
-                "projects": [{"id": project_path, "name": repo}]
+                "projects": [{"id": project_path, "name": repo}],
             }
             return await self._analyze_gitlab(
                 config=config,
@@ -146,7 +144,9 @@ class RepoAnalysisService:
                 db=db,
             )
         else:
-            raise ValueError(f"Could not determine repository type from URL: {repo_url}")
+            raise ValueError(
+                f"Could not determine repository type from URL: {repo_url}"
+            )
 
     def _parse_repo_url(self, url: str) -> tuple[str, str, str]:
         """
@@ -221,7 +221,9 @@ class RepoAnalysisService:
                     owner = repos[0].get("owner", "")
                     repo = repos[0].get("repo", "")
 
-            return await self._collect_github_data(connector, owner, repo, sections, progress_callback, user_id, db)
+            return await self._collect_github_data(
+                connector, owner, repo, sections, progress_callback, user_id, db
+            )
         finally:
             await connector.cleanup()
 
@@ -305,7 +307,8 @@ class RepoAnalysisService:
                     title=i.get("title", ""),
                     state=i.get("state", "open"),
                     author=i.get("author", "Unknown"),
-                    created_at=self._parse_datetime(i.get("created_at")) or datetime.utcnow(),
+                    created_at=self._parse_datetime(i.get("created_at"))
+                    or datetime.utcnow(),
                     labels=i.get("labels", []),
                     url=i.get("url"),
                 )
@@ -323,7 +326,8 @@ class RepoAnalysisService:
                     title=pr.get("title", ""),
                     state=pr.get("state", "open"),
                     author=pr.get("author", "Unknown"),
-                    created_at=self._parse_datetime(pr.get("created_at")) or datetime.utcnow(),
+                    created_at=self._parse_datetime(pr.get("created_at"))
+                    or datetime.utcnow(),
                     labels=pr.get("labels", []),
                     source_branch=pr.get("source_branch", ""),
                     target_branch=pr.get("target_branch", ""),
@@ -402,7 +406,9 @@ class RepoAnalysisService:
                     raise ValueError("No project configured")
                 project_id = projects[0].get("id") or projects[0].get("name")
 
-            return await self._collect_gitlab_data(connector, project_id, sections, progress_callback, user_id, db)
+            return await self._collect_gitlab_data(
+                connector, project_id, sections, progress_callback, user_id, db
+            )
         finally:
             await connector.cleanup()
 
@@ -413,7 +419,7 @@ class RepoAnalysisService:
         sections: List[str],
         progress_callback: Optional[callable] = None,
         user_id: Optional[UUID] = None,
-        db: Optional[AsyncSession] = None
+        db: Optional[AsyncSession] = None,
     ) -> RepoAnalysisResult:
         """Collect data from GitLab repository."""
         # Get basic repo info
@@ -484,7 +490,8 @@ class RepoAnalysisService:
                     title=i.get("title", ""),
                     state=i.get("state", "open"),
                     author=i.get("author", "Unknown"),
-                    created_at=self._parse_datetime(i.get("created_at")) or datetime.utcnow(),
+                    created_at=self._parse_datetime(i.get("created_at"))
+                    or datetime.utcnow(),
                     labels=i.get("labels", []),
                     url=i.get("url"),
                 )
@@ -502,7 +509,8 @@ class RepoAnalysisService:
                     title=mr.get("title", ""),
                     state=mr.get("state", "open"),
                     author=mr.get("author", "Unknown"),
-                    created_at=self._parse_datetime(mr.get("created_at")) or datetime.utcnow(),
+                    created_at=self._parse_datetime(mr.get("created_at"))
+                    or datetime.utcnow(),
                     labels=mr.get("labels", []),
                     source_branch=mr.get("source_branch", ""),
                     target_branch=mr.get("target_branch", ""),
@@ -576,6 +584,7 @@ class RepoAnalysisService:
         if user_id and db:
             try:
                 from app.models.memory import UserPreferences
+
                 result = await db.execute(
                     select(UserPreferences).where(UserPreferences.user_id == user_id)
                 )
@@ -593,12 +602,19 @@ class RepoAnalysisService:
         ]
 
         if language_stats and language_stats.percentages:
-            lang_str = ", ".join([f"{lang}: {pct}%" for lang, pct in list(language_stats.percentages.items())[:5]])
+            lang_str = ", ".join(
+                [
+                    f"{lang}: {pct}%"
+                    for lang, pct in list(language_stats.percentages.items())[:5]
+                ]
+            )
             context_parts.append(f"Languages: {lang_str}")
 
         if file_tree:
             # Truncate file tree if too long
-            tree_truncated = file_tree[:3000] + "..." if len(file_tree) > 3000 else file_tree
+            tree_truncated = (
+                file_tree[:3000] + "..." if len(file_tree) > 3000 else file_tree
+            )
             context_parts.append(f"File structure:\n{tree_truncated}")
 
         if readme:

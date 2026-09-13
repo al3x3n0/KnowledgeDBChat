@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PatchPRListItem(BaseModel):
@@ -20,8 +20,7 @@ class PatchPRListItem(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PatchPRListResponse(BaseModel):
@@ -46,8 +45,7 @@ class PatchPRResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PatchPRCreateRequest(BaseModel):
@@ -61,7 +59,9 @@ class PatchPRFromChainRequest(BaseModel):
     root_job_id: str = Field(..., min_length=1)
     title: Optional[str] = Field(default=None, max_length=500)
     description: Optional[str] = Field(default=None, max_length=20000)
-    proposal_strategy: str = Field(default="best_passing", pattern="^(best_passing|latest)$")
+    proposal_strategy: str = Field(
+        default="best_passing", pattern="^(best_passing|latest)$"
+    )
     open_after_create: bool = True
 
 
@@ -88,4 +88,3 @@ class PatchPRMergeResponse(BaseModel):
     selected_proposal_id: Optional[str] = None
     applied_files: List[Dict[str, Any]] = []
     errors: List[Dict[str, Any]] = []
-

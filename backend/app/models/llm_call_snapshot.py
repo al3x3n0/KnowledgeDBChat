@@ -9,10 +9,10 @@ text, so storage and data-sensitivity costs are real.
 
 from __future__ import annotations
 
-from datetime import datetime
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, JSON, String, Text
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.database import Base
@@ -23,10 +23,20 @@ class LLMCallSnapshot(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Correlation back to the agent loop (nullable: non-agent calls too).
-    job_id = Column(UUID(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="CASCADE"), nullable=True, index=True)
+    job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_jobs.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
     iteration = Column(Integer, nullable=True)
     # thinking | native_tool_loop | compaction | decision_repair | ...
     phase = Column(String(50), nullable=True)
@@ -42,6 +52,22 @@ class LLMCallSnapshot(Base):
     response_text = Column(Text, nullable=True)
     tool_calls = Column(JSON, nullable=True)
     structured = Column(JSON, nullable=True)
+
+    # What the model thought before it answered. Reasoning models return this
+    # separately from the answer and charge it against max_tokens, so a run can
+    # spend most of its budget here and show nothing for it -- which is exactly
+    # how an empty completion happens. Recorded so a decision can be audited
+    # against the thinking that produced it, rather than only the model's own
+    # summary of that thinking.
+    reasoning_text = Column(Text, nullable=True)
+    reasoning_tokens = Column(Integer, nullable=True)
+    # Prompt tokens the provider served from its cache, and those it did not.
+    # The thinking prompt is split into a byte-stable prefix and a volatile
+    # tail so the prefix can be cached; without these the split is an
+    # assumption nobody can check. Nullable because "the provider said
+    # nothing" and "the cache missed entirely" are different facts.
+    cache_hit_tokens = Column(Integer, nullable=True)
+    cache_miss_tokens = Column(Integer, nullable=True)
 
     error = Column(Text, nullable=True)
     latency_ms = Column(Integer, nullable=True)

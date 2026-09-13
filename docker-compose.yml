@@ -8,20 +8,26 @@ services:
       POSTGRES_USER: user
       POSTGRES_PASSWORD: password
     ports:
-      - "5432:5432"
+      - "${KDBC_POSTGRES_PORT:-25432}:5432"
     volumes:
       # Bind-mount DB data to host FS to reduce Docker Desktop disk usage
       - ./data/postgres_data:/var/lib/postgresql/data
       - ./data/postgres-init:/docker-entrypoint-initdb.d
     networks:
       - knowledge_net
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U user -d knowledge_db"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 5s
 
   # Redis for caching and task queue
   redis:
     image: redis:7-alpine
     container_name: knowledge_db_redis
     ports:
-      - "6379:6379"
+      - "${KDBC_REDIS_PORT:-26379}:6379"
     volumes:
       # Bind-mount Redis data to host FS to reduce Docker Desktop disk usage
       - ./data/redis_data:/data
@@ -34,7 +40,7 @@ services:
     image: qdrant/qdrant:latest
     container_name: knowledge_db_qdrant
     ports:
-      - "6333:6333"
+      - "${KDBC_QDRANT_PORT:-26333}:6333"
     volumes:
       # Bind-mount Qdrant storage to host FS to reduce Docker Desktop disk usage
       - ./data/qdrant_data:/qdrant/storage
@@ -46,8 +52,8 @@ services:
     image: minio/minio:latest
     container_name: knowledge_db_minio
     ports:
-      - "9000:9000"  # API
-      - "9001:9001"  # Console
+      - "${KDBC_MINIO_PORT:-29000}:9000"  # API
+      - "${KDBC_MINIO_CONSOLE_PORT:-29001}:9001"  # Console
     volumes:
       # Bind-mount MinIO data to host FS to reduce Docker Desktop disk usage
       - ./data/minio_data:/data
@@ -76,8 +82,6 @@ services:
       - REDIS_URL=redis://redis:6379/0
       - CELERY_BROKER_URL=redis://redis:6379/0
       - CELERY_RESULT_BACKEND=redis://redis:6379/0
-      - OLLAMA_BASE_URL=http://ollama:11434
-      - DEFAULT_MODEL=llama3.2:1b  # Force smallest model for Mac
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db
       # Vector store: "qdrant" (default) or "chroma"
       - VECTOR_STORE_PROVIDER=qdrant
@@ -89,7 +93,7 @@ services:
       - MINIO_BUCKET_NAME=documents
       - MINIO_USE_SSL=false
       - MINIO_PRESIGNED_URL_EXPIRY=3600
-      - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      - MINIO_PROXY_BASE_URL=http://localhost:${KDBC_UI_PORT:-23000}/minio
       - CHROMA_TELEMETRY_ENABLED=false
       - SECRET_KEY=your-secret-key-here  # Must match JWT_SECRET in video-streamer
       # Backpressure / pool tuning for dev stability (avoid exhausting Postgres connections)
@@ -98,7 +102,7 @@ services:
       - DB_POOL_TIMEOUT_SECONDS=5
       - DB_SESSION_ACQUIRE_TIMEOUT_SECONDS=2
       # Kroki for local Mermaid diagram rendering
-      - KROKI_URL=http://kroki:8000
+      - KROKI_URL=http://kroki-mermaid:8002
       # Transcription configuration
       # Note: "large" / "turbo" can exceed typical Docker Desktop memory budgets.
       # We default to "small" for reliability; you can switch to "medium"/"large" once Docker has enough RAM.
@@ -114,7 +118,7 @@ services:
       # Run migrations in the background so the API can start serving immediately.
       - RUN_ALEMBIC_MIGRATIONS=true
     ports:
-      - "8000:8000"
+      - "${KDBC_BACKEND_PORT:-28000}:8000"
     volumes:
       - ./data:/app/data
       - ./backend:/app
@@ -130,9 +134,41 @@ services:
       - redis
       - qdrant
       - minio
+    dns_opt:
+      - timeout:2
+      - attempts:5
     networks:
       - knowledge_net
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload --reload-dir app --reload-include "main.py" --timeout-graceful-shutdown 2 --reload-delay 0.25
+    # Two separate guards against the same failure, because the first alone was
+    # not enough.
+    #
+    # The failure: a reload landing while a request is in flight kills the
+    # worker once the graceful-shutdown timeout expires, and it comes back as a
+    # ZOMBIE the supervisor never replaces. The container keeps reporting
+    # "running" and serves nothing, which reads exactly like machine load.
+    # Measured four times in one session.
+    #
+    # 1. --reload-exclude: `--reload-include "main.py"` pulls /app itself into
+    #    the watch set, so the default *.py pattern covered tests, alembic and
+    #    scripts. Editing a TEST file restarted the server.
+    # 2. --timeout-graceful-shutdown 30 (was 2): excluding tests narrowed the
+    #    trigger but did not remove it -- editing an app file is supposed to
+    #    reload, and two seconds is not long enough for an ordinary request to
+    #    finish. Thirty is: it covers normal requests while still not waiting
+    #    on a minutes-long LLM call.
+    # --reload is OFF, after six dead workers in one session.
+    #
+    # The failure: the reload supervisor force-kills the worker and never
+    # replaces it. The container keeps reporting "running" and serves nothing,
+    # which reads exactly like machine load -- and cost four launches before it
+    # was recognised. Narrowing the watch (--reload-exclude) and widening the
+    # shutdown window (2s -> 30s) each reduced it and neither removed it: the
+    # last one died minutes after a clean start at load 20.
+    #
+    # The cost of turning it off is a manual `docker compose restart backend`
+    # after editing backend code. That is what was already happening, six times,
+    # unplanned. Celery has never hot-reloaded and always needed exactly this.
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --timeout-graceful-shutdown 30
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
       interval: 30s
@@ -158,10 +194,13 @@ services:
       - CORS_ORIGIN=*
       - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
     ports:
-      - "8080:8080"
+      - "${KDBC_VIDEO_PORT:-28080}:8080"
     depends_on:
-      - minio
-      - postgres
+      minio:
+        condition: service_healthy
+      postgres:
+        condition: service_healthy
+    restart: unless-stopped
     networks:
       - knowledge_net
     healthcheck:
@@ -172,66 +211,29 @@ services:
       start_period: 10s
 
   # Kroki for local diagram rendering (Mermaid, PlantUML, etc.)
-  kroki:
-    image: yuzutech/kroki:latest
-    container_name: knowledge_db_kroki
+  # Mermaid rendering. The service keeps its name because KROKI_URL and
+  # KROKI_LOCAL_IS_COMPANION still point at it and it still speaks the Kroki
+  # companion protocol -- POST the raw diagram to /svg or /png. What changed is
+  # what serves it: yuzutech/kroki-mermaid is 1.54 GB, this is 1.08 GB, and the
+  # difference is a JVM, npm, and ~190 MB of mesa and libLLVM that a headless
+  # Chromium rasterising an SVG never opens.
+  kroki-mermaid:
+    build:
+      context: ./mermaid-renderer
+      dockerfile: Dockerfile
+    image: knowledge_db_mermaid_renderer:latest
+    container_name: knowledge_db_kroki_mermaid
     ports:
-      - "8001:8000"
+      - "${KDBC_MERMAID_PORT:-28001}:8002"
     networks:
       - knowledge_net
-    environment:
-      - KROKI_MAX_URI_LENGTH=8000
     healthcheck:
-      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost:8000/health"]
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--output-document=/dev/null", "http://localhost:8002/health"]
       interval: 30s
       timeout: 10s
       retries: 3
       start_period: 10s
 
-  # Ollama for local LLM
-  ollama:
-    image: ollama/ollama:latest
-    container_name: knowledge_db_ollama
-    ports:
-      - "11434:11434"
-    volumes:
-      # Bind-mount Ollama models to host FS to reduce Docker Desktop disk usage
-      - ./data/ollama_data:/root/.ollama
-    networks:
-      - knowledge_net
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-      # Force CPU-only mode for Mac compatibility (disable GPU completely)
-      - OLLAMA_NUM_GPU=0
-      - CUDA_VISIBLE_DEVICES=""
-      # Limit memory usage (adjust based on your Mac's available RAM)
-      - OLLAMA_MAX_LOADED_MODELS=1
-      - OLLAMA_NUM_PARALLEL=1
-      # Additional memory management
-      - OLLAMA_KEEP_ALIVE=2m  # Shorter keep-alive to free memory faster
-      - OLLAMA_NUM_THREAD=2  # Reduce threads to save memory
-      # Force CPU-only (disable Metal/GPU on Mac)
-      - OLLAMA_GPU_LAYERS=0
-      - METAL_DEVICE=0
-    # Resource limits for Mac (reduced for 8GB Docker Desktop)
-    deploy:
-      resources:
-        limits:
-          # Reduced to 4GB since Docker Desktop only has ~7.6GB total
-          # This leaves memory for other containers (postgres, redis, backend)
-          memory: 4G
-          cpus: '4.0'  # Limit CPU cores
-        reservations:
-          memory: 1G  # Reduced reservation
-          cpus: '1.0'
-    # Increase shared memory for model loading (important for Mac)
-    shm_size: 2gb
-    # Explicitly disable GPU access
-    devices: []
-    # Restart policy
-    restart: unless-stopped
-
-  # Frontend (React)
   frontend:
     build:
       context: ./frontend
@@ -244,8 +246,8 @@ services:
       - ./frontend:/app
       - /app/node_modules
     environment:
-      - REACT_APP_API_URL=http://localhost:3000
-      - REACT_APP_WS_URL=ws://localhost:3000
+      - REACT_APP_API_URL=http://localhost:${KDBC_UI_PORT:-23000}
+      - REACT_APP_WS_URL=ws://localhost:${KDBC_UI_PORT:-23000}
     depends_on:
       - backend
     networks:
@@ -257,7 +259,7 @@ services:
     image: nginx:alpine
     container_name: knowledge_db_nginx
     ports:
-      - "3000:80"
+      - "${KDBC_UI_PORT:-23000}:80"
     volumes:
       - ./frontend/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     depends_on:
@@ -295,10 +297,10 @@ services:
       - MINIO_BUCKET_NAME=documents
       - MINIO_USE_SSL=false
       - MINIO_PRESIGNED_URL_EXPIRY=3600
-      - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      - MINIO_PROXY_BASE_URL=http://localhost:${KDBC_UI_PORT:-23000}/minio
       - CHROMA_TELEMETRY_ENABLED=false
       # Kroki for local Mermaid diagram rendering
-      - KROKI_URL=http://kroki:8000
+      - KROKI_URL=http://kroki-mermaid:8002
       # Transcription configuration
       # Note: "large" / "turbo" can exceed typical Docker Desktop memory budgets.
       # We default to "small" for reliability; you can switch to "medium"/"large" once Docker has enough RAM.
@@ -333,26 +335,96 @@ services:
       - redis
       - qdrant
       - minio
-      - kroki
+      - kroki-mermaid
+    # Docker's embedded resolver (127.0.0.11) drops lookups when the host is
+    # loaded, and glibc's default of attempts:2 gives up almost immediately.
+    # asyncpg then raises `[Errno -3] Temporary failure in name resolution`
+    # while opening a connection, SQLAlchemy poisons the session, and every
+    # later statement fails with "transaction has been rolled back" -- far from
+    # the cause, which is why this reads as a session bug and is not one.
+    #
+    # Celery is where it bites: CELERY_DB_USE_NULLPOOL means a NEW connection,
+    # and so a NEW DNS lookup, for EVERY database operation. An agent job does
+    # hundreds. The API pools its connections and has never once hit this.
+    # Measured: 14 occurrences in celery, 0 in the backend, and two of two
+    # substantive runs killed.
+    dns_opt:
+      - timeout:2
+      - attempts:5
     networks:
       - knowledge_net
-    command: celery -A app.core.celery worker --loglevel=info
-    # Increase container memory (compose-only) and shared memory to handle larger models
-    mem_limit: 6g
+    # --concurrency, explicitly. Without it celery sizes the pool from the
+    # host's cores, which on this machine meant ten worker processes at ~450 MB
+    # each -- 4.5 GB of a 7.7 GB Docker VM, on four CPUs. Ten CPU-bound workers
+    # on four cores is not throughput, and it starved everything else on the
+    # machine, the frontend dev server included. docker-compose.prod.yml has
+    # always passed 4; this brings dev in line.
+    command: celery -A app.core.celery worker --loglevel=info --concurrency=4
+    # 6g was sized when Whisper and torch lived in this image. They moved to
+    # celery_transcription, and this ceiling did not move with them.
+    mem_limit: 3g
     shm_size: 2gb
     # Optional Swarm-style limits (ignored by plain compose but useful if deployed via Swarm)
     deploy:
       resources:
         limits:
-          memory: 6G
+          memory: 3G
         reservations:
-          memory: 2G
+          memory: 1G
     healthcheck:
-      test: ["CMD", "celery", "-A", "app.core.celery", "inspect", "ping"]
+      # This worker, not whatever workers happen to be on the broker. A bare
+      # `inspect ping` exits 0 if ANY node replies, so once a second worker
+      # existed this container could report healthy on the strength of the
+      # transcription worker answering for it.
+      #
+      # The timeout is 30s because the probe is not the ping: `celery inspect`
+      # imports the whole application first, which is ~8s on this machine and
+      # more when the host is busy. At 10s it flapped under a concurrent build.
+      test: ["CMD-SHELL", "celery -A app.core.celery inspect ping -d celery@$$(hostname)"]
       interval: 30s
-      timeout: 10s
+      timeout: 30s
       retries: 3
       start_period: 40s
+
+  # Celery beat scheduler.
+  #
+  # Without this, nothing on beat_schedule ever fires, which for agent work
+  # means the periodic tasks that make a long-running job durable never run:
+  # process_scheduled_agent_jobs (every 5m), check_stalled_agent_jobs (10m),
+  # and resume_paused_agent_jobs (15m). A job whose worker dies then stays
+  # dead. That was only defined in docker-compose.prod.yml, so the recovery
+  # path could not be exercised in development at all.
+  celery_beat:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    image: knowledge_db_backend:latest
+    container_name: knowledge_db_celery_beat
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - VECTOR_STORE_PROVIDER=qdrant
+      - QDRANT_URL=http://qdrant:6333
+      - QDRANT_COLLECTION_NAME=knowledge_base
+      # The scheduler only enqueues; workers do the work and run migrations.
+      - RUN_ALEMBIC_MIGRATIONS=false
+    volumes:
+      - ./data:/app/data
+      - ./backend:/app
+    depends_on:
+      - postgres
+      - redis
+    dns_opt:
+      - timeout:2
+      - attempts:5
+    networks:
+      - knowledge_net
+    # The schedule file lives in a writable path that is not bind-mounted from
+    # the host, so a stale schedule cannot survive a rebuild and silently
+    # suppress runs.
+    command: celery -A app.core.celery beat --loglevel=info --schedule /tmp/celerybeat-schedule
 
   # Dedicated Celery worker for LaTeX compilation (recommended to isolate heavy/unsafe workloads)
   celery_latex:
@@ -372,10 +444,11 @@ services:
       - MINIO_BUCKET_NAME=documents
       - MINIO_USE_SSL=false
       - MINIO_PRESIGNED_URL_EXPIRY=3600
-      - MINIO_PROXY_BASE_URL=http://localhost:3000/minio
+      - MINIO_PROXY_BASE_URL=http://localhost:${KDBC_UI_PORT:-23000}/minio
       - CHROMA_TELEMETRY_ENABLED=false
       - RUN_ALEMBIC_MIGRATIONS=false
       - PYTHONDONTWRITEBYTECODE=1
+      - LOG_FILE=/tmp/logs/app.log
       - OPENBLAS_MAIN_FREE=1
       - GOTO_NUM_THREADS=1
       - OMP_NUM_THREADS=1
@@ -384,6 +457,9 @@ services:
       - postgres
       - redis
       - minio
+    dns_opt:
+      - timeout:2
+      - attempts:5
     networks:
       - knowledge_net
     command: celery -A app.core.celery_latex worker -Q latex --loglevel=info --concurrency=1
@@ -397,6 +473,84 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  # Dedicated Celery worker for transcription.
+  #
+  # Whisper, librosa, speechbrain and resemblyzer -- and numba and llvmlite
+  # under them -- are ~250 MB that the API, the general worker and beat all
+  # carried to run something only this worker performs. They now live in one
+  # image, built FROM knowledge_db_backend:latest, so the shared layers are
+  # stored once and only this service adds to them.
+  #
+  # BUILD ORDER: this derives from the backend image, and compose does not
+  # infer build order from a FROM. `make build` orders them; a bare
+  # `docker compose build celery_transcription` on a clean machine fails
+  # looking for a base image that is not there yet.
+  #
+  # Stop this service and transcription requests queue rather than fail --
+  # the same contract the latex queue has.
+  celery_transcription:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.transcription-worker
+    image: knowledge_db_transcription_worker:latest
+    container_name: knowledge_db_celery_transcription
+    environment:
+      - DATABASE_URL=postgresql://user:password@postgres:5432/knowledge_db
+      - REDIS_URL=redis://redis:6379/0
+      - CELERY_BROKER_URL=redis://redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://redis:6379/0
+      - MINIO_ENDPOINT=minio:9000
+      - MINIO_ACCESS_KEY=minioadmin
+      - MINIO_SECRET_KEY=minioadmin
+      - MINIO_BUCKET_NAME=documents
+      - MINIO_USE_SSL=false
+      - MINIO_PRESIGNED_URL_EXPIRY=3600
+      - MINIO_PROXY_BASE_URL=http://localhost:${KDBC_UI_PORT:-23000}/minio
+      # Transcription configuration. Kept identical to the general worker's so
+      # that moving the task between them cannot change a transcript.
+      - WHISPER_MODEL_SIZE=small
+      - WHISPER_DEVICE=auto
+      - TRANSCRIPTION_LANGUAGE=auto
+      - TRANSCRIPTION_SKIP_INITIAL_SECONDS=2.0
+      - TRANSCRIPTION_SPEAKER_DIARIZATION=false
+      - WHISPER_OFFLINE=1
+      # This is now the only image that can honour a preload: it is the one
+      # with Whisper in it. Set to "true" for warm first transcriptions.
+      - PRELOAD_WHISPER_MODEL=false
+      - RUN_ALEMBIC_MIGRATIONS=false
+      - OPENBLAS_MAIN_FREE=1
+      - GOTO_NUM_THREADS=4
+      - OMP_NUM_THREADS=4
+      - MKL_NUM_THREADS=4
+    volumes:
+      - ./data:/app/data
+      - ./backend:/app
+      - ./data/whisper_models:/root/.cache/knowledge_db_transcriber
+      - ./data/hf_cache:/root/.cache/huggingface
+      - ./data/torch_cache:/root/.cache/torch
+    depends_on:
+      - postgres
+      - redis
+      - minio
+    dns_opt:
+      - timeout:2
+      - attempts:5
+    networks:
+      - knowledge_net
+    command: celery -A app.core.celery_transcription worker -Q transcription --loglevel=info --concurrency=1
+    # Whisper "small" plus a long decode; the general worker's 6g was sized for
+    # this workload when it still ran there.
+    mem_limit: 6g
+    shm_size: 2gb
+    healthcheck:
+      # Self-targeted and generously timed, for the reasons on the general
+      # worker's probe above.
+      test: ["CMD-SHELL", "celery -A app.core.celery_transcription inspect ping -d celery@$$(hostname)"]
+      interval: 30s
+      timeout: 30s
+      retries: 3
+      start_period: 40s
 
 networks:
   knowledge_net:

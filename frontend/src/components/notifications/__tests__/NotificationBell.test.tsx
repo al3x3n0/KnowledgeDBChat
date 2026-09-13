@@ -189,13 +189,11 @@ describe('NotificationBell', () => {
     mockWriteText.mockClear();
   });
 
-  it('renders experiment recovery badges and guidance in the dropdown', () => {
+  it('renders experiment recovery badges and guidance in the dropdown', async () => {
     render(<NotificationBell />);
 
     fireEvent.click(screen.getByLabelText(/notifications/i));
-    const failedCard = screen.getByText('Experiment run failed').closest('.border-l-4');
-    expect(failedCard).not.toBeNull();
-    const failedCardQueries = within(failedCard as HTMLElement);
+    const failedCardQueries = within(screen.getByRole('article', { name: 'Experiment run failed' }));
 
     expect(screen.getByText('Experiment run failed')).toBeInTheDocument();
     expect(screen.getByText('Experiment run recovered')).toBeInTheDocument();
@@ -232,10 +230,10 @@ describe('NotificationBell', () => {
 
     fireEvent.click(failedCardQueries.getByText('Restart job'));
 
-    return waitFor(() => {
+    await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-1');
-      expect(mockPerformAgentJobAction).toHaveBeenCalledWith('job-1', 'restart', {});
     });
+    expect(mockPerformAgentJobAction).toHaveBeenCalledWith('job-1', 'restart', {});
   });
 
   it('can filter down to open recovery notifications', () => {
@@ -265,8 +263,8 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-1');
-      expect(mockMarkAsRead).toHaveBeenCalledWith('notif-4');
     });
+    expect(mockMarkAsRead).toHaveBeenCalledWith('notif-4');
 
     expect(mockMarkAsRead).not.toHaveBeenCalledWith('notif-2');
     expect(mockMarkAsRead).not.toHaveBeenCalledWith('notif-3');
@@ -282,8 +280,8 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockDismissNotification).toHaveBeenCalledWith('notif-1');
-      expect(mockDismissNotification).toHaveBeenCalledWith('notif-4');
     });
+    expect(mockDismissNotification).toHaveBeenCalledWith('notif-4');
 
     expect(mockDismissNotification).not.toHaveBeenCalledWith('notif-2');
     expect(mockDismissNotification).not.toHaveBeenCalledWith('notif-3');
@@ -338,10 +336,10 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-3');
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/autonomous-agents?tab=queue&job=job-3&queue_item_type=approval_checkpoint&queue_sla=overdue'
-      );
     });
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/autonomous-agents?tab=queue&job=job-3&queue_item_type=approval_checkpoint&queue_sla=overdue'
+    );
   });
 
   it('can reset back to all notifications from an empty filtered state', () => {
@@ -507,22 +505,21 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-1');
-      expect(mockPerformAgentJobAction).toHaveBeenCalledWith('job-1', 'relaunch', {});
     });
+    expect(mockPerformAgentJobAction).toHaveBeenCalledWith('job-1', 'relaunch', {});
   });
 
   it('can open the linked autonomous job from the dropdown', async () => {
     render(<NotificationBell />);
 
     fireEvent.click(screen.getByLabelText(/notifications/i));
-    const failedCard = screen.getByText('Experiment run failed').closest('.border-l-4');
-    expect(failedCard).not.toBeNull();
-    fireEvent.click(within(failedCard as HTMLElement).getByText('Open job'));
+    const failedCard = screen.getByRole('article', { name: 'Experiment run failed' });
+    fireEvent.click(within(failedCard).getByText('Open job'));
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-1');
-      expect(mockNavigate).toHaveBeenCalledWith('/autonomous-agents?job=job-1');
     });
+    expect(mockNavigate).toHaveBeenCalledWith('/autonomous-agents?job=job-1');
   });
 
   it('can open the linked research note from the dropdown', async () => {
@@ -533,8 +530,8 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-1');
-      expect(mockNavigate).toHaveBeenCalledWith('/research-notes?note=note-1');
     });
+    expect(mockNavigate).toHaveBeenCalledWith('/research-notes?note=note-1');
   });
 
   it('opens follow-up outcome notifications on the targeted domain opportunity deep link', async () => {
@@ -570,10 +567,10 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-follow-up-1');
-      expect(mockNavigate).toHaveBeenCalledWith(
-        '/autonomous-agents?tab=domain&profileId=profile-1&opportunityId=opp-profile-1'
-      );
     });
+    expect(mockNavigate).toHaveBeenCalledWith(
+      '/autonomous-agents?tab=domain&profileId=profile-1&opportunityId=opp-profile-1'
+    );
   });
 
   it('can open the linked follow-up job from a follow-up outcome notification', async () => {
@@ -609,8 +606,8 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-follow-up-job-1');
-      expect(mockNavigate).toHaveBeenCalledWith('/autonomous-agents?job=job-follow-up-2');
     });
+    expect(mockNavigate).toHaveBeenCalledWith('/autonomous-agents?job=job-follow-up-2');
   });
 
   it('can relaunch a failed follow-up outcome from the notification bell', async () => {
@@ -643,8 +640,8 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-follow-up-relaunch-1');
-      expect(mockRelaunchInboxFollowUp).toHaveBeenCalledWith('inbox-3', {});
     });
+    expect(mockRelaunchInboxFollowUp).toHaveBeenCalledWith('inbox-3', {});
   });
 
   it('does not render relaunch controls for completed follow-up outcome notifications', () => {
@@ -715,8 +712,8 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-reeval-1');
-      expect(mockNavigate).toHaveBeenCalledWith('/synthesis?job=syn-reeval-1');
     });
+    expect(mockNavigate).toHaveBeenCalledWith('/synthesis?job=syn-reeval-1');
   });
 
   it('can restart a failed reevaluation notification from the bell', async () => {
@@ -767,21 +764,20 @@ describe('NotificationBell', () => {
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-1');
-      expect(mockWriteText).toHaveBeenCalledWith('npm --prefix frontend test');
     });
+    expect(mockWriteText).toHaveBeenCalledWith('npm --prefix frontend test');
   });
 
   it('can copy the recommended next step from the dropdown', async () => {
     render(<NotificationBell />);
 
     fireEvent.click(screen.getByLabelText(/notifications/i));
-    const failedCard = screen.getByText('Experiment run failed').closest('.border-l-4');
-    expect(failedCard).not.toBeNull();
-    fireEvent.click(within(failedCard as HTMLElement).getByText('Copy next step'));
+    const failedCard = screen.getByRole('article', { name: 'Experiment run failed' });
+    fireEvent.click(within(failedCard).getByText('Copy next step'));
 
     await waitFor(() => {
       expect(mockMarkAsRead).toHaveBeenCalledWith('notif-1');
-      expect(mockWriteText).toHaveBeenCalledWith('Inspect failing fallback output');
     });
+    expect(mockWriteText).toHaveBeenCalledWith('Inspect failing fallback output');
   });
 });

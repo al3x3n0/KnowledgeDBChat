@@ -88,7 +88,6 @@ class BaseTrainer(ABC):
         Returns:
             TrainingResult with success status and output path
         """
-        pass
 
     @abstractmethod
     def is_available(self) -> bool:
@@ -98,7 +97,6 @@ class BaseTrainer(ABC):
         Returns:
             True if the backend can be used for training
         """
-        pass
 
     @abstractmethod
     def get_device_info(self) -> DeviceInfo:
@@ -108,7 +106,6 @@ class BaseTrainer(ABC):
         Returns:
             DeviceInfo with device details
         """
-        pass
 
     @abstractmethod
     async def cancel(self, job_id: UUID) -> bool:
@@ -121,7 +118,6 @@ class BaseTrainer(ABC):
         Returns:
             True if cancellation was requested successfully
         """
-        pass
 
     @abstractmethod
     def get_supported_models(self) -> List[str]:
@@ -131,7 +127,6 @@ class BaseTrainer(ABC):
         Returns:
             List of model identifiers that can be fine-tuned
         """
-        pass
 
     def get_default_hyperparameters(self, model_name: str) -> Dict[str, Any]:
         """
@@ -174,49 +169,3 @@ class BaseTrainer(ABC):
             defaults["max_seq_length"] = 1024
 
         return defaults
-
-    def estimate_memory_requirements(
-        self,
-        model_name: str,
-        training_method: str,
-        batch_size: int,
-        max_seq_length: int,
-    ) -> float:
-        """
-        Estimate GPU memory requirements in GB.
-
-        Args:
-            model_name: Base model name
-            training_method: lora, qlora, or full_finetune
-            batch_size: Batch size
-            max_seq_length: Maximum sequence length
-
-        Returns:
-            Estimated memory requirement in GB
-        """
-        # Base memory estimates per model size
-        model_lower = model_name.lower()
-        if "1b" in model_lower:
-            base_memory = 2.0
-        elif "3b" in model_lower:
-            base_memory = 6.0
-        elif "7b" in model_lower or "8b" in model_lower:
-            base_memory = 14.0
-        elif "13b" in model_lower or "14b" in model_lower:
-            base_memory = 26.0
-        elif "70b" in model_lower:
-            base_memory = 140.0
-        else:
-            base_memory = 8.0  # Default estimate
-
-        # Adjust for training method
-        if training_method == "qlora":
-            base_memory *= 0.25  # 4-bit quantization
-        elif training_method == "lora":
-            base_memory *= 0.5   # Only training adapters
-        # full_finetune uses full memory
-
-        # Adjust for batch size and sequence length
-        memory = base_memory * (batch_size / 4) * (max_seq_length / 2048)
-
-        return round(memory, 1)

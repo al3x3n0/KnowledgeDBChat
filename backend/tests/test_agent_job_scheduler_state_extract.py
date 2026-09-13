@@ -65,8 +65,9 @@ class TestQueueReasonLabel:
         assert queue_reason_label("approval_required") == "Approval required"
         assert queue_reason_label("budget_throttle") == "Autonomy budget review"
 
-    def test_unknown_code_titlecased(self):
-        assert queue_reason_label("some_new_reason") == "Some New Reason"
+    def test_unknown_code_sentence_cased(self):
+        # Fallback matches the sentence-case convention of the known labels.
+        assert queue_reason_label("some_new_reason") == "Some new reason"
 
     def test_empty_falls_back(self):
         assert queue_reason_label("") == "Needs review"

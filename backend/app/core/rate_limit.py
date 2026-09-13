@@ -2,13 +2,13 @@
 Rate limiting configuration.
 """
 
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-from slowapi.errors import RateLimitExceeded
 from fastapi import Request
 from jose import JWTError, jwt
+from slowapi import Limiter
+from slowapi.util import get_remote_address
 
 from app.core.config import settings
+
 
 def get_user_identifier(request: Request) -> str:
     """
@@ -24,15 +24,13 @@ def get_user_identifier(request: Request) -> str:
         token = auth_header.split(" ", 1)[1].strip()
         try:
             payload = jwt.decode(
-                token,
-                settings.SECRET_KEY,
-                algorithms=[settings.ALGORITHM]
+                token, settings.SECRET_KEY, algorithms=[settings.ALGORITHM]
             )
             if payload.get("type") == "access" and payload.get("sub"):
                 return f"user:{payload['sub']}"
         except JWTError:
             pass
-    
+
     # Fall back to IP address
     return get_remote_address(request)
 
@@ -65,10 +63,10 @@ LATEX_APPLY_DIFF_LIMIT = "60/minute"  # Apply patch-style diffs to LaTeX project
 def get_rate_limit_for_endpoint(path: str) -> str:
     """
     Get appropriate rate limit for an endpoint based on its path.
-    
+
     Args:
         path: Request path
-        
+
     Returns:
         Rate limit string
     """

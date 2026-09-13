@@ -4,8 +4,8 @@ MCP tool for fetching and extracting readable content from web pages.
 
 from typing import Any, Dict
 
-from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.mcp.auth import MCPAuthContext
 from app.services.web_scraper_service import WebScraperService
@@ -13,13 +13,19 @@ from app.services.web_scraper_service import WebScraperService
 
 class WebScrapeTool:
     name = "web_scrape"
-    description = "Fetch a web page (or small set of pages) and extract readable text and links"
+    description = (
+        "Fetch a web page (or small set of pages) and extract readable text and links"
+    )
 
     input_schema = {
         "type": "object",
         "properties": {
             "url": {"type": "string", "description": "The URL to fetch (http/https)"},
-            "follow_links": {"type": "boolean", "description": "Crawl links from the page", "default": False},
+            "follow_links": {
+                "type": "boolean",
+                "description": "Crawl links from the page",
+                "default": False,
+            },
             "max_pages": {
                 "type": "integer",
                 "description": "Maximum pages to fetch when crawling",
@@ -39,7 +45,11 @@ class WebScrapeTool:
                 "description": "Only follow links on the same domain as the start URL",
                 "default": True,
             },
-            "include_links": {"type": "boolean", "description": "Include extracted links in the response", "default": True},
+            "include_links": {
+                "type": "boolean",
+                "description": "Include extracted links in the response",
+                "default": True,
+            },
             "allow_private_networks": {
                 "type": "boolean",
                 "description": "Allow private-network hosts (admin-scope only)",

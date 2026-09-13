@@ -2,7 +2,7 @@
  * API client for Knowledge Database backend
  */
 
-import axios, { AxiosInstance, AxiosError, AxiosProgressEvent } from 'axios';
+import axios, { AxiosInstance, AxiosError } from 'axios';
 import toast from 'react-hot-toast';
 import {
   User,
@@ -13,7 +13,6 @@ import {
   ActiveGitSource,
   GitBranch,
   GitCompareJob,
-  DocumentChunk,
   SystemHealth,
   SystemStats,
   AdminIngestionStatus,
@@ -38,7 +37,6 @@ import {
   KGRelationshipUpdate,
   SearchParams,
   SearchResponse,
-  Notification,
   NotificationListResponse,
   NotificationPreferences,
   NotificationPreferencesUpdate,
@@ -87,11 +85,22 @@ import {
   MCPSourceAccessResponse,
   MCPSourceAccessUpdate,
   AgentJob,
+  AutonomousRndJobOutcomeResponse,
+  AutonomousRndVerificationAuditEnvelope,
+  AutonomousRndVerificationLaunchRequest,
+  AutonomousRndVerificationLaunchResponse,
+  ExternalAgentConnection,
+  ExternalAgentConnectionList,
+  ExternalAgentInvokeResult,
+  CompOpsEvidenceSubscription,
+  CompOpsEvidenceSubscriptionList,
+  CompOpsEvidenceSyncResult,
+  CompOpsWebhookSetup,
+  SecretSummary,
   AgentJobCreate,
   AgentJobFromTemplate,
   AgentJobUpdate,
   AgentJobListResponse,
-  AgentJobTemplate,
   AgentJobTemplateListResponse,
   AgentJobQuickStartBugTriageSwarmRequest,
   AgentJobQuickStartBuildBreakSwarmRequest,
@@ -261,14 +270,42 @@ import {
   LatexProjectFileUploadResponse,
   LatexCompileJobCreateRequest,
   LatexCompileJobResponse,
+  DocumentFolder,
+  AgentJobEvidence,
+  AgentJobWorkspace,
+  AgentJobWorkspaceFile,
+  PipelineBinding,
+  PipelineCheck,
+  PipelineDraft,
+  PipelineLaunch,
+  PipelineRun,
+  PipelineStageInsertion,
+  PipelineStageRestart,
+  PipelineVocabulary,
+  SavedPipeline,
+  DocumentFolderItemsResult,
+  DocumentFolderRef,
+  DocumentFolderTree,
 } from '../types';
 
-const runtimeEnv =
-  typeof globalThis !== 'undefined' && (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env
-    ? (globalThis as { process?: { env?: Record<string, string | undefined> } }).process!.env!
-    : {};
+// CRA substitutes the *bare identifier* `process.env.REACT_APP_X` at build
+// time. Reading it through `globalThis.process` defeats that substitution:
+// webpack 5 ships no process shim, so the lookup was undefined in every
+// browser and every build silently fell back to the defaults below --
+// REACT_APP_API_URL, REACT_APP_VIDEO_STREAM_URL and the build args that set
+// them in frontend/Dockerfile did nothing at all. Symptom: an app served from
+// any origin still called http://localhost:28000, cross-origin, instead of the
+// same-origin path its reverse proxy provides.
+//
+// Each name has to be written out; `process.env[name]` is a dynamic lookup and
+// is not substituted either.
+const runtimeEnv: Record<string, string | undefined> = {
+  REACT_APP_API_URL: process.env.REACT_APP_API_URL,
+  REACT_APP_WS_URL: process.env.REACT_APP_WS_URL,
+  REACT_APP_VIDEO_STREAM_URL: process.env.REACT_APP_VIDEO_STREAM_URL,
+};
 
-const API_BASE_URL = runtimeEnv.REACT_APP_API_URL || 'http://localhost:8000';
+const API_BASE_URL = runtimeEnv.REACT_APP_API_URL || 'http://localhost:28000';
 
 // API error response structure from backend
 interface ApiErrorResponse {
@@ -564,6 +601,9 @@ class ApiClient {
     limit?: number;
     source_id?: string;
     search?: string;
+    /** A folder key from getDocumentFolderTree(): the server resolves it, so
+     *  the tree and this list can never disagree about a folder's contents. */
+    folder?: string;
     owner_persona_id?: string;
     persona_id?: string;
     persona_role?: string;
@@ -571,6 +611,283 @@ class ApiClient {
     const response = await this.client.get('/api/v1/documents/', { params });
     // Backend returns PaginatedResponse with items array
     return response.data?.items || response.data || [];
+  }
+
+  // ------------------------------------------------------------- Pipelines
+
+  /** Everything wrong with a pipeline spec, before anything expensive runs.
+   *  Read-only: this launches nothing. */
+  async checkPipeline(
+    spec: Record<string, any>,
+    budgetSeconds?: number
+  ): Promise<PipelineCheck> {
+    const response = await this.client.post('/api/v1/agent-pipelines/check', {
+      spec,
+      budget_seconds: budgetSeconds,
+    });
+    return response.data;
+  }
+
+  /** Start a pipeline. Every check from checkPipeline runs again server-side
+   *  and refuses rather than advises — pass `acknowledgedSeconds` so a spec
+   *  edited since it was priced is rejected instead of quietly costing more. */
+  async launchPipeline(
+    spec: Record<string, any>,
+    options?: {
+      budgetSeconds?: number;
+      acknowledgedSeconds?: number;
+      /** The saved pipeline this run comes from, recorded on both sides. */
+      pipelineId?: string;
+    }
+  ): Promise<PipelineLaunch> {
+    const response = await this.client.post('/api/v1/agent-pipelines/launch', {
+      spec,
+      budget_seconds: options?.budgetSeconds,
+      acknowledged_seconds: options?.acknowledgedSeconds,
+      pipeline_id: options?.pipelineId,
+    });
+    return response.data;
+  }
+
+  /** This user's saved pipelines, most recently touched first. */
+  async listSavedPipelines(): Promise<SavedPipeline[]> {
+    const response = await this.client.get('/api/v1/agent-pipelines');
+    return response.data;
+  }
+
+  /** Save a pipeline. A spec that does not check is still saved — work in
+   *  progress is worth keeping — with the verdict recorded alongside it. */
+  async saveSavedPipeline(payload: {
+    name: string;
+    spec: Record<string, any>;
+    description?: string;
+  }): Promise<SavedPipeline> {
+    const response = await this.client.post('/api/v1/agent-pipelines', payload);
+    return response.data;
+  }
+
+  async updateSavedPipeline(
+    id: string,
+    payload: { name?: string; spec?: Record<string, any>; description?: string }
+  ): Promise<SavedPipeline> {
+    const response = await this.client.patch(`/api/v1/agent-pipelines/${id}`, payload);
+    return response.data;
+  }
+
+  async deleteSavedPipeline(id: string): Promise<{ deleted: string; name: string }> {
+    const response = await this.client.delete(`/api/v1/agent-pipelines/${id}`);
+    return response.data;
+  }
+
+  /** The job chain a pipeline compiles to, returned rather than launched. */
+  async bindPipeline(spec: Record<string, any>): Promise<PipelineBinding> {
+    const response = await this.client.post('/api/v1/agent-pipelines/bind', { spec });
+    return response.data;
+  }
+
+  /** What a run found, and whether it is what was asked for.
+   *
+   *  Separate from the job record because evidence is large: a list of forty
+   *  runs should not carry forty sets of findings to show a count. */
+  async getJobEvidence(jobId: string): Promise<AgentJobEvidence> {
+    const response = await this.client.get(`/api/v1/agent-jobs/${jobId}/evidence`);
+    return response.data;
+  }
+
+  /** Reject one result, with the reason that makes the rejection useful.
+   *
+   *  Advisory by design: no verdict changes and nothing downstream is
+   *  invalidated. What it does is travel — a restart of the stage begins with
+   *  this as an operator correction. */
+  async disputeJobEvidence(
+    jobId: string,
+    index: number,
+    reason: string
+  ): Promise<{ job_id: string; index: number; reason: string; advisory: boolean }> {
+    const response = await this.client.post(
+      `/api/v1/agent-jobs/${jobId}/evidence/${index}/dispute`,
+      { reason }
+    );
+    return response.data;
+  }
+
+  /** Take a rejection back — a measurement re-taken and found good. */
+  async withdrawJobEvidenceDispute(
+    jobId: string,
+    index: number
+  ): Promise<{ job_id: string; index: number; withdrawn: number }> {
+    const response = await this.client.delete(
+      `/api/v1/agent-jobs/${jobId}/evidence/${index}/dispute`
+    );
+    return response.data;
+  }
+
+  /** The environment a run worked in, and what it changed.
+   *
+   *  Addressed through the job rather than by workspace id: this is "how did
+   *  this stage produce this result", not a repository browser. */
+  async getJobWorkspace(jobId: string, path = '.'): Promise<AgentJobWorkspace> {
+    const response = await this.client.get(
+      `/api/v1/agent-jobs/${jobId}/workspace`,
+      { params: { path } }
+    );
+    return response.data;
+  }
+
+  /** One file from that workspace, as it stands now. Read-only. */
+  async getJobWorkspaceFile(
+    jobId: string,
+    path: string
+  ): Promise<AgentJobWorkspaceFile> {
+    const response = await this.client.get(
+      `/api/v1/agent-jobs/${jobId}/workspace/file`,
+      { params: { path } }
+    );
+    return response.data;
+  }
+
+  /** The finding types a contract may require, and the job types available.
+   *  Fetched rather than hardcoded: it is derived from the tool specs, so a
+   *  list kept here would drift the first time a tool is added. */
+  async getPipelineVocabulary(): Promise<PipelineVocabulary> {
+    const response = await this.client.get('/api/v1/agent-pipelines/vocabulary');
+    return response.data;
+  }
+
+  /** Draft a pipeline from a description of what you want done. Spends one
+   *  LLM call and launches nothing — the draft lands in the editor and is
+   *  checked there like anything else. */
+  async draftPipeline(
+    description: string,
+    budgetSeconds?: number
+  ): Promise<PipelineDraft> {
+    const response = await this.client.post('/api/v1/agent-pipelines/draft', {
+      description,
+      budget_seconds: budgetSeconds,
+    });
+    return response.data;
+  }
+
+  /** How far a run got, stage by stage — including the stages it has not
+   *  reached yet, which is what makes it a progress view rather than a list of
+   *  what already happened. */
+  async getPipelineRun(rootJobId: string): Promise<PipelineRun> {
+    const response = await this.client.get(
+      `/api/v1/agent-pipelines/runs/${rootJobId}/stages`
+    );
+    return response.data;
+  }
+
+  /** Run one stage again on the evidence the stages before it established,
+   *  rather than paying for the whole pipeline to reach the same point in a
+   *  different run. `note` reaches the restarted stage as an operator
+   *  correction it actually reads — without one it usually repeats itself. */
+  async restartPipelineStage(
+    rootJobId: string,
+    stage: string,
+    note?: string
+  ): Promise<PipelineStageRestart> {
+    const response = await this.client.post(
+      `/api/v1/agent-pipelines/runs/${rootJobId}/restart`,
+      { stage, note }
+    );
+    return response.data;
+  }
+
+  /** Add a stage the plan did not have, between one that worked and one that
+   *  could not. Everything downstream re-derives beneath it. */
+  async insertPipelineStage(
+    rootJobId: string,
+    payload: { after: string; stage: Record<string, any>; note?: string }
+  ): Promise<PipelineStageInsertion> {
+    const response = await this.client.post(
+      `/api/v1/agent-pipelines/runs/${rootJobId}/insert-stage`,
+      payload
+    );
+    return response.data;
+  }
+
+  // -------------------------------------------------------- Document folders
+
+  /** The whole tree: computed system folders, then this user's own. */
+  async getDocumentFolderTree(includeSystem = true): Promise<DocumentFolderTree> {
+    const response = await this.client.get('/api/v1/document-folders/tree', {
+      params: { include_system: includeSystem },
+    });
+    return response.data;
+  }
+
+  async createDocumentFolder(payload: {
+    name: string;
+    parent_id?: string | null;
+    description?: string | null;
+    color?: string | null;
+    position?: number;
+  }): Promise<DocumentFolder> {
+    const response = await this.client.post('/api/v1/document-folders', payload);
+    return response.data;
+  }
+
+  /** Rename, recolour or reorder. A move needs `reparent: true` as well,
+   *  because `parent_id: null` cannot otherwise be told from "unchanged". */
+  async updateDocumentFolder(
+    folderId: string,
+    payload: {
+      name?: string;
+      description?: string | null;
+      color?: string | null;
+      position?: number;
+      parent_id?: string | null;
+      reparent?: boolean;
+    }
+  ): Promise<DocumentFolder> {
+    const response = await this.client.patch(
+      `/api/v1/document-folders/${folderId}`,
+      payload
+    );
+    return response.data;
+  }
+
+  async deleteDocumentFolder(folderId: string, recursive = false): Promise<{
+    deleted: string;
+    name: string;
+    subfolders_deleted: number;
+  }> {
+    const response = await this.client.delete(`/api/v1/document-folders/${folderId}`, {
+      params: { recursive },
+    });
+    return response.data;
+  }
+
+  async addDocumentsToFolder(
+    folderId: string,
+    documentIds: string[]
+  ): Promise<DocumentFolderItemsResult> {
+    const response = await this.client.post(
+      `/api/v1/document-folders/${folderId}/documents`,
+      { document_ids: documentIds }
+    );
+    return response.data;
+  }
+
+  async removeDocumentsFromFolder(
+    folderId: string,
+    documentIds: string[]
+  ): Promise<DocumentFolderItemsResult> {
+    // A body on DELETE, which axios needs told explicitly.
+    const response = await this.client.delete(
+      `/api/v1/document-folders/${folderId}/documents`,
+      { data: { document_ids: documentIds } }
+    );
+    return response.data;
+  }
+
+  /** Which of this user's folders hold a document. */
+  async getFoldersForDocument(documentId: string): Promise<DocumentFolderRef[]> {
+    const response = await this.client.get(
+      `/api/v1/document-folders/for-document/${documentId}`
+    );
+    return response.data;
   }
 
   async searchDocuments(params: SearchParams): Promise<SearchResponse> {
@@ -1469,25 +1786,24 @@ class ApiClient {
       baseUrl = baseUrl.replace(/\/$/, '');
       if (baseUrl.endsWith('/api')) baseUrl = baseUrl.slice(0, -4);
 
-      // If pointing to nginx (port 3000), use /video
-      if (/(:|\/)3000(\/|$)/.test(baseUrl)) {
-        const url = `${baseUrl}/video/${documentId}`;
-        console.log('Video streamer URL (nginx base):', url, 'for document:', documentId);
+      // If the API and the page share an origin, one reverse proxy serves both
+      // and its /video route is there to be used. This used to test the URL for
+      // port 3000, which tied video routing to one particular host port -- it
+      // stopped matching the moment the stack moved to :23000 (the "3000" in
+      // "23000" has no ":" or "/" before it), and it never told nginx apart
+      // from the CRA dev server, which listens on 3000 and proxies nothing.
+      const pageOrigin =
+        typeof window !== 'undefined' && window.location?.origin
+          ? window.location.origin.replace(/\/$/, '')
+          : '';
+      if (pageOrigin && (baseUrl === '' || baseUrl === pageOrigin)) {
+        const url = `${pageOrigin}/video/${documentId}`;
+        console.log('Video streamer URL (same-origin proxy):', url, 'for document:', documentId);
         return url;
       }
 
-      // 3) Try current page origin (useful when running behind nginx)
-      if (typeof window !== 'undefined' && window.location?.origin) {
-        const origin = window.location.origin.replace(/\/$/, '');
-        if (/(:|\/)3000(\/|$)/.test(origin)) {
-          const url = `${origin}/video/${documentId}`;
-          console.log('Video streamer URL (window origin):', url, 'for document:', documentId);
-          return url;
-        }
-      }
-
       // 4) Fallback to direct video-streamer (dev without nginx)
-      const fallback = `http://localhost:8080/stream/${documentId}`;
+      const fallback = `http://localhost:28080/stream/${documentId}`;
       console.log('Video streamer URL (fallback direct):', fallback, 'for document:', documentId);
       return fallback;
     }
@@ -1654,6 +1970,7 @@ class ApiClient {
         const chunkFormData = new FormData();
         chunkFormData.append('chunk_number', chunkIndex.toString());
         chunkFormData.append('chunk', chunk, file.name);
+        const uploadedBeforeChunk = uploadedSoFar;
         
         try {
           await this.client.post(`/api/v1/upload/${sessionId}/chunk`, chunkFormData, {
@@ -1667,7 +1984,7 @@ class ApiClient {
                 // Overall progress
                 const overallProgress = ((chunkIndex + chunkProgress / 100) / totalChunks) * 100;
                 onProgress?.(Math.round(overallProgress));
-                onBytesProgress?.(uploadedSoFar + progressEvent.loaded, file.size);
+                onBytesProgress?.(uploadedBeforeChunk + progressEvent.loaded, file.size);
               }
             },
           });
@@ -2207,9 +2524,9 @@ class ApiClient {
     }
     
     // Use current window origin to avoid mixed content issues
-    // This ensures WebSocket URL matches the page origin (http://127.0.0.1:3000 or http://localhost:3000)
+    // This ensures WebSocket URL matches the page origin (http://127.0.0.1:23000 or http://localhost:23000)
     const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const host = window.location.host; // Includes port (e.g., "127.0.0.1:3000" or "localhost:3000")
+    const host = window.location.host; // Includes port (e.g., "127.0.0.1:23000" or "localhost:23000")
     const wsUrl = `${protocol}//${host}/api/v1/chat/sessions/${sessionId}/ws?token=${encodeURIComponent(token)}`;
     
     console.log('Creating WebSocket connection to:', wsUrl);
@@ -2909,6 +3226,157 @@ class ApiClient {
     return response.data;
   }
 
+  async getAutonomousRndJobOutcome(jobId: string): Promise<AutonomousRndJobOutcomeResponse> {
+    const response = await this.client.get(
+      `/api/v1/autonomous-rnd-evals/jobs/${encodeURIComponent(String(jobId))}/outcome`
+    );
+    return response.data;
+  }
+
+  async launchAutonomousRndVerificationTask(
+    jobId: string,
+    taskId: string,
+    data: AutonomousRndVerificationLaunchRequest
+  ): Promise<AutonomousRndVerificationLaunchResponse> {
+    const response = await this.client.post(
+      `/api/v1/autonomous-rnd-evals/jobs/${encodeURIComponent(String(jobId))}`
+        + `/verification-tasks/${encodeURIComponent(String(taskId))}/launch`,
+      data
+    );
+    return response.data;
+  }
+
+  async createAutonomousRndVerificationAuditSnapshot(
+    jobId: string,
+    filters: { task_id?: string; status?: string } = {}
+  ): Promise<AutonomousRndVerificationAuditEnvelope> {
+    const response = await this.client.post(
+      `/api/v1/autonomous-rnd-evals/jobs/${encodeURIComponent(String(jobId))}`
+        + '/verification-audit-snapshot',
+      filters
+    );
+    return response.data;
+  }
+
+  async listExternalAgentConnections(): Promise<ExternalAgentConnectionList> {
+    const response = await this.client.get('/api/v1/external-agents');
+    return response.data;
+  }
+
+  async createExternalAgentConnection(data: {
+    name: string;
+    description?: string | null;
+    provider_type: 'generic_agent' | 'compops' | 'mlflow';
+    endpoint_url: string;
+    capabilities: string[];
+    auth_type: 'none' | 'bearer' | 'api_key' | 'basic';
+    secret_id?: string | null;
+    auth_header_name?: string;
+    timeout_seconds?: number;
+    is_enabled?: boolean;
+  }): Promise<ExternalAgentConnection> {
+    const response = await this.client.post('/api/v1/external-agents', data);
+    return response.data;
+  }
+
+  async invokeExternalAgentConnection(
+    connectionId: string,
+    data: {
+      capability: string;
+      payload?: Record<string, any>;
+      request_id?: string;
+      agent_job_id?: string;
+    }
+  ): Promise<ExternalAgentInvokeResult> {
+    const response = await this.client.post(
+      `/api/v1/external-agents/${encodeURIComponent(connectionId)}/invoke`,
+      data
+    );
+    return response.data;
+  }
+
+  async listCompOpsEvidenceSubscriptions(
+    jobId: string
+  ): Promise<CompOpsEvidenceSubscriptionList> {
+    const response = await this.client.get(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}/compops-sync-subscriptions`
+    );
+    return response.data;
+  }
+
+  async createCompOpsEvidenceSubscription(
+    jobId: string,
+    data: {
+      tool_id: string;
+      capability: string;
+      payload: Record<string, any>;
+      interval_minutes: number;
+      sync_immediately?: boolean;
+    }
+  ): Promise<CompOpsEvidenceSyncResult> {
+    const response = await this.client.post(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}/compops-sync-subscriptions`,
+      data
+    );
+    return response.data;
+  }
+
+  async updateCompOpsEvidenceSubscription(
+    jobId: string,
+    subscriptionId: string,
+    data: { interval_minutes?: number; is_enabled?: boolean }
+  ): Promise<CompOpsEvidenceSubscription> {
+    const response = await this.client.patch(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}`
+        + `/compops-sync-subscriptions/${encodeURIComponent(subscriptionId)}`,
+      data
+    );
+    return response.data;
+  }
+
+  async syncCompOpsEvidenceSubscription(
+    jobId: string,
+    subscriptionId: string
+  ): Promise<CompOpsEvidenceSyncResult> {
+    const response = await this.client.post(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}`
+        + `/compops-sync-subscriptions/${encodeURIComponent(subscriptionId)}/sync`
+    );
+    return response.data;
+  }
+
+  async enableCompOpsSubscriptionWebhook(
+    jobId: string,
+    subscriptionId: string
+  ): Promise<CompOpsWebhookSetup> {
+    const response = await this.client.post(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}`
+        + `/compops-sync-subscriptions/${encodeURIComponent(subscriptionId)}/webhook`
+    );
+    return response.data;
+  }
+
+  async disableCompOpsSubscriptionWebhook(
+    jobId: string,
+    subscriptionId: string
+  ): Promise<CompOpsEvidenceSubscription> {
+    const response = await this.client.delete(
+      `/api/v1/external-agents/jobs/${encodeURIComponent(jobId)}`
+        + `/compops-sync-subscriptions/${encodeURIComponent(subscriptionId)}/webhook`
+    );
+    return response.data;
+  }
+
+  async listSecrets(): Promise<SecretSummary[]> {
+    const response = await this.client.get('/api/v1/secrets');
+    return response.data;
+  }
+
+  async storeSecret(name: string, value: string): Promise<SecretSummary> {
+    const response = await this.client.post('/api/v1/secrets', { name, value });
+    return response.data;
+  }
+
   async promoteDomainResearchAgentJob(
     jobId: string,
     data: AgentJobPromoteDomainResearchRequest
@@ -3468,6 +3936,7 @@ class ApiClient {
     options?: {
       style?: 'professional' | 'technical' | 'casual';
       includeLog?: boolean;
+      includeToolLog?: boolean;
       includeMetadata?: boolean;
       enhance?: boolean;
     }
@@ -3476,6 +3945,9 @@ class ApiClient {
       format,
       style: options?.style || 'professional',
       include_log: String(options?.includeLog || false),
+      // The log of tools the agent ran is on by default: without it the report
+      // states conclusions with no record of the calls behind them.
+      include_tool_log: String(options?.includeToolLog !== false),
       include_metadata: String(options?.includeMetadata !== false),
       enhance: String(options?.enhance || false),
     });
@@ -3497,6 +3969,7 @@ class ApiClient {
     options?: {
       style?: 'professional' | 'technical' | 'casual';
       includeLog?: boolean;
+      includeToolLog?: boolean;
       includeMetadata?: boolean;
       enhance?: boolean;
     }
@@ -3708,6 +4181,8 @@ class ApiClient {
     title: string;
     document_ids: string[];
     paper_ids?: string[];
+    /** Autonomous runs whose recorded findings become source material. */
+    agent_job_ids?: string[];
     research_note_id?: string;
     experiment_run_ids?: string[];
     primary_run_id?: string;

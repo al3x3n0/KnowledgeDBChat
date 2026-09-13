@@ -3,6 +3,53 @@
 // expect(element).toHaveTextContent(/react/i)
 // learn more: https://github.com/testing-library/jest-dom
 import '@testing-library/jest-dom';
+import { configure } from '@testing-library/react';
+
+// testing-library gives every findBy* and waitFor one second by default. The
+// heavier pages here mount, fire several queries and settle well inside that
+// on an idle machine and not reliably on a loaded one, which is what made
+// AutonomousAgentsPage's shards fail intermittently: 'auto-applies the default
+// trace view' failed looking for an option that arrived at 1.1 seconds.
+//
+// This weakens no assertion. A test that passes in 200ms still passes in
+// 200ms; only a failing one waits longer before saying so.
+configure({ asyncUtilTimeout: 5000 });
+
+// ...and the per-test budget has to be larger than that, which it was not.
+//
+// Jest's default test timeout is also 5000ms, so a test allowed to wait five
+// seconds for an element had exactly zero time left to do anything with it:
+// any test that actually used the async budget above died by construction.
+// That is what every intermittent failure in this suite turned out to be —
+// five different suites, five different days' worth of "flakiness", and not
+// one assertion failure among them, only "Exceeded timeout of 5000 ms".
+//
+// 20s leaves room for the async budget plus the render work around it, and is
+// still short enough that a genuine hang fails the build rather than stalling
+// it. Raise `asyncUtilTimeout` and this together, never one alone.
+jest.setTimeout(20_000);
+
+// jsdom implements no ResizeObserver, and several things here need one:
+// `useElementSize` (the KG canvas, the graph pages) and ReactFlow, which throws
+// outright without it. That absence is why those surfaces had no tests — the
+// component was fine and the environment could not mount it.
+//
+// A stub, not an implementation: it never fires. A test that needs a real
+// measurement should drive the callback itself rather than expect layout from
+// a DOM that does no layout.
+class ResizeObserverStub {
+  observe(): void {}
+  unobserve(): void {}
+  disconnect(): void {}
+}
+(global as any).ResizeObserver = (global as any).ResizeObserver || ResizeObserverStub;
+
+// ReactFlow measures with these too, and jsdom reports zero for all of them.
+if (!(window as any).DOMMatrixReadOnly) {
+  (window as any).DOMMatrixReadOnly = class {
+    m22 = 1;
+  };
+}
 
 // CRA/Jest (react-scripts) doesn't transform ESM in node_modules by default.
 // Some dependencies we use (react-markdown, tiptap v3) ship ESM and will fail

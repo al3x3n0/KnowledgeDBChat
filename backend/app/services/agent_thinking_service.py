@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import json
-import re
 from typing import Any, Dict, List, Optional
 
 from loguru import logger
+
+from app.services import agent_decision_parser
 
 
 class AgentThinkingService:
@@ -47,8 +48,12 @@ class AgentThinkingService:
             system_prompt = build_stable(job, agent_def, state, profile=profile)
             volatile_context = build_volatile(job, state) or ""
         else:
-            system_prompt = executor._build_thinking_prompt(job, agent_def, state, observation, profile=profile)
-        available_tools = executor._get_tools_for_job_type(job.job_type, job.config, profile=profile)
+            system_prompt = executor._build_thinking_prompt(
+                job, agent_def, state, observation, profile=profile
+            )
+        available_tools = executor._get_tools_for_job_type(
+            job.job_type, job.config, profile=profile
+        )
 
         user_message = f"""
 {volatile_context}
@@ -119,6 +124,10 @@ Respond in JSON format:
                     user_settings=user_settings,
                     routing=routing,
                     snapshot_context=snapshot_context,
+                    # Without the session the snapshot recorder returns early,
+                    # so LLM_CALL_SNAPSHOT_ENABLED would capture nothing for
+                    # the decision calls it exists to record.
+                    db=db,
                 )
 
             decision = await executor.decision_parser.parse_with_retry(
@@ -130,6 +139,7 @@ Respond in JSON format:
                 system_prompt=system_prompt,
                 user_message=user_message,
                 routing=routing,
+                db=db,
             )
 
             state["decision_parse_metrics"] = executor.decision_parser.metrics
@@ -137,8 +147,14 @@ Respond in JSON format:
             if decision is not None:
                 result = decision.model_dump()
                 if isinstance(result.get("action"), dict):
-                    result["action"] = executor._apply_default_scope_to_action(result["action"], job)
-                if result.get("action") is None and not result.get("goal_achieved") and not result.get("should_stop"):
+                    result["action"] = executor._apply_default_scope_to_action(
+                        result["action"], job
+                    )
+                if (
+                    result.get("action") is None
+                    and not result.get("goal_achieved")
+                    and not result.get("should_stop")
+                ):
                     recovery = executor._build_recovery_action(job, state)
                     if recovery:
                         result["action"] = recovery
@@ -148,7 +164,9 @@ Respond in JSON format:
                         ).strip()
                     else:
                         result["should_stop"] = True
-                        result["stop_reason"] = "No valid action available for continuation"
+                        result[
+                            "stop_reason"
+                        ] = "No valid action available for continuation"
                 return result
 
             return self.parse_decision_response(
@@ -164,7 +182,9 @@ Respond in JSON format:
             return {
                 "goal_achieved": False,
                 "should_stop": recovery_action is None,
-                "stop_reason": f"Thinking error: {exc}" if recovery_action is None else "",
+                "stop_reason": f"Thinking error: {exc}"
+                if recovery_action is None
+                else "",
                 "reasoning": str(exc),
                 "action": recovery_action,
             }
@@ -361,6 +381,7 @@ Respond in JSON format:
         user_settings: Optional[Any],
         routing: Optional[Dict[str, Any]],
         snapshot_context: Optional[Dict[str, Any]] = None,
+        db: Optional[Any] = None,
     ) -> str:
         """Produce the raw decision text for parsing.
 
@@ -379,6 +400,7 @@ Respond in JSON format:
                 user_settings=user_settings,
                 routing=routing,
                 snapshot_context=snapshot_context,
+                db=db,
             )
             if completion is not None:
                 if getattr(completion, "structured", None) is not None:
@@ -387,7 +409,9 @@ Respond in JSON format:
                 if text:
                     return text
         except Exception as exc:
-            logger.debug(f"Structured decision path unavailable, using prompted text: {exc}")
+            logger.debug(
+                f"Structured decision path unavailable, using prompted text: {exc}"
+            )
 
         response = await executor.llm_service.generate_response(
             system_prompt=system_prompt,
@@ -395,6 +419,7 @@ Respond in JSON format:
             user_settings=user_settings,
             routing=routing,
             snapshot_context=snapshot_context,
+            db=db,
         )
         return str(response or "")
 
@@ -415,7 +440,9 @@ Respond in JSON format:
             return {
                 "goal_achieved": False,
                 "should_stop": recovery is None,
-                "stop_reason": "Model response did not contain a valid JSON decision" if recovery is None else "",
+                "stop_reason": "Model response did not contain a valid JSON decision"
+                if recovery is None
+                else "",
                 "reasoning": text[:500] if text else "Model returned an empty decision",
                 "assessment": None,
                 "action": recovery,
@@ -436,7 +463,9 @@ Respond in JSON format:
                 reasoning = f"{reasoning[:360]} Auto-selected deterministic recovery action.".strip()
             else:
                 should_stop = True
-                stop_reason = stop_reason or "No valid action available for continuation"
+                stop_reason = (
+                    stop_reason or "No valid action available for continuation"
+                )
 
         if should_stop and not stop_reason:
             stop_reason = "Model requested stop"
@@ -451,58 +480,8 @@ Respond in JSON format:
         }
 
     def _extract_first_json_object(self, text: str) -> Optional[Dict[str, Any]]:
-        """Extract the first valid JSON object from plain text or fenced markdown."""
-        if not text:
-            return None
-
-        stripped = text.strip()
-        try:
-            parsed = json.loads(stripped)
-            if isinstance(parsed, dict):
-                return parsed
-        except Exception:
-            pass
-
-        fence_match = re.search(r"```(?:json)?\s*(.*?)\s*```", text, flags=re.IGNORECASE | re.DOTALL)
-        if fence_match:
-            fenced = fence_match.group(1).strip()
-            try:
-                parsed = json.loads(fenced)
-                if isinstance(parsed, dict):
-                    return parsed
-            except Exception:
-                pass
-
-        for start in [i for i, ch in enumerate(text) if ch == "{"]:
-            depth = 0
-            in_string = False
-            escaped = False
-            for idx in range(start, len(text)):
-                ch = text[idx]
-                if in_string:
-                    if escaped:
-                        escaped = False
-                    elif ch == "\\":
-                        escaped = True
-                    elif ch == '"':
-                        in_string = False
-                    continue
-
-                if ch == '"':
-                    in_string = True
-                elif ch == "{":
-                    depth += 1
-                elif ch == "}":
-                    depth -= 1
-                    if depth == 0:
-                        candidate = text[start : idx + 1]
-                        try:
-                            parsed = json.loads(candidate)
-                            if isinstance(parsed, dict):
-                                return parsed
-                        except Exception:
-                            break
-        return None
+        """Extract the first JSON object from model output."""
+        return agent_decision_parser.extract_first_json_object(text)
 
     def _normalize_decision_action(
         self,
@@ -510,34 +489,8 @@ Respond in JSON format:
         available_tools: List[str],
     ) -> Optional[Dict[str, Any]]:
         """Normalize action payload and reject unavailable tools."""
-        if action is None:
-            return None
-        if isinstance(action, str):
-            action = {"tool": action, "params": {}}
-        if not isinstance(action, dict):
-            return None
-
-        tool = str(action.get("tool") or "").strip()
-        if not tool or tool not in set(available_tools):
-            return None
-
-        params = action.get("params")
-        if not isinstance(params, dict):
-            params = {}
-
-        purpose = str(action.get("purpose") or "").strip()
-        return {"tool": tool, "params": params, "purpose": purpose[:300]}
+        return agent_decision_parser.normalize_decision_action(action, available_tools)
 
     def _coerce_bool(self, value: Any, default: bool = False) -> bool:
         """Coerce flexible model outputs to booleans."""
-        if isinstance(value, bool):
-            return value
-        if isinstance(value, (int, float)):
-            return bool(value)
-        if isinstance(value, str):
-            lowered = value.strip().lower()
-            if lowered in {"true", "yes", "1", "y"}:
-                return True
-            if lowered in {"false", "no", "0", "n"}:
-                return False
-        return default
+        return agent_decision_parser.coerce_bool(value, default)

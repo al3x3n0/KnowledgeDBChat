@@ -9,26 +9,174 @@ Handles background execution of autonomous agent jobs, including:
 
 import asyncio
 import json
+import time
 from datetime import datetime, timedelta
-from typing import Optional
-from uuid import UUID
+from typing import Any, Awaitable, Callable, Dict, Optional
+from uuid import UUID, uuid4
 
 from celery import current_task
+from celery.exceptions import SoftTimeLimitExceeded
 from loguru import logger
+from sqlalchemy import and_, delete, or_, select
+from sqlalchemy.orm import selectinload
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
+from app.services.agent_execution_lease_service import (
+    ExecutionLeaseLostError,
+    agent_execution_lease_service,
+)
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.services.research_inbox_follow_up_service import sync_follow_up_outcome_for_job
-from sqlalchemy import select, and_, or_, delete
-from sqlalchemy.orm import selectinload
+
+#: Phases that mean a run is waiting for a human, not idling. The stalled-job
+#: sweep must leave these alone: resuming a job paused for approval is not
+#: recovery, it is walking through the gate nobody opened.
+WAITING_ON_A_PERSON = frozenset({"awaiting_approval", "blocked_needs_input"})
+
+
+async def renew_lease_on_a_recycled_session(
+    *,
+    session_holder: Dict[str, Any],
+    session_factory: Any,
+    lease: Any,
+    ttl_seconds: int,
+) -> Any:
+    """Renew the lease, discarding the session if the attempt fails at all.
+
+    The session is reused between ticks so the renewal is one small UPDATE on a
+    warm connection rather than a fresh engine every forty seconds. That makes
+    discarding it on failure essential: a session whose statement was
+    interrupted stays in a failed transaction, and every later renewal on it
+    dies with "Can't reconnect until invalid transaction is rolled back".
+
+    `BaseException`, not `Exception`, and that distinction is the whole bug.
+    The caller bounds each renewal with `asyncio.wait_for`, which CANCELS this
+    coroutine when it times out -- and `CancelledError` does not inherit from
+    `Exception`, so the one failure mode the bound exists to produce was the
+    one that skipped this cleanup. Measured live: a renewal timed out, the
+    half-used session stayed in the holder, every subsequent tick failed on it,
+    and 120s later a healthy job died with "Execution lease lost at fence 2" at
+    iteration 25 -- blaming the lease, two layers from the cause.
+
+    The holder is cleared BEFORE the close is attempted, because closing a
+    cancelled session can itself fail: what matters is that the next tick does
+    not find this one.
+    """
+    session = session_holder.get("session")
+    if session is None:
+        session = session_factory()
+        session_holder["session"] = session
+    try:
+        return await agent_execution_lease_service.renew(
+            db=session,
+            lease=lease,
+            ttl_seconds=ttl_seconds,
+        )
+    except BaseException:
+        session_holder.pop("session", None)
+        try:
+            await session.close()
+        except BaseException:
+            pass
+        raise
+
+
+async def run_execution_lease_heartbeat(
+    *,
+    job_id: str,
+    fence: Any,
+    renew: Callable[[], Awaitable[Any]],
+    interval: float,
+    ttl_seconds: int,
+    stop: asyncio.Event,
+    lease_lost: asyncio.Event,
+) -> None:
+    """Keep a running job's lease alive until the run ends or the lease is gone.
+
+    Extracted from the task so it can be driven directly. It was a closure, and
+    the only tests that could reach it were replicas of its control flow --
+    which pass just as happily when the real loop drifts away from them.
+
+    Two behaviours pull in opposite directions and the TTL is the line between
+    them. A renewal can fail for reasons that have nothing to do with ownership
+    -- a saturated pool, a dropped connection, a database restart -- and
+    surrendering a running job to one of those throws away everything it has
+    done, so those are retried. But a lease that has not been renewed for
+    longer than its TTL has certainly expired, and another worker is entitled
+    to take it; continuing past that point is two workers on one job.
+
+    Before this was guarded at all, the first such failure raised out of the
+    coroutine and ended the heartbeat. `asyncio.create_task` holds that
+    exception until someone retrieves it, and the only retrieval ran after the
+    job had finished, so renewals stopped in silence: the lease lapsed, the
+    stalled-job sweep declared the job an orphan, another worker took it, and
+    this one found out at commit time -- reported as "Execution lease lost at
+    fence 3", two takeovers after the fact, blaming the job.
+    """
+    last_renewed = time.monotonic()
+    while not stop.is_set():
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=interval)
+            return
+        except asyncio.TimeoutError:
+            pass
+        try:
+            # Bounded, because an unbounded renewal is not a heartbeat. The
+            # renewal opens its own session -- a fresh engine and connection
+            # every tick -- and if that blocks on a saturated pool the loop
+            # simply stops: timestamps frozen, no exception raised, nothing
+            # logged, and the lease quietly expires under a job that is still
+            # working. Observed exactly so: heartbeat age climbing 28s, 55s,
+            # 85s, 113s while the run went on making API calls, until the
+            # lease went negative and the commit was refused.
+            #
+            # A renewal slower than the interval is useless even if it
+            # succeeds, so the timeout is a fraction of it, and a timeout is
+            # handled as the failed renewal it is: retried, and given up on
+            # only once the TTL says the lease cannot still be held.
+            renewed = await asyncio.wait_for(renew(), timeout=max(5.0, interval * 0.8))
+        except asyncio.CancelledError:
+            raise
+        except Exception as renew_error:
+            stale_for = time.monotonic() - last_renewed
+            if stale_for >= ttl_seconds:
+                lease_lost.set()
+                logger.error(
+                    f"Execution lease for job {job_id} has not been renewed "
+                    f"for {stale_for:.0f}s (ttl {ttl_seconds}s); it has "
+                    f"expired and another worker may already hold it: "
+                    f"{renew_error}"
+                )
+                return
+            logger.warning(
+                f"Execution lease renewal failed for job {job_id} "
+                f"({stale_for:.0f}s since the last success, ttl "
+                f"{ttl_seconds}s); retrying: {renew_error}"
+            )
+            continue
+        if renewed is None:
+            lease_lost.set()
+            logger.error(
+                f"Execution lease heartbeat lost for job {job_id} at fence {fence}"
+            )
+            return
+        last_renewed = time.monotonic()
 
 
 def _scheduler_state(job: AgentJob) -> dict:
     results = job.results if isinstance(job.results, dict) else {}
-    execution = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
-    state = execution.get("scheduler_state") if isinstance(execution.get("scheduler_state"), dict) else {}
+    execution = (
+        results.get("execution_strategy")
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
+    state = (
+        execution.get("scheduler_state")
+        if isinstance(execution.get("scheduler_state"), dict)
+        else {}
+    )
     return {
         **state,
         "last_run_status": str(state.get("last_run_status") or "").strip() or None,
@@ -38,7 +186,11 @@ def _scheduler_state(job: AgentJob) -> dict:
 
 def _write_scheduler_state(job: AgentJob, state: dict) -> dict:
     results = dict(job.results) if isinstance(job.results, dict) else {}
-    execution = dict(results.get("execution_strategy")) if isinstance(results.get("execution_strategy"), dict) else {}
+    execution = (
+        dict(results.get("execution_strategy"))
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
     execution["scheduler_state"] = state
     results["execution_strategy"] = execution
     job.results = results
@@ -57,7 +209,13 @@ def _mark_scheduler_dispatched(job: AgentJob, *, dispatched_at: datetime) -> Non
     _write_scheduler_state(job, state)
 
 
-def _record_scheduler_outcome(job: AgentJob, *, outcome: str, happened_at: datetime, queue_reason: str | None = None) -> None:
+def _record_scheduler_outcome(
+    job: AgentJob,
+    *,
+    outcome: str,
+    happened_at: datetime,
+    queue_reason: str | None = None,
+) -> None:
     state = _scheduler_state(job)
     state["last_run_status"] = outcome
     state["current_run_started_at"] = None
@@ -75,13 +233,19 @@ def _record_scheduler_outcome(job: AgentJob, *, outcome: str, happened_at: datet
         if str(job.schedule_type or "").strip().lower() in {"recurring", "continuous"}:
             interval_minutes = 30
             try:
-                interval_minutes = int(((job.config or {}).get("interval_minutes") or 30))
+                interval_minutes = int(
+                    ((job.config or {}).get("interval_minutes") or 30)
+                )
             except Exception:
                 interval_minutes = 30
             interval_minutes = max(1, min(interval_minutes, 24 * 60))
-            backoff_seconds = min(interval_minutes * 60 * (2 ** max(0, streak - 1)), 6 * 60 * 60)
+            backoff_seconds = min(
+                interval_minutes * 60 * (2 ** max(0, streak - 1)), 6 * 60 * 60
+            )
             state["backoff_seconds"] = int(backoff_seconds)
-            state["backoff_until"] = (happened_at + timedelta(seconds=backoff_seconds)).isoformat()
+            state["backoff_until"] = (
+                happened_at + timedelta(seconds=backoff_seconds)
+            ).isoformat()
             job.next_run_at = happened_at + timedelta(seconds=backoff_seconds)
     _write_scheduler_state(job, state)
 
@@ -99,6 +263,7 @@ async def _publish_job_progress(
 ):
     """Publish job progress update to Redis for WebSocket subscribers."""
     import redis.asyncio as redis
+
     from app.core.config import settings
 
     try:
@@ -120,7 +285,10 @@ async def _publish_job_progress(
             message["error"] = error
         if isinstance(execution_graph_runtime, dict) and execution_graph_runtime:
             message["execution_graph_runtime"] = execution_graph_runtime
-        if isinstance(scope_observability_runtime, dict) and scope_observability_runtime:
+        if (
+            isinstance(scope_observability_runtime, dict)
+            and scope_observability_runtime
+        ):
             message["scope_observability_runtime"] = scope_observability_runtime
 
         await redis_client.publish(channel, json.dumps(message))
@@ -129,7 +297,12 @@ async def _publish_job_progress(
         logger.warning(f"Failed to publish progress for agent job {job_id}: {e}")
 
 
-async def _execute_agent_job_async(job_id: str, user_id: str):
+async def _execute_agent_job_async(
+    job_id: str,
+    user_id: str,
+    *,
+    lease_owner_id: Optional[str] = None,
+):
     """Async implementation of agent job execution."""
     job_uuid = UUID(job_id)
     session_factory = create_celery_session()
@@ -152,19 +325,101 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
             logger.info(f"Agent job {job_id} was cancelled")
             return
 
-        # Store celery task ID
-        if current_task:
-            job.celery_task_id = current_task.request.id
-            await db.commit()
+        owner_id = str(
+            lease_owner_id
+            or getattr(getattr(current_task, "request", None), "id", None)
+            or f"worker:{uuid4()}"
+        )
+        lease_ttl = (
+            (job.config or {}).get("execution_lease_ttl_seconds")
+            if isinstance(job.config, dict)
+            else None
+        )
+        lease = await agent_execution_lease_service.acquire(
+            db=db,
+            job_id=job_uuid,
+            owner_id=owner_id,
+            ttl_seconds=lease_ttl,
+        )
+        if lease is None:
+            logger.info(
+                f"Agent job {job_id} already has an active execution lease; "
+                "duplicate delivery skipped"
+            )
+            return {
+                "status": "lease_conflict",
+                "job_id": job_id,
+            }
+        await db.refresh(job)
 
-        await _publish_job_progress(job_id, 0, "starting", "running")
+        # Store celery task ID
+        job.celery_task_id = owner_id
+        await db.commit()
+
+        heartbeat_stop = asyncio.Event()
+        lease_lost = asyncio.Event()
+        heartbeat_interval = max(
+            10,
+            agent_execution_lease_service.normalize_ttl(lease_ttl) // 3,
+        )
+
+        lease_ttl_seconds = agent_execution_lease_service.normalize_ttl(lease_ttl)
+
+        # One session for the life of the run, not one per tick. Building a
+        # fresh engine and checking out a new connection every forty seconds
+        # is what made the renewal hang: the running job holds the database
+        # concurrency it needs, the heartbeat waits behind it, and the wait is
+        # unbounded. Measured before this: the renewal timed out at 32s, then
+        # again, and the lease expired under a job that was still working.
+        #
+        # The connection is used for one small UPDATE every forty seconds,
+        # which also keeps it from going idle.
+        heartbeat_session_factory = create_celery_session()
+        heartbeat_session_holder: Dict[str, Any] = {}
+
+        async def _renew_once() -> Any:
+            return await renew_lease_on_a_recycled_session(
+                session_holder=heartbeat_session_holder,
+                session_factory=heartbeat_session_factory,
+                lease=lease,
+                ttl_seconds=lease_ttl,
+            )
+
+        async def _heartbeat_execution_lease() -> None:
+            await run_execution_lease_heartbeat(
+                job_id=job_id,
+                fence=lease.fence,
+                renew=_renew_once,
+                interval=heartbeat_interval,
+                ttl_seconds=lease_ttl_seconds,
+                stop=heartbeat_stop,
+                lease_lost=lease_lost,
+            )
+
+        heartbeat_task = asyncio.create_task(_heartbeat_execution_lease())
+
+        await _publish_job_progress(
+            job_id=job_id,
+            progress=0,
+            phase="starting",
+            status="running",
+        )
 
         try:
             # Initialize executor
             executor = AutonomousAgentExecutor()
+            executor.execution_lease = lease
 
             # Progress callback that publishes to Redis
             async def progress_callback(progress_data: dict):
+                if lease_lost.is_set():
+                    raise ExecutionLeaseLostError(
+                        f"Execution lease heartbeat lost for job {job_id}"
+                    )
+                await agent_execution_lease_service.assert_owned(
+                    db=db,
+                    lease=lease,
+                )
                 # Check for cancellation
                 await db.refresh(job)
                 if job.status == AgentJobStatus.CANCELLED.value:
@@ -179,24 +434,55 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
                     phase_details=progress_data.get("phase_details"),
                     execution_graph_runtime=(
                         progress_data.get("execution_graph_runtime")
-                        if isinstance(progress_data.get("execution_graph_runtime"), dict)
+                        if isinstance(
+                            progress_data.get("execution_graph_runtime"), dict
+                        )
                         else None
                     ),
                     scope_observability_runtime=(
                         progress_data.get("scope_observability_runtime")
-                        if isinstance(progress_data.get("scope_observability_runtime"), dict)
+                        if isinstance(
+                            progress_data.get("scope_observability_runtime"), dict
+                        )
                         else None
                     ),
                 )
 
-            # Execute the job
-            result = await executor.execute_job(
-                job_id=job_uuid,
-                db=db,
-                progress_callback=progress_callback,
+            # Execute the job as a task, so losing the lease can stop it
+            # rather than wait to be noticed. Detection used to live only in
+            # progress_callback, and a run that lost its lease at 17:15 kept
+            # working until 19:47 before anything checked -- two and a half
+            # hours of simulations and LLM calls, all of it discarded, with
+            # every action in the transcript recorded as successful.
+            execution_task = asyncio.ensure_future(
+                executor.execute_job(
+                    job_id=job_uuid,
+                    db=db,
+                    progress_callback=progress_callback,
+                )
             )
+            lease_watch = asyncio.ensure_future(lease_lost.wait())
+            try:
+                done, _pending = await asyncio.wait(
+                    {execution_task, lease_watch},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+            finally:
+                lease_watch.cancel()
+
+            if execution_task not in done:
+                execution_task.cancel()
+                try:
+                    await execution_task
+                except (asyncio.CancelledError, Exception):
+                    pass
+                raise ExecutionLeaseLostError(
+                    f"Execution lease lost for job {job_id} at fence " f"{lease.fence}"
+                )
+            result = execution_task.result()
 
             # Publish completion
+            await agent_execution_lease_service.assert_owned(db=db, lease=lease)
             final_status = result.get("status", "completed")
             _record_scheduler_outcome(
                 job,
@@ -216,6 +502,14 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
 
             logger.info(f"Agent job {job_id} completed with status: {final_status}")
 
+        except ExecutionLeaseLostError as e:
+            await db.rollback()
+            logger.error(f"Abandoning stale execution for job {job_id}: {e}")
+            return {
+                "status": "lease_lost",
+                "job_id": job_id,
+                "fence": lease.fence,
+            }
         except Exception as e:
             # Update job as failed
             job.status = AgentJobStatus.FAILED.value
@@ -239,6 +533,55 @@ async def _execute_agent_job_async(job_id: str, user_id: str):
             )
 
             logger.error(f"Agent job {job_id} failed: {e}")
+        finally:
+            heartbeat_stop.set()
+            heartbeat_task.cancel()
+            _hb_session = heartbeat_session_holder.pop("session", None)
+            if _hb_session is not None:
+                try:
+                    await _hb_session.close()
+                except Exception:
+                    pass
+            try:
+                await heartbeat_task
+            except asyncio.CancelledError:
+                pass
+            except Exception as heartbeat_error:
+                # Catching only CancelledError here meant a heartbeat that had
+                # died of anything else re-raised from the cleanup path and
+                # replaced whatever the job was actually reporting.
+                logger.error(
+                    f"Execution lease heartbeat for job {job_id} died: "
+                    f"{heartbeat_error}"
+                )
+            try:
+                await agent_execution_lease_service.release(db=db, lease=lease)
+            except Exception as release_error:
+                logger.warning(
+                    f"Failed releasing execution lease for job {job_id}: "
+                    f"{release_error}"
+                )
+
+
+#: Failures a retry cannot fix, so retrying only repeats the cost.
+#: SoftTimeLimitExceeded means the job exhausted its wall clock; the same work
+#: takes the same time. ExecutionLeaseLostError means another owner holds the
+#: job. CancelledError means someone asked for it to stop.
+TERMINAL_TASK_ERRORS = (
+    SoftTimeLimitExceeded,
+    ExecutionLeaseLostError,
+    asyncio.CancelledError,
+)
+
+
+def is_terminal_task_error(exc: BaseException) -> bool:
+    """Whether re-running this job could plausibly go differently.
+
+    A named predicate rather than an inline isinstance because this is the
+    decision that turned one timed-out job into three failed ones, and it
+    should be testable without a Celery worker.
+    """
+    return isinstance(exc, TERMINAL_TASK_ERRORS)
 
 
 @celery_app.task(bind=True, max_retries=2, default_retry_delay=120)
@@ -258,11 +601,23 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
     """
     logger.info(f"Starting autonomous agent job execution for {job_id}")
 
+    task_owner_id = str(
+        getattr(getattr(self, "request", None), "id", None)
+        or getattr(getattr(current_task, "request", None), "id", None)
+        or f"worker:{uuid4()}"
+    )
+    execution_coro = _execute_agent_job_async(
+        job_id,
+        user_id,
+        lease_owner_id=task_owner_id,
+    )
     try:
-        asyncio.run(_execute_agent_job_async(job_id, user_id))
+        asyncio.run(execution_coro)
 
     except Exception as e:
+        execution_coro.close()
         logger.exception(f"Agent job task failed for {job_id}")
+        error_text = str(e)
 
         async def _mark_failed():
             job_uuid = UUID(job_id)
@@ -272,13 +627,35 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
                     select(AgentJob).where(AgentJob.id == job_uuid)
                 )
                 job = result.scalar_one_or_none()
-                if job and job.status not in (
-                    AgentJobStatus.COMPLETED.value,
-                    AgentJobStatus.FAILED.value,
-                    AgentJobStatus.CANCELLED.value,
+                lease_expired = False
+                if job and job.execution_lease_expires_at is not None:
+                    lease_deadline = job.execution_lease_expires_at
+                    lease_now = (
+                        datetime.now(lease_deadline.tzinfo)
+                        if lease_deadline.tzinfo is not None
+                        else datetime.utcnow()
+                    )
+                    lease_expired = lease_deadline <= lease_now
+                lease_allows_failure_write = bool(
+                    job
+                    and (
+                        not job.execution_lease_owner
+                        or job.execution_lease_owner == task_owner_id
+                        or lease_expired
+                    )
+                )
+                if (
+                    job
+                    and lease_allows_failure_write
+                    and job.status
+                    not in (
+                        AgentJobStatus.COMPLETED.value,
+                        AgentJobStatus.FAILED.value,
+                        AgentJobStatus.CANCELLED.value,
+                    )
                 ):
                     job.status = AgentJobStatus.FAILED.value
-                    job.error = f"Task error: {str(e)}"
+                    job.error = f"Task error: {error_text}"
                     job.completed_at = datetime.utcnow()
                     _record_scheduler_outcome(
                         job,
@@ -294,7 +671,23 @@ def execute_agent_job_task(self, job_id: str, user_id: str):
         except Exception:
             logger.warning("Failed to persist agent job task failure status")
 
-        # Retry on transient errors
+        # Retry only what a retry could actually fix.
+        #
+        # This used to retry every exception, having just written the job to
+        # FAILED. Three things went wrong at once: a 16-iteration job that ran
+        # out of wall clock was re-run from scratch, against a job already
+        # marked failed; the retry held the only worker slot (prefetch
+        # multiplier 1); and the NEXT job's heartbeat could not run while it
+        # did, so that job lost its lease and failed too. One timeout poisoned
+        # two later runs. A soft time limit is not transient -- re-running the
+        # same work takes the same time and hits the same wall -- and a lost
+        # lease means another owner has it, so retrying only contends again.
+        if is_terminal_task_error(e):
+            logger.info(
+                f"Not retrying agent job {job_id}: {type(e).__name__} is "
+                "terminal, and a retry would repeat the work that failed."
+            )
+            return
         if self.request.retries < self.max_retries:
             raise self.retry(exc=e)
 
@@ -316,15 +709,18 @@ def process_scheduled_agent_jobs():
 
             # Find jobs that are due
             result = await db.execute(
-                select(AgentJob).where(
+                select(AgentJob)
+                .where(
                     and_(
                         AgentJob.schedule_type.isnot(None),
                         AgentJob.next_run_at <= now,
-                        AgentJob.status.in_([
-                            AgentJobStatus.PENDING.value,
-                            AgentJobStatus.COMPLETED.value,
-                            AgentJobStatus.FAILED.value,
-                        ]),
+                        AgentJob.status.in_(
+                            [
+                                AgentJobStatus.PENDING.value,
+                                AgentJobStatus.COMPLETED.value,
+                                AgentJobStatus.FAILED.value,
+                            ]
+                        ),
                     )
                 )
                 .with_for_update(skip_locked=True)
@@ -351,15 +747,20 @@ def process_scheduled_agent_jobs():
                     # Parse cron and calculate next run
                     try:
                         from croniter import croniter
+
                         cron = croniter(job.schedule_cron, now)
                         job.next_run_at = cron.get_next(datetime)
                     except Exception as e:
-                        logger.error(f"Failed to calculate next run for job {job.id}: {e}")
+                        logger.error(
+                            f"Failed to calculate next run for job {job.id}: {e}"
+                        )
                         job.next_run_at = None
                 elif job.schedule_type == "continuous":
                     # Simple interval scheduling (minutes) stored in job.config.interval_minutes.
                     try:
-                        interval = int(((job.config or {}).get("interval_minutes") or 30))
+                        interval = int(
+                            ((job.config or {}).get("interval_minutes") or 30)
+                        )
                     except Exception:
                         interval = 30
                     interval = max(1, min(interval, 24 * 60))
@@ -405,11 +806,24 @@ def resume_paused_agent_jobs():
             paused_jobs = result.scalars().all()
 
             resumed_count = 0
+            waiting_count = 0
             for job in paused_jobs:
+                # A job waiting on a person is not idle, and resuming it is not
+                # recovery -- it is walking through the gate. This sweep filtered
+                # on status alone, so a stage paused for approval was resumed
+                # five minutes later without anyone approving anything, and a run
+                # that had correctly concluded it was blocked went straight back
+                # into the wall it had just described.
+                if str(job.current_phase or "") in WAITING_ON_A_PERSON:
+                    waiting_count += 1
+                    continue
+
                 # Paused jobs are not eligible for can_continue(); check resource limits directly.
                 is_limited, reason = job.is_resource_limited()
                 if is_limited:
-                    logger.info(f"Skipping paused agent job {job.id} because of {reason}")
+                    logger.info(
+                        f"Skipping paused agent job {job.id} because of {reason}"
+                    )
                     continue
 
                 logger.info(f"Resuming paused agent job {job.id}")
@@ -421,7 +835,10 @@ def resume_paused_agent_jobs():
                 resumed_count += 1
 
             await db.commit()
-            logger.info(f"Resumed {resumed_count} paused agent jobs")
+            logger.info(
+                f"Resumed {resumed_count} paused agent jobs; "
+                f"{waiting_count} are waiting on a person and were left alone"
+            )
 
     asyncio.run(_check_paused())
 
@@ -451,11 +868,13 @@ def cleanup_old_agent_jobs(days: int = 30):
                 select(AgentJob).where(
                     and_(
                         AgentJob.created_at < cutoff_date,
-                        AgentJob.status.in_([
-                            AgentJobStatus.COMPLETED.value,
-                            AgentJobStatus.FAILED.value,
-                            AgentJobStatus.CANCELLED.value,
-                        ])
+                        AgentJob.status.in_(
+                            [
+                                AgentJobStatus.COMPLETED.value,
+                                AgentJobStatus.FAILED.value,
+                                AgentJobStatus.CANCELLED.value,
+                            ]
+                        ),
                     )
                 )
             )
@@ -466,7 +885,9 @@ def cleanup_old_agent_jobs(days: int = 30):
                 try:
                     # Delete checkpoints before removing the job row.
                     await db.execute(
-                        delete(AgentJobCheckpoint).where(AgentJobCheckpoint.job_id == job.id)
+                        delete(AgentJobCheckpoint).where(
+                            AgentJobCheckpoint.job_id == job.id
+                        )
                     )
 
                     # Delete job
@@ -482,13 +903,46 @@ def cleanup_old_agent_jobs(days: int = 30):
     asyncio.run(_cleanup())
 
 
+MAX_ORPHAN_RECOVERIES = 3
+ORPHAN_RECOVERY_PHASE = "orphan_recovered"
+
+
+def count_orphan_recoveries(job: AgentJob) -> int:
+    """How many times this job has already been recovered from a lost worker."""
+    entries = job.execution_log if isinstance(job.execution_log, list) else []
+    return sum(
+        1
+        for entry in entries
+        if isinstance(entry, dict) and entry.get("phase") == ORPHAN_RECOVERY_PHASE
+    )
+
+
+def is_orphaned(job: AgentJob, now: datetime) -> bool:
+    """True when no worker holds this job any more.
+
+    The lease is what distinguishes a job whose worker died from one that is
+    genuinely wedged: a live lease is heartbeated by the worker running it, so
+    if it has expired or was never taken, nobody is executing this job and it
+    is safe to queue again. Without that distinction the only options are to
+    fail every quiet job -- losing hours of work a checkpoint could restore --
+    or to requeue every quiet job and risk two workers running one job.
+    """
+    expires_at = job.execution_lease_expires_at
+    if expires_at is None:
+        return True
+    if expires_at.tzinfo is not None:
+        expires_at = expires_at.replace(tzinfo=None)
+    return expires_at < now
+
+
 @celery_app.task
 def check_stalled_agent_jobs(timeout_minutes: int = 30):
     """
     Check for stalled agent jobs that haven't made progress.
 
-    Jobs that have been running without activity for too long
-    are marked as failed.
+    A job whose worker died is queued again, resuming from its last
+    checkpoint; a job that is quiet while its lease is still being
+    heartbeated is genuinely stuck and is failed.
 
     Args:
         timeout_minutes: Minutes without activity before marking as stalled
@@ -514,12 +968,61 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30):
             )
             stalled_jobs = result.scalars().all()
 
+            now = datetime.utcnow()
+            recovered_count = 0
+            failed_count = 0
             for job in stalled_jobs:
+                recoveries = count_orphan_recoveries(job)
+                limited, limit_reason = job.is_resource_limited()
+                if (
+                    is_orphaned(job, now)
+                    and not limited
+                    and recoveries < MAX_ORPHAN_RECOVERIES
+                ):
+                    logger.warning(
+                        f"Agent job {job.id} lost its worker; queueing again "
+                        f"(recovery {recoveries + 1}/{MAX_ORPHAN_RECOVERIES})"
+                    )
+                    job.add_log_entry(
+                        {
+                            "phase": ORPHAN_RECOVERY_PHASE,
+                            "reason": "execution lease expired with no worker",
+                            "recovery_attempt": recoveries + 1,
+                        }
+                    )
+                    job.status = AgentJobStatus.PENDING.value
+                    job.celery_task_id = None
+                    job.last_activity_at = now
+                    # A job queued to run again has not completed and carries no
+                    # error; leaving either set describes a finished run.
+                    job.completed_at = None
+                    job.error = None
+                    execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                    recovered_count += 1
+                    await _publish_job_progress(
+                        job_id=str(job.id),
+                        progress=job.progress,
+                        phase=ORPHAN_RECOVERY_PHASE,
+                        status="pending",
+                    )
+                    continue
+
                 logger.warning(f"Marking stalled agent job {job.id} as failed")
                 job.status = AgentJobStatus.FAILED.value
-                job.error = f"Job stalled - no activity for {timeout_minutes} minutes"
-                job.completed_at = datetime.utcnow()
+                if limited:
+                    job.error = f"Job stalled and cannot continue: {limit_reason}"
+                elif recoveries >= MAX_ORPHAN_RECOVERIES:
+                    job.error = (
+                        f"Job lost its worker {recoveries} times; not retried again"
+                    )
+                else:
+                    job.error = (
+                        f"Job stalled - no activity for {timeout_minutes} minutes "
+                        "while its execution lease was still held"
+                    )
+                job.completed_at = now
                 job.celery_task_id = None
+                failed_count += 1
                 _record_scheduler_outcome(
                     job,
                     outcome=AgentJobStatus.FAILED.value,
@@ -537,7 +1040,10 @@ def check_stalled_agent_jobs(timeout_minutes: int = 30):
                 )
 
             await db.commit()
-            logger.info(f"Marked {len(stalled_jobs)} stalled jobs as failed")
+            logger.info(
+                f"Stalled-job sweep: {recovered_count} requeued after losing a "
+                f"worker, {failed_count} failed"
+            )
 
     asyncio.run(_check_stalled())
 
@@ -555,16 +1061,14 @@ def generate_job_summary(job_id: str):
     logger.info(f"Generating summary for agent job {job_id}")
 
     async def _generate_summary():
-        from app.services.llm_service import LLMService, UserLLMSettings
         from app.models.memory import UserPreferences
+        from app.services.llm_service import LLMService, UserLLMSettings
 
         job_uuid = UUID(job_id)
         session_factory = create_celery_session()
 
         async with session_factory() as db:
-            result = await db.execute(
-                select(AgentJob).where(AgentJob.id == job_uuid)
-            )
+            result = await db.execute(select(AgentJob).where(AgentJob.id == job_uuid))
             job = result.scalar_one_or_none()
 
             if not job or job.status != AgentJobStatus.COMPLETED.value:
@@ -576,9 +1080,15 @@ def generate_job_summary(job_id: str):
             # Best-effort: apply per-user LLM settings (provider/model/custom URL, etc.)
             user_settings = None
             try:
-                prefs_res = await db.execute(select(UserPreferences).where(UserPreferences.user_id == job.user_id))
+                prefs_res = await db.execute(
+                    select(UserPreferences).where(
+                        UserPreferences.user_id == job.user_id
+                    )
+                )
                 prefs = prefs_res.scalar_one_or_none()
-                user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
+                user_settings = (
+                    UserLLMSettings.from_preferences(prefs) if prefs else None
+                )
             except Exception:
                 user_settings = None
 
@@ -620,3 +1130,96 @@ Provide a 2-3 sentence summary of what was accomplished."""
                 logger.error(f"Failed to generate summary for job {job_id}: {e}")
 
     asyncio.run(_generate_summary())
+
+
+@celery_app.task
+def advance_research_campaigns(limit: int = 25):
+    """Move every active campaign forward one step.
+
+    A campaign holds a line of enquiry across many jobs and keeps all its state
+    in the database, so running one is a matter of asking it to take a step
+    often enough. This is that asking. Nothing is held between calls, which is
+    why a restart costs only the time the machine was off.
+
+    Each step launches at most one job per campaign, so this tick's cost is
+    bounded by the number of active campaigns rather than by the size of their
+    backlogs.
+    """
+
+    async def _advance():
+        session_factory = create_celery_session()
+        async with session_factory() as db:
+            from app.services import research_campaign_service
+
+            steps = await research_campaign_service.advance_all(db, limit=limit)
+            await db.commit()
+
+            launched = [s for s in steps if s.get("action") == "launched"]
+            for step in launched:
+                job_id = step.get("launched_job")
+                campaign_id = step.get("campaign")
+                if not job_id:
+                    continue
+                # The campaign records the job; a worker still has to run it.
+                job = await db.get(AgentJob, UUID(str(job_id)))
+                if job is None:
+                    continue
+                execute_agent_job_task.delay(str(job.id), str(job.user_id))
+                logger.info(f"Campaign {campaign_id} launched job {job_id}")
+
+            finished = [
+                s for s in steps if s.get("action") in ("completed", "exhausted")
+            ]
+            for step in finished:
+                logger.info(
+                    f"Campaign {step.get('campaign')} {step.get('action')} "
+                    f"after {step.get('jobs_launched')} jobs"
+                )
+            if steps:
+                logger.info(
+                    f"Advanced {len(steps)} campaign(s): "
+                    f"{len(launched)} launched, {len(finished)} finished"
+                )
+            return {"advanced": len(steps), "launched": len(launched)}
+
+    return asyncio.run(_advance())
+
+
+@celery_app.task
+def sweep_coding_workspaces():
+    """Release workspaces past their retention window or over the disk budget.
+
+    Retention was swept only when a job finished, which made the policy read
+    "at least 72 hours" rather than "72 hours": on a quiet system expired
+    workspaces sat until something else happened to run. That is the wrong way
+    round -- an idle system is exactly the one nobody is watching, and the one
+    where a forgotten campaign's workspaces would sit for a week.
+
+    Two rules, and they answer different questions. The age rule says how long
+    the environment a measurement was taken in is worth keeping. The budget
+    says how much disk that is allowed to cost, which age alone cannot bound:
+    three days of a quiet week and three days of a campaign are the same policy
+    and wildly different numbers.
+    """
+    from app.core.config import settings
+    from app.services.coding_workspace_manager import CodingWorkspaceManager
+
+    async def _sweep():
+        session_factory = create_celery_session()
+        async with session_factory() as db:
+            manager = CodingWorkspaceManager()
+            hours = int(getattr(settings, "CODING_WORKSPACE_RETENTION_HOURS", 0) or 0)
+            expired = 0
+            if hours > 0:
+                expired = await manager.sweep_expired(db, hours=hours)
+            over = await manager.sweep_over_budget(
+                db,
+                max_total_mb=int(
+                    getattr(settings, "CODING_WORKSPACE_MAX_TOTAL_MB", 0) or 0
+                ),
+            )
+            if expired or over:
+                logger.info(f"Workspace sweep: {expired} expired, {over} over budget")
+            return {"expired": expired, "over_budget": over}
+
+    return asyncio.run(_sweep())

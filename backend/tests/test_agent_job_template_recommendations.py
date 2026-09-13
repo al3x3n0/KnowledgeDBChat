@@ -3,13 +3,22 @@ from uuid import uuid4
 
 import pytest
 
-from app.api.endpoints.agent_jobs import _score_template_recommendation
-from app.api.endpoints.agent_jobs import list_job_templates
+from app.api.endpoints.agent_jobs import (
+    _score_template_recommendation,
+    list_job_templates,
+)
 from app.models.agent_job import AgentJobTemplate
 from app.schemas.agent_job import AgentJobTemplateResponse
 
 
-def _make_template(*, name: str, category: str, runner: str, display_name: str = "", default_goal: str = "") -> AgentJobTemplateResponse:
+def _make_template(
+    *,
+    name: str,
+    category: str,
+    runner: str,
+    display_name: str = "",
+    default_goal: str = "",
+) -> AgentJobTemplateResponse:
     now = datetime.utcnow()
     return AgentJobTemplateResponse(
         id=uuid4(),
@@ -80,7 +89,9 @@ def _assert_no_target_source_id(value):
 
 
 @pytest.mark.asyncio
-async def test_list_job_templates_normalizes_db_template_scope_keys(db_session, test_user):
+async def test_list_job_templates_normalizes_db_template_scope_keys(
+    db_session, test_user
+):
     tpl = AgentJobTemplate(
         name=f"scope_norm_tpl_{uuid4().hex[:8]}",
         display_name="Scope Normalize Template",

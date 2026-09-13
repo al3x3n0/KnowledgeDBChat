@@ -3,11 +3,10 @@ Pydantic schemas for reading lists.
 """
 
 from datetime import datetime
-from typing import List, Optional, Literal
+from typing import List, Literal, Optional
 from uuid import UUID
 
 from pydantic import BaseModel, Field
-
 
 ReadingStatus = Literal["to-read", "reading", "done"]
 
@@ -68,4 +67,3 @@ class ReadingListItemUpdate(BaseModel):
     priority: Optional[int] = None
     position: Optional[int] = None
     notes: Optional[str] = None
-

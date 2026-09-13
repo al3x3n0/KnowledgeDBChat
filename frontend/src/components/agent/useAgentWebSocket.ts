@@ -272,6 +272,9 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
   const reconnectTimeoutRef = useRef<NodeJS.Timeout | null>(null);
   const pingIntervalRef = useRef<NodeJS.Timeout | null>(null);
   const reconnectAttemptsRef = useRef(0);
+  const intentionalDisconnectRef = useRef(false);
+  const handleWebSocketMessageRef = useRef<(data: any) => void>(() => {});
+  const pollTemplateJobStatusRef = useRef<(jobId: string) => void>(() => {});
   const maxReconnectAttempts = 3;
 
   // Load active conversation on mount
@@ -322,6 +325,7 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
     }
 
     try {
+      intentionalDisconnectRef.current = false;
       setConnectionStatus('connecting');
       const ws = new WebSocket(getWsUrl());
       wsRef.current = ws;
@@ -341,13 +345,16 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
       ws.onmessage = (event) => {
         try {
           const data = JSON.parse(event.data);
-          handleWebSocketMessage(data);
+          handleWebSocketMessageRef.current(data);
         } catch (error) {
           console.error('Failed to parse WebSocket message:', error);
         }
       };
 
       ws.onclose = () => {
+        if (wsRef.current === ws) {
+          wsRef.current = null;
+        }
         setConnectionStatus('disconnected');
         setIsLoading(false);
 
@@ -356,7 +363,7 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
         }
 
         // Attempt reconnect
-        if (reconnectAttemptsRef.current < maxReconnectAttempts) {
+        if (!intentionalDisconnectRef.current && reconnectAttemptsRef.current < maxReconnectAttempts) {
           reconnectAttemptsRef.current += 1;
           reconnectTimeoutRef.current = setTimeout(() => {
             connect();
@@ -375,6 +382,7 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
   }, []);
 
   const disconnect = useCallback(() => {
+    intentionalDisconnectRef.current = true;
     if (reconnectTimeoutRef.current) {
       clearTimeout(reconnectTimeoutRef.current);
     }
@@ -574,6 +582,7 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
         break;
     }
   }, []);
+  handleWebSocketMessageRef.current = handleWebSocketMessage;
 
   const sendMessage = useCallback((content: string) => {
     if (!content.trim()) return;
@@ -780,7 +789,7 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
       toast.success('Template job started');
 
       // Start polling for job status
-      pollTemplateJobStatus(result.id);
+      pollTemplateJobStatusRef.current(result.id);
 
     } catch (error: any) {
       console.error('Template upload error:', error);
@@ -865,6 +874,7 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
     // Start polling after a short delay
     setTimeout(checkStatus, 2000);
   }, []);
+  pollTemplateJobStatusRef.current = pollTemplateJobStatus;
 
   const clearPendingTemplateUpload = useCallback(() => {
     setPendingTemplateUpload(false);
@@ -984,7 +994,7 @@ export function useAgentWebSocket(): UseAgentWebSocketReturn {
     return () => {
       disconnect();
     };
-  }, []);
+  }, [connect, disconnect, loadAvailableAgents]);
 
   return {
     messages,

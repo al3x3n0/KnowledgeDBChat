@@ -35,4 +35,3 @@ class RunEvalResponse(BaseModel):
     avg_score: float
     num_cases: int
     results: List[Dict[str, Any]]
-

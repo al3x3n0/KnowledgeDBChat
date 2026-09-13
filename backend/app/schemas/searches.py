@@ -31,4 +31,3 @@ class SearchShareResponse(BaseModel):
     query: str
     filters: Optional[Dict[str, Any]] = None
     created_at: datetime
-

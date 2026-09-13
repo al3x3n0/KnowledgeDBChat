@@ -29,7 +29,10 @@ const renderPage = (initialEntry = '/usage/routing') => {
   });
 
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <QueryClientProvider client={queryClient}>
         <RoutingObservabilityPage />
       </QueryClientProvider>

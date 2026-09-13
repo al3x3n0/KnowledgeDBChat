@@ -13,7 +13,7 @@ from pathlib import Path
 backend_dir = Path(__file__).parent.parent
 sys.path.insert(0, str(backend_dir))
 
-from app.core.database import create_tables, drop_tables
+from app.core.database import drop_tables
 from app.core.config import settings
 
 def run_command(command, description):
@@ -104,9 +104,9 @@ async def reset_database():
         await drop_tables()
         print("✅ All tables dropped")
         
-        # Create all tables
-        await create_tables()
-        print("✅ All tables created")
+        # Rebuild through Alembic so the result matches a real deployment.
+        subprocess.run(["alembic", "upgrade", "head"], check=True)
+        print("✅ Schema rebuilt via alembic upgrade head")
         
         print("✅ Database reset completed successfully!")
         return True

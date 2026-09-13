@@ -259,17 +259,17 @@ def cmd_configure(args):
         console.print(Panel.fit(
             "[bold]Team AI Cloud CLI Configuration[/bold]\n\n"
             "You'll need:\n"
-            "1. Your API base URL (e.g., http://localhost:8000)\n"
+            "1. Your API base URL (e.g., http://localhost:28000)\n"
             "2. An API key (create one at /api-keys in the web UI)",
             title="Setup"
         ))
-        base_url = Prompt.ask("API Base URL", default=client.base_url or "http://localhost:8000")
+        base_url = Prompt.ask("API Base URL", default=client.base_url or "http://localhost:28000")
         api_key = Prompt.ask("API Key", password=True)
     else:
         print("Team AI Cloud CLI Configuration")
         print("-" * 40)
-        base_url = input(f"API Base URL [{client.base_url or 'http://localhost:8000'}]: ").strip()
-        base_url = base_url or client.base_url or "http://localhost:8000"
+        base_url = input(f"API Base URL [{client.base_url or 'http://localhost:28000'}]: ").strip()
+        base_url = base_url or client.base_url or "http://localhost:28000"
         api_key = input("API Key: ").strip()
 
     if not api_key:

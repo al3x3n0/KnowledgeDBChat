@@ -68,18 +68,16 @@ This guide provides step-by-step instructions for building and running the Knowl
 
 7. **Run database migrations**:
    ```bash
-   # Connect to backend container
-   docker exec -it knowledge_db_backend python -c "
-   import asyncio
-   from app.core.database import create_tables
-   asyncio.run(create_tables())
-   "
+   make db-migrate
+   # equivalently: docker exec -it knowledge_db_backend alembic upgrade head
    ```
+   The container entrypoint already runs migrations on start; this is for
+   applying new ones without a restart.
 
 8. **Access the application**:
-   - Frontend: http://localhost:3000
-   - Backend API: http://localhost:8000
-   - API Documentation: http://localhost:8000/docs
+   - Frontend: http://localhost:23000
+   - Backend API: http://localhost:28000
+   - API Documentation: http://localhost:28000/docs
    - Ollama: http://localhost:11434
 
 ### Active Directory (LDAP) Login + Import (Optional)
@@ -205,8 +203,8 @@ cp env.example .env
 
 **Important environment variables to set in `.env`**:
 ```bash
-DATABASE_URL=postgresql://user:password@localhost:5432/knowledge_db
-REDIS_URL=redis://localhost:6379/0
+DATABASE_URL=postgresql://user:password@localhost:25432/knowledge_db
+REDIS_URL=redis://localhost:26379/0
 OLLAMA_BASE_URL=http://localhost:11434
 SECRET_KEY=your-secret-key-here  # Generate a secure key!
 ```
@@ -223,14 +221,9 @@ python -c "import secrets; print(secrets.token_urlsafe(32))"
 cd backend
 source venv/bin/activate  # if not already activated
 
-# Create database tables
-python -c "
-import asyncio
-from app.core.database import create_tables
-asyncio.run(create_tables())
-"
-
-# Or using Alembic (if migrations exist)
+# Build the schema. Alembic is the only supported way to do this: creating
+# tables from model metadata skips migrations and leaves the database
+# unstamped, which is how the schema silently drifted in the past.
 alembic upgrade head
 ```
 
@@ -260,14 +253,14 @@ cd frontend
 npm install
 
 # Create .env file (optional, defaults work for local dev)
-echo "REACT_APP_API_URL=http://localhost:8000" > .env
-echo "REACT_APP_WS_URL=ws://localhost:8000" >> .env
+echo "REACT_APP_API_URL=http://localhost:28000" > .env
+echo "REACT_APP_WS_URL=ws://localhost:28000" >> .env
 
 # Start development server
 npm start
 ```
 
-The frontend will open at http://localhost:3000
+The frontend will open at http://localhost:23000
 
 ---
 
@@ -277,10 +270,10 @@ The frontend will open at http://localhost:3000
 
 ```bash
 # Using curl
-curl http://localhost:8000/health
+curl http://localhost:28000/health
 
 # Or visit in browser
-open http://localhost:8000/docs
+open http://localhost:28000/docs
 ```
 
 ### Check Services
@@ -299,10 +292,10 @@ curl http://localhost:11434/api/tags
 
 ### Create First User
 
-1. Open http://localhost:3000
+1. Open http://localhost:23000
 2. Click "Register" or use the API:
    ```bash
-   curl -X POST http://localhost:8000/api/v1/auth/register \
+   curl -X POST http://localhost:28000/api/v1/auth/register \
      -H "Content-Type: application/json" \
      -d '{
        "username": "admin",
@@ -471,19 +464,19 @@ docker compose build --no-cache backend
        server_name your-domain.com;
 
        location / {
-           proxy_pass http://localhost:3000;
+           proxy_pass http://localhost:23000;
            proxy_set_header Host $host;
            proxy_set_header X-Real-IP $remote_addr;
        }
 
        location /api {
-           proxy_pass http://localhost:8000;
+           proxy_pass http://localhost:28000;
            proxy_set_header Host $host;
            proxy_set_header X-Real-IP $remote_addr;
        }
 
        location /ws {
-           proxy_pass http://localhost:8000;
+           proxy_pass http://localhost:28000;
            proxy_http_version 1.1;
            proxy_set_header Upgrade $http_upgrade;
            proxy_set_header Connection "upgrade";
@@ -530,9 +523,9 @@ docker compose build --no-cache backend
 ## Quick Reference
 
 ### Service URLs (Development)
-- Frontend: http://localhost:3000
-- Backend API: http://localhost:8000
-- API Docs: http://localhost:8000/docs
+- Frontend: http://localhost:23000
+- Backend API: http://localhost:28000
+- API Docs: http://localhost:28000/docs
 - Ollama: http://localhost:11434
 
 ### Important Directories

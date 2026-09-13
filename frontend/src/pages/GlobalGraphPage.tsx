@@ -2,7 +2,18 @@ import React from 'react';
 import { useNavigate, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery } from 'react-query';
 import toast from 'react-hot-toast';
-import { ArrowLeft, Network, Filter, Download, ZoomIn, Sparkles } from 'lucide-react';
+import {
+  ArrowLeft,
+  Download,
+  Filter,
+  Network,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightOpen,
+  PanelRightClose,
+  Sparkles,
+  ZoomIn,
+} from 'lucide-react';
 import apiClient from '../services/api';
 import ForceGraph, { FGNode, FGEdge, ForceGraphHandle } from '../components/kg/ForceGraph';
 import { useElementSize } from '../hooks/useElementSize';
@@ -22,9 +33,9 @@ const extractArxivId = (raw: string): string | null => {
   m = v.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?/i);
   if (m?.[1]) return m[1];
   // old-style: cs.CL/0001234
-  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.\-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
+  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
   if (m?.[1]) return m[1];
-  m = v.match(/^([\w.\-]+\/\d+(?:v\d+)?)$/i);
+  m = v.match(/^([\w.-]+\/\d+(?:v\d+)?)$/i);
   if (m?.[1]) return m[1];
   return null;
 };
@@ -39,6 +50,33 @@ const parseCsvParam = (v: string | null): string[] | null => {
     .map((s) => s.trim())
     .filter(Boolean);
 };
+
+/**
+ * How many of the grid's twelve columns the canvas gets.
+ *
+ * Stated as arithmetic in one place because the previous version hard-coded
+ * two span classes that had to agree with the panels beside them, and did not:
+ * the details panel was rendered unconditionally at a quarter of the width, so
+ * a canvas with nothing selected still gave that quarter away to a
+ * placeholder.
+ *
+ * Tailwind scans source for literal class names, so these are spelled out
+ * rather than interpolated — a computed `lg:col-span-${n}` is not in the
+ * stylesheet at runtime.
+ */
+export function graphColumnSpanClass(showFilters: boolean, detailsOpen: boolean): string {
+  const used = (showFilters ? 3 : 0) + (detailsOpen ? 3 : 0);
+  switch (12 - used) {
+    case 12:
+      return 'lg:col-span-12';
+    case 9:
+      return 'lg:col-span-9';
+    case 6:
+      return 'lg:col-span-6';
+    default:
+      return 'lg:col-span-9';
+  }
+}
 
 const GlobalGraphPage: React.FC = () => {
   const navigate = useNavigate();
@@ -91,8 +129,11 @@ const GlobalGraphPage: React.FC = () => {
 
   const { data: kgTypes } = useQuery(['kg-types'], () => apiClient.getKGTypes(), { staleTime: 60000 });
 
-  const nodes = (graphData?.nodes || []) as GlobalGraphNode[];
-  const edges = (graphData?.edges || []) as FGEdge[];
+  const nodes = React.useMemo(
+    () => (graphData?.nodes || []) as GlobalGraphNode[],
+    [graphData?.nodes]
+  );
+  const edges = React.useMemo(() => (graphData?.edges || []) as FGEdge[], [graphData?.edges]);
   const metadata = graphData?.metadata;
 
   const availableEntityTypes = React.useMemo(() => {
@@ -178,6 +219,8 @@ const GlobalGraphPage: React.FC = () => {
   }, [selected]);
 
   const graphRef = React.useRef<ForceGraphHandle>(null);
+
+
   const graphBox = useElementSize<HTMLDivElement>();
   const width = Math.max(320, graphBox.width || 0);
   const height = Math.max(420, graphBox.height || 0);
@@ -201,7 +244,39 @@ const GlobalGraphPage: React.FC = () => {
     setSearchParams(params, { replace: true });
   }, [selectedEntityTypes, selectedRelationTypes, minConfidence, minMentions, limitNodes, limitEdges, search, selected, setSearchParams]);
 
-  const [showFilters, setShowFilters] = React.useState(true);
+  // Panel state, remembered per browser. Wrapped because localStorage throws
+  // outright in a private window rather than returning null.
+  const readPanel = (key: string, fallback: boolean) => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw === null ? fallback : raw === '1';
+    } catch {
+      return fallback;
+    }
+  };
+  const [showFilters, setShowFilters] = React.useState(() =>
+    readPanel('kg_panel_filters', true)
+  );
+  const [detailsCollapsed, setDetailsCollapsed] = React.useState(() =>
+    readPanel('kg_panel_details_collapsed', false)
+  );
+
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem('kg_panel_filters', showFilters ? '1' : '0');
+      window.localStorage.setItem(
+        'kg_panel_details_collapsed',
+        detailsCollapsed ? '1' : '0'
+      );
+    } catch {
+      // The panels still work; they just do not persist.
+    }
+  }, [showFilters, detailsCollapsed]);
+
+  // The canvas takes whatever the two side panels are not using.
+  const hasSelection = Boolean(selectedNode || selectedEdge);
+  const detailsOpen = hasSelection && !detailsCollapsed;
+  const graphColSpanClass = graphColumnSpanClass(showFilters, detailsOpen);
 
   return (
     <div className="p-6 h-full min-h-0 flex flex-col gap-4 flex-1">
@@ -267,10 +342,31 @@ const GlobalGraphPage: React.FC = () => {
         )}
       </div>
 
-      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden grid grid-cols-1 lg:grid-cols-4 lg:grid-rows-1 gap-0 flex-1 min-h-0">
+      {/* Twelve columns rather than four, so the canvas can take whatever the
+          panels are not using instead of being pinned to a quarter of the
+          width. `lg:grid-rows-1` gives the single row the container's full
+          height; below that breakpoint the children stack, which is why the
+          canvas carries its own min-height — without one it collapsed to zero
+          and the graph disappeared on a narrow window. */}
+      <div className="bg-white border border-gray-200 rounded-lg overflow-hidden grid grid-cols-1 lg:grid-cols-12 lg:grid-rows-1 gap-0 flex-1 min-h-0">
         {/* Filters Panel */}
         {showFilters && (
-          <div className="border-r border-gray-200 p-4 lg:col-span-1 space-y-4 overflow-auto h-full min-h-0">
+          <div className="border-r border-gray-200 lg:col-span-3 overflow-auto h-full min-h-0">
+            <div className="sticky top-0 z-10 flex items-center justify-between gap-2 bg-gray-100 px-4 py-2.5 border-b border-gray-200">
+              <span className="text-[10px] font-semibold tracking-wide uppercase text-gray-500">
+                Filters
+              </span>
+              <button
+                type="button"
+                aria-label="Collapse filters"
+                title="Collapse filters"
+                className="p-1 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-900 transition-colors duration-fast"
+                onClick={() => setShowFilters(false)}
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </button>
+            </div>
+            <div className="p-4 space-y-4">
             <div>
               <div className="flex items-center justify-between gap-2 mb-2">
                 <h3 className="text-sm font-medium text-gray-800 inline-flex items-center gap-1">
@@ -487,11 +583,39 @@ const GlobalGraphPage: React.FC = () => {
             >
               Apply Filters
             </button>
+            </div>
           </div>
         )}
 
         {/* Graph Area */}
-        <div className={(showFilters ? 'lg:col-span-2' : 'lg:col-span-3') + ' h-full min-h-0 flex flex-col'}>
+        <div
+          className={`${graphColSpanClass} relative h-full min-h-[420px] lg:min-h-0 flex flex-col`}
+        >
+          {/* Re-open handles, on the canvas itself. A panel collapsed from
+              inside the panel has to be re-openable from where you are
+              looking, which is here. */}
+          {!showFilters && (
+            <button
+              type="button"
+              aria-label="Show filters"
+              title="Show filters"
+              className="absolute left-2 top-2 z-10 p-1.5 rounded-md surface-2 text-gray-600 hover:text-gray-900 transition-all duration-fast ease-ui"
+              onClick={() => setShowFilters(true)}
+            >
+              <PanelLeftOpen className="w-4 h-4" />
+            </button>
+          )}
+          {hasSelection && detailsCollapsed && (
+            <button
+              type="button"
+              aria-label="Show details"
+              title="Show details"
+              className="absolute right-2 top-2 z-10 p-1.5 rounded-md surface-2 text-gray-600 hover:text-gray-900 transition-all duration-fast ease-ui"
+              onClick={() => setDetailsCollapsed(false)}
+            >
+              <PanelRightOpen className="w-4 h-4" />
+            </button>
+          )}
           {isLoading ? (
             <div className="p-6 text-gray-600 flex-1">Loading graph...</div>
           ) : isError ? (
@@ -510,16 +634,42 @@ const GlobalGraphPage: React.FC = () => {
                   selectedNodeId={selected}
                   selectedEdgeId={selectedEdge?.id || null}
                   onBackgroundClick={() => { setSelected(null); setSelectedEdge(null); }}
-                  onNodeClick={n => { setSelected(n.id); setSelectedEdge(null); }}
-                  onEdgeClick={e => { setSelectedEdge(e); setSelected(null); }}
+                  onNodeClick={n => {
+                    setSelected(n.id);
+                    setSelectedEdge(null);
+                    setDetailsCollapsed(false);
+                  }}
+                  onEdgeClick={e => {
+                    setSelectedEdge(e);
+                    setSelected(null);
+                    setDetailsCollapsed(false);
+                  }}
                 />
               )}
             </div>
           )}
         </div>
 
-        {/* Details Panel */}
-        <div className="border-l border-gray-200 p-4 lg:col-span-1 overflow-auto h-full min-h-0">
+        {/* Details Panel. Rendered only when there is something to show: an
+            empty panel used to hold a quarter of the width open for a
+            placeholder, which is the reason the canvas never filled the page. */}
+        {detailsOpen && (
+        <div className="border-l border-gray-200 lg:col-span-3 overflow-auto h-full min-h-0">
+          <div className="sticky top-0 z-10 flex items-center justify-between gap-2 bg-gray-100 px-4 py-2.5 border-b border-gray-200">
+            <span className="text-[10px] font-semibold tracking-wide uppercase text-gray-500">
+              Details
+            </span>
+            <button
+              type="button"
+              aria-label="Collapse details"
+              title="Collapse details"
+              className="p-1 rounded text-gray-500 hover:bg-gray-200 hover:text-gray-900 transition-colors duration-fast"
+              onClick={() => setDetailsCollapsed(true)}
+            >
+              <PanelRightClose className="w-4 h-4" />
+            </button>
+          </div>
+          <div className="p-4">
           <h2 className="text-base font-semibold text-gray-900 mb-2">Details</h2>
           {selectedNode ? (
             <div>
@@ -806,7 +956,9 @@ const GlobalGraphPage: React.FC = () => {
               </div>
             </div>
           )}
+          </div>
         </div>
+        )}
       </div>
     </div>
   );

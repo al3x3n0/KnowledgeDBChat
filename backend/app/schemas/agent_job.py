@@ -6,10 +6,11 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from app.schemas.domain_research_profile import DomainResearchProfileResponse
 from app.schemas.research_portfolio import ResearchPortfolioResponse
+from app.services.agent_scope_service import normalize_scope_config
 from app.services.scientific_validation_service import (
     normalize_portfolio_automation_policy,
     normalize_portfolio_automation_profile,
@@ -17,23 +18,14 @@ from app.services.scientific_validation_service import (
 )
 
 
-def _normalize_scope_config(config: Any) -> Any:
-    """Normalize legacy `target_source_id` to canonical `source_id` in config maps."""
-    if not isinstance(config, dict):
-        return config
-    out = dict(config)
-    source_id = str(out.get("source_id") or "").strip()
-    target_source_id = str(out.get("target_source_id") or "").strip()
-    if not source_id and target_source_id:
-        out["source_id"] = target_source_id
-    out.pop("target_source_id", None)
-    return out
-
-
-def _normalize_text_list(value: Any, *, max_items: int = 12, max_len: int = 240) -> Optional[List[str]]:
+def _normalize_text_list(
+    value: Any, *, max_items: int = 12, max_len: int = 240
+) -> Optional[List[str]]:
     if value is None:
         return None
-    rows = value if isinstance(value, list) else str(value).replace("\n", ",").split(",")
+    rows = (
+        value if isinstance(value, list) else str(value).replace("\n", ",").split(",")
+    )
     out: List[str] = []
     for row in rows:
         text = str(row or "").strip()
@@ -45,10 +37,14 @@ def _normalize_text_list(value: Any, *, max_items: int = 12, max_len: int = 240)
     return out or None
 
 
-def _normalize_uuid_text_list(value: Any, *, max_items: int = 24) -> Optional[List[str]]:
+def _normalize_uuid_text_list(
+    value: Any, *, max_items: int = 24
+) -> Optional[List[str]]:
     if value is None:
         return None
-    rows = value if isinstance(value, list) else str(value).replace("\n", ",").split(",")
+    rows = (
+        value if isinstance(value, list) else str(value).replace("\n", ",").split(",")
+    )
     out: List[str] = []
     for row in rows:
         text = str(row or "").strip()
@@ -61,14 +57,25 @@ def _normalize_uuid_text_list(value: Any, *, max_items: int = 24) -> Optional[Li
 
 
 def _normalize_domain_source_scope(value: Any) -> str:
-    text = str(value or "kb_plus_arxiv").strip().lower().replace("-", "_").replace(" ", "_")
+    text = (
+        str(value or "kb_plus_arxiv")
+        .strip()
+        .lower()
+        .replace("-", "_")
+        .replace(" ", "_")
+    )
     if text in {"kb", "documents", "kb_first"}:
         text = "kb_only"
     elif text in {"arxiv", "papers"}:
         text = "arxiv_only"
     elif text in {"kb_plus_repo", "kb_repo", "repo"}:
         text = "kb_plus_arxiv_plus_repo"
-    elif text not in {"kb_only", "arxiv_only", "kb_plus_arxiv", "kb_plus_arxiv_plus_repo"}:
+    elif text not in {
+        "kb_only",
+        "arxiv_only",
+        "kb_plus_arxiv",
+        "kb_plus_arxiv_plus_repo",
+    }:
         text = "kb_plus_arxiv"
     return text
 
@@ -99,25 +106,52 @@ class AgentJobCreate(BaseModel):
 
     name: str = Field(..., min_length=1, max_length=200, description="Job name")
     description: Optional[str] = Field(None, description="Job description")
-    job_type: str = Field("custom", description="Type of job: research, monitor, analysis, synthesis, knowledge_expansion, custom")
-    goal: str = Field(..., min_length=1, description="The goal for the agent to achieve")
-    goal_criteria: Optional[Dict[str, Any]] = Field(None, description="Structured success criteria")
-    config: Optional[Dict[str, Any]] = Field(None, description="Job-specific configuration")
-    agent_definition_id: Optional[UUID] = Field(None, description="ID of agent definition to use")
+    job_type: str = Field(
+        "custom",
+        description="Type of job: research, monitor, analysis, synthesis, knowledge_expansion, custom",
+    )
+    goal: str = Field(
+        ..., min_length=1, description="The goal for the agent to achieve"
+    )
+    goal_criteria: Optional[Dict[str, Any]] = Field(
+        None, description="Structured success criteria"
+    )
+    config: Optional[Dict[str, Any]] = Field(
+        None, description="Job-specific configuration"
+    )
+    agent_definition_id: Optional[UUID] = Field(
+        None, description="ID of agent definition to use"
+    )
 
     # Resource limits (optional overrides)
-    max_iterations: Optional[int] = Field(None, ge=1, le=1000, description="Maximum iterations")
-    max_tool_calls: Optional[int] = Field(None, ge=1, le=5000, description="Maximum tool calls")
-    max_llm_calls: Optional[int] = Field(None, ge=1, le=2000, description="Maximum LLM calls")
-    max_runtime_minutes: Optional[int] = Field(None, ge=1, le=480, description="Maximum runtime in minutes")
+    max_iterations: Optional[int] = Field(
+        None, ge=1, le=1000, description="Maximum iterations"
+    )
+    max_tool_calls: Optional[int] = Field(
+        None, ge=1, le=5000, description="Maximum tool calls"
+    )
+    max_llm_calls: Optional[int] = Field(
+        None, ge=1, le=2000, description="Maximum LLM calls"
+    )
+    max_runtime_minutes: Optional[int] = Field(
+        None, ge=1, le=480, description="Maximum runtime in minutes"
+    )
 
     # Scheduling
-    schedule_type: Optional[str] = Field(None, description="Scheduling type: once, recurring, continuous")
-    schedule_cron: Optional[str] = Field(None, description="Cron expression for recurring jobs")
-    start_immediately: bool = Field(True, description="Start job immediately after creation")
+    schedule_type: Optional[str] = Field(
+        None, description="Scheduling type: once, recurring, continuous"
+    )
+    schedule_cron: Optional[str] = Field(
+        None, description="Cron expression for recurring jobs"
+    )
+    start_immediately: bool = Field(
+        True, description="Start job immediately after creation"
+    )
 
     # Job chaining
-    chain_config: Optional[Dict[str, Any]] = Field(None, description="Chain configuration for triggering child jobs")
+    chain_config: Optional[Dict[str, Any]] = Field(
+        None, description="Chain configuration for triggering child jobs"
+    )
     # Structure:
     # {
     #   "trigger_condition": "on_complete",  # on_complete, on_fail, on_any_end, on_progress, on_findings
@@ -134,12 +168,14 @@ class AgentJobCreate(BaseModel):
     #     }
     #   ]
     # }
-    parent_job_id: Optional[UUID] = Field(None, description="ID of parent job (for manually chained jobs)")
+    parent_job_id: Optional[UUID] = Field(
+        None, description="ID of parent job (for manually chained jobs)"
+    )
 
     @field_validator("config", mode="before")
     @classmethod
     def _normalize_config(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
 
 class AgentJobFromTemplate(BaseModel):
@@ -148,25 +184,37 @@ class AgentJobFromTemplate(BaseModel):
     template_id: UUID = Field(..., description="ID of the template to use")
     name: str = Field(..., min_length=1, max_length=200, description="Job name")
     goal: Optional[str] = Field(None, description="Override the default goal")
-    config: Optional[Dict[str, Any]] = Field(None, description="Override template config")
+    config: Optional[Dict[str, Any]] = Field(
+        None, description="Override template config"
+    )
     start_immediately: bool = Field(True, description="Start job immediately")
-    chain_config: Optional[Dict[str, Any]] = Field(None, description="Optional chain configuration (triggers child jobs)")
+    chain_config: Optional[Dict[str, Any]] = Field(
+        None, description="Optional chain configuration (triggers child jobs)"
+    )
 
     @field_validator("config", mode="before")
     @classmethod
     def _normalize_config(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
 
 class AgentJobQuickStartClaudeBackendRequest(BaseModel):
     """Quick-start request for launching the Claude-style backend coding loop."""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Optional job name")
+    name: Optional[str] = Field(
+        None, min_length=1, max_length=200, description="Optional job name"
+    )
     goal: str = Field(..., min_length=1, description="Backend coding goal")
     source_id: UUID = Field(..., description="Target git DocumentSource UUID")
-    search_query: Optional[str] = Field("backend", description="Optional retrieval hint for code patch context")
-    file_paths: Optional[List[str]] = Field(None, description="Optional list of focused file paths")
-    commands: Optional[List[str]] = Field(None, description="Optional verification commands")
+    search_query: Optional[str] = Field(
+        "backend", description="Optional retrieval hint for code patch context"
+    )
+    file_paths: Optional[List[str]] = Field(
+        None, description="Optional list of focused file paths"
+    )
+    commands: Optional[List[str]] = Field(
+        None, description="Optional verification commands"
+    )
     start_immediately: bool = Field(True, description="Start job immediately")
     config_overrides: Optional[Dict[str, Any]] = Field(
         None,
@@ -176,7 +224,7 @@ class AgentJobQuickStartClaudeBackendRequest(BaseModel):
     @field_validator("config_overrides", mode="before")
     @classmethod
     def _normalize_config_overrides(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
     @field_validator("search_query", mode="before")
     @classmethod
@@ -231,13 +279,17 @@ class AgentJobQuickStartClaudeBackendRequest(BaseModel):
 class AgentJobQuickStartRoleWorkflowRequest(BaseModel):
     """Quick-start request for launching role-based swarm workflows."""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Optional job name")
+    name: Optional[str] = Field(
+        None, min_length=1, max_length=200, description="Optional job name"
+    )
     goal: str = Field(..., min_length=1, description="Goal for the role workflow")
     roles: Optional[List[str]] = Field(
         None,
         description="Optional role list (e.g. researcher_documents, researcher_arxiv, analyst, synthesizer)",
     )
-    max_agents: Optional[int] = Field(None, ge=1, le=12, description="Maximum swarm child roles")
+    max_agents: Optional[int] = Field(
+        None, ge=1, le=12, description="Maximum swarm child roles"
+    )
     memory_profile: Optional[str] = Field(
         "balanced",
         description="Memory profile: off, minimal, balanced, evidence, synthesis",
@@ -271,7 +323,7 @@ class AgentJobQuickStartRoleWorkflowRequest(BaseModel):
     @field_validator("config_overrides", mode="before")
     @classmethod
     def _normalize_config_overrides(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
     @field_validator("roles", mode="before")
     @classmethod
@@ -338,7 +390,16 @@ class AgentJobQuickStartRoleWorkflowRequest(BaseModel):
         else:
             return None
 
-        allowed = {"finding", "insight", "pattern", "lesson", "fact", "preference", "context", "summary"}
+        allowed = {
+            "finding",
+            "insight",
+            "pattern",
+            "lesson",
+            "fact",
+            "preference",
+            "context",
+            "summary",
+        }
         out: List[str] = []
         for raw in rows:
             token = str(raw or "").strip().lower().replace("-", "_").replace(" ", "_")
@@ -352,10 +413,18 @@ class AgentJobQuickStartRoleWorkflowRequest(BaseModel):
 class AgentJobQuickStartDomainResearchRequest(BaseModel):
     """Quick-start request for launching a domain research orchestrator."""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Optional job name")
-    domain: str = Field(..., min_length=1, max_length=300, description="Domain or topic to research")
-    objective: str = Field(..., min_length=1, description="Research objective or thesis prompt")
-    customer_context: Optional[str] = Field(None, description="Optional customer or operating context")
+    name: Optional[str] = Field(
+        None, min_length=1, max_length=200, description="Optional job name"
+    )
+    domain: str = Field(
+        ..., min_length=1, max_length=300, description="Domain or topic to research"
+    )
+    objective: str = Field(
+        ..., min_length=1, description="Research objective or thesis prompt"
+    )
+    customer_context: Optional[str] = Field(
+        None, description="Optional customer or operating context"
+    )
     source_scope: Optional[str] = Field(
         "kb_plus_arxiv_plus_repo",
         description="Evidence scope: kb_only, arxiv_only, kb_plus_arxiv, kb_plus_arxiv_plus_repo",
@@ -368,9 +437,15 @@ class AgentJobQuickStartDomainResearchRequest(BaseModel):
         "literature_to_hypothesis",
         description="Research loop shape; v1 supports literature_to_hypothesis",
     )
-    monitor_queries: Optional[List[str]] = Field(None, description="Optional domain monitoring queries")
-    repo_source_ids: Optional[List[UUID]] = Field(None, description="Optional repository source UUIDs for code/benchmark evidence")
-    benchmark_queries: Optional[List[str]] = Field(None, description="Optional benchmark or perf-counter retrieval queries")
+    monitor_queries: Optional[List[str]] = Field(
+        None, description="Optional domain monitoring queries"
+    )
+    repo_source_ids: Optional[List[UUID]] = Field(
+        None, description="Optional repository source UUIDs for code/benchmark evidence"
+    )
+    benchmark_queries: Optional[List[str]] = Field(
+        None, description="Optional benchmark or perf-counter retrieval queries"
+    )
     sandbox_profile_id: Optional[str] = Field(
         None,
         description="Optional approved sandbox profile identifier for recipe-backed validation execution",
@@ -387,11 +462,21 @@ class AgentJobQuickStartDomainResearchRequest(BaseModel):
         None,
         description="Optional selection policy override for surfaced hypothesis count",
     )
-    persist_artifacts: bool = Field(True, description="Persist generated artifacts as Research Notes")
-    auto_launch_follow_up: bool = Field(True, description="Auto-launch a deep-dive follow-up when confidence passes")
-    max_documents: Optional[int] = Field(10, ge=1, le=25, description="Maximum KB documents to use")
-    max_papers: Optional[int] = Field(8, ge=0, le=25, description="Maximum arXiv papers to use")
-    profile_id: Optional[UUID] = Field(None, description="Optional saved domain research profile UUID")
+    persist_artifacts: bool = Field(
+        True, description="Persist generated artifacts as Research Notes"
+    )
+    auto_launch_follow_up: bool = Field(
+        True, description="Auto-launch a deep-dive follow-up when confidence passes"
+    )
+    max_documents: Optional[int] = Field(
+        10, ge=1, le=25, description="Maximum KB documents to use"
+    )
+    max_papers: Optional[int] = Field(
+        8, ge=0, le=25, description="Maximum arXiv papers to use"
+    )
+    profile_id: Optional[UUID] = Field(
+        None, description="Optional saved domain research profile UUID"
+    )
     auto_create_experiment_plans: bool = Field(
         True,
         description="Auto-create experiment plans for strong ideas when policy passes",
@@ -423,9 +508,17 @@ class AgentJobQuickStartDomainResearchRequest(BaseModel):
     @field_validator("config_overrides", mode="before")
     @classmethod
     def _normalize_config_overrides(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
-    @field_validator("domain", "objective", "customer_context", "research_mode", "report_format", "sandbox_profile_id", mode="before")
+    @field_validator(
+        "domain",
+        "objective",
+        "customer_context",
+        "research_mode",
+        "report_format",
+        "sandbox_profile_id",
+        mode="before",
+    )
     @classmethod
     def _normalize_text_fields(cls, value: Any) -> Any:
         if value is None:
@@ -445,7 +538,13 @@ class AgentJobQuickStartDomainResearchRequest(BaseModel):
     @field_validator("research_mode", mode="before")
     @classmethod
     def _normalize_research_mode(cls, value: Any) -> Any:
-        text = str(value or "literature_to_hypothesis").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "literature_to_hypothesis")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
         if text not in {"literature_to_hypothesis"}:
             return "literature_to_hypothesis"
         return text
@@ -453,7 +552,13 @@ class AgentJobQuickStartDomainResearchRequest(BaseModel):
     @field_validator("report_format", mode="before")
     @classmethod
     def _normalize_report_format(cls, value: Any) -> Any:
-        text = str(value or "brief_and_report").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "brief_and_report")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
         if text not in {"brief_only", "report_only", "brief_and_report"}:
             text = "brief_and_report"
         return text
@@ -514,7 +619,16 @@ class AgentJobPromoteDomainResearchProfileRequest(BaseModel):
     max_documents: Optional[int] = Field(default=None, ge=1, le=25)
     max_papers: Optional[int] = Field(default=None, ge=0, le=25)
 
-    @field_validator("title", "domain", "objective", "customer_context", "research_mode", "report_format", "sandbox_profile_id", mode="before")
+    @field_validator(
+        "title",
+        "domain",
+        "objective",
+        "customer_context",
+        "research_mode",
+        "report_format",
+        "sandbox_profile_id",
+        mode="before",
+    )
     @classmethod
     def _normalize_text_fields(cls, value: Any) -> Any:
         if value is None:
@@ -540,7 +654,13 @@ class AgentJobPromoteDomainResearchProfileRequest(BaseModel):
     def _normalize_research_mode_field(cls, value: Any) -> Any:
         if value is None:
             return None
-        text = str(value or "literature_to_hypothesis").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "literature_to_hypothesis")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
         if text not in {"literature_to_hypothesis"}:
             return "literature_to_hypothesis"
         return text
@@ -550,7 +670,13 @@ class AgentJobPromoteDomainResearchProfileRequest(BaseModel):
     def _normalize_report_format_field(cls, value: Any) -> Any:
         if value is None:
             return None
-        text = str(value or "brief_and_report").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "brief_and_report")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
         if text not in {"brief_only", "report_only", "brief_and_report"}:
             return "brief_and_report"
         return text
@@ -621,8 +747,12 @@ class AgentJobPromoteDomainResearchPortfolioRequest(BaseModel):
 
 
 class AgentJobPromoteDomainResearchRequest(BaseModel):
-    target_mode: str = Field(default="profile_only", description="profile_only or profile_with_portfolio")
-    profile: AgentJobPromoteDomainResearchProfileRequest = Field(default_factory=AgentJobPromoteDomainResearchProfileRequest)
+    target_mode: str = Field(
+        default="profile_only", description="profile_only or profile_with_portfolio"
+    )
+    profile: AgentJobPromoteDomainResearchProfileRequest = Field(
+        default_factory=AgentJobPromoteDomainResearchProfileRequest
+    )
     portfolio_id: Optional[UUID] = None
     portfolio: Optional[AgentJobPromoteDomainResearchPortfolioRequest] = None
     start_profile_now: bool = True
@@ -631,7 +761,13 @@ class AgentJobPromoteDomainResearchRequest(BaseModel):
     @field_validator("target_mode", mode="before")
     @classmethod
     def _normalize_target_mode(cls, value: Any) -> str:
-        text = str(value or "profile_only").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "profile_only")
+            .strip()
+            .lower()
+            .replace("-", "_")
+            .replace(" ", "_")
+        )
         if text not in {"profile_only", "profile_with_portfolio"}:
             return "profile_only"
         return text
@@ -650,15 +786,31 @@ class AgentJobPromoteDomainResearchResponse(BaseModel):
 class AgentJobQuickStartRepoBugTriageRequest(BaseModel):
     """Quick-start request for launching the repo-wide bug triage + repair loop."""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Optional job name")
-    goal: Optional[str] = Field(None, min_length=1, description="Optional desired fix outcome")
-    failure_symptom: Optional[str] = Field(None, min_length=1, description="Observed bug symptom or failure description")
+    name: Optional[str] = Field(
+        None, min_length=1, max_length=200, description="Optional job name"
+    )
+    goal: Optional[str] = Field(
+        None, min_length=1, description="Optional desired fix outcome"
+    )
+    failure_symptom: Optional[str] = Field(
+        None, min_length=1, description="Observed bug symptom or failure description"
+    )
     source_id: UUID = Field(..., description="Target git DocumentSource UUID")
-    scope: Optional[str] = Field("auto", description="Repo scope profile: auto, backend, frontend, worker")
-    search_query: Optional[str] = Field(None, description="Optional retrieval hint for code patch context")
-    file_paths: Optional[List[str]] = Field(None, description="Optional list of focused file paths")
-    commands: Optional[List[str]] = Field(None, description="Optional verification commands")
-    error_output: Optional[str] = Field(None, description="Optional logs or stack trace text")
+    scope: Optional[str] = Field(
+        "auto", description="Repo scope profile: auto, backend, frontend, worker"
+    )
+    search_query: Optional[str] = Field(
+        None, description="Optional retrieval hint for code patch context"
+    )
+    file_paths: Optional[List[str]] = Field(
+        None, description="Optional list of focused file paths"
+    )
+    commands: Optional[List[str]] = Field(
+        None, description="Optional verification commands"
+    )
+    error_output: Optional[str] = Field(
+        None, description="Optional logs or stack trace text"
+    )
     start_immediately: bool = Field(True, description="Start job immediately")
     config_overrides: Optional[Dict[str, Any]] = Field(
         None,
@@ -667,19 +819,29 @@ class AgentJobQuickStartRepoBugTriageRequest(BaseModel):
 
     @model_validator(mode="after")
     def _require_goal_or_symptom(self) -> "AgentJobQuickStartRepoBugTriageRequest":
-        if not str(self.goal or "").strip() and not str(self.failure_symptom or "").strip():
+        if (
+            not str(self.goal or "").strip()
+            and not str(self.failure_symptom or "").strip()
+        ):
             raise ValueError("Either goal or failure_symptom is required")
         return self
 
     @field_validator("config_overrides", mode="before")
     @classmethod
     def _normalize_config_overrides(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
     @field_validator("scope", mode="before")
     @classmethod
     def _normalize_scope(cls, value: Any) -> Any:
-        text = str(value or "auto").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "auto")
+            .strip()
+            .lower()
+            .replace("-", "")
+            .replace("_", "")
+            .replace(" ", "")
+        )
         if text not in {"auto", "backend", "frontend", "worker"}:
             text = "auto"
         return text
@@ -712,17 +874,37 @@ class AgentJobQuickStartRepoBugTriageRequest(BaseModel):
 class _AgentJobQuickStartCodingSwarmRequestBase(BaseModel):
     """Shared quick-start request shape for coding swarm presets."""
 
-    name: Optional[str] = Field(None, min_length=1, max_length=200, description="Optional job name")
-    goal: Optional[str] = Field(None, min_length=1, description="Optional desired fix outcome")
-    failure_symptom: Optional[str] = Field(None, min_length=1, description="Observed bug symptom or failure description")
+    name: Optional[str] = Field(
+        None, min_length=1, max_length=200, description="Optional job name"
+    )
+    goal: Optional[str] = Field(
+        None, min_length=1, description="Optional desired fix outcome"
+    )
+    failure_symptom: Optional[str] = Field(
+        None, min_length=1, description="Observed bug symptom or failure description"
+    )
     source_id: UUID = Field(..., description="Target git DocumentSource UUID")
-    scope: Optional[str] = Field("auto", description="Repo scope profile: auto, backend, frontend, worker")
-    search_query: Optional[str] = Field(None, description="Optional retrieval hint for swarm triage context")
-    file_paths: Optional[List[str]] = Field(None, description="Optional list of focused file paths")
-    commands: Optional[List[str]] = Field(None, description="Optional verification commands")
-    error_output: Optional[str] = Field(None, description="Optional logs or stack trace text")
-    max_agents: Optional[int] = Field(4, ge=1, le=4, description="Maximum coding swarm agents")
-    profile_id: Optional[UUID] = Field(None, description="Optional saved coding swarm profile id")
+    scope: Optional[str] = Field(
+        "auto", description="Repo scope profile: auto, backend, frontend, worker"
+    )
+    search_query: Optional[str] = Field(
+        None, description="Optional retrieval hint for swarm triage context"
+    )
+    file_paths: Optional[List[str]] = Field(
+        None, description="Optional list of focused file paths"
+    )
+    commands: Optional[List[str]] = Field(
+        None, description="Optional verification commands"
+    )
+    error_output: Optional[str] = Field(
+        None, description="Optional logs or stack trace text"
+    )
+    max_agents: Optional[int] = Field(
+        4, ge=1, le=4, description="Maximum coding swarm agents"
+    )
+    profile_id: Optional[UUID] = Field(
+        None, description="Optional saved coding swarm profile id"
+    )
     start_immediately: bool = Field(True, description="Start job immediately")
     config_overrides: Optional[Dict[str, Any]] = Field(
         None,
@@ -731,19 +913,29 @@ class _AgentJobQuickStartCodingSwarmRequestBase(BaseModel):
 
     @model_validator(mode="after")
     def _require_goal_or_symptom(self) -> "_AgentJobQuickStartCodingSwarmRequestBase":
-        if not str(self.goal or "").strip() and not str(self.failure_symptom or "").strip():
+        if (
+            not str(self.goal or "").strip()
+            and not str(self.failure_symptom or "").strip()
+        ):
             raise ValueError("Either goal or failure_symptom is required")
         return self
 
     @field_validator("config_overrides", mode="before")
     @classmethod
     def _normalize_config_overrides(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
     @field_validator("scope", mode="before")
     @classmethod
     def _normalize_scope(cls, value: Any) -> Any:
-        text = str(value or "auto").strip().lower().replace("-", "_").replace(" ", "_")
+        text = (
+            str(value or "auto")
+            .strip()
+            .lower()
+            .replace("-", "")
+            .replace("_", "")
+            .replace(" ", "")
+        )
         if text not in {"auto", "backend", "frontend", "worker"}:
             text = "auto"
         return text
@@ -773,15 +965,21 @@ class _AgentJobQuickStartCodingSwarmRequestBase(BaseModel):
         return AgentJobQuickStartClaudeBackendRequest._normalize_commands(value)
 
 
-class AgentJobQuickStartBugTriageSwarmRequest(_AgentJobQuickStartCodingSwarmRequestBase):
+class AgentJobQuickStartBugTriageSwarmRequest(
+    _AgentJobQuickStartCodingSwarmRequestBase
+):
     """Quick-start request for launching a coding-focused bug triage swarm."""
 
 
-class AgentJobQuickStartBuildBreakSwarmRequest(_AgentJobQuickStartCodingSwarmRequestBase):
+class AgentJobQuickStartBuildBreakSwarmRequest(
+    _AgentJobQuickStartCodingSwarmRequestBase
+):
     """Quick-start request for launching a build-break coding swarm."""
 
 
-class AgentJobQuickStartFrontendRegressionSwarmRequest(_AgentJobQuickStartCodingSwarmRequestBase):
+class AgentJobQuickStartFrontendRegressionSwarmRequest(
+    _AgentJobQuickStartCodingSwarmRequestBase
+):
     """Quick-start request for launching a frontend-regression coding swarm."""
 
 
@@ -803,7 +1001,7 @@ class AgentJobUpdate(BaseModel):
     @field_validator("config", mode="before")
     @classmethod
     def _normalize_config(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
 
 class AgentJobLogEntry(BaseModel):
@@ -938,6 +1136,10 @@ class AgentJobResponse(BaseModel):
 
     # Celery task tracking
     celery_task_id: Optional[str]
+    execution_lease_owner: Optional[str] = None
+    execution_lease_expires_at: Optional[datetime] = None
+    execution_lease_heartbeat_at: Optional[datetime] = None
+    execution_fence: int = 0
 
     # Job chaining
     parent_job_id: Optional[UUID] = None
@@ -950,8 +1152,7 @@ class AgentJobResponse(BaseModel):
     approval_checkpoint: Optional[Dict[str, Any]] = None
     executive_digest: Optional[Dict[str, Any]] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentJobListResponse(BaseModel):
@@ -962,6 +1163,149 @@ class AgentJobListResponse(BaseModel):
     page: int
     page_size: int
     has_more: bool
+
+
+class AgentJobEvidenceValue(BaseModel):
+    """One field of a finding, rendered short."""
+
+    label: str
+    value: str
+
+
+class AgentJobEvidenceItem(BaseModel):
+    """One finding, as a reader needs it to judge whether it holds."""
+
+    index: int
+    type: str
+    title: str = ""
+    values: List[AgentJobEvidenceValue] = Field(default_factory=list)
+    #: Whether it reports a spread. Answered by the validity service, which is
+    #: the same authority `require_uncertainty` uses -- never a second one.
+    has_uncertainty: bool = False
+    #: quiet / busy / saturated. A wall-clock number taken on a saturated host
+    #: is not a measurement, and only the finding knows which it was.
+    measurement_environment: str = ""
+    warning: str = ""
+    #: Evidence a later change invalidates, so it is never inherited from an
+    #: upstream stage.
+    perishable: bool = False
+    #: A person rejected this result. Advisory: the contract's verdict is
+    #: unchanged and nothing downstream is invalidated. What it does is travel
+    #: into a restart of the stage, and into the prompt of a run that would
+    #: cite this evidence again.
+    disputed: bool = False
+    dispute_reason: str = ""
+
+
+class AgentJobEvidenceRequirement(BaseModel):
+    """One finding type the contract asked for, and what arrived."""
+
+    finding_type: str
+    satisfied: bool = False
+    #: Indices into `evidence`, so one finding is shown once however many
+    #: requirements it answers.
+    satisfied_by: List[int] = Field(default_factory=list)
+    uncertainty_required: bool = False
+    #: Findings that arrived without the spread they were required to carry.
+    missing_uncertainty: List[int] = Field(default_factory=list)
+
+
+class AgentJobEvidenceResponse(BaseModel):
+    """A run's evidence, and what it was asked for.
+
+    Replaces `findings_count`, which said how many findings existed and
+    nothing about whether any of them was worth believing.
+    """
+
+    job_id: str
+    evidence: List[AgentJobEvidenceItem] = Field(default_factory=list)
+    requirements: List[AgentJobEvidenceRequirement] = Field(default_factory=list)
+    #: Findings of a type nothing asked for. Not a fault -- a run records what
+    #: it learns -- but separated so the required evidence is findable, and
+    #: capped: this database holds thousands of them against a handful of
+    #: measurements.
+    unrequested: List[int] = Field(default_factory=list)
+    #: How many exist in total, so a page showing a sample can say so rather
+    #: than presenting it as the whole.
+    unrequested_total: int = 0
+    contract_enabled: bool = False
+    #: The contract's own verdict, carried through rather than recomputed.
+    contract_satisfied: bool = False
+    #: How many findings a person rejected. A run resting on rejected evidence
+    #: must not read as clean, even though its contract is unchanged.
+    disputed_count: int = 0
+    missing: List[str] = Field(default_factory=list)
+    #: Claims the run made and never settled with a measurement.
+    unsettled_predictions: List[str] = Field(default_factory=list)
+
+
+class AgentJobEvidenceDisputeRequest(BaseModel):
+    """Reject one result, with the reason that makes the rejection useful."""
+
+    #: Required, and deliberately so: a later run has to tell a result
+    #: rejected for a harness defect from one rejected because the question
+    #: changed, and only the reason distinguishes them.
+    reason: str = Field(..., min_length=1, max_length=2000)
+
+
+class AgentJobEvidenceDisputeResponse(BaseModel):
+    job_id: str
+    index: int
+    reason: str
+    #: What this does NOT do, stated in the response because the caller is
+    #: about to tell someone: nothing downstream is invalidated and the
+    #: contract's verdict is unchanged.
+    advisory: bool = True
+
+
+class AgentJobWorkspaceEntry(BaseModel):
+    """One file or directory in the workspace as it stands now."""
+
+    path: str
+    is_dir: bool = False
+    size: int = 0
+    #: Whether the run added or modified it. Decided against the hashes of the
+    #: files the workspace started with -- the directory alone shows only what
+    #: it ends with.
+    changed: bool = False
+
+
+class AgentJobWorkspaceResponse(BaseModel):
+    """The environment a run worked in, and what it changed."""
+
+    job_id: str
+    workspace_id: str
+    #: active / retained / discarded.
+    status: str = ""
+    source_id: Optional[str] = None
+    repo_url: Optional[str] = None
+    branch: Optional[str] = None
+
+    path: str = "."
+    entries: List[AgentJobWorkspaceEntry] = Field(default_factory=list)
+    truncated: bool = False
+
+    #: What the run changed. Which files, not which lines: only the originals'
+    #: hashes are kept, and storing every original would multiply the disk cost
+    #: of a feature that already needs a retention window.
+    modified: List[str] = Field(default_factory=list)
+    added: List[str] = Field(default_factory=list)
+    deleted: List[str] = Field(default_factory=list)
+
+
+class AgentJobWorkspaceFileResponse(BaseModel):
+    job_id: str
+    workspace_id: str
+    path: str
+    content: str = ""
+    changed: bool = False
+    #: The line-level change, when the workspace has a git repository to answer
+    #: with. An empty string means git knows the file and it is unchanged.
+    diff: Optional[str] = None
+    #: Whether git could answer at all. False means the change cannot be shown
+    #: -- a workspace built from knowledge-base documents has no repository and
+    #: no stored originals -- which is not the same as nothing having changed.
+    diff_available: bool = False
 
 
 class AgentJobDetailResponse(AgentJobResponse):
@@ -1026,8 +1370,7 @@ class AgentJobTemplateResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentJobTemplateListResponse(BaseModel):
@@ -1096,7 +1439,7 @@ class AgentCheckpointQueueBulkActionRequest(BaseModel):
         ...,
         description="Bulk action. Supported by item_type validation on the server.",
     )
-    job_ids: List[UUID] = Field(
+    job_ids: List[str] = Field(
         ...,
         min_length=1,
         description="Job ids to process in one homogeneous bulk action.",
@@ -1111,7 +1454,7 @@ class AgentCheckpointQueueBulkActionRequest(BaseModel):
 class AgentCheckpointQueueBulkActionResultResponse(BaseModel):
     """Per-item result for a bulk queue action."""
 
-    job_id: UUID
+    job_id: Optional[str] = None
     ok: bool
     status: Optional[str] = None
     error: Optional[str] = None
@@ -1124,7 +1467,9 @@ class AgentCheckpointQueueBulkActionResponse(BaseModel):
     requested_count: int
     applied: int
     failed: int
-    results: List[AgentCheckpointQueueBulkActionResultResponse] = Field(default_factory=list)
+    results: List[AgentCheckpointQueueBulkActionResultResponse] = Field(
+        default_factory=list
+    )
 
 
 class AgentCheckpointQueueFollowUpActionRequest(BaseModel):
@@ -1135,20 +1480,32 @@ class AgentCheckpointQueueFollowUpActionRequest(BaseModel):
     portfolio_opportunity_id: Optional[str] = Field(None, max_length=200)
     domain_research_profile_id: Optional[UUID] = None
     profile_opportunity_id: Optional[str] = Field(None, max_length=200)
-    action: str = Field(..., description="Action to perform: approve_launch or reject_launch")
+    action: str = Field(
+        ..., description="Action to perform: approve_launch or reject_launch"
+    )
     operator_note: Optional[str] = Field(None, max_length=2000)
 
     @model_validator(mode="after")
     def _validate_target(self) -> "AgentCheckpointQueueFollowUpActionRequest":
         has_inbox = self.inbox_item_id is not None
-        has_portfolio = self.portfolio_id is not None and bool(str(self.portfolio_opportunity_id or "").strip())
-        has_profile = self.domain_research_profile_id is not None and bool(str(self.profile_opportunity_id or "").strip())
+        has_portfolio = self.portfolio_id is not None and bool(
+            str(self.portfolio_opportunity_id or "").strip()
+        )
+        has_profile = self.domain_research_profile_id is not None and bool(
+            str(self.profile_opportunity_id or "").strip()
+        )
         if sum(1 for flag in (has_inbox, has_portfolio, has_profile) if flag) != 1:
-            raise ValueError("Provide either inbox_item_id, portfolio_id + portfolio_opportunity_id, or domain_research_profile_id + profile_opportunity_id")
+            raise ValueError(
+                "Provide either inbox_item_id, portfolio_id + portfolio_opportunity_id, or domain_research_profile_id + profile_opportunity_id"
+            )
         if self.portfolio_opportunity_id is not None:
-            self.portfolio_opportunity_id = str(self.portfolio_opportunity_id).strip() or None
+            self.portfolio_opportunity_id = (
+                str(self.portfolio_opportunity_id).strip() or None
+            )
         if self.profile_opportunity_id is not None:
-            self.profile_opportunity_id = str(self.profile_opportunity_id).strip() or None
+            self.profile_opportunity_id = (
+                str(self.profile_opportunity_id).strip() or None
+            )
         return self
 
 
@@ -1175,17 +1532,34 @@ class AgentCheckpointQueueBulkFollowUpActionRequest(BaseModel):
     portfolio_opportunity_ids: List[str] = Field(default_factory=list, max_length=100)
     domain_research_profile_id: Optional[UUID] = None
     profile_opportunity_ids: List[str] = Field(default_factory=list, max_length=100)
-    action: str = Field(..., description="Action to perform: approve_launch or reject_launch")
+    action: str = Field(
+        ..., description="Action to perform: approve_launch or reject_launch"
+    )
     operator_note: Optional[str] = Field(None, max_length=2000)
 
     @model_validator(mode="after")
     def _validate_target(self) -> "AgentCheckpointQueueBulkFollowUpActionRequest":
-        self.portfolio_opportunity_ids = [str(value).strip() for value in self.portfolio_opportunity_ids if str(value).strip()]
-        self.profile_opportunity_ids = [str(value).strip() for value in self.profile_opportunity_ids if str(value).strip()]
-        has_portfolio = self.portfolio_id is not None and len(self.portfolio_opportunity_ids) > 0
-        has_profile = self.domain_research_profile_id is not None and len(self.profile_opportunity_ids) > 0
+        self.portfolio_opportunity_ids = [
+            str(value).strip()
+            for value in self.portfolio_opportunity_ids
+            if str(value).strip()
+        ]
+        self.profile_opportunity_ids = [
+            str(value).strip()
+            for value in self.profile_opportunity_ids
+            if str(value).strip()
+        ]
+        has_portfolio = (
+            self.portfolio_id is not None and len(self.portfolio_opportunity_ids) > 0
+        )
+        has_profile = (
+            self.domain_research_profile_id is not None
+            and len(self.profile_opportunity_ids) > 0
+        )
         if sum(1 for flag in (has_portfolio, has_profile) if flag) != 1:
-            raise ValueError("Provide either portfolio_id + portfolio_opportunity_ids or domain_research_profile_id + profile_opportunity_ids")
+            raise ValueError(
+                "Provide either portfolio_id + portfolio_opportunity_ids or domain_research_profile_id + profile_opportunity_ids"
+            )
         return self
 
 
@@ -1210,21 +1584,41 @@ class AgentCheckpointQueueBulkFollowUpActionResponse(BaseModel):
     requested_count: int
     applied: int
     failed: int
-    results: List[AgentCheckpointQueueBulkFollowUpActionResultResponse] = Field(default_factory=list)
+    results: List[AgentCheckpointQueueBulkFollowUpActionResultResponse] = Field(
+        default_factory=list
+    )
 
 
 class AgentJobFeedbackCreate(BaseModel):
     """Create human feedback that can tune future autonomous behavior."""
 
-    rating: int = Field(..., ge=1, le=5, description="User rating for this output/checkpoint")
-    feedback: Optional[str] = Field(None, max_length=4000, description="Optional feedback text")
-    target_type: str = Field("job", description="Target: job, checkpoint, finding, action, or tool")
-    target_id: Optional[str] = Field(None, max_length=200, description="Optional target identifier")
+    rating: int = Field(
+        ..., ge=1, le=5, description="User rating for this output/checkpoint"
+    )
+    feedback: Optional[str] = Field(
+        None, max_length=4000, description="Optional feedback text"
+    )
+    target_type: str = Field(
+        "job", description="Target: job, checkpoint, finding, action, or tool"
+    )
+    target_id: Optional[str] = Field(
+        None, max_length=200, description="Optional target identifier"
+    )
     scope: str = Field("user", description="Learning scope: user, customer, or team")
-    team_key: Optional[str] = Field(None, max_length=120, description="Team key when scope=team")
-    preferred_tools: Optional[List[str]] = Field(default_factory=list, description="Tools to favor in future runs")
-    discouraged_tools: Optional[List[str]] = Field(default_factory=list, description="Tools to avoid in future runs")
-    checkpoint: Optional[str] = Field(None, max_length=200, description="Checkpoint label if feedback is checkpoint-specific")
+    team_key: Optional[str] = Field(
+        None, max_length=120, description="Team key when scope=team"
+    )
+    preferred_tools: Optional[List[str]] = Field(
+        default_factory=list, description="Tools to favor in future runs"
+    )
+    discouraged_tools: Optional[List[str]] = Field(
+        default_factory=list, description="Tools to avoid in future runs"
+    )
+    checkpoint: Optional[str] = Field(
+        None,
+        max_length=200,
+        description="Checkpoint label if feedback is checkpoint-specific",
+    )
 
 
 class AgentJobFeedbackResponse(BaseModel):
@@ -1328,8 +1722,12 @@ class AgentJobMemoryStatsResponse(BaseModel):
     job_sourced: int
     chat_sourced: int
     manual: int
-    most_accessed: List[AgentJobMemoryStatsMostAccessedItem] = Field(default_factory=list)
-    most_important: List[AgentJobMemoryStatsMostImportantItem] = Field(default_factory=list)
+    most_accessed: List[AgentJobMemoryStatsMostAccessedItem] = Field(
+        default_factory=list
+    )
+    most_important: List[AgentJobMemoryStatsMostImportantItem] = Field(
+        default_factory=list
+    )
 
 
 class AgentJobMemorySearchItemResponse(BaseModel):
@@ -1635,10 +2033,18 @@ class AgentDecisionTraceAnalyticsResponse(BaseModel):
     total: int
     by_source_kind: Dict[str, int] = Field(default_factory=dict)
     by_triage_status: Dict[str, int] = Field(default_factory=dict)
-    top_decision_types: List[AgentDecisionTraceAnalyticsBucketResponse] = Field(default_factory=list)
-    top_reason_labels: List[AgentDecisionTraceAnalyticsBucketResponse] = Field(default_factory=list)
-    top_queue_reasons: List[AgentDecisionTraceAnalyticsBucketResponse] = Field(default_factory=list)
-    daily_trend: List[AgentDecisionTraceAnalyticsTrendPointResponse] = Field(default_factory=list)
+    top_decision_types: List[AgentDecisionTraceAnalyticsBucketResponse] = Field(
+        default_factory=list
+    )
+    top_reason_labels: List[AgentDecisionTraceAnalyticsBucketResponse] = Field(
+        default_factory=list
+    )
+    top_queue_reasons: List[AgentDecisionTraceAnalyticsBucketResponse] = Field(
+        default_factory=list
+    )
+    daily_trend: List[AgentDecisionTraceAnalyticsTrendPointResponse] = Field(
+        default_factory=list
+    )
 
 
 class AgentDecisionTraceActionRequest(BaseModel):
@@ -1683,8 +2089,7 @@ class AgentDecisionTraceViewResponse(AgentDecisionTraceViewBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentDecisionTraceViewListResponse(BaseModel):
@@ -1733,7 +2138,9 @@ class AgentJobSwarmAnalyticsPresetRowResponse(BaseModel):
 
 
 class AgentJobSwarmAnalyticsResponse(BaseModel):
-    preset_rows: List[AgentJobSwarmAnalyticsPresetRowResponse] = Field(default_factory=list)
+    preset_rows: List[AgentJobSwarmAnalyticsPresetRowResponse] = Field(
+        default_factory=list
+    )
     totals: Dict[str, Any] = Field(default_factory=dict)
     filters: Dict[str, Any] = Field(default_factory=dict)
 
@@ -1797,7 +2204,9 @@ class AgentJobSwarmOutcomePresetRowResponse(BaseModel):
 
 
 class AgentJobSwarmOutcomeAnalyticsResponse(BaseModel):
-    preset_rows: List[AgentJobSwarmOutcomePresetRowResponse] = Field(default_factory=list)
+    preset_rows: List[AgentJobSwarmOutcomePresetRowResponse] = Field(
+        default_factory=list
+    )
     cases: List[AgentJobSwarmOutcomeCaseResponse] = Field(default_factory=list)
     totals: Dict[str, Any] = Field(default_factory=dict)
     filters: Dict[str, Any] = Field(default_factory=dict)
@@ -1812,8 +2221,7 @@ class AgentJobCheckpointResponse(BaseModel):
     phase: Optional[str]
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # Chain Definition schemas
@@ -1823,30 +2231,46 @@ class ChainStepConfig(BaseModel):
     step_name: str = Field(..., description="Name of this step")
     template_id: Optional[UUID] = Field(None, description="Optional template to use")
     job_type: str = Field("custom", description="Job type for this step")
-    goal_template: str = Field(..., description="Goal template with {variable} placeholders")
-    config: Optional[Dict[str, Any]] = Field(None, description="Step-specific configuration")
-    trigger_condition: str = Field("on_complete", description="When to trigger next step")
-    trigger_thresholds: Optional[Dict[str, int]] = Field(None, description="Thresholds for progress/findings triggers")
+    goal_template: str = Field(
+        ..., description="Goal template with {variable} placeholders"
+    )
+    config: Optional[Dict[str, Any]] = Field(
+        None, description="Step-specific configuration"
+    )
+    trigger_condition: str = Field(
+        "on_complete", description="When to trigger next step"
+    )
+    trigger_thresholds: Optional[Dict[str, int]] = Field(
+        None, description="Thresholds for progress/findings triggers"
+    )
 
     @field_validator("config", mode="before")
     @classmethod
     def _normalize_config(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
 
 class AgentJobChainDefinitionCreate(BaseModel):
     """Request schema for creating a chain definition."""
 
-    name: str = Field(..., min_length=1, max_length=100, description="Unique chain name")
-    display_name: str = Field(..., min_length=1, max_length=200, description="Display name")
+    name: str = Field(
+        ..., min_length=1, max_length=100, description="Unique chain name"
+    )
+    display_name: str = Field(
+        ..., min_length=1, max_length=200, description="Display name"
+    )
     description: Optional[str] = Field(None, description="Chain description")
-    chain_steps: List[ChainStepConfig] = Field(..., min_length=1, description="Ordered list of chain steps")
-    default_settings: Optional[Dict[str, Any]] = Field(None, description="Default settings for all jobs")
+    chain_steps: List[ChainStepConfig] = Field(
+        ..., min_length=1, description="Ordered list of chain steps"
+    )
+    default_settings: Optional[Dict[str, Any]] = Field(
+        None, description="Default settings for all jobs"
+    )
 
     @field_validator("default_settings", mode="before")
     @classmethod
     def _normalize_default_settings(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
 
 class AgentJobChainDefinitionUpdate(BaseModel):
@@ -1861,7 +2285,7 @@ class AgentJobChainDefinitionUpdate(BaseModel):
     @field_validator("default_settings", mode="before")
     @classmethod
     def _normalize_default_settings(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
 
 class AgentJobChainDefinitionResponse(BaseModel):
@@ -1879,8 +2303,7 @@ class AgentJobChainDefinitionResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class AgentJobChainDefinitionListResponse(BaseModel):
@@ -1893,24 +2316,44 @@ class AgentJobChainDefinitionListResponse(BaseModel):
 class AgentJobFromChainCreate(BaseModel):
     """Request schema for creating a job chain from a definition."""
 
-    chain_definition_id: UUID = Field(..., description="ID of the chain definition to use")
-    name_prefix: str = Field(..., min_length=1, max_length=150, description="Prefix for job names")
-    variables: Dict[str, str] = Field(default_factory=dict, description="Variables to substitute in goal templates")
-    config_overrides: Optional[Dict[str, Any]] = Field(None, description="Override chain default settings")
+    chain_definition_id: UUID = Field(
+        ..., description="ID of the chain definition to use"
+    )
+    name_prefix: str = Field(
+        ..., min_length=1, max_length=150, description="Prefix for job names"
+    )
+    variables: Dict[str, str] = Field(
+        default_factory=dict, description="Variables to substitute in goal templates"
+    )
+    config_overrides: Optional[Dict[str, Any]] = Field(
+        None, description="Override chain default settings"
+    )
     start_immediately: bool = Field(True, description="Start first job immediately")
 
     @field_validator("config_overrides", mode="before")
     @classmethod
     def _normalize_config_overrides(cls, value: Any) -> Any:
-        return _normalize_scope_config(value)
+        return normalize_scope_config(value)
 
 
 class AgentJobSaveAsChainRequest(BaseModel):
     """Request schema for saving an executed job chain as a reusable chain definition (playbook)."""
 
-    name: Optional[str] = Field(default=None, min_length=1, max_length=100, description="Unique chain name (optional)")
-    display_name: Optional[str] = Field(default=None, min_length=1, max_length=200, description="Display name (optional)")
-    description: Optional[str] = Field(default=None, max_length=2000, description="Description (optional)")
+    name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=100,
+        description="Unique chain name (optional)",
+    )
+    display_name: Optional[str] = Field(
+        default=None,
+        min_length=1,
+        max_length=200,
+        description="Display name (optional)",
+    )
+    description: Optional[str] = Field(
+        default=None, max_length=2000, description="Description (optional)"
+    )
 
 
 class AgentJobChainStatusResponse(BaseModel):
@@ -1933,5 +2376,7 @@ AgentJobPromoteDomainResearchResponse.model_rebuild()
 from app.schemas import experiment as _experiment_schemas  # noqa: E402
 
 _experiment_schemas.AgentJobExperimentRunResponse = AgentJobExperimentRunResponse
-_experiment_schemas.AgentJobOperatorInterventionResponse = AgentJobOperatorInterventionResponse
+_experiment_schemas.AgentJobOperatorInterventionResponse = (
+    AgentJobOperatorInterventionResponse
+)
 _experiment_schemas.ExperimentRunResponse.model_rebuild()

@@ -2,17 +2,13 @@
 
 from __future__ import annotations
 
-from copy import deepcopy
-from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services.autonomy_service import build_domain_profile_compat_policy
 
 
 class AgentChainOrchestrationService:
@@ -23,15 +19,26 @@ class AgentChainOrchestrationService:
         db: AsyncSession,
     ) -> Dict[str, Any]:
         """Decide whether a swarm fan-in child is allowed to trigger now."""
-        chain_cfg = parent_job.chain_config if isinstance(parent_job.chain_config, dict) else {}
-        chain_data = chain_cfg.get("chain_data") if isinstance(chain_cfg.get("chain_data"), dict) else {}
+        chain_cfg = (
+            parent_job.chain_config if isinstance(parent_job.chain_config, dict) else {}
+        )
+        chain_data = (
+            chain_cfg.get("chain_data")
+            if isinstance(chain_cfg.get("chain_data"), dict)
+            else {}
+        )
         if not bool(chain_data.get("swarm_fan_in_wait_for_all_siblings", False)):
             return {"enabled": False, "ready": True, "already_exists": False}
 
         group_id = str(chain_data.get("swarm_fan_in_group_id") or "").strip()
         sibling_parent_id = parent_job.parent_job_id
         if not sibling_parent_id:
-            return {"enabled": True, "ready": True, "already_exists": False, "group_id": group_id}
+            return {
+                "enabled": True,
+                "ready": True,
+                "already_exists": False,
+                "group_id": group_id,
+            }
 
         siblings_res = await db.execute(
             select(AgentJob).where(AgentJob.parent_job_id == sibling_parent_id)
@@ -43,11 +50,78 @@ class AgentChainOrchestrationService:
             AgentJobStatus.CANCELLED.value,
         }
         total_siblings = len(siblings)
-        terminal_count = len([s for s in siblings if str(s.status) in terminal])
+
+        def _finished_its_work(sibling: Any, status: str) -> bool:
+            """Whether this role has nothing left to compute.
+
+            Terminal is the obvious case. The other is a role PAUSED at an
+            approval gate: it finished, and it is waiting for a person rather
+            than working. Those are different states, and counting the second
+            as unfinished is what would make approval-gated swarms deadlock --
+            every role pauses, none counts, the fan-in never reaches `ready`,
+            and approving changes nothing because the gate still sees zero
+            terminal siblings.
+
+            The same distinction the run view already draws between a pipeline
+            that is `waiting` and one that died.
+            """
+            if status in terminal:
+                return True
+            if status != AgentJobStatus.PAUSED.value:
+                return False
+            results = getattr(sibling, "results", None)
+            checkpoint = (
+                results.get("approval_checkpoint")
+                if isinstance(results, dict)
+                else None
+            )
+            return isinstance(checkpoint, dict) and bool(checkpoint)
+
+        # The asking job counts itself from its own in-memory status, not from
+        # whatever the query returned for it.
+        #
+        # This gate is evaluated DURING the asking job's finalisation, before
+        # its terminal status is visible to a fresh SELECT. So every sibling
+        # counted N-1 and deferred, including the last one -- and since a
+        # deferral schedules no retry, nobody ever fired. The fan-in was
+        # unreachable for any swarm of any size, which is why no job in this
+        # database has ever carried a swarm summary.
+        #
+        # Measured on the first swarm ever run here: the verifier finished
+        # last and recorded `swarm_fan_in_deferred terminal=1 expected=2`.
+        asking_id = getattr(parent_job, "id", None)
+        terminal_count = 0
+        for sibling in siblings:
+            status = str(sibling.status)
+            if asking_id is not None and getattr(sibling, "id", None) == asking_id:
+                # Prefer the live object: it knows it has finished.
+                status = str(parent_job.status)
+            if _finished_its_work(sibling, status):
+                terminal_count += 1
         expected = int(chain_data.get("swarm_fan_in_expected_siblings", 0) or 0)
         if expected <= 0:
             expected = total_siblings
         ready = bool(total_siblings >= expected and terminal_count >= expected)
+
+        # Serialise the check-and-create across siblings.
+        #
+        # Fixing the last-finisher race turned "nobody fires" into "everybody
+        # fires": both siblings now reach `ready` at the same moment, and
+        # neither sees the other's fan-in yet, so both create one. Measured on
+        # the first swarm where the fan-in worked at all -- two
+        # `Swarm Synthesis` jobs for one group.
+        #
+        # The lock is taken on the shared swarm parent and held until this
+        # transaction commits, which is after the fan-in row is written. The
+        # second sibling therefore blocks, then finds `already_exists` and
+        # stands down. A short critical section on one row, and the only place
+        # where two siblings can both be right.
+        if group_id and siblings:
+            await db.execute(
+                select(AgentJob.id)
+                .where(AgentJob.id == sibling_parent_id)
+                .with_for_update()
+            )
 
         already_exists = False
         if group_id and siblings:
@@ -80,8 +154,24 @@ class AgentChainOrchestrationService:
         parent_job: AgentJob,
         db: AsyncSession,
     ) -> Dict[str, Any]:
-        """Collect sibling job outputs for swarm fan-in aggregators."""
-        sibling_parent_id = parent_job.parent_job_id
+        """Collect sibling job outputs for swarm fan-in aggregators.
+
+        Siblings are PEERS of the job firing the chain -- the other roles of
+        the same swarm -- so they are the children of its parent, not its own
+        children. Reading `parent_job.id` here looked for the firing role's
+        descendants, of which there are none but the aggregator itself, so this
+        returned `{}` and the `swarm` payload was never attached. The
+        aggregator then died with "Missing inherited swarm sibling data" every
+        time it ran, which is exactly what the first swarm to get this far did.
+
+        `evaluate_swarm_fan_in_gate` already used `parent_job.parent_job_id`
+        for the same question. Two halves of one feature disagreeing about what
+        a sibling is, and only the half that could refuse was right.
+
+        Falls back to the job's own id so a shape where the aggregator hangs
+        directly off the swarm parent still resolves.
+        """
+        sibling_parent_id = parent_job.parent_job_id or parent_job.id
         if not sibling_parent_id:
             return {}
         siblings_res = await db.execute(
@@ -110,6 +200,11 @@ class AgentChainOrchestrationService:
                     "progress": int(s.progress or 0),
                     "role": str(cfg.get("swarm_role") or ""),
                     "results": s.results if isinstance(s.results, dict) else {},
+                    "output_artifacts": (
+                        s.output_artifacts
+                        if isinstance(s.output_artifacts, list)
+                        else []
+                    ),
                 }
             )
         return {
@@ -180,18 +275,30 @@ class AgentChainOrchestrationService:
                         "type": "swarm_fan_in_deferred",
                         "iteration": int(parent_job.iteration or 0),
                         "group_id": str(fan_in_gate.get("group_id") or ""),
-                        "expected_siblings": int(fan_in_gate.get("expected_siblings", 0) or 0),
-                        "terminal_siblings": int(fan_in_gate.get("terminal_siblings", 0) or 0),
-                        "total_siblings": int(fan_in_gate.get("total_siblings", 0) or 0),
+                        "expected_siblings": int(
+                            fan_in_gate.get("expected_siblings", 0) or 0
+                        ),
+                        "terminal_siblings": int(
+                            fan_in_gate.get("terminal_siblings", 0) or 0
+                        ),
+                        "total_siblings": int(
+                            fan_in_gate.get("total_siblings", 0) or 0
+                        ),
                     },
                 )
                 parent_job.add_log_entry(
                     {
                         "phase": "swarm_fan_in_deferred",
                         "group_id": str(fan_in_gate.get("group_id") or ""),
-                        "expected_siblings": int(fan_in_gate.get("expected_siblings", 0) or 0),
-                        "terminal_siblings": int(fan_in_gate.get("terminal_siblings", 0) or 0),
-                        "total_siblings": int(fan_in_gate.get("total_siblings", 0) or 0),
+                        "expected_siblings": int(
+                            fan_in_gate.get("expected_siblings", 0) or 0
+                        ),
+                        "terminal_siblings": int(
+                            fan_in_gate.get("terminal_siblings", 0) or 0
+                        ),
+                        "total_siblings": int(
+                            fan_in_gate.get("total_siblings", 0) or 0
+                        ),
                     }
                 )
                 await db.commit()
@@ -214,7 +321,11 @@ class AgentChainOrchestrationService:
                     )
                     if child_job:
                         created_job_ids.append(str(child_job.id))
-                        child_cfg = child_job.config if isinstance(child_job.config, dict) else {}
+                        child_cfg = (
+                            child_job.config
+                            if isinstance(child_job.config, dict)
+                            else {}
+                        )
                         executor._append_job_result_step_event(
                             parent_job,
                             {
@@ -227,7 +338,9 @@ class AgentChainOrchestrationService:
                                 "swarm_role": str(child_cfg.get("swarm_role") or ""),
                             },
                         )
-                        logger.info(f"Created chained job {child_job.id} from parent {parent_job.id}")
+                        logger.info(
+                            f"Created chained job {child_job.id} from parent {parent_job.id}"
+                        )
                 except Exception as e:
                     logger.error(f"Failed to create chained job: {e}")
 
@@ -245,10 +358,40 @@ class AgentChainOrchestrationService:
 
         await db.commit()
 
-        # Trigger execution of created jobs
+        # Trigger execution of created jobs.
+        #
+        # Guarded, and per job rather than around the loop. The children are
+        # already committed by the line above; a broker that cannot be reached
+        # is a dispatch problem, not a reason to raise out of a parent whose
+        # own work is finished and finalized. Unguarded, a Redis outage turned
+        # a completed run into an exception at its caller -- after the parent
+        # had extracted its memories and created every child -- which is the
+        # opposite of the property the campaign machinery is built on, that a
+        # reboot costs only the downtime.
+        #
+        # An undispatched child stays queued in the database and is picked up
+        # by reconciliation, so the loss is a delay rather than the job.
         from app.tasks.agent_job_tasks import execute_agent_job_task
+
+        undispatched: List[str] = []
         for job_id in created_job_ids:
-            execute_agent_job_task.delay(job_id, str(parent_job.user_id))
+            try:
+                execute_agent_job_task.delay(job_id, str(parent_job.user_id))
+            except Exception as exc:
+                undispatched.append(job_id)
+                logger.error(
+                    f"Chained job {job_id} was created but could not be "
+                    f"dispatched: {exc}. It stays queued for reconciliation."
+                )
+        if undispatched:
+            executor._append_job_result_step_event(
+                parent_job,
+                {
+                    "type": "chain_dispatch_failed",
+                    "iteration": int(parent_job.iteration or 0),
+                    "job_ids": undispatched[:20],
+                },
+            )
 
         return created_job_ids
 
@@ -270,8 +413,6 @@ class AgentChainOrchestrationService:
         Returns:
             Created AgentJob or None if creation failed
         """
-        # Get data to pass to child
-        chain_data = parent_job.get_chain_data_for_child()
         parent_config = parent_job.chain_config or {}
 
         # Build child job configuration
@@ -286,22 +427,38 @@ class AgentChainOrchestrationService:
             if "inherited_data" not in child_job_config:
                 child_job_config["inherited_data"] = {}
             child_job_config["inherited_data"]["parent_results"] = parent_job.results
-            child_job_config["inherited_data"]["parent_findings"] = parent_job.results.get("findings", [])
+            child_job_config["inherited_data"][
+                "parent_findings"
+            ] = parent_job.results.get("findings", [])
 
         if str(child_job_config.get("origin") or "") == "swarm_fan_in_aggregator":
-            sibling_payload = await executor._build_swarm_sibling_payload(parent_job, db)
+            sibling_payload = await executor._build_swarm_sibling_payload(
+                parent_job, db
+            )
             if sibling_payload:
-                if "inherited_data" not in child_job_config or not isinstance(child_job_config.get("inherited_data"), dict):
+                if "inherited_data" not in child_job_config or not isinstance(
+                    child_job_config.get("inherited_data"), dict
+                ):
                     child_job_config["inherited_data"] = {}
                 child_job_config["inherited_data"]["swarm"] = sibling_payload
-        elif str(child_job_config.get("origin") or "") == "swarm_fan_in_rerun_aggregator":
-            base_payload = child_job_config.get("swarm_rerun_base_payload") if isinstance(child_job_config.get("swarm_rerun_base_payload"), dict) else {}
+        elif (
+            str(child_job_config.get("origin") or "") == "swarm_fan_in_rerun_aggregator"
+        ):
+            base_payload = (
+                child_job_config.get("swarm_rerun_base_payload")
+                if isinstance(child_job_config.get("swarm_rerun_base_payload"), dict)
+                else {}
+            )
             sibling_payload = executor._compose_swarm_rerun_payload(
                 base_payload,
                 tie_breaker_job=parent_job,
-                tie_breaker_source_job_id=str(child_job_config.get("tie_breaker_source_job_id") or ""),
+                tie_breaker_source_job_id=str(
+                    child_job_config.get("tie_breaker_source_job_id") or ""
+                ),
             )
-            if "inherited_data" not in child_job_config or not isinstance(child_job_config.get("inherited_data"), dict):
+            if "inherited_data" not in child_job_config or not isinstance(
+                child_job_config.get("inherited_data"), dict
+            ):
                 child_job_config["inherited_data"] = {}
             child_job_config["inherited_data"]["swarm"] = sibling_payload
             child_job_config.pop("swarm_rerun_base_payload", None)
@@ -309,12 +466,15 @@ class AgentChainOrchestrationService:
         # Create the child job
         child_job = AgentJob(
             name=child_config.get("name", f"Chained: {parent_job.name}"),
-            description=child_config.get("description", f"Chained from job: {parent_job.name}"),
+            description=child_config.get(
+                "description", f"Chained from job: {parent_job.name}"
+            ),
             job_type=child_config.get("job_type", parent_job.job_type),
             goal=child_config.get("goal", parent_job.goal),
             goal_criteria=child_config.get("goal_criteria"),
             config=child_job_config,
-            agent_definition_id=child_config.get("agent_definition_id") or parent_job.agent_definition_id,
+            agent_definition_id=child_config.get("agent_definition_id")
+            or parent_job.agent_definition_id,
             user_id=parent_job.user_id,
             status=AgentJobStatus.PENDING.value,
             # Chain hierarchy
@@ -324,22 +484,32 @@ class AgentChainOrchestrationService:
             # Chain config for further chaining
             chain_config=child_config.get("chain_config"),
             # Resource limits - inherit from parent or use child config
-            max_iterations=child_config.get("max_iterations", parent_job.max_iterations),
-            max_tool_calls=child_config.get("max_tool_calls", parent_job.max_tool_calls),
+            max_iterations=child_config.get(
+                "max_iterations", parent_job.max_iterations
+            ),
+            max_tool_calls=child_config.get(
+                "max_tool_calls", parent_job.max_tool_calls
+            ),
             max_llm_calls=child_config.get("max_llm_calls", parent_job.max_llm_calls),
-            max_runtime_minutes=child_config.get("max_runtime_minutes", parent_job.max_runtime_minutes),
+            max_runtime_minutes=child_config.get(
+                "max_runtime_minutes", parent_job.max_runtime_minutes
+            ),
         )
 
         db.add(child_job)
         await db.flush()  # Get the ID
 
         # Log the chain creation
-        parent_job.add_log_entry({
-            "phase": "chain_triggered",
-            "child_job_id": str(child_job.id),
-            "child_job_name": child_job.name,
-            "trigger_event": "complete" if parent_job.status == AgentJobStatus.COMPLETED.value else "fail",
-        })
+        parent_job.add_log_entry(
+            {
+                "phase": "chain_triggered",
+                "child_job_id": str(child_job.id),
+                "child_job_name": child_job.name,
+                "trigger_event": "complete"
+                if parent_job.status == AgentJobStatus.COMPLETED.value
+                else "fail",
+            }
+        )
 
         return child_job
 
@@ -369,12 +539,16 @@ class AgentChainOrchestrationService:
 
         # Check progress-based trigger
         if job.should_trigger_chain("progress", progress):
-            triggered = await executor._trigger_chained_jobs(job, "progress", db, progress)
+            triggered = await executor._trigger_chained_jobs(
+                job, "progress", db, progress
+            )
             triggered_jobs.extend(triggered)
 
         # Check findings-based trigger
         if job.should_trigger_chain("findings", findings_count):
-            triggered = await executor._trigger_chained_jobs(job, "findings", db, findings_count)
+            triggered = await executor._trigger_chained_jobs(
+                job, "findings", db, findings_count
+            )
             triggered_jobs.extend(triggered)
 
         return triggered_jobs

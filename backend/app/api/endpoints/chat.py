@@ -2,31 +2,36 @@
 Chat-related API endpoints.
 """
 
-from datetime import datetime
-from typing import List, Optional
+from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, Request, WebSocket, WebSocketDisconnect
-from sqlalchemy.ext.asyncio import AsyncSession
+
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+)
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.core.rate_limit import limiter, CHAT_LIMIT
-from app.models.chat import ChatSession, ChatMessage
-from app.models.user import User
+from app.core.rate_limit import CHAT_LIMIT, limiter
 from app.models.memory import UserPreferences
-from app.services.chat_service import ChatService
-from app.services.llm_service import UserLLMSettings
-from app.services.auth_service import get_current_user
-from sqlalchemy import select
+from app.models.user import User
 from app.schemas.chat import (
-    ChatSessionCreate,
-    ChatSessionUpdate,
-    ChatSessionResponse,
     ChatMessageCreate,
     ChatMessageResponse,
-    ChatQuery
+    ChatSessionCreate,
+    ChatSessionResponse,
+    ChatSessionUpdate,
 )
 from app.schemas.common import PaginatedResponse
+from app.services.auth_service import get_current_user
+from app.services.chat_service import ChatService
+from app.services.llm_service import UserLLMSettings
 
 router = APIRouter()
 chat_service = ChatService()
@@ -38,28 +43,28 @@ async def create_chat_session(
     request: Request,
     session_data: ChatSessionCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Create a new chat session.
-    
+
     Args:
         request: FastAPI request object (for rate limiting)
         session_data: Chat session creation data
         current_user: Current authenticated user
         db: Database session
-        
+
     Returns:
         Created chat session response
     """
     from app.core.logging import log_error
-    
+
     try:
         session = await chat_service.create_session(
             user_id=current_user.id,
             title=session_data.title,
             extra_metadata=session_data.extra_metadata,
-            db=db
+            db=db,
         )
         # Set messages to empty list for new session (prevents lazy loading issues)
         session.messages = []
@@ -74,58 +79,56 @@ async def get_chat_sessions(
     page: int = 1,
     page_size: int = 20,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get paginated list of chat sessions for the current user.
-    
+
     Args:
         page: Page number (1-indexed)
         page_size: Number of items per page (1-100)
         current_user: Current authenticated user
         db: Database session
-        
+
     Returns:
         Paginated response with chat sessions
     """
-    from app.utils.exceptions import ValidationError
     from app.core.logging import log_error
-    
+    from app.utils.exceptions import ValidationError
+
     try:
         # Validate pagination parameters
         if page < 1:
             raise ValidationError("Page must be >= 1", field="page")
         if page_size < 1 or page_size > 100:
-            raise ValidationError("Page size must be between 1 and 100", field="page_size")
-        
+            raise ValidationError(
+                "Page size must be between 1 and 100", field="page_size"
+            )
+
         # Calculate skip
         skip = (page - 1) * page_size
-        
+
         # Get sessions with total count
         sessions, total = await chat_service.get_user_sessions(
-            user_id=current_user.id,
-            db=db,
-            skip=skip,
-            limit=page_size
+            user_id=current_user.id, db=db, skip=skip, limit=page_size
         )
-        
-        logger.info(f"Retrieved {len(sessions)} sessions for user {current_user.id} (total: {total}, page: {page}, page_size: {page_size})")
-        
+
+        logger.info(
+            f"Retrieved {len(sessions)} sessions for user {current_user.id} (total: {total}, page: {page}, page_size: {page_size})"
+        )
+
         # Convert to response models
         # For list view, set messages to empty list to prevent lazy loading issues
         items = []
         for session in sessions:
             session.messages = []
             items.append(ChatSessionResponse.from_orm(session))
-        
+
         logger.debug(f"Converted {len(items)} sessions to response models")
-        
+
         # Return paginated response
         return PaginatedResponse.create(
-            items=items,
-            total=total,
-            page=page,
-            page_size=page_size
+            items=items, total=total, page=page, page_size=page_size
         )
     except ValidationError:
         raise
@@ -138,18 +141,16 @@ async def get_chat_sessions(
 async def get_chat_session(
     session_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Get a specific chat session with messages."""
     try:
         session = await chat_service.get_session_with_messages(
-            session_id=session_id,
-            user_id=current_user.id,
-            db=db
+            session_id=session_id, user_id=current_user.id, db=db
         )
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
-        
+
         return ChatSessionResponse.from_orm(session)
     except HTTPException:
         raise
@@ -201,39 +202,34 @@ async def send_message(
     session_id: UUID,
     message_data: ChatMessageCreate,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Send a message in a chat session and generate AI response.
-    
+
     Args:
         request: FastAPI request object (for rate limiting)
         session_id: Chat session ID
         message_data: Message creation data
         current_user: Current authenticated user
         db: Database session
-        
+
     Returns:
         Chat message response with AI-generated reply
     """
     from app.core.logging import log_error
-    
+
     try:
         # Verify session belongs to user
         session = await chat_service.get_session(
-            session_id=session_id,
-            user_id=current_user.id,
-            db=db
+            session_id=session_id, user_id=current_user.id, db=db
         )
         if not session:
             raise HTTPException(status_code=404, detail="Chat session not found")
-        
+
         # Create user message
-        user_message = await chat_service.create_message(
-            session_id=session_id,
-            content=message_data.content,
-            role="user",
-            db=db
+        await chat_service.create_message(
+            session_id=session_id, content=message_data.content, role="user", db=db
         )
 
         # Load user LLM preferences
@@ -251,13 +247,15 @@ async def send_message(
             db=db,
             user_settings=user_settings,
         )
-        
+
         return ChatMessageResponse.from_orm(ai_response)
-    
+
     except HTTPException:
         raise
     except Exception as e:
-        log_error(e, context={"session_id": str(session_id), "user_id": str(current_user.id)})
+        log_error(
+            e, context={"session_id": str(session_id), "user_id": str(current_user.id)}
+        )
         raise HTTPException(status_code=500, detail="Failed to send message")
 
 
@@ -268,9 +266,9 @@ async def websocket_chat(
 ):
     """WebSocket endpoint for real-time chat."""
     # Authenticate WebSocket connection
-    from app.utils.websocket_auth import require_websocket_auth
     from app.core.database import AsyncSessionLocal
-    
+    from app.utils.websocket_auth import require_websocket_auth
+
     try:
         user = await require_websocket_auth(websocket)
         logger.info(f"WebSocket authenticated for user {user.id}, session {session_id}")
@@ -283,40 +281,40 @@ async def websocket_chat(
             # Receive message from client
             data = await websocket.receive_json()
             query = data.get("message", "")
-            
+
             if not query:
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Empty message received"
-                })
+                await websocket.send_json(
+                    {"type": "error", "message": "Empty message received"}
+                )
                 continue
-            
+
             # Send typing indicator
-            await websocket.send_json({
-                "type": "typing",
-                "message": "AI is thinking..."
-            })
-            
+            await websocket.send_json(
+                {"type": "typing", "message": "AI is thinking..."}
+            )
+
             try:
                 # Don't hold a DB connection for the lifetime of the WebSocket.
                 # Acquire a session only while doing DB work for a single message.
                 async with AsyncSessionLocal() as db:
                     # Verify session belongs to authenticated user
                     session = await chat_service.get_session(
-                        session_id=session_id,
-                        user_id=user.id,
-                        db=db
+                        session_id=session_id, user_id=user.id, db=db
                     )
                     if not session:
-                        await websocket.send_json({
-                            "type": "error",
-                            "message": "Chat session not found or access denied"
-                        })
+                        await websocket.send_json(
+                            {
+                                "type": "error",
+                                "message": "Chat session not found or access denied",
+                            }
+                        )
                         continue
 
                     # Load user LLM preferences
                     prefs_result = await db.execute(
-                        select(UserPreferences).where(UserPreferences.user_id == user.id)
+                        select(UserPreferences).where(
+                            UserPreferences.user_id == user.id
+                        )
                     )
                     user_prefs = prefs_result.scalar_one_or_none()
                     user_settings = UserLLMSettings.from_preferences(user_prefs)
@@ -329,20 +327,22 @@ async def websocket_chat(
                         db=db,
                         user_settings=user_settings,
                     )
-                
+
                 # Send response
-                await websocket.send_json({
-                    "type": "message",
-                    "data": {
-                        "id": str(response.id),
-                        "content": response.content,
-                        "role": response.role,
-                        "created_at": response.created_at.isoformat(),
-                        "source_documents": response.source_documents,
-                        "response_time": response.response_time
+                await websocket.send_json(
+                    {
+                        "type": "message",
+                        "data": {
+                            "id": str(response.id),
+                            "content": response.content,
+                            "role": response.role,
+                            "created_at": response.created_at.isoformat(),
+                            "source_documents": response.source_documents,
+                            "response_time": response.response_time,
+                        },
                     }
-                })
-                
+                )
+
             except Exception as e:
                 logger.error(f"Error generating response: {e}")
                 try:
@@ -350,11 +350,10 @@ async def websocket_chat(
                         await db.rollback()
                 except Exception:
                     pass
-                await websocket.send_json({
-                    "type": "error",
-                    "message": "Failed to generate response"
-                })
-    
+                await websocket.send_json(
+                    {"type": "error", "message": "Failed to generate response"}
+                )
+
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for session {session_id}")
     except Exception as e:
@@ -366,30 +365,34 @@ async def websocket_chat(
 async def delete_chat_session(
     session_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Delete a chat session (soft delete)."""
     from app.core.logging import log_error
-    
+
     try:
-        logger.info(f"Delete request for session {session_id} by user {current_user.id}")
-        success = await chat_service.delete_session(
-            session_id=session_id,
-            user_id=current_user.id,
-            db=db
+        logger.info(
+            f"Delete request for session {session_id} by user {current_user.id}"
         )
-        
+        success = await chat_service.delete_session(
+            session_id=session_id, user_id=current_user.id, db=db
+        )
+
         if not success:
-            logger.warning(f"Session {session_id} not found or doesn't belong to user {current_user.id}")
+            logger.warning(
+                f"Session {session_id} not found or doesn't belong to user {current_user.id}"
+            )
             raise HTTPException(status_code=404, detail="Chat session not found")
-        
+
         logger.info(f"Successfully deleted session {session_id}")
         return {"message": "Chat session deleted successfully"}
-    
+
     except HTTPException:
         raise
     except Exception as e:
-        log_error(e, context={"session_id": str(session_id), "user_id": str(current_user.id)})
+        log_error(
+            e, context={"session_id": str(session_id), "user_id": str(current_user.id)}
+        )
         raise HTTPException(status_code=500, detail="Failed to delete chat session")
 
 
@@ -399,22 +402,19 @@ async def provide_feedback(
     rating: int,
     feedback: Optional[str] = None,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """Provide feedback on a chat message."""
     try:
         success = await chat_service.update_message_feedback(
-            message_id=message_id,
-            rating=rating,
-            feedback=feedback,
-            db=db
+            message_id=message_id, rating=rating, feedback=feedback, db=db
         )
-        
+
         if not success:
             raise HTTPException(status_code=404, detail="Message not found")
-        
+
         return {"message": "Feedback submitted successfully"}
-    
+
     except HTTPException:
         raise
     except Exception as e:

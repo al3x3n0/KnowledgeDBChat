@@ -32,7 +32,9 @@ class WebScraperService:
         self._owns_client = client is None
         self._enforce_network_safety = enforce_network_safety
 
-    async def _get_client(self, *, timeout_s: float, headers: Dict[str, str]) -> httpx.AsyncClient:
+    async def _get_client(
+        self, *, timeout_s: float, headers: Dict[str, str]
+    ) -> httpx.AsyncClient:
         if self._client is None:
             self._client = httpx.AsyncClient(
                 timeout=timeout_s,
@@ -72,7 +74,9 @@ class WebScraperService:
 
         normalized_url = self._normalize_url(url)
         if self._enforce_network_safety:
-            self._validate_safe_url(normalized_url, allow_private_networks=allow_private_networks)
+            self._validate_safe_url(
+                normalized_url, allow_private_networks=allow_private_networks
+            )
 
         root_netloc = urlparse(normalized_url).netloc.lower()
         request_headers = {
@@ -123,7 +127,10 @@ class WebScraperService:
                 try:
                     normalized_link = self._normalize_url(link)
                     if self._enforce_network_safety:
-                        self._validate_safe_url(normalized_link, allow_private_networks=allow_private_networks)
+                        self._validate_safe_url(
+                            normalized_link,
+                            allow_private_networks=allow_private_networks,
+                        )
                 except Exception:
                     continue
                 queue.append((normalized_link, depth + 1))
@@ -156,12 +163,18 @@ class WebScraperService:
         )
 
         content_type = (response.headers.get("content-type") or "").lower()
-        if "text/html" in content_type or "application/xhtml+xml" in content_type or content_type == "":
+        if (
+            "text/html" in content_type
+            or "application/xhtml+xml" in content_type
+            or content_type == ""
+        ):
             soup = BeautifulSoup(response.content, "html.parser")
             title = self._extract_title(soup)
             main = self._select_main_content(soup)
             text = self._extract_text(main, title=title)
-            links = self._extract_links(main, base_url=final_url) if include_links else []
+            links = (
+                self._extract_links(main, base_url=final_url) if include_links else []
+            )
         elif "text/plain" in content_type:
             title = ""
             text = response.text
@@ -205,7 +218,9 @@ class WebScraperService:
 
         final_url = str(response.url)
         if self._enforce_network_safety:
-            self._validate_safe_url(final_url, allow_private_networks=allow_private_networks)
+            self._validate_safe_url(
+                final_url, allow_private_networks=allow_private_networks
+            )
         hydrated = httpx.Response(
             status_code=response.status_code,
             headers=response.headers,
@@ -223,10 +238,24 @@ class WebScraperService:
             raise ValueError("URL must include a hostname")
         if parsed.username or parsed.password:
             raise ValueError("Userinfo in URL is not supported")
-        normalized = urlunparse((parsed.scheme, parsed.netloc, parsed.path or "/", parsed.params, parsed.query, ""))
+        normalized = urlunparse(
+            (
+                parsed.scheme,
+                parsed.netloc,
+                parsed.path or "/",
+                parsed.params,
+                parsed.query,
+                "",
+            )
+        )
         return normalized
 
-    def _is_allowed_ip(self, ip: ipaddress.IPv4Address | ipaddress.IPv6Address, *, allow_private_networks: bool) -> bool:
+    def _is_allowed_ip(
+        self,
+        ip: ipaddress.IPv4Address | ipaddress.IPv6Address,
+        *,
+        allow_private_networks: bool,
+    ) -> bool:
         if ip.is_loopback or ip.is_link_local or ip.is_multicast or ip.is_unspecified:
             return False
         if ip.is_global:
@@ -242,13 +271,19 @@ class WebScraperService:
             raise ValueError("URL must include a hostname")
 
         host_lower = hostname.lower()
-        if host_lower in {"localhost"} or host_lower.endswith(".localhost") or host_lower.endswith(".local"):
+        if (
+            host_lower in {"localhost"}
+            or host_lower.endswith(".localhost")
+            or host_lower.endswith(".local")
+        ):
             raise ValueError("Localhost domains are not allowed")
 
         # If it's a literal IP, check it directly.
         try:
             ip = ipaddress.ip_address(host_lower)
-            if not self._is_allowed_ip(ip, allow_private_networks=allow_private_networks):
+            if not self._is_allowed_ip(
+                ip, allow_private_networks=allow_private_networks
+            ):
                 raise ValueError("Disallowed IP address")
             return
         except ValueError:
@@ -265,7 +300,9 @@ class WebScraperService:
                 ip = ipaddress.ip_address(addr)
             except ValueError:
                 continue
-            if not self._is_allowed_ip(ip, allow_private_networks=allow_private_networks):
+            if not self._is_allowed_ip(
+                ip, allow_private_networks=allow_private_networks
+            ):
                 raise ValueError("Disallowed IP address")
 
     def _select_main_content(self, soup: BeautifulSoup):
@@ -319,7 +356,9 @@ class WebScraperService:
             for node in root.select(selector):
                 node.decompose()
 
-        for node in root.select("sup.reference, span.mw-cite-backlink, span.mw-cite-backlink *"):
+        for node in root.select(
+            "sup.reference, span.mw-cite-backlink, span.mw-cite-backlink *"
+        ):
             node.decompose()
 
         text = root.get_text(separator="\n", strip=True)

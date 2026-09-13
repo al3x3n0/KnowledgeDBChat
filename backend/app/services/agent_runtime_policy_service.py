@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
-import hashlib
 from typing import Any, Dict, Optional, Tuple
+
+from app.services import agent_tool_scoring
 
 
 class AgentRuntimePolicyService:
@@ -18,8 +19,14 @@ class AgentRuntimePolicyService:
         selection_cfg: Optional[Dict[str, Any]] = None,
     ) -> Tuple[str, Dict[str, Any]]:
         """Resolve configured tool-selection mode with optional A/B override."""
-        cfg = selection_cfg if isinstance(selection_cfg, dict) else executor._get_tool_selection_config(job)
-        base_mode = str(cfg.get("policy_mode", "adaptive") or "adaptive").strip().lower()
+        cfg = (
+            selection_cfg
+            if isinstance(selection_cfg, dict)
+            else executor._get_tool_selection_config(job)
+        )
+        base_mode = (
+            str(cfg.get("policy_mode", "adaptive") or "adaptive").strip().lower()
+        )
         if base_mode not in {"baseline", "adaptive", "thompson"}:
             base_mode = "adaptive"
 
@@ -34,7 +41,9 @@ class AgentRuntimePolicyService:
 
         if not assignment["enabled"]:
             override_mode = (
-                str((state or {}).get("tool_selection_mode_override") or "").strip().lower()
+                str((state or {}).get("tool_selection_mode_override") or "")
+                .strip()
+                .lower()
                 if isinstance(state, dict)
                 else ""
             )
@@ -43,18 +52,28 @@ class AgentRuntimePolicyService:
                 assignment["override_active"] = True
                 assignment["mode"] = base_mode
             elif isinstance(state, dict):
-                base_mode = executor._apply_goal_stage_policy_mode(state, base_mode, cfg)
+                base_mode = executor._apply_goal_stage_policy_mode(
+                    state, base_mode, cfg
+                )
             if isinstance(state, dict):
                 state["tool_selection_effective_mode"] = base_mode
                 state["tool_selection_ab_assignment"] = assignment
-                base_mode = executor._apply_live_mode_fallback_guardrail(job, state, base_mode, cfg)
+                base_mode = executor._apply_live_mode_fallback_guardrail(
+                    job, state, base_mode, cfg
+                )
                 state["tool_selection_effective_mode"] = base_mode
                 assignment["mode"] = base_mode
-                assignment["goal_stage"] = str(state.get("tool_selection_goal_stage") or "")
+                assignment["goal_stage"] = str(
+                    state.get("tool_selection_goal_stage") or ""
+                )
             return base_mode, assignment
 
-        variant_a = str(cfg.get("ab_test_variant_a", "adaptive") or "adaptive").strip().lower()
-        variant_b = str(cfg.get("ab_test_variant_b", "thompson") or "thompson").strip().lower()
+        variant_a = (
+            str(cfg.get("ab_test_variant_a", "adaptive") or "adaptive").strip().lower()
+        )
+        variant_b = (
+            str(cfg.get("ab_test_variant_b", "thompson") or "thompson").strip().lower()
+        )
         if variant_a not in {"baseline", "adaptive", "thompson"}:
             variant_a = "adaptive"
         if variant_b not in {"baseline", "adaptive", "thompson"}:
@@ -100,6 +119,4 @@ class AgentRuntimePolicyService:
 
     def _stable_fraction(self, key: str) -> float:
         """Map a key to stable [0,1) fraction."""
-        digest = hashlib.sha256(str(key).encode("utf-8")).hexdigest()
-        bucket = int(digest[:12], 16)
-        return float(bucket % 1_000_000) / 1_000_000
+        return agent_tool_scoring.stable_fraction(key)

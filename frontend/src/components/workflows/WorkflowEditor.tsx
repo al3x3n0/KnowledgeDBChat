@@ -18,7 +18,7 @@ import ReactFlow, {
   Panel,
 } from 'reactflow';
 import 'reactflow/dist/style.css';
-import { Undo2, Redo2, Save, Trash2, ZoomIn, ZoomOut } from 'lucide-react';
+import { Undo2, Redo2, Save, ZoomIn, ZoomOut } from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import { useWorkflowStore, WorkflowNodeData } from './useWorkflowStore';
@@ -37,13 +37,12 @@ interface WorkflowEditorProps {
 
 const WorkflowEditorInner: React.FC<WorkflowEditorProps> = ({ onSave }) => {
   const reactFlowWrapper = useRef<HTMLDivElement>(null);
-  const { project, fitView, zoomIn, zoomOut } = useReactFlow();
+  const { project, zoomIn, zoomOut } = useReactFlow();
 
   // Store state and actions
   const nodes = useWorkflowStore((state) => state.nodes);
   const edges = useWorkflowStore((state) => state.edges);
   const selectedNodeId = useWorkflowStore((state) => state.selectedNodeId);
-  const isDirty = useWorkflowStore((state) => state.isSaving);
   const isSaving = useWorkflowStore((state) => state.isSaving);
 
   const onNodesChange = useWorkflowStore((state) => state.onNodesChange);
@@ -118,7 +117,7 @@ const WorkflowEditorInner: React.FC<WorkflowEditorProps> = ({ onSave }) => {
       }
 
       // Redo: Ctrl+Shift+Z or Ctrl+Y
-      if (event.ctrlKey && (event.shiftKey && event.key === 'z' || event.key === 'y')) {
+      if (event.ctrlKey && ((event.shiftKey && event.key === 'z') || event.key === 'y')) {
         event.preventDefault();
         redo();
       }

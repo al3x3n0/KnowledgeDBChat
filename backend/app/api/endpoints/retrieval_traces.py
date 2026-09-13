@@ -35,4 +35,3 @@ async def get_retrieval_trace(
     if trace.user_id != current_user.id and not _is_admin(current_user):
         raise HTTPException(status_code=404, detail="Not found")
     return RetrievalTraceResponse.model_validate(trace)
-

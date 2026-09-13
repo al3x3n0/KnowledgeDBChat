@@ -1,0 +1,13 @@
+[package]
+name = "candidate-coster"
+version = "0.1.0"
+edition = "2021"
+description = "Turn a mined instruction pattern into the assembly llvm-mca must cost"
+
+# No dependencies on purpose, for the same reason as idiom-miner: this ships
+# inside reproducible evidence bundles, and a build that reaches the network
+# for crates is a build a third party cannot repeat years later.
+[dependencies]
+
+[profile.release]
+opt-level = 3

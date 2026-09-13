@@ -1,0 +1,389 @@
+"""One declaration per tool, and every registry reading it.
+
+Defining a tool meant editing four unrelated files: the schema a model reads,
+the governance metadata, the per-job-type allowlist, and the evidence map a
+plan is derived from. Sixteen commits in a year touched all four, and the
+misses were silent -- a tool absent from a registry is not broken, just
+quieter. These tests assert the registries now derive from the spec rather
+than agree with it by hand.
+"""
+
+import pytest
+
+from app.agent_core import tool_specs
+from app.agent_core.tool_catalog import get_tool_metadata
+from app.services import agent_evidence_map, agent_job_tool_policy
+from app.services.agent_tools import AGENT_TOOLS
+
+SPECS = tool_specs.all_specs()
+# Every job type the policy defines. This listed five of the nine, so a spec
+# could have been wrong about four of them without any test noticing.
+JOB_TYPES = (
+    "research",
+    "monitor",
+    "analysis",
+    "synthesis",
+    "coding",
+    "document_authoring",
+    "knowledge_expansion",
+    "custom",
+    "data_analysis",
+)
+
+
+def test_there_are_specs_to_check():
+    """A guard over an empty registry passes without checking anything."""
+    assert len(SPECS) >= 19
+
+
+@pytest.mark.parametrize("spec", SPECS, ids=lambda s: s.name)
+class TestEveryRegistryReadsTheSpec:
+    def test_the_model_is_offered_the_declared_schema(self, spec):
+        offered = [t for t in AGENT_TOOLS if t["name"] == spec.name]
+        assert len(offered) == 1, f"{spec.name} appears {len(offered)} times"
+        assert offered[0]["description"] == spec.description
+        assert offered[0]["parameters"] == spec.parameters
+
+    def test_governance_reads_the_declared_classification(self, spec):
+        meta = get_tool_metadata(spec.name)
+        assert meta is not None, f"{spec.name} has no catalog metadata"
+        assert meta.effects == spec.effects
+        assert meta.network == spec.network
+        assert meta.cost_tier == spec.cost_tier
+        assert meta.pii_risk == spec.pii_risk
+
+    def test_the_job_types_that_may_call_it_are_the_declared_ones(self, spec):
+        expected = set(JOB_TYPES) if spec.job_types is None else set(spec.job_types)
+        for job_type in JOB_TYPES:
+            allowed = spec.name in agent_job_tool_policy.get_tools_for_job_type(
+                job_type, {}
+            )
+            assert allowed is (
+                job_type in expected
+            ), f"{spec.name} on {job_type}: policy says {allowed}"
+
+
+def test_the_evidence_map_is_exactly_the_specs_that_produce_evidence():
+    """Four counter tools were missing from this map, so a contract asking for
+    their findings was told no tool produced them. Deriving it removes the
+    possibility rather than the instance."""
+    mapped = {e.tool for e in agent_evidence_map.EVIDENCE_TOOLS}
+    declared = {s.name for s in SPECS if s.produces}
+    assert mapped == declared
+
+
+def test_a_producing_spec_carries_its_evidence_into_the_map():
+    for spec in SPECS:
+        if not spec.produces:
+            continue
+        entry = next(
+            e for e in agent_evidence_map.EVIDENCE_TOOLS if e.tool == spec.name
+        )
+        assert entry.produces == spec.produces
+        assert entry.requires == spec.requires
+        assert entry.consumes == spec.consumes
+
+
+def test_a_tool_that_produces_nothing_stays_out_of_the_map():
+    """Silence is the honest default: a tool with no declared output should not
+    appear to promise evidence a planner can chain on."""
+    mapped = {e.tool for e in agent_evidence_map.EVIDENCE_TOOLS}
+    for spec in SPECS:
+        if not spec.produces:
+            assert spec.name not in mapped
+
+
+def test_every_spec_can_actually_be_run():
+    """A declaration is not a capability until something answers the call."""
+    from tests.test_capability_reachability import dispatchable_tools
+
+    undispatchable = sorted({s.name for s in SPECS} - dispatchable_tools())
+    assert not undispatchable, f"declared but nothing handles them: {undispatchable}"
+
+
+def test_evidence_requirements_name_tools_that_exist():
+    """A chain derived backwards from a contract has to be runnable."""
+    names = {s.name for s in SPECS}
+    for spec in SPECS:
+        for required in spec.requires:
+            assert required in names, f"{spec.name} requires unknown {required}"
+
+
+def test_declared_classifications_use_known_values():
+    for spec in SPECS:
+        assert spec.effects in {"read", "write"}
+        assert spec.network in {"none", "egress"}
+        assert spec.cost_tier in {"low", "medium", "high"}
+        assert spec.pii_risk in {"low", "medium", "high"}
+
+
+def test_the_schema_list_is_exactly_the_specs():
+    """There is one declaration, not two that happen to match today.
+
+    ``AGENT_TOOLS`` was a literal list of 197 schemas maintained beside the
+    catalog, the policy and the evidence map. It is now a view of the specs,
+    so a tool cannot be declared in one and missing from the other.
+    """
+    assert [t["name"] for t in AGENT_TOOLS] == [s.name for s in SPECS]
+
+
+def test_no_tool_is_declared_in_two_modules():
+    """Assembly raises on a duplicate, so this pins the guard itself."""
+    names = [s.name for s in SPECS]
+    assert len(names) == len(set(names))
+
+
+def test_one_declaration_is_enough(monkeypatch):
+    """The property the move exists for.
+
+    Verified end to end separately, by reloading the four registry modules
+    around an invented spec and watching it appear in all of them; that check
+    is not safe to keep in a shared suite, because reloading a module other
+    tests hold references into swaps the objects under them. What is pinned
+    here is the derivation every registry reads at import.
+    """
+    invented = tool_specs.ToolSpec(
+        name="measure_invented_thing",
+        description="An invented tool, declared once.",
+        parameters={"type": "object", "properties": {}},
+        effects="write",
+        cost_tier="high",
+        produces=("invented_measurement",),
+    )
+    monkeypatch.setattr(tool_specs, "TOOL_SPECS", SPECS + (invented,))
+    monkeypatch.setattr(
+        tool_specs, "_BY_NAME", {s.name: s for s in tool_specs.TOOL_SPECS}
+    )
+
+    assert any(s["name"] == "measure_invented_thing" for s in tool_specs.schemas())
+    assert "measure_invented_thing" in tool_specs.tools_for_job_type("research")
+    assert tool_specs.spec_for("measure_invented_thing").effects == "write"
+    assert "measure_invented_thing" in tool_specs.spec_names()
+
+
+def test_a_spec_limited_to_one_job_type_is_offered_only_there(monkeypatch):
+    narrow = tool_specs.ToolSpec(
+        name="coding_only_thing",
+        description="Scoped to one job type.",
+        parameters={"type": "object", "properties": {}},
+        job_types=("coding",),
+    )
+    monkeypatch.setattr(tool_specs, "TOOL_SPECS", SPECS + (narrow,))
+
+    assert "coding_only_thing" in tool_specs.tools_for_job_type("coding")
+    assert "coding_only_thing" not in tool_specs.tools_for_job_type("research")
+
+
+def test_a_spec_belonging_to_no_job_type_is_offered_to_none(monkeypatch):
+    """Distinct from "all", and 58 tools depend on the difference: they are
+    reachable from chat or MCP and from no autonomous job."""
+    chat_only = tool_specs.ToolSpec(
+        name="chat_only_thing",
+        description="Reachable from chat, from no job type.",
+        parameters={"type": "object", "properties": {}},
+        job_types=(),
+    )
+    monkeypatch.setattr(tool_specs, "TOOL_SPECS", SPECS + (chat_only,))
+
+    for job_type in JOB_TYPES:
+        assert "chat_only_thing" not in tool_specs.tools_for_job_type(job_type)
+
+
+class TestDataAnalysisSchemasMatchTheirService:
+    """The data-analysis schemas were converted, not moved.
+
+    They were declared as prose keyed by parameter name, carrying no types at
+    all, so nothing could check them and the repair pass had nothing to work
+    from. The types now in the specs were read from the service signatures;
+    these tests keep them tied to those signatures, because a schema that
+    drifts from what the service accepts is the defect this whole registry
+    exists to prevent -- and a wrong type is worse than none, since the repair
+    pass acts on it.
+    """
+
+    def _pairs(self):
+        import inspect
+        import typing
+
+        from app.agent_core.tool_specs import data_analysis
+        from app.services.data_analysis_tools import (
+            DATA_ANALYSIS_EXPOSED_NAMES,
+            DataAnalysisTools,
+        )
+
+        method_for = {v: k for k, v in DATA_ANALYSIS_EXPOSED_NAMES.items()}
+        for spec in data_analysis.SPECS:
+            fn = getattr(DataAnalysisTools, method_for.get(spec.name, spec.name))
+            params = {
+                k: v for k, v in inspect.signature(fn).parameters.items() if k != "self"
+            }
+            yield spec, params, typing.get_type_hints(fn), inspect._empty
+
+    def test_the_schema_offers_exactly_what_the_service_accepts(self):
+        for spec, params, _hints, _empty in self._pairs():
+            offered = set(spec.parameters["properties"])
+            assert offered == set(params), (
+                f"{spec.name}: schema offers {sorted(offered)}, "
+                f"service accepts {sorted(params)}"
+            )
+
+    def test_required_means_the_service_has_no_default(self):
+        for spec, params, _hints, empty in self._pairs():
+            required = set(spec.parameters.get("required") or [])
+            expected = {k for k, v in params.items() if v.default is empty}
+            assert required == expected, f"{spec.name}: required {sorted(required)}"
+
+    def test_every_declared_type_matches_the_signature(self):
+        import typing
+
+        def json_type(ann):
+            origin = typing.get_origin(ann)
+            args = typing.get_args(ann)
+            if origin is typing.Union:
+                inner = [a for a in args if a is not type(None)]
+                return json_type(inner[0]) if inner else None
+            if origin is list:
+                return "array"
+            if origin is dict:
+                return "object"
+            return {
+                str: "string",
+                bool: "boolean",
+                float: "number",
+                int: "integer",
+            }.get(ann)
+
+        for spec, params, hints, _empty in self._pairs():
+            for name, prop in spec.parameters["properties"].items():
+                assert prop.get("type") == json_type(
+                    hints.get(name)
+                ), f"{spec.name}.{name}: declared {prop.get('type')!r}"
+
+    def test_the_list_parameters_are_arrays(self):
+        """The specific trap: guessing ``string`` for these would have had the
+        repair pass rewrite correct calls into broken ones."""
+        from app.agent_core.tool_specs import data_analysis
+
+        by_name = {s.name: s for s in data_analysis.SPECS}
+        for tool, field in (
+            ("create_flowchart", "nodes"),
+            ("create_pie_chart_diagram", "slices"),
+            ("create_chart_from_dataset", "y_columns"),
+            ("create_sequence_diagram", "participants"),
+        ):
+            prop = by_name[tool].parameters["properties"][field]
+            assert prop["type"] == "array", f"{tool}.{field} is {prop['type']!r}"
+
+
+class TestDeclaredEvidenceIsActuallyProduced:
+    """A tool that declares evidence it never emits is worse than one that
+    declares none.
+
+    The evidence map plans from `produces`: a contract asking for a finding
+    type gets that tool scheduled, the tool runs, succeeds, and the contract is
+    no closer to satisfied. The run then repeats until it exhausts its
+    iterations, and nothing anywhere says why.
+
+    Four tools were in that state, all of them declarations added by hand
+    without checking the handler: ingest_paper_by_id emitted `paper_ingested`
+    against a declared `papers_ingested`, find_related_papers emitted
+    `related_paper` against `related_paper_set`, summarize_document emitted the
+    generic `summary`, and create_document_from_text emitted an ARTIFACT and no
+    finding at all -- the last being the easiest to miss, because the handler
+    plainly returns a dict with a "type" in it.
+    """
+
+    @staticmethod
+    def _emitted_finding_types(body: str) -> set:
+        """Finding types a handler body emits.
+
+        Only inside a "findings" list. An "artifacts" entry also carries a
+        "type" and is not evidence -- conflating them is exactly how
+        create_document_from_text looked correct.
+        """
+        import re
+
+        types = set()
+        has_block = False
+        # A handler may attach findings as a dict literal ("findings": [...]),
+        # by assignment (result["findings"] = [...]) or via setdefault. All
+        # three reach the executor identically, so all three count here --
+        # a check that only recognised one spelling would report a tool as
+        # emitting nothing while it emitted correctly.
+        for match in re.finditer(r'"findings"\s*(?::|\]\s*=|,)\s*\[', body):
+            depth, index = 0, match.end() - 1
+            while index < len(body):
+                if body[index] == "[":
+                    depth += 1
+                elif body[index] == "]":
+                    depth -= 1
+                    if depth == 0:
+                        break
+                index += 1
+            block = body[match.end() : index]
+            has_block = True
+            types.update(re.findall(r'"type"\s*:\s*"([a-z_0-9]+)"', block))
+        # The flag matters separately from the types. A handler may append a
+        # finding it built in a variable ("findings": [finding]), where the
+        # type is set at runtime and no static read can see it. That is not
+        # the failure this guards -- the tool does emit evidence -- so it is
+        # reported as "emits findings, type not statically visible" rather
+        # than as emitting nothing.
+        return types, has_block
+
+    def test_every_declared_evidence_type_is_emitted_somewhere(self):
+        import re
+        from pathlib import Path
+
+        from app.agent_core import tool_specs
+
+        source = Path("app/services/agent_tool_dispatch.py")
+        if not source.exists():  # pragma: no cover
+            source = (
+                Path(__file__).resolve().parents[1]
+                / "app"
+                / "services"
+                / "agent_tool_dispatch.py"
+            )
+        text = source.read_text()
+
+        bodies = {}
+        for match in re.finditer(r"    async def _([a-z_0-9]+)\(\s*\n?\s*params", text):
+            name = match.group(1)
+            nxt = text.find("\n    async def _", match.end())
+            body = text[match.start() : nxt if nxt > 0 else len(text)]
+            emitted, has_block = self._emitted_finding_types(body)
+            # Two providers define some handlers; keep whichever body actually
+            # emits findings so a thin delegating stub does not mask the real one.
+            if has_block or name not in bodies:
+                bodies[name] = (emitted, has_block, body)
+
+        problems = []
+        for spec in tool_specs.all_specs():
+            if not spec.produces:
+                continue
+            entry = bodies.get(spec.name)
+            if entry is None:
+                continue
+            emitted, has_block, body = entry
+            if has_block and not emitted:
+                # Findings are emitted from a variable; the type is decided at
+                # runtime and cannot be checked here.
+                continue
+            if not emitted:
+                # A handler that hands the call to a service builds no result
+                # of its own, so its findings are not visible here and this
+                # check has nothing to say about it. Only a handler that
+                # assembles its own return dict is in scope.
+                if "return await" in body or "return {" not in body:
+                    continue
+                problems.append(
+                    f"{spec.name} declares {sorted(spec.produces)}, builds its "
+                    "own result, and puts no findings in it"
+                )
+            elif not set(spec.produces) & emitted:
+                problems.append(
+                    f"{spec.name} declares {sorted(spec.produces)} but emits "
+                    f"{sorted(emitted)}"
+                )
+        assert not problems, "\n".join(problems)

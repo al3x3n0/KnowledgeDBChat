@@ -7,16 +7,15 @@ that can be used by autonomous agent jobs.
 
 from __future__ import annotations
 
-import json
 import base64
+import json
 from typing import Any, Dict, List, Optional
-from uuid import UUID
 
 from loguru import logger
 
 _IMPORT_ERROR: str | None = None
 try:
-    from app.services.data_sandbox_service import sandbox_manager, DataSandbox
+    from app.services.data_sandbox_service import DataSandbox, sandbox_manager
     from app.services.visualization_service import visualization_service
 except Exception as e:
     sandbox_manager = None  # type: ignore[assignment]
@@ -305,8 +304,12 @@ class DataAnalysisTools:
         """
         try:
             result = self.sandbox.join_datasets(
-                left_dataset_id, right_dataset_id,
-                on=on, left_on=left_on, right_on=right_on, how=how
+                left_dataset_id,
+                right_dataset_id,
+                on=on,
+                left_on=left_on,
+                right_on=right_on,
+                how=how,
             )
             return {
                 "success": True,
@@ -380,7 +383,9 @@ class DataAnalysisTools:
             Anomaly detection results
         """
         try:
-            result = self.sandbox.detect_anomalies(dataset_id, columns, method, threshold)
+            result = self.sandbox.detect_anomalies(
+                dataset_id, columns, method, threshold
+            )
             return {"success": True, **result}
         except Exception as e:
             logger.error(f"Failed to detect anomalies: {e}")
@@ -492,7 +497,7 @@ class DataAnalysisTools:
             result = visualization_service.create_chart(
                 "heatmap",
                 corr_result["matrix"],
-                {"title": title, "annotate": True, "cmap": "RdYlBu_r"}
+                {"title": title, "annotate": True, "cmap": "RdYlBu_r"},
             )
             return {
                 "success": True,
@@ -531,7 +536,7 @@ class DataAnalysisTools:
             result = diagram_service.create_mermaid_diagram(
                 "flowchart",
                 {"nodes": nodes, "edges": edges},
-                {"title": title, "direction": direction}
+                {"title": title, "direction": direction},
             )
             return {"success": True, **result}
         except Exception as e:
@@ -559,7 +564,7 @@ class DataAnalysisTools:
             result = diagram_service.create_mermaid_diagram(
                 "sequence",
                 {"participants": participants, "messages": messages},
-                {"title": title}
+                {"title": title},
             )
             return {"success": True, **result}
         except Exception as e:
@@ -587,7 +592,7 @@ class DataAnalysisTools:
             result = diagram_service.create_mermaid_diagram(
                 "er",
                 {"entities": entities, "relationships": relationships},
-                {"title": title}
+                {"title": title},
             )
             return {"success": True, **result}
         except Exception as e:
@@ -615,8 +620,7 @@ class DataAnalysisTools:
         """
         try:
             result = diagram_service.create_architecture_diagram(
-                components, connections,
-                {"title": title, "format": format}
+                components, connections, {"title": title, "format": format}
             )
             return {"success": True, **result}
         except Exception as e:
@@ -642,8 +646,7 @@ class DataAnalysisTools:
         """
         try:
             result = diagram_service.create_drawio_diagram(
-                {"nodes": nodes, "edges": edges},
-                {"title": title}
+                {"nodes": nodes, "edges": edges}, {"title": title}
             )
             return {"success": True, **result}
         except Exception as e:
@@ -667,9 +670,7 @@ class DataAnalysisTools:
         """
         try:
             result = diagram_service.create_mermaid_diagram(
-                "pie",
-                {"slices": slices},
-                {"title": title}
+                "pie", {"slices": slices}, {"title": title}
             )
             return {"success": True, **result}
         except Exception as e:
@@ -694,9 +695,7 @@ class DataAnalysisTools:
         """
         try:
             result = diagram_service.create_mermaid_diagram(
-                "gantt",
-                {"sections": sections},
-                {"title": title}
+                "gantt", {"sections": sections}, {"title": title}
             )
             return {"success": True, **result}
         except Exception as e:
@@ -725,7 +724,7 @@ class DataAnalysisTools:
             return {
                 "success": True,
                 "format": "csv",
-                "content_base64": base64.b64encode(csv_bytes).decode('utf-8'),
+                "content_base64": base64.b64encode(csv_bytes).decode("utf-8"),
                 "mime_type": "text/csv",
             }
         except Exception as e:
@@ -759,207 +758,26 @@ class DataAnalysisTools:
 
 
 # Tool definitions for the autonomous agent executor
-DATA_ANALYSIS_TOOL_DEFINITIONS = {
-    # Data Loading
-    "load_csv_data": {
-        "name": "load_csv_data",
-        "description": "Load CSV data into the analysis sandbox. Returns dataset ID for further operations.",
-        "parameters": {
-            "content": "CSV content as string",
-            "name": "Name for the dataset",
-            "delimiter": "(optional) Field delimiter, default comma",
-            "has_header": "(optional) Whether first row is header, default true",
-        },
-    },
-    "load_json_data": {
-        "name": "load_json_data",
-        "description": "Load JSON data into the analysis sandbox. Supports arrays and objects.",
-        "parameters": {
-            "content": "JSON content as string",
-            "name": "Name for the dataset",
-        },
-    },
-    "create_dataset": {
-        "name": "create_dataset",
-        "description": "Create a dataset from a dictionary with column names as keys.",
-        "parameters": {
-            "data": "Dictionary with column names as keys and lists as values",
-            "name": "Name for the dataset",
-        },
-    },
-    "list_datasets": {
-        "name": "list_datasets",
-        "description": "List all datasets currently in the analysis sandbox.",
-        "parameters": {},
-    },
-    "describe_dataset": {
-        "name": "describe_dataset",
-        "description": "Get detailed statistics about a dataset including column types, null counts, and summary statistics.",
-        "parameters": {
-            "dataset_id": "ID of the dataset to describe",
-        },
-    },
-
-    # Data Transformation
-    "query_data": {
-        "name": "query_data",
-        "description": "Query a dataset using pandas query syntax. Example: 'age > 30 and status == \"active\"'",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-            "query": "Query string",
-        },
-    },
-    "filter_data": {
-        "name": "filter_data",
-        "description": "Filter dataset based on conditions. Supports operators: eq, ne, gt, gte, lt, lte, in, not_in, contains, startswith, endswith, isnull, notnull",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-            "conditions": "Filter conditions as dict, e.g., {\"age\": {\"op\": \"gt\", \"value\": 30}}",
-        },
-    },
-    "aggregate_data": {
-        "name": "aggregate_data",
-        "description": "Aggregate dataset with optional grouping. Supports: sum, mean, median, min, max, count, std, var, first, last, nunique",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-            "group_by": "(optional) Columns to group by",
-            "aggregations": "Aggregations, e.g., {\"sales\": [\"sum\", \"mean\"]}",
-        },
-    },
-    "join_datasets": {
-        "name": "join_datasets",
-        "description": "Join two datasets on specified columns.",
-        "parameters": {
-            "left_dataset_id": "ID of left dataset",
-            "right_dataset_id": "ID of right dataset",
-            "on": "(optional) Column to join on if same name in both",
-            "left_on": "(optional) Column from left dataset",
-            "right_on": "(optional) Column from right dataset",
-            "how": "Join type: inner, left, right, outer",
-        },
-    },
-    "transform_data": {
-        "name": "transform_data",
-        "description": "Apply transformations to dataset. Operations: rename, drop, fillna, astype, sort, drop_duplicates, add_column, select",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-            "operations": "List of transformation operations",
-        },
-    },
-
-    # Analysis
-    "detect_anomalies": {
-        "name": "detect_anomalies",
-        "description": "Detect anomalies in numeric columns using z-score or IQR method.",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-            "columns": "(optional) Columns to check",
-            "method": "Detection method: zscore or iqr",
-            "threshold": "(optional) Threshold for z-score, default 3.0",
-        },
-    },
-    "calculate_correlations": {
-        "name": "calculate_correlations",
-        "description": "Calculate correlation matrix for numeric columns.",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-            "columns": "(optional) Columns to include",
-            "method": "Correlation method: pearson, spearman, kendall",
-        },
-    },
-
-    # Visualization
-    "create_chart": {
-        "name": "create_chart",
-        "description": "Create a chart from dataset. Types: bar, line, pie, scatter, histogram, heatmap, box, area, horizontal_bar",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-            "chart_type": "Type of chart",
-            "x_column": "(optional) Column for x-axis",
-            "y_columns": "(optional) Columns for y-axis",
-            "title": "(optional) Chart title",
-            "config": "(optional) Additional configuration",
-        },
-    },
-    "create_correlation_heatmap": {
-        "name": "create_correlation_heatmap",
-        "description": "Create a correlation heatmap from dataset.",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-            "title": "(optional) Chart title",
-        },
-    },
-
-    # Diagrams
-    "create_flowchart": {
-        "name": "create_flowchart",
-        "description": "Create a flowchart diagram from nodes and edges.",
-        "parameters": {
-            "nodes": "List of nodes with id, label, and optional shape",
-            "edges": "List of edges with source, target, and optional label",
-            "title": "(optional) Diagram title",
-            "direction": "(optional) Flow direction: TD, LR, BT, RL",
-        },
-    },
-    "create_sequence_diagram": {
-        "name": "create_sequence_diagram",
-        "description": "Create a sequence diagram showing interactions between participants.",
-        "parameters": {
-            "participants": "List of participant names",
-            "messages": "List of messages with from, to, and text",
-            "title": "(optional) Diagram title",
-        },
-    },
-    "create_er_diagram": {
-        "name": "create_er_diagram",
-        "description": "Create an Entity-Relationship diagram.",
-        "parameters": {
-            "entities": "List of entities with name and attributes",
-            "relationships": "List of relationships with source, target, cardinality, label",
-            "title": "(optional) Diagram title",
-        },
-    },
-    "create_architecture_diagram": {
-        "name": "create_architecture_diagram",
-        "description": "Create an architecture diagram with components and connections.",
-        "parameters": {
-            "components": "List of components with id, label, shape, color",
-            "connections": "List of connections with source, target, label",
-            "title": "(optional) Diagram title",
-            "format": "(optional) Output format: auto, mermaid, graphviz, drawio",
-        },
-    },
-    "create_drawio_diagram": {
-        "name": "create_drawio_diagram",
-        "description": "Create a Draw.io diagram (editable format) with nodes and edges.",
-        "parameters": {
-            "nodes": "List of nodes with id, label, x, y, width, height, shape, fillColor",
-            "edges": "List of edges with source, target, label, style",
-            "title": "(optional) Diagram title",
-        },
-    },
-    "create_gantt_chart": {
-        "name": "create_gantt_chart",
-        "description": "Create a Gantt chart for project timeline visualization.",
-        "parameters": {
-            "sections": "List of sections with name and tasks (each task has name, start, duration, optional status)",
-            "title": "(optional) Chart title",
-        },
-    },
-
-    # Export
-    "export_dataset_csv": {
-        "name": "export_dataset_csv",
-        "description": "Export dataset to CSV format.",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-        },
-    },
-    "export_dataset_json": {
-        "name": "export_dataset_json",
-        "description": "Export dataset to JSON format.",
-        "parameters": {
-            "dataset_id": "ID of the dataset",
-        },
-    },
-}
+# Two different charting tools were both called ``create_chart``: the one the
+# builtin catalog advertises takes inline ``data`` and is served by the
+# visualization provider, while this dataset-backed one takes a ``dataset_id``.
+# Provider resolution is first-wins and the data-analysis provider is
+# registered earlier, so it answered every catalog-conformant call with
+# "Dataset 'None' not found" -- the advertised tool could not work at all.
+# Exposing it under a name that says which contract it takes leaves
+# ``create_chart`` to the tool the catalog describes.
+#
+# This lives beside the definitions rather than in the dispatcher because it is
+# part of the tool's public name: every surface that advertises these tools,
+# governs them or dispatches them has to agree on it. Kept in the dispatcher,
+# it was a second registration point and behaved like one -- dispatch renamed
+# the handler and the prompt builder went on advertising the dataset contract
+# under the old name, so a data_analysis run was shown one tool and given
+# another.
+# The schemas these tools are offered under live in
+# app/agent_core/tool_specs/data_analysis.py, generated from the signatures
+# below. They were declared here as prose keyed by parameter name, which
+# carried no types: the catalog wrapped them in a schema with no ``type`` on
+# any property, so the validators had nothing to check and the two halves
+# could disagree without anything saying so.
+DATA_ANALYSIS_EXPOSED_NAMES = {"create_chart": "create_chart_from_dataset"}

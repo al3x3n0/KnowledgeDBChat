@@ -22,9 +22,9 @@ make logs
 ```
 
 That's it! The application will be available at:
-- **Frontend**: http://localhost:3000
-- **Backend API**: http://localhost:8000
-- **API Docs**: http://localhost:8000/docs
+- **Frontend**: http://localhost:23000
+- **Backend API**: http://localhost:28000
+- **API Docs**: http://localhost:28000/docs
 
 ---
 
@@ -86,9 +86,9 @@ docker compose -f docker-compose.yml -f docker-compose.docker-tools.yml up -d
 #### Initialize Database
 
 ```bash
-# Run database migrations
+# Run database migrations (Alembic owns the schema)
 make db-migrate
-# or: docker compose exec backend python -c "import asyncio; from app.core.database import create_tables; asyncio.run(create_tables())"
+# equivalently: docker compose exec backend alembic upgrade head
 ```
 
 #### Download Ollama Model (for chat functionality)
@@ -170,19 +170,19 @@ docker compose ps
 
 ```bash
 # Backend health
-curl http://localhost:8000/health
+curl http://localhost:28000/health
 
 # Nginx (frontend reverse proxy)
-curl http://localhost:3000/health
+curl http://localhost:23000/health
 
 # Frontend (served via nginx)
-curl http://localhost:3000
+curl http://localhost:23000
 
 # MinIO
-curl http://localhost:9000/minio/health/live
+curl http://localhost:29000/minio/health/live
 
 # Video streamer
-curl http://localhost:8080/health
+curl http://localhost:28080/health
 
 # Ollama
 curl http://localhost:11434/api/tags
@@ -232,8 +232,8 @@ make pull-model
 make health
 
 # 8. Access the application
-# Frontend: http://localhost:3000
-# API Docs: http://localhost:8000/docs
+# Frontend: http://localhost:23000
+# API Docs: http://localhost:28000/docs
 ```
 
 ---
@@ -293,7 +293,7 @@ docker compose restart celery
 ## 📝 Next Steps After Launch
 
 1. **Create your first user**:
-   - Open http://localhost:3000
+   - Open http://localhost:23000
    - Click "Register"
    - Create an account
 
@@ -308,7 +308,7 @@ docker compose restart celery
    - The RAG system will retrieve relevant information
 
 4. **Check API documentation**:
-   - Visit http://localhost:8000/docs
+   - Visit http://localhost:28000/docs
    - Explore available endpoints
    - Test API calls directly
 

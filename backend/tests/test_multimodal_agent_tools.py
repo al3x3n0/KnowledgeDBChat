@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 
 class TestTranscribeDocument:
     """Tests for transcribe_document tool logic."""
@@ -15,8 +13,21 @@ class TestTranscribeDocument:
 
     def test_audio_file_types_accepted(self):
         av_prefixes = ("audio/", "video/")
-        av_exts = {".mp3", ".mp4", ".wav", ".m4a", ".ogg", ".flac",
-                   ".aac", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
+        av_exts = {
+            ".mp3",
+            ".mp4",
+            ".wav",
+            ".m4a",
+            ".ogg",
+            ".flac",
+            ".aac",
+            ".avi",
+            ".mkv",
+            ".mov",
+            ".webm",
+            ".flv",
+            ".wmv",
+        }
         assert any("audio/mpeg".startswith(p) for p in av_prefixes)
         assert ".mp3" in av_exts
         assert ".wav" in av_exts
@@ -29,8 +40,21 @@ class TestTranscribeDocument:
         ft = "application/pdf"
         ext = ".pdf"
         av_prefixes = ("audio/", "video/")
-        av_exts = {".mp3", ".mp4", ".wav", ".m4a", ".ogg", ".flac",
-                   ".aac", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
+        av_exts = {
+            ".mp3",
+            ".mp4",
+            ".wav",
+            ".m4a",
+            ".ogg",
+            ".flac",
+            ".aac",
+            ".avi",
+            ".mkv",
+            ".mov",
+            ".webm",
+            ".flv",
+            ".wmv",
+        }
         is_av = any(ft.startswith(p) for p in av_prefixes) or ext in av_exts
         assert not is_av
 
@@ -88,6 +112,7 @@ class TestTranscribeDocument:
 
     def test_extension_detection(self):
         from pathlib import Path
+
         assert Path("recording.mp3").suffix.lower() == ".mp3"
         assert Path("video.avi").suffix.lower() == ".avi"
         assert Path("document.pdf").suffix.lower() == ".pdf"
@@ -102,8 +127,15 @@ class TestAnalyzeImage:
         assert not doc_id
 
     def test_image_types_accepted(self):
-        image_types = {"image/png", "image/jpeg", "image/jpg", "image/gif",
-                       "image/webp", "image/bmp", "image/tiff"}
+        image_types = {
+            "image/png",
+            "image/jpeg",
+            "image/jpg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+            "image/tiff",
+        }
         assert "image/png" in image_types
         assert "image/jpeg" in image_types
 
@@ -116,20 +148,31 @@ class TestAnalyzeImage:
     def test_non_image_rejected(self):
         ft = "application/pdf"
         ext = ".pdf"
-        image_types = {"image/png", "image/jpeg", "image/jpg", "image/gif",
-                       "image/webp", "image/bmp", "image/tiff"}
+        image_types = {
+            "image/png",
+            "image/jpeg",
+            "image/jpg",
+            "image/gif",
+            "image/webp",
+            "image/bmp",
+            "image/tiff",
+        }
         image_exts = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".tif"}
         is_image = ft in image_types or ext in image_exts
         assert not is_image
 
     def test_default_prompt(self):
         params = {"document_id": str(uuid.uuid4())}
-        prompt = (params.get("prompt") or "").strip() or \
-            "Describe this image in detail, including any text, diagrams, charts, or notable visual elements."
+        prompt = (
+            params.get("prompt") or ""
+        ).strip() or "Describe this image in detail, including any text, diagrams, charts, or notable visual elements."
         assert "Describe this image" in prompt
 
     def test_custom_prompt(self):
-        params = {"document_id": str(uuid.uuid4()), "prompt": "Extract all text from this image"}
+        params = {
+            "document_id": str(uuid.uuid4()),
+            "prompt": "Extract all text from this image",
+        }
         prompt = (params.get("prompt") or "").strip() or "default"
         assert prompt == "Extract all text from this image"
 
@@ -156,6 +199,7 @@ class TestAnalyzeImage:
 
     def test_base64_encoding(self):
         import base64
+
         sample = b"\x89PNG\r\n\x1a\n" + b"\x00" * 100
         b64 = base64.b64encode(sample).decode("utf-8")
         decoded = base64.b64decode(b64)
@@ -163,6 +207,7 @@ class TestAnalyzeImage:
 
     def test_ollama_payload_format(self):
         import base64
+
         image_b64 = base64.b64encode(b"fake image data").decode("utf-8")
         payload = {
             "model": "llava",
@@ -172,7 +217,7 @@ class TestAnalyzeImage:
             "options": {
                 "temperature": 0.3,
                 "num_predict": 2048,
-            }
+            },
         }
         assert payload["model"] == "llava"
         assert len(payload["images"]) == 1
@@ -213,7 +258,9 @@ class TestAnalyzeImage:
     def test_404_error_message(self):
         error_msg = "HTTP 404 Not Found"
         if "404" in error_msg:
-            friendly = "Vision model 'llava' not available. Pull it with: ollama pull llava"
+            friendly = (
+                "Vision model 'llava' not available. Pull it with: ollama pull llava"
+            )
         assert "Pull it with" in friendly
 
 
@@ -232,8 +279,21 @@ class TestGetMediaInfo:
         assert not any("image/png".startswith(p) for p in av_prefixes)
 
     def test_av_detection_by_extension(self):
-        av_exts = {".mp3", ".mp4", ".wav", ".m4a", ".ogg", ".flac",
-                   ".aac", ".avi", ".mkv", ".mov", ".webm", ".flv", ".wmv"}
+        av_exts = {
+            ".mp3",
+            ".mp4",
+            ".wav",
+            ".m4a",
+            ".ogg",
+            ".flac",
+            ".aac",
+            ".avi",
+            ".mkv",
+            ".mov",
+            ".webm",
+            ".flv",
+            ".wmv",
+        }
         assert ".mp4" in av_exts
         assert ".pdf" not in av_exts
 
@@ -280,7 +340,7 @@ class TestGetMediaInfo:
                     "sample_rate": "44100",
                     "channels": 2,
                 },
-            ]
+            ],
         }
         fmt = probe_data.get("format", {})
         media_info = {}
@@ -312,8 +372,13 @@ class TestGetMediaInfo:
         probe_data = {
             "format": {"duration": "245.3", "format_name": "mp3", "bit_rate": "128000"},
             "streams": [
-                {"codec_type": "audio", "codec_name": "mp3", "sample_rate": "44100", "channels": 2},
-            ]
+                {
+                    "codec_type": "audio",
+                    "codec_name": "mp3",
+                    "sample_rate": "44100",
+                    "channels": 2,
+                },
+            ],
         }
         media_info = {}
         fmt = probe_data.get("format", {})
@@ -403,6 +468,7 @@ class TestMultiModalSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "transcribe_document" in names
         assert "analyze_image" in names
@@ -410,6 +476,7 @@ class TestMultiModalSchemas:
 
     def test_transcribe_document_requires_document_id(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("transcribe_document")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -417,11 +484,13 @@ class TestMultiModalSchemas:
 
     def test_transcribe_document_has_language(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("transcribe_document")
         assert "language" in tool["parameters"]["properties"]
 
     def test_analyze_image_requires_document_id(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("analyze_image")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -429,6 +498,7 @@ class TestMultiModalSchemas:
 
     def test_analyze_image_has_prompt_and_model(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("analyze_image")
         props = tool["parameters"]["properties"]
         assert "prompt" in props
@@ -436,6 +506,7 @@ class TestMultiModalSchemas:
 
     def test_get_media_info_requires_document_id(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_media_info")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -447,39 +518,46 @@ class TestMultiModalRegistry:
 
     def test_transcribe_is_write(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("transcribe_document")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_transcribe_is_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("transcribe_document")
         assert meta.cost_tier == "medium"
 
     def test_analyze_image_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("analyze_image")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_analyze_image_is_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("analyze_image")
         assert meta.cost_tier == "medium"
 
     def test_get_media_info_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("get_media_info")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_get_media_info_is_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("get_media_info")
         assert meta.cost_tier == "low"
 
     def test_none_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["transcribe_document", "analyze_image", "get_media_info"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

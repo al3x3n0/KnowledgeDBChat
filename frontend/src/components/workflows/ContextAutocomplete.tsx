@@ -6,7 +6,7 @@
  */
 
 import React, { useState, useRef, useEffect, useMemo } from 'react';
-import { ChevronDown, Variable, Info } from 'lucide-react';
+import { Variable, Info } from 'lucide-react';
 
 // Context variable type
 export interface ContextVariable {

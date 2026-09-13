@@ -113,7 +113,9 @@ def agent_spec_from_model(agent: Any) -> AgentSpec:
     """Best-effort mapper from ORM-like agent model to a core DTO."""
     return AgentSpec(
         name=str(getattr(agent, "name", "") or ""),
-        display_name=str(getattr(agent, "display_name", "") or getattr(agent, "name", "") or ""),
+        display_name=str(
+            getattr(agent, "display_name", "") or getattr(agent, "name", "") or ""
+        ),
         system_prompt=str(getattr(agent, "system_prompt", "") or ""),
         capabilities=list(getattr(agent, "capabilities", None) or []),
         tool_whitelist=(

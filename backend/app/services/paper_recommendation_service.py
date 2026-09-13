@@ -8,13 +8,12 @@ from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import select, func
+from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
 from app.services.vector_store import vector_store_service
-
 
 KG_REL_TYPES = ("uses_method", "evaluated_on", "targets_task")
 
@@ -48,7 +47,11 @@ class PaperRecommendationService:
         if not candidate_ids:
             return []
 
-        docs_result = await db.execute(select(Document.id, Document.title).where(Document.id.in_(list(candidate_ids))))
+        docs_result = await db.execute(
+            select(Document.id, Document.title).where(
+                Document.id.in_(list(candidate_ids))
+            )
+        )
         title_by_id = {row[0]: row[1] for row in docs_result.all()}
 
         max_kg = max((v for v, _ in kg_hits.values()), default=0)
@@ -62,7 +65,9 @@ class PaperRecommendationService:
             vec_score, best_chunk = vec_hits.get(cid, (0.0, None))
             combined = (0.6 * (kg_count / max_kg)) + (0.4 * (vec_score / max_vec))
 
-            common_names = [kg_entities.get(eid) for eid in common_ids if eid in kg_entities]
+            common_names = [
+                kg_entities.get(eid) for eid in common_ids if eid in kg_entities
+            ]
             common_names = [n for n in common_names if n]
 
             scored.append(
@@ -87,22 +92,27 @@ class PaperRecommendationService:
         self, db: AsyncSession, document_id: UUID, *, limit: int
     ) -> Tuple[Dict[UUID, Tuple[int, List[UUID]]], Dict[UUID, str]]:
         rels_result = await db.execute(
-            select(Relationship.target_entity_id)
-            .where(
+            select(Relationship.target_entity_id).where(
                 Relationship.document_id == document_id,
                 Relationship.relation_type.in_(KG_REL_TYPES),
-                Relationship.inferred == True,
+                Relationship.inferred.is_(True),
             )
         )
         entity_ids = [row[0] for row in rels_result.all() if row and row[0]]
         if not entity_ids:
             return {}, {}
 
-        ents_result = await db.execute(select(Entity.id, Entity.canonical_name).where(Entity.id.in_(entity_ids)))
+        ents_result = await db.execute(
+            select(Entity.id, Entity.canonical_name).where(Entity.id.in_(entity_ids))
+        )
         entity_name = {row[0]: row[1] for row in ents_result.all()}
 
         mentions_result = await db.execute(
-            select(EntityMention.document_id, EntityMention.entity_id, func.count(EntityMention.id).label("cnt"))
+            select(
+                EntityMention.document_id,
+                EntityMention.entity_id,
+                func.count(EntityMention.id).label("cnt"),
+            )
             .where(EntityMention.entity_id.in_(entity_ids))
             .group_by(EntityMention.document_id, EntityMention.entity_id)
         )
@@ -115,7 +125,9 @@ class PaperRecommendationService:
             if ent_id not in by_doc[doc_id]:
                 by_doc[doc_id].append(ent_id)
 
-        candidates = sorted(by_doc.items(), key=lambda kv: len(kv[1]), reverse=True)[:limit]
+        candidates = sorted(by_doc.items(), key=lambda kv: len(kv[1]), reverse=True)[
+            :limit
+        ]
         out: Dict[UUID, Tuple[int, List[UUID]]] = {}
         for doc_id, ent_ids in candidates:
             out[doc_id] = (len(ent_ids), ent_ids)
@@ -125,7 +137,11 @@ class PaperRecommendationService:
         self, doc: Document, *, limit: int
     ) -> Dict[UUID, Tuple[float, Optional[UUID]]]:
         await self._ensure_vector_store_initialized()
-        query = (doc.title or "") + "\n" + ((doc.summary or "")[:800] if doc.summary else (doc.content or "")[:800])
+        query = (
+            (doc.title or "")
+            + "\n"
+            + ((doc.summary or "")[:800] if doc.summary else (doc.content or "")[:800])
+        )
         query = query.strip()
         if not query:
             return {}

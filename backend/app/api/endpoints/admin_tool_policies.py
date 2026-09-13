@@ -17,7 +17,6 @@ from app.models.user import User
 from app.schemas.tool_policy import AdminToolPolicyCreate, ToolPolicyResponse
 from app.services.auth_service import require_admin
 
-
 router = APIRouter()
 
 
@@ -78,4 +77,3 @@ async def delete_tool_policy(
     if res.rowcount == 0:
         raise HTTPException(status_code=404, detail="Not found")
     await db.commit()
-

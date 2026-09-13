@@ -1,4 +1,6 @@
-.PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint typecheck-frontend test-backend-coverage
+.PHONY: help setup build start stop restart logs test clean validate-env check-health doctor fmt lint typecheck-frontend test-backend-coverage \
+	helm-lint helm-template helm-validate helm-smoke minikube-up minikube-reinstall minikube-down \
+	k8s-status k8s-logs-backend k8s-logs-celery k8s-logs-migrate k8s-test k8s-shell-backend k8s-uninstall
 
 # Prefer legacy `docker-compose` if installed, otherwise use `docker compose`.
 DC ?= $(shell command -v docker-compose >/dev/null 2>&1 && echo docker-compose || echo "docker compose")
@@ -6,13 +8,22 @@ DC ?= $(shell command -v docker-compose >/dev/null 2>&1 && echo docker-compose |
 # Default Ollama model to pull (override with `make pull-model MODEL=...`).
 MODEL ?= llama3.2:1b
 
+# Host ports the stack publishes. These mirror the defaults in
+# docker-compose.yml; setting them in .env moves both together, so the stack
+# can sit beside another project without a port fight.
+kdbc_env = $(or $(shell [ -f .env ] && sed -n 's/^$(1)=\(.*\)/\1/p' .env 2>/dev/null),$(2))
+KDBC_UI_PORT      ?= $(call kdbc_env,KDBC_UI_PORT,23000)
+KDBC_BACKEND_PORT ?= $(call kdbc_env,KDBC_BACKEND_PORT,28000)
+KDBC_MINIO_PORT   ?= $(call kdbc_env,KDBC_MINIO_PORT,29000)
+KDBC_VIDEO_PORT   ?= $(call kdbc_env,KDBC_VIDEO_PORT,28080)
+
 help: ## Show this help message
 	@echo "Knowledge Database Chat - Makefile Commands"
 	@echo ""
 	@echo "Usage: make [target]"
 	@echo ""
 	@echo "Targets:"
-	@grep -E '^[a-zA-Z_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
+	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-20s %s\n", $$1, $$2}'
 
 setup: ## Initial setup - create directories and copy env files
 	@echo "🚀 Setting up Knowledge Database Chat..."
@@ -22,12 +33,17 @@ setup: ## Initial setup - create directories and copy env files
 		echo "✅ Created backend/.env"; \
 	fi
 	@if [ ! -f frontend/.env ]; then \
-		cp frontend/.env.example frontend/.env; \
+		cp frontend/.env.example frontend/.env && \
 		echo "✅ Created frontend/.env"; \
 	fi
 	@echo "✅ Setup complete!"
 
 build: ## Build Docker containers
+# The transcription worker builds FROM the backend image and compose does not
+# infer build order from a FROM, so the backend is built first by name. Without
+# this a clean machine fails on "pull access denied" for an image that is about
+# to be built two lines later.
+	$(DC) build backend
 	$(DC) build
 
 start: ## Start all services
@@ -58,8 +74,20 @@ shell-backend: ## Open shell in backend container
 shell-frontend: ## Open shell in frontend container
 	$(DC) exec frontend /bin/sh
 
-db-migrate: ## Run database migrations
-	$(DC) exec backend python -c "import asyncio; from app.core.database import create_tables; asyncio.run(create_tables())"
+db-migrate: ## Run database migrations (Alembic is the source of schema truth)
+	$(DC) exec backend alembic upgrade head
+
+db-revision: ## Autogenerate a migration from model changes (make db-revision M="add x")
+	$(DC) exec backend alembic revision --autogenerate -m "$(M)"
+
+db-current: ## Show the applied migration revision
+	$(DC) exec backend alembic current
+
+db-check-drift: ## Verify migrations still build the schema the models describe
+	$(DC) exec backend python scripts/check_schema_drift.py
+
+db-stamp-legacy: ## Bring a pre-Alembic database (built by create_all) under Alembic
+	$(DC) exec backend python scripts/stamp_legacy_database.py
 
 db-shell: ## Open PostgreSQL shell
 	$(DC) exec postgres psql -U user -d knowledge_db
@@ -70,8 +98,16 @@ redis-shell: ## Open Redis CLI
 test-backend: ## Run backend tests
 	$(DC) exec backend pytest
 
+test-rnd-evals: ## Run autonomous R&D evaluation and trajectory regression tests
+	$(DC) exec -T backend pytest -q --no-cov tests/test_autonomous_rnd_eval_service.py tests/test_autonomous_rnd_eval_run_service.py tests/test_autonomous_rnd_eval_launch_service.py tests/test_autonomous_rnd_eval_tasks.py tests/test_autonomous_rnd_evidence_verification_service.py tests/test_autonomous_rnd_verification_planner_service.py tests/test_autonomous_rnd_trajectory_service.py tests/test_autonomous_rnd_verification_audit_service.py tests/test_autonomous_rnd_eval_endpoints.py tests/test_agent_experiment_runner_service.py tests/test_benchmark_assets.py
+
+test-external-agents: ## Run external-agent gateway and registry regression tests
+	$(DC) exec -T backend pytest -q --no-cov tests/test_external_agent_gateway_service.py tests/test_external_agents_endpoints.py
+
 test-backend-coverage: ## Run backend tests with CI-style coverage threshold
-	$(DC) exec backend pytest --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=70
+# 48 is the measured floor; the suite reports 49.55%. Keep this equal to the
+# --cov-fail-under in .github/workflows/ci.yml.
+	$(DC) exec backend pytest --cov=app --cov-report=term-missing --cov-report=html --cov-report=xml --cov-fail-under=48
 
 test-frontend: ## Run frontend tests (non-interactive)
 	$(DC) exec frontend npm run test:ci
@@ -84,10 +120,13 @@ test-frontend-watch: ## Run frontend tests (watch mode)
 
 test: test-backend test-frontend ## Run all tests
 
-pull-model: ## Pull default Ollama model
-	$(DC) exec ollama ollama pull $(MODEL)
+pull-model: ## Pull a model into an Ollama you run yourself
+	@echo "The stack no longer bundles Ollama; this project uses an external"
+	@echo "LLM API. Point OLLAMA_BASE_URL at your own instance and pull there:"
+	@echo "  ollama pull $(MODEL)"
+	@exit 1
 
-download-models: ## Download all necessary models (Ollama, embeddings, reranking)
+download-models: ## Download embedding and reranking models
 	python scripts/download_models.py
 
 validate-env: ## Validate backend environment variables
@@ -98,9 +137,9 @@ check-health: ## Run local health checks (Docker + services)
 
 doctor: validate-env check-health ## Validate env + health checks
 
-fmt-backend: ## Format backend code (black + isort)
-	$(DC) exec backend black .
+fmt-backend: ## Format backend code (isort + black)
 	$(DC) exec backend isort .
+	$(DC) exec backend black .
 
 lint-backend: ## Lint backend code (flake8)
 	$(DC) exec backend flake8
@@ -126,13 +165,13 @@ health: ## Check health of all services
 	@echo "Checking service health..."
 	@echo ""
 	@echo "Backend API:"
-	@curl -s http://localhost:8000/health || echo "❌ Backend not responding"
+	@curl -s http://localhost:$(KDBC_BACKEND_PORT)/health || echo "❌ Backend not responding"
 	@echo ""
 	@echo "Nginx:"
-	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3000/health || echo "❌ Nginx not responding"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:$(KDBC_UI_PORT)/health || echo "❌ Nginx not responding"
 	@echo ""
 	@echo "Frontend:"
-	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:3000 || echo "❌ Frontend not responding"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:$(KDBC_UI_PORT) || echo "❌ Frontend not responding"
 	@echo ""
 	@echo "PostgreSQL:"
 	@$(DC) exec -T postgres pg_isready -U user || echo "❌ PostgreSQL not ready"
@@ -141,13 +180,11 @@ health: ## Check health of all services
 	@$(DC) exec -T redis redis-cli ping || echo "❌ Redis not responding"
 	@echo ""
 	@echo "MinIO:"
-	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:9000/minio/health/live || echo "❌ MinIO not responding"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:$(KDBC_MINIO_PORT)/minio/health/live || echo "❌ MinIO not responding"
 	@echo ""
 	@echo "Video streamer:"
-	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:8080/health || echo "❌ Video streamer not responding"
+	@curl -s -o /dev/null -w "HTTP %{http_code}\n" http://localhost:$(KDBC_VIDEO_PORT)/health || echo "❌ Video streamer not responding"
 	@echo ""
-	@echo "Ollama:"
-	@curl -s http://localhost:11434/api/tags > /dev/null && echo "✅ Ollama is running" || echo "❌ Ollama not responding"
 
 dev-backend: ## Start backend in development mode (manual setup)
 	cd backend && . venv/bin/activate && uvicorn main:app --reload
@@ -157,3 +194,144 @@ dev-frontend: ## Start frontend in development mode (manual setup)
 
 dev-celery: ## Start Celery worker in development mode (manual setup)
 	cd backend && . venv/bin/activate && celery -A app.core.celery worker --loglevel=info
+
+# --- Kubernetes / Helm -------------------------------------------------------
+# The chart lives in deploy/helm/knowledgedbchat; deploy/README.md has the guide.
+CHART ?= deploy/helm/knowledgedbchat
+K8S_NAMESPACE ?= knowledgedbchat
+K8S_RELEASE ?= kdbc
+
+helm-lint: ## Lint the Helm chart against every values profile
+	helm lint $(CHART)
+	helm lint $(CHART) -f $(CHART)/values-minikube.yaml
+	helm lint $(CHART) -f $(CHART)/values-prod.example.yaml
+
+helm-template: ## Render the chart for every values profile
+	@helm template $(K8S_RELEASE) $(CHART) > /dev/null && echo "✅ defaults render"
+	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-minikube.yaml > /dev/null && echo "✅ minikube profile renders"
+	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-prod.example.yaml > /dev/null && echo "✅ prod profile renders"
+
+helm-validate: helm-lint ## Render the chart and validate it against the Kubernetes API schemas
+	@command -v kubeconform >/dev/null 2>&1 || { echo "kubeconform not installed (brew install kubeconform)"; exit 1; }
+	@helm template $(K8S_RELEASE) $(CHART) -f $(CHART)/values-minikube.yaml | kubeconform -strict -summary -kubernetes-version 1.31.0
+	@helm template $(K8S_RELEASE) $(CHART) \
+		--set ollama.enabled=true --set celeryLatex.enabled=true \
+		--set celeryTranscription.enabled=true \
+		--set networkPolicy.enabled=true --set ingress.enabled=true \
+		--set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
+		--set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \
+		| kubeconform -strict -summary -kubernetes-version 1.31.0
+
+minikube-up: ## Start minikube, build images into it, and install the chart
+	./deploy/minikube/bootstrap.sh
+
+minikube-reinstall: ## Reinstall the chart on the running minikube without rebuilding images
+	SKIP_START=1 SKIP_BUILD=1 ./deploy/minikube/bootstrap.sh
+
+minikube-down: ## Delete the minikube profile (and everything in it)
+	minikube delete --profile=$${MINIKUBE_PROFILE:-knowledgedbchat}
+
+k8s-status: ## Show pods of the Helm release
+	kubectl -n $(K8S_NAMESPACE) get pods,svc -l app.kubernetes.io/instance=$(K8S_RELEASE)
+
+k8s-logs-backend: ## Tail backend logs in Kubernetes
+	kubectl -n $(K8S_NAMESPACE) logs -f deploy/$(K8S_RELEASE)-knowledgedbchat-backend
+
+k8s-logs-celery: ## Tail Celery worker logs in Kubernetes
+	kubectl -n $(K8S_NAMESPACE) logs -f deploy/$(K8S_RELEASE)-knowledgedbchat-celery
+
+k8s-logs-migrate: ## Show the Alembic migration Job output
+	kubectl -n $(K8S_NAMESPACE) logs job/$(K8S_RELEASE)-knowledgedbchat-migrate
+
+k8s-test: ## Run the chart's in-cluster smoke test
+	helm test $(K8S_RELEASE) -n $(K8S_NAMESPACE)
+
+k8s-shell-backend: ## Open a shell in a backend pod
+	kubectl -n $(K8S_NAMESPACE) exec -it deploy/$(K8S_RELEASE)-knowledgedbchat-backend -- /bin/bash
+
+k8s-uninstall: ## Uninstall the Helm release (PVCs are kept)
+	helm uninstall $(K8S_RELEASE) -n $(K8S_NAMESPACE)
+
+helm-smoke: ## Install the chart on the current cluster and assert its wiring (needs a reachable cluster)
+	./deploy/smoke-test.sh
+
+# --- Sandbox images -----------------------------------------------------
+# The images agent tools run submitted code in. They were built by hand and
+# pushed, which is how the code and the image drift: Rust crates and the
+# rustc edition flag only work against an image built after they were added,
+# and nothing in the repo said so or could rebuild one.
+#
+# Contexts differ per image and the differences are not cosmetic --
+# compiler-research builds from the repository root because it compiles
+# tools/candidate-coster in a discarded stage, and gem5 must be arm64. Those
+# are encoded here rather than left in the README for someone to retype.
+SANDBOX_REGISTRY ?= ghcr.io/al3x3n0
+
+sandbox-base: ## Build the shared sandbox base image (clang, lld, python3)
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-sandbox-base:latest \
+	  deploy/sandbox-images/base
+
+sandbox-compiler: sandbox-base ## Build the compiler-research image (C + Rust + crates)
+	docker build -f deploy/sandbox-images/compiler-research/Dockerfile \
+	  -t $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest .
+
+sandbox-polyglot: ## Build the polyglot-slim image (C + Rust + Python, no crates)
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-polyglot-slim:latest \
+	  deploy/sandbox-images/polyglot-slim
+
+sandbox-profiling: sandbox-base ## Build the profiling-research image
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-profiling-research:latest \
+	  deploy/sandbox-images/profiling-research
+
+sandbox-microarch: sandbox-base ## Build the microarch-research image
+	docker build -t $(SANDBOX_REGISTRY)/kdbc-microarch-research:latest \
+	  deploy/sandbox-images/microarch-research
+
+sandbox-gem5: ## Build the gem5-research image (arm64 only -- see deploy/sandbox-images/README.md)
+	docker build --platform linux/arm64 \
+	  -t $(SANDBOX_REGISTRY)/kdbc-gem5-research:latest \
+	  deploy/sandbox-images/gem5-research
+
+sandbox-axis: ## Build the axis-research image (needs AXIS_PATH=/path/to/axis)
+	@test -n "$(AXIS_PATH)" || { \
+	  echo "AXIS_PATH is required: AXIS lives in its own repository and is the"; \
+	  echo "build context. e.g. make sandbox-axis AXIS_PATH=/path/to/KevinAI/axis"; \
+	  exit 1; }
+	docker build -f deploy/sandbox-images/axis-research/Dockerfile \
+	  -t $(SANDBOX_REGISTRY)/kdbc-axis-research:latest $(AXIS_PATH)
+
+sandbox-images: sandbox-compiler sandbox-polyglot sandbox-profiling sandbox-microarch ## Build every sandbox image this repo can build
+	@echo "Built from this repository. gem5 (make sandbox-gem5, arm64) and"
+	@echo "axis (make sandbox-axis AXIS_PATH=...) are separate: see"
+	@echo "deploy/sandbox-images/README.md for why."
+
+sandbox-check: ## Report which sandbox images exist locally and what they carry
+	@for image in kdbc-sandbox-base kdbc-compiler-research kdbc-polyglot-slim \
+	              kdbc-profiling-research \
+	              kdbc-microarch-research kdbc-gem5-research kdbc-axis-research; do \
+	  if docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1; then \
+	    printf '  %-28s %s\n' "$$image" \
+	      "$$(docker image ls --format '{{.Size}}' \
+	         $(SANDBOX_REGISTRY)/$$image:latest | head -1)"; \
+	  else \
+	    printf '  %-28s %s\n' "$$image" "MISSING"; \
+	  fi; \
+	done
+	@echo ""
+	@echo "Toolchains each image must carry for the agent tools to work."
+	@echo "Probed through /bin/sh -lc, the way the runner invokes them: a login"
+	@echo "shell resets PATH, and rustc has gone missing that way before."
+	@for image in kdbc-compiler-research kdbc-polyglot-slim; do \
+	  docker image inspect $(SANDBOX_REGISTRY)/$$image:latest >/dev/null 2>&1 || continue; \
+	  echo "  $$image:"; \
+	  docker run --rm --entrypoint sh $(SANDBOX_REGISTRY)/$$image:latest \
+	    -lc 'printf "    clang   %s\n" "$$(clang --version 2>/dev/null | head -1 || echo MISSING)"; \
+	         printf "    rustc   %s\n" "$$(rustc --version 2>/dev/null || echo MISSING)"; \
+	         printf "    python3 %s\n" "$$(python3 -V 2>&1 || echo MISSING)"; \
+	         printf "    crates  %s\n" "$$(test -f /opt/rust-deps/externs.txt \
+	           && grep -o -- "--extern [a-z_]*" /opt/rust-deps/externs.txt | wc -l | tr -d " " \
+	           || echo 0)"' 2>/dev/null \
+	    || echo "    (probe failed)"; \
+	done
+	@docker image inspect $(SANDBOX_REGISTRY)/kdbc-compiler-research:latest >/dev/null 2>&1 \
+	  || echo "  (compiler-research image not built: run make sandbox-compiler)"

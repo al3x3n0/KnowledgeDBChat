@@ -3,9 +3,7 @@
 import tempfile
 import uuid
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
-
-import pytest
+from unittest.mock import AsyncMock
 
 from app.services.coding_workspace_manager import (
     CodingWorkspace,
@@ -18,7 +16,9 @@ def _make_manager_and_workspace(files: dict[str, str] | None = None):
     """Create a workspace manager with a populated workspace."""
     mgr = CodingWorkspaceManager()
     workspace_id = str(uuid.uuid4())
-    base_path = Path(tempfile.mkdtemp(prefix=f"test_persist_{workspace_id[:8]}_")).resolve()
+    base_path = Path(
+        tempfile.mkdtemp(prefix=f"test_persist_{workspace_id[:8]}_")
+    ).resolve()
 
     original_hashes = {}
     for rel, content in (files or {}).items():
@@ -50,7 +50,12 @@ class TestPersistWorkspaceManifest:
             "source_id": None,
             "repo_url": None,
             "files": [
-                {"path": "a.py", "object_path": "workspaces/job-123/a.py", "size": 100, "status": "modified"},
+                {
+                    "path": "a.py",
+                    "object_path": "workspaces/job-123/a.py",
+                    "size": 100,
+                    "status": "modified",
+                },
             ],
             "total_files": 1,
             "changes_summary": {"modified": 1, "added": 0, "deleted": 0},
@@ -95,7 +100,9 @@ class TestPersistWorkspaceManifest:
 class TestPersistWorkspaceUpload:
     """Tests for the actual persist_workspace method with mocked storage."""
 
-    def _run_persist(self, mgr, ws, job_id="job-1", user_id="user-1", document_workspace=None):
+    def _run_persist(
+        self, mgr, ws, job_id="job-1", user_id="user-1", document_workspace=None
+    ):
         """Run persist_workspace with mocked storage_service module."""
         import asyncio
         import sys
@@ -111,7 +118,11 @@ class TestPersistWorkspaceUpload:
         saved = sys.modules.get("app.services.storage_service")
         sys.modules["app.services.storage_service"] = fake_mod
         try:
-            result = asyncio.run(mgr.persist_workspace(ws, job_id, user_id, document_workspace=document_workspace))
+            result = asyncio.run(
+                mgr.persist_workspace(
+                    ws, job_id, user_id, document_workspace=document_workspace
+                )
+            )
         finally:
             if saved is not None:
                 sys.modules["app.services.storage_service"] = saved
@@ -152,6 +163,8 @@ class TestPersistWorkspaceUpload:
         assert result["manifest"]["type"] == "workspace_snapshot"
         assert result["manifest"]["files"][0]["path"] == "a.py"
         assert result["manifest"]["files"][0]["status"] == "modified"
+        assert result["manifest"]["base_digest"]
+        assert result["manifest"]["persistence_complete"] is True
         mock_storage.upload_to_path.assert_called_once()
 
     def test_persist_uploads_added_files(self):
@@ -190,6 +203,8 @@ class TestPersistWorkspaceUpload:
 
         # Should have persisted only the successful one
         assert result["files_persisted"] == 1
+        assert result["manifest"]["persistence_complete"] is False
+        assert result["manifest"]["failed_files"] == ["a.py"]
 
 
 class TestGetWorkspaceArtifactUrl:
@@ -230,11 +245,13 @@ class TestOutputArtifactsIntegration:
     def test_multiple_workspace_snapshots(self):
         output_artifacts = []
         for i in range(3):
-            output_artifacts.append({
-                "type": "workspace_snapshot",
-                "workspace_id": f"ws-{i}",
-                "total_files": i + 1,
-            })
+            output_artifacts.append(
+                {
+                    "type": "workspace_snapshot",
+                    "workspace_id": f"ws-{i}",
+                    "total_files": i + 1,
+                }
+            )
         snapshots = [a for a in output_artifacts if a["type"] == "workspace_snapshot"]
         assert len(snapshots) == 3
 
@@ -245,5 +262,7 @@ class TestOutputArtifactsIntegration:
             {"type": "demo_check", "source_id": "s-1"},
         ]
         assert len(output_artifacts) == 3
-        ws_snapshots = [a for a in output_artifacts if a["type"] == "workspace_snapshot"]
+        ws_snapshots = [
+            a for a in output_artifacts if a["type"] == "workspace_snapshot"
+        ]
         assert len(ws_snapshots) == 1

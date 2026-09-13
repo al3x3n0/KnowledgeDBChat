@@ -1,0 +1,89 @@
+{{- if .Values.celeryTranscription.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-celery-transcription" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "celery-transcription") | nindent 4 }}
+spec:
+  replicas: {{ .Values.celeryTranscription.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-transcription") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-transcription") | nindent 8 }}
+      annotations:
+        {{- include "kdbc.configChecksums" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kdbc.serviceAccountName" . }}
+      {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      # A transcription in flight is minutes of CPU that would have to start
+      # over; drain rather than kill.
+      terminationGracePeriodSeconds: 300
+      containers:
+        - name: celery-transcription
+          image: "{{ .Values.image.transcriptionWorker.repository }}:{{ .Values.image.transcriptionWorker.tag }}"
+          imagePullPolicy: {{ .Values.image.transcriptionWorker.pullPolicy }}
+          # The image inherits the backend's ENTRYPOINT, which runs Alembic
+          # unless told otherwise. Migrations belong to the hook Job; a worker
+          # racing them is what that Job exists to prevent.
+          command:
+            - celery
+            - -A
+            - app.core.celery_transcription
+            - worker
+            - -Q
+            - {{ .Values.config.extra.TRANSCRIPTION_CELERY_QUEUE | default "transcription" | quote }}
+            - --loglevel={{ lower .Values.config.logLevel }}
+            - --concurrency={{ .Values.celeryTranscription.concurrency }}
+          env:
+            {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            - name: RUN_ALEMBIC_MIGRATIONS
+              value: "false"
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            {{- with .Values.global.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            {{- include "kdbc.appEnvFrom" . | nindent 12 }}
+          volumeMounts:
+            {{- include "kdbc.dataVolumeMounts" . | nindent 12 }}
+            - name: dshm
+              mountPath: /dev/shm
+          livenessProbe:
+            exec:
+              # This pod's own worker, not the whole cluster of workers.
+              command:
+                - sh
+                - -c
+                - celery -A app.core.celery_transcription inspect ping -d celery@$(hostname)
+            initialDelaySeconds: 120
+            periodSeconds: 60
+            timeoutSeconds: 30
+            failureThreshold: 3
+          resources:
+            {{- toYaml .Values.celeryTranscription.resources | nindent 12 }}
+      volumes:
+        {{- include "kdbc.dataVolume" . | nindent 8 }}
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      {{- with .Values.celeryTranscription.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.celeryTranscription.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.celeryTranscription.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

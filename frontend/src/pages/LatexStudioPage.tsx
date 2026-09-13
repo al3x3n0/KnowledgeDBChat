@@ -173,7 +173,7 @@ const LatexStudioPage: React.FC = () => {
   );
 
   useEffect(() => {
-    if (unsafeExecStatus && !unsafeExecStatus.enabled) {
+    if (unsafeExecStatus?.enabled === false) {
       setPaperPipelineEnableExperiments(false);
       setResearchEngineerEnableExperiments(false);
     }

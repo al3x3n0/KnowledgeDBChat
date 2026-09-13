@@ -14,9 +14,9 @@ const extractArxivId = (raw: string): string | null => {
   if (m?.[1]) return m[1];
   m = v.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?/i);
   if (m?.[1]) return m[1];
-  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.\-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
+  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
   if (m?.[1]) return m[1];
-  m = v.match(/^([\w.\-]+\/\d+(?:v\d+)?)$/i);
+  m = v.match(/^([\w.-]+\/\d+(?:v\d+)?)$/i);
   if (m?.[1]) return m[1];
   return null;
 };
@@ -35,7 +35,10 @@ const ContextPackPage: React.FC = () => {
   const pack: any = (trace?.trace as any)?.kg_context_pack || null;
   const kgContext: string | null = (pack?.kg_context as string) || null;
 
-  const entities: any[] = Array.isArray(pack?.entities) ? pack.entities : [];
+  const entities: any[] = React.useMemo(
+    () => (Array.isArray(pack?.entities) ? pack.entities : []),
+    [pack?.entities]
+  );
   const relationships: any[] = Array.isArray(pack?.relationships) ? pack.relationships : [];
   const stats: any = pack?.stats || null;
 

@@ -577,7 +577,7 @@ export const useWorkflowStore = create<WorkflowState>((set, get) => ({
 
   // Context flow computation
   computeContextFlow: () => {
-    const { nodes, edges, toolSchemas } = get();
+    const { nodes, edges } = get();
     const contextFlow: Record<string, ContextVariable[]> = {};
 
     // Build adjacency list (reverse - find what nodes lead to each node)

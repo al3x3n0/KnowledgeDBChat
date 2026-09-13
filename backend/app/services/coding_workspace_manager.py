@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import json
 import os
 import shutil
 import tempfile
@@ -31,8 +32,12 @@ class CodingWorkspace:
     source_id: Optional[str] = None
     repo_url: Optional[str] = None
     branch: Optional[str] = None
+    owner_job_id: Optional[str] = None
+    session_id: Optional[str] = None
     created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
     original_hashes: Dict[str, str] = field(default_factory=dict)
+    checkpoint_root: Optional[Path] = None
+    checkpoints: Dict[str, Dict[str, Any]] = field(default_factory=dict)
 
 
 # Maximum workspace size (total bytes of files written from KB source).
@@ -41,14 +46,59 @@ MAX_WORKSPACE_BYTES = 100 * 1024 * 1024  # 100 MB
 MAX_SOURCE_FILES = 2000
 # Maximum single file size when populating from KB.
 MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB
+MAX_CHECKPOINTS = 8
+MAX_CHECKPOINT_FILES = 5000
+MAX_CHECKPOINT_BYTES = 100 * 1024 * 1024
 
 
 def _sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
 
+def _workspace_root() -> Path:
+    """Where new workspaces are made.
+
+    The shared data volume, not `/tmp`. The agent runs in a celery worker and
+    the API answers in a different container, so a workspace under the
+    worker's own `/tmp` cannot be read by anything that would show it -- and
+    for a research pipeline the environment a number was measured in is part
+    of the evidence.
+
+    Falls back to a temp directory if the volume is not writable, because a
+    misconfigured root must not stop the agent from working: losing the ability
+    to INSPECT a workspace is a smaller failure than losing the ability to make
+    one.
+    """
+    from app.core.config import settings
+
+    root = Path(getattr(settings, "CODING_WORKSPACE_ROOT", "") or "")
+    if not root:
+        return Path(tempfile.mkdtemp(prefix="agent_ws_root_"))
+    try:
+        root.mkdir(parents=True, exist_ok=True)
+        return root
+    except OSError as error:
+        logger.warning(
+            f"Coding workspace root {root} is not usable ({error}); "
+            "falling back to a temp directory, which no other process can read"
+        )
+        return Path(tempfile.mkdtemp(prefix="agent_ws_root_"))
+
+
+def _new_workspace_dir(workspace_id: str) -> Path:
+    """A directory for one workspace, named by its id.
+
+    Named rather than randomised so the path can be derived from the id alone:
+    a reader with the id and the volume can find the files without consulting
+    anything.
+    """
+    path = _workspace_root() / workspace_id
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
 class CodingWorkspaceManager:
-    """Manages temporary coding workspaces for agent jobs."""
+    """Manages coding workspaces for agent jobs."""
 
     def __init__(self) -> None:
         self._workspaces: Dict[str, CodingWorkspace] = {}
@@ -70,10 +120,11 @@ class CodingWorkspaceManager:
         hashes of each original file for later change detection.
         """
         from sqlalchemy import select
+
         from app.models.document import Document
 
         workspace_id = str(uuid.uuid4())
-        base_path = Path(tempfile.mkdtemp(prefix=f"agent_ws_{workspace_id[:8]}_"))
+        base_path = _new_workspace_dir(workspace_id)
 
         # Query code documents from the source.
         result = await db.execute(
@@ -145,7 +196,7 @@ class CodingWorkspaceManager:
         caller before invoking this method.
         """
         workspace_id = str(uuid.uuid4())
-        base_path = Path(tempfile.mkdtemp(prefix=f"agent_ws_{workspace_id[:8]}_"))
+        base_path = _new_workspace_dir(workspace_id)
 
         cmd = ["git", "clone", "--depth", "1"]
         if branch:
@@ -161,9 +212,7 @@ class CodingWorkspaceManager:
                 ),
                 timeout=timeout,
             )
-            stdout, stderr = await asyncio.wait_for(
-                proc.communicate(), timeout=timeout
-            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
             if proc.returncode != 0:
                 raise RuntimeError(
                     f"git clone failed (exit {proc.returncode}): {stderr.decode('utf-8', errors='replace')[:500]}"
@@ -206,14 +255,473 @@ class CodingWorkspaceManager:
     # ------------------------------------------------------------------
 
     def get(self, workspace_id: str) -> Optional[CodingWorkspace]:
+        """The workspace, if this process made it.
+
+        Deliberately still synchronous and still process-local: this is the
+        agent's path, it always holds the workspace it is working in, and
+        making it async would ripple through every coding tool for no gain.
+        A reader in another process uses `load_record` instead.
+        """
         return self._workspaces.get(workspace_id)
 
-    def get_or_default(self, workspace_id: Optional[str], state: Dict[str, Any]) -> Optional[CodingWorkspace]:
+    # ------------------------------------------------------------------
+    # The registry: how a workspace is found from another process
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _record_state(workspace: CodingWorkspace) -> Dict[str, Any]:
+        """What reading the directory cannot recover.
+
+        Chiefly the hashes of the files it started with. Without those there
+        is no way to say what the run CHANGED, which is the question a reviewer
+        actually asks -- the directory alone shows only what it ends with.
+        """
+        return {
+            "original_hashes": dict(workspace.original_hashes or {}),
+            "checkpoints": {
+                str(k): v for k, v in (workspace.checkpoints or {}).items()
+            },
+            "checkpoint_root": (
+                str(workspace.checkpoint_root) if workspace.checkpoint_root else ""
+            ),
+            "session_id": workspace.session_id or "",
+        }
+
+    async def persist_record(
+        self,
+        workspace: CodingWorkspace,
+        db: Any,
+        *,
+        user_id: Any,
+        job_id: Any = None,
+        status: str = "active",
+    ) -> None:
+        """Record the workspace so another process can find it.
+
+        Best-effort on purpose. A workspace that cannot be registered is still
+        a workspace the agent can work in; refusing to run because the registry
+        write failed would trade a missing view for a missing capability.
+        """
+        try:
+            from sqlalchemy import select
+
+            from app.models.coding_workspace import CodingWorkspaceRecord
+
+            existing = (
+                await db.execute(
+                    select(CodingWorkspaceRecord).where(
+                        CodingWorkspaceRecord.id == uuid.UUID(workspace.workspace_id)
+                    )
+                )
+            ).scalar_one_or_none()
+
+            if existing is None:
+                existing = CodingWorkspaceRecord(
+                    id=uuid.UUID(workspace.workspace_id),
+                    user_id=user_id,
+                    owner_job_id=job_id,
+                    base_path=str(workspace.base_path),
+                    source_id=workspace.source_id,
+                    repo_url=workspace.repo_url,
+                    branch=workspace.branch,
+                )
+                db.add(existing)
+
+            existing.state = self._record_state(workspace)
+            existing.status = status
+            existing.last_used_at = datetime.now(timezone.utc)
+            await db.commit()
+        except Exception as error:  # noqa: BLE001 - see the docstring
+            logger.warning(
+                f"Could not register workspace {workspace.workspace_id}: {error}"
+            )
+
+    async def load_record(
+        self, workspace_id: str, db: Any
+    ) -> Optional[CodingWorkspace]:
+        """Rebuild a workspace handle from the registry, for a reader.
+
+        Returns None when the row is missing OR when the directory it names is
+        gone: a handle onto files that no longer exist would fail on the first
+        read with a confusing error, and "the workspace was discarded" is a
+        different answer from "there is no such workspace".
+        """
+        try:
+            from sqlalchemy import select
+
+            from app.models.coding_workspace import CodingWorkspaceRecord
+
+            row = (
+                await db.execute(
+                    select(CodingWorkspaceRecord).where(
+                        CodingWorkspaceRecord.id == uuid.UUID(str(workspace_id))
+                    )
+                )
+            ).scalar_one_or_none()
+        except Exception as error:  # noqa: BLE001
+            logger.warning(f"Could not read workspace {workspace_id}: {error}")
+            return None
+
+        if row is None:
+            return None
+        base_path = Path(str(row.base_path))
+        if not base_path.is_dir():
+            return None
+
+        state = row.state if isinstance(row.state, dict) else {}
+        checkpoint_root = str(state.get("checkpoint_root") or "")
+        return CodingWorkspace(
+            workspace_id=str(row.id),
+            base_path=base_path,
+            source_id=row.source_id,
+            repo_url=row.repo_url,
+            branch=row.branch,
+            owner_job_id=str(row.owner_job_id) if row.owner_job_id else None,
+            session_id=str(state.get("session_id") or "") or None,
+            original_hashes=dict(state.get("original_hashes") or {}),
+            checkpoint_root=Path(checkpoint_root) if checkpoint_root else None,
+            checkpoints=dict(state.get("checkpoints") or {}),
+        )
+
+    def get_or_default(
+        self, workspace_id: Optional[str], state: Dict[str, Any]
+    ) -> Optional[CodingWorkspace]:
         """Get workspace by explicit id or fall back to state['coding_workspace_id']."""
         wid = workspace_id or (state.get("coding_workspace_id") if state else None)
         if not wid:
             return None
         return self._workspaces.get(str(wid))
+
+    # ------------------------------------------------------------------
+    # Recovery checkpoints
+    # ------------------------------------------------------------------
+
+    @staticmethod
+    def _base_digest(workspace: CodingWorkspace) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                workspace.original_hashes,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def workspace_state_digest(workspace: CodingWorkspace) -> str:
+        """Hash the current non-git workspace tree for checkpoint deduplication."""
+        current_hashes: Dict[str, str] = {}
+        for root, _dirs, filenames in os.walk(workspace.base_path):
+            if ".git" in Path(root).parts:
+                continue
+            for filename in filenames:
+                file_path = Path(root) / filename
+                relative = str(file_path.relative_to(workspace.base_path))
+                try:
+                    current_hashes[relative] = _sha256(file_path.read_bytes())
+                except OSError:
+                    continue
+        return hashlib.sha256(
+            json.dumps(
+                current_hashes,
+                sort_keys=True,
+                separators=(",", ":"),
+            ).encode("utf-8")
+        ).hexdigest()
+
+    @staticmethod
+    def _checkpoint_public(metadata: Dict[str, Any]) -> Dict[str, Any]:
+        return {key: value for key, value in metadata.items() if key not in {"path"}}
+
+    def create_checkpoint(
+        self,
+        workspace: CodingWorkspace,
+        *,
+        label: str = "",
+        kind: str = "manual",
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Create a bounded full-tree checkpoint outside the active workspace."""
+        if len(workspace.checkpoints) >= MAX_CHECKPOINTS:
+            return None, f"Checkpoint limit reached ({MAX_CHECKPOINTS})"
+
+        checkpoint_id = f"checkpoint-{uuid.uuid4().hex[:16]}"
+        if workspace.checkpoint_root is None:
+            # Beside the workspace on the shared volume, not in the worker's
+            # /tmp. A checkpoint exists to be restored from after something
+            # went wrong, and the thing that most often goes wrong takes the
+            # worker with it -- which used to take every checkpoint too.
+            #
+            # `.checkpoints` is a sibling of the tree rather than inside it, so
+            # a checkpoint never contains the previous checkpoints.
+            root = workspace.base_path.parent / f"{workspace.workspace_id}.checkpoints"
+            try:
+                root.mkdir(parents=True, exist_ok=True)
+                workspace.checkpoint_root = root
+            except OSError:
+                workspace.checkpoint_root = Path(
+                    tempfile.mkdtemp(prefix=f"agent_cp_{workspace.workspace_id[:8]}_")
+                )
+        target_root = workspace.checkpoint_root / checkpoint_id
+        target_root.mkdir(parents=True, exist_ok=False)
+        total_files = 0
+        total_bytes = 0
+        skipped_symlinks: List[str] = []
+
+        try:
+            for source in sorted(workspace.base_path.rglob("*")):
+                relative = source.relative_to(workspace.base_path)
+                if ".git" in relative.parts:
+                    continue
+                if source.is_symlink():
+                    skipped_symlinks.append(str(relative))
+                    continue
+                if source.is_dir():
+                    (target_root / relative).mkdir(parents=True, exist_ok=True)
+                    continue
+                if not source.is_file():
+                    continue
+                size = source.stat().st_size
+                total_files += 1
+                total_bytes += size
+                if total_files > MAX_CHECKPOINT_FILES:
+                    raise ValueError(
+                        f"Checkpoint exceeds {MAX_CHECKPOINT_FILES} file limit"
+                    )
+                if total_bytes > MAX_CHECKPOINT_BYTES:
+                    raise ValueError(
+                        f"Checkpoint exceeds {MAX_CHECKPOINT_BYTES} byte limit"
+                    )
+                destination = target_root / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+        except Exception as exc:
+            shutil.rmtree(target_root, ignore_errors=True)
+            return None, str(exc)
+
+        metadata: Dict[str, Any] = {
+            "checkpoint_id": checkpoint_id,
+            "workspace_id": workspace.workspace_id,
+            "label": str(label or "").strip()[:120],
+            "kind": str(kind or "manual").strip()[:40],
+            "created_at": datetime.now(timezone.utc).isoformat(),
+            "files_count": total_files,
+            "total_bytes": total_bytes,
+            "skipped_symlinks": skipped_symlinks[:50],
+            "path": target_root,
+        }
+        workspace.checkpoints[checkpoint_id] = metadata
+        return self._checkpoint_public(metadata), None
+
+    def list_checkpoints(self, workspace: CodingWorkspace) -> List[Dict[str, Any]]:
+        """Return checkpoint metadata without exposing host paths."""
+        rows = [
+            self._checkpoint_public(metadata)
+            for metadata in workspace.checkpoints.values()
+        ]
+        return sorted(rows, key=lambda row: str(row.get("created_at") or ""))
+
+    def restore_checkpoint(
+        self,
+        workspace: CodingWorkspace,
+        checkpoint_id: str,
+        *,
+        preserve_current: bool = True,
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Restore a full-tree checkpoint while retaining the repository .git dir."""
+        metadata = workspace.checkpoints.get(str(checkpoint_id or "").strip())
+        if not isinstance(metadata, dict):
+            return None, "Checkpoint not found"
+        checkpoint_path = metadata.get("path")
+        if not isinstance(checkpoint_path, Path) or not checkpoint_path.is_dir():
+            return None, "Checkpoint data is unavailable"
+
+        safety_checkpoint = None
+        if preserve_current:
+            safety_checkpoint, error = self.create_checkpoint(
+                workspace,
+                label=f"Before restore {checkpoint_id}",
+                kind="pre_restore",
+            )
+            if error:
+                return None, f"Could not preserve current workspace: {error}"
+
+        try:
+            self._restore_tree(workspace, checkpoint_path)
+        except Exception as exc:
+            rollback_error = None
+            if isinstance(safety_checkpoint, dict):
+                safety_metadata = workspace.checkpoints.get(
+                    str(safety_checkpoint.get("checkpoint_id") or "")
+                )
+                safety_path = (
+                    safety_metadata.get("path")
+                    if isinstance(safety_metadata, dict)
+                    else None
+                )
+                if isinstance(safety_path, Path):
+                    try:
+                        self._restore_tree(workspace, safety_path)
+                    except Exception as rollback_exc:
+                        rollback_error = str(rollback_exc)
+            message = f"Checkpoint restore failed: {exc}"
+            if rollback_error:
+                message += f"; safety rollback also failed: {rollback_error}"
+            return None, message
+
+        return {
+            "workspace_id": workspace.workspace_id,
+            "restored_checkpoint_id": checkpoint_id,
+            "safety_checkpoint": safety_checkpoint,
+            "status": self.get_status(workspace),
+        }, None
+
+    @staticmethod
+    def _restore_tree(workspace: CodingWorkspace, checkpoint_path: Path) -> None:
+        """Replace the non-git workspace tree from a checkpoint directory."""
+        for child in workspace.base_path.iterdir():
+            if child.name == ".git":
+                continue
+            if child.is_dir() and not child.is_symlink():
+                shutil.rmtree(child)
+            else:
+                child.unlink()
+        for source in sorted(checkpoint_path.rglob("*")):
+            relative = source.relative_to(checkpoint_path)
+            destination = workspace.base_path / relative
+            if source.is_dir():
+                destination.mkdir(parents=True, exist_ok=True)
+            elif source.is_file():
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(source, destination)
+
+    async def hydrate_candidate_snapshot(
+        self,
+        workspace: CodingWorkspace,
+        manifest: Dict[str, Any],
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+        """Apply a complete immutable candidate delta to its exact source baseline."""
+        manifest_type = str(manifest.get("type") or "")
+        if manifest_type not in {
+            "workspace_delta_snapshot",
+            "workspace_session_checkpoint",
+        }:
+            return None, "Candidate snapshot type is invalid"
+        if manifest.get("immutable") is not True:
+            return None, "Candidate snapshot is not immutable"
+        if manifest.get("persistence_complete") is not True:
+            return None, "Candidate snapshot persistence is incomplete"
+        if str(manifest.get("base_digest") or "") != self._base_digest(workspace):
+            return None, "Candidate snapshot baseline does not match this workspace"
+        if int(self.get_status(workspace).get("changes_count") or 0) != 0:
+            return None, "Candidate hydration requires a clean baseline workspace"
+
+        job_id = str(manifest.get("job_id") or "").strip()
+        files = manifest.get("files")
+        deleted_files = manifest.get("deleted_files")
+        if (
+            not job_id
+            or not isinstance(files, list)
+            or not isinstance(deleted_files, list)
+        ):
+            return None, "Candidate snapshot manifest is incomplete"
+        if len(files) > MAX_CHECKPOINT_FILES:
+            return None, "Candidate snapshot exceeds file count limit"
+
+        from app.services.storage_service import storage_service
+
+        staging_root = Path(
+            tempfile.mkdtemp(prefix=f"agent_hydrate_{workspace.workspace_id[:8]}_")
+        )
+        total_bytes = 0
+        hydrated_paths: List[str] = []
+        seen_paths: set[str] = set()
+        try:
+            for item in files:
+                if not isinstance(item, dict):
+                    raise ValueError(
+                        "Candidate snapshot contains an invalid file entry"
+                    )
+                relative = str(item.get("path") or "").strip()
+                object_path = str(item.get("object_path") or "").strip()
+                if manifest_type == "workspace_session_checkpoint":
+                    expected_object_path = (
+                        "workspace_checkpoints/"
+                        f"{str(manifest.get('session_id') or '').strip()}/"
+                        f"{str(manifest.get('checkpoint_id') or '').strip()}/"
+                        f"{relative}"
+                    )
+                else:
+                    expected_object_path = f"workspaces/{job_id}/{relative}"
+                destination = self._safe_resolve(staging_root, relative)
+                if (
+                    destination is None
+                    or not relative
+                    or object_path != expected_object_path
+                    or relative in seen_paths
+                ):
+                    raise ValueError(f"Unsafe candidate file entry: {relative}")
+                seen_paths.add(relative)
+                content = await storage_service.get_file_content(object_path)
+                expected_hash = str(item.get("sha256") or "").strip()
+                if not expected_hash or _sha256(content) != expected_hash:
+                    raise ValueError(f"Candidate file hash mismatch: {relative}")
+                total_bytes += len(content)
+                if total_bytes > MAX_WORKSPACE_BYTES:
+                    raise ValueError("Candidate snapshot exceeds workspace size limit")
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                destination.write_bytes(content)
+                hydrated_paths.append(relative)
+
+            safe_deleted: List[str] = []
+            for raw_path in deleted_files:
+                relative = str(raw_path or "").strip()
+                if self.safe_resolve(workspace, relative) is None:
+                    raise ValueError(f"Unsafe deleted file entry: {relative}")
+                if relative in seen_paths:
+                    raise ValueError(
+                        f"Candidate path cannot be changed and deleted: {relative}"
+                    )
+                safe_deleted.append(relative)
+
+            safety_checkpoint, error = self.create_checkpoint(
+                workspace,
+                label=f"Before hydrate {str(manifest.get('snapshot_id') or '')[:40]}",
+                kind="pre_hydrate",
+            )
+            if error:
+                raise ValueError(f"Could not checkpoint before hydration: {error}")
+
+            try:
+                for relative in hydrated_paths:
+                    source = self._safe_resolve(staging_root, relative)
+                    destination = self.safe_resolve(workspace, relative)
+                    if source is None or destination is None:
+                        raise ValueError(f"Unsafe candidate path: {relative}")
+                    destination.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(source, destination)
+                for relative in safe_deleted:
+                    target = self.safe_resolve(workspace, relative)
+                    if target is not None and target.is_file():
+                        target.unlink()
+            except Exception:
+                self.restore_checkpoint(
+                    workspace,
+                    str(safety_checkpoint.get("checkpoint_id") or ""),
+                    preserve_current=False,
+                )
+                raise
+
+            return {
+                "workspace_id": workspace.workspace_id,
+                "snapshot_id": str(manifest.get("snapshot_id") or ""),
+                "hydrated_files": hydrated_paths,
+                "deleted_files": safe_deleted,
+                "safety_checkpoint": safety_checkpoint,
+                "status": self.get_status(workspace),
+            }, None
+        except Exception as exc:
+            return None, str(exc)
+        finally:
+            shutil.rmtree(staging_root, ignore_errors=True)
 
     # ------------------------------------------------------------------
     # Path safety
@@ -263,11 +771,13 @@ class CodingWorkspaceManager:
                 if ".git" in p.parts:
                     continue
                 rel = str(p.relative_to(workspace.base_path))
-                entries.append({
-                    "path": rel,
-                    "type": "dir" if p.is_dir() else "file",
-                    "size": p.stat().st_size if p.is_file() else 0,
-                })
+                entries.append(
+                    {
+                        "path": rel,
+                        "type": "dir" if p.is_dir() else "file",
+                        "size": p.stat().st_size if p.is_file() else 0,
+                    }
+                )
                 if len(entries) >= max_results:
                     break
         else:
@@ -275,11 +785,13 @@ class CodingWorkspaceManager:
                 if p.name == ".git":
                     continue
                 rel = str(p.relative_to(workspace.base_path))
-                entries.append({
-                    "path": rel,
-                    "type": "dir" if p.is_dir() else "file",
-                    "size": p.stat().st_size if p.is_file() else 0,
-                })
+                entries.append(
+                    {
+                        "path": rel,
+                        "type": "dir" if p.is_dir() else "file",
+                        "size": p.stat().st_size if p.is_file() else 0,
+                    }
+                )
                 if len(entries) >= max_results:
                     break
 
@@ -371,15 +883,62 @@ class CodingWorkspaceManager:
                 if compiled.search(line):
                     start = max(0, i - context_lines)
                     end = min(len(lines), i + context_lines + 1)
-                    results.append({
-                        "file": str(fpath.relative_to(workspace.base_path)),
-                        "line": i + 1,
-                        "match": line.rstrip()[:300],
-                        "context": "\n".join(lines[start:end]),
-                    })
+                    results.append(
+                        {
+                            "file": str(fpath.relative_to(workspace.base_path)),
+                            "line": i + 1,
+                            "match": line.rstrip()[:300],
+                            "context": "\n".join(lines[start:end]),
+                        }
+                    )
                     if len(results) >= max_results:
                         return results
         return results
+
+    async def unified_diff(
+        self, workspace: CodingWorkspace, path: str, timeout: int = 15
+    ) -> Optional[str]:
+        """The line-level change to one file, when the workspace has git.
+
+        A workspace cloned from a repository keeps its `.git` (the clone is
+        `--depth 1`, which is shallow in history, not in working tree), so the
+        real diff is already there and only needed asking for. A workspace
+        built from knowledge-base documents has no git and no stored originals,
+        and for those this returns None -- which the caller must present as
+        "the change cannot be shown" rather than "there was no change".
+
+        Read-only by construction. `git diff` alone: no `add -N` to pick up
+        untracked files, because that writes to the index, and a window that
+        quietly modifies the workspace it is showing you is not a window.
+        Untracked files are reported as added by `get_status`, and their whole
+        content is the change.
+        """
+        if not (workspace.base_path / ".git").is_dir():
+            return None
+        target = self.safe_resolve(workspace, path)
+        if target is None:
+            return None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                "git",
+                "--no-pager",
+                "diff",
+                "--",
+                path,
+                cwd=str(workspace.base_path),
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            stdout, _stderr = await asyncio.wait_for(
+                proc.communicate(), timeout=timeout
+            )
+        except (asyncio.TimeoutError, OSError) as error:
+            logger.warning(f"git diff failed in {workspace.workspace_id}: {error}")
+            return None
+        patch = stdout.decode("utf-8", errors="replace")
+        # An empty patch means git knows the file and it is unchanged. That is
+        # a real answer, and distinct from None, which means git cannot say.
+        return patch
 
     def get_status(self, workspace: CodingWorkspace) -> Dict[str, Any]:
         """Compare current workspace files against originals."""
@@ -443,12 +1002,15 @@ class CodingWorkspaceManager:
         status = self.get_status(workspace)
         changed_paths = status["modified"] + status["added"]
 
-        if not changed_paths and not (document_workspace and document_workspace.get("assembled_markdown")):
+        if not changed_paths and not (
+            document_workspace and document_workspace.get("assembled_markdown")
+        ):
             return {"files_persisted": 0, "manifest": None}
 
         await storage_service.initialize()
 
         manifest_files: List[Dict[str, Any]] = []
+        failed_files: List[str] = []
         for rel_path in changed_paths:
             target = self._safe_resolve(workspace.base_path, rel_path)
             if target is None or not target.is_file():
@@ -462,13 +1024,19 @@ class CodingWorkspaceManager:
             mime = mimetypes.guess_type(rel_path)[0] or "application/octet-stream"
             try:
                 await storage_service.upload_to_path(object_path, content_bytes, mime)
-                manifest_files.append({
-                    "path": rel_path,
-                    "object_path": object_path,
-                    "size": len(content_bytes),
-                    "status": "modified" if rel_path in status["modified"] else "added",
-                })
+                manifest_files.append(
+                    {
+                        "path": rel_path,
+                        "object_path": object_path,
+                        "size": len(content_bytes),
+                        "sha256": _sha256(content_bytes),
+                        "status": "modified"
+                        if rel_path in status["modified"]
+                        else "added",
+                    }
+                )
             except Exception as upload_err:
+                failed_files.append(rel_path)
                 logger.warning(f"Failed to persist {rel_path}: {upload_err}")
 
         # Persist assembled document markdown if present
@@ -478,15 +1046,21 @@ class CodingWorkspaceManager:
                 md_bytes = assembled.encode("utf-8")
                 md_path = f"workspaces/{job_id}/_assembled_document.md"
                 try:
-                    await storage_service.upload_to_path(md_path, md_bytes, "text/markdown")
-                    manifest_files.append({
-                        "path": "_assembled_document.md",
-                        "object_path": md_path,
-                        "size": len(md_bytes),
-                        "status": "added",
-                    })
+                    await storage_service.upload_to_path(
+                        md_path, md_bytes, "text/markdown"
+                    )
+                    manifest_files.append(
+                        {
+                            "path": "_assembled_document.md",
+                            "object_path": md_path,
+                            "size": len(md_bytes),
+                            "status": "added",
+                        }
+                    )
                 except Exception as upload_err:
-                    logger.warning(f"Failed to persist assembled document: {upload_err}")
+                    logger.warning(
+                        f"Failed to persist assembled document: {upload_err}"
+                    )
 
         manifest = {
             "type": "workspace_snapshot",
@@ -496,7 +1070,19 @@ class CodingWorkspaceManager:
             "source_id": workspace.source_id,
             "repo_url": workspace.repo_url,
             "files": manifest_files,
+            "deleted_files": list(status["deleted"]),
+            "failed_files": failed_files,
             "total_files": len(manifest_files),
+            "base_files_count": len(workspace.original_hashes),
+            "base_digest": hashlib.sha256(
+                json.dumps(
+                    workspace.original_hashes,
+                    sort_keys=True,
+                    separators=(",", ":"),
+                ).encode("utf-8")
+            ).hexdigest(),
+            "persistence_complete": not failed_files
+            and len(manifest_files) >= len(changed_paths),
             "changes_summary": {
                 "modified": len(status["modified"]),
                 "added": len(status["added"]),
@@ -509,6 +1095,105 @@ class CodingWorkspaceManager:
             f"Persisted workspace {workspace.workspace_id} for job {job_id}: "
             f"{len(manifest_files)} files uploaded"
         )
+        return {"files_persisted": len(manifest_files), "manifest": manifest}
+
+    async def persist_durable_checkpoint(
+        self,
+        workspace: CodingWorkspace,
+        *,
+        job_id: str,
+        user_id: str,
+        session_id: str,
+        label: str = "",
+        reason: str = "periodic",
+    ) -> Dict[str, Any]:
+        """Persist an immutable workspace delta for cross-worker resumption."""
+        import mimetypes
+
+        from app.services.storage_service import storage_service
+
+        normalized_session_id = str(session_id or "").strip()
+        if not normalized_session_id or any(
+            not (char.isalnum() or char in {"-", "_"}) for char in normalized_session_id
+        ):
+            raise ValueError("Invalid coding workspace session ID")
+
+        status = self.get_status(workspace)
+        changed_paths = list(status["modified"]) + list(status["added"])
+        checkpoint_id = f"durable-{uuid.uuid4().hex[:20]}"
+        object_prefix = f"workspace_checkpoints/{normalized_session_id}/{checkpoint_id}"
+        manifest_files: List[Dict[str, Any]] = []
+        failed_files: List[str] = []
+        workspace_state_digest = self.workspace_state_digest(workspace)
+
+        await storage_service.initialize()
+        for relative in changed_paths:
+            source = self.safe_resolve(workspace, relative)
+            if source is None or not source.is_file():
+                failed_files.append(relative)
+                continue
+            try:
+                content = source.read_bytes()
+            except OSError:
+                failed_files.append(relative)
+                continue
+            object_path = f"{object_prefix}/{relative}"
+            content_type = (
+                mimetypes.guess_type(relative)[0] or "application/octet-stream"
+            )
+            try:
+                await storage_service.upload_to_path(
+                    object_path,
+                    content,
+                    content_type,
+                )
+                manifest_files.append(
+                    {
+                        "path": relative,
+                        "object_path": object_path,
+                        "size": len(content),
+                        "sha256": _sha256(content),
+                        "status": (
+                            "modified" if relative in status["modified"] else "added"
+                        ),
+                    }
+                )
+            except Exception as exc:
+                failed_files.append(relative)
+                logger.warning(
+                    f"Failed to persist durable checkpoint file {relative}: {exc}"
+                )
+
+        manifest = {
+            "type": "workspace_session_checkpoint",
+            "checkpoint_id": checkpoint_id,
+            "snapshot_id": checkpoint_id,
+            "checkpoint_kind": "resumable",
+            "immutable": True,
+            "persistence_complete": not failed_files
+            and len(manifest_files) == len(changed_paths),
+            "job_id": str(job_id),
+            "user_id": str(user_id),
+            "session_id": normalized_session_id,
+            "workspace_id": workspace.workspace_id,
+            "source_id": workspace.source_id,
+            "repo_url": workspace.repo_url,
+            "branch": workspace.branch,
+            "base_digest": self._base_digest(workspace),
+            "base_files_count": len(workspace.original_hashes),
+            "workspace_state_digest": workspace_state_digest,
+            "files": manifest_files,
+            "deleted_files": list(status["deleted"]),
+            "failed_files": failed_files,
+            "changes_summary": {
+                "modified": len(status["modified"]),
+                "added": len(status["added"]),
+                "deleted": len(status["deleted"]),
+            },
+            "label": str(label or "").strip()[:120],
+            "reason": str(reason or "periodic").strip()[:80],
+            "persisted_at": datetime.now(timezone.utc).isoformat(),
+        }
         return {"files_persisted": len(manifest_files), "manifest": manifest}
 
     # ------------------------------------------------------------------
@@ -524,8 +1209,192 @@ class CodingWorkspaceManager:
                 logger.info(f"Cleaned up workspace {workspace_id}")
             except Exception as e:
                 logger.warning(f"Failed to clean workspace {workspace_id}: {e}")
+        if ws and ws.checkpoint_root and ws.checkpoint_root.exists():
+            shutil.rmtree(ws.checkpoint_root, ignore_errors=True)
 
     def cleanup_all(self) -> None:
-        """Clean up all active workspaces."""
+        """Delete every workspace this process made, files and all.
+
+        Kept for callers that genuinely want the files gone now. The job
+        finaliser uses `release_all` instead, because deleting the workspace at
+        the end of the run is what made a measurement impossible to re-derive.
+        """
         for wid in list(self._workspaces):
             self.cleanup(wid)
+
+    async def release_all(self, db: Any, *, user_id: Any, job_id: Any = None) -> None:
+        """Finish with this process's workspaces without destroying them.
+
+        The old behaviour deleted every directory the moment the job ended,
+        which is why the environment a number was measured in could never be
+        inspected afterwards. Now the files are kept for
+        `CODING_WORKSPACE_RETENTION_HOURS` and the row says `retained`.
+
+        A retention window needs a sweep or it is just a slower leak, so
+        expired workspaces are removed here -- as later jobs finish, rather
+        than on a timer. That keeps the cost proportional to how much the
+        system is used and needs no new scheduled task.
+        """
+        from app.core.config import settings
+
+        hours = int(getattr(settings, "CODING_WORKSPACE_RETENTION_HOURS", 0) or 0)
+
+        if hours <= 0:
+            # Explicitly configured to keep nothing. Record that the files are
+            # gone rather than leaving rows that promise a directory which no
+            # longer exists.
+            for wid in list(self._workspaces):
+                workspace = self._workspaces.get(wid)
+                if workspace is not None:
+                    await self.persist_record(
+                        workspace,
+                        db,
+                        user_id=user_id,
+                        job_id=job_id,
+                        status="discarded",
+                    )
+            self.cleanup_all()
+            return
+
+        for wid in list(self._workspaces):
+            workspace = self._workspaces.get(wid)
+            if workspace is None:
+                continue
+            await self.persist_record(
+                workspace, db, user_id=user_id, job_id=job_id, status="retained"
+            )
+        # Dropped from this process's dict but left on disk: the agent is done
+        # with them and a reader finds them through the registry.
+        self._workspaces.clear()
+
+        await self.sweep_expired(db, hours=hours)
+        await self.sweep_over_budget(
+            db,
+            max_total_mb=int(
+                getattr(settings, "CODING_WORKSPACE_MAX_TOTAL_MB", 0) or 0
+            ),
+        )
+
+    @staticmethod
+    def _tree_bytes(path: Path) -> int:
+        """How much disk a workspace occupies. Missing is zero, not an error."""
+        total = 0
+        try:
+            for root, _dirs, files in os.walk(path):
+                for name in files:
+                    try:
+                        total += (Path(root) / name).stat().st_size
+                    except OSError:
+                        continue
+        except OSError:
+            return 0
+        return total
+
+    async def _discard(self, row: Any, db: Any) -> bool:
+        """Remove one workspace's files, keeping the row.
+
+        Knowing a workspace existed and its files are gone is different
+        information from never having heard of it, and a finding that cites it
+        should still be traceable.
+        """
+        path = Path(str(row.base_path))
+        try:
+            if path.is_dir():
+                shutil.rmtree(path, ignore_errors=True)
+            checkpoints = path.parent / f"{row.id}.checkpoints"
+            if checkpoints.is_dir():
+                shutil.rmtree(checkpoints, ignore_errors=True)
+        except OSError as error:
+            logger.warning(f"Could not remove workspace {row.id}: {error}")
+            return False
+        row.status = "discarded"
+        return True
+
+    async def sweep_over_budget(self, db: Any, *, max_total_mb: int) -> int:
+        """Release the oldest retained workspaces until the total fits.
+
+        The age rule says how long evidence is worth keeping; this says how
+        much disk that is allowed to cost. Without it, retention is a promise
+        whose price nobody can predict -- three days of a quiet week and three
+        days of a campaign are the same policy and wildly different numbers.
+
+        Oldest first, because the least recently used workspace is the one
+        least likely to be the subject of a question someone is asking now.
+        """
+        if max_total_mb <= 0:
+            return 0
+        removed = 0
+        try:
+            from sqlalchemy import select
+
+            from app.models.coding_workspace import CodingWorkspaceRecord
+
+            rows = (
+                (
+                    await db.execute(
+                        select(CodingWorkspaceRecord)
+                        .where(CodingWorkspaceRecord.status == "retained")
+                        .order_by(CodingWorkspaceRecord.last_used_at.desc())
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            budget = int(max_total_mb) * 1024 * 1024
+            used = 0
+            # Newest first: everything that fits under the budget is kept, and
+            # the tail that does not is released.
+            for row in rows:
+                size = self._tree_bytes(Path(str(row.base_path)))
+                if used + size <= budget:
+                    used += size
+                    continue
+                if await self._discard(row, db):
+                    removed += 1
+            if removed:
+                await db.commit()
+                logger.info(
+                    f"Released {removed} workspace(s) to stay under "
+                    f"{max_total_mb} MB"
+                )
+        except Exception as error:  # noqa: BLE001 - a sweep must not fail a job
+            logger.warning(f"Workspace budget sweep failed: {error}")
+        return removed
+
+    async def sweep_expired(self, db: Any, *, hours: int) -> int:
+        """Delete retained workspaces older than the retention window.
+
+        Best-effort, like registration: a sweep that fails must not fail the
+        job whose finaliser called it.
+        """
+        removed = 0
+        try:
+            from datetime import timedelta
+
+            from sqlalchemy import select
+
+            from app.models.coding_workspace import CodingWorkspaceRecord
+
+            cutoff = datetime.now(timezone.utc) - timedelta(hours=hours)
+            rows = (
+                (
+                    await db.execute(
+                        select(CodingWorkspaceRecord)
+                        .where(CodingWorkspaceRecord.status == "retained")
+                        .where(CodingWorkspaceRecord.last_used_at < cutoff)
+                        .limit(50)
+                    )
+                )
+                .scalars()
+                .all()
+            )
+
+            for row in rows:
+                if await self._discard(row, db):
+                    removed += 1
+            if removed:
+                await db.commit()
+        except Exception as error:  # noqa: BLE001 - see the docstring
+            logger.warning(f"Workspace sweep failed: {error}")
+        return removed

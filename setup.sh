@@ -71,7 +71,7 @@ wait_for() {
 # Wait for core dependencies
 wait_for "PostgreSQL" "\"${COMPOSE[@]}\" exec -T postgres pg_isready -U user" 90 || exit 1
 wait_for "Redis" "\"${COMPOSE[@]}\" exec -T redis redis-cli ping" 60 || exit 1
-wait_for "MinIO" "curl -fsS http://localhost:9000/minio/health/live" 90 || exit 1
+wait_for "MinIO" "curl -fsS http://localhost:29000/minio/health/live" 90 || exit 1
 wait_for "Ollama API" "curl -fsS http://localhost:11434/api/tags" 90 || exit 1
 
 # Initialize database
@@ -126,10 +126,10 @@ echo "   - cd backend && python scripts/setup_sources.py example"
 echo "   - Edit sources_config.json with your settings"
 echo "   - python scripts/setup_sources.py sources_config.json"
 echo "3. Access the application:"
-echo "   - Frontend: http://localhost:3000"
-echo "   - Backend API: http://localhost:8000"
-echo "   - API Documentation: http://localhost:8000/docs"
-echo "   - Admin Panel: http://localhost:8000/api/v1/admin/health"
+echo "   - Frontend: http://localhost:23000"
+echo "   - Backend API: http://localhost:28000"
+echo "   - API Documentation: http://localhost:28000/docs"
+echo "   - Admin Panel: http://localhost:28000/api/v1/admin/health"
 echo "4. Start all services: make start"
 echo "5. View logs: make logs"
 echo ""

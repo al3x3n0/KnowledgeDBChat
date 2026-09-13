@@ -7,18 +7,19 @@ from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, desc
+from sqlalchemy import desc, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.tool_audit import ToolExecutionAudit
 from app.models.user import User
 from app.schemas.agent import AgentToolCall
-from app.schemas.tool_audit import ToolAuditResponse, ToolApprovalRequest
+from app.schemas.tool_audit import ToolApprovalRequest, ToolAuditResponse
 from app.services.agent_service import AgentService
 from app.services.auth_service import get_current_user
 
 router = APIRouter()
+
 
 def _approval_mode(row: ToolExecutionAudit) -> str:
     mode = str(row.approval_mode or "").strip().lower()
@@ -56,7 +57,9 @@ def _to_response(row: ToolExecutionAudit) -> ToolAuditResponse:
         tool_name=row.tool_name,
         tool_input=row.tool_input,
         tool_output=row.tool_output,
-        policy_decision=row.policy_decision if isinstance(row.policy_decision, dict) else (row.policy_decision or None),
+        policy_decision=row.policy_decision
+        if isinstance(row.policy_decision, dict)
+        else (row.policy_decision or None),
         status=row.status,
         error=row.error,
         execution_time_ms=row.execution_time_ms,
@@ -82,7 +85,11 @@ async def list_tool_audit(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    query = select(ToolExecutionAudit).order_by(desc(ToolExecutionAudit.created_at)).limit(limit)
+    query = (
+        select(ToolExecutionAudit)
+        .order_by(desc(ToolExecutionAudit.created_at))
+        .limit(limit)
+    )
     if status:
         query = query.where(ToolExecutionAudit.status == status)
     if not current_user.is_admin():
@@ -99,19 +106,25 @@ async def approve_tool(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(ToolExecutionAudit).where(ToolExecutionAudit.id == audit_id))
+    result = await db.execute(
+        select(ToolExecutionAudit).where(ToolExecutionAudit.id == audit_id)
+    )
     row = result.scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Audit record not found")
     if not (current_user.is_admin() or row.user_id == current_user.id):
         raise HTTPException(status_code=403, detail="Forbidden")
     if not row.approval_required:
-        raise HTTPException(status_code=400, detail="No approval required for this record")
+        raise HTTPException(
+            status_code=400, detail="No approval required for this record"
+        )
 
     # Normalize status for backward compatibility.
     _recompute_approval_status(row)
     if row.approval_status in {"approved", "rejected"}:
-        raise HTTPException(status_code=400, detail="No pending approval for this record")
+        raise HTTPException(
+            status_code=400, detail="No pending approval for this record"
+        )
 
     now = datetime.utcnow()
     mode = _approval_mode(row)
@@ -150,18 +163,24 @@ async def reject_tool(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(ToolExecutionAudit).where(ToolExecutionAudit.id == audit_id))
+    result = await db.execute(
+        select(ToolExecutionAudit).where(ToolExecutionAudit.id == audit_id)
+    )
     row = result.scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Audit record not found")
     if not (current_user.is_admin() or row.user_id == current_user.id):
         raise HTTPException(status_code=403, detail="Forbidden")
     if not row.approval_required:
-        raise HTTPException(status_code=400, detail="No approval required for this record")
+        raise HTTPException(
+            status_code=400, detail="No approval required for this record"
+        )
 
     _recompute_approval_status(row)
     if row.approval_status in {"approved", "rejected"}:
-        raise HTTPException(status_code=400, detail="No pending approval for this record")
+        raise HTTPException(
+            status_code=400, detail="No pending approval for this record"
+        )
 
     row.approval_status = "rejected"
     row.approved_by = current_user.id
@@ -180,7 +199,9 @@ async def run_tool(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    result = await db.execute(select(ToolExecutionAudit).where(ToolExecutionAudit.id == audit_id))
+    result = await db.execute(
+        select(ToolExecutionAudit).where(ToolExecutionAudit.id == audit_id)
+    )
     row = result.scalar_one_or_none()
     if not row:
         raise HTTPException(status_code=404, detail="Audit record not found")
@@ -193,7 +214,9 @@ async def run_tool(
     if row.approval_required:
         _recompute_approval_status(row)
         if row.approval_status != "approved":
-            raise HTTPException(status_code=400, detail="Tool approval required (not approved yet)")
+            raise HTTPException(
+                status_code=400, detail="Tool approval required (not approved yet)"
+            )
 
     # Persist any normalization changes (best-effort).
     await db.commit()
@@ -210,16 +233,24 @@ async def run_tool(
 
         short_name = tool_name.split("mcp:", 1)[1].strip()
         payload = row.tool_input if isinstance(row.tool_input, dict) else {}
-        args = payload.get("arguments") if isinstance(payload.get("arguments"), dict) else (row.tool_input or {})
+        args = (
+            payload.get("arguments")
+            if isinstance(payload.get("arguments"), dict)
+            else (row.tool_input or {})
+        )
         api_key_id_raw = payload.get("api_key_id")
 
         if not api_key_id_raw:
-            raise HTTPException(status_code=422, detail="Missing api_key_id for MCP audit record")
+            raise HTTPException(
+                status_code=422, detail="Missing api_key_id for MCP audit record"
+            )
 
         try:
             api_key_id = _UUID(str(api_key_id_raw))
         except Exception:
-            raise HTTPException(status_code=422, detail="Invalid api_key_id for MCP audit record")
+            raise HTTPException(
+                status_code=422, detail="Invalid api_key_id for MCP audit record"
+            )
 
         api_key = await db.get(APIKey, api_key_id)
         if not api_key or api_key.user_id != row.user_id:
@@ -236,7 +267,9 @@ async def run_tool(
 
         try:
             started = time.time()
-            result = await execute_mcp_tool(tool_name=short_name, args=args or {}, auth=auth, db=db)
+            result = await execute_mcp_tool(
+                tool_name=short_name, args=args or {}, auth=auth, db=db
+            )
             row.status = "completed"
             row.tool_output = result
             row.execution_time_ms = int((time.time() - started) * 1000)
@@ -251,7 +284,14 @@ async def run_tool(
         from uuid import UUID as _UUID
 
         from app.models.workflow import UserTool
-        from app.services.custom_tool_service import CustomToolService, ToolExecutionError
+        from app.services.custom_tool_service import (
+            CustomToolService,
+            ToolExecutionError,
+        )
+        from app.services.external_system_evidence_link_service import (
+            ExternalSystemEvidenceLinkError,
+            external_system_evidence_link_service,
+        )
 
         try:
             tool_id = _UUID(tool_name.split("user_tool:", 1)[1].strip())
@@ -281,8 +321,22 @@ async def run_tool(
             row.status = "completed"
             row.tool_output = result.get("output")
             row.execution_time_ms = int(result.get("execution_time_ms") or 0)
+            linked_job_id = (
+                row.tool_input.get("agent_job_id")
+                if isinstance(row.tool_input, dict)
+                else None
+            )
+            if linked_job_id:
+                await external_system_evidence_link_service.link(
+                    job_id=_UUID(str(linked_job_id)),
+                    user_id=row.user_id,
+                    tool=tool,
+                    gateway_result=result.get("output") or {},
+                    audit_id=row.id,
+                    db=db,
+                )
             await db.commit()
-        except ToolExecutionError as exc:
+        except (ExternalSystemEvidenceLinkError, ToolExecutionError, ValueError) as exc:
             row.status = "failed"
             row.error = str(exc)
             await db.commit()

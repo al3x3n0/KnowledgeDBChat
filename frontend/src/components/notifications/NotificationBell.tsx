@@ -450,6 +450,8 @@ const NotificationBell: React.FC = () => {
                 return (
                 <div
                   key={notification.id}
+                  role="article"
+                  aria-label={notification.title}
                   className={`
                     px-4 py-3 border-b border-gray-100 hover:bg-gray-50 cursor-pointer
                     border-l-4 ${getPriorityColor(notification.priority)}

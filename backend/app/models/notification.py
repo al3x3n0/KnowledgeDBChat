@@ -2,12 +2,22 @@
 Notification-related database models.
 """
 
-from datetime import datetime
-from typing import Optional
-from sqlalchemy import Column, String, Text, DateTime, Boolean, ForeignKey, Index, Float, Integer
-from sqlalchemy.dialects.postgresql import UUID, JSONB
-from sqlalchemy.orm import relationship
 import uuid
+from datetime import datetime
+
+from sqlalchemy import (
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
@@ -18,16 +28,25 @@ class Notification(Base):
     __tablename__ = "notifications"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
     # Notification content
     notification_type = Column(String(50), nullable=False, index=True)
     title = Column(String(255), nullable=False)
     message = Column(Text, nullable=False)
-    priority = Column(String(20), default="normal", nullable=False)  # low, normal, high, urgent
+    priority = Column(
+        String(20), default="normal", nullable=False
+    )  # low, normal, high, urgent
 
     # Related entities (polymorphic references)
-    related_entity_type = Column(String(50), nullable=True)  # "document", "source", "user", etc.
+    related_entity_type = Column(
+        String(50), nullable=True
+    )  # "document", "source", "user", etc.
     related_entity_id = Column(UUID(as_uuid=True), nullable=True, index=True)
 
     # Additional data for the notification (action URLs, metadata, etc.)
@@ -45,14 +64,22 @@ class Notification(Base):
     expires_at = Column(DateTime(timezone=True), nullable=True)
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True)
+    created_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False, index=True
+    )
 
     # Relationships
     user = relationship("User", backref="notifications")
 
     # Composite index for efficient queries
     __table_args__ = (
-        Index('ix_notifications_user_unread', 'user_id', 'is_read', 'is_dismissed', 'created_at'),
+        Index(
+            "ix_notifications_user_unread",
+            "user_id",
+            "is_read",
+            "is_dismissed",
+            "created_at",
+        ),
     )
 
     def __repr__(self):
@@ -65,7 +92,13 @@ class NotificationPreferences(Base):
     __tablename__ = "notification_preferences"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, unique=True, index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        unique=True,
+        index=True,
+    )
 
     # Document event preferences
     notify_document_processing = Column(Boolean, default=True, nullable=False)
@@ -78,18 +111,34 @@ class NotificationPreferences(Base):
     # Research notes
     notify_research_note_citation_issues = Column(Boolean, default=True, nullable=False)
     notify_experiment_run_updates = Column(Boolean, default=True, nullable=False)
-    notify_hypothesis_reevaluation_updates = Column(Boolean, default=True, nullable=False)
+    notify_hypothesis_reevaluation_updates = Column(
+        Boolean, default=True, nullable=False
+    )
     notify_queue_urgency_alerts = Column(Boolean, default=True, nullable=False)
     notify_follow_up_outcome_alerts = Column(Boolean, default=True, nullable=False)
     notify_policy_guardrail_alerts = Column(Boolean, default=True, nullable=False)
     notify_autonomy_budget_alerts = Column(Boolean, default=True, nullable=False)
-    notify_customer_autonomy_budget_alerts = Column(Boolean, default=True, nullable=False)
-    research_note_citation_coverage_threshold = Column(Float, default=0.7, nullable=False)
-    research_note_citation_notify_cooldown_hours = Column(Integer, default=12, nullable=False)
-    queue_urgency_alert_reminder_cooldown_hours = Column(Integer, default=6, nullable=False)
-    research_note_citation_notify_on_unknown_keys = Column(Boolean, default=True, nullable=False)
-    research_note_citation_notify_on_low_coverage = Column(Boolean, default=True, nullable=False)
-    research_note_citation_notify_on_missing_bibliography = Column(Boolean, default=True, nullable=False)
+    notify_customer_autonomy_budget_alerts = Column(
+        Boolean, default=True, nullable=False
+    )
+    research_note_citation_coverage_threshold = Column(
+        Float, default=0.7, nullable=False
+    )
+    research_note_citation_notify_cooldown_hours = Column(
+        Integer, default=12, nullable=False
+    )
+    queue_urgency_alert_reminder_cooldown_hours = Column(
+        Integer, default=6, nullable=False
+    )
+    research_note_citation_notify_on_unknown_keys = Column(
+        Boolean, default=True, nullable=False
+    )
+    research_note_citation_notify_on_low_coverage = Column(
+        Boolean, default=True, nullable=False
+    )
+    research_note_citation_notify_on_missing_bibliography = Column(
+        Boolean, default=True, nullable=False
+    )
 
     # System event preferences
     notify_maintenance = Column(Boolean, default=True, nullable=False)
@@ -106,8 +155,15 @@ class NotificationPreferences(Base):
     show_desktop_notification = Column(Boolean, default=False, nullable=False)
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
     # Relationships
     user = relationship("User", backref="notification_preferences")
@@ -119,6 +175,7 @@ class NotificationPreferences(Base):
 # Notification type constants for reference
 class NotificationType:
     """Notification type constants."""
+
     # Document events
     DOCUMENT_PROCESSING_COMPLETE = "document_processing_complete"
     DOCUMENT_PROCESSING_ERROR = "document_processing_error"
@@ -138,6 +195,7 @@ class NotificationType:
     # Research notes
     RESEARCH_NOTE_CITATION_ISSUE = "research_note_citation_issue"
     EXPERIMENT_RUN_UPDATE = "experiment_run_update"
+    AUTONOMOUS_RND_VERIFICATION_UPDATE = "autonomous_rnd_verification_update"
     HYPOTHESIS_REEVALUATION_UPDATE = "hypothesis_reevaluation_update"
     QUEUE_URGENCY_ALERT = "queue_urgency_alert"
     FOLLOW_UP_OUTCOME_ALERT = "follow_up_outcome_alert"

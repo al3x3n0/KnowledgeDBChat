@@ -3,12 +3,12 @@ Utility modules for the Knowledge Database application.
 """
 
 from .exceptions import (
-    KnowledgeDBException,
-    DocumentNotFoundError,
-    VectorStoreError,
-    LLMServiceError,
     AuthenticationError,
+    DocumentNotFoundError,
+    KnowledgeDBException,
+    LLMServiceError,
     ValidationError,
+    VectorStoreError,
 )
 
 __all__ = [
@@ -19,4 +19,3 @@ __all__ = [
     "AuthenticationError",
     "ValidationError",
 ]
-

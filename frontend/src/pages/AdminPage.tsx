@@ -16,8 +16,6 @@ import {
   XCircle,
   Clock,
   Play,
-  Trash2,
-  Download,
   BarChart3,
   Server,
   HardDrive,
@@ -30,7 +28,7 @@ import {
 import { formatDistanceToNow } from 'date-fns';
 
 import { apiClient } from '../services/api';
-import { SystemHealth, SystemStats, DocumentSource, Persona, AgentDefinition, AgentDefinitionCreate, AgentDefinitionUpdate, CapabilityInfo, AgentDefinitionSummary, ToolAudit } from '../types';
+import { SystemHealth, SystemStats, Persona, AgentDefinition, AgentDefinitionCreate, AgentDefinitionUpdate, CapabilityInfo, AgentDefinitionSummary, ToolAudit } from '../types';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import ProgressBar from '../components/common/ProgressBar';
@@ -42,7 +40,6 @@ import ConfirmationModal from '../components/common/ConfirmationModal';
 const AdminPage: React.FC = () => {
   const location = useLocation();
   const navigate = useNavigate();
-  const queryClient = useQueryClient();
   const [activeTab, setActiveTab] = useState(() => {
     const params = new URLSearchParams(location.search);
     return params.get('tab') || 'overview';
@@ -67,12 +64,10 @@ const AdminPage: React.FC = () => {
   useEffect(() => {
     const params = new URLSearchParams(location.search);
     const tabParam = params.get('tab') || 'overview';
-    if (tabParam !== activeTab) {
-      setActiveTab(tabParam);
-    }
+    setActiveTab((current) => (tabParam === current ? current : tabParam));
     const personaParam = params.get('personaId') || undefined;
-    if (personaParam && personaParam !== focusedPersonaId) {
-      setFocusedPersonaId(personaParam);
+    if (personaParam) {
+      setFocusedPersonaId((current) => (personaParam === current ? current : personaParam));
     }
   }, [location.search]);
 
@@ -110,7 +105,7 @@ const AdminPage: React.FC = () => {
   };
 
   // Fetch system health
-  const { data: health, isLoading: healthLoading, refetch: refetchHealth } = useQuery(
+  const { data: health, refetch: refetchHealth } = useQuery(
     'systemHealth',
     () => apiClient.getSystemHealth(),
     {
@@ -120,7 +115,7 @@ const AdminPage: React.FC = () => {
   );
 
   // Fetch system stats
-  const { data: stats, isLoading: statsLoading, refetch: refetchStats } = useQuery(
+  const { data: stats } = useQuery(
     'systemStats',
     () => apiClient.getSystemStats(),
     {
@@ -407,8 +402,8 @@ const AIHubAdminTab: React.FC = () => {
     }
   );
 
-  const templates = allTemplates?.templates || [];
-  const presets: any[] = (allPresets as any)?.presets || [];
+  const templates = useMemo(() => allTemplates?.templates || [], [allTemplates?.templates]);
+  const presets: any[] = useMemo(() => (allPresets as any)?.presets || [], [allPresets]);
 
   const selectedIds = useMemo(() => {
     return templates.filter((t) => localEnabled[t.id]).map((t) => t.id);
@@ -1279,8 +1274,8 @@ const DataSourcesTab: React.FC = () => {
     by_type?: Record<string, number>;
   } | null>(null);
   const [dryRunOverrides, setDryRunOverrides] = useState<{ include_files: boolean; include_issues: boolean; include_prs: boolean; include_mrs: boolean; include_wiki: boolean }>({ include_files: true, include_issues: true, include_prs: true, include_mrs: true, include_wiki: true });
-  const [historySourceId, setHistorySourceId] = useState<string | null>(null);
-  const [historyLimit, setHistoryLimit] = useState<number>(20);
+  const [historySourceId] = useState<string | null>(null);
+  const [historyLimit] = useState<number>(20);
   const [historyOffset, setHistoryOffset] = useState<number>(0);
   const [historyOpen, setHistoryOpen] = useState(false);
   const [historyItems, setHistoryItems] = useState<any[] | null>(null);
@@ -2035,7 +2030,7 @@ const DataSourcesTab: React.FC = () => {
                       variant="ghost"
                       size="sm"
                       onClick={async () => {
-                        try { const res = await apiClient.cancelSourceSync(source.id); toast.success('Cancel requested'); } catch { toast.error('Failed to request cancel'); }
+                        try { await apiClient.cancelSourceSync(source.id); toast.success('Cancel requested'); } catch { toast.error('Failed to request cancel'); }
                       }}
                     >
                       Cancel
@@ -2428,7 +2423,6 @@ const DryRunSampleTable: React.FC<{ items: Array<{ title?: string; identifier?: 
 
 // Tasks Tab
 const TasksTab: React.FC = () => {
-  const queryClient = useQueryClient();
   const summarizeAllMutation = useMutation(
     (limit: number) => apiClient.summarizeMissingDocuments(limit),
     {

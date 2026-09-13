@@ -10,7 +10,7 @@ All pure — no DB or request coupling.
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 from app.models.agent_job import AgentJob, AgentJobStatus
@@ -34,14 +34,37 @@ def parse_optional_datetime(raw: Any) -> Optional[datetime]:
         return None
 
 
+def _naive_utc(value: Optional[datetime]) -> Optional[datetime]:
+    """The same instant with no tzinfo, so two of these can be subtracted.
+
+    Every timestamp column on a job is ``DateTime(timezone=True)`` while the
+    Python defaults are naive ``utcnow()``, so what goes in naive comes back
+    from Postgres AWARE. Anything comparing a stored timestamp against
+    ``utcnow()`` is therefore one row away from
+    ``TypeError: can't subtract offset-naive and offset-aware datetimes`` --
+    which is exactly how the control-plane run list started returning 500 as
+    soon as a job reached the checkpoint queue.
+
+    Normalising here rather than at each call site because this is the one
+    place the subtraction happens, and a rule applied in four places is a rule
+    that will be missed in the fifth.
+    """
+    if value is None:
+        return None
+    if value.tzinfo is None:
+        return value
+    return value.astimezone(timezone.utc).replace(tzinfo=None)
+
+
 def queue_age_minutes(
     created_at: Optional[datetime], *, now: Optional[datetime] = None
 ) -> int:
     """Whole minutes elapsed since ``created_at`` (clamped to >= 0)."""
     if created_at is None:
         return 0
-    reference = now or datetime.utcnow()
-    return max(0, int((reference - created_at).total_seconds() // 60))
+    reference = _naive_utc(now) or datetime.utcnow()
+    started = _naive_utc(created_at)
+    return max(0, int((reference - started).total_seconds() // 60))
 
 
 def extract_launch_mode(config: Optional[dict]) -> str:
@@ -54,20 +77,41 @@ def extract_launch_mode(config: Optional[dict]) -> str:
 def extract_approval_checkpoint(job: AgentJob) -> Optional[dict]:
     """Extract pending approval checkpoint summary for paused jobs."""
     results = job.results if isinstance(job.results, dict) else {}
-    direct = results.get("approval_checkpoint") if isinstance(results.get("approval_checkpoint"), dict) else None
-    execution = results.get("execution_strategy") if isinstance(results.get("execution_strategy"), dict) else {}
-    approval = execution.get("approval_checkpoints") if isinstance(execution.get("approval_checkpoints"), dict) else {}
-    pending = approval.get("pending") if isinstance(approval.get("pending"), dict) else None
+    direct = (
+        results.get("approval_checkpoint")
+        if isinstance(results.get("approval_checkpoint"), dict)
+        else None
+    )
+    execution = (
+        results.get("execution_strategy")
+        if isinstance(results.get("execution_strategy"), dict)
+        else {}
+    )
+    approval = (
+        execution.get("approval_checkpoints")
+        if isinstance(execution.get("approval_checkpoints"), dict)
+        else {}
+    )
+    pending = (
+        approval.get("pending") if isinstance(approval.get("pending"), dict) else None
+    )
     data = direct or pending
     if not isinstance(data, dict):
         return None
     return {
         "required": True,
-        "status": "pending" if str(job.status or "") == AgentJobStatus.PAUSED.value else "stale",
+        "status": "pending"
+        if str(job.status or "") == AgentJobStatus.PAUSED.value
+        else "stale",
         "current_phase": str(job.current_phase or ""),
         "message": str(data.get("message") or job.phase_details or "").strip()[:300],
         "iteration": int(data.get("iteration", 0) or 0),
-        "reasons": [str(x)[:140] for x in (data.get("reasons") if isinstance(data.get("reasons"), list) else [])[:8]],
+        "reasons": [
+            str(x)[:140]
+            for x in (
+                data.get("reasons") if isinstance(data.get("reasons"), list) else []
+            )[:8]
+        ],
         "action": data.get("action") if isinstance(data.get("action"), dict) else {},
         "created_at": data.get("created_at"),
     }
@@ -79,7 +123,9 @@ def queue_customer_for_job(job: AgentJob) -> Optional[str]:
     values = [
         cfg.get("customer"),
         cfg.get("customer_context"),
-        ((job.results or {}).get("customer_profile") or {}).get("name") if isinstance((job.results or {}).get("customer_profile"), dict) else None,
+        ((job.results or {}).get("customer_profile") or {}).get("name")
+        if isinstance((job.results or {}).get("customer_profile"), dict)
+        else None,
     ]
     for raw in values:
         text = str(raw or "").strip()
@@ -94,10 +140,17 @@ def queue_evidence_summary_for_job(job: AgentJob) -> Optional[str]:
     """Short human-readable reason a job is sitting in the review queue."""
     checkpoint = extract_approval_checkpoint(job)
     if checkpoint:
-        reasons = checkpoint.get("reasons") if isinstance(checkpoint.get("reasons"), list) else []
+        reasons = (
+            checkpoint.get("reasons")
+            if isinstance(checkpoint.get("reasons"), list)
+            else []
+        )
         tool = str(((checkpoint.get("action") or {}).get("tool") or "")).strip()
         if reasons:
-            return "; ".join(str(x).strip() for x in reasons[:3] if str(x).strip())[:320] or None
+            return (
+                "; ".join(str(x).strip() for x in reasons[:3] if str(x).strip())[:320]
+                or None
+            )
         if tool:
             return f"Pending tool: {tool}"[:320]
     scheduler_state = extract_scheduler_state(job) or {}

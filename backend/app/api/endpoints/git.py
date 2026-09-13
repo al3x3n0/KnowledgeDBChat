@@ -1,27 +1,27 @@
+import base64
 from typing import List, Optional
 from uuid import UUID
+
+from celery.result import AsyncResult
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
 from loguru import logger
 from pydantic import BaseModel
-import base64
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.celery import celery_app
 from app.core.database import get_db
 from app.models.document import DocumentSource, GitBranchDiff
-from app.schemas.git import GitBranchResponse, GitCompareRequest, GitCompareJobResponse
-from app.services.auth_service import get_current_user
 from app.models.user import User
+from app.schemas.git import GitBranchResponse, GitCompareJobResponse, GitCompareRequest
+from app.services.auth_service import get_current_user
 from app.services.git_service import GitService
 from app.tasks.git_compare_tasks import compare_git_branches
-from celery.result import AsyncResult
-from app.core.celery import celery_app
 from app.utils.ingestion_state import (
-    set_git_compare_task,
     get_git_compare_task,
     set_git_compare_cancel_flag,
-    clear_git_compare_task,
+    set_git_compare_task,
 )
 
 router = APIRouter()
@@ -33,7 +33,9 @@ async def _get_source_or_404(db: AsyncSession, source_id: UUID) -> DocumentSourc
     if not source:
         raise HTTPException(status_code=404, detail="Document source not found")
     if source.source_type not in ("github", "gitlab"):
-        raise HTTPException(status_code=400, detail="Source does not support git operations")
+        raise HTTPException(
+            status_code=400, detail="Source does not support git operations"
+        )
     return source
 
 
@@ -69,7 +71,9 @@ def _default_repository(source: DocumentSource) -> Optional[str]:
 @router.get("/sources/{source_id}/branches", response_model=List[GitBranchResponse])
 async def list_git_branches(
     source_id: UUID,
-    repository: Optional[str] = Query(default=None, description="Repository identifier"),
+    repository: Optional[str] = Query(
+        default=None, description="Repository identifier"
+    ),
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
@@ -132,7 +136,9 @@ async def list_compare_jobs(
     current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
-    stmt = select(GitBranchDiff, DocumentSource).join(DocumentSource, GitBranchDiff.source_id == DocumentSource.id)
+    stmt = select(GitBranchDiff, DocumentSource).join(
+        DocumentSource, GitBranchDiff.source_id == DocumentSource.id
+    )
     if source_id:
         stmt = stmt.where(GitBranchDiff.source_id == source_id)
     result = await db.execute(stmt.order_by(GitBranchDiff.created_at.desc()).limit(50))
@@ -196,6 +202,7 @@ async def cancel_compare_job(
 
 class ArchitectureDiagramRequest(BaseModel):
     """Request model for generating architecture diagrams."""
+
     project_id: str
     branch: Optional[str] = None
     diagram_type: str = "auto"
@@ -205,6 +212,7 @@ class ArchitectureDiagramRequest(BaseModel):
 
 class ArchitectureDiagramResponse(BaseModel):
     """Response model for architecture diagram generation."""
+
     project_name: str
     project_url: Optional[str] = None
     mermaid_code: str
@@ -216,7 +224,9 @@ class ArchitectureDiagramResponse(BaseModel):
     render_error: Optional[str] = None
 
 
-@router.post("/sources/{source_id}/architecture", response_model=ArchitectureDiagramResponse)
+@router.post(
+    "/sources/{source_id}/architecture", response_model=ArchitectureDiagramResponse
+)
 async def generate_architecture_diagram(
     source_id: UUID,
     request: ArchitectureDiagramRequest,
@@ -237,7 +247,7 @@ async def generate_architecture_diagram(
     if source.source_type != "gitlab":
         raise HTTPException(
             status_code=400,
-            detail="Architecture diagrams are only supported for GitLab sources"
+            detail="Architecture diagrams are only supported for GitLab sources",
         )
 
     config = source.config or {}
@@ -247,7 +257,7 @@ async def generate_architecture_diagram(
     if not gitlab_url or not token:
         raise HTTPException(
             status_code=400,
-            detail="GitLab source is missing URL or token configuration"
+            detail="GitLab source is missing URL or token configuration",
         )
 
     try:
@@ -299,7 +309,7 @@ async def generate_architecture_diagram_png(
     if source.source_type != "gitlab":
         raise HTTPException(
             status_code=400,
-            detail="Architecture diagrams are only supported for GitLab sources"
+            detail="Architecture diagrams are only supported for GitLab sources",
         )
 
     config = source.config or {}
@@ -309,7 +319,7 @@ async def generate_architecture_diagram_png(
     if not gitlab_url or not token:
         raise HTTPException(
             status_code=400,
-            detail="GitLab source is missing URL or token configuration"
+            detail="GitLab source is missing URL or token configuration",
         )
 
     try:
@@ -327,7 +337,7 @@ async def generate_architecture_diagram_png(
         if not result.get("png_base64"):
             raise HTTPException(
                 status_code=500,
-                detail=result.get("render_error", "Failed to render PNG")
+                detail=result.get("render_error", "Failed to render PNG"),
             )
 
         png_bytes = base64.b64decode(result["png_base64"])
@@ -336,7 +346,7 @@ async def generate_architecture_diagram_png(
             media_type="image/png",
             headers={
                 "Content-Disposition": f"inline; filename=architecture_{request.project_id}.png"
-            }
+            },
         )
 
     except HTTPException:
@@ -366,7 +376,7 @@ async def generate_architecture_diagram_svg(
     if source.source_type != "gitlab":
         raise HTTPException(
             status_code=400,
-            detail="Architecture diagrams are only supported for GitLab sources"
+            detail="Architecture diagrams are only supported for GitLab sources",
         )
 
     config = source.config or {}
@@ -376,7 +386,7 @@ async def generate_architecture_diagram_svg(
     if not gitlab_url or not token:
         raise HTTPException(
             status_code=400,
-            detail="GitLab source is missing URL or token configuration"
+            detail="GitLab source is missing URL or token configuration",
         )
 
     try:
@@ -394,7 +404,7 @@ async def generate_architecture_diagram_svg(
         if not result.get("svg"):
             raise HTTPException(
                 status_code=500,
-                detail=result.get("render_error", "Failed to render SVG")
+                detail=result.get("render_error", "Failed to render SVG"),
             )
 
         return Response(
@@ -402,7 +412,7 @@ async def generate_architecture_diagram_svg(
             media_type="image/svg+xml",
             headers={
                 "Content-Disposition": f"inline; filename=architecture_{request.project_id}.svg"
-            }
+            },
         )
 
     except HTTPException:
@@ -433,7 +443,7 @@ async def analyze_repository_structure(
     if source.source_type != "gitlab":
         raise HTTPException(
             status_code=400,
-            detail="Repository analysis is only supported for GitLab sources"
+            detail="Repository analysis is only supported for GitLab sources",
         )
 
     config = source.config or {}
@@ -443,7 +453,7 @@ async def analyze_repository_structure(
     if not gitlab_url or not token:
         raise HTTPException(
             status_code=400,
-            detail="GitLab source is missing URL or token configuration"
+            detail="GitLab source is missing URL or token configuration",
         )
 
     try:

@@ -34,7 +34,9 @@ async def test_web_scraper_extracts_readable_text_and_links():
     transport = httpx.MockTransport(handler)
     async with httpx.AsyncClient(transport=transport, follow_redirects=True) as client:
         service = WebScraperService(client=client, enforce_network_safety=False)
-        result = await service.scrape("https://example.com/wiki/Test", include_links=True)
+        result = await service.scrape(
+            "https://example.com/wiki/Test", include_links=True
+        )
 
     assert result["total_pages"] == 1
     page = result["pages"][0]
@@ -105,4 +107,3 @@ async def test_web_scraper_blocks_localhost_and_private_ips():
 
     with pytest.raises(ValueError):
         await service.scrape("http://127.0.0.1/")
-

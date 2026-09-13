@@ -3,8 +3,8 @@ import pytest
 
 @pytest.mark.asyncio
 async def test_generate_multi_queries_passes_user_settings_through():
-    from app.services.query_processor import QueryProcessor
     from app.services.llm_service import UserLLMSettings
+    from app.services.query_processor import QueryProcessor
 
     qp = QueryProcessor()
     settings = UserLLMSettings(provider="deepseek", model="deepseek-chat")
@@ -27,4 +27,3 @@ async def test_generate_multi_queries_passes_user_settings_through():
     assert seen.get("user_settings") is settings
     assert "hello" in variations
     assert any(v == "alt phrasing" for v in variations)
-

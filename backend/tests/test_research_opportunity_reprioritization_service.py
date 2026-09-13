@@ -11,7 +11,9 @@ from app.services.research_opportunity_reprioritization_service import (
 )
 
 
-def test_project_note_reevaluation_updates_profile_and_auto_launches_follow_up(db_session, test_user, monkeypatch):
+def test_project_note_reevaluation_updates_profile_and_auto_launches_follow_up(
+    db_session, test_user, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Reprioritized note",
@@ -28,13 +30,17 @@ def test_project_note_reevaluation_updates_profile_and_auto_launches_follow_up(d
                     "evidence_score": 0.88,
                     "overall_score": 0.86,
                     "recommended_next_step": "Expand the benchmark matrix.",
-                    "supporting_sources": [{"id": "paper-1", "title": "Branch locality"}],
+                    "supporting_sources": [
+                        {"id": "paper-1", "title": "Branch locality"}
+                    ],
                     "experiment_evidence": [
                         {
                             "run_id": "run-profile-1",
                             "summary": "Profile run improved throughput by 9%.",
                             "result_highlights": ["Runtime: 91ms"],
-                            "supporting_sources": [{"id": "run-profile-doc", "title": "Profile run report"}],
+                            "supporting_sources": [
+                                {"id": "run-profile-doc", "title": "Profile run report"}
+                            ],
                             "autonomous_origin": {
                                 "source_kind": "profile",
                                 "source_id": "aaaaaaaa-aaaa-aaaa-aaaa-aaaaaaaaaaaa",
@@ -46,7 +52,10 @@ def test_project_note_reevaluation_updates_profile_and_auto_launches_follow_up(d
                 }
             ],
             "priority_deltas": [
-                {"hypothesis_id": "profile-opp-1", "reason": "Positive evidence reinforced priority."},
+                {
+                    "hypothesis_id": "profile-opp-1",
+                    "reason": "Positive evidence reinforced priority.",
+                },
             ],
         },
     )
@@ -119,14 +128,20 @@ def test_project_note_reevaluation_updates_profile_and_auto_launches_follow_up(d
         profile.latest_run_job_id = parent_job.id
         db_session.add(profile)
         await db_session.commit()
-        result = await project_note_reevaluation_to_autonomous_opportunities(db=db_session, note=note)
+        result = await project_note_reevaluation_to_autonomous_opportunities(
+            db=db_session, note=note
+        )
         await db_session.commit()
         await db_session.refresh(profile)
         return result, profile
 
     result, profile = asyncio.get_event_loop().run_until_complete(_run())
 
-    assert result == {"profiles_updated": 1, "portfolios_updated": 0, "opportunities_updated": 1}
+    assert result == {
+        "profiles_updated": 1,
+        "portfolios_updated": 0,
+        "opportunities_updated": 1,
+    }
     opportunity = profile.latest_summary["opportunities"][0]
     assert opportunity["title"] == "Profile opportunity"
     assert opportunity["confidence"] == 0.88
@@ -139,7 +154,9 @@ def test_project_note_reevaluation_updates_profile_and_auto_launches_follow_up(d
     assert queued_jobs == [("child-profile-1", str(test_user.id))]
 
 
-def test_project_note_reevaluation_queues_portfolio_follow_up_for_approval(db_session, test_user, monkeypatch):
+def test_project_note_reevaluation_queues_portfolio_follow_up_for_approval(
+    db_session, test_user, monkeypatch
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Queued note",
@@ -215,17 +232,26 @@ def test_project_note_reevaluation_queues_portfolio_follow_up_for_approval(db_se
         db_session.add(note)
         db_session.add(portfolio)
         await db_session.commit()
-        result = await project_note_reevaluation_to_autonomous_opportunities(db=db_session, note=note)
+        result = await project_note_reevaluation_to_autonomous_opportunities(
+            db=db_session, note=note
+        )
         await db_session.commit()
         await db_session.refresh(portfolio)
         return result, portfolio
 
     result, portfolio = asyncio.get_event_loop().run_until_complete(_run())
 
-    assert result == {"profiles_updated": 0, "portfolios_updated": 1, "opportunities_updated": 1}
+    assert result == {
+        "profiles_updated": 0,
+        "portfolios_updated": 1,
+        "opportunities_updated": 1,
+    }
     opportunity = portfolio.opportunities[0]
     assert opportunity["follow_up_review_status"] == "pending_approval"
-    assert opportunity["follow_up_review_evidence_revision"] == opportunity["evidence_revision"]
+    assert (
+        opportunity["follow_up_review_evidence_revision"]
+        == opportunity["evidence_revision"]
+    )
     assert opportunity["child_job_ids"] == []
     assert opportunity["stage"] == "accepted"
 
@@ -331,20 +357,42 @@ def test_project_note_reevaluation_is_idempotent(db_session, test_user, monkeypa
         profile.latest_run_job_id = parent_job.id
         db_session.add(profile)
         await db_session.commit()
-        first = await project_note_reevaluation_to_autonomous_opportunities(db=db_session, note=note)
+        first = await project_note_reevaluation_to_autonomous_opportunities(
+            db=db_session, note=note
+        )
         await db_session.commit()
         await db_session.refresh(profile)
         first_stamp = profile.latest_summary["opportunities"][0]["reprioritized_at"]
-        second = await project_note_reevaluation_to_autonomous_opportunities(db=db_session, note=note)
+        second = await project_note_reevaluation_to_autonomous_opportunities(
+            db=db_session, note=note
+        )
         await db_session.commit()
         await db_session.refresh(profile)
-        return first, second, first_stamp, profile.latest_summary["opportunities"][0]["reprioritized_at"], profile
+        return (
+            first,
+            second,
+            first_stamp,
+            profile.latest_summary["opportunities"][0]["reprioritized_at"],
+            profile,
+        )
 
-    first, second, first_stamp, second_stamp, profile = asyncio.get_event_loop().run_until_complete(_run())
+    (
+        first,
+        second,
+        first_stamp,
+        second_stamp,
+        profile,
+    ) = asyncio.get_event_loop().run_until_complete(_run())
 
     assert first["opportunities_updated"] == 1
-    assert second == {"profiles_updated": 0, "portfolios_updated": 0, "opportunities_updated": 0}
+    assert second == {
+        "profiles_updated": 0,
+        "portfolios_updated": 0,
+        "opportunities_updated": 0,
+    }
     assert first_stamp == second_stamp
     assert created_jobs == ["opp-1"]
     assert queued_jobs == [("child-stable-1", str(test_user.id))]
-    assert profile.latest_summary["opportunities"][0]["child_job_ids"] == ["child-stable-1"]
+    assert profile.latest_summary["opportunities"][0]["child_job_ids"] == [
+        "child-stable-1"
+    ]

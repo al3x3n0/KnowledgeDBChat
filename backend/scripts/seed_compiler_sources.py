@@ -197,12 +197,12 @@ async def seed_sources():
         print("-" * 60)
         for src in all_sources:
             print(f"\n# {src.name}")
-            print(f"curl -X POST http://localhost:8000/api/v1/admin/sync/source/{src.id} \\")
+            print(f"curl -X POST http://localhost:28000/api/v1/admin/sync/source/{src.id} \\")
             print(f"  -H 'Authorization: Bearer <token>'")
 
         print("\n" + "-" * 60)
         print("Or trigger all at once via admin panel or:")
-        print("  curl -X POST http://localhost:8000/api/v1/admin/sync/all")
+        print("  curl -X POST http://localhost:28000/api/v1/admin/sync/all")
         print("-" * 60 + "\n")
 
 

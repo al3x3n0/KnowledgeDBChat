@@ -1,50 +1,125 @@
 import json
-import pytest
-from sqlalchemy import select
-from uuid import uuid4
-from types import SimpleNamespace
 from datetime import datetime, timedelta
+from types import SimpleNamespace
+from uuid import uuid4
+
+import pytest
+from fastapi import HTTPException
+from sqlalchemy import select
 
 from app.api.endpoints import agent_jobs as agent_jobs_endpoint
 from app.api.endpoints.agent_jobs import (
-    act_on_decision_trace_event,
-    _build_decision_trace_from_queue_items,
-    _build_decision_trace_from_monitor_snapshot,
-    _build_decision_trace_from_job,
-    _build_decision_trace_from_opportunities,
     _build_checkpoint_queue_items,
+    _build_decision_trace_from_job,
+    _build_decision_trace_from_monitor_snapshot,
+    _build_decision_trace_from_opportunities,
+    _build_decision_trace_from_queue_items,
+    _build_extract_job_memories_response,
     _build_follow_up_actions_for_inbox_item,
+    _build_job_memories_list_response,
+    _build_job_memory_response,
+    _build_memory_graph_response,
+    _build_memory_search_response,
+    _build_memory_stats_response,
+    _extract_swarm_summary,
     _job_matches_bulk_queue_item_type,
     _job_to_response,
     _queue_priority_fields,
+    _record_job_operator_event,
     _score_follow_up_action_for_item,
     _validate_bulk_queue_action,
-    _build_extract_job_memories_response,
-    _build_job_memory_response,
-    _build_job_memories_list_response,
-    _build_memory_search_response,
-    _build_memory_stats_response,
-    _build_memory_graph_response,
+    act_on_decision_trace_event,
     create_decision_trace_view,
     delete_decision_trace_view,
-    _record_job_operator_event,
+    export_decision_trace,
     get_decision_trace,
     get_decision_trace_analytics,
-    export_decision_trace,
     list_decision_trace_views,
     update_decision_trace_view,
 )
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.autonomy_decision_event import AutonomyDecisionEvent
+from app.models.domain_research_profile import DomainResearchProfile
+from app.models.experiment import ExperimentRun
 from app.models.notification import Notification
 from app.models.research_inbox import ResearchInboxItem
 from app.models.research_portfolio import ResearchPortfolio
-from app.models.domain_research_profile import DomainResearchProfile
-from app.models.experiment import ExperimentRun
 from app.models.user import User
-from app.schemas.agent_job import AgentDecisionTraceActionRequest, AgentDecisionTraceViewCreate, AgentDecisionTraceViewUpdate
+from app.schemas.agent_job import (
+    AgentDecisionTraceActionRequest,
+    AgentDecisionTraceViewCreate,
+    AgentDecisionTraceViewUpdate,
+)
 from app.services.autonomy_event_service import record_autonomy_decision_event
-from fastapi import HTTPException
+
+
+def test_extract_swarm_summary_omits_jobs_without_swarm_signals():
+    job = AgentJob(
+        name="Ordinary Job",
+        goal="Run one task",
+        job_type="analysis",
+        user_id=uuid4(),
+        status=AgentJobStatus.PENDING.value,
+        config={},
+        results={},
+    )
+
+    assert _extract_swarm_summary(job) is None
+
+
+def test_extract_swarm_summary_projects_fan_in_and_collaboration():
+    owner_id = uuid4()
+    reviewer_id = uuid4()
+    job = AgentJob(
+        name="Coding Swarm",
+        goal="Converge on a repair",
+        job_type="coding",
+        user_id=owner_id,
+        status=AgentJobStatus.COMPLETED.value,
+        config={"swarm_child_jobs_enabled": True},
+        results={
+            "execution_strategy": {
+                "swarm": {
+                    "configured": True,
+                    "fan_in_enabled": True,
+                    "child_jobs_count": 3,
+                    "roles_assigned": ["tester", "reviewer"],
+                }
+            },
+            "swarm_fan_in": {
+                "received_siblings": 2,
+                "roles": ["implementer", "tester"],
+                "consensus_findings": [
+                    {"finding": "Shared root cause"},
+                    "malformed",
+                ],
+                "conflicts": [{"topic": "scope"}],
+                "action_plan": [{"action": "apply patch"}],
+                "confidence": {"overall": 0.82},
+                "winning_role": "implementer",
+                "review_state": "auto_promoted",
+            },
+            "swarm_collaboration": {
+                "shared_review": True,
+                "shared_with_user_ids": [str(reviewer_id)],
+                "assigned_user_id": str(reviewer_id),
+                "review_note": "Verify the promoted slice",
+            },
+        },
+    )
+
+    summary = _extract_swarm_summary(job, current_user_id=str(reviewer_id))
+
+    assert summary is not None
+    assert summary["expected_siblings"] == 3
+    assert summary["received_siblings"] == 2
+    assert summary["terminal_siblings"] == 2
+    assert summary["roles"] == ["implementer", "tester"]
+    assert summary["consensus_count"] == 2
+    assert summary["consensus_findings"] == ["Shared root cause"]
+    assert summary["owner_user_id"] == str(owner_id)
+    assert summary["assigned_user_id"] == str(reviewer_id)
+    assert summary["collaboration_summary"]["is_assigned_to_current_user"] is True
 
 
 def test_job_to_response_exposes_launch_mode_field():
@@ -70,7 +145,10 @@ def test_job_to_response_exposes_relaunch_relation_fields():
         job_type="analysis",
         user_id=uuid4(),
         status=AgentJobStatus.PENDING.value,
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(parent_id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(parent_id),
+        },
     )
 
     res = _job_to_response(job, relaunch_children_count=3)
@@ -119,7 +197,13 @@ def test_job_to_response_normalizes_scope_keys_in_config_and_chain_config():
             "default_settings": {"target_source_id": "root-src"},
             "child_jobs": [
                 {"name": "Step 1", "config": {"target_source_id": "child-src-1"}},
-                {"name": "Step 2", "config": {"source_id": "child-src-2", "target_source_id": "legacy"}},
+                {
+                    "name": "Step 2",
+                    "config": {
+                        "source_id": "child-src-2",
+                        "target_source_id": "legacy",
+                    },
+                },
             ],
         },
     )
@@ -151,11 +235,15 @@ def test_job_to_response_projects_typed_experiment_run_fields():
                 "source_name": "Knowledge Repo",
                 "ok": True,
                 "final_phase": "retry_primary",
-                "verification_commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+                "verification_commands": [
+                    "CI=true npm --prefix frontend test -- --watchAll=false"
+                ],
                 "bootstrap_commands": ["npm --prefix frontend install"],
                 "fallback_commands": ["python3 -m pytest -q backend/tests"],
                 "phases": ["primary", "bootstrap", "retry_primary"],
-                "failed_commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+                "failed_commands": [
+                    "CI=true npm --prefix frontend test -- --watchAll=false"
+                ],
                 "bootstrap_attempted": True,
                 "bootstrap_ok": True,
             },
@@ -234,8 +322,13 @@ def test_job_to_response_projects_typed_operator_interventions():
     assert res.operator_interventions[0].job_status_after == "paused"
     assert res.operator_interventions[0].note == "Inspect fallback output"
     assert res.operator_interventions[0].outcome_status == "applied"
-    assert res.operator_interventions[0].outcome_reason == "Job remains paused after intervention"
-    assert res.operator_interventions[0].metadata == {"tool": "python -m pytest -q backend/tests"}
+    assert (
+        res.operator_interventions[0].outcome_reason
+        == "Job remains paused after intervention"
+    )
+    assert res.operator_interventions[0].metadata == {
+        "tool": "python -m pytest -q backend/tests"
+    }
 
 
 def test_build_checkpoint_queue_items_includes_approval_recovery_and_follow_up():
@@ -322,12 +415,17 @@ def test_build_checkpoint_queue_items_includes_approval_recovery_and_follow_up()
     assert items[2].reason_code == "accepted_inbox_item"
 
     trace_events = _build_decision_trace_from_queue_items(items[:2])
-    recovery_event = next(row for row in trace_events if row.decision_type == "job_recovery_queued")
+    recovery_event = next(
+        row for row in trace_events if row.decision_type == "job_recovery_queued"
+    )
     assert recovery_event.reason_label == "Execution failure"
     assert recovery_event.scheduler_state is not None
     assert recovery_event.scheduler_state["queue_reason"] == "execution_failure"
     assert recovery_event.metadata is not None
-    assert recovery_event.metadata["scheduler_state"]["queue_reason"] == "execution_failure"
+    assert (
+        recovery_event.metadata["scheduler_state"]["queue_reason"]
+        == "execution_failure"
+    )
 
 
 def test_build_decision_trace_from_opportunities_projects_stateful_events():
@@ -386,7 +484,9 @@ def test_build_decision_trace_from_monitor_snapshot_projects_policy_and_rebalanc
                     "policy_guardrail_state": "active",
                     "policy_guardrail_action": "rollback",
                     "policy_guardrail_reasons": ["Outcomes degraded"],
-                    "policy_guardrail_target_policy": {"follow_up_review_mode": "manual_only"},
+                    "policy_guardrail_target_policy": {
+                        "follow_up_review_mode": "manual_only"
+                    },
                     "latest_policy_changed_at": "2026-03-22T11:30:00Z",
                     "budget_clamp_state": "customer_backlog",
                     "budget_clamp_reasons": ["Queue backlog full"],
@@ -397,8 +497,12 @@ def test_build_decision_trace_from_monitor_snapshot_projects_policy_and_rebalanc
                             "at": "2026-03-22T10:00:00Z",
                             "change_source": "rollback",
                             "change_reason": "Rollback triggered",
-                            "previous_effective_policy": {"follow_up_review_mode": "queue_for_approval"},
-                            "next_effective_policy": {"follow_up_review_mode": "manual_only"},
+                            "previous_effective_policy": {
+                                "follow_up_review_mode": "queue_for_approval"
+                            },
+                            "next_effective_policy": {
+                                "follow_up_review_mode": "manual_only"
+                            },
                         }
                     ],
                 }
@@ -525,7 +629,10 @@ def test_build_decision_trace_from_opportunities_projects_follow_up_terminal_out
     ]
     assert events[0].status == "completed"
     assert events[0].metadata is not None
-    assert events[0].metadata["follow_up_outcome_summary"] == "Validated the hotspot and documented next steps."
+    assert (
+        events[0].metadata["follow_up_outcome_summary"]
+        == "Validated the hotspot and documented next steps."
+    )
     assert events[1].status == "failed"
     assert events[1].after_state is not None
     assert events[1].after_state["follow_up_last_job_id"] == "job-follow-up-2"
@@ -656,6 +763,48 @@ def test_build_decision_trace_from_job_projects_scheduler_recovery_metadata():
     assert event.metadata["scheduler_state"]["backoff_until"] == "not-a-datetime"
 
 
+def test_build_decision_trace_from_job_projects_operator_intervention():
+    job_id = uuid4()
+    job = AgentJob(
+        id=job_id,
+        name="Operator-guided repair",
+        goal="Apply a reviewed repair",
+        job_type="coding",
+        user_id=uuid4(),
+        status=AgentJobStatus.PAUSED.value,
+        created_at=datetime(2026, 3, 16, 9, 0, 0),
+        results={
+            "execution_strategy": {
+                "operator_interventions": [
+                    {
+                        "action": "pause",
+                        "at": "2026-03-16T09:05:00",
+                        "job_status_before": "running",
+                        "job_status_after": "paused",
+                        "note": "Review generated patch",
+                        "metadata": {"checkpoint": "patch_review"},
+                    }
+                ]
+            }
+        },
+    )
+
+    events = _build_decision_trace_from_job(job)
+
+    assert len(events) == 1
+    event = events[0]
+    assert event.event_type == "job_operator_action"
+    assert event.decision_type == "pause"
+    assert event.status == "paused"
+    assert event.operator_note == "Review generated patch"
+    assert event.before_state == {"job_status": "running"}
+    assert event.after_state == {"job_status": "paused"}
+    assert event.deep_link is not None
+    assert str(event.deep_link.job_id) == str(job_id)
+    assert event.metadata is not None
+    assert event.metadata["outcome_status"] == "applied"
+
+
 def test_build_checkpoint_queue_items_skips_auto_launched_follow_ups_and_marks_blocked_items():
     blocked_item = ResearchInboxItem(
         id=uuid4(),
@@ -691,7 +840,10 @@ def test_build_checkpoint_queue_items_skips_auto_launched_follow_ups_and_marks_b
     assert items[0].reason_label == "Follow-up blocked by policy"
     assert items[0].follow_up_policy_mode == "auto_launch_safe"
     assert items[0].follow_up_launch_status == "blocked"
-    assert items[0].follow_up_block_reason == "Recommendation is not allowlisted by this monitor policy."
+    assert (
+        items[0].follow_up_block_reason
+        == "Recommendation is not allowlisted by this monitor policy."
+    )
 
 
 def test_build_checkpoint_queue_items_projects_pending_follow_up_approval_actions():
@@ -714,8 +866,13 @@ def test_build_checkpoint_queue_items_projects_pending_follow_up_approval_action
     assert len(items) == 1
     assert items[0].reason_code == "follow_up_launch_approval"
     assert items[0].reason_label == "Follow-up launch approval"
-    assert [action.action for action in items[0].actions] == ["approve_launch", "reject_launch"]
-    assert items[0].actions[0].follow_up_action_payload == {"inbox_item_id": str(pending_item.id)}
+    assert [action.action for action in items[0].actions] == [
+        "approve_launch",
+        "reject_launch",
+    ]
+    assert items[0].actions[0].follow_up_action_payload == {
+        "inbox_item_id": str(pending_item.id)
+    }
 
 
 def test_build_checkpoint_queue_items_projects_policy_review_guardrail():
@@ -754,15 +911,23 @@ def test_build_checkpoint_queue_items_projects_policy_review_guardrail():
                 "policy_guardrail_status": "active",
                 "policy_guardrail_action": "rollback",
                 "budget_throttle_state": "normal",
-                "policy_guardrail_reasons": ["More accepted items are getting blocked by policy"],
+                "policy_guardrail_reasons": [
+                    "More accepted items are getting blocked by policy"
+                ],
                 "policy_guardrail_target_history_entry_id": "history-2",
                 "policy_guardrail_follow_up_autonomy": {
                     "mode": "queue_for_approval",
-                    "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+                    "allowed_recommendations": [
+                        "deep_dive_chain",
+                        "single_research_job",
+                    ],
                 },
                 "policy_guardrail_target_policy": {
                     "follow_up_review_mode": "queue_for_approval",
-                    "allowed_recommendations": ["deep_dive_chain", "single_research_job"],
+                    "allowed_recommendations": [
+                        "deep_dive_chain",
+                        "single_research_job",
+                    ],
                 },
             }
         ],
@@ -773,9 +938,14 @@ def test_build_checkpoint_queue_items_projects_policy_review_guardrail():
     assert items[0].policy_guardrail_action == "rollback"
     assert items[0].reason_label == "Policy safeguard review"
     assert items[0].policy_guardrail_target_policy is not None
-    assert items[0].policy_guardrail_target_policy["follow_up_review_mode"] == "queue_for_approval"
+    assert (
+        items[0].policy_guardrail_target_policy["follow_up_review_mode"]
+        == "queue_for_approval"
+    )
     assert items[0].actions[0].action == "apply_guardrail"
-    assert items[0].actions[0].policy_rollback_payload == {"history_entry_id": "history-2"}
+    assert items[0].actions[0].policy_rollback_payload == {
+        "history_entry_id": "history-2"
+    }
 
 
 def test_build_checkpoint_queue_items_projects_portfolio_follow_up_approval():
@@ -877,7 +1047,9 @@ def test_build_checkpoint_queue_items_projects_portfolio_policy_and_budget_revie
     items = _build_checkpoint_queue_items([], [], [portfolio])
 
     assert [item.item_type for item in items] == ["policy_review", "budget_review"]
-    assert all(action.action == "open_fleet" for item in items for action in item.actions)
+    assert all(
+        action.action == "open_fleet" for item in items for action in item.actions
+    )
 
 
 def test_build_checkpoint_queue_items_projects_profile_follow_up_approval():
@@ -988,7 +1160,9 @@ def test_build_checkpoint_queue_items_projects_profile_policy_and_budget_reviews
     items = _build_checkpoint_queue_items([], [], [], [profile])
 
     assert [item.item_type for item in items] == ["policy_review", "budget_review"]
-    assert all(action.action == "open_fleet" for item in items for action in item.actions)
+    assert all(
+        action.action == "open_fleet" for item in items for action in item.actions
+    )
 
 
 def test_follow_up_action_scoring_prefers_learned_single_job_recommendation():
@@ -1015,7 +1189,9 @@ def test_follow_up_action_scoring_prefers_learned_single_job_recommendation():
 
     assert actions[0].recommendation_key == "single_research_job"
     assert actions[0].recommended is True
-    assert int(actions[0].recommendation_score or 0) > int(actions[1].recommendation_score or 0)
+    assert int(actions[0].recommendation_score or 0) > int(
+        actions[1].recommendation_score or 0
+    )
     assert "learned_recommendation:7" in (actions[0].recommendation_reasons or [])
 
 
@@ -1102,7 +1278,9 @@ def test_validate_bulk_queue_action_rejects_mixed_or_unsupported_actions():
         assert False, "expected HTTPException"
     except HTTPException as exc:
         assert exc.status_code == 400
-        assert "only supported for approval_checkpoint and job_recovery" in str(exc.detail)
+        assert "only supported for approval_checkpoint and job_recovery" in str(
+            exc.detail
+        )
 
     try:
         _validate_bulk_queue_action("approval_checkpoint", "restart")
@@ -1152,9 +1330,15 @@ def test_job_matches_bulk_queue_item_type_uses_current_queue_eligibility():
         results={},
     )
 
-    ok_approval, reason_approval = _job_matches_bulk_queue_item_type(approval_job, "approval_checkpoint")
-    ok_recovery, reason_recovery = _job_matches_bulk_queue_item_type(recovery_job, "job_recovery")
-    bad_match, bad_reason = _job_matches_bulk_queue_item_type(non_queue_job, "job_recovery")
+    ok_approval, reason_approval = _job_matches_bulk_queue_item_type(
+        approval_job, "approval_checkpoint"
+    )
+    ok_recovery, reason_recovery = _job_matches_bulk_queue_item_type(
+        recovery_job, "job_recovery"
+    )
+    bad_match, bad_reason = _job_matches_bulk_queue_item_type(
+        non_queue_job, "job_recovery"
+    )
 
     assert ok_approval is True
     assert reason_approval is None
@@ -1165,7 +1349,9 @@ def test_job_matches_bulk_queue_item_type_uses_current_queue_eligibility():
 
 
 @pytest.mark.asyncio
-async def test_record_job_operator_event_threads_scheduler_state_into_trace_payload(monkeypatch):
+async def test_record_job_operator_event_threads_scheduler_state_into_trace_payload(
+    monkeypatch,
+):
     job = AgentJob(
         id=uuid4(),
         user_id=uuid4(),
@@ -1189,7 +1375,9 @@ async def test_record_job_operator_event_threads_scheduler_state_into_trace_payl
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr("app.api.endpoints.agent_jobs.record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        "app.api.endpoints.agent_jobs.record_autonomy_decision_event", _fake_record
+    )
 
     await _record_job_operator_event(
         db=SimpleNamespace(),
@@ -1233,7 +1421,9 @@ async def test_record_job_operator_event_ignores_malformed_scheduler_state(monke
         captured.update(kwargs)
         return SimpleNamespace(id=uuid4())
 
-    monkeypatch.setattr("app.api.endpoints.agent_jobs.record_autonomy_decision_event", _fake_record)
+    monkeypatch.setattr(
+        "app.api.endpoints.agent_jobs.record_autonomy_decision_event", _fake_record
+    )
 
     await _record_job_operator_event(
         db=SimpleNamespace(),
@@ -1263,7 +1453,11 @@ def test_job_to_response_ignores_invalid_operator_intervention_shapes():
             "execution_strategy": {
                 "operator_interventions": [
                     "bad-payload",
-                    {"action": "resume", "job_status_before": "paused", "job_status_after": "running"},
+                    {
+                        "action": "resume",
+                        "job_status_before": "paused",
+                        "job_status_after": "running",
+                    },
                 ]
             }
         },
@@ -1628,11 +1822,21 @@ def test_build_memory_stats_response_normalizes_counts_and_rows():
             "chat_sourced": 1,
             "manual": "2",
             "most_accessed": [
-                {"id": uuid4(), "type": "lesson", "content": "dry run first", "access_count": "5"},
+                {
+                    "id": uuid4(),
+                    "type": "lesson",
+                    "content": "dry run first",
+                    "access_count": "5",
+                },
                 "invalid",
             ],
             "most_important": [
-                {"id": uuid4(), "type": "finding", "content": "throughput +23%", "importance": "0.88"},
+                {
+                    "id": uuid4(),
+                    "type": "finding",
+                    "content": "throughput +23%",
+                    "importance": "0.88",
+                },
             ],
         }
     )
@@ -1656,8 +1860,12 @@ def test_build_memory_stats_response_handles_invalid_numeric_values():
             "job_sourced": object(),
             "chat_sourced": "bad",
             "manual": None,
-            "most_accessed": [{"id": "m1", "type": "lesson", "content": "x", "access_count": "NaN"}],
-            "most_important": [{"id": "m2", "type": "finding", "content": "y", "importance": "NaN"}],
+            "most_accessed": [
+                {"id": "m1", "type": "lesson", "content": "x", "access_count": "NaN"}
+            ],
+            "most_important": [
+                {"id": "m2", "type": "finding", "content": "y", "importance": "NaN"}
+            ],
         }
     )
 
@@ -1746,7 +1954,9 @@ def test_build_memory_graph_response_handles_invalid_numeric_values():
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_endpoint_filters_triage_and_actionable_only(db_session, test_user):
+async def test_decision_trace_endpoint_filters_triage_and_actionable_only(
+    db_session, test_user
+):
     event = await record_autonomy_decision_event(
         db_session,
         user_id=test_user.id,
@@ -1792,16 +2002,22 @@ async def test_decision_trace_endpoint_filters_triage_and_actionable_only(db_ses
     notifications = list(
         (
             await db_session.execute(
-                select(Notification).where(Notification.related_entity_type == "autonomy_decision_event")
+                select(Notification).where(
+                    Notification.related_entity_type == "autonomy_decision_event"
+                )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     assert len(notifications) == 1
     assert notifications[0].action_url.endswith(f"trace_event={event.id}")
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_shared_assignment_and_escalation_filters(db_session, test_user):
+async def test_decision_trace_shared_assignment_and_escalation_filters(
+    db_session, test_user
+):
     collaborator = User(
         username="trace-collaborator",
         email="trace-collaborator@example.com",
@@ -1859,7 +2075,9 @@ async def test_decision_trace_shared_assignment_and_escalation_filters(db_sessio
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_hides_unrelated_collaboration_events(db_session, test_user):
+async def test_decision_trace_hides_unrelated_collaboration_events(
+    db_session, test_user
+):
     unrelated = User(
         username="trace-unrelated",
         email="trace-unrelated@example.com",
@@ -1906,7 +2124,9 @@ async def test_decision_trace_hides_unrelated_collaboration_events(db_session, t
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_endpoint_surfaces_derived_job_recovery_events(db_session, test_user):
+async def test_decision_trace_endpoint_surfaces_derived_job_recovery_events(
+    db_session, test_user
+):
     job = AgentJob(
         id=uuid4(),
         name="Recovery Job",
@@ -1965,7 +2185,9 @@ async def test_decision_trace_endpoint_surfaces_derived_job_recovery_events(db_s
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_endpoint_surfaces_persisted_job_recovery_event_context(db_session, test_user):
+async def test_decision_trace_endpoint_surfaces_persisted_job_recovery_event_context(
+    db_session, test_user
+):
     event = await record_autonomy_decision_event(
         db_session,
         user_id=test_user.id,
@@ -2022,13 +2244,17 @@ async def test_decision_trace_endpoint_surfaces_persisted_job_recovery_event_con
     assert row.metadata["scheduler_state"]["failure_streak"] == 3
 
     notification = (
-        await db_session.execute(
-            select(Notification).where(
-                Notification.related_entity_type == "autonomy_decision_event",
-                Notification.related_entity_id == event.id,
+        (
+            await db_session.execute(
+                select(Notification).where(
+                    Notification.related_entity_type == "autonomy_decision_event",
+                    Notification.related_entity_id == event.id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert notification is not None
     assert notification.data is not None
     assert notification.data["reason_label"] == "Execution failure"
@@ -2037,7 +2263,9 @@ async def test_decision_trace_endpoint_surfaces_persisted_job_recovery_event_con
 
 
 @pytest.mark.asyncio
-async def test_record_autonomy_decision_event_normalizes_structured_trace_context(db_session, test_user):
+async def test_record_autonomy_decision_event_normalizes_structured_trace_context(
+    db_session, test_user
+):
     event = await record_autonomy_decision_event(
         db_session,
         user_id=test_user.id,
@@ -2094,13 +2322,17 @@ async def test_record_autonomy_decision_event_normalizes_structured_trace_contex
     assert row.metadata["source"] == "scheduler"
 
     notification = (
-        await db_session.execute(
-            select(Notification).where(
-                Notification.related_entity_type == "autonomy_decision_event",
-                Notification.related_entity_id == event.id,
+        (
+            await db_session.execute(
+                select(Notification).where(
+                    Notification.related_entity_type == "autonomy_decision_event",
+                    Notification.related_entity_id == event.id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert notification is not None
     assert notification.data is not None
     assert notification.data["reason_label"] == "Execution failure"
@@ -2109,7 +2341,9 @@ async def test_record_autonomy_decision_event_normalizes_structured_trace_contex
 
 
 @pytest.mark.asyncio
-async def test_record_autonomy_decision_event_strips_malformed_scheduler_context(db_session, test_user):
+async def test_record_autonomy_decision_event_strips_malformed_scheduler_context(
+    db_session, test_user
+):
     event = await record_autonomy_decision_event(
         db_session,
         user_id=test_user.id,
@@ -2157,13 +2391,17 @@ async def test_record_autonomy_decision_event_strips_malformed_scheduler_context
     assert "scheduler_state" not in row.metadata
 
     notification = (
-        await db_session.execute(
-            select(Notification).where(
-                Notification.related_entity_type == "autonomy_decision_event",
-                Notification.related_entity_id == event.id,
+        (
+            await db_session.execute(
+                select(Notification).where(
+                    Notification.related_entity_type == "autonomy_decision_event",
+                    Notification.related_entity_id == event.id,
+                )
             )
         )
-    ).scalars().first()
+        .scalars()
+        .first()
+    )
     assert notification is not None
     assert notification.data is not None
     assert notification.data["reason_label"] == "Execution failure"
@@ -2171,7 +2409,9 @@ async def test_record_autonomy_decision_event_strips_malformed_scheduler_context
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_endpoint_preserves_label_only_customer_rebalance_events(db_session, test_user):
+async def test_decision_trace_endpoint_preserves_label_only_customer_rebalance_events(
+    db_session, test_user
+):
     event = await record_autonomy_decision_event(
         db_session,
         user_id=test_user.id,
@@ -2224,7 +2464,9 @@ async def test_decision_trace_endpoint_preserves_label_only_customer_rebalance_e
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_analytics_endpoint_summarizes_trace_trends_and_queue_reasons(db_session, test_user):
+async def test_decision_trace_analytics_endpoint_summarizes_trace_trends_and_queue_reasons(
+    db_session, test_user
+):
     today = datetime.utcnow().date()
     day_one = datetime.combine(today - timedelta(days=1), datetime.min.time())
     day_two = datetime.combine(today - timedelta(days=2), datetime.min.time())
@@ -2240,7 +2482,10 @@ async def test_decision_trace_analytics_endpoint_summarizes_trace_trends_and_que
         summary="Recovery Job: queued for scheduler recovery",
         reason_code="execution_failure",
         reason_label="Execution failure",
-        scheduler_state={"queue_reason": "execution_failure", "last_run_status": "failed"},
+        scheduler_state={
+            "queue_reason": "execution_failure",
+            "last_run_status": "failed",
+        },
         event_time=day_one,
     )
     await record_autonomy_decision_event(
@@ -2254,7 +2499,10 @@ async def test_decision_trace_analytics_endpoint_summarizes_trace_trends_and_que
         summary="Validation Run: blocked pending approval",
         reason_code="approval_required",
         reason_label="Approval required",
-        scheduler_state={"queue_reason": "approval_required", "last_run_status": "pending"},
+        scheduler_state={
+            "queue_reason": "approval_required",
+            "last_run_status": "pending",
+        },
         event_time=day_one,
     )
     await record_autonomy_decision_event(
@@ -2282,7 +2530,10 @@ async def test_decision_trace_analytics_endpoint_summarizes_trace_trends_and_que
         summary="Recovery Job 3: queued for scheduler recovery",
         reason_code="execution_failure",
         reason_label="Execution failure",
-        scheduler_state={"queue_reason": "execution_failure", "last_run_status": "failed"},
+        scheduler_state={
+            "queue_reason": "execution_failure",
+            "last_run_status": "failed",
+        },
         event_time=day_two,
     )
     await db_session.commit()
@@ -2318,13 +2569,18 @@ async def test_decision_trace_analytics_endpoint_summarizes_trace_trends_and_que
     assert response.top_reason_labels[0].count == 3
     assert response.top_queue_reasons[0].value == "execution_failure"
     assert response.top_queue_reasons[0].count == 2
-    assert any(bucket.value == "unknown" and bucket.count == 1 for bucket in response.top_queue_reasons)
+    assert any(
+        bucket.value == "unknown" and bucket.count == 1
+        for bucket in response.top_queue_reasons
+    )
     assert len(response.daily_trend) == 7
     assert sum(point.count for point in response.daily_trend) == 4
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_analytics_endpoint_returns_empty_trend_for_no_matches(db_session, test_user):
+async def test_decision_trace_analytics_endpoint_returns_empty_trend_for_no_matches(
+    db_session, test_user
+):
     response = await get_decision_trace_analytics(
         source_kind="portfolio",
         decision_type=None,
@@ -2356,7 +2612,9 @@ async def test_decision_trace_analytics_endpoint_returns_empty_trend_for_no_matc
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_export_json_preserves_scheduler_context_and_filters(db_session, test_user):
+async def test_decision_trace_export_json_preserves_scheduler_context_and_filters(
+    db_session, test_user
+):
     await record_autonomy_decision_event(
         db_session,
         user_id=test_user.id,
@@ -2368,7 +2626,10 @@ async def test_decision_trace_export_json_preserves_scheduler_context_and_filter
         summary="Export Job: queued for scheduler recovery",
         reason_code="execution_failure",
         reason_label="Execution failure",
-        scheduler_state={"queue_reason": "execution_failure", "last_run_status": "failed"},
+        scheduler_state={
+            "queue_reason": "execution_failure",
+            "last_run_status": "failed",
+        },
     )
     await record_autonomy_decision_event(
         db_session,
@@ -2410,13 +2671,18 @@ async def test_decision_trace_export_json_preserves_scheduler_context_and_filter
     assert payload["by_source_kind"]["job"] == 2
     assert all(item["reason_label"] == "Execution failure" for item in payload["items"])
     items_by_source_id = {str(item["source_id"]): item for item in payload["items"]}
-    assert items_by_source_id["job-export-1"]["scheduler_state"]["queue_reason"] == "execution_failure"
+    assert (
+        items_by_source_id["job-export-1"]["scheduler_state"]["queue_reason"]
+        == "execution_failure"
+    )
     assert items_by_source_id["job-export-2"]["scheduler_state"] is None
     assert response.media_type == "application/json"
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_export_csv_returns_header_only_for_empty_result(db_session, test_user):
+async def test_decision_trace_export_csv_returns_header_only_for_empty_result(
+    db_session, test_user
+):
     response = await export_decision_trace(
         format="csv",
         source_kind="portfolio",
@@ -2440,7 +2706,9 @@ async def test_decision_trace_export_csv_returns_header_only_for_empty_result(db
     csv_text = response.body.decode()
     assert csv_text.startswith("event_id,event_time,event_type,source_kind")
     assert csv_text.count("\n") == 1
-    assert response.headers["Content-Disposition"].startswith('attachment; filename="decision_trace_export_')
+    assert response.headers["Content-Disposition"].startswith(
+        'attachment; filename="decision_trace_export_'
+    )
     assert response.media_type == "text/csv; charset=utf-8"
 
 
@@ -2485,7 +2753,9 @@ async def test_decision_trace_event_actions_update_triage_state(db_session, test
 
     assigned = await act_on_decision_trace_event(
         event_id=event.id,
-        request=AgentDecisionTraceActionRequest(action="assign", assigned_to_user_id=str(test_user.id)),
+        request=AgentDecisionTraceActionRequest(
+            action="assign", assigned_to_user_id=str(test_user.id)
+        ),
         db=db_session,
         current_user=test_user,
     )
@@ -2493,7 +2763,9 @@ async def test_decision_trace_event_actions_update_triage_state(db_session, test
 
     reopened = await act_on_decision_trace_event(
         event_id=event.id,
-        request=AgentDecisionTraceActionRequest(action="reopen", note="Needs another pass"),
+        request=AgentDecisionTraceActionRequest(
+            action="reopen", note="Needs another pass"
+        ),
         db=db_session,
         current_user=test_user,
     )
@@ -2501,7 +2773,9 @@ async def test_decision_trace_event_actions_update_triage_state(db_session, test
 
     due_dated = await act_on_decision_trace_event(
         event_id=event.id,
-        request=AgentDecisionTraceActionRequest(action="set_due_at", due_at=datetime.utcnow() - timedelta(hours=1)),
+        request=AgentDecisionTraceActionRequest(
+            action="set_due_at", due_at=datetime.utcnow() - timedelta(hours=1)
+        ),
         db=db_session,
         current_user=test_user,
     )
@@ -2511,7 +2785,9 @@ async def test_decision_trace_event_actions_update_triage_state(db_session, test
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_follow_up_approve_reuses_profile_queue_action(db_session, test_user, monkeypatch):
+async def test_decision_trace_follow_up_approve_reuses_profile_queue_action(
+    db_session, test_user, monkeypatch
+):
     profile = DomainResearchProfile(
         id=uuid4(),
         user_id=test_user.id,
@@ -2546,11 +2822,17 @@ async def test_decision_trace_follow_up_approve_reuses_profile_queue_action(db_s
             follow_up_job_id=uuid4(),
         )
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_queue_action)
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_perform_follow_up_queue_action",
+        _fake_follow_up_queue_action,
+    )
 
     response = await act_on_decision_trace_event(
         event_id=event.id,
-        request=AgentDecisionTraceActionRequest(action="approve_launch", note="Ship it"),
+        request=AgentDecisionTraceActionRequest(
+            action="approve_launch", note="Ship it"
+        ),
         db=db_session,
         current_user=test_user,
     )
@@ -2568,7 +2850,9 @@ async def test_decision_trace_follow_up_approve_reuses_profile_queue_action(db_s
     assert response.event.after_state is not None
     assert response.event.after_state["opportunity_id"] == "opp-compiler-1"
     assert response.event.after_state["follow_up_launch_status"] == "launched"
-    assert response.event.after_state["follow_up_operator_decision"] == "approved_launch"
+    assert (
+        response.event.after_state["follow_up_operator_decision"] == "approved_launch"
+    )
     assert response.event.after_state["follow_up_job_id"]
 
     refreshed = await db_session.get(AutonomyDecisionEvent, event.id)
@@ -2578,7 +2862,9 @@ async def test_decision_trace_follow_up_approve_reuses_profile_queue_action(db_s
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_follow_up_reject_reuses_portfolio_queue_action(db_session, test_user, monkeypatch):
+async def test_decision_trace_follow_up_reject_reuses_portfolio_queue_action(
+    db_session, test_user, monkeypatch
+):
     portfolio = ResearchPortfolio(
         id=uuid4(),
         user_id=test_user.id,
@@ -2612,7 +2898,11 @@ async def test_decision_trace_follow_up_reject_reuses_portfolio_queue_action(db_
             follow_up_job_id=None,
         )
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_perform_follow_up_queue_action", _fake_follow_up_queue_action)
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_perform_follow_up_queue_action",
+        _fake_follow_up_queue_action,
+    )
 
     response = await act_on_decision_trace_event(
         event_id=event.id,
@@ -2637,7 +2927,9 @@ async def test_decision_trace_follow_up_reject_reuses_portfolio_queue_action(db_
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_follow_up_relaunch_reuses_inbox_relaunch(db_session, test_user, monkeypatch):
+async def test_decision_trace_follow_up_relaunch_reuses_inbox_relaunch(
+    db_session, test_user, monkeypatch
+):
     old_job_id = uuid4()
     new_job_id = uuid4()
     inbox_item = ResearchInboxItem(
@@ -2687,11 +2979,17 @@ async def test_decision_trace_follow_up_relaunch_reuses_inbox_relaunch(db_sessio
             follow_up_job_id=new_job_id,
         )
 
-    monkeypatch.setattr(agent_jobs_endpoint, "_relaunch_follow_up_inbox_item", _fake_relaunch_inbox_follow_up_item)
+    monkeypatch.setattr(
+        agent_jobs_endpoint,
+        "_relaunch_follow_up_inbox_item",
+        _fake_relaunch_inbox_follow_up_item,
+    )
 
     response = await act_on_decision_trace_event(
         event_id=event.id,
-        request=AgentDecisionTraceActionRequest(action="relaunch_follow_up", note="Retry now"),
+        request=AgentDecisionTraceActionRequest(
+            action="relaunch_follow_up", note="Retry now"
+        ),
         db=db_session,
         current_user=test_user,
     )
@@ -2717,7 +3015,9 @@ async def test_decision_trace_follow_up_relaunch_reuses_inbox_relaunch(db_sessio
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_follow_up_actions_reject_unsupported_events(db_session, test_user):
+async def test_decision_trace_follow_up_actions_reject_unsupported_events(
+    db_session, test_user
+):
     derived_event = await record_autonomy_decision_event(
         db_session,
         user_id=test_user.id,
@@ -2771,7 +3071,10 @@ async def test_decision_trace_follow_up_actions_reject_unsupported_events(db_ses
         decision_type="follow_up_completed",
         status="completed",
         summary="Completed follow-up",
-        after_state={"follow_up_outcome_status": "completed", "follow_up_last_job_id": str(uuid4())},
+        after_state={
+            "follow_up_outcome_status": "completed",
+            "follow_up_last_job_id": str(uuid4()),
+        },
     )
     await db_session.commit()
 
@@ -2786,7 +3089,9 @@ async def test_decision_trace_follow_up_actions_reject_unsupported_events(db_ses
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_assignment_requires_collaboration_visibility(db_session, test_user):
+async def test_decision_trace_assignment_requires_collaboration_visibility(
+    db_session, test_user
+):
     outsider = User(
         username="trace-outsider",
         email="trace-outsider@example.com",
@@ -2810,7 +3115,9 @@ async def test_decision_trace_assignment_requires_collaboration_visibility(db_se
     with pytest.raises(HTTPException) as exc_info:
         await act_on_decision_trace_event(
             event_id=event.id,
-            request=AgentDecisionTraceActionRequest(action="assign", assigned_to_user_id=str(outsider.id)),
+            request=AgentDecisionTraceActionRequest(
+                action="assign", assigned_to_user_id=str(outsider.id)
+            ),
             db=db_session,
             current_user=test_user,
         )
@@ -2819,7 +3126,9 @@ async def test_decision_trace_assignment_requires_collaboration_visibility(db_se
 
 
 @pytest.mark.asyncio
-async def test_decision_trace_escalation_notifies_assignee_instead_of_owner(db_session, test_user):
+async def test_decision_trace_escalation_notifies_assignee_instead_of_owner(
+    db_session, test_user
+):
     collaborator = User(
         username="trace-assignee",
         email="trace-assignee@example.com",
@@ -2846,7 +3155,9 @@ async def test_decision_trace_escalation_notifies_assignee_instead_of_owner(db_s
 
     await act_on_decision_trace_event(
         event_id=event.id,
-        request=AgentDecisionTraceActionRequest(action="set_due_at", due_at=datetime.utcnow() - timedelta(hours=1)),
+        request=AgentDecisionTraceActionRequest(
+            action="set_due_at", due_at=datetime.utcnow() - timedelta(hours=1)
+        ),
         db=db_session,
         current_user=test_user,
     )
@@ -2854,9 +3165,13 @@ async def test_decision_trace_escalation_notifies_assignee_instead_of_owner(db_s
     notifications = list(
         (
             await db_session.execute(
-                select(Notification).where(Notification.related_entity_type == "autonomy_decision_event")
+                select(Notification).where(
+                    Notification.related_entity_type == "autonomy_decision_event"
+                )
             )
-        ).scalars().all()
+        )
+        .scalars()
+        .all()
     )
     assert notifications
     assert notifications[-1].user_id == collaborator.id
@@ -2908,14 +3223,22 @@ async def test_decision_trace_views_round_trip(db_session, test_user):
     assert updated.filters["date_range"] == "7d"
     assert updated.is_default is True
 
-    listed_after_update = await list_decision_trace_views(db=db_session, current_user=test_user)
+    listed_after_update = await list_decision_trace_views(
+        db=db_session, current_user=test_user
+    )
     assert listed_after_update.total == 2
     assert listed_after_update.items[0].is_default is True
     assert listed_after_update.items[0].id == promoted.id
     assert listed_after_update.items[1].is_default is False
     assert listed_after_update.items[1].id == created.id
 
-    await delete_decision_trace_view(view_id=created.id, db=db_session, current_user=test_user)
-    await delete_decision_trace_view(view_id=promoted.id, db=db_session, current_user=test_user)
-    listed_after_delete = await list_decision_trace_views(db=db_session, current_user=test_user)
+    await delete_decision_trace_view(
+        view_id=created.id, db=db_session, current_user=test_user
+    )
+    await delete_decision_trace_view(
+        view_id=promoted.id, db=db_session, current_user=test_user
+    )
+    listed_after_delete = await list_decision_trace_views(
+        db=db_session, current_user=test_user
+    )
     assert listed_after_delete.total == 0

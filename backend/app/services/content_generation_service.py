@@ -5,16 +5,17 @@ Uses LLM to generate structured content based on document context.
 """
 
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document
 from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.vector_store import vector_store_service
 from app.services.search_service import search_service
+from app.services.vector_store import vector_store_service
 
 
 class ContentGenerationService:
@@ -61,14 +62,14 @@ class ContentGenerationService:
         length_guidance = {
             "short": "Keep the email brief, 2-3 paragraphs maximum.",
             "medium": "Write a standard-length email, 3-5 paragraphs.",
-            "long": "Write a comprehensive email covering all relevant details."
+            "long": "Write a comprehensive email covering all relevant details.",
         }
 
         tone_guidance = {
             "professional": "Use a professional, business-appropriate tone.",
             "casual": "Use a friendly, conversational tone.",
             "formal": "Use a formal, respectful tone.",
-            "friendly": "Use a warm, approachable tone while remaining professional."
+            "friendly": "Use a warm, approachable tone while remaining professional.",
         }
 
         system_prompt = f"""You are an expert email writer. Generate a well-structured email draft.
@@ -108,15 +109,15 @@ Generate the email draft with:
             )
 
             # Parse the response to extract components
-            lines = response.strip().split('\n')
+            lines = response.strip().split("\n")
             subject_line = subject
             body = response
 
             # Try to extract subject if provided in response
             for i, line in enumerate(lines):
-                if line.lower().startswith('subject:'):
+                if line.lower().startswith("subject:"):
                     subject_line = line[8:].strip()
-                    body = '\n'.join(lines[i+1:]).strip()
+                    body = "\n".join(lines[i + 1 :]).strip()
                     break
 
             return {
@@ -126,7 +127,7 @@ Generate the email draft with:
                 "length": length,
                 "recipient": recipient,
                 "documents_referenced": len(document_ids) if document_ids else 0,
-                "generated_at": datetime.utcnow().isoformat()
+                "generated_at": datetime.utcnow().isoformat(),
             }
 
         except Exception as e:
@@ -210,8 +211,8 @@ Format action items as:
 
             # Extract action items if present
             action_items = []
-            for line in response.split('\n'):
-                if line.strip().startswith('- [ ]') or line.strip().startswith('- [x]'):
+            for line in response.split("\n"):
+                if line.strip().startswith("- [ ]") or line.strip().startswith("- [x]"):
                     action_items.append(line.strip()[5:].strip())
 
             return {
@@ -219,7 +220,7 @@ Format action items as:
                 "participants": participants or [],
                 "notes": response,
                 "action_items": action_items,
-                "generated_at": datetime.utcnow().isoformat()
+                "generated_at": datetime.utcnow().isoformat(),
             }
 
         except Exception as e:
@@ -264,13 +265,13 @@ Format action items as:
             "technical": "Create technical documentation with detailed explanations, architecture overview, and implementation details.",
             "user_guide": "Create a user-friendly guide with step-by-step instructions and practical examples.",
             "api": "Create API documentation with endpoints, parameters, request/response examples, and error codes.",
-            "how_to": "Create a how-to guide with clear steps, prerequisites, and troubleshooting tips."
+            "how_to": "Create a how-to guide with clear steps, prerequisites, and troubleshooting tips.",
         }
 
         audience_context = {
             "developers": "Write for software developers who understand programming concepts.",
             "end_users": "Write for non-technical users with clear, simple language.",
-            "admins": "Write for system administrators who manage deployments and configurations."
+            "admins": "Write for system administrators who manage deployments and configurations.",
         }
 
         system_prompt = f"""You are a technical writer creating high-quality documentation.
@@ -305,9 +306,9 @@ Generate comprehensive documentation suitable for {target_audience}."""
 
             # Extract title from response
             title = topic
-            lines = response.strip().split('\n')
-            if lines and lines[0].startswith('#'):
-                title = lines[0].lstrip('#').strip()
+            lines = response.strip().split("\n")
+            if lines and lines[0].startswith("#"):
+                title = lines[0].lstrip("#").strip()
 
             return {
                 "title": title,
@@ -316,7 +317,7 @@ Generate comprehensive documentation suitable for {target_audience}."""
                 "target_audience": target_audience,
                 "content": response,
                 "word_count": len(response.split()),
-                "generated_at": datetime.utcnow().isoformat()
+                "generated_at": datetime.utcnow().isoformat(),
             }
 
         except Exception as e:
@@ -398,9 +399,9 @@ Focus on:
 
             # Count key metrics mentioned
             metrics = []
-            for line in response.split('\n'):
+            for line in response.split("\n"):
                 # Simple heuristic: lines with numbers might be metrics
-                if any(char.isdigit() for char in line) and '%' in line or '$' in line:
+                if any(char.isdigit() for char in line) and "%" in line or "$" in line:
                     metrics.append(line.strip())
 
             return {
@@ -410,7 +411,7 @@ Focus on:
                 "sections_included": sections,
                 "key_metrics_found": metrics[:5] if metrics else [],
                 "documents_analyzed": len(document_ids) if document_ids else 0,
-                "generated_at": datetime.utcnow().isoformat()
+                "generated_at": datetime.utcnow().isoformat(),
             }
 
         except Exception as e:
@@ -447,13 +448,36 @@ Focus on:
         )
 
         default_sections = {
-            "status": ["Executive Summary", "Progress Update", "Milestones", "Risks & Issues", "Next Steps"],
-            "analysis": ["Executive Summary", "Methodology", "Findings", "Analysis", "Conclusions", "Recommendations"],
-            "research": ["Abstract", "Introduction", "Literature Review", "Methodology", "Results", "Discussion", "Conclusion"],
-            "summary": ["Overview", "Key Points", "Details", "Conclusions"]
+            "status": [
+                "Executive Summary",
+                "Progress Update",
+                "Milestones",
+                "Risks & Issues",
+                "Next Steps",
+            ],
+            "analysis": [
+                "Executive Summary",
+                "Methodology",
+                "Findings",
+                "Analysis",
+                "Conclusions",
+                "Recommendations",
+            ],
+            "research": [
+                "Abstract",
+                "Introduction",
+                "Literature Review",
+                "Methodology",
+                "Results",
+                "Discussion",
+                "Conclusion",
+            ],
+            "summary": ["Overview", "Key Points", "Details", "Conclusions"],
         }
 
-        report_sections = sections or default_sections.get(report_type, default_sections["summary"])
+        report_sections = sections or default_sections.get(
+            report_type, default_sections["summary"]
+        )
 
         system_prompt = f"""You are creating a formal {report_type} report.
 
@@ -490,7 +514,7 @@ Format with proper markdown headings and structure."""
                 "sections": report_sections,
                 "word_count": len(response.split()),
                 "documents_referenced": len(document_ids) if document_ids else 0,
-                "generated_at": datetime.utcnow().isoformat()
+                "generated_at": datetime.utcnow().isoformat(),
             }
 
         except Exception as e:
@@ -511,26 +535,26 @@ Format with proper markdown headings and structure."""
         # Get documents by ID
         if document_ids:
             for doc_id in document_ids[:max_docs]:
-                result = await db.execute(
-                    select(Document).where(Document.id == doc_id)
-                )
+                result = await db.execute(select(Document).where(Document.id == doc_id))
                 doc = result.scalar_one_or_none()
                 if doc:
-                    content = doc.content if full_content else (doc.summary or doc.content[:2000])
+                    content = (
+                        doc.content
+                        if full_content
+                        else (doc.summary or doc.content[:2000])
+                    )
                     contexts.append(f"[Document: {doc.title}]\n{content}")
 
         # Search for additional context
         if search_query and len(contexts) < max_docs:
             remaining = max_docs - len(contexts)
             results, _, _ = await search_service.search(
-                query=search_query,
-                mode="smart",
-                page=1,
-                page_size=remaining,
-                db=db
+                query=search_query, mode="smart", page=1, page_size=remaining, db=db
             )
             for result in results:
-                contexts.append(f"[Search Result: {result.get('title', 'Unknown')}]\n{result.get('snippet', '')}")
+                contexts.append(
+                    f"[Search Result: {result.get('title', 'Unknown')}]\n{result.get('snippet', '')}"
+                )
 
         return "\n\n---\n\n".join(contexts)
 

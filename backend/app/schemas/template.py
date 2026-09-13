@@ -3,13 +3,15 @@ Template-related Pydantic schemas.
 """
 
 from datetime import datetime
-from typing import List, Optional, Dict, Any
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class TemplateSectionResponse(BaseModel):
     """Schema for a template section."""
+
     title: str
     level: int
     placeholder_text: Optional[str] = None
@@ -17,15 +19,15 @@ class TemplateSectionResponse(BaseModel):
 
 class TemplateJobCreate(BaseModel):
     """Schema for creating a template fill job."""
+
     source_document_ids: List[UUID] = Field(
-        ...,
-        min_length=1,
-        description="List of document IDs to use as sources"
+        ..., min_length=1, description="List of document IDs to use as sources"
     )
 
 
 class TemplateJobResponse(BaseModel):
     """Schema for template job response."""
+
     id: UUID
     template_filename: str
     sections: Optional[List[Dict[str, Any]]] = None
@@ -40,18 +42,19 @@ class TemplateJobResponse(BaseModel):
     completed_at: Optional[datetime] = None
     download_url: Optional[str] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class TemplateJobListResponse(BaseModel):
     """Schema for listing template jobs."""
+
     jobs: List[TemplateJobResponse]
     total: int
 
 
 class TemplateProgressUpdate(BaseModel):
     """Schema for WebSocket progress updates."""
+
     type: str  # progress, complete, error
     job_id: str
     stage: Optional[str] = None

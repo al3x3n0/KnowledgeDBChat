@@ -7,9 +7,9 @@ from sqlalchemy import select
 
 from app.models.document import Document, DocumentSource
 from app.models.persona import DocumentPersonaDetection
-from app.services.persona_service import persona_service
 from app.services.document_service import DocumentService
-from tests.factories import create_test_document_source, create_test_document
+from app.services.persona_service import persona_service
+from tests.factories import create_test_document, create_test_document_source
 
 
 @pytest.mark.asyncio

@@ -21,17 +21,33 @@ class DockerExecuteTool:
     input_schema = {
         "type": "object",
         "properties": {
-            "image": {"type": "string", "description": "Docker image to execute, e.g. python:3.11-slim"},
+            "image": {
+                "type": "string",
+                "description": "Docker image to execute, e.g. python:3.11-slim",
+            },
             "command": {
                 "type": "array",
                 "items": {"type": "string"},
                 "description": "Command argv list to run inside container",
             },
             "stdin_data": {"type": "string", "description": "Optional stdin payload"},
-            "input_content": {"type": "string", "description": "Optional input file content"},
-            "timeout_seconds": {"type": "integer", "default": 120, "minimum": 1, "maximum": 3600},
+            "input_content": {
+                "type": "string",
+                "description": "Optional input file content",
+            },
+            "timeout_seconds": {
+                "type": "integer",
+                "default": 120,
+                "minimum": 1,
+                "maximum": 3600,
+            },
             "memory_limit": {"type": "string", "default": "512m"},
-            "cpu_limit": {"type": "number", "default": 1.0, "minimum": 0.1, "maximum": 8.0},
+            "cpu_limit": {
+                "type": "number",
+                "default": 1.0,
+                "minimum": 0.1,
+                "maximum": 8.0,
+            },
             "network_enabled": {"type": "boolean", "default": False},
             "environment": {
                 "type": "object",
@@ -68,10 +84,16 @@ class DockerExecuteTool:
         safe_image = str(image or "").strip()
         if not safe_image:
             return {"error": "image is required"}
-        if not isinstance(command, list) or not command or not all(isinstance(x, str) and x.strip() for x in command):
+        if (
+            not isinstance(command, list)
+            or not command
+            or not all(isinstance(x, str) and x.strip() for x in command)
+        ):
             return {"error": "command must be a non-empty string array"}
 
-        logger.info(f"MCP docker_execute: image={safe_image}, user={auth.user.username}")
+        logger.info(
+            f"MCP docker_execute: image={safe_image}, user={auth.user.username}"
+        )
 
         # Attempt to ensure image exists; if pull fails, execution may still fail with a detailed error.
         await docker_executor.pull_image(safe_image)

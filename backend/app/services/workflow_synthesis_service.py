@@ -19,9 +19,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.memory import UserPreferences
 from app.models.workflow import UserTool
 from app.schemas.workflow import WorkflowCreate
+from app.services import llm_json
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.llm_service import LLMService, UserLLMSettings
-
 
 ALLOWED_NODE_TYPES = {"start", "end", "tool", "condition", "parallel", "loop", "wait"}
 
@@ -38,6 +38,21 @@ class SynthesisBundle:
     warnings: List[str]
     custom_tools: List[Dict[str, Any]]
     workflow_tool: Optional[Dict[str, Any]]
+
+
+MAX_SYNTHESIS_ATTEMPTS = 2
+
+RETRY_SUFFIX_NO_STEPS = (
+    "\n\nYour previous answer contained no tool nodes, so the workflow would "
+    "do nothing. Return the same JSON shape with at least one node of "
+    'node_type "tool" whose builtin_tool names a tool from the builtin list '
+    "above, plus the start and end nodes and the edges connecting them."
+)
+
+RETRY_SUFFIX_INVALID_JSON = (
+    "\n\nYour previous answer was not valid JSON. Return a single JSON object "
+    "and nothing else: no markdown, no code fences, no commentary."
+)
 
 
 class WorkflowSynthesisService:
@@ -66,6 +81,14 @@ class WorkflowSynthesisService:
             workflow_tool_name=None,
         )
         return bundle.workflow, bundle.warnings
+
+    @staticmethod
+    def _has_work_nodes(normalized: Dict[str, Any]) -> bool:
+        """Whether the draft does anything beyond starting and stopping."""
+        return any(
+            str(node.get("node_type") or "").strip().lower() not in {"start", "end"}
+            for node in (normalized.get("nodes") or [])
+        )
 
     async def synthesize_bundle(
         self,
@@ -96,30 +119,72 @@ class WorkflowSynthesisService:
         llm_service = LLMService()
         user_settings = await self._load_user_settings(db, user_id)
 
-        response_text = await llm_service.generate_response(
-            query=prompt,
-            user_settings=user_settings,
-            task_type="workflow_synthesis",
-        )
+        # The model answers this prompt well most of the time and occasionally
+        # returns no steps at all, which normalizes to a start -> end workflow
+        # that does nothing. Ask again once, telling it what was wrong, rather
+        # than persisting an empty workflow and exposing it as a tool.
+        normalized: Dict[str, Any] = {}
+        warnings: List[str] = []
+        attempt_prompt = prompt
+        last_error: Optional[str] = None
 
-        try:
-            raw_data = self._extract_json(response_text)
-        except Exception as exc:
-            logger.error(f"Workflow synthesis JSON parse failed: {exc}")
-            raise ValueError("LLM response did not contain valid JSON") from exc
+        for attempt in range(1, MAX_SYNTHESIS_ATTEMPTS + 1):
+            response_text = await llm_service.generate_response(
+                query=attempt_prompt,
+                user_settings=user_settings,
+                task_type="workflow_synthesis",
+                db=db,
+                snapshot_context={
+                    "phase": "workflow_synthesis",
+                    "iteration": attempt,
+                },
+            )
 
-        normalized, warnings = self._normalize_workflow(
-            raw_data,
-            catalog,
-            fallback_name=name,
-            fallback_description=description,
-            fallback_trigger=trigger_config,
-            fallback_is_active=is_active,
-            synthesize_custom_tools=synthesize_custom_tools,
-            preferred_tool_type=preferred_tool_type,
-            expose_workflow_as_tool=expose_workflow_as_tool,
-            workflow_tool_name=workflow_tool_name,
-        )
+            # The snapshot recorder only adds its row to this session; the
+            # agent loop happens to commit later, but a synthesis request
+            # writes nothing else, so without this the diagnostics for the
+            # call that just ran are discarded when the session closes.
+            try:
+                await db.commit()
+            except Exception:  # pragma: no cover - diagnostics only
+                pass
+
+            try:
+                raw_data = self._extract_json(response_text)
+            except Exception as exc:
+                last_error = f"response did not contain valid JSON: {exc}"
+                logger.warning(
+                    f"Workflow synthesis attempt {attempt} failed: {last_error}"
+                )
+                attempt_prompt = prompt + RETRY_SUFFIX_INVALID_JSON
+                continue
+
+            normalized, warnings = self._normalize_workflow(
+                raw_data,
+                catalog,
+                fallback_name=name,
+                fallback_description=description,
+                fallback_trigger=trigger_config,
+                fallback_is_active=is_active,
+                synthesize_custom_tools=synthesize_custom_tools,
+                preferred_tool_type=preferred_tool_type,
+                expose_workflow_as_tool=expose_workflow_as_tool,
+                workflow_tool_name=workflow_tool_name,
+            )
+            if self._has_work_nodes(normalized):
+                if attempt > 1:
+                    warnings.append(
+                        f"Synthesis succeeded on attempt {attempt}; "
+                        "the earlier attempt produced no usable steps."
+                    )
+                break
+
+            last_error = "the draft contained no tool nodes"
+            logger.warning(f"Workflow synthesis attempt {attempt}: {last_error}")
+            attempt_prompt = prompt + RETRY_SUFFIX_NO_STEPS
+
+        if not normalized:
+            raise ValueError(f"LLM response did not contain valid JSON ({last_error})")
 
         custom_tools = normalized.pop("custom_tools", [])
         workflow_tool = normalized.pop("workflow_tool", None)
@@ -135,7 +200,9 @@ class WorkflowSynthesisService:
             workflow_tool=workflow_tool,
         )
 
-    async def _load_user_settings(self, db: AsyncSession, user_id) -> Optional[UserLLMSettings]:
+    async def _load_user_settings(
+        self, db: AsyncSession, user_id
+    ) -> Optional[UserLLMSettings]:
         try:
             prefs_result = await db.execute(
                 select(UserPreferences).where(UserPreferences.user_id == user_id)
@@ -148,9 +215,7 @@ class WorkflowSynthesisService:
         return None
 
     async def _load_tool_catalog(self, db: AsyncSession, user_id) -> ToolCatalog:
-        result = await db.execute(
-            select(UserTool).where(UserTool.user_id == user_id)
-        )
+        result = await db.execute(select(UserTool).where(UserTool.user_id == user_id))
         custom_tools = result.scalars().all()
         builtin_tools = [
             {
@@ -191,12 +256,10 @@ class WorkflowSynthesisService:
         )
 
         preferred_name = name or ""
-        trigger_hint = json.dumps(trigger_config or {"type": "manual"}, ensure_ascii=True)
-        tool_synth_hint = (
-            "true"
-            if synthesize_custom_tools
-            else "false"
+        trigger_hint = json.dumps(
+            trigger_config or {"type": "manual"}, ensure_ascii=True
         )
+        tool_synth_hint = "true" if synthesize_custom_tools else "false"
         preferred_tool_hint = preferred_tool_type or "none"
         expose_workflow_tool_hint = "true" if expose_workflow_as_tool else "false"
         workflow_tool_name_hint = workflow_tool_name or ""
@@ -256,6 +319,9 @@ class WorkflowSynthesisService:
             "  } | null\n"
             "}\n\n"
             "Rules:\n"
+            "- The workflow MUST contain at least one node of node_type "
+            '"tool". A workflow of only start and end does nothing and will '
+            "be rejected.\n"
             "- Include exactly one start node and at least one end node.\n"
             "- Use tool nodes for actions; set builtin_tool to a name from the builtin tools list.\n"
             "- Use tool_id only for custom tools and only if provided in the custom tools list.\n"
@@ -282,19 +348,11 @@ class WorkflowSynthesisService:
         )
 
     def _extract_json(self, text: str) -> Dict[str, Any]:
-        cleaned = text.strip()
-        if cleaned.startswith("```"):
-            cleaned = re.sub(r"^```[a-zA-Z0-9_-]*", "", cleaned).strip()
-            if cleaned.endswith("```"):
-                cleaned = cleaned[:-3].strip()
-
-        start = cleaned.find("{")
-        end = cleaned.rfind("}")
-        if start == -1 or end == -1 or end <= start:
+        """Parse the model's workflow JSON, raising if the reply has none."""
+        parsed = llm_json.extract_json_object(text)
+        if parsed is None:
             raise ValueError("No JSON object found in response")
-
-        payload = cleaned[start:end + 1]
-        return json.loads(payload)
+        return parsed
 
     def _normalize_workflow(
         self,
@@ -320,7 +378,11 @@ class WorkflowSynthesisService:
             preferred_tool_type=preferred_tool_type,
             warnings=warnings,
         )
-        generated_custom_names = {str(t.get("name") or "").strip().lower() for t in generated_custom_tools if t.get("name")}
+        generated_custom_names = {
+            str(t.get("name") or "").strip().lower()
+            for t in generated_custom_tools
+            if t.get("name")
+        }
 
         is_active = data.get("is_active")
         if is_active is None:
@@ -328,9 +390,13 @@ class WorkflowSynthesisService:
 
         normalized: Dict[str, Any] = {
             "name": (data.get("name") or fallback_name or "Generated Workflow").strip(),
-            "description": (data.get("description") or fallback_description or "").strip(),
+            "description": (
+                data.get("description") or fallback_description or ""
+            ).strip(),
             "is_active": is_active,
-            "trigger_config": data.get("trigger_config") or fallback_trigger or {"type": "manual"},
+            "trigger_config": data.get("trigger_config")
+            or fallback_trigger
+            or {"type": "manual"},
             "nodes": [],
             "edges": [],
             "custom_tools": generated_custom_tools,
@@ -338,7 +404,9 @@ class WorkflowSynthesisService:
                 data.get("workflow_tool"),
                 expose_workflow_as_tool=expose_workflow_as_tool,
                 workflow_tool_name=workflow_tool_name,
-                workflow_name=(data.get("name") or fallback_name or "Generated Workflow"),
+                workflow_name=(
+                    data.get("name") or fallback_name or "Generated Workflow"
+                ),
                 warnings=warnings,
             ),
         }
@@ -357,7 +425,9 @@ class WorkflowSynthesisService:
                     suffix += 1
                     new_id = f"{node_id}_{suffix}"
                 node_id = new_id
-                warnings.append(f"Duplicate node_id '{node_id_raw}' renamed to '{node_id}'.")
+                warnings.append(
+                    f"Duplicate node_id '{node_id_raw}' renamed to '{node_id}'."
+                )
             seen_ids.add(node_id)
 
             node_type = node.get("node_type") or node.get("type") or "tool"
@@ -382,20 +452,31 @@ class WorkflowSynthesisService:
                             tool_id = str(custom_match.id)
 
                 if builtin_tool and builtin_tool not in builtin_names:
-                    warnings.append(f"Unknown builtin tool '{builtin_tool}' on node '{node_id}'.")
+                    warnings.append(
+                        f"Unknown builtin tool '{builtin_tool}' on node '{node_id}'."
+                    )
                     builtin_tool = None
 
                 if tool_id and str(tool_id) not in custom_by_id:
-                    warnings.append(f"Unknown custom tool id '{tool_id}' on node '{node_id}'.")
+                    warnings.append(
+                        f"Unknown custom tool id '{tool_id}' on node '{node_id}'."
+                    )
                     tool_id = None
 
                 if not builtin_tool and not tool_id:
-                    if tool_name and str(tool_name).strip().lower() in generated_custom_names:
+                    if (
+                        tool_name
+                        and str(tool_name).strip().lower() in generated_custom_names
+                    ):
                         config["tool_name_hint"] = str(tool_name).strip()
                     elif config.get("tool_name_hint"):
-                        config["tool_name_hint"] = str(config.get("tool_name_hint")).strip()
+                        config["tool_name_hint"] = str(
+                            config.get("tool_name_hint")
+                        ).strip()
                     else:
-                        warnings.append(f"Tool node '{node_id}' has no valid tool reference.")
+                        warnings.append(
+                            f"Tool node '{node_id}' has no valid tool reference."
+                        )
 
             normalized["nodes"].append(
                 {
@@ -448,7 +529,13 @@ class WorkflowSynthesisService:
         if not isinstance(tool_data, list):
             return []
 
-        allowed_types = {"webhook", "transform", "python", "llm_prompt", "docker_container"}
+        allowed_types = {
+            "webhook",
+            "transform",
+            "python",
+            "llm_prompt",
+            "docker_container",
+        }
         normalized: List[Dict[str, Any]] = []
         seen = set()
 
@@ -460,14 +547,22 @@ class WorkflowSynthesisService:
                 continue
             key = name.lower()
             if key in seen:
-                warnings.append(f"Duplicate synthesized custom tool '{name}' was skipped.")
+                warnings.append(
+                    f"Duplicate synthesized custom tool '{name}' was skipped."
+                )
                 continue
             seen.add(key)
 
-            tool_type = str(item.get("tool_type") or preferred_tool_type or "docker_container").strip().lower()
+            tool_type = (
+                str(item.get("tool_type") or preferred_tool_type or "docker_container")
+                .strip()
+                .lower()
+            )
             if tool_type not in allowed_types:
-                warnings.append(f"Synthesized tool '{name}' had unsupported type '{tool_type}', using '{preferred_tool_type or 'docker_container'}'.")
-                tool_type = (preferred_tool_type or "docker_container")
+                warnings.append(
+                    f"Synthesized tool '{name}' had unsupported type '{tool_type}', using '{preferred_tool_type or 'docker_container'}'."
+                )
+                tool_type = preferred_tool_type or "docker_container"
                 if tool_type not in allowed_types:
                     tool_type = "docker_container"
 
@@ -481,7 +576,8 @@ class WorkflowSynthesisService:
             normalized.append(
                 {
                     "name": name[:100],
-                    "description": str(item.get("description") or "").strip() or f"Synthesized {tool_type} tool",
+                    "description": str(item.get("description") or "").strip()
+                    or f"Synthesized {tool_type} tool",
                     "tool_type": tool_type,
                     "parameters_schema": parameters_schema,
                     "config": config,
@@ -504,7 +600,9 @@ class WorkflowSynthesisService:
             return None
 
         draft = item if isinstance(item, dict) else {}
-        name = str(draft.get("name") or workflow_tool_name or f"Run {workflow_name}").strip()
+        name = str(
+            draft.get("name") or workflow_tool_name or f"Run {workflow_name}"
+        ).strip()
         if not name:
             name = "Run Workflow"
         config = draft.get("config")
@@ -525,7 +623,9 @@ class WorkflowSynthesisService:
 
         return {
             "name": name[:100],
-            "description": str(draft.get("description") or f"Run workflow '{workflow_name}'").strip(),
+            "description": str(
+                draft.get("description") or f"Run workflow '{workflow_name}'"
+            ).strip(),
             "tool_type": tool_type,
             "parameters_schema": parameters_schema,
             "config": config,
@@ -537,7 +637,9 @@ class WorkflowSynthesisService:
         cleaned = cleaned.strip("_") or "node"
         return cleaned[:50]
 
-    def _normalize_config(self, node: Dict[str, Any], config: Dict[str, Any]) -> Dict[str, Any]:
+    def _normalize_config(
+        self, node: Dict[str, Any], config: Dict[str, Any]
+    ) -> Dict[str, Any]:
         normalized = dict(config)
 
         if "inputMapping" in normalized and "input_mapping" not in normalized:
@@ -558,7 +660,9 @@ class WorkflowSynthesisService:
 
         return normalized
 
-    def _ensure_start_end_nodes(self, normalized: Dict[str, Any], warnings: List[str]) -> None:
+    def _ensure_start_end_nodes(
+        self, normalized: Dict[str, Any], warnings: List[str]
+    ) -> None:
         nodes = normalized["nodes"]
         node_ids = {n["node_id"] for n in nodes}
         has_start = any(n["node_type"] == "start" for n in nodes)
@@ -582,6 +686,22 @@ class WorkflowSynthesisService:
             )
             warnings.append("Added missing start node.")
 
+        # A workflow of start -> end does nothing. That state used to be
+        # returned as a success carrying "Added missing start node.", which
+        # reads as a tidy-up rather than as the model having produced no steps,
+        # so an empty workflow was saved and exposed as a runnable tool.
+        work_nodes = [
+            node
+            for node in nodes
+            if str(node.get("node_type") or "").strip().lower() not in {"start", "end"}
+        ]
+        if not work_nodes:
+            warnings.append(
+                "SYNTHESIS PRODUCED NO STEPS: the model returned no usable tool "
+                "nodes, so this workflow would do nothing. Retry with a more "
+                "specific description, or name the tools to use."
+            )
+
         if not has_end:
             end_id = "end"
             if end_id in node_ids:
@@ -599,11 +719,16 @@ class WorkflowSynthesisService:
             )
             warnings.append("Added missing end node.")
 
-    def _prune_invalid_edges(self, normalized: Dict[str, Any], warnings: List[str]) -> None:
+    def _prune_invalid_edges(
+        self, normalized: Dict[str, Any], warnings: List[str]
+    ) -> None:
         node_ids = {n["node_id"] for n in normalized["nodes"]}
         valid_edges = []
         for edge in normalized["edges"]:
-            if edge["source_node_id"] not in node_ids or edge["target_node_id"] not in node_ids:
+            if (
+                edge["source_node_id"] not in node_ids
+                or edge["target_node_id"] not in node_ids
+            ):
                 warnings.append(
                     f"Removed edge from '{edge['source_node_id']}' to '{edge['target_node_id']}' (unknown node)."
                 )
@@ -611,10 +736,15 @@ class WorkflowSynthesisService:
             valid_edges.append(edge)
         normalized["edges"] = valid_edges
 
-    def _auto_connect_orphans(self, normalized: Dict[str, Any], warnings: List[str]) -> None:
+    def _auto_connect_orphans(
+        self, normalized: Dict[str, Any], warnings: List[str]
+    ) -> None:
         nodes = normalized["nodes"]
         edges = normalized["edges"]
-        edge_keys = {(e["source_node_id"], e["target_node_id"], e.get("source_handle")) for e in edges}
+        edge_keys = {
+            (e["source_node_id"], e["target_node_id"], e.get("source_handle"))
+            for e in edges
+        }
 
         if not edges and len(nodes) >= 2:
             ordered = self._ordered_nodes(nodes)

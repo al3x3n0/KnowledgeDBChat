@@ -2,11 +2,12 @@
 Template job database models.
 """
 
-from datetime import datetime
-from sqlalchemy import Column, Integer, String, Text, DateTime, ForeignKey, JSON
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
 import uuid
+from datetime import datetime
+
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
@@ -30,12 +31,16 @@ class TemplateJob(Base):
     source_document_ids = Column(JSON, nullable=False)  # List of UUID strings
 
     # Processing status
-    status = Column(String(50), default="pending")  # pending, analyzing, extracting, filling, completed, failed
+    status = Column(
+        String(50), default="pending"
+    )  # pending, analyzing, extracting, filling, completed, failed
     progress = Column(Integer, default=0)  # 0-100
     current_section = Column(String(500), nullable=True)
 
     # Result
-    filled_file_path = Column(String(1000), nullable=True)  # MinIO path to filled document
+    filled_file_path = Column(
+        String(1000), nullable=True
+    )  # MinIO path to filled document
     filled_filename = Column(String(500), nullable=True)
 
     # Error tracking
@@ -43,7 +48,9 @@ class TemplateJob(Base):
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
     completed_at = Column(DateTime(timezone=True), nullable=True)
 
     # Relationships

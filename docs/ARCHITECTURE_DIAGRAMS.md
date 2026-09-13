@@ -1,229 +1,358 @@
-# KnowledgeDBChat — Architecture Diagrams
+# KnowledgeOps Lab Architecture Diagrams
 
-Implementation-faithful visual map of the system as it exists today. Four
-views, from the outside in: deployment, backend subsystems, the autonomous
-agent runtime, and the LLM provider stack.
+These Mermaid diagrams complement the canonical
+[text architecture](ARCHITECTURE_ASCII.md). They intentionally show stable
+subsystem boundaries instead of file, endpoint, model, or migration counts.
 
-Diagrams are Mermaid — GitHub renders them inline; locally use the Kroki
-service (`http://localhost:8001`) or any Mermaid renderer.
+GitHub renders Mermaid inline. The local development stack also includes Kroki
+at `http://localhost:8001`.
 
----
-
-## 1. Deployment view (docker-compose services)
+## 1. Product context
 
 ```mermaid
 flowchart LR
-    subgraph Clients
-        UI["React Frontend<br/>(35 pages, api.ts client)"]
-        MCPC["External MCP Clients<br/>(API-key auth)"]
+    PEOPLE["Researchers, engineers,<br/>reviewers, operators"]
+
+    subgraph KOL["KnowledgeOps Lab"]
+        UI["Operator workspace<br/>React + TypeScript"]
+        API["Control plane<br/>FastAPI"]
+        KNOW["Knowledge operations<br/>ingest, retrieve, RAG, graph"]
+        RND["Autonomous R&D<br/>plan, investigate, experiment"]
+        CODE["Engineering agents<br/>workspace, code, test, review"]
+        EVID["Evidence and governance<br/>policy, provenance, verification, audit"]
     end
 
-    subgraph Core["Backend"]
-        NGINX["nginx :3000"]
-        API["FastAPI backend :8000<br/>~58 endpoint groups /api/v1"]
-        CEL["Celery worker<br/>27 task modules"]
-        CELTEX["celery_latex<br/>isolated LaTeX queue"]
-        BEAT["celery_beat (prod)<br/>schedules"]
+    subgraph EXT["External systems"]
+        REPOS["GitHub, GitLab,<br/>Confluence, web, arXiv"]
+        MODELS["Ollama and<br/>external model providers"]
+        COMPOPS["CompOps<br/>compiler research"]
+        MLFLOW["MLflow<br/>experiment tracking"]
+        MCP["MCP clients<br/>and external agents"]
     end
 
-    subgraph Data["State & Storage"]
-        PG[("PostgreSQL :5432<br/>50+ models, 73 migrations")]
-        REDIS[("Redis :6379<br/>cache, broker, pub/sub, flags")]
-        QDR[("Qdrant :6333<br/>vector index")]
-        MINIO[("MinIO :9000/:9001<br/>documents, media, exports")]
+    PEOPLE --> UI --> API
+    API --> KNOW
+    API --> RND
+    API --> CODE
+    KNOW --> EVID
+    RND --> EVID
+    CODE --> EVID
+    KNOW <--> REPOS
+    API <--> MODELS
+    RND <--> COMPOPS
+    RND <--> MLFLOW
+    API <--> MCP
+```
+
+## 2. Deployment topology
+
+```mermaid
+flowchart TB
+    CLIENT["Browser / MCP client"]
+
+    subgraph EDGE["Application edge"]
+        NGINX["nginx"]
+        FRONT["React frontend"]
+        API["FastAPI backend"]
+        VIDEO["Go video-streamer"]
     end
 
-    subgraph Aux["Auxiliary services"]
-        OLL["Ollama :11434<br/>local LLM"]
-        KROKI["Kroki :8001<br/>diagram rendering"]
-        VID["Go video-streamer :8080"]
+    subgraph WORKERS["Asynchronous execution"]
+        REDIS[("Redis<br/>broker, cache, pub/sub")]
+        CELERY["General Celery worker"]
+        LATEX["Isolated LaTeX worker"]
+        BEAT["Celery Beat<br/>production schedules"]
     end
 
-    EXT["External LLM APIs<br/>DeepSeek | OpenAI | Anthropic | Qwen | Kimi"]
+    subgraph STATE["Durable state"]
+        PG[("PostgreSQL")]
+        QDRANT[("Qdrant")]
+        MINIO[("MinIO")]
+    end
 
-    UI --> NGINX --> API
-    MCPC --> API
+    subgraph LOCAL["Local auxiliary services"]
+        OLLAMA["Ollama"]
+        KROKI["Kroki"]
+    end
+
+    PROVIDERS["External models,<br/>repositories, CompOps, MLflow"]
+
+    CLIENT --> NGINX
+    NGINX --> FRONT
+    NGINX --> API
+    NGINX --> MINIO
+    FRONT --> API
+    FRONT --> VIDEO
     API --> PG
-    API --> REDIS
-    API --> QDR
+    API --> QDRANT
     API --> MINIO
-    API --> OLL
-    API --> EXT
+    API --> REDIS
+    API --> OLLAMA
     API --> KROKI
-    REDIS --> CEL
-    CEL --> PG
-    CEL --> QDR
-    CEL --> MINIO
-    CEL --> OLL
-    CEL --> EXT
-    REDIS --> CELTEX
+    API <--> PROVIDERS
     BEAT --> REDIS
-    UI --> VID --> MINIO
+    REDIS --> CELERY
+    REDIS --> LATEX
+    CELERY --> PG
+    CELERY --> QDRANT
+    CELERY --> MINIO
+    CELERY --> OLLAMA
+    CELERY <--> PROVIDERS
+    LATEX --> MINIO
+    VIDEO --> MINIO
 ```
 
----
-
-## 2. Backend subsystem view
+## 3. Backend subsystem map
 
 ```mermaid
 flowchart TB
-    ROUTES["api/routes.py — /api/v1<br/>auth · users · chat · documents · kg · admin"]
+    ROUTES["API endpoints and WebSockets"]
+    SCHEMAS["Pydantic contracts"]
 
-    subgraph Subsystems["Domain subsystems (endpoints + services + models share name prefixes)"]
-        AGENTS["Autonomous agents<br/>agent-jobs · control-plane · workflows"]
-        CODING["Coding swarm<br/>backlog · code-patches · patch-prs · git"]
-        RESEARCH["Research suite<br/>papers · notes · portfolios · inbox · monitors"]
-        GEN["Doc generation<br/>latex · presentations · docx · artifacts · export"]
-        TRAIN["Training / AI Hub<br/>datasets · jobs · model registry · evals"]
-        GOV["Tool governance<br/>policies · audit · secrets · user-tools · mcp-config"]
-        OBS["Observability<br/>usage · retrieval-traces · llm-snapshots · analytics"]
+    subgraph DOMAINS["Domain services"]
+        KNOW["Knowledge<br/>documents, retrieval, graph, memory"]
+        RESEARCH["Research<br/>papers, notes, portfolios, experiments"]
+        AGENTS["Autonomy<br/>jobs, planning, tools, runtime"]
+        CODING["Coding<br/>workspaces, swarms, patches"]
+        AUTHOR["Authoring<br/>reports, slides, diagrams, LaTeX"]
+        EXTERNAL["External systems<br/>gateway, CompOps, MLflow, MCP"]
+        GOVERN["Governance<br/>policy, approvals, secrets, audit"]
     end
 
-    subgraph Foundation["Foundation services"]
-        RAG["RAG pipeline<br/>hybrid search + rerank + MMR + KG context"]
-        LLM["LLMService + llm_providers/<br/>(view 4)"]
-        MEM["Memory<br/>extraction · ranking · injection"]
-        KGS["Knowledge graph<br/>Entity - Mention - Relationship"]
-        CONN["Connectors<br/>GitLab · GitHub · Confluence · Web · ArXiv"]
-        STORE["VectorStore · Storage · Transcription"]
+    subgraph INFRA["Infrastructure services"]
+        TASKS["Celery tasks"]
+        MODELS["SQLAlchemy models"]
+        VECTOR["Vector and lexical search"]
+        OBJECTS["Object storage"]
+        LLM["LLM routing"]
     end
 
-    ROUTES --> Subsystems
-    Subsystems --> Foundation
-    AGENTS -.->|"policy + audit on every tool call"| GOV
-    Foundation --> INFRA["PostgreSQL · Redis · Qdrant · MinIO"]
+    ROUTES --> SCHEMAS
+    SCHEMAS --> KNOW
+    SCHEMAS --> RESEARCH
+    SCHEMAS --> AGENTS
+    SCHEMAS --> CODING
+    SCHEMAS --> AUTHOR
+    SCHEMAS --> EXTERNAL
+    KNOW --> GOVERN
+    RESEARCH --> GOVERN
+    AGENTS --> GOVERN
+    CODING --> GOVERN
+    EXTERNAL --> GOVERN
+    KNOW --> MODELS
+    RESEARCH --> MODELS
+    AGENTS --> MODELS
+    CODING --> MODELS
+    AUTHOR --> MODELS
+    EXTERNAL --> MODELS
+    KNOW --> VECTOR
+    KNOW --> OBJECTS
+    AGENTS --> LLM
+    AUTHOR --> LLM
+    AGENTS --> TASKS
+    RESEARCH --> TASKS
+    EXTERNAL --> TASKS
 ```
 
----
-
-## 3. Autonomous agent runtime (one job)
-
-The observe→think→act→evaluate loop with the current think-phase pipeline.
-Items marked ★ are recent additions.
+## 4. Autonomous R&D runtime
 
 ```mermaid
-flowchart TB
-    START["execute_job"]
-    DET{"deterministic_runner<br/>configured?"}
-    RUNNER["Deterministic runner registry<br/>(30+ runners: research, coding, latex...)"]
-    INIT["Loop init: checkpoint resume ·<br/>skill profile · project profile · memory injection"]
-    OBS["OBSERVE<br/>AgentObservationService"]
-    GATE{"goal_achieved claimed?"}
-    CONTRACT["Goal contract check<br/>min findings / artifacts / progress<br/>blocks false completion"]
-    EVAL["EVALUATE<br/>progress heuristics · critic pass ·<br/>checkpoint every 5 iters"]
+flowchart TD
+    CREATE["Create job<br/>goal + configuration"]
+    POLICY["Resolve effective policy<br/>scope + tools + budget + mode"]
+    LEASE["Acquire execution lease<br/>and fencing token"]
+    RESTORE["Load checkpoint<br/>reconcile journal"]
+    OBSERVE["Observe"]
+    PLAN["Plan / replan"]
+    SELECT["Select action"]
+    GUARD{"Policy, scope,<br/>budget allowed?"}
+    APPROVAL["Pause for approval<br/>or intervention"]
+    ACT["Execute tool"]
+    DEFER{"Deferred<br/>external call?"}
+    WAIT["Checkpoint waiting state<br/>pause job"]
+    VERIFY["Verify"]
+    SUMMARY["Summarize"]
+    PROGRESS{"Goal complete,<br/>blocked, or continue?"}
+    CHECKPOINT["Save checkpoint<br/>renew lease"]
+    FINISH["Finalize outcome<br/>evidence + audit"]
 
-    subgraph THINK["THINK — AgentThinkingService"]
-        COMPACT["★ Auto-compaction<br/>state > threshold → summarize old actions<br/>into compressed_history (fast tier)"]
-        PROMPT["★ Cache-friendly prompt split<br/>stable per-job prefix → system prompt<br/>volatile plan/critic/history → user message"]
-        NTL{"★ native_tool_loop<br/>enabled?"}
-        LOOP["★ Native tool loop<br/>model calls read-safe tools via native API<br/>(bounded; gated tools deferred)"]
-        STRUCT["★ generate_structured<br/>schema-enforced decision JSON"]
-        PARSE["Decision parser<br/>Pydantic validate → retry → repair"]
-    end
-
-    subgraph ACT["ACT — act_phase"]
-        APPROVE{"approval checkpoint /<br/>dangerous tool?"}
-        PAUSE["PAUSE job<br/>await operator approval"]
-        DISPATCH["AgentActionService → AgentToolRegistry<br/>policy check → execute → audit log<br/>(173 tools)"]
-    end
-
-    subgraph FIN["FINALIZE"]
-        RESULTS["persist results + digest"]
-        MEMX["memory extraction → ConversationMemory"]
-        CHAIN["trigger chained jobs<br/>(fan-out / fan-in via Celery)"]
-    end
-
-    subgraph GOLDEN["★ Golden-task regression suite"]
-        G1["runs this real loop end-to-end with<br/>scripted LLM + scripted tools (5 contracts)"]
-    end
-
-    START --> DET
-    DET -- yes --> RUNNER
-    DET -- no --> INIT
-    INIT --> OBS
-    OBS --> COMPACT --> PROMPT --> NTL
-    NTL -- yes --> LOOP --> PARSE
-    NTL -- no --> STRUCT --> PARSE
-    PARSE --> GATE
-    GATE -- yes --> CONTRACT
-    GATE -- no --> APPROVE
-    APPROVE -- required --> PAUSE
-    APPROVE -- clear --> DISPATCH
-    DISPATCH --> EVAL
-    EVAL -->|"budgets remain"| OBS
-    CONTRACT -- satisfied --> RESULTS
-    EVAL -->|"budget / stop"| RESULTS
-    RESULTS --> MEMX --> CHAIN
+    CREATE --> POLICY --> LEASE --> RESTORE --> OBSERVE --> PLAN --> SELECT --> GUARD
+    GUARD -- "denied or approval" --> APPROVAL
+    APPROVAL -- "approved / resumed" --> RESTORE
+    GUARD -- "allowed" --> ACT --> DEFER
+    DEFER -- "yes" --> WAIT
+    WAIT -- "response correlated" --> RESTORE
+    DEFER -- "no" --> VERIFY --> SUMMARY --> PROGRESS
+    PROGRESS -- "continue" --> CHECKPOINT --> OBSERVE
+    PROGRESS -- "replan" --> PLAN
+    PROGRESS -- "complete or terminal" --> FINISH
 ```
 
----
-
-## 4. LLM provider stack & observability
+## 5. Durable execution and recovery
 
 ```mermaid
-flowchart TB
-    subgraph Callers
-        CHAT["Chat / RAG"]
-        THINKC["Agent think phase"]
-        NTLC["★ Native tool loop"]
-        COMPC["★ Auto-compaction"]
-        MEMC["Memory extraction/ranking"]
-    end
+flowchart LR
+    WORKER["Celery execution worker"]
+    LEASE{"Execution lease<br/>owner + expiry + fence"}
+    JOB[("AgentJob<br/>status, phase, budgets")]
+    CHECKPOINT[("Checkpoint<br/>normalized runtime state")]
+    JOURNAL[("Hash-chained journal<br/>intent and result")]
+    OUTBOX[("External-call outbox<br/>delivery and resume claims")]
+    TOOL["Tool or external side effect"]
 
-    subgraph SVC["LLMService"]
-        GR["generate_response<br/>(legacy prompted text)"]
-        GS["★ generate_structured<br/>(native tools + JSON schema)"]
-        ROUTE["Tier routing: fast | balanced | deep<br/>feature flags → user/task overrides →<br/>fallback tiers + health cooldowns"]
-        SEM["concurrency semaphore"]
-    end
-
-    subgraph PROV["★ app/services/llm_providers/"]
-        OLLP["OllamaProvider<br/>/api/chat · tools · format"]
-        OAIP["OpenAICompatibleProvider (openai SDK)<br/>openai · deepseek · qwen · kimi · custom"]
-        ANTP["AnthropicProvider (anthropic SDK)<br/>tools · forced-tool schema output ·<br/>★ cache_control breakpoints · refusal handling"]
-    end
-
-    subgraph APIs["Model APIs"]
-        OLLAMA["Ollama (local)"]
-        OPENAI["OpenAI"]
-        DS["DeepSeek"]
-        QWEN["Qwen / DashScope"]
-        KIMI["Kimi / Moonshot"]
-        CLAUDE["Anthropic Claude"]
-    end
-
-    subgraph OBSV["Observability (per call)"]
-        USAGE[("llm_usage_events<br/>tokens · latency · tier · cache hits")]
-        SNAP[("★ llm_call_snapshots<br/>full prompts + responses<br/>job/iteration/phase correlation")]
-    end
-
-    Callers --> SVC
-    GR --> ROUTE
-    GS --> ROUTE
-    ROUTE --> SEM --> PROV
-    OLLP --> OLLAMA
-    OAIP --> OPENAI
-    OAIP --> DS
-    OAIP --> QWEN
-    OAIP --> KIMI
-    ANTP --> CLAUDE
-    SVC --> USAGE
-    SVC --> SNAP
-    SNAP -.->|"GET /api/v1/llm-snapshots"| REPLAY["Replay / debug"]
+    WORKER --> LEASE
+    LEASE -- "acquired" --> JOB
+    LEASE -- "conflict" --> STOP["Skip duplicate delivery"]
+    WORKER --> CHECKPOINT
+    WORKER --> JOURNAL
+    JOURNAL -- "persist intent" --> TOOL
+    TOOL -- "result" --> JOURNAL
+    JOURNAL --> CHECKPOINT
+    TOOL -- "asynchronous request" --> OUTBOX
+    OUTBOX -- "response" --> CHECKPOINT
+    CHECKPOINT -- "restart / resume" --> WORKER
+    LEASE -- "heartbeat and fenced writes" --> WORKER
 ```
 
-**Key properties encoded above**
+The mechanisms have different jobs: leases arbitrate ownership, fencing rejects
+stale owners, journal entries reconcile partial calls, checkpoints restore
+runtime state, and the outbox bridges transactions with asynchronous systems.
 
-- Every tool an agent executes — whether via the classic act phase or the
-  native tool loop — passes through the same dispatch: policy engine →
-  execution → audit log. Approval-gated and dangerous tools always route
-  back to the act phase's pause-for-approval machinery.
-- The think-phase system prompt is byte-stable per job; all per-iteration
-  context rides in the user message. On Anthropic this makes the prefix a
-  cache read (~0.1× cost) from iteration 2 onward; OpenAI/DeepSeek prefix
-  caching engages automatically.
-- Both LLM paths share tier routing, provider health cooldowns, usage
-  accounting, and (opt-in) full call snapshots keyed by job/iteration/phase.
-- The golden-task suite (`tests/test_golden_agent_tasks.py`) exercises the
-  real loop in view 3 with only the LLM and tool seams scripted — it is the
-  regression gate for changes to any starred component.
+## 6. Coding harness and swarm
+
+```mermaid
+flowchart TD
+    REQUEST["Coding goal or backlog slice"]
+    SCOPE["Task contract<br/>workspace + policy + acceptance criteria"]
+    PLAN["Planner role<br/>task graph"]
+
+    subgraph SWARM["Bounded role swarm"]
+        IMPLEMENT["Implementer<br/>inspect, patch, create, command"]
+        SPECIALIST["Specialist roles<br/>frontend, backend, tests, research"]
+        VERIFY["Verifier<br/>tests, lint, build, evidence"]
+        REVIEW["Reviewer<br/>accept, reject, request repair"]
+    end
+
+    SESSION[("Workspace session")]
+    SNAPSHOT[("Candidate snapshot")]
+    DURABLE[("Durable checkpoint")]
+    OUTPUT["Verified patch, artifact,<br/>PR handoff, or recovery state"]
+
+    REQUEST --> SCOPE --> PLAN
+    PLAN --> IMPLEMENT
+    PLAN --> SPECIALIST
+    IMPLEMENT --> SESSION
+    SPECIALIST --> SESSION
+    SESSION --> SNAPSHOT
+    SESSION --> DURABLE
+    SNAPSHOT --> VERIFY --> REVIEW
+    REVIEW -- "repair" --> IMPLEMENT
+    REVIEW -- "accepted" --> OUTPUT
+    DURABLE -- "restart recovery" --> SESSION
+```
+
+## 7. External call, correlation, and resume
+
+```mermaid
+sequenceDiagram
+    participant A as Agent runtime
+    participant DB as PostgreSQL
+    participant W as Outbox worker
+    participant X as External system
+    participant R as Response correlator
+    participant Q as Agent task queue
+
+    A->>A: Validate tool policy, connection, capability, payload
+    A->>DB: Commit journal result + outbox row + waiting plan state
+    A->>DB: Set job paused / awaiting_external
+    W->>DB: Claim due outbox row
+    W->>X: Invoke with stable request identity
+    X-->>W: Return bounded response
+    W->>DB: Fence acknowledgement and store response
+    R->>DB: Claim successful uncorrelated response
+    R->>DB: Merge response into checkpoint
+    R->>DB: Complete waiting step and set job pending
+    R->>Q: Enqueue resume task
+    R->>DB: Mark resume enqueued
+    Q->>DB: Acquire execution lease
+    Q->>A: Restore checkpoint and continue next step
+```
+
+Delivery is retryable and idempotent. The task queue can provide at-least-once
+delivery; the resume marker and execution lease prevent duplicate active
+execution.
+
+## 8. Evidence verification
+
+```mermaid
+flowchart TD
+    SOURCE["Finding, artifact,<br/>tool result, external response"]
+    LEDGER[("Evidence ledger<br/>provenance + confidence")]
+    PLANNER["Verification planner"]
+
+    subgraph CHECKS["Verification work"]
+        LOCAL["Local deterministic checks"]
+        SANDBOX["Scientific sandbox run"]
+        EXTERNAL["External-system attestation"]
+        GRADER["Independent grader"]
+        HUMAN["Operator approval"]
+    end
+
+    RECONCILE["Verification reconciliation"]
+    DECISION{"Evidence status"}
+    ACCEPT["Accepted outcome"]
+    DISPUTE["Disputed / needs work"]
+    REJECT["Rejected"]
+    AUDIT[("Trajectory grade<br/>signed audit snapshot")]
+
+    SOURCE --> LEDGER --> PLANNER
+    PLANNER --> LOCAL
+    PLANNER --> SANDBOX
+    PLANNER --> EXTERNAL
+    PLANNER --> GRADER
+    PLANNER --> HUMAN
+    LOCAL --> RECONCILE
+    SANDBOX --> RECONCILE
+    EXTERNAL --> RECONCILE
+    GRADER --> RECONCILE
+    HUMAN --> RECONCILE
+    RECONCILE --> DECISION
+    DECISION --> ACCEPT
+    DECISION --> DISPUTE
+    DECISION --> REJECT
+    ACCEPT --> AUDIT
+    DISPUTE --> AUDIT
+    REJECT --> AUDIT
+```
+
+## 9. External-system ownership
+
+```mermaid
+flowchart LR
+    subgraph KOL["KnowledgeOps Lab owns"]
+        POLICY["Policy and approval"]
+        IDENTITY["Request identity<br/>and correlation"]
+        PROV["Bounded provenance<br/>and evidence links"]
+        VERIFY["Local verification<br/>and outcome state"]
+    end
+
+    subgraph SOURCE["Source systems own"]
+        COMPILER["CompOps<br/>runs, raw IR, logs, artifacts"]
+        TRACKING["MLflow<br/>experiments, metrics, artifacts, registry"]
+        REPO["Repositories<br/>history, branches, merge authority"]
+        PROVIDER["Model providers<br/>inference infrastructure"]
+    end
+
+    POLICY --> IDENTITY --> PROV --> VERIFY
+    IDENTITY <--> COMPILER
+    IDENTITY <--> TRACKING
+    IDENTITY <--> REPO
+    IDENTITY <--> PROVIDER
+```
+
+KnowledgeOps Lab stores enough local state to reproduce decisions and audit
+provenance without silently becoming the system of record for every remote
+artifact.
+
+For a compact presentation view, use
+[the single-slide Mermaid map](knowledgeops_architecture_slide.mmd).

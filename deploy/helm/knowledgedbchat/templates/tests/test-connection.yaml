@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: {{ printf "%s-test-connection" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "test") | nindent 4 }}
+  annotations:
+    "helm.sh/hook": test
+    "helm.sh/hook-delete-policy": before-hook-creation,hook-succeeded
+spec:
+  restartPolicy: Never
+  containers:
+    - name: check
+      image: curlimages/curl:8.10.1
+      command:
+        - sh
+        - -c
+        - |
+          set -e
+          echo "--> backend /health"
+          curl -fsS "http://{{ include "kdbc.backend.serviceName" . }}:{{ .Values.backend.service.port }}/health"
+          {{- if .Values.gateway.enabled }}
+          echo
+          echo "--> gateway /health"
+          curl -fsS "http://{{ include "kdbc.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/health"
+          echo "--> gateway -> backend /api/v1/system/health"
+          curl -fsS -o /dev/null -w '%{http_code}\n' "http://{{ include "kdbc.fullname" . }}-gateway:{{ .Values.gateway.service.port }}/api/v1/system/health"
+          {{- end }}
+          {{- if .Values.frontend.enabled }}
+          echo "--> frontend index"
+          curl -fsS -o /dev/null "http://{{ include "kdbc.frontend.serviceName" . }}:{{ .Values.frontend.service.port }}/"
+          {{- end }}
+          {{- if .Values.videoStreamer.enabled }}
+          echo "--> video-streamer /health"
+          curl -fsS "http://{{ include "kdbc.videoStreamer.serviceName" . }}:{{ .Values.videoStreamer.service.port }}/health"
+          {{- end }}
+          echo
+          echo "all checks passed"
+      resources:
+        requests:
+          cpu: 10m
+          memory: 32Mi

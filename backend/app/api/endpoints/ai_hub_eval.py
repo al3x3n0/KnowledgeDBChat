@@ -11,10 +11,14 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.endpoints.auth import get_current_active_user
 from app.core.config import settings
 from app.core.database import get_db
-from app.models.model_registry import ModelAdapter
-from app.models.user import User
-from app.schemas.ai_hub_eval import EvalTemplatesResponse, EvalTemplateInfo, RunEvalRequest, RunEvalResponse
 from app.core.feature_flags import get_str as get_feature_str
+from app.models.user import User
+from app.schemas.ai_hub_eval import (
+    EvalTemplateInfo,
+    EvalTemplatesResponse,
+    RunEvalRequest,
+    RunEvalResponse,
+)
 from app.services.ai_hub_eval_service import ai_hub_eval_service
 from app.services.model_registry_service import model_registry_service
 
@@ -62,7 +66,9 @@ async def list_enabled_eval_templates(
     override = await get_feature_str("ai_hub_enabled_eval_templates")
     # If an admin has explicitly set the override (even to empty), do not fall back to env.
     if override is None:
-        enabled_ids = _parse_enabled_ids(getattr(settings, "AI_HUB_EVAL_ENABLED_TEMPLATE_IDS", None))
+        enabled_ids = _parse_enabled_ids(
+            getattr(settings, "AI_HUB_EVAL_ENABLED_TEMPLATE_IDS", None)
+        )
     else:
         enabled_ids = _parse_enabled_ids(override)
 
@@ -100,7 +106,9 @@ async def run_eval(
     except Exception:
         raise HTTPException(status_code=400, detail="Invalid adapter_id")
 
-    adapter = await model_registry_service.get_adapter(db, adapter_uuid, current_user.id)
+    adapter = await model_registry_service.get_adapter(
+        db, adapter_uuid, current_user.id
+    )
     if not adapter:
         raise HTTPException(status_code=404, detail="Adapter not found")
 

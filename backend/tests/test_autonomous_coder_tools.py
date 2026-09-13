@@ -1,6 +1,5 @@
 """Tests for autonomous coding tool handler logic (clone_and_index_repo, browse_repo_files, etc.)."""
 
-import pytest
 import tempfile
 import uuid
 from pathlib import Path
@@ -16,7 +15,9 @@ def _make_manager_and_workspace(files: dict[str, str] | None = None):
     """Create a workspace manager with a populated workspace."""
     mgr = CodingWorkspaceManager()
     workspace_id = str(uuid.uuid4())
-    base_path = Path(tempfile.mkdtemp(prefix=f"test_coder_{workspace_id[:8]}_")).resolve()
+    base_path = Path(
+        tempfile.mkdtemp(prefix=f"test_coder_{workspace_id[:8]}_")
+    ).resolve()
 
     original_hashes = {}
     for rel, content in (files or {}).items():
@@ -78,29 +79,37 @@ class TestBrowseRepoFiles:
     """Tests for browse_repo_files tool logic."""
 
     def test_browse_root(self):
-        mgr, ws = _make_manager_and_workspace({
-            "src/main.py": "main",
-            "src/utils.py": "utils",
-            "README.md": "readme",
-        })
+        mgr, ws = _make_manager_and_workspace(
+            {
+                "src/main.py": "main",
+                "src/utils.py": "utils",
+                "README.md": "readme",
+            }
+        )
         entries = mgr.browse_files(ws, path=".")
         paths = {e["path"] for e in entries}
         assert "README.md" in paths
         assert "src" in paths
 
     def test_browse_subdirectory(self):
-        mgr, ws = _make_manager_and_workspace({
-            "src/main.py": "main",
-            "src/utils.py": "utils",
-        })
+        mgr, ws = _make_manager_and_workspace(
+            {
+                "src/main.py": "main",
+                "src/utils.py": "utils",
+            }
+        )
         entries = mgr.browse_files(ws, path="src")
         paths = {e["path"] for e in entries}
         assert "src/main.py" in paths
 
     def test_browse_with_glob(self):
-        mgr, ws = _make_manager_and_workspace({
-            "a.py": "a", "b.js": "b", "c.py": "c",
-        })
+        mgr, ws = _make_manager_and_workspace(
+            {
+                "a.py": "a",
+                "b.js": "b",
+                "c.py": "c",
+            }
+        )
         entries = mgr.browse_files(ws, glob_pattern="*.py")
         paths = {e["path"] for e in entries}
         assert "a.py" in paths
@@ -184,19 +193,23 @@ class TestSearchCode:
     """Tests for search_code tool logic."""
 
     def test_basic_search(self):
-        mgr, ws = _make_manager_and_workspace({
-            "a.py": "def foo():\n    return 42\n",
-            "b.py": "x = 1\n",
-        })
+        mgr, ws = _make_manager_and_workspace(
+            {
+                "a.py": "def foo():\n    return 42\n",
+                "b.py": "x = 1\n",
+            }
+        )
         results = mgr.search_code(ws, r"def \w+")
         assert len(results) == 1
         assert results[0]["file"] == "a.py"
 
     def test_search_with_file_glob(self):
-        mgr, ws = _make_manager_and_workspace({
-            "a.py": "match here",
-            "b.js": "match here too",
-        })
+        mgr, ws = _make_manager_and_workspace(
+            {
+                "a.py": "match here",
+                "b.js": "match here too",
+            }
+        )
         results = mgr.search_code(ws, "match", file_glob="*.py")
         assert all(r["file"].endswith(".py") for r in results)
 
@@ -218,11 +231,13 @@ class TestGetWorkspaceStatus:
         assert status["total_files"] == 2
 
     def test_tracks_all_change_types(self):
-        mgr, ws = _make_manager_and_workspace({
-            "keep.py": "keep",
-            "modify.py": "original",
-            "delete.py": "delete me",
-        })
+        mgr, ws = _make_manager_and_workspace(
+            {
+                "keep.py": "keep",
+                "modify.py": "original",
+                "delete.py": "delete me",
+            }
+        )
         (ws.base_path / "modify.py").write_text("changed")
         (ws.base_path / "delete.py").unlink()
         (ws.base_path / "new.py").write_text("new file")

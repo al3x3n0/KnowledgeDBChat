@@ -5,25 +5,29 @@ Creates PDF files from structured content using reportlab.
 """
 
 from io import BytesIO
-from typing import Dict, Optional, Any, List
-from loguru import logger
+from typing import Any, Dict, List, Optional
 
 from reportlab.lib import colors
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib.styles import ParagraphStyle, getSampleStyleSheet
 from reportlab.platypus import (
-    SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle,
-    PageBreak, Preformatted, ListFlowable, ListItem, HRFlowable
+    HRFlowable,
+    ListFlowable,
+    ListItem,
+    PageBreak,
+    Paragraph,
+    Preformatted,
+    SimpleDocTemplate,
+    Spacer,
+    Table,
+    TableStyle,
 )
-from reportlab.pdfbase import pdfmetrics
-from reportlab.pdfbase.ttfonts import TTFont
 
 
 def hex_to_color(hex_color: str) -> colors.Color:
     """Convert hex color string to reportlab Color."""
-    hex_color = hex_color.lstrip('#')
+    hex_color = hex_color.lstrip("#")
     r = int(hex_color[0:2], 16) / 255
     g = int(hex_color[2:4], 16) / 255
     b = int(hex_color[4:6], 16) / 255
@@ -87,7 +91,7 @@ class PDFBuilder:
         self,
         style: str = "professional",
         custom_theme: Optional[Dict[str, Any]] = None,
-        page_size: str = "letter"
+        page_size: str = "letter",
     ):
         """
         Initialize the builder with a style or custom theme.
@@ -161,98 +165,114 @@ class PDFBuilder:
         styles = getSampleStyleSheet()
 
         # Title style
-        styles.add(ParagraphStyle(
-            name='DocTitle',
-            parent=styles['Title'],
-            fontName=self.style_config["title_font"],
-            fontSize=self.style_config["title_size"],
-            textColor=hex_to_color(self.style_config["title_color"]),
-            alignment=TA_CENTER,
-            spaceAfter=20,
-        ))
+        styles.add(
+            ParagraphStyle(
+                name="DocTitle",
+                parent=styles["Title"],
+                fontName=self.style_config["title_font"],
+                fontSize=self.style_config["title_size"],
+                textColor=hex_to_color(self.style_config["title_color"]),
+                alignment=TA_CENTER,
+                spaceAfter=20,
+            )
+        )
 
         # Heading 1 style
-        styles.add(ParagraphStyle(
-            name='DocHeading1',
-            parent=styles['Heading1'],
-            fontName=self.style_config["title_font"],
-            fontSize=self.style_config["heading1_size"],
-            textColor=hex_to_color(self.style_config["heading_color"]),
-            spaceBefore=16,
-            spaceAfter=8,
-        ))
+        styles.add(
+            ParagraphStyle(
+                name="DocHeading1",
+                parent=styles["Heading1"],
+                fontName=self.style_config["title_font"],
+                fontSize=self.style_config["heading1_size"],
+                textColor=hex_to_color(self.style_config["heading_color"]),
+                spaceBefore=16,
+                spaceAfter=8,
+            )
+        )
 
         # Heading 2 style
-        styles.add(ParagraphStyle(
-            name='DocHeading2',
-            parent=styles['Heading2'],
-            fontName=self.style_config["title_font"],
-            fontSize=self.style_config["heading2_size"],
-            textColor=hex_to_color(self.style_config["heading_color"]),
-            spaceBefore=12,
-            spaceAfter=6,
-        ))
+        styles.add(
+            ParagraphStyle(
+                name="DocHeading2",
+                parent=styles["Heading2"],
+                fontName=self.style_config["title_font"],
+                fontSize=self.style_config["heading2_size"],
+                textColor=hex_to_color(self.style_config["heading_color"]),
+                spaceBefore=12,
+                spaceAfter=6,
+            )
+        )
 
         # Heading 3 style
-        styles.add(ParagraphStyle(
-            name='DocHeading3',
-            fontName=self.style_config["body_font"],
-            fontSize=self.style_config["body_size"] + 1,
-            textColor=hex_to_color(self.style_config["heading_color"]),
-            spaceBefore=10,
-            spaceAfter=4,
-            fontWeight='bold',
-        ))
+        styles.add(
+            ParagraphStyle(
+                name="DocHeading3",
+                fontName=self.style_config["body_font"],
+                fontSize=self.style_config["body_size"] + 1,
+                textColor=hex_to_color(self.style_config["heading_color"]),
+                spaceBefore=10,
+                spaceAfter=4,
+                fontWeight="bold",
+            )
+        )
 
         # Body style
-        styles.add(ParagraphStyle(
-            name='DocBody',
-            parent=styles['Normal'],
-            fontName=self.style_config["body_font"],
-            fontSize=self.style_config["body_size"],
-            textColor=hex_to_color(self.style_config["text_color"]),
-            alignment=TA_JUSTIFY,
-            spaceAfter=10,
-            leading=14,
-        ))
+        styles.add(
+            ParagraphStyle(
+                name="DocBody",
+                parent=styles["Normal"],
+                fontName=self.style_config["body_font"],
+                fontSize=self.style_config["body_size"],
+                textColor=hex_to_color(self.style_config["text_color"]),
+                alignment=TA_JUSTIFY,
+                spaceAfter=10,
+                leading=14,
+            )
+        )
 
         # Code style
-        styles.add(ParagraphStyle(
-            name='DocCode',
-            fontName=self.style_config["code_font"],
-            fontSize=self.style_config["code_size"],
-            textColor=hex_to_color(self.style_config["text_color"]),
-            backColor=colors.Color(0.95, 0.95, 0.95),
-            leftIndent=10,
-            rightIndent=10,
-            spaceBefore=8,
-            spaceAfter=8,
-        ))
+        styles.add(
+            ParagraphStyle(
+                name="DocCode",
+                fontName=self.style_config["code_font"],
+                fontSize=self.style_config["code_size"],
+                textColor=hex_to_color(self.style_config["text_color"]),
+                backColor=colors.Color(0.95, 0.95, 0.95),
+                leftIndent=10,
+                rightIndent=10,
+                spaceBefore=8,
+                spaceAfter=8,
+            )
+        )
 
         # Quote style
-        styles.add(ParagraphStyle(
-            name='DocQuote',
-            parent=styles['Normal'],
-            fontName=self.style_config["body_font"],
-            fontSize=self.style_config["body_size"],
-            textColor=hex_to_color(self.style_config["text_color"]),
-            leftIndent=20,
-            borderLeftWidth=3,
-            borderLeftColor=hex_to_color(self.style_config["accent_color"]),
-            spaceBefore=10,
-            spaceAfter=10,
-        ))
+        styles.add(
+            ParagraphStyle(
+                name="DocQuote",
+                parent=styles["Normal"],
+                fontName=self.style_config["body_font"],
+                fontSize=self.style_config["body_size"],
+                textColor=hex_to_color(self.style_config["text_color"]),
+                leftIndent=20,
+                borderLeftWidth=3,
+                borderLeftColor=hex_to_color(self.style_config["accent_color"]),
+                spaceBefore=10,
+                spaceAfter=10,
+            )
+        )
 
         # List item style
-        styles.add(ParagraphStyle(
-            name='DocListItem',
-            parent=styles['Normal'],
-            fontName=self.style_config["body_font"],
-            fontSize=self.style_config["body_size"],
-            textColor=hex_to_color(self.style_config["text_color"]),
-            leftIndent=20,
-            spaceAfter=4,
-        ))
+        styles.add(
+            ParagraphStyle(
+                name="DocListItem",
+                parent=styles["Normal"],
+                fontName=self.style_config["body_font"],
+                fontSize=self.style_config["body_size"],
+                textColor=hex_to_color(self.style_config["text_color"]),
+                leftIndent=20,
+                spaceAfter=4,
+            )
+        )
 
         self._styles = styles
         return styles
@@ -262,7 +282,7 @@ class PDFBuilder:
         title: str,
         content_items: List[Dict[str, Any]],
         author: Optional[str] = None,
-        subject: Optional[str] = None
+        subject: Optional[str] = None,
     ) -> bytes:
         """
         Build a PDF document from content items.
@@ -305,14 +325,16 @@ class PDFBuilder:
         story = []
 
         # Add title
-        story.append(Paragraph(self._escape_html(title), styles['DocTitle']))
-        story.append(HRFlowable(
-            width="100%",
-            thickness=1,
-            color=hex_to_color(self.style_config["accent_color"]),
-            spaceBefore=0,
-            spaceAfter=20,
-        ))
+        story.append(Paragraph(self._escape_html(title), styles["DocTitle"]))
+        story.append(
+            HRFlowable(
+                width="100%",
+                thickness=1,
+                color=hex_to_color(self.style_config["accent_color"]),
+                spaceBefore=0,
+                spaceAfter=20,
+            )
+        )
 
         # Process content items
         for item in content_items:
@@ -326,16 +348,22 @@ class PDFBuilder:
 
             elif item_type == "paragraph":
                 text = self._escape_html(item.get("text", ""))
-                story.append(Paragraph(text, styles['DocBody']))
+                story.append(Paragraph(text, styles["DocBody"]))
 
             elif item_type == "bullet_list":
                 items = item.get("items", [])
                 list_items = []
                 for list_item in items:
                     list_items.append(
-                        ListItem(Paragraph(self._escape_html(list_item), styles['DocListItem']))
+                        ListItem(
+                            Paragraph(
+                                self._escape_html(list_item), styles["DocListItem"]
+                            )
+                        )
                     )
-                story.append(ListFlowable(list_items, bulletType='bullet', start='bulletchar'))
+                story.append(
+                    ListFlowable(list_items, bulletType="bullet", start="bulletchar")
+                )
                 story.append(Spacer(1, 10))
 
             elif item_type == "numbered_list":
@@ -343,9 +371,13 @@ class PDFBuilder:
                 list_items = []
                 for list_item in items:
                     list_items.append(
-                        ListItem(Paragraph(self._escape_html(list_item), styles['DocListItem']))
+                        ListItem(
+                            Paragraph(
+                                self._escape_html(list_item), styles["DocListItem"]
+                            )
+                        )
                     )
-                story.append(ListFlowable(list_items, bulletType='1'))
+                story.append(ListFlowable(list_items, bulletType="1"))
                 story.append(Spacer(1, 10))
 
             elif item_type == "code_block":
@@ -354,13 +386,14 @@ class PDFBuilder:
 
                 # Add language label if provided
                 if language:
-                    story.append(Paragraph(
-                        f"<b>{self._escape_html(language)}</b>",
-                        styles['DocCode']
-                    ))
+                    story.append(
+                        Paragraph(
+                            f"<b>{self._escape_html(language)}</b>", styles["DocCode"]
+                        )
+                    )
 
                 # Add code as preformatted text
-                story.append(Preformatted(code, styles['DocCode']))
+                story.append(Preformatted(code, styles["DocCode"]))
                 story.append(Spacer(1, 10))
 
             elif item_type == "table":
@@ -376,21 +409,58 @@ class PDFBuilder:
 
                 if table_data:
                     table = Table(table_data, repeatRows=1 if headers else 0)
-                    table_style = TableStyle([
-                        ('BACKGROUND', (0, 0), (-1, 0), hex_to_color(self.style_config["heading_color"])),
-                        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
-                        ('FONTNAME', (0, 0), (-1, 0), self.style_config["title_font"]),
-                        ('FONTSIZE', (0, 0), (-1, 0), self.style_config["body_size"]),
-                        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
-                        ('TOPPADDING', (0, 0), (-1, 0), 8),
-                        ('FONTNAME', (0, 1), (-1, -1), self.style_config["body_font"]),
-                        ('FONTSIZE', (0, 1), (-1, -1), self.style_config["body_size"] - 1),
-                        ('TEXTCOLOR', (0, 1), (-1, -1), hex_to_color(self.style_config["text_color"])),
-                        ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
-                        ('GRID', (0, 0), (-1, -1), 0.5, colors.grey),
-                        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.Color(0.95, 0.95, 0.95)]),
-                    ])
+                    table_style = TableStyle(
+                        [
+                            (
+                                "BACKGROUND",
+                                (0, 0),
+                                (-1, 0),
+                                hex_to_color(self.style_config["heading_color"]),
+                            ),
+                            ("TEXTCOLOR", (0, 0), (-1, 0), colors.white),
+                            (
+                                "FONTNAME",
+                                (0, 0),
+                                (-1, 0),
+                                self.style_config["title_font"],
+                            ),
+                            (
+                                "FONTSIZE",
+                                (0, 0),
+                                (-1, 0),
+                                self.style_config["body_size"],
+                            ),
+                            ("BOTTOMPADDING", (0, 0), (-1, 0), 8),
+                            ("TOPPADDING", (0, 0), (-1, 0), 8),
+                            (
+                                "FONTNAME",
+                                (0, 1),
+                                (-1, -1),
+                                self.style_config["body_font"],
+                            ),
+                            (
+                                "FONTSIZE",
+                                (0, 1),
+                                (-1, -1),
+                                self.style_config["body_size"] - 1,
+                            ),
+                            (
+                                "TEXTCOLOR",
+                                (0, 1),
+                                (-1, -1),
+                                hex_to_color(self.style_config["text_color"]),
+                            ),
+                            ("ALIGN", (0, 0), (-1, -1), "LEFT"),
+                            ("VALIGN", (0, 0), (-1, -1), "MIDDLE"),
+                            ("GRID", (0, 0), (-1, -1), 0.5, colors.grey),
+                            (
+                                "ROWBACKGROUNDS",
+                                (0, 1),
+                                (-1, -1),
+                                [colors.white, colors.Color(0.95, 0.95, 0.95)],
+                            ),
+                        ]
+                    )
                     table.setStyle(table_style)
                     story.append(table)
                     story.append(Spacer(1, 15))
@@ -398,25 +468,45 @@ class PDFBuilder:
             elif item_type == "quote":
                 text = self._escape_html(item.get("text", ""))
                 # Create a quote with left border effect using table
-                quote_table = Table([[Paragraph(f"<i>{text}</i>", styles['DocBody'])]], colWidths=[self.page_size[0] - 200])
-                quote_table.setStyle(TableStyle([
-                    ('LEFTPADDING', (0, 0), (-1, -1), 15),
-                    ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-                    ('TOPPADDING', (0, 0), (-1, -1), 5),
-                    ('LINEBEFOERE', (0, 0), (0, -1), 3, hex_to_color(self.style_config["accent_color"])),
-                    ('BACKGROUND', (0, 0), (-1, -1), colors.Color(0.98, 0.98, 0.98)),
-                ]))
+                quote_table = Table(
+                    [[Paragraph(f"<i>{text}</i>", styles["DocBody"])]],
+                    colWidths=[self.page_size[0] - 200],
+                )
+                quote_table.setStyle(
+                    TableStyle(
+                        [
+                            ("LEFTPADDING", (0, 0), (-1, -1), 15),
+                            ("BOTTOMPADDING", (0, 0), (-1, -1), 5),
+                            ("TOPPADDING", (0, 0), (-1, -1), 5),
+                            (
+                                "LINEBEFOERE",
+                                (0, 0),
+                                (0, -1),
+                                3,
+                                hex_to_color(self.style_config["accent_color"]),
+                            ),
+                            (
+                                "BACKGROUND",
+                                (0, 0),
+                                (-1, -1),
+                                colors.Color(0.98, 0.98, 0.98),
+                            ),
+                        ]
+                    )
+                )
                 story.append(quote_table)
                 story.append(Spacer(1, 10))
 
             elif item_type == "horizontal_rule":
-                story.append(HRFlowable(
-                    width="100%",
-                    thickness=1,
-                    color=hex_to_color(self.style_config["accent_color"]),
-                    spaceBefore=10,
-                    spaceAfter=10,
-                ))
+                story.append(
+                    HRFlowable(
+                        width="100%",
+                        thickness=1,
+                        color=hex_to_color(self.style_config["accent_color"]),
+                        spaceBefore=10,
+                        spaceAfter=10,
+                    )
+                )
 
             elif item_type == "page_break":
                 story.append(PageBreak())
@@ -424,7 +514,7 @@ class PDFBuilder:
             else:
                 # Default to paragraph
                 text = self._escape_html(str(item.get("text", item)))
-                story.append(Paragraph(text, styles['DocBody']))
+                story.append(Paragraph(text, styles["DocBody"]))
 
         # Build PDF
         doc.build(story)
@@ -435,9 +525,4 @@ class PDFBuilder:
         """Escape HTML special characters for reportlab paragraphs."""
         if not text:
             return ""
-        return (
-            text
-            .replace('&', '&amp;')
-            .replace('<', '&lt;')
-            .replace('>', '&gt;')
-        )
+        return text.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")

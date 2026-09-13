@@ -1,0 +1,75 @@
+{{- if .Values.celeryBeat.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-celery-beat" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "celery-beat") | nindent 4 }}
+spec:
+  # Exactly one scheduler, ever: two beats double-fire every periodic task.
+  replicas: 1
+  strategy:
+    type: Recreate
+  selector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-beat") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-beat") | nindent 8 }}
+      annotations:
+        {{- include "kdbc.configChecksums" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kdbc.serviceAccountName" . }}
+      {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      containers:
+        - name: celery-beat
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.backend.pullPolicy }}
+          command:
+            - celery
+            - -A
+            - app.core.celery
+            - beat
+            - --loglevel={{ lower .Values.config.logLevel }}
+            - --schedule=/app/data/celerybeat/schedule
+          env:
+            {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            {{- with .Values.global.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            {{- include "kdbc.appEnvFrom" . | nindent 12 }}
+          volumeMounts:
+            {{- include "kdbc.dataVolumeMounts" . | nindent 12 }}
+          resources:
+            {{- toYaml .Values.celeryBeat.resources | nindent 12 }}
+      initContainers:
+        - name: init-schedule-dir
+          image: "{{ .Values.image.backend.repository }}:{{ .Values.image.backend.tag }}"
+          imagePullPolicy: {{ .Values.image.backend.pullPolicy }}
+          command: ["sh", "-c", "mkdir -p /app/data/celerybeat"]
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+      volumes:
+        {{- include "kdbc.dataVolume" . | nindent 8 }}
+      {{- with .Values.celeryBeat.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.celeryBeat.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.celeryBeat.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

@@ -1,7 +1,5 @@
 """Tests for prompt template management tools (switch_strategy, set_focus_directive, get_available_strategies)."""
 
-import pytest
-
 
 class TestSwitchStrategy:
     """Tests for switch_strategy tool logic."""
@@ -16,18 +14,39 @@ class TestSwitchStrategy:
         assert not role
 
     def test_invalid_role_rejected(self):
-        valid_roles = {"researcher", "critic", "synthesizer", "verifier", "coder", "author"}
+        valid_roles = {
+            "researcher",
+            "critic",
+            "synthesizer",
+            "verifier",
+            "coder",
+            "author",
+        }
         assert "explorer" not in valid_roles
         assert "manager" not in valid_roles
 
     def test_all_valid_roles_accepted(self):
-        valid_roles = {"researcher", "critic", "synthesizer", "verifier", "coder", "author"}
+        valid_roles = {
+            "researcher",
+            "critic",
+            "synthesizer",
+            "verifier",
+            "coder",
+            "author",
+        }
         for role in valid_roles:
             assert role in valid_roles
 
     def test_role_case_insensitive(self):
         role = "Researcher".strip().lower()
-        valid_roles = {"researcher", "critic", "synthesizer", "verifier", "coder", "author"}
+        valid_roles = {
+            "researcher",
+            "critic",
+            "synthesizer",
+            "verifier",
+            "coder",
+            "author",
+        }
         assert role in valid_roles
 
     def test_state_profile_updated(self):
@@ -38,13 +57,15 @@ class TestSwitchStrategy:
 
     def test_strategy_switch_logged(self):
         state = {"strategy_switches": []}
-        state["strategy_switches"].append({
-            "from": "researcher",
-            "to": "critic",
-            "reason": "Enough findings gathered, need validation",
-            "iteration": 8,
-            "timestamp": "2026-03-20T12:00:00",
-        })
+        state["strategy_switches"].append(
+            {
+                "from": "researcher",
+                "to": "critic",
+                "reason": "Enough findings gathered, need validation",
+                "iteration": 8,
+                "timestamp": "2026-03-20T12:00:00",
+            }
+        )
         assert len(state["strategy_switches"]) == 1
         assert state["strategy_switches"][0]["from"] == "researcher"
         assert state["strategy_switches"][0]["to"] == "critic"
@@ -216,7 +237,9 @@ class TestPromptInjection:
                 prompt += f"- Context: {ctx}\n"
             outputs = handoff_contract.get("expected_outputs", [])
             if isinstance(outputs, list) and outputs:
-                prompt += f"- Expected outputs: {', '.join(str(o) for o in outputs[:10])}\n"
+                prompt += (
+                    f"- Expected outputs: {', '.join(str(o) for o in outputs[:10])}\n"
+                )
             prompt += "- You MUST produce results that satisfy the expected outputs.\n"
         assert "HANDOFF CONTRACT" in prompt
         assert "transformers" in prompt
@@ -247,6 +270,7 @@ class TestPromptManagementSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "switch_strategy" in names
         assert "set_focus_directive" in names
@@ -254,6 +278,7 @@ class TestPromptManagementSchemas:
 
     def test_switch_strategy_requires_role(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("switch_strategy")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -261,6 +286,7 @@ class TestPromptManagementSchemas:
 
     def test_switch_strategy_has_role_enum(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("switch_strategy")
         role_prop = tool["parameters"]["properties"]["role"]
         assert "enum" in role_prop
@@ -270,6 +296,7 @@ class TestPromptManagementSchemas:
 
     def test_set_focus_directive_requires_directive(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("set_focus_directive")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -277,11 +304,13 @@ class TestPromptManagementSchemas:
 
     def test_set_focus_directive_has_append(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("set_focus_directive")
         assert "append" in tool["parameters"]["properties"]
 
     def test_get_available_strategies_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_available_strategies")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -293,21 +322,36 @@ class TestPromptManagementRegistry:
 
     def test_all_are_read(self):
         from app.services.tool_registry import get_tool_metadata
-        for tool_name in ["switch_strategy", "set_focus_directive", "get_available_strategies"]:
+
+        for tool_name in [
+            "switch_strategy",
+            "set_focus_directive",
+            "get_available_strategies",
+        ]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.effects == "read"
 
     def test_all_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
-        for tool_name in ["switch_strategy", "set_focus_directive", "get_available_strategies"]:
+
+        for tool_name in [
+            "switch_strategy",
+            "set_focus_directive",
+            "get_available_strategies",
+        ]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.cost_tier == "low"
 
     def test_none_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
-        for tool_name in ["switch_strategy", "set_focus_directive", "get_available_strategies"]:
+
+        for tool_name in [
+            "switch_strategy",
+            "set_focus_directive",
+            "get_available_strategies",
+        ]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.network == "none"

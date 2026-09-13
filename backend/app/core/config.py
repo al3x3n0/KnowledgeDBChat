@@ -3,18 +3,19 @@ Application configuration settings.
 """
 
 import os
-from typing import Optional, List
-from pydantic import field_validator
-from pydantic_settings import BaseSettings
+from typing import List, Optional
+
 from loguru import logger
+from pydantic import field_validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
     """Application settings."""
-    
+
     # Database
-    DATABASE_URL: str = "postgresql://user:password@localhost:5432/knowledge_db"
-    REDIS_URL: str = "redis://localhost:6379/0"
+    DATABASE_URL: str = "postgresql://user:password@localhost:25432/knowledge_db"
+    REDIS_URL: str = "redis://localhost:26379/0"
 
     # Database pool tuning (async engine)
     DB_POOL_SIZE: int = 20
@@ -22,7 +23,9 @@ class Settings(BaseSettings):
     DB_POOL_TIMEOUT_SECONDS: int = 10
     DB_POOL_RECYCLE_SECONDS: int = 300
     # Backpressure: limit concurrent DB sessions per API instance
-    DB_SESSION_CONCURRENCY_LIMIT: Optional[int] = None  # default: pool_size + max_overflow
+    DB_SESSION_CONCURRENCY_LIMIT: Optional[
+        int
+    ] = None  # default: pool_size + max_overflow
     DB_SESSION_ACQUIRE_TIMEOUT_SECONDS: int = 2
 
     # Celery task DB pool tuning (fresh engine per task invocation)
@@ -30,25 +33,79 @@ class Settings(BaseSettings):
     CELERY_DB_POOL_SIZE: int = 2
     CELERY_DB_MAX_OVERFLOW: int = 5
     CELERY_DB_POOL_TIMEOUT_SECONDS: int = 10
-    
+
     # LLM Configuration
-    # Provider: 'ollama' (local), 'deepseek', 'openai', 'anthropic',
-    # 'qwen' (DashScope), or 'kimi' (Moonshot AI)
-    LLM_PROVIDER: str = "ollama"
+    # Provider: 'deepseek', 'openai', 'anthropic', 'qwen' (DashScope),
+    # 'kimi' (Moonshot AI), or 'ollama' (local).
+    #
+    # Defaults to deepseek because the stack no longer bundles Ollama. The
+    # previous default named a service nothing starts, so a stack brought up
+    # without a .env pointed at a dead host and failed with a connection
+    # refused that said nothing about configuration. Failing on a missing
+    # DEEPSEEK_API_KEY at least names what is missing.
+    LLM_PROVIDER: str = "deepseek"
+    # Only used when LLM_PROVIDER is 'ollama'. Point it at an instance you run
+    # yourself; nothing in the compose stacks serves this.
     OLLAMA_BASE_URL: str = "http://localhost:11434"
-    DEFAULT_MODEL: str = "llama3.2:1b"  # Smallest model for Mac compatibility (~1GB, best for 8GB Mac)
-    # Alternative models: "llama3.2:3b" (~2GB), "phi3:mini" (~2GB), "gemma:2b" (~1.5GB)
-    # For more powerful systems: "llama2" (~4GB), "mistral:7b" (~4GB), "llama3.2" (~4GB)
+    # Must name a model the configured provider actually serves: it reaches
+    # the request as `model or settings.<PROVIDER>_MODEL`, so an Ollama model
+    # name under LLM_PROVIDER=deepseek is sent to DeepSeek and rejected with a
+    # 400 naming the three it accepts.
+    DEFAULT_MODEL: str = "deepseek-v4-pro"
+    # For Ollama, models sized for a Mac: "llama3.2:1b" (~1GB, best for 8GB),
+    # "llama3.2:3b" (~2GB), "phi3:mini" (~2GB), "gemma:2b" (~1.5GB); on more
+    # memory, "llama2" (~4GB), "mistral:7b" (~4GB), "llama3.2" (~4GB).
+    # Which runtime executes the embedding and reranking models.
+    #
+    # "onnx" (default) runs them under ONNX Runtime, 53 MB, loading each
+    # model's own `onnx/model.onnx` from the same Hugging Face repo
+    # sentence-transformers would have used. It replaced 578 MB of torch,
+    # transformers, scipy and scikit-learn, and it runs the cross-encoder that
+    # torch cannot on this platform. Measured agreement with the torch
+    # pipeline: per-vector cosine 1.000000, identical top-5 rankings.
+    #
+    # "sentence-transformers" restores the old path for anyone who wants it:
+    # `pip install sentence-transformers` first, it is no longer installed.
+    EMBEDDING_BACKEND: str = "onnx"
     EMBEDDING_MODEL: str = "all-MiniLM-L6-v2"
     # Alternative embedding models: "all-mpnet-base-v2" (better quality), "multilingual-mpnet-base-v2" (multilingual)
-    EMBEDDING_MODEL_OPTIONS: List[str] = ["all-MiniLM-L6-v2", "all-mpnet-base-v2", "multilingual-mpnet-base-v2"]
+    EMBEDDING_MODEL_OPTIONS: List[str] = [
+        "all-MiniLM-L6-v2",
+        "all-mpnet-base-v2",
+        "multilingual-mpnet-base-v2",
+    ]
 
     # DeepSeek (external) — optional
     DEEPSEEK_API_BASE: str = "https://api.deepseek.com/v1"
     DEEPSEEK_API_KEY: Optional[str] = None
-    DEEPSEEK_MODEL: str = "deepseek-chat"
+    # deepseek-chat was retired; the API now accepts deepseek-v4-pro,
+    # deepseek-v4-flash and deepseek-v4-flash-vision-exp, and rejects
+    # anything else with a 400 naming the three.
+    DEEPSEEK_MODEL: str = "deepseek-v4-pro"
     DEEPSEEK_TIMEOUT_SECONDS: int = 120
-    DEEPSEEK_MAX_RESPONSE_TOKENS: int = 2000
+    # These models reason before answering and charge it to max_tokens, so
+    # this has to fit the thinking as well as the answer. At 2000 an agent
+    # decision came back empty once the prompt grew. At 8000 the same thing
+    # happened again on a research job: six calls in one run came back with
+    # finish_reason='length' and completion_tokens exactly 8000, having spent
+    # the whole budget reasoning and emitted no answer at all -- the thinking
+    # phase, the decision, and the memory ranker each failed that way, so the
+    # job could not advance past iteration zero.
+    DEEPSEEK_MAX_RESPONSE_TOKENS: int = 16000
+    # A floor under whatever a caller asks for. Call sites across this
+    # codebase name budgets between 200 and 4096, all written when a model
+    # emitted its answer directly. These models reason first and charge it
+    # to the same budget, so a number that sizes the answer truncates the
+    # thinking and the call returns empty. The caller's number stays the
+    # intent; this is the headroom it did not know it needed.
+    DEEPSEEK_MIN_COMPLETION_TOKENS: int = 4000
+
+    # Where reproducibility bundles are written. Hardcoded to the container
+    # path until a run outside it failed every record_entry with "Read-only
+    # file system: '/app'" -- a warning, so the run continued and simply
+    # produced no bundle. That is the quietest possible version of the gap
+    # this machinery exists to close.
+    AGENT_BUNDLE_ROOT: str = "/app/data/agent-bundles"
 
     # OpenAI (external, official SDK) — optional
     OPENAI_API_BASE: str = "https://api.openai.com/v1"
@@ -83,42 +140,82 @@ class Settings(BaseSettings):
     CHROMA_COLLECTION_NAME: str = "knowledge_base"
 
     # Vector store provider
-    # Supported: "chroma" (embedded), "qdrant" (service)
+    # Supported: "qdrant" (service, the default) and "chroma" (embedded).
+    #
+    # chromadb is NOT installed by default. It brings 173 MB -- kubernetes,
+    # onnxruntime, pulsar-client and the rest -- for a backend this project
+    # does not use, so it was dropped from requirements.txt. The code still
+    # supports it: `pip install chromadb==0.4.18` and set this to "chroma".
+    # Selecting it without installing it raises with the import error rather
+    # than failing obscurely later.
     VECTOR_STORE_PROVIDER: str = "qdrant"
 
     # Qdrant (when VECTOR_STORE_PROVIDER="qdrant")
-    QDRANT_URL: str = "http://localhost:6333"
+    QDRANT_URL: str = "http://localhost:26333"
     QDRANT_API_KEY: Optional[str] = None
     QDRANT_COLLECTION_NAME: str = "knowledge_base"
-    
+
     # Security
     SECRET_KEY: str = "your-secret-key-change-in-production"
     ALGORITHM: str = "HS256"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
-    
+    # Ed25519 seed is base64/base64url-encoded raw 32-byte private key material.
+    # When omitted, a stable development seed is domain-derived from SECRET_KEY.
+    AUTONOMOUS_RND_AUDIT_SIGNING_KEY_ID: str = "knowledgeops-ed25519-v1"
+    AUTONOMOUS_RND_AUDIT_SIGNING_PRIVATE_KEY: Optional[str] = None
+    # Launching an evaluation suite fans out into many unattended agent jobs,
+    # so it stays opt-in and hard-capped on total trial jobs per launch.
+    AUTONOMOUS_RND_EVAL_LAUNCH_ENABLED: bool = False
+    AUTONOMOUS_RND_EVAL_MAX_TRIAL_JOBS: int = 30
+    AUTONOMOUS_RND_EVAL_TRIAL_MAX_ITERATIONS: int = 25
+    AUTONOMOUS_RND_EVAL_TRIAL_MAX_RUNTIME_MINUTES: int = 30
+    # Exact hostnames permitted to resolve to private/loopback addresses through
+    # the external-system gateway (for example a Docker-internal CompOps API).
+    EXTERNAL_GATEWAY_PRIVATE_HOST_ALLOWLIST: str = ""
+
     # Application
     DEBUG: bool = True
     HOST: str = "0.0.0.0"
     PORT: int = 8000
     WORKERS: int = 1
-    
+
     # Data Sources
     GITLAB_URL: Optional[str] = None
     GITLAB_TOKEN: Optional[str] = None
     CONFLUENCE_URL: Optional[str] = None
     CONFLUENCE_USER: Optional[str] = None
     CONFLUENCE_API_TOKEN: Optional[str] = None
-    
+
     # Vision
-    VISION_MODEL: str = "llava"  # Vision-capable model for image analysis (e.g. llava, llava:13b)
+    #
+    # OLLAMA ONLY. The image-analysis tool posts Ollama's payload shape to
+    # {OLLAMA_BASE_URL}/api/generate, so this names an Ollama model whatever
+    # LLM_PROVIDER says, and the tool needs an Ollama instance to reach.
+    VISION_MODEL: str = (
+        "llava"  # Vision-capable model for image analysis (e.g. llava, llava:13b)
+    )
 
     # Transcription
     WHISPER_MODEL_SIZE: str = "base"  # Options: tiny, base, small, medium, large
     WHISPER_DEVICE: str = "auto"  # Options: cpu, cuda, auto
     TRANSCRIPTION_LANGUAGE: str = "auto"  # Default language for transcription ("auto" enables Whisper language detection)
-    TRANSCRIPTION_SPEAKER_DIARIZATION: bool = False  # Enable speaker labels in transcripts
-    TRANSCRIPTION_DIARIZATION_MODEL: str = "pyannote/speaker-diarization-3.1"  # Pyannote diarization model
-    HUGGINGFACE_TOKEN: Optional[str] = None  # HF token required to download some pyannote models
+    TRANSCRIPTION_SPEAKER_DIARIZATION: bool = (
+        False  # Enable speaker labels in transcripts
+    )
+    TRANSCRIPTION_DIARIZATION_MODEL: str = (
+        "pyannote/speaker-diarization-3.1"  # Pyannote diarization model
+    )
+    HUGGINGFACE_TOKEN: Optional[
+        str
+    ] = None  # HF token required to download some pyannote models
+    # Transcription runs on its own worker and its own queue. The audio stack
+    # (Whisper, librosa, speechbrain, resemblyzer, and the numba/llvmlite pair
+    # under them) is ~250 MB that every API and Celery container used to carry
+    # to run a feature one worker performs; it now lives only in
+    # Dockerfile.transcription-worker. Nothing consumes this queue unless that
+    # worker is running, so transcription jobs wait rather than fail -- the
+    # same contract the LaTeX queue has.
+    TRANSCRIPTION_CELERY_QUEUE: str = "transcription"
     TRANSCRIPTION_FILTER_INTRO_JUNK: bool = True
     TRANSCRIPTION_INTRO_MAX_SECONDS: float = 12.0
     TRANSCRIPTION_INTRO_NO_SPEECH_PROB: float = 0.30
@@ -126,7 +223,9 @@ class Settings(BaseSettings):
 
     # LDAP (optional)
     LDAP_ENABLED: bool = False
-    LDAP_URI: Optional[str] = None  # e.g. "ldap://ldap.example.com:389" or "ldaps://ldap.example.com:636"
+    LDAP_URI: Optional[
+        str
+    ] = None  # e.g. "ldap://ldap.example.com:389" or "ldaps://ldap.example.com:636"
     LDAP_START_TLS: bool = False
     LDAP_INSECURE_SKIP_TLS_VERIFY: bool = False
     LDAP_CONNECT_TIMEOUT_SECONDS: int = 8
@@ -137,9 +236,15 @@ class Settings(BaseSettings):
 
     # User search
     LDAP_BASE_DN: Optional[str] = None  # e.g. "dc=example,dc=com"
-    LDAP_USER_DN_TEMPLATE: Optional[str] = None  # e.g. "uid={username},ou=People,dc=example,dc=com"
-    LDAP_USER_SEARCH_FILTER: str = "(|(uid={username})(sAMAccountName={username})(userPrincipalName={username}))"
-    LDAP_IMPORT_FILTER: str = "(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
+    LDAP_USER_DN_TEMPLATE: Optional[
+        str
+    ] = None  # e.g. "uid={username},ou=People,dc=example,dc=com"
+    LDAP_USER_SEARCH_FILTER: str = (
+        "(|(uid={username})(sAMAccountName={username})(userPrincipalName={username}))"
+    )
+    LDAP_IMPORT_FILTER: str = (
+        "(|(objectClass=person)(objectClass=inetOrgPerson)(objectClass=user))"
+    )
     LDAP_SEARCH_PAGE_SIZE: int = 200
 
     # Attribute mapping
@@ -147,27 +252,31 @@ class Settings(BaseSettings):
     LDAP_EMAIL_ATTRIBUTE: str = "mail"
     LDAP_FULL_NAME_ATTRIBUTE: str = "displayName"
     LDAP_GROUPS_ATTRIBUTE: str = "memberOf"
-    LDAP_DEFAULT_EMAIL_DOMAIN: Optional[str] = None  # if LDAP has no email, we can synthesize `${username}@domain`
-    LDAP_USER_ATTRIBUTES: str = "uid,sAMAccountName,userPrincipalName,mail,cn,displayName,memberOf"
+    LDAP_DEFAULT_EMAIL_DOMAIN: Optional[
+        str
+    ] = None  # if LDAP has no email, we can synthesize `${username}@domain`
+    LDAP_USER_ATTRIBUTES: str = (
+        "uid,sAMAccountName,userPrincipalName,mail,cn,displayName,memberOf"
+    )
 
     # Role mapping (comma-separated group DNs)
     LDAP_ADMIN_GROUP_DNS: Optional[str] = None
     LDAP_VIEWER_GROUP_DNS: Optional[str] = None
     LDAP_SYNC_ON_LOGIN: bool = True
     LDAP_CREATE_USER_ON_LOGIN: bool = True
-    
+
     # File Upload Limits
     MAX_FILE_SIZE: int = 500 * 1024 * 1024  # 500MB default (videos can be large)
     MAX_VIDEO_SIZE: int = 2000 * 1024 * 1024  # 2GB for videos specifically
-    
+
     # Celery
-    CELERY_BROKER_URL: str = "redis://localhost:6379/0"
-    CELERY_RESULT_BACKEND: str = "redis://localhost:6379/0"
-    
+    CELERY_BROKER_URL: str = "redis://localhost:26379/0"
+    CELERY_RESULT_BACKEND: str = "redis://localhost:26379/0"
+
     # Logging
     LOG_LEVEL: str = "INFO"
     LOG_FILE: str = "./data/logs/app.log"
-    
+
     # Chat Configuration
     MAX_CONTEXT_LENGTH: int = 4000
     MAX_RESPONSE_LENGTH: int = 1000
@@ -176,23 +285,33 @@ class Settings(BaseSettings):
 
     # Backpressure (global concurrency caps)
     LLM_MAX_CONCURRENCY: int = 4
-    
+
     # Document Processing
     CHUNK_SIZE: int = 1000
     CHUNK_OVERLAP: int = 200
     MAX_SEARCH_RESULTS: int = 5
-    
+
     # Summarization
-    SUMMARIZATION_HEAVY_THRESHOLD_CHARS: int = 30000  # Above this, treat as heavy and prefer external provider
-    SUMMARIZATION_CHUNK_SIZE_CHARS: int = 12000       # Per-chunk size for document summarization
-    SUMMARIZATION_CHUNK_OVERLAP_CHARS: int = 800      # Overlap between chunks to preserve continuity
+    SUMMARIZATION_HEAVY_THRESHOLD_CHARS: int = (
+        30000  # Above this, treat as heavy and prefer external provider
+    )
+    SUMMARIZATION_CHUNK_SIZE_CHARS: int = (
+        12000  # Per-chunk size for document summarization
+    )
+    SUMMARIZATION_CHUNK_OVERLAP_CHARS: int = (
+        800  # Overlap between chunks to preserve continuity
+    )
     KNOWLEDGE_GRAPH_ENABLED: bool = True
     SUMMARIZATION_ENABLED: bool = True
     AUTO_SUMMARIZE_ON_PROCESS: bool = False
 
     # Knowledge Graph Extraction
-    KG_LLM_EXTRACTION_ENABLED: bool = True  # Use LLM for better entity/relationship extraction
-    KG_EXTRACTION_MODEL: Optional[str] = None  # Model for KG extraction (None = use default)
+    KG_LLM_EXTRACTION_ENABLED: bool = (
+        True  # Use LLM for better entity/relationship extraction
+    )
+    KG_EXTRACTION_MODEL: Optional[
+        str
+    ] = None  # Model for KG extraction (None = use default)
     KG_EXTRACTION_BATCH_SIZE: int = 3  # Chunks to batch per LLM call
     KG_EXTRACTION_MAX_TEXT_LENGTH: int = 3000  # Max chars per extraction call
 
@@ -210,12 +329,41 @@ class Settings(BaseSettings):
     UNSAFE_CODE_EXEC_DOCKER_IMAGE: str = "python:3.11-slim"
     UNSAFE_CODE_EXEC_DOCKER_CPUS: float = 1.0
     UNSAFE_CODE_EXEC_DOCKER_PIDS_LIMIT: int = 128
+    # A paper's abstract is not a paper. Implementing an algorithm from one is
+    # not possible, and a specification produced from one is the model's recall
+    # dressed as reading -- which no contract counting `algorithm_spec` can
+    # tell from the real thing. Fetching the PDF is what makes the difference
+    # checkable.
+    #
+    # On by default, unlike the code-execution flags, because it is an outbound
+    # GET to a URL derived from an arXiv id on a fixed host: no user-supplied
+    # URL, nothing executed. The bounds below are the real protection.
+    # How much of a paper `extract_algorithm_spec` reads. Sized at 12,000 when
+    # an ingested "paper" was its abstract, which made the cap generous; a real
+    # paper is several times that, and the window silently kept the first
+    # third. Measured: 12,000 of 36,886 characters, so the claims came from the
+    # abstract and introduction while the algorithm listings and benchmark
+    # tables -- the parts a specification and its worked examples live in --
+    # were never read.
+    SPEC_EXTRACTION_MAX_CHARS: int = 60000
+
+    ARXIV_FULL_TEXT_ENABLED: bool = True
+    ARXIV_FULL_TEXT_MAX_BYTES: int = 25_000_000
+    ARXIV_FULL_TEXT_MAX_CHARS: int = 400_000
+    ARXIV_FULL_TEXT_TIMEOUT_SECONDS: int = 90
+
     SCIENTIFIC_VALIDATION_ALLOWED_DOCKER_IMAGES: str = (
-        "ghcr.io/knowledgedb/compiler-research:latest,"
-        "ghcr.io/knowledgedb/microarch-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-compiler-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-polyglot-slim:latest,"
+        "ghcr.io/al3x3n0/kdbc-microarch-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-axis-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-profiling-research:latest,"
+        "ghcr.io/al3x3n0/kdbc-gem5-research:latest,"
         "python:3.11-slim"
     )
-    SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = "repo_reconstruction,perf_counters"
+    SCIENTIFIC_VALIDATION_ALLOWED_CAPABILITIES: str = (
+        "repo_reconstruction,perf_counters"
+    )
     SCIENTIFIC_VALIDATION_ALLOWED_BENCHMARK_FAMILIES: str = (
         "compiler_regression,codegen_quality,kernel_compile,"
         "perf_counter_regression,cache_branch_analysis,throughput_latency,generic_validation"
@@ -233,10 +381,12 @@ class Settings(BaseSettings):
     RAG_KG_CONTEXT_ENABLED: bool = True  # Inject KG context into chat responses
     RAG_KG_MAX_ENTITIES: int = 10  # Max entities to include in context
     RAG_KG_MAX_RELATIONSHIPS: int = 15  # Max relationships to include
-    
+
     # RAG Configuration
     RAG_HYBRID_SEARCH_ENABLED: bool = True
-    RAG_HYBRID_SEARCH_ALPHA: float = 0.7  # Semantic weight (0.0 = keyword only, 1.0 = semantic only)
+    RAG_HYBRID_SEARCH_ALPHA: float = (
+        0.7  # Semantic weight (0.0 = keyword only, 1.0 = semantic only)
+    )
     RAG_RERANKING_ENABLED: bool = True
     RAG_RERANKING_MODEL: str = "cross-encoder/ms-marco-MiniLM-L-6-v2"
     RAG_RERANKING_TOP_K: int = 5
@@ -247,12 +397,19 @@ class Settings(BaseSettings):
     RAG_MMR_ENABLED: bool = True
     RAG_MMR_LAMBDA: float = 0.5  # Balance between relevance (1.0) and diversity (0.0)
     RAG_DEDUPLICATION_ENABLED: bool = True
-    RAG_DEDUPLICATION_THRESHOLD: float = 0.95  # Similarity threshold for considering duplicates
-    
+    RAG_DEDUPLICATION_THRESHOLD: float = (
+        0.95  # Similarity threshold for considering duplicates
+    )
+
     # Kroki (local diagram rendering)
-    KROKI_URL: str = "http://localhost:8001"  # Local Kroki Docker container
+    KROKI_URL: str = "http://localhost:28001"  # Local Kroki Docker container
     KROKI_FALLBACK_URL: str = "https://kroki.io"  # External fallback
     KROKI_USE_FALLBACK: bool = True  # Fall back to external if local fails
+    # Whether KROKI_URL points at a Kroki *companion* (one renderer, raw POST
+    # to /svg) rather than the full gateway. The gateway bundles every diagram
+    # backend at 3.76 GB; the only caller here renders Mermaid, so the stack
+    # runs the companion alone. Set False when pointing at a real gateway.
+    KROKI_LOCAL_IS_COMPANION: bool = True
 
     # LaTeX Studio
     # Security note: compiling arbitrary TeX on the server can be dangerous (file reads, resource usage).
@@ -269,18 +426,43 @@ class Settings(BaseSettings):
     LATEX_COMPILER_JOB_RUNNING_STALE_SECONDS: int = 5 * 60
 
     # MinIO Object Storage
-    MINIO_ENDPOINT: str = "localhost:9000"
+    MINIO_ENDPOINT: str = "localhost:29000"
     MINIO_ACCESS_KEY: str = "minioadmin"
     MINIO_SECRET_KEY: str = "minioadmin"
     MINIO_BUCKET_NAME: str = "documents"
     MINIO_USE_SSL: bool = False
     MINIO_PRESIGNED_URL_EXPIRY: int = 3600  # 1 hour in seconds
-    MINIO_PROXY_BASE_URL: Optional[str] = None  # Base URL for nginx proxy (e.g., "http://localhost:3000/minio")
+    MINIO_PROXY_BASE_URL: Optional[
+        str
+    ] = None  # Base URL for nginx proxy (e.g., "http://localhost:23000/minio")
 
     # Secrets vault
-    SECRETS_ENCRYPTION_KEY: Optional[str] = None  # Optional Fernet key (urlsafe base64, 32 bytes)
+    SECRETS_ENCRYPTION_KEY: Optional[
+        str
+    ] = None  # Optional Fernet key (urlsafe base64, 32 bytes)
+
+    #: Wall-clock measurement runs one at a time per host. A swarm fans its
+    #: roles out in parallel and two of them then time each other's CPU
+    #: contention: measured, both roles of one swarm started benchmarking in
+    #: the same second and each reported 130-142% trial spread on a host they
+    #: had themselves saturated. Only timing takes the lock; compiles and
+    #: correctness checks stay parallel.
+    AGENT_MEASUREMENT_LOCK_ENABLED: bool = True
+    #: How long a measurement waits for the one ahead of it before going ahead
+    #: unserialised. It never fails the work -- a timing with a caveat beats no
+    #: timing -- and the result records `serialized: false` when it happens.
+    AGENT_MEASUREMENT_LOCK_WAIT_SECONDS: int = 180
 
     # Agent governance
+    #: When a swarm's merged verdict stops for a person: `never`,
+    #: `on_dispute` (roles disagreed, could not resolve, did not all finish,
+    #: or cross-checked nothing), or `always`. Per-job override via the job
+    #: config key `swarm_review_gate`.
+    #:
+    #: Default is not `always` on purpose: a gate met on every clean run is one
+    #: people learn to approve without reading, which costs attention and
+    #: protects nothing.
+    AGENT_SWARM_REVIEW_GATE: str = "on_dispute"
     AGENT_REQUIRE_TOOL_APPROVAL: bool = True
     AGENT_DANGEROUS_TOOLS: List[str] = [
         "delete_document",
@@ -306,6 +488,32 @@ class Settings(BaseSettings):
     REPO_SYMBOL_RETRIEVAL_ENABLED: bool = False
     # If enabled, autonomous agent jobs may directly apply code patches to the KB (writes).
     # Strongly recommended to keep disabled and use PatchPR review/merge instead.
+    #: Where coding workspaces live. On the shared data volume rather than a
+    #: temp directory, because the API and the celery workers are different
+    #: containers: a workspace under /tmp exists only in the process that made
+    #: it, so nothing can inspect the environment a measurement was taken in
+    #: once the job ends. Both mount ./data at /app/data already.
+    CODING_WORKSPACE_ROOT: str = "/app/data/workspaces"
+
+    #: How long a workspace's files are kept after the job that made it ends.
+    #: The environment a measurement was taken in is part of the evidence, and
+    #: a benchmark whose workspace has been deleted is a number nobody can
+    #: re-derive -- but a workspace is up to 100 MB, so keeping every one for
+    #: ever is not an option either. Expired ones are swept as later jobs
+    #: finish. Set to 0 to delete immediately, which is what this did before
+    #: workspaces were addressable at all.
+    CODING_WORKSPACE_RETENTION_HOURS: int = 72
+
+    #: A ceiling on what retained workspaces may occupy, in megabytes.
+    #:
+    #: Age alone does not bound disk: "keep everything for three days" costs
+    #: however many jobs run in three days, times up to 100 MB each, and that
+    #: number is not knowable in advance. A byte budget is the guarantee an
+    #: operator actually wants, so when the total exceeds it the OLDEST
+    #: retained workspaces are released early -- before their window expires.
+    #: 0 disables the ceiling and leaves only the age rule.
+    CODING_WORKSPACE_MAX_TOTAL_MB: int = 4096
+
     AGENT_KB_PATCH_APPLY_ENABLED: bool = False
 
     # Custom tools
@@ -321,10 +529,18 @@ class Settings(BaseSettings):
     TRAINING_LOCAL_MAX_GPU_MEMORY_GB: float = 24.0
     TRAINING_CHECKPOINT_INTERVAL_STEPS: int = 100
     TRAINING_OUTPUT_DIR: str = "./data/training_outputs"
-    AI_HUB_EVAL_TEMPLATES_DIR: Optional[str] = None  # Optional override for eval template "plugins"
-    AI_HUB_EVAL_ENABLED_TEMPLATE_IDS: Optional[str] = None  # Comma-separated template IDs allowed for non-admin users
-    AI_HUB_DATASET_PRESETS_DIR: Optional[str] = None  # Optional override for dataset preset "plugins"
-    AI_HUB_DATASET_ENABLED_PRESET_IDS: Optional[str] = None  # Comma-separated preset IDs allowed for non-admin users
+    AI_HUB_EVAL_TEMPLATES_DIR: Optional[
+        str
+    ] = None  # Optional override for eval template "plugins"
+    AI_HUB_EVAL_ENABLED_TEMPLATE_IDS: Optional[
+        str
+    ] = None  # Comma-separated template IDs allowed for non-admin users
+    AI_HUB_DATASET_PRESETS_DIR: Optional[
+        str
+    ] = None  # Optional override for dataset preset "plugins"
+    AI_HUB_DATASET_ENABLED_PRESET_IDS: Optional[
+        str
+    ] = None  # Comma-separated preset IDs allowed for non-admin users
 
     # Cloud Training (future - optional)
     MODAL_API_KEY: Optional[str] = None
@@ -334,24 +550,42 @@ class Settings(BaseSettings):
     DATASET_MAX_SIZE_MB: int = 500
     DATASET_MAX_SAMPLES: int = 100000
     DATASET_MAX_TOKEN_COUNT: int = 50000000  # 50M tokens
-    
+
+    #: Browser origins allowed to call the API cross-origin. The UI is served
+    #: same-origin through nginx, so this matters only for a browser pointed
+    #: straight at the API port (and for a frontend dev server run outside
+    #: Docker). Host ports are configurable -- see KDBC_UI_PORT in the compose
+    #: files -- so this list has to be configurable with them rather than
+    #: hardcoded, which is what pinned it to :3000 through the port move.
+    #: Comma-separated, and a plain str rather than List[str] on purpose:
+    #: pydantic-settings JSON-decodes complex types straight from the
+    #: environment *before* any validator runs, so a List[str] here could not
+    #: be set from an ordinary env var at all -- "a,b" raises SettingsError at
+    #: startup instead of parsing. Read it through `cors_allowed_origins`.
+    CORS_ALLOWED_ORIGINS: str = (
+        "http://localhost:23000,http://127.0.0.1:23000,"
+        "http://localhost:3000,http://127.0.0.1:3000"
+    )
+
+    @property
+    def cors_allowed_origins(self) -> List[str]:
+        return [o.strip() for o in self.CORS_ALLOWED_ORIGINS.split(",") if o.strip()]
+
     @field_validator("DATABASE_URL", mode="before")
     @classmethod
     def validate_database_url(cls, v):
         if not v or v == "":
             raise ValueError("DATABASE_URL must be set")
         return v
-    
+
     @field_validator("SECRET_KEY", mode="before")
     @classmethod
     def validate_secret_key(cls, v):
         if v == "your-secret-key-change-in-production":
             logger.warning("Using default SECRET_KEY. Change this in production!")
         return v
-    
-    class Config:
-        env_file = ".env"
-        case_sensitive = True
+
+    model_config = SettingsConfigDict(env_file=".env", case_sensitive=True)
 
     # Validators
     @field_validator("OLLAMA_BASE_URL", mode="before")
@@ -365,11 +599,17 @@ class Settings(BaseSettings):
         # If value is localhost but we're running inside Docker, localhost points at the container.
         # Default to the docker-compose service name `ollama`.
         try:
-            in_docker = os.path.exists("/.dockerenv") or os.path.exists("/run/.containerenv")
+            in_docker = os.path.exists("/.dockerenv") or os.path.exists(
+                "/run/.containerenv"
+            )
         except Exception:
             in_docker = False
 
-        if in_docker and isinstance(v, str) and ("localhost:11434" in v or "127.0.0.1:11434" in v):
+        if (
+            in_docker
+            and isinstance(v, str)
+            and ("localhost:11434" in v or "127.0.0.1:11434" in v)
+        ):
             return "http://ollama:11434"
 
         return v
@@ -381,7 +621,7 @@ class Settings(BaseSettings):
         env_val = os.getenv("CELERY_BROKER_URL")
         if env_val:
             return env_val
-        return os.getenv("REDIS_URL", v or "redis://localhost:6379/0")
+        return os.getenv("REDIS_URL", v or "redis://localhost:26379/0")
 
     @field_validator("CELERY_RESULT_BACKEND", mode="before")
     @classmethod
@@ -389,7 +629,7 @@ class Settings(BaseSettings):
         env_val = os.getenv("CELERY_RESULT_BACKEND")
         if env_val:
             return env_val
-        return os.getenv("REDIS_URL", v or "redis://localhost:6379/0")
+        return os.getenv("REDIS_URL", v or "redis://localhost:26379/0")
 
 
 # Global settings instance
@@ -402,10 +642,10 @@ logger.add(
     level=settings.LOG_LEVEL,
     rotation="10 MB",
     retention="30 days",
-    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}"
+    format="{time:YYYY-MM-DD HH:mm:ss} | {level} | {name}:{function}:{line} | {message}",
 )
 logger.add(
     lambda msg: print(msg, end=""),
     level=settings.LOG_LEVEL,
-    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | {message}"
+    format="<green>{time:YYYY-MM-DD HH:mm:ss}</green> | <level>{level}</level> | <cyan>{name}</cyan>:<cyan>{function}</cyan>:<cyan>{line}</cyan> | {message}",
 )

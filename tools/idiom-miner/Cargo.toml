@@ -1,0 +1,13 @@
+[package]
+name = "idiom-miner"
+version = "0.1.0"
+edition = "2021"
+description = "Count code idioms across a large source tree, with provenance"
+
+# No dependencies on purpose. This binary is meant to ship inside reproducible
+# evidence bundles, where a build that reaches the network for crates is a
+# build a third party cannot repeat years later.
+[dependencies]
+
+[profile.release]
+opt-level = 3

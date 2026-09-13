@@ -80,7 +80,9 @@ def test_langgraph_issue_pr_draft_success(
     assert body["status_reason_code"] == "passed"
     assert body["pr_draft"]["title"] == "fix(scope): draft"
     assert body["repo_context_meta"]["cache_status"] == "hit"
-    assert body["repo_context_summary"]["top_tests"][0] == "backend/tests/test_example.py"
+    assert (
+        body["repo_context_summary"]["top_tests"][0] == "backend/tests/test_example.py"
+    )
     assert body["confidence_breakdown"]["overall"] > 0.8
     assert body["decision_trace"][0] == "reviewer_decision:pass"
 

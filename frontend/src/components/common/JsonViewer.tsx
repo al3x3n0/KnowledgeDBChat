@@ -12,8 +12,6 @@ const Toggle: React.FC<{ open: boolean; onClick: () => void }> = ({ open, onClic
   </button>
 );
 
-const isObject = (v: any) => v && typeof v === 'object' && !Array.isArray(v);
-
 const Node: React.FC<NodeProps> = ({ data, label, depth = 0 }) => {
   const [open, setOpen] = React.useState(depth < 1);
 
@@ -55,4 +53,3 @@ const JsonViewer: React.FC<{ json: any }> = ({ json }) => {
 };
 
 export default JsonViewer;
-

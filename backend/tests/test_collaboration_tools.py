@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 
 class TestCreateHandoff:
     """Tests for create_handoff tool logic."""
@@ -47,7 +45,11 @@ class TestCreateHandoff:
         assert job_type == "research"
 
     def test_invalid_job_type_falls_back(self):
-        params = {"goal": "test", "expected_outputs": ["summary"], "job_type": "invalid"}
+        params = {
+            "goal": "test",
+            "expected_outputs": ["summary"],
+            "job_type": "invalid",
+        }
         child_type = str(params.get("job_type", "research")).strip()
         valid = {"research", "analysis", "synthesis", "custom"}
         if child_type not in valid:
@@ -217,6 +219,7 @@ class TestCollaborationSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "create_handoff" in names
         assert "get_sibling_status" in names
@@ -224,6 +227,7 @@ class TestCollaborationSchemas:
 
     def test_create_handoff_requires_goal_and_outputs(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("create_handoff")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -232,6 +236,7 @@ class TestCollaborationSchemas:
 
     def test_create_handoff_has_job_type_enum(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("create_handoff")
         job_type_prop = tool["parameters"]["properties"]["job_type"]
         assert "enum" in job_type_prop
@@ -239,6 +244,7 @@ class TestCollaborationSchemas:
 
     def test_get_sibling_status_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_sibling_status")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -246,6 +252,7 @@ class TestCollaborationSchemas:
 
     def test_broadcast_requires_message(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("broadcast_to_siblings")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -257,37 +264,47 @@ class TestCollaborationRegistry:
 
     def test_create_handoff_is_write(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("create_handoff")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_create_handoff_is_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("create_handoff")
         assert meta is not None
         assert meta.cost_tier == "medium"
 
     def test_get_sibling_status_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("get_sibling_status")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_broadcast_is_write(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("broadcast_to_siblings")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_get_sibling_status_is_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("get_sibling_status")
         assert meta is not None
         assert meta.cost_tier == "low"
 
     def test_none_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
-        for tool_name in ["create_handoff", "get_sibling_status", "broadcast_to_siblings"]:
+
+        for tool_name in [
+            "create_handoff",
+            "get_sibling_status",
+            "broadcast_to_siblings",
+        ]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.network == "none"

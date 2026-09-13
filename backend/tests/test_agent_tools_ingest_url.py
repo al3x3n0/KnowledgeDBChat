@@ -15,4 +15,3 @@ def test_ingest_url_tool_requires_url():
     ok, err = validate_tool_params("ingest_url", {"url": "https://example.com"})
     assert ok is True
     assert err == ""
-

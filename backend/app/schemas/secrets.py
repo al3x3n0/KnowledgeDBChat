@@ -19,4 +19,3 @@ class SecretResponse(BaseModel):
 
 class SecretRevealResponse(SecretResponse):
     value: Optional[str] = None
-

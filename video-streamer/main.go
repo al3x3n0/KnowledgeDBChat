@@ -48,27 +48,27 @@ func init() {
 	}
 
 	log.Printf("Video streamer initialized - MinIO: %s, Bucket: %s", minioEndpoint, bucketName)
-	
+
 	// Initialize database connection
 	databaseURL := getEnv("DATABASE_URL", "postgresql://user:password@postgres:5432/knowledge_db")
 	// Convert postgresql:// to postgres:// for pgx
 	databaseURL = strings.Replace(databaseURL, "postgresql://", "postgres://", 1)
-	
+
 	config, err := pgx.ParseConfig(databaseURL)
 	if err != nil {
 		log.Fatalf("Failed to parse database URL: %v", err)
 	}
-	
+
 	db = stdlib.OpenDB(*config)
 	db.SetMaxOpenConns(10)
 	db.SetMaxIdleConns(5)
 	db.SetConnMaxLifetime(5 * time.Minute)
-	
+
 	// Test connection
 	if err := db.Ping(); err != nil {
 		log.Fatalf("Failed to connect to database: %v", err)
 	}
-	
+
 	log.Printf("Database connection established")
 }
 
@@ -152,7 +152,7 @@ func handleHead(c *gin.Context) {
 	// Get object info - try the resolved path first
 	var objInfo minio.ObjectInfo
 	var found bool
-	
+
 	// Try the resolved path first (if it's not just a directory prefix)
 	if filePath != "" && !strings.HasSuffix(filePath, "/") {
 		objInfo, err = minioClient.StatObject(context.Background(), bucketName, filePath, minio.StatObjectOptions{})
@@ -163,16 +163,16 @@ func handleHead(c *gin.Context) {
 			log.Printf("MinIO StatObject failed for path %s: %v", filePath, err)
 		}
 	}
-	
+
 	// If not found, list objects with document ID prefix
 	if !found {
 		log.Printf("Listing objects in MinIO with prefix: %s/", documentID)
 		ctx := context.Background()
 		objectCh := minioClient.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
 			Prefix:    documentID + "/",
-			Recursive: true,  // List recursively to find files in subdirectories
+			Recursive: true, // List recursively to find files in subdirectories
 		})
-		
+
 		for object := range objectCh {
 			if object.Err != nil {
 				log.Printf("Error listing objects: %v", object.Err)
@@ -190,46 +190,46 @@ func handleHead(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	if !found {
 		log.Printf("File not found in MinIO for document %s at any path", documentID)
 		c.JSON(404, gin.H{"error": "File not found in storage"})
 		return
 	}
 
-    // Set headers - ensure proper content type for media files
-    contentType := objInfo.ContentType
-    if contentType == "" || contentType == "application/octet-stream" {
-        // Try to detect from filename
-        filename := strings.ToLower(objInfo.Key)
-        switch {
-        case strings.HasSuffix(filename, ".mkv"):
-            contentType = "video/x-matroska"
-        case strings.HasSuffix(filename, ".mp4"):
-            contentType = "video/mp4"
-        case strings.HasSuffix(filename, ".webm"):
-            contentType = "video/webm"
-        case strings.HasSuffix(filename, ".avi"):
-            contentType = "video/x-msvideo"
-        case strings.HasSuffix(filename, ".mov"):
-            contentType = "video/quicktime"
-        case strings.HasSuffix(filename, ".mp3"):
-            contentType = "audio/mpeg"
-        case strings.HasSuffix(filename, ".wav"):
-            contentType = "audio/wav"
-        case strings.HasSuffix(filename, ".m4a"):
-            contentType = "audio/mp4"
-        case strings.HasSuffix(filename, ".flac"):
-            contentType = "audio/flac"
-        case strings.HasSuffix(filename, ".ogg"):
-            contentType = "audio/ogg"
-        case strings.HasSuffix(filename, ".aac"):
-            contentType = "audio/aac"
-        default:
-            contentType = "application/octet-stream"
-        }
-    }
-	
+	// Set headers - ensure proper content type for media files
+	contentType := objInfo.ContentType
+	if contentType == "" || contentType == "application/octet-stream" {
+		// Try to detect from filename
+		filename := strings.ToLower(objInfo.Key)
+		switch {
+		case strings.HasSuffix(filename, ".mkv"):
+			contentType = "video/x-matroska"
+		case strings.HasSuffix(filename, ".mp4"):
+			contentType = "video/mp4"
+		case strings.HasSuffix(filename, ".webm"):
+			contentType = "video/webm"
+		case strings.HasSuffix(filename, ".avi"):
+			contentType = "video/x-msvideo"
+		case strings.HasSuffix(filename, ".mov"):
+			contentType = "video/quicktime"
+		case strings.HasSuffix(filename, ".mp3"):
+			contentType = "audio/mpeg"
+		case strings.HasSuffix(filename, ".wav"):
+			contentType = "audio/wav"
+		case strings.HasSuffix(filename, ".m4a"):
+			contentType = "audio/mp4"
+		case strings.HasSuffix(filename, ".flac"):
+			contentType = "audio/flac"
+		case strings.HasSuffix(filename, ".ogg"):
+			contentType = "audio/ogg"
+		case strings.HasSuffix(filename, ".aac"):
+			contentType = "audio/aac"
+		default:
+			contentType = "application/octet-stream"
+		}
+	}
+
 	c.Header("Content-Type", contentType)
 	c.Header("Content-Length", strconv.FormatInt(objInfo.Size, 10))
 	c.Header("Accept-Ranges", "bytes")
@@ -265,7 +265,7 @@ func handleStream(c *gin.Context) {
 	// Get object info - try the resolved path first
 	var objInfo minio.ObjectInfo
 	var found bool
-	
+
 	// Try the resolved path first (if it's not just a directory prefix)
 	if filePath != "" && !strings.HasSuffix(filePath, "/") {
 		objInfo, err = minioClient.StatObject(context.Background(), bucketName, filePath, minio.StatObjectOptions{})
@@ -276,16 +276,16 @@ func handleStream(c *gin.Context) {
 			log.Printf("MinIO StatObject failed for path %s: %v", filePath, err)
 		}
 	}
-	
+
 	// If not found, list objects with document ID prefix
 	if !found {
 		log.Printf("Listing objects in MinIO with prefix: %s/", documentID)
 		ctx := context.Background()
 		objectCh := minioClient.ListObjects(ctx, bucketName, minio.ListObjectsOptions{
 			Prefix:    documentID + "/",
-			Recursive: true,  // List recursively to find files in subdirectories
+			Recursive: true, // List recursively to find files in subdirectories
 		})
-		
+
 		for object := range objectCh {
 			if object.Err != nil {
 				log.Printf("Error listing objects: %v", object.Err)
@@ -303,7 +303,7 @@ func handleStream(c *gin.Context) {
 			}
 		}
 	}
-	
+
 	if !found {
 		log.Printf("File not found in MinIO for document %s at any path", documentID)
 		c.JSON(404, gin.H{"error": "File not found in storage"})
@@ -312,38 +312,38 @@ func handleStream(c *gin.Context) {
 
 	fileSize := objInfo.Size
 	contentType := objInfo.ContentType
-	
-    // Ensure proper content type for media files
-    if contentType == "" || contentType == "application/octet-stream" {
-        // Try to detect from filename
-        filename := strings.ToLower(objInfo.Key)
-        switch {
-        case strings.HasSuffix(filename, ".mkv"):
-            contentType = "video/x-matroska"
-        case strings.HasSuffix(filename, ".mp4"):
-            contentType = "video/mp4"
-        case strings.HasSuffix(filename, ".webm"):
-            contentType = "video/webm"
-        case strings.HasSuffix(filename, ".avi"):
-            contentType = "video/x-msvideo"
-        case strings.HasSuffix(filename, ".mov"):
-            contentType = "video/quicktime"
-        case strings.HasSuffix(filename, ".mp3"):
-            contentType = "audio/mpeg"
-        case strings.HasSuffix(filename, ".wav"):
-            contentType = "audio/wav"
-        case strings.HasSuffix(filename, ".m4a"):
-            contentType = "audio/mp4"
-        case strings.HasSuffix(filename, ".flac"):
-            contentType = "audio/flac"
-        case strings.HasSuffix(filename, ".ogg"):
-            contentType = "audio/ogg"
-        case strings.HasSuffix(filename, ".aac"):
-            contentType = "audio/aac"
-        default:
-            contentType = "application/octet-stream"
-        }
-    }
+
+	// Ensure proper content type for media files
+	if contentType == "" || contentType == "application/octet-stream" {
+		// Try to detect from filename
+		filename := strings.ToLower(objInfo.Key)
+		switch {
+		case strings.HasSuffix(filename, ".mkv"):
+			contentType = "video/x-matroska"
+		case strings.HasSuffix(filename, ".mp4"):
+			contentType = "video/mp4"
+		case strings.HasSuffix(filename, ".webm"):
+			contentType = "video/webm"
+		case strings.HasSuffix(filename, ".avi"):
+			contentType = "video/x-msvideo"
+		case strings.HasSuffix(filename, ".mov"):
+			contentType = "video/quicktime"
+		case strings.HasSuffix(filename, ".mp3"):
+			contentType = "audio/mpeg"
+		case strings.HasSuffix(filename, ".wav"):
+			contentType = "audio/wav"
+		case strings.HasSuffix(filename, ".m4a"):
+			contentType = "audio/mp4"
+		case strings.HasSuffix(filename, ".flac"):
+			contentType = "audio/flac"
+		case strings.HasSuffix(filename, ".ogg"):
+			contentType = "audio/ogg"
+		case strings.HasSuffix(filename, ".aac"):
+			contentType = "audio/aac"
+		default:
+			contentType = "application/octet-stream"
+		}
+	}
 
 	// Handle range request
 	if rangeHeader != "" {
@@ -450,7 +450,7 @@ func authenticate(tokenQuery, authHeader string) bool {
 		log.Printf("JWT_SECRET is not set!")
 		return false
 	}
-	
+
 	var token string
 
 	// Prefer Authorization header over query parameter (more secure)
@@ -511,7 +511,7 @@ func getEnv(key, defaultValue string) string {
 func getFilePathFromDatabase(documentID string) (string, error) {
 	// Query database directly to get file path
 	query := `SELECT file_path FROM documents WHERE id = $1`
-	
+
 	var filePath sql.NullString
 	err := db.QueryRow(query, documentID).Scan(&filePath)
 	if err != nil {
@@ -522,15 +522,15 @@ func getFilePathFromDatabase(documentID string) (string, error) {
 		log.Printf("Database query error: %v", err)
 		return "", err
 	}
-	
+
 	if !filePath.Valid || filePath.String == "" {
 		log.Printf("Document %s has no file_path in database", documentID)
 		return fmt.Sprintf("%s/", documentID), nil
 	}
-	
+
 	path := filePath.String
 	log.Printf("Got file_path from database for document %s: %s", documentID, path)
-	
+
 	// Normalize file path (remove 'documents/' prefix if present)
 	if strings.HasPrefix(path, "documents/") {
 		path = strings.TrimPrefix(path, "documents/")
@@ -538,7 +538,7 @@ func getFilePathFromDatabase(documentID string) (string, error) {
 	if strings.HasPrefix(path, "./") {
 		path = strings.TrimPrefix(path, "./")
 	}
-	
+
 	log.Printf("Normalized file path: %s", path)
 	return path, nil
 }
@@ -556,16 +556,16 @@ func getFilePathFromBackend(documentID, token string) (string, error) {
 	// BACKEND_API_URL should be like "http://backend:8000/api/v1/documents"
 	// So we need to construct the full URL
 	url := fmt.Sprintf("%s/%s", backendURL, documentID)
-	
+
 	req, err := http.NewRequest("GET", url, nil)
 	if err != nil {
 		return "", err
 	}
-	
+
 	if token != "" {
 		req.Header.Set("Authorization", fmt.Sprintf("Bearer %s", token))
 	}
-	
+
 	client := &http.Client{Timeout: 5 * time.Second}
 	resp, err := client.Do(req)
 	if err != nil {
@@ -574,14 +574,14 @@ func getFilePathFromBackend(documentID, token string) (string, error) {
 		return fmt.Sprintf("%s/", documentID), nil
 	}
 	defer resp.Body.Close()
-	
+
 	if resp.StatusCode != 200 {
 		// Read response body for debugging
 		bodyBytes, _ := io.ReadAll(resp.Body)
 		log.Printf("Backend returned %d for URL %s, response: %s, using fallback path", resp.StatusCode, url, string(bodyBytes))
 		return fmt.Sprintf("%s/", documentID), nil
 	}
-	
+
 	// Parse JSON response
 	var doc DocumentResponse
 	if err := json.NewDecoder(resp.Body).Decode(&doc); err != nil {
@@ -589,9 +589,9 @@ func getFilePathFromBackend(documentID, token string) (string, error) {
 		// Fallback: try to list objects in MinIO with document ID prefix
 		return fmt.Sprintf("%s/", documentID), nil
 	}
-	
+
 	log.Printf("Got document from backend: ID=%s, FilePath=%s", doc.ID, doc.FilePath)
-	
+
 	// Normalize file path (remove 'documents/' prefix if present)
 	filePath := doc.FilePath
 	if strings.HasPrefix(filePath, "documents/") {
@@ -600,14 +600,14 @@ func getFilePathFromBackend(documentID, token string) (string, error) {
 	if strings.HasPrefix(filePath, "./") {
 		filePath = strings.TrimPrefix(filePath, "./")
 	}
-	
+
 	// If file path is empty or just document ID, try to find the actual file
 	if filePath == "" || filePath == documentID || filePath == fmt.Sprintf("%s/", documentID) {
 		log.Printf("File path is empty or just document ID, will try to find file in MinIO")
 		// Return pattern that will be tried in handleHead/handleStream
 		return fmt.Sprintf("%s/", documentID), nil
 	}
-	
+
 	log.Printf("Normalized file path: %s", filePath)
 	return filePath, nil
 }

@@ -191,7 +191,10 @@ const renderPage = (initialEntry = '/agent-control-plane') => {
   });
 
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <QueryClientProvider client={queryClient}>
         <AgentControlPlanePage />
       </QueryClientProvider>
@@ -934,15 +937,21 @@ describe('AgentControlPlanePage', () => {
   });
 
   test('renders useful fallbacks when routing and memory are missing and detail fails', async () => {
+    const consoleErrorSpy = jest.spyOn(console, 'error').mockImplementation(() => {});
     apiClient.getAgentControlRuns.mockResolvedValue({
       items: [makeRun({ id: 'workflow:wf-1', source_type: 'workflow', title: 'Sparse workflow', routing: null })],
       total: 1,
     });
     apiClient.getAgentControlRun.mockRejectedValue(new Error('not found'));
 
-    renderPage('/agent-control-plane?run=workflow:wf-1');
+    try {
+      renderPage('/agent-control-plane?run=workflow:wf-1');
 
-    expect(await screen.findByText('This control run could not be loaded.')).toBeInTheDocument();
+      expect(await screen.findByText('This control run could not be loaded.')).toBeInTheDocument();
+      expect(consoleErrorSpy).toHaveBeenCalled();
+    } finally {
+      consoleErrorSpy.mockRestore();
+    }
   });
 
   test('applies the default saved view when no explicit URL filters are present', async () => {
@@ -1006,7 +1015,15 @@ describe('AgentControlPlanePage', () => {
       })
     );
 
-    fireEvent.click(screen.getByRole('button', { name: 'Delete View' }));
+    // The save call having been MADE is not the same as the view being
+    // selected: the id arrives in the URL from the mutation's onSuccess, and
+    // until it does `Delete View` is disabled and its handler returns early.
+    // Clicking on the create assertion alone raced that, and the test failed
+    // roughly one run in three with "Number of calls: 0". Waiting on the
+    // button's own precondition is the signal, not a timeout.
+    const deleteViewButton = screen.getByRole('button', { name: 'Delete View' });
+    await waitFor(() => expect(deleteViewButton).toBeEnabled());
+    fireEvent.click(deleteViewButton);
 
     await waitFor(() => expect(apiClient.deleteAgentControlRunView).toHaveBeenCalledWith('view-1'));
   });

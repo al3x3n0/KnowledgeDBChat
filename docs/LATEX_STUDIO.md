@@ -36,8 +36,14 @@ LATEX_COMPILER_CELERY_QUEUE=latex
 
 Start a worker listening on the LaTeX queue (example):
 ```bash
-celery -A app.core.celery worker -Q latex -l info
+celery -A app.core.celery_latex worker -Q latex -l info
 ```
+
+`app.core.celery_latex` includes only `app.tasks.latex_tasks`, which is what
+lets the dedicated worker image install `requirements.latex-worker.txt` instead
+of the full backend set. `app.core.celery` also serves this queue, but only in
+an environment that has every backend dependency — on the LaTeX image it dies
+at worker startup with `ModuleNotFoundError: No module named 'httpx'`.
 
 When enabled, the UI will enqueue compile jobs and poll `/api/v1/latex/compile-jobs/{job_id}` for results.
 

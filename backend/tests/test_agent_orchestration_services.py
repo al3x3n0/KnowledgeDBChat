@@ -5,9 +5,13 @@ from uuid import uuid4
 import pytest
 
 from app.models.agent_job import AgentJob, AgentJobStatus
-from app.services.agent_chain_orchestration_service import AgentChainOrchestrationService
+from app.services.agent_chain_orchestration_service import (
+    AgentChainOrchestrationService,
+)
 from app.services.agent_follow_up_job_service import AgentFollowUpJobService
-from app.services.agent_scientific_validation_service import AgentScientificValidationService
+from app.services.agent_scientific_validation_service import (
+    AgentScientificValidationService,
+)
 
 
 def _make_job(config=None) -> AgentJob:
@@ -60,28 +64,42 @@ async def test_follow_up_job_service_inherits_policy_and_sandbox_context(db_sess
         customer_context="bounded compiler research",
         track_type="compiler",
         source_scope="kb_plus_arxiv_plus_repo",
-        top_idea={"title": "Vectorization regression", "hypothesis": "A pass ordering issue regressed vectorization"},
+        top_idea={
+            "title": "Vectorization regression",
+            "hypothesis": "A pass ordering issue regressed vectorization",
+        },
         docs=[],
         repo_documents=[],
         papers=[],
         repo_source_ids=["repo-source-1"],
         benchmark_queries=["compile time regression"],
         automation_profile="balanced",
-        automation_policy={"follow_up_review_mode": "queue_for_approval", "auto_execute_validation_runs": False},
+        automation_policy={
+            "follow_up_review_mode": "queue_for_approval",
+            "auto_execute_validation_runs": False,
+        },
         sandbox_profile_id="scientific-compiler-sandbox",
         profile_id="profile-compiler-1",
     )
 
     assert child is not None
     assert child.config["automation_profile"] == "balanced"
-    assert child.config["automation_policy"]["follow_up_review_mode"] == "queue_for_approval"
+    assert (
+        child.config["automation_policy"]["follow_up_review_mode"]
+        == "queue_for_approval"
+    )
     assert child.config["sandbox_profile_id"] == "scientific-compiler-sandbox"
     assert child.config["profile_id"] == "profile-compiler-1"
-    assert child.config["validation_policy"]["follow_up_review_mode"] == "queue_for_approval"
+    assert (
+        child.config["validation_policy"]["follow_up_review_mode"]
+        == "queue_for_approval"
+    )
 
 
 @pytest.mark.asyncio
-async def test_chain_service_builds_swarm_sibling_payload_excluding_aggregators(db_session):
+async def test_chain_service_builds_swarm_sibling_payload_excluding_aggregators(
+    db_session,
+):
     service = AgentChainOrchestrationService()
     parent = _make_job()
     db_session.add(parent)
@@ -125,7 +143,9 @@ async def test_chain_service_trigger_progress_chain_uses_executor_hook():
     service = AgentChainOrchestrationService()
     job = _make_job()
     job.should_trigger_chain = lambda event, value: event == "progress"
-    executor = SimpleNamespace(_trigger_chained_jobs=AsyncMock(return_value=["child-1"]))
+    executor = SimpleNamespace(
+        _trigger_chained_jobs=AsyncMock(return_value=["child-1"])
+    )
 
     triggered = await service.trigger_progress_chain(
         executor,
@@ -137,4 +157,3 @@ async def test_chain_service_trigger_progress_chain_uses_executor_hook():
 
     assert triggered == ["child-1"]
     executor._trigger_chained_jobs.assert_awaited_once()
-

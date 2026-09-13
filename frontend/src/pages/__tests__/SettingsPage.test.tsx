@@ -96,7 +96,10 @@ describe('SettingsPage notifications tab', () => {
 
   it('saves the experiment run notification preference', async () => {
     render(
-      <MemoryRouter initialEntries={['/settings?tab=notifications']}>
+      <MemoryRouter
+        initialEntries={['/settings?tab=notifications']}
+        future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+      >
         <Routes>
           <Route path="/settings" element={<SettingsPage />} />
         </Routes>

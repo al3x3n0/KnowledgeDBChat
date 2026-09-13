@@ -1,20 +1,20 @@
 """Tests for agent_execution_planner module."""
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.services.agent_execution_planner import (
     AgentExecutionPlanner,
     ExecutionPlan,
     PlanStep,
-    Subgoal,
 )
-
 
 # ---------------------------------------------------------------------------
 # PlanStep model
 # ---------------------------------------------------------------------------
+
 
 class TestPlanStepModel:
     def test_valid_step(self):
@@ -44,11 +44,10 @@ class TestPlanStepModel:
 # ExecutionPlan model
 # ---------------------------------------------------------------------------
 
+
 class TestExecutionPlanModel:
     def test_valid_plan(self):
-        plan = ExecutionPlan(
-            steps=[PlanStep(title="Step 1"), PlanStep(title="Step 2")]
-        )
+        plan = ExecutionPlan(steps=[PlanStep(title="Step 1"), PlanStep(title="Step 2")])
         assert len(plan.steps) == 2
         assert plan.version == 1
         assert plan.replan_count == 0
@@ -58,11 +57,17 @@ class TestExecutionPlanModel:
 # AgentExecutionPlanner
 # ---------------------------------------------------------------------------
 
+
 class TestAgentExecutionPlanner:
     def setup_method(self):
         self.llm = AsyncMock()
         self.planner = AgentExecutionPlanner(self.llm)
-        self.tools = ["search_documents", "read_document_content", "summarize_document", "save_research_finding"]
+        self.tools = [
+            "search_documents",
+            "read_document_content",
+            "summarize_document",
+            "save_research_finding",
+        ]
 
     # ------------------------------------------------------------------
     # create_plan
@@ -70,19 +75,32 @@ class TestAgentExecutionPlanner:
 
     @pytest.mark.asyncio
     async def test_create_plan_from_llm(self):
-        self.llm.generate_response.return_value = json.dumps({
-            "steps": [
-                {"title": "Search", "objective": "Find papers", "suggested_tools": ["search_documents"]},
-                {"title": "Read", "objective": "Read papers", "suggested_tools": ["read_document_content"]},
-            ]
-        })
+        self.llm.generate_response.return_value = json.dumps(
+            {
+                "steps": [
+                    {
+                        "title": "Search",
+                        "objective": "Find papers",
+                        "suggested_tools": ["search_documents"],
+                    },
+                    {
+                        "title": "Read",
+                        "objective": "Read papers",
+                        "suggested_tools": ["read_document_content"],
+                    },
+                ]
+            }
+        )
         job = MagicMock()
         job.goal = "Research quantum computing"
         job.job_type = "research"
         job.config = {}
 
         plan = await self.planner.create_plan(
-            job=job, observation={}, user_settings=None, available_tools=self.tools,
+            job=job,
+            observation={},
+            user_settings=None,
+            available_tools=self.tools,
         )
         assert len(plan.steps) >= 2
         assert plan.steps[0].title == "Search"
@@ -96,7 +114,10 @@ class TestAgentExecutionPlanner:
         job.config = {}
 
         plan = await self.planner.create_plan(
-            job=job, observation={}, user_settings=None, available_tools=self.tools,
+            job=job,
+            observation={},
+            user_settings=None,
+            available_tools=self.tools,
         )
         # Should return fallback plan
         assert len(plan.steps) == 3
@@ -104,18 +125,26 @@ class TestAgentExecutionPlanner:
 
     @pytest.mark.asyncio
     async def test_create_plan_filters_unavailable_tools(self):
-        self.llm.generate_response.return_value = json.dumps({
-            "steps": [
-                {"title": "Step", "suggested_tools": ["search_documents", "nonexistent_tool"]},
-            ]
-        })
+        self.llm.generate_response.return_value = json.dumps(
+            {
+                "steps": [
+                    {
+                        "title": "Step",
+                        "suggested_tools": ["search_documents", "nonexistent_tool"],
+                    },
+                ]
+            }
+        )
         job = MagicMock()
         job.goal = "Test"
         job.job_type = "custom"
         job.config = {}
 
         plan = await self.planner.create_plan(
-            job=job, observation={}, user_settings=None, available_tools=self.tools,
+            job=job,
+            observation={},
+            user_settings=None,
+            available_tools=self.tools,
         )
         assert "nonexistent_tool" not in plan.steps[0].suggested_tools
 
@@ -153,7 +182,9 @@ class TestAgentExecutionPlanner:
             "plan_replan_count": 0,
             "actions_taken": [{"success": False}, {"success": False}],
         }
-        assert self.planner.evaluate_replan_triggers(job, state) == "tool_failure_streak"
+        assert (
+            self.planner.evaluate_replan_triggers(job, state) == "tool_failure_streak"
+        )
 
     def test_progress_divergence_trigger(self):
         job = MagicMock()
@@ -166,7 +197,9 @@ class TestAgentExecutionPlanner:
             "goal_progress": 30,
             "actions_taken": [],
         }
-        assert self.planner.evaluate_replan_triggers(job, state) == "progress_divergence"
+        assert (
+            self.planner.evaluate_replan_triggers(job, state) == "progress_divergence"
+        )
 
     def test_max_replans_respected(self):
         job = MagicMock()
@@ -180,7 +213,9 @@ class TestAgentExecutionPlanner:
         job.iteration = 8
         job.config = {"replan_enabled": False}
         state = {"stalled_iterations": 5, "plan_replan_count": 0}
-        assert self.planner.evaluate_replan_triggers(job, state, config=job.config) is None
+        assert (
+            self.planner.evaluate_replan_triggers(job, state, config=job.config) is None
+        )
 
     # ------------------------------------------------------------------
     # replan
@@ -188,11 +223,13 @@ class TestAgentExecutionPlanner:
 
     @pytest.mark.asyncio
     async def test_replan_preserves_completed(self):
-        self.llm.generate_response.return_value = json.dumps({
-            "steps": [
-                {"title": "New step", "objective": "Do something new"},
-            ]
-        })
+        self.llm.generate_response.return_value = json.dumps(
+            {
+                "steps": [
+                    {"title": "New step", "objective": "Do something new"},
+                ]
+            }
+        )
         job = MagicMock()
         job.goal = "Test"
         job.config = {}
@@ -207,8 +244,11 @@ class TestAgentExecutionPlanner:
         }
 
         plan = await self.planner.replan(
-            job=job, state=state, observation={},
-            user_settings=None, available_tools=self.tools,
+            job=job,
+            state=state,
+            observation={},
+            user_settings=None,
+            available_tools=self.tools,
             trigger_reason="stall_detected",
         )
         assert plan.version == 2
@@ -221,21 +261,26 @@ class TestAgentExecutionPlanner:
     def test_decompose_from_criteria(self):
         plan = ExecutionPlan(steps=[PlanStep(title="Step 1")])
         subgoals = self.planner.decompose_into_subgoals(
-            plan, "Test goal",
-            goal_criteria={"criteria": [
-                {"name": "Find papers", "description": "At least 5 papers"},
-                {"name": "Analyze", "description": "Identify key themes"},
-            ]},
+            plan,
+            "Test goal",
+            goal_criteria={
+                "criteria": [
+                    {"name": "Find papers", "description": "At least 5 papers"},
+                    {"name": "Analyze", "description": "Identify key themes"},
+                ]
+            },
         )
         assert len(subgoals) == 2
         assert subgoals[0].title == "Find papers"
 
     def test_decompose_automatic(self):
-        plan = ExecutionPlan(steps=[
-            PlanStep(title="Search", suggested_tools=["search_documents"]),
-            PlanStep(title="Read", suggested_tools=["read_document_content"]),
-            PlanStep(title="Synthesize", suggested_tools=["save_research_finding"]),
-        ])
+        plan = ExecutionPlan(
+            steps=[
+                PlanStep(title="Search", suggested_tools=["search_documents"]),
+                PlanStep(title="Read", suggested_tools=["read_document_content"]),
+                PlanStep(title="Synthesize", suggested_tools=["save_research_finding"]),
+            ]
+        )
         subgoals = self.planner.decompose_into_subgoals(plan, "Research")
         assert len(subgoals) >= 1
 
@@ -276,11 +321,13 @@ class TestAgentExecutionPlanner:
     # ------------------------------------------------------------------
 
     def test_compute_plan_progress(self):
-        plan = ExecutionPlan(steps=[
-            PlanStep(title="A", progress=100),
-            PlanStep(title="B", progress=50),
-            PlanStep(title="C", progress=0),
-        ])
+        plan = ExecutionPlan(
+            steps=[
+                PlanStep(title="A", progress=100),
+                PlanStep(title="B", progress=50),
+                PlanStep(title="C", progress=0),
+            ]
+        )
         assert AgentExecutionPlanner.compute_plan_progress(plan) == 50
 
     def test_compute_plan_progress_empty(self):

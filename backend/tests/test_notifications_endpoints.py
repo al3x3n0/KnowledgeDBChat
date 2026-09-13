@@ -26,6 +26,7 @@ def test_update_notification_preferences_can_disable_experiment_run_updates(
     auth_headers,
 ):
     import asyncio
+
     from sqlalchemy import select
 
     response = client.put(
@@ -51,7 +52,9 @@ def test_update_notification_preferences_can_disable_experiment_run_updates(
 
     async def _load_preferences():
         result = await db_session.execute(
-            select(NotificationPreferences).where(NotificationPreferences.user_id == test_user.id)
+            select(NotificationPreferences).where(
+                NotificationPreferences.user_id == test_user.id
+            )
         )
         return result.scalar_one()
 

@@ -1,0 +1,16 @@
+{{- if .Values.backend.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kdbc.backend.serviceName" . }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "backend") | nindent 4 }}
+spec:
+  type: {{ .Values.backend.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.backend.service.port }}
+      targetPort: http
+  selector:
+    {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "backend") | nindent 4 }}
+{{- end }}

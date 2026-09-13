@@ -15,6 +15,7 @@ import {
   MoreVertical,
   Loader2,
   Wrench,
+  Bot,
   Globe,
   Code,
   MessageSquare,
@@ -27,6 +28,8 @@ import toast from 'react-hot-toast';
 import api from '../services/api';
 import { AgentDefinitionSummary } from '../types';
 import JsonViewer from '../components/common/JsonViewer';
+import { CompOpsConnectionsPanel } from '../components/tools/CompOpsConnectionsPanel';
+import { MLflowConnectionsPanel } from '../components/tools/MLflowConnectionsPanel';
 
 // Types
 interface UserTool {
@@ -34,7 +37,7 @@ interface UserTool {
   user_id: string;
   name: string;
   description: string | null;
-  tool_type: 'webhook' | 'transform' | 'python' | 'llm_prompt' | 'docker_container' | 'workflow_runner';
+  tool_type: 'webhook' | 'external_agent' | 'transform' | 'python' | 'llm_prompt' | 'docker_container' | 'workflow_runner';
   parameters_schema: Record<string, any>;
   config: Record<string, any>;
   is_enabled: boolean;
@@ -50,6 +53,12 @@ const TOOL_TYPES = {
     description: 'Make HTTP requests to external APIs',
     icon: Globe,
     color: 'blue',
+  },
+  external_agent: {
+    label: 'External Agent',
+    description: 'Call a registered capability-scoped external agent',
+    icon: Bot,
+    color: 'cyan',
   },
   transform: {
     label: 'Transform',
@@ -184,6 +193,9 @@ const ToolsPage: React.FC = () => {
         </button>
       </div>
 
+      <CompOpsConnectionsPanel onConnectionsChanged={loadTools} />
+      <MLflowConnectionsPanel onConnectionsChanged={loadTools} />
+
       {/* Search and Filter */}
       <div className="flex items-center space-x-4 mb-6">
         <div className="relative flex-1">
@@ -244,7 +256,7 @@ const ToolsPage: React.FC = () => {
             return (
               <div
                 key={tool.id}
-                className={`bg-white rounded-lg border shadow-sm hover:shadow-md transition-shadow ${
+                className={`bg-white rounded-lg border shadow-sm transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 ${
                   !tool.is_enabled ? 'opacity-60' : ''
                 }`}
               >
@@ -581,11 +593,17 @@ const ToolEditorModal: React.FC<ToolEditorModalProps> = ({
                 disabled={isEditing}
                 className="w-full px-3 py-2 border rounded-lg focus:ring-2 focus:ring-primary-500 disabled:bg-gray-100"
               >
-                {Object.entries(TOOL_TYPES).map(([type, info]) => (
-                  <option key={type} value={type}>
-                    {info.label}
-                  </option>
-                ))}
+                {Object.entries(TOOL_TYPES)
+                  .filter(
+                    ([type]) =>
+                      type !== 'external_agent' ||
+                      tool?.tool_type === 'external_agent'
+                  )
+                  .map(([type, info]) => (
+                    <option key={type} value={type}>
+                      {info.label}
+                    </option>
+                  ))}
               </select>
             </div>
           </div>

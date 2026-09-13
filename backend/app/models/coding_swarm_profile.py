@@ -1,9 +1,18 @@
 from __future__ import annotations
 
-from datetime import datetime
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Boolean, Column, DateTime, ForeignKey, Integer, JSON, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.database import Base
@@ -13,8 +22,18 @@ class CodingSwarmProfile(Base):
     __tablename__ = "coding_swarm_profiles"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
-    source_id = Column(UUID(as_uuid=True), ForeignKey("document_sources.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
+    source_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("document_sources.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
     title = Column(String(200), nullable=False)
     description = Column(Text, nullable=True)
@@ -29,8 +48,20 @@ class CodingSwarmProfile(Base):
     is_default = Column(Boolean, nullable=False, default=False)
     visibility = Column(String(24), nullable=False, default="private", index=True)
     shared_with_user_ids = Column(JSON, nullable=True)
-    latest_job_id = Column(UUID(as_uuid=True), ForeignKey("agent_jobs.id", ondelete="SET NULL"), nullable=True, index=True)
+    latest_job_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_jobs.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     profile_metadata = Column(JSON, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )

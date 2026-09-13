@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 
 class TestSendMessageToAgent:
     """Tests for send_message_to_agent tool logic."""
@@ -19,7 +17,10 @@ class TestSendMessageToAgent:
         assert not message
 
     def test_accepts_valid_params(self):
-        params = {"target_job_id": str(uuid.uuid4()), "message": "Found interesting data"}
+        params = {
+            "target_job_id": str(uuid.uuid4()),
+            "message": "Found interesting data",
+        }
         target = str(params.get("target_job_id", "")).strip()
         message = str(params.get("message", "")).strip()
         assert target
@@ -42,6 +43,7 @@ class TestSendMessageToAgent:
 
     def test_message_entry_structure(self):
         from datetime import datetime
+
         entry = {
             "from_job_id": str(uuid.uuid4()),
             "from_job_name": "Research Agent",
@@ -123,7 +125,7 @@ class TestReadAgentMessages:
                 "total": 1,
                 "since_index": 0,
                 "shared_findings_count": 0,
-            }
+            },
         }
         assert result["data"]["total"] == 1
         assert result["data"]["messages"][0]["category"] == "greeting"
@@ -134,12 +136,14 @@ class TestMessagingToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "send_message_to_agent" in names
         assert "read_agent_messages" in names
 
     def test_send_message_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("send_message_to_agent")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -148,6 +152,7 @@ class TestMessagingToolSchemas:
 
     def test_read_messages_no_required_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("read_agent_messages")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -159,12 +164,14 @@ class TestMessagingToolRegistry:
 
     def test_send_message_is_write_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("send_message_to_agent")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_read_messages_is_read_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("read_agent_messages")
         assert meta is not None
         assert meta.effects == "read"

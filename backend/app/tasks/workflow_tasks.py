@@ -8,17 +8,17 @@ Handles:
 """
 
 import asyncio
-from uuid import UUID
 from datetime import datetime
-from celery import shared_task
+from uuid import UUID
+
 from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
 
 from app.core.celery import celery_app
 from app.core.database import create_celery_session
-from app.models.workflow import Workflow, WorkflowExecution
 from app.models.user import User
+from app.models.workflow import Workflow, WorkflowExecution
 
 
 def run_async(coro):
@@ -69,13 +69,13 @@ async def _execute_workflow_async(execution_id: str):
             raise ValueError(f"Execution {execution_id} not found")
 
         if execution.status != "pending":
-            logger.warning(f"Execution {execution_id} is not pending (status: {execution.status})")
+            logger.warning(
+                f"Execution {execution_id} is not pending (status: {execution.status})"
+            )
             return
 
         # Load user
-        user_result = await db.execute(
-            select(User).where(User.id == execution.user_id)
-        )
+        user_result = await db.execute(select(User).where(User.id == execution.user_id))
         user = user_result.scalar_one_or_none()
 
         if not user:
@@ -87,7 +87,7 @@ async def _execute_workflow_async(execution_id: str):
         try:
             await engine.execute_existing_execution(execution)
 
-        except Exception as e:
+        except Exception:
             # The engine should have already updated the execution status
             # but we re-raise for the Celery task to handle
             raise
@@ -132,10 +132,9 @@ async def _trigger_scheduled_workflows_async():
     async with session_factory() as db:
         # Find active workflows with schedule triggers
         result = await db.execute(
-            select(Workflow)
-            .where(
-                Workflow.is_active == True,
-                Workflow.trigger_config["type"].astext == "schedule"
+            select(Workflow).where(
+                Workflow.is_active.is_(True),
+                Workflow.trigger_config["type"].astext == "schedule",
             )
         )
         workflows = result.scalars().all()
@@ -151,7 +150,6 @@ async def _trigger_scheduled_workflows_async():
                 # Parse cron expression
                 cron = croniter(schedule, now)
                 prev_run = cron.get_prev(datetime)
-                next_run = cron.get_next(datetime)
 
                 # Check if we should run (within last minute)
                 time_since_prev = (now - prev_run).total_seconds()
@@ -159,11 +157,10 @@ async def _trigger_scheduled_workflows_async():
                 if time_since_prev < 60:  # Within last minute
                     # Check if we already ran recently
                     recent_result = await db.execute(
-                        select(WorkflowExecution)
-                        .where(
+                        select(WorkflowExecution).where(
                             WorkflowExecution.workflow_id == workflow.id,
                             WorkflowExecution.trigger_type == "schedule",
-                            WorkflowExecution.created_at > prev_run
+                            WorkflowExecution.created_at > prev_run,
                         )
                     )
 
@@ -175,10 +172,13 @@ async def _trigger_scheduled_workflows_async():
                         workflow_id=workflow.id,
                         user_id=workflow.user_id,
                         trigger_type="schedule",
-                        trigger_data={"schedule": schedule, "scheduled_time": prev_run.isoformat()},
+                        trigger_data={
+                            "schedule": schedule,
+                            "scheduled_time": prev_run.isoformat(),
+                        },
                         status="pending",
                         progress=0,
-                        context={}
+                        context={},
                     )
                     db.add(execution)
                     await db.commit()
@@ -210,18 +210,19 @@ def trigger_event_workflow(event_name: str, event_data: dict, user_id: str):
         logger.error(f"Error processing event trigger: {e}")
 
 
-async def _trigger_event_workflow_async(event_name: str, event_data: dict, user_id: str):
+async def _trigger_event_workflow_async(
+    event_name: str, event_data: dict, user_id: str
+):
     """Find and trigger workflows matching the event."""
     session_factory = create_celery_session()
     async with session_factory() as db:
         # Find active workflows with matching event triggers
         result = await db.execute(
-            select(Workflow)
-            .where(
-                Workflow.is_active == True,
+            select(Workflow).where(
+                Workflow.is_active.is_(True),
                 Workflow.user_id == UUID(user_id),
                 Workflow.trigger_config["type"].astext == "event",
-                Workflow.trigger_config["event"].astext == event_name
+                Workflow.trigger_config["event"].astext == event_name,
             )
         )
         workflows = result.scalars().all()
@@ -236,7 +237,7 @@ async def _trigger_event_workflow_async(event_name: str, event_data: dict, user_
                     trigger_data={"event": event_name, "event_data": event_data},
                     status="pending",
                     progress=0,
-                    context={"event": event_data}
+                    context={"event": event_data},
                 )
                 db.add(execution)
                 await db.commit()
@@ -244,15 +245,20 @@ async def _trigger_event_workflow_async(event_name: str, event_data: dict, user_
 
                 # Queue the execution
                 execute_workflow_task.delay(str(execution.id))
-                logger.info(f"Triggered event workflow: {workflow.name} for event {event_name}")
+                logger.info(
+                    f"Triggered event workflow: {workflow.name} for event {event_name}"
+                )
 
             except Exception as e:
-                logger.error(f"Error triggering workflow {workflow.id} for event {event_name}: {e}")
+                logger.error(
+                    f"Error triggering workflow {workflow.id} for event {event_name}: {e}"
+                )
 
 
 # =============================================================================
 # Event Publisher Helper
 # =============================================================================
+
 
 def publish_workflow_event(event_name: str, event_data: dict, user_id: str):
     """

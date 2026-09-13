@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 
 class TestBatchSearch:
     """Tests for batch_search tool logic."""
@@ -105,12 +103,20 @@ class TestBatchSearch:
             "data": {
                 "queries_executed": 3,
                 "results": [
-                    {"query": "transformers", "results": [{"id": "d1", "title": "Paper 1"}], "total": 15},
-                    {"query": "attention mechanism", "results": [{"id": "d2", "title": "Paper 2"}], "total": 8},
+                    {
+                        "query": "transformers",
+                        "results": [{"id": "d1", "title": "Paper 1"}],
+                        "total": 15,
+                    },
+                    {
+                        "query": "attention mechanism",
+                        "results": [{"id": "d2", "title": "Paper 2"}],
+                        "total": 8,
+                    },
                     {"query": "BERT", "results": [], "total": 0},
                 ],
                 "total_unique_documents": 2,
-            }
+            },
         }
         assert result["data"]["queries_executed"] == 3
         assert result["data"]["total_unique_documents"] == 2
@@ -118,19 +124,27 @@ class TestBatchSearch:
 
     def test_findings_aggregation(self):
         all_results = [
-            {"query": "q1", "results": [{"id": "d1", "title": "P1", "relevance_score": 0.9}]},
-            {"query": "q2", "results": [{"id": "d2", "title": "P2", "relevance_score": 0.8}]},
+            {
+                "query": "q1",
+                "results": [{"id": "d1", "title": "P1", "relevance_score": 0.9}],
+            },
+            {
+                "query": "q2",
+                "results": [{"id": "d2", "title": "P2", "relevance_score": 0.8}],
+            },
         ]
         findings = []
         for qr in all_results:
             for r in qr.get("results", [])[:5]:
-                findings.append({
-                    "type": "document",
-                    "title": r.get("title"),
-                    "id": r.get("id"),
-                    "score": r.get("relevance_score"),
-                    "query": qr.get("query"),
-                })
+                findings.append(
+                    {
+                        "type": "document",
+                        "title": r.get("title"),
+                        "id": r.get("id"),
+                        "score": r.get("relevance_score"),
+                        "query": qr.get("query"),
+                    }
+                )
         assert len(findings) == 2
         assert findings[0]["query"] == "q1"
         assert findings[1]["query"] == "q2"
@@ -179,7 +193,12 @@ class TestBatchSummarize:
         assert gen is True
 
     def test_status_available(self):
-        summary = {"document_id": "d1", "title": "Paper", "summary": "A summary...", "status": "available"}
+        summary = {
+            "document_id": "d1",
+            "title": "Paper",
+            "summary": "A summary...",
+            "status": "available",
+        }
         assert summary["status"] == "available"
 
     def test_status_no_summary(self):
@@ -191,11 +210,21 @@ class TestBatchSummarize:
         assert summary["status"] == "not_found"
 
     def test_status_generated(self):
-        summary = {"document_id": "d4", "title": "Paper 4", "summary": "Generated summary", "status": "generated"}
+        summary = {
+            "document_id": "d4",
+            "title": "Paper 4",
+            "summary": "Generated summary",
+            "status": "generated",
+        }
         assert summary["status"] == "generated"
 
     def test_status_generation_failed(self):
-        summary = {"document_id": "d5", "title": "Paper 5", "status": "generation_failed", "error": "LLM timeout"}
+        summary = {
+            "document_id": "d5",
+            "title": "Paper 5",
+            "status": "generation_failed",
+            "error": "LLM timeout",
+        }
         assert summary["status"] == "generation_failed"
         assert "timeout" in summary["error"]
 
@@ -207,7 +236,9 @@ class TestBatchSummarize:
             {"status": "not_found"},
             {"status": "available"},
         ]
-        available = sum(1 for s in summaries if s.get("status") in ("available", "generated"))
+        available = sum(
+            1 for s in summaries if s.get("status") in ("available", "generated")
+        )
         assert available == 3
 
     def test_result_format(self):
@@ -215,14 +246,19 @@ class TestBatchSummarize:
             "success": True,
             "data": {
                 "summaries": [
-                    {"document_id": "d1", "title": "P1", "summary": "...", "status": "available"},
+                    {
+                        "document_id": "d1",
+                        "title": "P1",
+                        "summary": "...",
+                        "status": "available",
+                    },
                     {"document_id": "d2", "title": "P2", "status": "no_summary"},
                     {"document_id": "d3", "status": "not_found"},
                 ],
                 "total_requested": 3,
                 "available": 1,
                 "missing": 2,
-            }
+            },
         }
         assert result["data"]["total_requested"] == 3
         assert result["data"]["available"] == 1
@@ -239,12 +275,14 @@ class TestBatchToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "batch_search" in names
         assert "batch_summarize" in names
 
     def test_batch_search_requires_queries(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("batch_search")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -252,6 +290,7 @@ class TestBatchToolSchemas:
 
     def test_batch_summarize_requires_document_ids(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("batch_summarize")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -259,22 +298,26 @@ class TestBatchToolSchemas:
 
     def test_batch_search_has_deduplicate_param(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("batch_search")
         assert "deduplicate" in tool["parameters"]["properties"]
 
     def test_batch_summarize_has_generate_missing_param(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("batch_summarize")
         assert "generate_missing" in tool["parameters"]["properties"]
 
     def test_batch_search_queries_is_array(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("batch_search")
         queries_prop = tool["parameters"]["properties"]["queries"]
         assert queries_prop["type"] == "array"
 
     def test_batch_summarize_ids_is_array(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("batch_summarize")
         ids_prop = tool["parameters"]["properties"]["document_ids"]
         assert ids_prop["type"] == "array"
@@ -285,18 +328,21 @@ class TestBatchToolRegistry:
 
     def test_batch_search_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("batch_search")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_batch_summarize_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("batch_summarize")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_both_are_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["batch_search", "batch_summarize"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
@@ -304,6 +350,7 @@ class TestBatchToolRegistry:
 
     def test_neither_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["batch_search", "batch_summarize"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

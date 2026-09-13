@@ -5,16 +5,16 @@ Orchestrates the export process from various content sources.
 """
 
 from datetime import datetime
-from typing import Optional, Dict, Any, List, Callable
+from typing import Any, Callable, Dict, List, Optional
 from uuid import UUID
+
 from loguru import logger
-
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.export_job import ExportJob
-from app.models.chat import ChatSession, ChatMessage
+from app.models.chat import ChatMessage, ChatSession
 from app.models.document import Document
+from app.models.export_job import ExportJob
 from app.services.docx_builder import DOCXBuilder, markdown_to_content_items
 from app.services.pdf_builder import PDFBuilder
 from app.services.storage_service import StorageService
@@ -45,7 +45,7 @@ class ExportService:
         content: Optional[str] = None,
         content_format: str = "markdown",
         style: str = "professional",
-        custom_theme: Optional[Dict[str, Any]] = None
+        custom_theme: Optional[Dict[str, Any]] = None,
     ) -> ExportJob:
         """
         Create a new export job.
@@ -78,7 +78,7 @@ class ExportService:
             style=style,
             custom_theme=custom_theme,
             status="pending",
-            progress=0
+            progress=0,
         )
         db.add(job)
         await db.commit()
@@ -90,7 +90,7 @@ class ExportService:
         self,
         db: AsyncSession,
         job_id: UUID,
-        progress_callback: Optional[Callable[[int, str], None]] = None
+        progress_callback: Optional[Callable[[int, str], None]] = None,
     ) -> ExportJob:
         """
         Process an export job.
@@ -140,7 +140,7 @@ class ExportService:
                 content_items=content_items,
                 output_format=job.output_format,
                 style=job.style,
-                custom_theme=job.custom_theme
+                custom_theme=job.custom_theme,
             )
 
             update_progress(70, "Uploading to storage")
@@ -156,9 +156,7 @@ class ExportService:
                 else "application/pdf"
             )
             await self.storage.upload_file(
-                file_bytes,
-                file_path,
-                content_type=content_type
+                file_bytes, file_path, content_type=content_type
             )
 
             update_progress(90, "Finalizing")
@@ -183,9 +181,7 @@ class ExportService:
             raise
 
     async def _get_chat_content(
-        self,
-        db: AsyncSession,
-        session_id: UUID
+        self, db: AsyncSession, session_id: UUID
     ) -> List[Dict[str, Any]]:
         """
         Get content items from a chat session.
@@ -218,29 +214,25 @@ class ExportService:
 
         # Add session topic as heading if available
         if session.topic:
-            content_items.append({
-                "type": "heading",
-                "level": 1,
-                "text": session.topic
-            })
+            content_items.append({"type": "heading", "level": 1, "text": session.topic})
             content_items.append({"type": "horizontal_rule"})
 
         # Convert messages to content items
         for msg in messages:
             # Add role as subheading
             role_display = "User" if msg.role == "user" else "Assistant"
-            content_items.append({
-                "type": "heading",
-                "level": 2,
-                "text": f"{role_display}:"
-            })
+            content_items.append(
+                {"type": "heading", "level": 2, "text": f"{role_display}:"}
+            )
 
             # Add timestamp if available
             if msg.created_at:
-                content_items.append({
-                    "type": "paragraph",
-                    "text": f"[{msg.created_at.strftime('%Y-%m-%d %H:%M')}]"
-                })
+                content_items.append(
+                    {
+                        "type": "paragraph",
+                        "text": f"[{msg.created_at.strftime('%Y-%m-%d %H:%M')}]",
+                    }
+                )
 
             # Parse message content
             message_items = self._parse_content(msg.content, "markdown")
@@ -248,32 +240,27 @@ class ExportService:
 
             # Add sources if available
             if msg.sources:
-                content_items.append({
-                    "type": "heading",
-                    "level": 3,
-                    "text": "Sources:"
-                })
+                content_items.append(
+                    {"type": "heading", "level": 3, "text": "Sources:"}
+                )
                 source_items = []
                 for source in msg.sources:
                     if isinstance(source, dict):
-                        source_text = source.get("title") or source.get("source", str(source))
+                        source_text = source.get("title") or source.get(
+                            "source", str(source)
+                        )
                     else:
                         source_text = str(source)
                     source_items.append(source_text)
                 if source_items:
-                    content_items.append({
-                        "type": "bullet_list",
-                        "items": source_items
-                    })
+                    content_items.append({"type": "bullet_list", "items": source_items})
 
             content_items.append({"type": "horizontal_rule"})
 
         return content_items
 
     async def _get_document_content(
-        self,
-        db: AsyncSession,
-        document_id: UUID
+        self, db: AsyncSession, document_id: UUID
     ) -> List[Dict[str, Any]]:
         """
         Get content items from a document summary.
@@ -286,9 +273,7 @@ class ExportService:
             List of content items
         """
         # Get document
-        result = await db.execute(
-            select(Document).where(Document.id == document_id)
-        )
+        result = await db.execute(select(Document).where(Document.id == document_id))
         document = result.scalar_one_or_none()
 
         if not document:
@@ -297,57 +282,47 @@ class ExportService:
         content_items = []
 
         # Add document metadata
-        content_items.append({
-            "type": "heading",
-            "level": 1,
-            "text": document.title or "Document Summary"
-        })
+        content_items.append(
+            {
+                "type": "heading",
+                "level": 1,
+                "text": document.title or "Document Summary",
+            }
+        )
 
         # Add metadata table
         metadata_rows = []
         if document.file_type:
             metadata_rows.append(["Type", document.file_type])
         if document.created_at:
-            metadata_rows.append(["Created", document.created_at.strftime('%Y-%m-%d %H:%M')])
+            metadata_rows.append(
+                ["Created", document.created_at.strftime("%Y-%m-%d %H:%M")]
+            )
         if document.source_identifier:
             metadata_rows.append(["Source", document.source_identifier])
 
         if metadata_rows:
-            content_items.append({
-                "type": "table",
-                "headers": ["Field", "Value"],
-                "rows": metadata_rows
-            })
+            content_items.append(
+                {"type": "table", "headers": ["Field", "Value"], "rows": metadata_rows}
+            )
 
         content_items.append({"type": "horizontal_rule"})
 
         # Add summary if available
         if document.summary:
-            content_items.append({
-                "type": "heading",
-                "level": 2,
-                "text": "Summary"
-            })
+            content_items.append({"type": "heading", "level": 2, "text": "Summary"})
             summary_items = self._parse_content(document.summary, "markdown")
             content_items.extend(summary_items)
 
         # Add full content if no summary
         elif document.content:
-            content_items.append({
-                "type": "heading",
-                "level": 2,
-                "text": "Content"
-            })
+            content_items.append({"type": "heading", "level": 2, "text": "Content"})
             doc_items = self._parse_content(document.content, "markdown")
             content_items.extend(doc_items)
 
         return content_items
 
-    def _parse_content(
-        self,
-        content: str,
-        content_format: str
-    ) -> List[Dict[str, Any]]:
+    def _parse_content(self, content: str, content_format: str) -> List[Dict[str, Any]]:
         """
         Parse content string into content items.
 
@@ -367,8 +342,12 @@ class ExportService:
             return self._html_to_content_items(content)
         else:
             # Plain text - split into paragraphs
-            paragraphs = content.split('\n\n')
-            return [{"type": "paragraph", "text": p.strip()} for p in paragraphs if p.strip()]
+            paragraphs = content.split("\n\n")
+            return [
+                {"type": "paragraph", "text": p.strip()}
+                for p in paragraphs
+                if p.strip()
+            ]
 
     def _html_to_content_items(self, html: str) -> List[Dict[str, Any]]:
         """
@@ -382,7 +361,7 @@ class ExportService:
         """
         from bs4 import BeautifulSoup
 
-        soup = BeautifulSoup(html, 'html.parser')
+        soup = BeautifulSoup(html, "html.parser")
         content_items = []
 
         for element in soup.children:
@@ -392,78 +371,89 @@ class ExportService:
                 if text:
                     content_items.append({"type": "paragraph", "text": text})
 
-            elif element.name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            elif element.name in ["h1", "h2", "h3", "h4", "h5", "h6"]:
                 level = int(element.name[1])
-                content_items.append({
-                    "type": "heading",
-                    "level": level,
-                    "text": element.get_text().strip()
-                })
+                content_items.append(
+                    {
+                        "type": "heading",
+                        "level": level,
+                        "text": element.get_text().strip(),
+                    }
+                )
 
-            elif element.name == 'p':
-                content_items.append({
-                    "type": "paragraph",
-                    "text": element.get_text().strip()
-                })
+            elif element.name == "p":
+                content_items.append(
+                    {"type": "paragraph", "text": element.get_text().strip()}
+                )
 
-            elif element.name == 'ul':
-                items = [li.get_text().strip() for li in element.find_all('li', recursive=False)]
+            elif element.name == "ul":
+                items = [
+                    li.get_text().strip()
+                    for li in element.find_all("li", recursive=False)
+                ]
                 content_items.append({"type": "bullet_list", "items": items})
 
-            elif element.name == 'ol':
-                items = [li.get_text().strip() for li in element.find_all('li', recursive=False)]
+            elif element.name == "ol":
+                items = [
+                    li.get_text().strip()
+                    for li in element.find_all("li", recursive=False)
+                ]
                 content_items.append({"type": "numbered_list", "items": items})
 
-            elif element.name == 'pre':
-                code = element.find('code')
+            elif element.name == "pre":
+                code = element.find("code")
                 if code:
                     language = ""
-                    if code.get('class'):
-                        for cls in code.get('class', []):
-                            if cls.startswith('language-'):
+                    if code.get("class"):
+                        for cls in code.get("class", []):
+                            if cls.startswith("language-"):
                                 language = cls[9:]
                                 break
-                    content_items.append({
-                        "type": "code_block",
-                        "code": code.get_text(),
-                        "language": language
-                    })
+                    content_items.append(
+                        {
+                            "type": "code_block",
+                            "code": code.get_text(),
+                            "language": language,
+                        }
+                    )
                 else:
-                    content_items.append({
-                        "type": "code_block",
-                        "code": element.get_text(),
-                        "language": ""
-                    })
+                    content_items.append(
+                        {
+                            "type": "code_block",
+                            "code": element.get_text(),
+                            "language": "",
+                        }
+                    )
 
-            elif element.name == 'blockquote':
-                content_items.append({
-                    "type": "quote",
-                    "text": element.get_text().strip()
-                })
+            elif element.name == "blockquote":
+                content_items.append(
+                    {"type": "quote", "text": element.get_text().strip()}
+                )
 
-            elif element.name == 'hr':
+            elif element.name == "hr":
                 content_items.append({"type": "horizontal_rule"})
 
-            elif element.name == 'table':
+            elif element.name == "table":
                 headers = []
                 rows = []
-                thead = element.find('thead')
+                thead = element.find("thead")
                 if thead:
-                    header_row = thead.find('tr')
+                    header_row = thead.find("tr")
                     if header_row:
-                        headers = [th.get_text().strip() for th in header_row.find_all(['th', 'td'])]
+                        headers = [
+                            th.get_text().strip()
+                            for th in header_row.find_all(["th", "td"])
+                        ]
 
-                tbody = element.find('tbody') or element
-                for tr in tbody.find_all('tr'):
-                    row = [td.get_text().strip() for td in tr.find_all(['td', 'th'])]
+                tbody = element.find("tbody") or element
+                for tr in tbody.find_all("tr"):
+                    row = [td.get_text().strip() for td in tr.find_all(["td", "th"])]
                     if row and row != headers:
                         rows.append(row)
 
-                content_items.append({
-                    "type": "table",
-                    "headers": headers,
-                    "rows": rows
-                })
+                content_items.append(
+                    {"type": "table", "headers": headers, "rows": rows}
+                )
 
         return content_items
 
@@ -473,7 +463,7 @@ class ExportService:
         content_items: List[Dict[str, Any]],
         output_format: str,
         style: str,
-        custom_theme: Optional[Dict[str, Any]] = None
+        custom_theme: Optional[Dict[str, Any]] = None,
     ) -> bytes:
         """
         Build document using appropriate builder.
@@ -493,16 +483,10 @@ class ExportService:
         else:
             builder = PDFBuilder(style=style, custom_theme=custom_theme)
 
-        return builder.build(
-            title=title,
-            content_items=content_items
-        )
+        return builder.build(title=title, content_items=content_items)
 
     async def get_export_job(
-        self,
-        db: AsyncSession,
-        job_id: UUID,
-        user_id: Optional[UUID] = None
+        self, db: AsyncSession, job_id: UUID, user_id: Optional[UUID] = None
     ) -> Optional[ExportJob]:
         """
         Get an export job by ID.
@@ -523,11 +507,7 @@ class ExportService:
         return result.scalar_one_or_none()
 
     async def get_user_export_jobs(
-        self,
-        db: AsyncSession,
-        user_id: UUID,
-        limit: int = 50,
-        offset: int = 0
+        self, db: AsyncSession, user_id: UUID, limit: int = 50, offset: int = 0
     ) -> List[ExportJob]:
         """
         Get export jobs for a user.
@@ -551,10 +531,7 @@ class ExportService:
         return list(result.scalars().all())
 
     async def get_download_content(
-        self,
-        db: AsyncSession,
-        job_id: UUID,
-        user_id: UUID
+        self, db: AsyncSession, job_id: UUID, user_id: UUID
     ) -> Optional[bytes]:
         """
         Get the file content for download.

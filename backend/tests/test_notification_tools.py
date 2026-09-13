@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 
 class TestSendNotification:
     """Tests for send_notification tool logic."""
@@ -19,7 +17,10 @@ class TestSendNotification:
         assert not message
 
     def test_accepts_valid_params(self):
-        params = {"title": "Job Complete", "message": "Research finished with 10 papers found"}
+        params = {
+            "title": "Job Complete",
+            "message": "Research finished with 10 papers found",
+        }
         title = str(params.get("title", "")).strip()
         message = str(params.get("message", "")).strip()
         assert title == "Job Complete"
@@ -69,7 +70,7 @@ class TestSendNotification:
                 "notification_id": str(uuid.uuid4()),
                 "delivered": True,
                 "priority": "high",
-            }
+            },
         }
         assert result["data"]["delivered"] is True
         assert result["data"]["priority"] == "high"
@@ -94,7 +95,10 @@ class TestSendEmailAlert:
         assert not body
 
     def test_accepts_valid_params(self):
-        params = {"subject": "Urgent: Job Failed", "body": "The research job encountered an error."}
+        params = {
+            "subject": "Urgent: Job Failed",
+            "body": "The research job encountered an error.",
+        }
         subject = str(params.get("subject", "")).strip()
         body = str(params.get("body", "")).strip()
         assert subject
@@ -114,7 +118,7 @@ class TestSendEmailAlert:
                 "delivered": True,
                 "delivery_method": "in_app_notification",
                 "note": "SMTP not configured; delivered as in-app notification",
-            }
+            },
         }
         assert result["data"]["delivery_method"] == "in_app_notification"
         assert "SMTP" in result["data"]["note"]
@@ -129,12 +133,14 @@ class TestNotificationToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "send_notification" in names
         assert "send_email_alert" in names
 
     def test_send_notification_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("send_notification")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -143,6 +149,7 @@ class TestNotificationToolSchemas:
 
     def test_send_email_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("send_email_alert")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -155,18 +162,21 @@ class TestNotificationToolRegistry:
 
     def test_send_notification_is_write_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("send_notification")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_send_email_is_write_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("send_email_alert")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_notification_tools_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["send_notification", "send_email_alert"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

@@ -35,9 +35,10 @@ import {
 } from 'lucide-react';
 import toast from 'react-hot-toast';
 import { apiClient } from '../services/api';
-import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document, ResearchNote } from '../types';
+import type { SynthesisJob, SynthesisJobType, SynthesisJobStatus, Document, AgentJob } from '../types';
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
+import SkeletonList from '../components/common/SkeletonList';
 import { useNotifications } from '../contexts/NotificationContext';
 
 // Job type configuration
@@ -166,12 +167,6 @@ const SynthesisPage: React.FC = () => {
     }
   );
 
-  // Fetch types info
-  const { data: typesInfo } = useQuery(
-    ['synthesis-types-info'],
-    () => apiClient.getSynthesisTypesInfo()
-  );
-
   // Mutations
   const deleteMutation = useMutation(
     (jobId: string) => apiClient.deleteSynthesisJob(jobId),
@@ -237,7 +232,7 @@ const SynthesisPage: React.FC = () => {
 
     return (
       <div
-        className={`bg-white border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer ${
+        className={`bg-white border rounded-lg p-4 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 active:translate-y-0 active:shadow-level-1 cursor-pointer ${
           selectedJob?.id === job.id ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200'
         }`}
         onClick={() => setSelectedJob(job)}
@@ -248,7 +243,7 @@ const SynthesisPage: React.FC = () => {
               <TypeIcon className="w-4 h-4" />
             </div>
             <div>
-              <h3 className="font-medium text-gray-900 truncate max-w-[200px]">{job.title}</h3>
+              <h3 className="section-heading truncate max-w-[200px]">{job.title}</h3>
               <p className="text-xs text-gray-500">{typeConfig.label}</p>
             </div>
           </div>
@@ -720,7 +715,7 @@ const SynthesisPage: React.FC = () => {
         <div ref={contentContainerRef} className="flex-1 overflow-y-auto p-4">
           {/* Progress */}
           <div className="mb-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-2">Progress</h3>
+            <h3 className="section-heading">Progress</h3>
             <div className="h-3 bg-gray-200 rounded-full overflow-hidden">
               <div
                 className={`h-full rounded-full transition-all ${
@@ -740,7 +735,7 @@ const SynthesisPage: React.FC = () => {
           {/* Topic */}
           {job.topic && (
             <div className="mb-4">
-              <h3 className="text-sm font-medium text-gray-700 mb-1">Topic</h3>
+              <h3 className="section-heading">Topic</h3>
               <p className="text-sm text-gray-600 bg-gray-50 rounded-lg p-3">{job.topic}</p>
             </div>
           )}
@@ -748,7 +743,7 @@ const SynthesisPage: React.FC = () => {
           {/* Research Hub options */}
           {job.job_type === 'gap_analysis_hypotheses' && job.options && (
             <div className="mb-4">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Research Hub Options</h3>
+              <h3 className="section-heading">Research Hub Options</h3>
               <div className="text-sm text-gray-700 bg-gray-50 rounded-lg p-3 space-y-1">
                 {job.options.domain && (
                   <p>
@@ -778,7 +773,7 @@ const SynthesisPage: React.FC = () => {
           {/* Decision memo options */}
           {job.job_type === 'decision_memo' && job.options && (
             <div className="mb-4">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Decision Memo Options</h3>
+              <h3 className="section-heading">Decision Memo Options</h3>
               <div className="text-sm text-gray-700 bg-gray-50 rounded-lg p-3 space-y-1">
                 {job.options.audience && (
                   <p>
@@ -804,7 +799,7 @@ const SynthesisPage: React.FC = () => {
 
           {/* Documents */}
           <div className="mb-4">
-            <h3 className="text-sm font-medium text-gray-700 mb-2">
+            <h3 className="section-heading">
               {job.paper_ids?.length ? `Papers (${job.paper_ids.length})` : `Documents (${job.document_ids.length})`}
             </h3>
             <div className="text-xs text-gray-500 bg-gray-50 rounded-lg p-3 max-h-24 overflow-y-auto">
@@ -817,7 +812,7 @@ const SynthesisPage: React.FC = () => {
           {/* Metadata */}
           {job.result_metadata && (
             <div className="mb-4">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Results</h3>
+              <h3 className="section-heading">Results</h3>
               <div className="grid grid-cols-2 gap-3">
                 {job.result_metadata.word_count !== undefined && (
                   <div className="bg-gray-50 rounded-lg p-3 text-center">
@@ -866,7 +861,7 @@ const SynthesisPage: React.FC = () => {
           {isCompletedReevaluationDraft && sourceNote && (
             <div className="mb-4">
               {renderReevaluationHandoffActions(false)}
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Changes vs source note</h3>
+              <h3 className="section-heading">Changes vs source note</h3>
               <div className="space-y-2">
                 {reevaluationDiffRows.map((row) => {
                   const previousRank = row.previous?.rank;
@@ -917,7 +912,7 @@ const SynthesisPage: React.FC = () => {
 
           {isCompilerExplanationJob && job.result_metadata && (
             <div className="mb-4">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Compiler Regression Explanation</h3>
+              <h3 className="section-heading">Compiler Regression Explanation</h3>
               <div className="rounded border border-sky-200 bg-sky-50 p-4 space-y-3">
                 {job.result_metadata.summary ? (
                   <div className="text-sm text-sky-900">{String(job.result_metadata.summary)}</div>
@@ -992,7 +987,7 @@ const SynthesisPage: React.FC = () => {
 
           {isCompilerPatchProposalJob && job.result_metadata && (
             <div className="mb-4">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Compiler Patch Proposal</h3>
+              <h3 className="section-heading">Compiler Patch Proposal</h3>
               <div className="rounded border border-teal-200 bg-teal-50 p-4 space-y-3">
                 {job.result_metadata.proposal_summary ? (
                   <div className="text-sm text-teal-900">{String(job.result_metadata.proposal_summary)}</div>
@@ -1043,7 +1038,7 @@ const SynthesisPage: React.FC = () => {
 
           {isCompilerPatchDraftJob && job.result_metadata && (
             <div className="mb-4">
-              <h3 className="text-sm font-medium text-gray-700 mb-2">Compiler Patch Draft</h3>
+              <h3 className="section-heading">Compiler Patch Draft</h3>
               <div className="rounded border border-violet-200 bg-violet-50 p-4 space-y-3">
                 {job.result_metadata.draft_summary ? (
                   <div className="text-sm text-violet-900">{String(job.result_metadata.draft_summary)}</div>
@@ -1118,7 +1113,7 @@ const SynthesisPage: React.FC = () => {
           {job.result_content && (
             <div className="mb-4">
               <div className="flex items-center justify-between mb-2">
-                <h3 className="text-sm font-medium text-gray-700">Content Preview</h3>
+                <h3 className="section-heading">Content Preview</h3>
                 <div className="flex items-center gap-2">
                   {job.job_type === 'gap_analysis_hypotheses' && sections.length > 0 && (
                     <select
@@ -1215,6 +1210,7 @@ const SynthesisPage: React.FC = () => {
     const [step, setStep] = useState<'type' | 'documents' | 'config'>('type');
     const [selectedType, setSelectedType] = useState<SynthesisJobType>('multi_doc_summary');
     const [selectedDocs, setSelectedDocs] = useState<string[]>([]);
+    const [selectedRuns, setSelectedRuns] = useState<string[]>([]);
     const [searchQuery, setSearchQuery] = useState('');
     const [sourceSearchQuery, setSourceSearchQuery] = useState('');
     const [title, setTitle] = useState('');
@@ -1257,9 +1253,17 @@ const SynthesisPage: React.FC = () => {
       { enabled: step === 'documents' }
     );
 
+    // Completed runs only: a run still going has findings that will change,
+    // and a document citing a moving number is worse than one citing none.
+    const { data: runsData, isLoading: runsLoading } = useQuery(
+      ['agent-runs-for-synthesis'],
+      () => apiClient.listAgentJobs({ status: 'completed', page_size: 25, sort_by: 'recent' }),
+      { enabled: step === 'documents' }
+    );
+
     const handleSubmit = async () => {
-      if (selectedDocs.length === 0 && !sourceSearchQuery.trim()) {
-        toast.error('Select at least one document or provide a search query');
+      if (selectedDocs.length === 0 && selectedRuns.length === 0 && !sourceSearchQuery.trim()) {
+        toast.error('Select a document or a run, or provide a search query');
         return;
       }
       if (!title.trim()) {
@@ -1273,6 +1277,7 @@ const SynthesisPage: React.FC = () => {
           job_type: selectedType,
           title,
           document_ids: selectedDocs,
+          agent_job_ids: selectedRuns.length ? selectedRuns : undefined,
           search_query: sourceSearchQuery.trim() || undefined,
           topic: topic || undefined,
           output_format: outputFormat,
@@ -1357,7 +1362,7 @@ const SynthesisPage: React.FC = () => {
                           <Icon className="w-5 h-5" />
                         </div>
                         <div>
-                          <h3 className="font-medium text-gray-900">{config.label}</h3>
+                          <h3 className="section-heading">{config.label}</h3>
                           <p className="text-xs text-gray-500 mt-1">{config.description}</p>
                         </div>
                       </div>
@@ -1386,6 +1391,55 @@ const SynthesisPage: React.FC = () => {
                 <p className="text-sm text-gray-500 mb-3">
                   Selected: {selectedDocs.length} documents
                 </p>
+
+                {/* Runs as sources. A run's findings reach the synthesis with
+                    their measurements attached, so a number in the document is
+                    the one the run recorded rather than one typed in again. */}
+                <div className="mb-4">
+                  <label className="block text-sm font-medium text-gray-700 mb-1">
+                    Or build on what a run measured
+                  </label>
+                  {runsLoading ? (
+                    <SkeletonList rows={3} variant="row" label="Loading completed runs" />
+                  ) : (runsData?.jobs || []).length === 0 ? (
+                    <p className="text-xs text-gray-500">
+                      No completed runs yet. A run's findings become citable here once it finishes.
+                    </p>
+                  ) : (
+                    <div className="space-y-2 max-h-48 overflow-y-auto">
+                      {(runsData?.jobs || []).map((run: AgentJob) => (
+                        <label
+                          key={run.id}
+                          className={`flex items-center gap-3 p-3 border rounded-lg cursor-pointer ${
+                            selectedRuns.includes(run.id)
+                              ? 'border-primary-500 bg-primary-50'
+                              : 'border-gray-200 hover:bg-gray-50'
+                          }`}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={selectedRuns.includes(run.id)}
+                            onChange={(e) => {
+                              if (e.target.checked) {
+                                setSelectedRuns([...selectedRuns, run.id]);
+                              } else {
+                                setSelectedRuns(selectedRuns.filter((id) => id !== run.id));
+                              }
+                            }}
+                            className="rounded"
+                          />
+                          <div className="flex-1 min-w-0">
+                            <p className="font-medium text-gray-900 truncate">{run.name}</p>
+                            <p className="text-xs text-gray-500 truncate">
+                              {run.job_type}
+                              {typeof run.iteration === 'number' ? ` | ${run.iteration} iterations` : ''}
+                            </p>
+                          </div>
+                        </label>
+                      ))}
+                    </div>
+                  )}
+                </div>
 
                 <div className="mb-4">
                   <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -1598,6 +1652,9 @@ const SynthesisPage: React.FC = () => {
                   <div className="text-sm text-gray-600 space-y-1">
                     <p><span className="text-gray-500">Type:</span> {JOB_TYPE_CONFIG[selectedType].label}</p>
                     <p><span className="text-gray-500">Documents:</span> {selectedDocs.length}</p>
+                    {selectedRuns.length > 0 && (
+                      <p><span className="text-gray-500">Runs:</span> {selectedRuns.length}</p>
+                    )}
                     {sourceSearchQuery.trim() && (
                       <p><span className="text-gray-500">Search query:</span> {sourceSearchQuery.trim()}</p>
                     )}
@@ -1625,7 +1682,7 @@ const SynthesisPage: React.FC = () => {
               onClick={() => {
                 if (step === 'type') setStep('documents');
                 else if (step === 'documents') {
-                  if (selectedDocs.length === 0 && !sourceSearchQuery.trim()) {
+                  if (selectedDocs.length === 0 && selectedRuns.length === 0 && !sourceSearchQuery.trim()) {
                     toast.error('Select at least one document or provide a search query');
                     return;
                   }

@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 
 class TestCompressHistory:
     """Tests for compress_history tool logic."""
@@ -39,21 +37,39 @@ class TestCompressHistory:
 
     def test_action_text_extraction(self):
         actions = [
-            {"action": {"tool": "search_documents"}, "result": {"success": True, "data": {"total": 5}}, "iteration": 1},
-            {"action": {"tool": "answer_question"}, "result": {"success": False, "error": "timeout"}, "iteration": 2},
+            {
+                "action": {"tool": "search_documents"},
+                "result": {"success": True, "data": {"total": 5}},
+                "iteration": 1,
+            },
+            {
+                "action": {"tool": "answer_question"},
+                "result": {"success": False, "error": "timeout"},
+                "iteration": 2,
+            },
         ]
         lines = []
         for a in actions:
-            tool = a.get("action", {}).get("tool", "unknown") if isinstance(a.get("action"), dict) else "unknown"
+            tool = (
+                a.get("action", {}).get("tool", "unknown")
+                if isinstance(a.get("action"), dict)
+                else "unknown"
+            )
             res_summary = ""
             act_result = a.get("result", {})
             if isinstance(act_result, dict):
                 if act_result.get("success"):
-                    data_keys = list(act_result.get("data", {}).keys()) if isinstance(act_result.get("data"), dict) else []
+                    data_keys = (
+                        list(act_result.get("data", {}).keys())
+                        if isinstance(act_result.get("data"), dict)
+                        else []
+                    )
                     res_summary = f"success, data keys: {data_keys}"
                 else:
                     res_summary = f"failed: {str(act_result.get('error', ''))[:100]}"
-            lines.append(f"- Iteration {a.get('iteration', '?')}: {tool} → {res_summary}")
+            lines.append(
+                f"- Iteration {a.get('iteration', '?')}: {tool} → {res_summary}"
+            )
         assert "search_documents" in lines[0]
         assert "success" in lines[0]
         assert "answer_question" in lines[1]
@@ -68,7 +84,9 @@ class TestCompressHistory:
 
     def test_compressed_history_stored_in_state(self):
         state = {}
-        state["compressed_history"] = "Agent searched for papers and found 3 relevant results."
+        state[
+            "compressed_history"
+        ] = "Agent searched for papers and found 3 relevant results."
         assert "compressed_history" in state
         assert len(state["compressed_history"]) > 0
 
@@ -96,7 +114,11 @@ class TestCompressHistory:
 
     def test_missing_action_tool_defaults_to_unknown(self):
         action = {"result": {"success": True}}
-        tool = action.get("action", {}).get("tool", "unknown") if isinstance(action.get("action"), dict) else "unknown"
+        tool = (
+            action.get("action", {}).get("tool", "unknown")
+            if isinstance(action.get("action"), dict)
+            else "unknown"
+        )
         assert tool == "unknown"
 
 
@@ -124,7 +146,11 @@ class TestSummarizeFindings:
             {"category": "methodology", "title": "B"},
         ]
         cat_filter = None
-        target = [f for f in findings if f.get("category") == cat_filter] if cat_filter else list(findings)
+        target = (
+            [f for f in findings if f.get("category") == cat_filter]
+            if cat_filter
+            else list(findings)
+        )
         assert len(target) == 2
 
     def test_consolidate_replaces_findings(self):
@@ -180,7 +206,11 @@ class TestSummarizeFindings:
 
     def test_findings_text_format(self):
         findings = [
-            {"category": "key_insight", "title": "Finding A", "content": "Content of finding A"},
+            {
+                "category": "key_insight",
+                "title": "Finding A",
+                "content": "Content of finding A",
+            },
         ]
         findings_text = ""
         for f in findings:
@@ -243,12 +273,14 @@ class TestContextManagementSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "compress_history" in names
         assert "summarize_findings" in names
 
     def test_compress_history_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("compress_history")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -256,11 +288,13 @@ class TestContextManagementSchemas:
 
     def test_compress_history_has_keep_last(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("compress_history")
         assert "keep_last" in tool["parameters"]["properties"]
 
     def test_summarize_findings_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("summarize_findings")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -268,11 +302,13 @@ class TestContextManagementSchemas:
 
     def test_summarize_findings_has_consolidate(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("summarize_findings")
         assert "consolidate" in tool["parameters"]["properties"]
 
     def test_summarize_findings_has_category(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("summarize_findings")
         assert "category" in tool["parameters"]["properties"]
 
@@ -282,18 +318,21 @@ class TestContextManagementRegistry:
 
     def test_compress_history_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("compress_history")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_summarize_findings_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("summarize_findings")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_both_are_medium_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["compress_history", "summarize_findings"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
@@ -301,6 +340,7 @@ class TestContextManagementRegistry:
 
     def test_neither_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["compress_history", "summarize_findings"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

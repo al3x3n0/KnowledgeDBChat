@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import TYPE_CHECKING, Any, Dict, List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     # Imported lazily to break the schema import cycle:
@@ -27,8 +27,13 @@ EXPERIMENT_RUN_STATUS_PATTERN = "^(pending|planned|queued|provisioning|running|p
 class ExperimentPlanGenerateRequest(BaseModel):
     note_id: UUID
     max_note_chars: int = Field(default=12000, ge=500, le=60000)
-    prefer_section: str = Field(default="hypothesis", pattern="^(hypothesis|full_note)$")
-    plan_mode: str = Field(default="aggregate_note", pattern="^(aggregate_note|single_hypothesis|compiler_regression_followup)$")
+    prefer_section: str = Field(
+        default="hypothesis", pattern="^(hypothesis|full_note)$"
+    )
+    plan_mode: Optional[str] = Field(
+        default=None,
+        pattern="^(aggregate_note|single_hypothesis|compiler_regression_followup)$",
+    )
     hypothesis_id: Optional[str] = None
     benchmark_suite_id: Optional[str] = Field(default=None, max_length=120)
     benchmark_case_ids: List[str] = Field(default_factory=list, max_length=24)
@@ -54,8 +59,7 @@ class ExperimentPlanResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExperimentPlanListResponse(BaseModel):
@@ -149,8 +153,7 @@ class ScientificValidationRunSummaryResponse(BaseModel):
     started_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExperimentRunResponse(BaseModel):
@@ -197,8 +200,7 @@ class ExperimentRunResponse(BaseModel):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ExperimentRunListResponse(BaseModel):

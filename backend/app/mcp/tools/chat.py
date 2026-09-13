@@ -2,17 +2,16 @@
 MCP Chat tool for RAG-powered Q&A.
 """
 
-from typing import List, Optional, Any, Dict
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
 from app.mcp.auth import MCPAuthContext
 from app.models.document import Document
 from app.models.memory import UserPreferences
-from app.services.chat_service import ChatService
 from app.services.llm_service import LLMService, UserLLMSettings
 from app.services.vector_store import vector_store_service
 
@@ -30,34 +29,31 @@ class ChatTool:
     input_schema = {
         "type": "object",
         "properties": {
-            "question": {
-                "type": "string",
-                "description": "The question to ask"
-            },
+            "question": {"type": "string", "description": "The question to ask"},
             "source_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional: Limit search to specific source IDs"
+                "description": "Optional: Limit search to specific source IDs",
             },
             "document_ids": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Optional: Limit search to specific document IDs"
+                "description": "Optional: Limit search to specific document IDs",
             },
             "max_context_chunks": {
                 "type": "integer",
                 "default": 5,
                 "minimum": 1,
                 "maximum": 20,
-                "description": "Maximum number of context chunks to use"
+                "description": "Maximum number of context chunks to use",
             },
             "include_sources": {
                 "type": "boolean",
                 "default": True,
-                "description": "Include source references in response"
-            }
+                "description": "Include source references in response",
+            },
         },
-        "required": ["question"]
+        "required": ["question"],
     }
 
     def __init__(self):
@@ -90,7 +86,9 @@ class ChatTool:
         """
         auth.require_scope("chat")
 
-        logger.info(f"MCP chat: question='{question[:50]}...', user={auth.user.username}")
+        logger.info(
+            f"MCP chat: question='{question[:50]}...', user={auth.user.username}"
+        )
 
         try:
             # Load user LLM settings
@@ -101,15 +99,18 @@ class ChatTool:
 
             # Search for relevant context
             raw_results = await vector_store_service.search(
-                query=question,
-                limit=max_context_chunks * 2  # Get more to filter
+                query=question, limit=max_context_chunks * 2  # Get more to filter
             )
 
             # Filter results by accessible documents
             accessible_doc_ids = await self._get_accessible_doc_ids(
                 auth, db, source_ids, document_ids
             )
-            doc_id_set = set(str(doc_id) for doc_id in accessible_doc_ids) if accessible_doc_ids else None
+            doc_id_set = (
+                set(str(doc_id) for doc_id in accessible_doc_ids)
+                if accessible_doc_ids
+                else None
+            )
 
             filtered_results = []
             sources_used = []
@@ -126,12 +127,16 @@ class ChatTool:
                 filtered_results.append(content)
 
                 if include_sources:
-                    sources_used.append({
-                        "document_id": result_doc_id,
-                        "title": metadata.get("title", "Unknown"),
-                        "score": result.get("score", 0),
-                        "chunk_preview": content[:200] + "..." if len(content) > 200 else content,
-                    })
+                    sources_used.append(
+                        {
+                            "document_id": result_doc_id,
+                            "title": metadata.get("title", "Unknown"),
+                            "score": result.get("score", 0),
+                            "chunk_preview": content[:200] + "..."
+                            if len(content) > 200
+                            else content,
+                        }
+                    )
 
                 if len(filtered_results) >= max_context_chunks:
                     break
@@ -187,9 +192,7 @@ Answer:"""
             }
 
     async def _load_user_settings(
-        self,
-        user_id: UUID,
-        db: AsyncSession
+        self, user_id: UUID, db: AsyncSession
     ) -> Optional[UserLLMSettings]:
         """Load user's LLM preferences."""
         try:

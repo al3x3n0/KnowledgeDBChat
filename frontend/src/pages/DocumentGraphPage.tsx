@@ -17,9 +17,9 @@ const extractArxivId = (raw: string): string | null => {
   if (m?.[1]) return m[1];
   m = v.match(/arxiv\.org\/(?:abs|pdf)\/(\d{4}\.\d{4,5}(?:v\d+)?)(?:\.pdf)?/i);
   if (m?.[1]) return m[1];
-  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.\-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
+  m = v.match(/arxiv\.org\/(?:abs|pdf)\/([\w.-]+\/\d+(?:v\d+)?)(?:\.pdf)?/i);
   if (m?.[1]) return m[1];
-  m = v.match(/^([\w.\-]+\/\d+(?:v\d+)?)$/i);
+  m = v.match(/^([\w.-]+\/\d+(?:v\d+)?)$/i);
   if (m?.[1]) return m[1];
   return null;
 };
@@ -67,8 +67,8 @@ const DocumentGraphPage: React.FC = () => {
   const width = Math.max(320, graphBox.width || 0);
   const height = Math.max(420, graphBox.height || 0);
 
-  const nodes = (graph?.nodes || []) as FGNode[];
-  const edges = (graph?.edges || []) as FGEdge[];
+  const nodes = React.useMemo(() => (graph?.nodes || []) as FGNode[], [graph?.nodes]);
+  const edges = React.useMemo(() => (graph?.edges || []) as FGEdge[], [graph?.edges]);
 
   const [selected, setSelected] = React.useState<string | null>(null);
   const selectedNode = React.useMemo(() => nodes.find(n => n.id === selected) || null, [nodes, selected]);
@@ -142,14 +142,15 @@ const DocumentGraphPage: React.FC = () => {
   // Filters and search
   const [selectedEntityTypes, setSelectedEntityTypes] = React.useState<string[] | null>(() => parseCsvParam(searchParams.get('types')));
   const allRelTypes = React.useMemo(() => Array.from(new Set(edges.map(e => e.type))).sort(), [edges]);
+  const relTypesParam = searchParams.get('rels') || '';
   const [relTypes, setRelTypes] = React.useState<Record<string, boolean>>({});
   React.useEffect(() => {
     // initialize relation types to enabled when edges change
     const init: Record<string, boolean> = {};
-    const paramRels = (searchParams.get('rels') || '').split(',');
+    const paramRels = relTypesParam.split(',');
     allRelTypes.forEach(t => (init[t] = paramRels.length ? paramRels.includes(t) : true));
     setRelTypes(init);
-  }, [allRelTypes.length]);
+  }, [allRelTypes, relTypesParam]);
 
   const [search, setSearch] = React.useState(searchParams.get('q') || '');
 
@@ -191,7 +192,7 @@ const DocumentGraphPage: React.FC = () => {
     if (search) params.q = search;
     if (selected) params.sel = selected;
     setSearchParams(params, { replace: true });
-  }, [selectedEntityTypes, relTypes, search, selected]);
+  }, [selectedEntityTypes, relTypes, search, selected, setSearchParams]);
 
   return (
     <div className="p-6 h-full min-h-0 flex flex-col gap-4 flex-1">

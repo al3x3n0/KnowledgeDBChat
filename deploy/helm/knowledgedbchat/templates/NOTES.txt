@@ -1,0 +1,42 @@
+KnowledgeDBChat {{ .Chart.AppVersion }} is installed as release "{{ .Release.Name }}" in namespace "{{ .Release.Namespace }}".
+
+Watch it come up:
+  kubectl -n {{ .Release.Namespace }} get pods -l app.kubernetes.io/instance={{ .Release.Name }} -w
+
+Reach the app:
+{{- if .Values.ingress.enabled }}
+{{- range .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ .host }}
+{{- end }}
+  (minikube: `minikube ip` and add that IP to /etc/hosts for the host above)
+{{- else if eq .Values.gateway.service.type "NodePort" }}
+  minikube service {{ include "kdbc.fullname" . }}-gateway -n {{ .Release.Namespace }} --url
+{{- else }}
+  kubectl -n {{ .Release.Namespace }} port-forward svc/{{ include "kdbc.fullname" . }}-gateway 8080:{{ .Values.gateway.service.port }}
+  then open http://localhost:8080
+{{- end }}
+
+Verify the release:
+  helm test {{ .Release.Name }} -n {{ .Release.Namespace }}
+
+Migration status (Alembic is the only source of schema truth):
+  kubectl -n {{ .Release.Namespace }} logs job/{{ include "kdbc.fullname" . }}-migrate
+
+{{- if and .Values.secrets.create (eq .Values.secrets.secretKey "change-me-please-generate-a-long-random-string") }}
+
+################################################################################
+#  WARNING: this release uses the chart's placeholder credentials.             #
+#  Fine for minikube, unsafe anywhere else. Set at minimum:                    #
+#    secrets.secretKey, secrets.postgresPassword, secrets.minioRootPassword    #
+#  or point secrets.existingSecret at a Secret you manage.                     #
+################################################################################
+{{- end }}
+{{- if not .Values.ollama.enabled }}
+{{- if and (eq .Values.config.llmProvider "ollama") (not .Values.ollama.external.url) }}
+
+NOTE: config.llmProvider is "ollama" but ollama.enabled=false and
+ollama.external.url is empty, so LLM calls will fail. Either set
+ollama.enabled=true, set ollama.external.url, or switch config.llmProvider to a
+hosted provider and supply the matching API key under `secrets`.
+{{- end }}
+{{- end }}

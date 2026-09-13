@@ -2,27 +2,35 @@
 Knowledge graph API endpoints.
 """
 
-from typing import Optional, List
+import json
+from typing import List, Optional
 from uuid import UUID
+
 from fastapi import APIRouter, Depends, HTTPException, Query
+from pydantic import BaseModel
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.core.config import settings
-from app.services.knowledge_graph_service import KnowledgeGraphService
+from app.core.database import get_db
+from app.models.document import Document, DocumentChunk
+from app.models.knowledge_graph import Entity
 from app.schemas.knowledge_graph import (
-    KGStats, KGGraph, KGEntity, KGRelationship, KGChunk, KGMention,
-    KGEntityDetail, KGEntityUpdate, KGAuditRecord, KGGlobalGraph,
-    KGRelationshipCreate, KGRelationshipUpdate, KGRelationshipDetail,
+    KGChunk,
+    KGEntity,
+    KGEntityDetail,
+    KGEntityUpdate,
+    KGGlobalGraph,
+    KGGraph,
+    KGRelationship,
+    KGRelationshipCreate,
+    KGRelationshipDetail,
+    KGRelationshipUpdate,
+    KGStats,
     KGTypes,
 )
-from pydantic import BaseModel
 from app.services.auth_service import require_admin
-from app.models.document import DocumentChunk, Document
-from sqlalchemy import select
-from app.models.knowledge_graph import Entity
-import json
-
+from app.services.knowledge_graph_service import KnowledgeGraphService
 
 router = APIRouter()
 
@@ -60,12 +68,22 @@ async def document_graph(document_id: str, db: AsyncSession = Depends(get_db)):
 
 @router.get("/global/graph", response_model=KGGlobalGraph)
 async def global_graph(
-    entity_types: Optional[str] = Query(None, description="Comma-separated entity types to include"),
-    relation_types: Optional[str] = Query(None, description="Comma-separated relation types to include"),
-    min_confidence: float = Query(0.0, ge=0, le=1, description="Minimum relationship confidence"),
+    entity_types: Optional[str] = Query(
+        None, description="Comma-separated entity types to include"
+    ),
+    relation_types: Optional[str] = Query(
+        None, description="Comma-separated relation types to include"
+    ),
+    min_confidence: float = Query(
+        0.0, ge=0, le=1, description="Minimum relationship confidence"
+    ),
     min_mentions: int = Query(1, ge=1, description="Minimum entity mention count"),
-    limit_nodes: int = Query(300, ge=10, le=1000, description="Maximum nodes to return"),
-    limit_edges: int = Query(1000, ge=10, le=5000, description="Maximum edges to return"),
+    limit_nodes: int = Query(
+        300, ge=10, le=1000, description="Maximum nodes to return"
+    ),
+    limit_edges: int = Query(
+        1000, ge=10, le=5000, description="Maximum edges to return"
+    ),
     search: Optional[str] = Query(None, description="Search entities by name"),
     db: AsyncSession = Depends(get_db),
 ):
@@ -111,8 +129,9 @@ async def resolve_kg_types(req: KGResolveTypesRequest):
 
     This is for UI filtering and does not mutate the KG.
     """
-    from app.services.llm_service import LLMService
     import re as _re
+
+    from app.services.llm_service import LLMService
 
     def _parse_json_obj(s: str) -> dict:
         s = (s or "").strip()
@@ -138,8 +157,12 @@ async def resolve_kg_types(req: KGResolveTypesRequest):
     if not query:
         return {"entity_types": None, "relation_types": None}
 
-    available_entity_types = [t for t in (req.entity_types or []) if isinstance(t, str) and t.strip()]
-    available_relation_types = [t for t in (req.relation_types or []) if isinstance(t, str) and t.strip()]
+    available_entity_types = [
+        t for t in (req.entity_types or []) if isinstance(t, str) and t.strip()
+    ]
+    available_relation_types = [
+        t for t in (req.relation_types or []) if isinstance(t, str) and t.strip()
+    ]
 
     prompt = (
         "You are helping a user filter a knowledge graph.\n"
@@ -210,7 +233,15 @@ async def get_audit_logs(
 ):
     try:
         svc = KnowledgeGraphService()
-        return await svc.audit_logs(db, action=action, user_id=user_id, date_from=date_from, date_to=date_to, limit=limit, offset=offset)
+        return await svc.audit_logs(
+            db,
+            action=action,
+            user_id=user_id,
+            date_from=date_from,
+            date_to=date_to,
+            limit=limit,
+            offset=offset,
+        )
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to get audit logs: {e}")
 
@@ -226,12 +257,21 @@ async def list_entities(
     ents = await svc.entities(db, q=q, limit=limit, offset=offset)
     total = await svc.entities_count(db, q=q)
     # Pydantic model expects fields by alias mapping
-    items = [KGEntity(id=str(e.id), canonical_name=e.canonical_name, entity_type=e.entity_type) for e in ents]
+    items = [
+        KGEntity(
+            id=str(e.id), canonical_name=e.canonical_name, entity_type=e.entity_type
+        )
+        for e in ents
+    ]
     return {"items": items, "total": total, "limit": limit, "offset": offset}
 
 
 @router.get("/entity/{entity_id}/relationships", response_model=List[KGRelationship])
-async def entity_relationships(entity_id: str, limit: int = Query(default=100, ge=1, le=500), db: AsyncSession = Depends(get_db)):
+async def entity_relationships(
+    entity_id: str,
+    limit: int = Query(default=100, ge=1, le=500),
+    db: AsyncSession = Depends(get_db),
+):
     svc = KnowledgeGraphService()
     rels = await svc.relationships_for_entity(db, entity_id, limit=limit)
     return [
@@ -241,8 +281,10 @@ async def entity_relationships(entity_id: str, limit: int = Query(default=100, g
             source=str(r.source_entity_id),
             target=str(r.target_entity_id),
             confidence=r.confidence or 0.0,
-            evidence=getattr(r, 'evidence', None),
-            chunk_id=str(getattr(r, 'chunk_id')) if getattr(r, 'chunk_id', None) else None,
+            evidence=getattr(r, "evidence", None),
+            chunk_id=str(getattr(r, "chunk_id"))
+            if getattr(r, "chunk_id", None)
+            else None,
         )
         for r in rels
     ]
@@ -261,15 +303,19 @@ async def rebuild_document_graph(document_id: str, db: AsyncSession = Depends(ge
 @router.get("/chunk/{chunk_id}", response_model=KGChunk)
 async def get_chunk(
     chunk_id: str,
-    evidence: Optional[str] = Query(default=None, description="Evidence text to locate within the chunk"),
-    db: AsyncSession = Depends(get_db)
+    evidence: Optional[str] = Query(
+        default=None, description="Evidence text to locate within the chunk"
+    ),
+    db: AsyncSession = Depends(get_db),
 ):
     try:
         chunk = await db.get(DocumentChunk, UUID(chunk_id))
         if not chunk:
             raise HTTPException(status_code=404, detail="Chunk not found")
         # Load document title
-        doc = (await db.execute(select(Document).where(Document.id == chunk.document_id))).scalar_one_or_none()
+        doc = (
+            await db.execute(select(Document).where(Document.id == chunk.document_id))
+        ).scalar_one_or_none()
         content = chunk.content or ""
         match_start = None
         match_end = None
@@ -298,7 +344,7 @@ async def entity_mentions(
     entity_id: str,
     limit: int = Query(default=25, ge=1, le=200),
     offset: int = Query(default=0, ge=0),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     try:
         svc = KnowledgeGraphService()
@@ -326,10 +372,13 @@ async def merge_entities(
         # Audit log
         try:
             from app.models.knowledge_graph import KGAuditLog
+
             log = KGAuditLog(
                 user_id=current_user.id,
-                action='merge_entities',
-                details=json.dumps({"source_id": req.source_id, "target_id": req.target_id, **result})
+                action="merge_entities",
+                details=json.dumps(
+                    {"source_id": req.source_id, "target_id": req.target_id, **result}
+                ),
             )
             db.add(log)
             await db.commit()
@@ -391,10 +440,16 @@ async def update_entity(
             # Audit log
             try:
                 from app.models.knowledge_graph import KGAuditLog
+
                 log = KGAuditLog(
                     user_id=current_user.id,
-                    action='update_entity',
-                    details=json.dumps({"entity_id": entity_id, "changes": data.dict(exclude_unset=True)})
+                    action="update_entity",
+                    details=json.dumps(
+                        {
+                            "entity_id": entity_id,
+                            "changes": data.dict(exclude_unset=True),
+                        }
+                    ),
                 )
                 db.add(log)
                 await db.commit()
@@ -421,8 +476,9 @@ async def infer_entity_type(
 ):
     """Infer entity type using the LLM against the open-list of known entity types (admin only)."""
     import re as _re
-    from app.services.llm_service import LLMService
+
     from app.models.knowledge_graph import EntityMention
+    from app.services.llm_service import LLMService
 
     try:
         ent = await db.get(Entity, UUID(entity_id))
@@ -450,7 +506,7 @@ async def infer_entity_type(
             mention_rows = []
 
         evidence: List[str] = []
-        for s, t in (mention_rows or []):
+        for s, t in mention_rows or []:
             ss = (s or "").strip()
             if ss:
                 evidence.append(ss[:240])
@@ -526,7 +582,9 @@ async def infer_entity_type(
 @router.delete("/entity/{entity_id}")
 async def delete_entity(
     entity_id: str,
-    confirm_name: str = Query(..., description="Type the entity canonical name to confirm"),
+    confirm_name: str = Query(
+        ..., description="Type the entity canonical name to confirm"
+    ),
     db: AsyncSession = Depends(get_db),
     current_user=Depends(require_admin),
 ):
@@ -535,16 +593,19 @@ async def delete_entity(
         if not ent:
             raise HTTPException(status_code=404, detail="Entity not found")
         if ent.canonical_name != confirm_name:
-            raise HTTPException(status_code=400, detail="Confirmation name does not match entity")
+            raise HTTPException(
+                status_code=400, detail="Confirmation name does not match entity"
+            )
         svc = KnowledgeGraphService()
         result = await svc.delete_entity(db, entity_id)
         # Audit log
         try:
             from app.models.knowledge_graph import KGAuditLog
+
             log = KGAuditLog(
                 user_id=current_user.id,
-                action='delete_entity',
-                details=json.dumps({"entity_id": entity_id, **result})
+                action="delete_entity",
+                details=json.dumps({"entity_id": entity_id, **result}),
             )
             db.add(log)
             await db.commit()
@@ -560,6 +621,7 @@ async def delete_entity(
 # =============================================================================
 # Relationship CRUD Endpoints
 # =============================================================================
+
 
 @router.get("/relation-types")
 async def list_relation_types(db: AsyncSession = Depends(get_db)):
@@ -603,15 +665,18 @@ async def create_relationship(
         # Audit log
         try:
             from app.models.knowledge_graph import KGAuditLog
+
             log = KGAuditLog(
                 user_id=current_user.id,
-                action='create_relationship',
-                details=json.dumps({
-                    "relationship_id": str(rel.id),
-                    "source_entity_id": data.source_entity_id,
-                    "target_entity_id": data.target_entity_id,
-                    "relation_type": data.relation_type,
-                })
+                action="create_relationship",
+                details=json.dumps(
+                    {
+                        "relationship_id": str(rel.id),
+                        "source_entity_id": data.source_entity_id,
+                        "target_entity_id": data.target_entity_id,
+                        "relation_type": data.relation_type,
+                    }
+                ),
             )
             db.add(log)
             await db.commit()
@@ -625,7 +690,9 @@ async def create_relationship(
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to create relationship: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to create relationship: {e}"
+        )
 
 
 @router.patch("/relationship/{rel_id}", response_model=KGRelationshipDetail)
@@ -658,14 +725,17 @@ async def update_relationship(
         # Audit log
         try:
             from app.models.knowledge_graph import KGAuditLog
+
             changes = data.dict(exclude_unset=True)
             log = KGAuditLog(
                 user_id=current_user.id,
-                action='update_relationship',
-                details=json.dumps({
-                    "relationship_id": rel_id,
-                    "changes": changes,
-                })
+                action="update_relationship",
+                details=json.dumps(
+                    {
+                        "relationship_id": rel_id,
+                        "changes": changes,
+                    }
+                ),
             )
             db.add(log)
             await db.commit()
@@ -679,7 +749,9 @@ async def update_relationship(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to update relationship: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to update relationship: {e}"
+        )
 
 
 @router.delete("/relationship/{rel_id}")
@@ -711,15 +783,18 @@ async def delete_relationship(
         # Audit log
         try:
             from app.models.knowledge_graph import KGAuditLog
+
             log = KGAuditLog(
                 user_id=current_user.id,
-                action='delete_relationship',
-                details=json.dumps({
-                    "relationship_id": rel_id,
-                    "relation_type": detail["relation_type"],
-                    "source_entity_id": detail["source_entity_id"],
-                    "target_entity_id": detail["target_entity_id"],
-                })
+                action="delete_relationship",
+                details=json.dumps(
+                    {
+                        "relationship_id": rel_id,
+                        "relation_type": detail["relation_type"],
+                        "source_entity_id": detail["source_entity_id"],
+                        "target_entity_id": detail["target_entity_id"],
+                    }
+                ),
             )
             db.add(log)
             await db.commit()
@@ -731,4 +806,6 @@ async def delete_relationship(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to delete relationship: {e}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to delete relationship: {e}"
+        )

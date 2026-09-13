@@ -90,6 +90,36 @@ celery_app.conf.update(
     task_soft_time_limit=25 * 60,  # 25 minutes
     worker_prefetch_multiplier=1,
     worker_max_tasks_per_child=1000,
+    #: Recycle a child that has grown past this, in KiB. A seatbelt against
+    #: accumulated growth, not a tuning knob -- celery checks it after a task
+    #: returns, so it catches a child that keeps memory between tasks, which
+    #: is the leak shape. It cannot stop a single task ballooning mid-run.
+    #:
+    #: Measured on this worker at --concurrency=4 under a 3g mem_limit:
+    #:
+    #:     fresh child      ~337 MB RSS   cgroup total  823 MB
+    #:     after ~23 hours  ~650 MB RSS   cgroup total 2281 MB
+    #:
+    #: So children really do accumulate -- about 1.4 GB across the pool in a
+    #: day -- which is what this guard is for.
+    #:
+    #: Sizing it needs both numbers, because they measure different things.
+    #: Celery compares a child's RSS against this value, while the container
+    #: is killed on its CGROUP total, and the two diverge sharply: summing
+    #: per-process RSS gives 1743 MB where the cgroup says 823 MB, because
+    #: forked children share most of their pages with the parent
+    #: copy-on-write. Treating the limit as "concurrency x threshold + parent"
+    #: would size this far too low.
+    #:
+    #: Extrapolating the two points above, children at 1 GiB RSS would put the
+    #: cgroup near 4 GB -- past the limit, so the container would die before
+    #: the guard ever fired. 768 MiB sits above both the fresh child and the
+    #: day-old one, so it fires only on genuine excess, and early enough that
+    #: the cgroup still has room.
+    #:
+    #: Re-measure if --concurrency or mem_limit changes; the safe threshold
+    #: comes from the cgroup relationship, not from arithmetic on RSS.
+    worker_max_memory_per_child=768 * 1024,
 )
 
 # Periodic task schedule

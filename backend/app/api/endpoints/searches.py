@@ -7,7 +7,7 @@ from typing import List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
-from sqlalchemy import select, desc, or_
+from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
@@ -35,12 +35,12 @@ async def list_saved_searches(
         .where(
             or_(
                 SavedSearch.user_id == current_user.id,
-                SavedSearch.user_id.is_(None)  # System-wide searches
+                SavedSearch.user_id.is_(None),  # System-wide searches
             )
         )
         .order_by(
             SavedSearch.user_id.is_(None).desc(),  # System searches first
-            desc(SavedSearch.updated_at)
+            desc(SavedSearch.updated_at),
         )
     )
     items = result.scalars().all()
@@ -91,7 +91,9 @@ async def delete_saved_search(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(SavedSearch).where(SavedSearch.id == search_id, SavedSearch.user_id == current_user.id)
+        select(SavedSearch).where(
+            SavedSearch.id == search_id, SavedSearch.user_id == current_user.id
+        )
     )
     row = result.scalar_one_or_none()
     if not row:
@@ -117,7 +119,12 @@ async def create_search_share(
     db.add(share)
     await db.commit()
     await db.refresh(share)
-    return SearchShareResponse(token=share.token, query=share.query, filters=share.filters, created_at=share.created_at)
+    return SearchShareResponse(
+        token=share.token,
+        query=share.query,
+        filters=share.filters,
+        created_at=share.created_at,
+    )
 
 
 @router.get("/shares/{token}", response_model=SearchShareResponse)
@@ -131,5 +138,9 @@ async def get_search_share(
     share = result.scalar_one_or_none()
     if not share:
         raise HTTPException(status_code=404, detail="Share not found")
-    return SearchShareResponse(token=share.token, query=share.query, filters=share.filters, created_at=share.created_at)
-
+    return SearchShareResponse(
+        token=share.token,
+        query=share.query,
+        filters=share.filters,
+        created_at=share.created_at,
+    )

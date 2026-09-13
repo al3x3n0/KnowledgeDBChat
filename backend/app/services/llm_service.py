@@ -17,25 +17,50 @@ Two generation paths:
 """
 
 import asyncio
-import httpx
+from contextvars import ContextVar
 from dataclasses import dataclass
-from typing import Optional, List, Dict, Any
-from loguru import logger
+from typing import Any, Dict, List, Optional, Tuple
 from uuid import UUID
 
+import httpx
+from loguru import logger
 from sqlalchemy.ext.asyncio import AsyncSession
+from tenacity import (
+    retry,
+    retry_if_exception_type,
+    stop_after_attempt,
+    wait_exponential,
+)
 
 from app.core.config import settings
 from app.models.llm_usage import LLMUsageEvent
+from app.services import llm_truncation
 from app.services.llm_routing import (
     coerce_routing_config,
     compute_attempt_tiers,
     resolve_tier_overrides,
 )
 from app.utils.exceptions import LLMServiceError
-from tenacity import retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 _LLM_SEMAPHORE = asyncio.Semaphore(settings.LLM_MAX_CONCURRENCY)
+
+#: The last completion's reasoning, per asyncio task.
+#:
+#: The text is wanted by the snapshot recorder, which sits several frames above
+#: the client that receives it, and _generate_response_once returns only a
+#: string. A ContextVar carries it without threading a new return type through
+#: every provider path, and without the cross-talk an instance attribute would
+#: have under LLM_MAX_CONCURRENCY: each task gets its own copy.
+_LAST_REASONING: ContextVar[Optional[Tuple[str, Optional[int]]]] = ContextVar(
+    "llm_last_reasoning", default=None
+)
+
+#: Cache accounting from the most recent completion, carried the same way the
+#: reasoning is: the recorder runs a layer above the provider call and has no
+#: other way to see the raw usage block.
+_LAST_CACHE: ContextVar[Optional[Tuple[Optional[int], Optional[int]]]] = ContextVar(
+    "llm_last_cache", default=None
+)
 
 
 # Supported task types for per-task model configuration.
@@ -60,9 +85,36 @@ LLM_TASK_TYPES = [
 ]
 
 
+def _usage_user_id(value: Any) -> Optional[UUID]:
+    """A user id as the UUID columns in this module actually type it.
+
+    Callers hand this in as a string -- the agent loop passes
+    ``str(job.user_id)`` -- while ``LLMUsageEvent.user_id`` and
+    ``LLMCallSnapshot.user_id`` are both ``UUID(as_uuid=True)``. PostgreSQL
+    tolerates the string, so this ran for a long time without complaint;
+    SQLAlchemy's non-native-UUID path calls ``value.hex`` and raises
+    AttributeError, which is what an agent loop running against SQLite hits on
+    its first real LLM call. The suite never saw it because it never makes one.
+
+    Used by both writers. Fixing only the usage event left the snapshot to fail
+    the same way the moment snapshots were switched on -- the same defect twice,
+    found the second time by turning on a feature rather than by reading.
+    """
+    if isinstance(value, UUID):
+        return value
+    text = str(value or "").strip()
+    if not text:
+        return None
+    try:
+        return UUID(text)
+    except (ValueError, AttributeError, TypeError):
+        return None
+
+
 @dataclass
 class UserLLMSettings:
     """User-specific LLM settings that override system defaults."""
+
     provider: Optional[str] = None  # "ollama", "deepseek", "openai", or custom
     model: Optional[str] = None
     api_url: Optional[str] = None
@@ -90,11 +142,18 @@ class UserLLMSettings:
 
     def has_custom_settings(self) -> bool:
         """Check if any custom settings are configured."""
-        return any([
-            self.provider, self.model, self.api_url,
-            self.api_key, self.temperature is not None, self.max_tokens is not None,
-            self.task_models, self.task_providers
-        ])
+        return any(
+            [
+                self.provider,
+                self.model,
+                self.api_url,
+                self.api_key,
+                self.temperature is not None,
+                self.max_tokens is not None,
+                self.task_models,
+                self.task_providers,
+            ]
+        )
 
     def get_model_for_task(self, task_type: str) -> Optional[str]:
         """
@@ -119,11 +178,99 @@ class UserLLMSettings:
         return self.provider
 
 
+def _meta_from_completion(
+    data: Dict[str, Any], fallback_model: Optional[str] = None
+) -> Dict[str, Any]:
+    """Response metadata, with the reasoning set aside where it belongs.
+
+    These models return the chain of thought apart from the answer and charge
+    it against max_tokens, so it is paid for whether or not anything reads it.
+    Dropping it left an agent's decisions replayable while the thinking behind
+    them was not, and made a call that spent its whole budget reasoning look
+    simply empty.
+
+    The text goes to a context variable for the snapshot recorder; only its
+    size goes into the returned meta, which is written to a usage row on every
+    call and would otherwise be dwarfed by it.
+    """
+    choice = (data.get("choices") or [{}])[0]
+    message = choice.get("message") or {}
+    usage = data.get("usage") or {}
+    details = usage.get("completion_tokens_details")
+    reasoning = message.get("reasoning_content") or message.get("reasoning")
+    reasoning_tokens = (
+        details.get("reasoning_tokens") if isinstance(details, dict) else None
+    )
+    _LAST_REASONING.set((reasoning, reasoning_tokens) if reasoning else None)
+    cache_hit, cache_miss = _cache_tokens(usage)
+    _LAST_CACHE.set((cache_hit, cache_miss))
+    return {
+        "id": data.get("id"),
+        "model": data.get("model") or fallback_model,
+        "usage": data.get("usage"),
+        "finish_reason": choice.get("finish_reason"),
+        "reasoning_tokens": reasoning_tokens,
+        "reasoning_chars": len(reasoning) if reasoning else 0,
+        "cache_hit_tokens": cache_hit,
+        "cache_miss_tokens": cache_miss,
+    }
+
+
+def _cache_tokens(usage: Dict[str, Any]) -> tuple[Optional[int], Optional[int]]:
+    """Prompt tokens served from the provider's cache, and those that were not.
+
+    The prompt is split into a byte-stable prefix and a volatile tail precisely
+    so the prefix can be cached, and Anthropic requests carry cache_control
+    breakpoints for the same reason -- but nothing ever read back whether any
+    of it worked. A cache mechanism whose hit rate is never measured is a
+    mechanism nobody can tell apart from a comment.
+
+    Providers spell it three ways and none of them agree:
+      DeepSeek    prompt_cache_hit_tokens / prompt_cache_miss_tokens
+      OpenAI      prompt_tokens_details.cached_tokens (hits only)
+      Anthropic   cache_read_input_tokens / cache_creation_input_tokens
+
+    Returns (hit, miss), either of which is None when the provider said
+    nothing. None is not zero here: zero is a measured miss, None is silence,
+    and averaging silence as zero would report a healthy cache as broken.
+    """
+    if not isinstance(usage, dict):
+        return None, None
+
+    hit = usage.get("prompt_cache_hit_tokens")
+    miss = usage.get("prompt_cache_miss_tokens")
+    if hit is not None or miss is not None:
+        return _as_int_or_none(hit), _as_int_or_none(miss)
+
+    read = usage.get("cache_read_input_tokens")
+    created = usage.get("cache_creation_input_tokens")
+    if read is not None or created is not None:
+        return _as_int_or_none(read), _as_int_or_none(created)
+
+    details = usage.get("prompt_tokens_details")
+    if isinstance(details, dict) and details.get("cached_tokens") is not None:
+        cached = _as_int_or_none(details.get("cached_tokens"))
+        total = _as_int_or_none(usage.get("prompt_tokens"))
+        # The miss is inferred, and only when both halves are known: reporting
+        # a miss of "everything" against an unknown total would invent a rate.
+        return cached, (
+            max(total - cached, 0) if total is not None and cached is not None else None
+        )
+    return None, None
+
+
+def _as_int_or_none(value: Any) -> Optional[int]:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return None
+
+
 class LLMService:
     """Service for interacting with configured LLM provider."""
 
     def __init__(self):
-        self.provider = (settings.LLM_PROVIDER or "ollama").lower()
+        self.provider = (settings.LLM_PROVIDER or "deepseek").lower()
         self.base_url = settings.OLLAMA_BASE_URL
         self.default_model = settings.DEFAULT_MODEL
         # A single client is enough; per-request overrides set timeouts/headers
@@ -131,7 +278,6 @@ class LLMService:
         self._unhealthy_until: Dict[str, float] = {}
         self._unhealthy_reason: Dict[str, str] = {}
         self._unhealthy_lock = asyncio.Lock()
-    
 
     async def _is_healthy(self, key: str) -> bool:
         try:
@@ -148,7 +294,9 @@ class LLMService:
                 return True
             return False
 
-    async def _mark_unhealthy(self, key: str, *, cooldown_seconds: int, reason: str) -> None:
+    async def _mark_unhealthy(
+        self, key: str, *, cooldown_seconds: int, reason: str
+    ) -> None:
         cooldown_seconds = max(5, min(int(cooldown_seconds or 60), 3600))
         try:
             now = asyncio.get_event_loop().time()
@@ -156,16 +304,19 @@ class LLMService:
             now = 0.0
         async with self._unhealthy_lock:
             self._unhealthy_until[key] = float(now) + float(cooldown_seconds)
-            self._unhealthy_reason[key] = str(reason or '')[:200]
+            self._unhealthy_reason[key] = str(reason or "")[:200]
 
     def _health_key(self, *, provider: str, api_url: Optional[str]) -> str:
-        p = (provider or '').strip().lower() or 'unknown'
-        u = (api_url or '').strip()
+        p = (provider or "").strip().lower() or "unknown"
+        u = (api_url or "").strip()
         return f"{p}:{u}" if u else p
 
-    async def _tier_overrides_for(self, attempt_tier: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+    async def _tier_overrides_for(
+        self, attempt_tier: Optional[str]
+    ) -> tuple[Optional[str], Optional[str]]:
         try:
             from app.core.feature_flags import get_str as _get_str
+
             return await resolve_tier_overrides(_get_str, attempt_tier)
         except Exception:
             return None, None
@@ -197,13 +348,27 @@ class LLMService:
         prompt_tokens: Optional[int] = None,
         completion_tokens: Optional[int] = None,
         snapshot_context: Optional[Dict[str, Any]] = None,
+        reasoning_text: Optional[str] = None,
+        reasoning_tokens: Optional[int] = None,
+        cache_hit_tokens: Optional[int] = None,
+        cache_miss_tokens: Optional[int] = None,
     ) -> None:
         """Persist a full request/response snapshot for replay debugging.
 
         Best-effort and opt-in (LLM_CALL_SNAPSHOT_ENABLED); never raises.
+
+        The reasoning defaults to whatever the call just produced rather than
+        to nothing. Passing it in was tried first and three call sites became
+        two that remembered and one that did not -- and the one that did not
+        was the structured path, which is where the agent's decisions are made.
+        Reading it here means a new call site cannot forget.
         """
         if db is None or not getattr(settings, "LLM_CALL_SNAPSHOT_ENABLED", False):
             return
+        if reasoning_text is None:
+            carried = _LAST_REASONING.get()
+            if carried:
+                reasoning_text, reasoning_tokens = carried
         try:
             from uuid import UUID as _UUID
 
@@ -218,7 +383,7 @@ class LLMService:
                     job_id = None
             iteration = ctx.get("iteration")
             snapshot = LLMCallSnapshot(
-                user_id=user_id,
+                user_id=_usage_user_id(user_id),
                 job_id=job_id,
                 iteration=int(iteration) if isinstance(iteration, int) else None,
                 phase=(str(ctx.get("phase"))[:50] if ctx.get("phase") else None),
@@ -229,10 +394,18 @@ class LLMService:
                 response_text=self._clip_snapshot(response_text),
                 tool_calls=tool_calls,
                 structured=structured,
+                reasoning_text=self._clip_snapshot(reasoning_text)
+                if reasoning_text
+                else None,
+                reasoning_tokens=(
+                    int(reasoning_tokens) if isinstance(reasoning_tokens, int) else None
+                ),
                 error=(str(error)[:2000] if error else None),
                 latency_ms=latency_ms,
                 prompt_tokens=prompt_tokens,
                 completion_tokens=completion_tokens,
+                cache_hit_tokens=cache_hit_tokens,
+                cache_miss_tokens=cache_miss_tokens,
             )
             db.add(snapshot)
         except Exception:
@@ -279,20 +452,26 @@ class LLMService:
         if query is None:
             query = prompt or user_message
         if query is None:
-            raise TypeError("generate_response requires `query` (or `prompt` / `user_message`).")
+            raise TypeError(
+                "generate_response requires `query` (or `prompt` / `user_message`)."
+            )
 
         # Best-effort: if a DB session and user_id are provided, auto-load per-user LLM preferences.
         # This keeps user settings applied even when call sites don't explicitly pass `user_settings=`.
         if user_settings is None and user_id is not None and db is not None:
             try:
                 from uuid import UUID as _UUID
+
                 from sqlalchemy import select as _select
+
                 from app.models.memory import UserPreferences as _UserPreferences
 
                 uid = user_id
                 if isinstance(uid, str):
                     uid = _UUID(uid)
-                prefs_res = await db.execute(_select(_UserPreferences).where(_UserPreferences.user_id == uid))
+                prefs_res = await db.execute(
+                    _select(_UserPreferences).where(_UserPreferences.user_id == uid)
+                )
                 prefs = prefs_res.scalar_one_or_none()
                 if prefs is not None:
                     user_settings = UserLLMSettings.from_preferences(prefs)
@@ -301,11 +480,19 @@ class LLMService:
 
         routing_origin = None
         if isinstance(routing, dict):
-            routing_origin = routing.get("_origin") if isinstance(routing.get("_origin"), dict) else None
+            routing_origin = (
+                routing.get("_origin")
+                if isinstance(routing.get("_origin"), dict)
+                else None
+            )
 
         routing_cfg = coerce_routing_config(routing)
         tier = routing_cfg.get("tier")
-        fallback_tiers = routing_cfg.get("fallback_tiers") if isinstance(routing_cfg.get("fallback_tiers"), list) else []
+        fallback_tiers = (
+            routing_cfg.get("fallback_tiers")
+            if isinstance(routing_cfg.get("fallback_tiers"), list)
+            else []
+        )
 
         timeout_seconds = routing_cfg.get("timeout_seconds")
         max_tokens_cap = routing_cfg.get("max_tokens_cap")
@@ -315,9 +502,12 @@ class LLMService:
 
         last_err: Optional[Exception] = None
 
-        async def _tier_overrides(t: Optional[str]) -> tuple[Optional[str], Optional[str]]:
+        async def _tier_overrides(
+            t: Optional[str],
+        ) -> tuple[Optional[str], Optional[str]]:
             try:
                 from app.core.feature_flags import get_str as _get_str
+
                 return await resolve_tier_overrides(_get_str, t)
             except Exception:
                 return None, None
@@ -328,7 +518,9 @@ class LLMService:
             attempt_provider = provider or tier_provider
             # If this provider/api_url recently failed, skip it and try the next tier.
             try:
-                hk = self._health_key(provider=str(attempt_provider or ""), api_url=api_url)
+                hk = self._health_key(
+                    provider=str(attempt_provider or ""), api_url=api_url
+                )
                 if not await self._is_healthy(hk):
                     continue
             except Exception:
@@ -379,9 +571,21 @@ class LLMService:
                         "attempt_provider_source": attempt_provider_source,
                         "attempt_model_source": attempt_model_source,
                         "origin": routing_origin,
-                        "agent_id": (routing_origin.get("agent_id") if isinstance(routing_origin, dict) else None),
-                        "experiment_id": (routing_origin.get("experiment_id") if isinstance(routing_origin, dict) else None),
-                        "experiment_variant_id": (routing_origin.get("experiment_variant_id") if isinstance(routing_origin, dict) else None),
+                        "agent_id": (
+                            routing_origin.get("agent_id")
+                            if isinstance(routing_origin, dict)
+                            else None
+                        ),
+                        "experiment_id": (
+                            routing_origin.get("experiment_id")
+                            if isinstance(routing_origin, dict)
+                            else None
+                        ),
+                        "experiment_variant_id": (
+                            routing_origin.get("experiment_variant_id")
+                            if isinstance(routing_origin, dict)
+                            else None
+                        ),
                     },
                     timeout_seconds=timeout_seconds,
                     max_tokens_cap=max_tokens_cap,
@@ -392,7 +596,9 @@ class LLMService:
                         "system_prompt": self._clip_snapshot(system_prompt),
                         "query": self._clip_snapshot(query),
                         "context": self._clip_snapshot(context),
-                        "conversation_history": self._clip_snapshot(conversation_history),
+                        "conversation_history": self._clip_snapshot(
+                            conversation_history
+                        ),
                         "tier": attempt_tier,
                     },
                     provider=attempt_provider,
@@ -400,8 +606,14 @@ class LLMService:
                     task_type=task_type,
                     user_id=user_id,
                     response_text=result_text,
-                    latency_ms=int((asyncio.get_event_loop().time() - attempt_started) * 1000),
+                    latency_ms=int(
+                        (asyncio.get_event_loop().time() - attempt_started) * 1000
+                    ),
                     snapshot_context=snapshot_context,
+                    reasoning_text=(_LAST_REASONING.get() or (None, None))[0],
+                    reasoning_tokens=(_LAST_REASONING.get() or (None, None))[1],
+                    cache_hit_tokens=(_LAST_CACHE.get() or (None, None))[0],
+                    cache_miss_tokens=(_LAST_CACHE.get() or (None, None))[1],
                 )
                 return result_text
             except LLMServiceError as e:
@@ -417,12 +629,18 @@ class LLMService:
                     task_type=task_type,
                     user_id=user_id,
                     error=str(e),
-                    latency_ms=int((asyncio.get_event_loop().time() - attempt_started) * 1000),
+                    latency_ms=int(
+                        (asyncio.get_event_loop().time() - attempt_started) * 1000
+                    ),
                     snapshot_context=snapshot_context,
                 )
                 try:
-                    k = self._health_key(provider=str(attempt_provider or ""), api_url=api_url)
-                    await self._mark_unhealthy(k, cooldown_seconds=cooldown_seconds, reason=str(e))
+                    k = self._health_key(
+                        provider=str(attempt_provider or ""), api_url=api_url
+                    )
+                    await self._mark_unhealthy(
+                        k, cooldown_seconds=cooldown_seconds, reason=str(e)
+                    )
                 except Exception:
                     pass
                 last_err = e
@@ -534,6 +752,7 @@ class LLMService:
             if effective_model is None and effective_provider == "ollama":
                 try:
                     from app.core.feature_flags import get_str as _get_str
+
                     effective_model = await _get_str("llm_default_model")
                 except Exception:
                     effective_model = None
@@ -544,7 +763,9 @@ class LLMService:
                     int(effective_max_tokens or max_tokens_cap), int(max_tokens_cap)
                 )
 
-            hk = self._health_key(provider=effective_provider, api_url=effective_api_url)
+            hk = self._health_key(
+                provider=effective_provider, api_url=effective_api_url
+            )
             try:
                 if not await self._is_healthy(hk):
                     continue
@@ -587,7 +808,9 @@ class LLMService:
             except Exception as e:
                 error_text = str(e)
                 logger.error(f"Error in structured LLM generation: {e}")
-                last_err = LLMServiceError(f"Failed to generate structured response: {e}")
+                last_err = LLMServiceError(
+                    f"Failed to generate structured response: {e}"
+                )
             finally:
                 if db is not None:
                     try:
@@ -595,13 +818,13 @@ class LLMService:
                             (asyncio.get_event_loop().time() - start_time) * 1000
                         )
                         event = LLMUsageEvent(
-                            user_id=user_id,
+                            user_id=_usage_user_id(user_id),
                             provider=(
-                                completion.provider if completion else effective_provider
+                                completion.provider
+                                if completion
+                                else effective_provider
                             ),
-                            model=(
-                                completion.model if completion else effective_model
-                            ),
+                            model=(completion.model if completion else effective_model),
                             task_type=task_type,
                             prompt_tokens=(
                                 completion.prompt_tokens if completion else None
@@ -628,7 +851,9 @@ class LLMService:
                                     len(completion.tool_calls) if completion else None
                                 ),
                                 "cache_read_input_tokens": (
-                                    (completion.raw or {}).get("cache_read_input_tokens")
+                                    (completion.raw or {}).get(
+                                        "cache_read_input_tokens"
+                                    )
                                     if completion
                                     else None
                                 ),
@@ -662,9 +887,7 @@ class LLMService:
                             }
                             for m in messages
                         ],
-                        "tool_names": [
-                            str(t.get("name") or "") for t in (tools or [])
-                        ],
+                        "tool_names": [str(t.get("name") or "") for t in (tools or [])],
                         "has_schema": bool(response_schema),
                         "tier": attempt_tier,
                     },
@@ -777,7 +1000,18 @@ class LLMService:
                     except Exception:
                         model = None
                 model = model or self.default_model
-                temperature = temperature if temperature is not None else settings.TEMPERATURE
+                temperature = (
+                    temperature if temperature is not None else settings.TEMPERATURE
+                )
+                # Deliberately NOT defaulted here. Each provider applies its
+                # own cap below when the caller named none, and coercing to the
+                # generic one first made those unreachable: a request with no
+                # max_tokens arrived at DeepSeek as 1000 rather than
+                # DEEPSEEK_MAX_RESPONSE_TOKENS, and its reasoning models spend
+                # the budget thinking before they answer, so the call returned
+                # empty. The agent's decision path passes no budget, which is
+                # how that setting came to be dead exactly where it mattered.
+                requested_max_tokens = max_tokens
                 max_tokens = max_tokens or settings.MAX_RESPONSE_LENGTH
 
                 # Routing decision provenance (best-effort)
@@ -799,17 +1033,33 @@ class LLMService:
                     # provider source
                     if provider_override:
                         routing_decision["provider_source"] = aps or "provider_override"
-                    elif user_settings and getattr(user_settings, "has_custom_settings")() and user_settings.get_provider_for_task(task_type):
+                    elif (
+                        user_settings
+                        and getattr(user_settings, "has_custom_settings")()
+                        and user_settings.get_provider_for_task(task_type)
+                    ):
                         routing_decision["provider_source"] = "user_task_provider"
-                    elif user_settings and getattr(user_settings, "has_custom_settings")() and getattr(user_settings, "provider", None):
+                    elif (
+                        user_settings
+                        and getattr(user_settings, "has_custom_settings")()
+                        and getattr(user_settings, "provider", None)
+                    ):
                         routing_decision["provider_source"] = "user_provider"
                     else:
                         routing_decision["provider_source"] = "system_default_provider"
 
                     # model source
-                    if user_settings and getattr(user_settings, "has_custom_settings")() and user_settings.get_model_for_task(task_type):
+                    if (
+                        user_settings
+                        and getattr(user_settings, "has_custom_settings")()
+                        and user_settings.get_model_for_task(task_type)
+                    ):
                         routing_decision["model_source"] = "user_task_model"
-                    elif user_settings and getattr(user_settings, "has_custom_settings")() and getattr(user_settings, "model", None):
+                    elif (
+                        user_settings
+                        and getattr(user_settings, "has_custom_settings")()
+                        and getattr(user_settings, "model", None)
+                    ):
                         routing_decision["model_source"] = "user_model"
                     elif model and ams:
                         routing_decision["model_source"] = ams
@@ -832,7 +1082,9 @@ class LLMService:
                     "kimi": ("kimi", "moonshot"),
                 }
                 if effective_provider in _sdk_provider_model_prefixes:
-                    from app.services.llm_providers import build_provider as _build_provider
+                    from app.services.llm_providers import (
+                        build_provider as _build_provider,
+                    )
 
                     provider_used = effective_provider
                     chat_messages = self._build_chat_messages(
@@ -843,10 +1095,14 @@ class LLMService:
                         kg_context=kg_context,
                         system_prompt=system_prompt,
                     )
-                    input_chars = sum(len(m.get("content") or "") for m in chat_messages)
+                    input_chars = sum(
+                        len(m.get("content") or "") for m in chat_messages
+                    )
                     prefixes = _sdk_provider_model_prefixes[effective_provider]
                     native_model = (
-                        model if model and str(model).lower().startswith(prefixes) else None
+                        model
+                        if model and str(model).lower().startswith(prefixes)
+                        else None
                     )
                     llm_provider = _build_provider(
                         effective_provider,
@@ -905,11 +1161,16 @@ class LLMService:
                 use_deepseek = (
                     effective_provider == "deepseek"
                     or effective_provider == "openai"
-                    or (prefer_deepseek and bool(getattr(settings, "DEEPSEEK_API_KEY", None)))
+                    or (
+                        prefer_deepseek
+                        and bool(getattr(settings, "DEEPSEEK_API_KEY", None))
+                    )
                 )
 
                 if use_deepseek:
-                    provider_used = "deepseek" if effective_provider == "deepseek" else "openai"
+                    provider_used = (
+                        "deepseek" if effective_provider == "deepseek" else "openai"
+                    )
                     messages = self._build_chat_messages(
                         query=query,
                         context=context,
@@ -927,7 +1188,10 @@ class LLMService:
                         model=model_used,
                         messages=messages,
                         temperature=temperature,
-                        max_tokens=(max_tokens or settings.DEEPSEEK_MAX_RESPONSE_TOKENS),
+                        max_tokens=(
+                            requested_max_tokens
+                            or settings.DEEPSEEK_MAX_RESPONSE_TOKENS
+                        ),
                         api_key_override=api_key,
                         api_base_override=api_base,
                         timeout_seconds=timeout_seconds,
@@ -967,9 +1231,15 @@ class LLMService:
                 output_chars = len(result or "")
                 if isinstance(meta, dict):
                     model_used = meta.get("model") or model_used
-                    prompt_tokens = meta.get("prompt_eval_count") or meta.get("prompt_tokens")
-                    completion_tokens = meta.get("eval_count") or meta.get("completion_tokens")
-                    if isinstance(prompt_tokens, int) and isinstance(completion_tokens, int):
+                    prompt_tokens = meta.get("prompt_eval_count") or meta.get(
+                        "prompt_tokens"
+                    )
+                    completion_tokens = meta.get("eval_count") or meta.get(
+                        "completion_tokens"
+                    )
+                    if isinstance(prompt_tokens, int) and isinstance(
+                        completion_tokens, int
+                    ):
                         total_tokens = prompt_tokens + completion_tokens
                     extra = meta
                 return result
@@ -983,7 +1253,9 @@ class LLMService:
         finally:
             if db is not None and provider_used is not None:
                 try:
-                    latency_ms = int((asyncio.get_event_loop().time() - start_time) * 1000)
+                    latency_ms = int(
+                        (asyncio.get_event_loop().time() - start_time) * 1000
+                    )
                     event_extra: Optional[Dict[str, Any]]
                     if isinstance(extra, dict):
                         event_extra = dict(extra)
@@ -995,7 +1267,7 @@ class LLMService:
                         event_extra["routing"] = routing_meta
 
                     event = LLMUsageEvent(
-                        user_id=user_id,
+                        user_id=_usage_user_id(user_id),
                         provider=provider_used,
                         model=model_used,
                         task_type=task_type,
@@ -1037,7 +1309,9 @@ class LLMService:
         prompt_parts = []
 
         # System instruction
-        system_instruction = system_prompt or """You are a helpful AI assistant for an organizational knowledge base. Your role is to answer questions based on the provided context from internal documents and previous conversation history.
+        system_instruction = (
+            system_prompt
+            or """You are a helpful AI assistant for an organizational knowledge base. Your role is to answer questions based on the provided context from internal documents and previous conversation history.
 
 Guidelines:
 1. Answer questions accurately based on the provided context
@@ -1053,12 +1327,15 @@ Citation format:
 - The context includes entries labeled “Source 1”, “Source 2”, etc.
 - When you use a source, add an inline citation like [1] or [2] matching the source number.
 - If you quote or rely on a specific claim, include a short evidence excerpt and cite it (e.g., “…excerpt…” [3])."""
+        )
 
         prompt_parts.append(system_instruction)
 
         # Add memory context if provided (most relevant for personalization)
         if memory_context:
-            prompt_parts.append(f"\nRelevant memories from past conversations:\n{memory_context}")
+            prompt_parts.append(
+                f"\nRelevant memories from past conversations:\n{memory_context}"
+            )
 
         # Add context if provided
         if context:
@@ -1098,7 +1375,9 @@ Citation format:
 
         user_parts: List[str] = []
         if memory_context:
-            user_parts.append(f"Relevant memories from past conversations:\n{memory_context}")
+            user_parts.append(
+                f"Relevant memories from past conversations:\n{memory_context}"
+            )
         if context:
             user_parts.append(f"Context from knowledge base:\n{context}")
         if kg_context:
@@ -1111,12 +1390,12 @@ Citation format:
             {"role": "system", "content": system_instruction},
             {"role": "user", "content": "\n\n".join(user_parts)},
         ]
-    
+
     @retry(
         stop=stop_after_attempt(3),
         wait=wait_exponential(multiplier=1, min=2, max=10),
         retry=retry_if_exception_type((httpx.HTTPError, httpx.TimeoutException)),
-        reraise=True
+        reraise=True,
     )
     async def _make_ollama_request(
         self,
@@ -1158,15 +1437,12 @@ Citation format:
                     # Force CPU usage and limit memory for Mac compatibility
                     "num_gpu": 0,  # Use CPU only (important for Mac)
                     "num_thread": 4,  # Limit CPU threads
-                    "numa": False  # Disable NUMA (not needed on Mac)
-                }
+                    "numa": False,  # Disable NUMA (not needed on Mac)
+                },
             }
 
-            response = await self.client.post(
-                f"{base_url}/api/generate",
-                json=payload
-            )
-            
+            response = await self.client.post(f"{base_url}/api/generate", json=payload)
+
             response.raise_for_status()
             result = response.json()
             text = (result.get("response", "") or "").strip()
@@ -1182,11 +1458,13 @@ Citation format:
                 "eval_duration": result.get("eval_duration"),
             }
             return text, meta
-                
+
         except httpx.HTTPStatusError as e:
-            logger.error(f"Ollama API error: {e.response.status_code} - {e.response.text}")
+            logger.error(
+                f"Ollama API error: {e.response.status_code} - {e.response.text}"
+            )
             raise LLMServiceError(f"Ollama API error: {e.response.status_code}")
-        except httpx.TimeoutException as e:
+        except httpx.TimeoutException:
             logger.error("LLM request timed out")
             raise LLMServiceError("Request timed out")
         except httpx.RequestError as e:
@@ -1208,21 +1486,39 @@ Citation format:
         api_key_override: Optional[str] = None,
         api_base_override: Optional[str] = None,
         timeout_seconds: Optional[int] = None,
+        _budget_retry: bool = False,
     ) -> tuple[str, Dict[str, Any]]:
-        """Call DeepSeek's OpenAI-compatible chat completions API."""
+        """Call DeepSeek's OpenAI-compatible chat completions API.
+
+        `_budget_retry` marks the one automatic retry on a truncated empty
+        response, so a second truncation reports rather than recursing.
+        """
         api_key = api_key_override or settings.DEEPSEEK_API_KEY
         if not api_key:
             raise LLMServiceError("DEEPSEEK_API_KEY is not set")
 
         api_base = api_base_override or settings.DEEPSEEK_API_BASE
         url = f"{api_base.rstrip('/')}/chat/completions"
-        timeout = int(timeout_seconds) if timeout_seconds is not None else int(settings.DEEPSEEK_TIMEOUT_SECONDS or 120)
+        timeout = (
+            int(timeout_seconds)
+            if timeout_seconds is not None
+            else int(settings.DEEPSEEK_TIMEOUT_SECONDS or 120)
+        )
+
+        # The caller sized an answer; the model spends an unknown amount
+        # reasoning before it writes one. Raising a cap costs nothing that is
+        # not generated -- max_tokens is a ceiling, not a purchase -- and
+        # without it every call site that asked for a short reply gets an empty
+        # string instead of a short reply.
+        effective_max_tokens = max(
+            int(max_tokens or 0), int(settings.DEEPSEEK_MIN_COMPLETION_TOKENS or 0)
+        )
 
         payload = {
             "model": model or settings.DEEPSEEK_MODEL,
             "messages": messages,
             "temperature": temperature,
-            "max_tokens": max_tokens,
+            "max_tokens": effective_max_tokens,
             "stream": False,
             "top_p": settings.TOP_P,
         }
@@ -1233,20 +1529,77 @@ Citation format:
         }
 
         try:
-            response = await self.client.post(url, json=payload, headers=headers, timeout=timeout)
+            response = await self.client.post(
+                url, json=payload, headers=headers, timeout=timeout
+            )
             response.raise_for_status()
             data = response.json()
             # OpenAI-compatible shape: choices[0].message.content
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
-            meta: Dict[str, Any] = {
-                "id": data.get("id"),
-                "model": data.get("model") or model,
-                "usage": data.get("usage"),
-            }
+            choice = (data.get("choices") or [{}])[0]
+            content = ((choice.get("message") or {}).get("content")) or ""
+            meta = _meta_from_completion(data, fallback_model=model)
+
+            # DeepSeek's current models reason before they answer, and the
+            # reasoning is charged against max_tokens. Ask for too few and the
+            # call succeeds, spends the whole budget thinking, and returns an
+            # empty string -- which every caller here reports as the model
+            # producing unusable output. The decision parser says "No valid
+            # JSON object found in response", an error about the model when the
+            # cause is a number in the config, and it only bites once the
+            # prompt grows enough to make the reasoning long: early iterations
+            # of a run parse, later ones do not.
+            if not (content or "").strip():
+                usage = data.get("usage") or {}
+                # Name the value that actually bound, not a plausible one. The
+                # budget is max(caller_asked, DEEPSEEK_MIN_COMPLETION_TOKENS),
+                # so when the floor wins it is the floor to raise -- this said
+                # DEEPSEEK_MAX_RESPONSE_TOKENS, which is a ceiling applied
+                # elsewhere and never the constraint here. Following that
+                # advice changes nothing and reads as though the fix was tried.
+                floor = int(settings.DEEPSEEK_MIN_COMPLETION_TOKENS or 0)
+                remedy = (
+                    f"Raise DEEPSEEK_MIN_COMPLETION_TOKENS (currently {floor}), "
+                    "which is what set this budget."
+                    if effective_max_tokens == floor and floor > int(max_tokens or 0)
+                    else f"Ask for more than {max_tokens} tokens at the call site."
+                )
+                # The cause is known exactly -- the budget ended before the
+                # answer began -- so the first response is to give it room,
+                # not to report. Once: a second truncation means the prompt
+                # itself is the problem and doubling again only spends more.
+                retry_budget = (
+                    None
+                    if _budget_retry
+                    else llm_truncation.next_budget(effective_max_tokens)
+                )
+                if retry_budget is not None and llm_truncation.is_truncated(
+                    choice.get("finish_reason"), content
+                ):
+                    logger.warning(
+                        f"{model} spent its whole {effective_max_tokens}-token "
+                        f"budget reasoning; retrying once at {retry_budget}"
+                    )
+                    return await self._make_deepseek_chat_request(
+                        model=model,
+                        messages=messages,
+                        temperature=temperature,
+                        max_tokens=retry_budget,
+                        api_key_override=api_key_override,
+                        api_base_override=api_base_override,
+                        timeout_seconds=timeout_seconds,
+                        _budget_retry=True,
+                    )
+                raise LLMServiceError(
+                    f"{model} returned no content "
+                    f"(finish_reason={choice.get('finish_reason')!r}, "
+                    f"max_tokens={effective_max_tokens} "
+                    f"(caller asked {max_tokens}), "
+                    f"completion_tokens={usage.get('completion_tokens')}"
+                    + (", already retried on a doubled budget" if _budget_retry else "")
+                    + "). These models spend max_tokens on reasoning before "
+                    f"answering, so a budget that fits the answer may not fit "
+                    f"the thinking. {remedy}"
+                )
             return (content or "").strip(), meta
         except httpx.HTTPStatusError as e:
             logger.error(
@@ -1317,11 +1670,7 @@ Citation format:
             data = response.json()
 
             # OpenAI-compatible shape: choices[0].message.content
-            content = (
-                data.get("choices", [{}])[0]
-                .get("message", {})
-                .get("content", "")
-            )
+            content = data.get("choices", [{}])[0].get("message", {}).get("content", "")
             meta: Dict[str, Any] = {
                 "id": data.get("id"),
                 "model": data.get("model") or model,
@@ -1340,44 +1689,9 @@ Citation format:
             logger.error(f"OpenAI-compatible API request error: {e}")
             raise LLMServiceError(f"Request error: {str(e)}")
 
-    async def check_model_availability(self, model: Optional[str] = None) -> bool:
-        """
-        Check if a model is available in Ollama.
-        
-        Args:
-            model: Model name to check (uses default if not provided)
-            
-        Returns:
-            True if model is available, False otherwise
-        """
-        try:
-            model = model or self.default_model
-            
-            response = await self.client.get(f"{self.base_url}/api/tags")
-            
-            if response.status_code == 200:
-                models = response.json()
-                available_models = [m["name"] for m in models.get("models", [])]
-                
-                # Check for exact match or partial match (e.g., "llama2" in "llama2:latest")
-                is_available = any(
-                    model in available_model or available_model.startswith(model)
-                    for available_model in available_models
-                )
-                
-                if not is_available:
-                    logger.warning(f"Model {model} not found. Available models: {available_models}")
-                
-                return is_available
-            else:
-                logger.error(f"Failed to check model availability: {response.status_code}")
-                return False
-                
-        except Exception as e:
-            logger.error(f"Error checking model availability: {e}")
-            return False
-    
-    async def list_available_models(self, base_url_override: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def list_available_models(
+        self, base_url_override: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
         """
         List all available models in Ollama.
 
@@ -1387,51 +1701,48 @@ Citation format:
         try:
             base_url = (base_url_override or self.base_url).rstrip("/")
             response = await self.client.get(f"{base_url}/api/tags")
-            
+
             if response.status_code == 200:
                 result = response.json()
                 return result.get("models", [])
             else:
                 logger.error(f"Failed to list models: {response.status_code}")
                 return []
-                
+
         except Exception as e:
             logger.error(f"Error listing models: {e}")
             return []
-    
+
     async def pull_model(self, model: str) -> bool:
         """
         Pull/download a model in Ollama.
-        
+
         Args:
             model: Model name to pull
-            
+
         Returns:
             True if model pull was successful, False otherwise
         """
         try:
             payload = {"name": model}
-            
-            response = await self.client.post(
-                f"{self.base_url}/api/pull",
-                json=payload
-            )
-            
+
+            response = await self.client.post(f"{self.base_url}/api/pull", json=payload)
+
             if response.status_code == 200:
                 logger.info(f"Successfully pulled model: {model}")
                 return True
             else:
                 logger.error(f"Failed to pull model {model}: {response.status_code}")
                 return False
-                
+
         except Exception as e:
             logger.error(f"Error pulling model {model}: {e}")
             return False
-    
+
     async def health_check(self) -> bool:
         """
         Check if the configured LLM service is healthy.
-        
+
         Returns:
             True if service is healthy, False otherwise
         """
@@ -1454,9 +1765,9 @@ Citation format:
         if self.provider == "deepseek":
             return settings.DEEPSEEK_MODEL
         return self.default_model
-    
+
     async def __aenter__(self):
         return self
-    
+
     async def __aexit__(self, exc_type, exc_val, exc_tb):
         await self.client.aclose()

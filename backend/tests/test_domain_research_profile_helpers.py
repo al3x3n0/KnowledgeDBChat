@@ -15,7 +15,10 @@ def test_domain_research_profile_create_normalizes_scope_and_queries():
         repo_source_ids="11111111-1111-1111-1111-111111111111\n22222222-2222-2222-2222-222222222222",
         benchmark_queries="ipc stall\nbranch miss",
         sandbox_profile_id=" scientific-microarchitecture-sandbox ",
-        validation_policy={"confidence_threshold": 0.81, "max_auto_follow_up_launches": 3},
+        validation_policy={
+            "confidence_threshold": 0.81,
+            "max_auto_follow_up_launches": 3,
+        },
     )
 
     assert payload.title == "Retrieval Monitor"

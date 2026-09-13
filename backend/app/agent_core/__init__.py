@@ -10,8 +10,8 @@ from .contracts import (
     ToolCatalog,
     ToolExecutor,
 )
-from .routing import AgentRouter, CAPABILITY_KEYWORDS
 from .planning import AgentExecutionPlanner, ExecutionPlan, PlanStep, Subgoal
+from .routing import CAPABILITY_KEYWORDS, AgentRouter
 from .tool_catalog import ToolMetadata, get_tool_metadata, iter_builtin_tools
 from .types import AgentSpec, JobSpec, RunState, ToolCall, ToolResult
 

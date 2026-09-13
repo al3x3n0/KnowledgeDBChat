@@ -3,7 +3,8 @@ Pydantic schemas for knowledge graph APIs.
 """
 
 from typing import List, Optional
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class KGEntity(BaseModel):
@@ -11,8 +12,7 @@ class KGEntity(BaseModel):
     name: str = Field(alias="canonical_name")
     type: str = Field(alias="entity_type")
 
-    class Config:
-        populate_by_name = True
+    model_config = ConfigDict(populate_by_name=True)
 
 
 class KGRelationship(BaseModel):
@@ -27,6 +27,7 @@ class KGRelationship(BaseModel):
 
 class KGRelationshipCreate(BaseModel):
     """Request schema for creating a relationship."""
+
     source_entity_id: str
     target_entity_id: str
     relation_type: str
@@ -36,6 +37,7 @@ class KGRelationshipCreate(BaseModel):
 
 class KGRelationshipUpdate(BaseModel):
     """Request schema for updating a relationship."""
+
     relation_type: Optional[str] = None
     confidence: Optional[float] = Field(None, ge=0.0, le=1.0)
     evidence: Optional[str] = None
@@ -43,6 +45,7 @@ class KGRelationshipUpdate(BaseModel):
 
 class KGRelationshipDetail(BaseModel):
     """Detailed relationship response with entity names."""
+
     id: str
     relation_type: str
     source_entity_id: str
@@ -117,6 +120,7 @@ class KGAuditRecord(BaseModel):
 
 class KGGlobalGraphMetadata(BaseModel):
     """Metadata for global graph response."""
+
     total_entities: int
     total_relationships: int
     filtered_nodes: int
@@ -127,6 +131,7 @@ class KGGlobalGraphMetadata(BaseModel):
 
 class KGGlobalGraph(BaseModel):
     """Response model for global knowledge graph."""
+
     nodes: List[dict]
     edges: List[dict]
     metadata: KGGlobalGraphMetadata
@@ -134,5 +139,6 @@ class KGGlobalGraph(BaseModel):
 
 class KGTypes(BaseModel):
     """Lists of known entity and relationship types in the system."""
+
     entity_types: List[str]
     relation_types: List[str]

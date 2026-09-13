@@ -1,0 +1,132 @@
+{{- if .Values.ollama.enabled }}
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ printf "%s-ollama" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "ollama") | nindent 4 }}
+spec:
+  ports:
+    - name: http
+      port: {{ .Values.ollama.service.port }}
+      targetPort: http
+  selector:
+    {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "ollama") | nindent 4 }}
+---
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: {{ printf "%s-ollama" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "ollama") | nindent 4 }}
+spec:
+  serviceName: {{ printf "%s-ollama" (include "kdbc.fullname" .) }}
+  replicas: 1
+  selector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "ollama") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "ollama") | nindent 8 }}
+    spec:
+      {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: ollama
+          image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}"
+          imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 11434
+          env:
+            - name: OLLAMA_HOST
+              value: "0.0.0.0"
+            - name: OLLAMA_MODELS
+              value: /root/.ollama/models
+          volumeMounts:
+            - name: models
+              mountPath: /root/.ollama
+            - name: dshm
+              mountPath: /dev/shm
+          readinessProbe:
+            httpGet:
+              path: /api/tags
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /api/tags
+              port: http
+            initialDelaySeconds: 60
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.ollama.resources | nindent 12 }}
+        {{- if .Values.ollama.pullModels }}
+        # Sidecar rather than init container: `ollama pull` needs the server
+        # running, and it must not block the Service from becoming ready.
+        - name: model-puller
+          image: "{{ .Values.ollama.image.repository }}:{{ .Values.ollama.image.tag }}"
+          imagePullPolicy: {{ .Values.ollama.image.pullPolicy }}
+          env:
+            - name: OLLAMA_HOST
+              value: "http://127.0.0.1:11434"
+          command:
+            - sh
+            - -c
+            - |
+              until ollama list >/dev/null 2>&1; do
+                echo "waiting for ollama server..."
+                sleep 3
+              done
+              {{- range .Values.ollama.pullModels }}
+              echo "pulling {{ . }}"
+              ollama pull "{{ . }}" || echo "pull of {{ . }} failed; will retry on next restart"
+              {{- end }}
+              echo "model pull complete; idling"
+              # Keep the container alive so the pod is not marked as failing.
+              tail -f /dev/null
+          resources:
+            requests:
+              cpu: 50m
+              memory: 128Mi
+            limits:
+              memory: 512Mi
+        {{- end }}
+      volumes:
+        - name: dshm
+          emptyDir:
+            medium: Memory
+            sizeLimit: 2Gi
+      {{- if not .Values.ollama.persistence.enabled }}
+        - name: models
+          emptyDir: {}
+      {{- else if .Values.ollama.persistence.existingClaim }}
+        - name: models
+          persistentVolumeClaim:
+            claimName: {{ .Values.ollama.persistence.existingClaim }}
+      {{- end }}
+      {{- with .Values.ollama.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ollama.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.ollama.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+  {{- if and .Values.ollama.persistence.enabled (not .Values.ollama.persistence.existingClaim) }}
+  volumeClaimTemplates:
+    - metadata:
+        name: models
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: {{ .Values.ollama.persistence.size }}
+        {{- include "kdbc.storageClass" (dict "ctx" . "sc" .Values.ollama.persistence.storageClass) | nindent 8 }}
+  {{- end }}
+{{- end }}

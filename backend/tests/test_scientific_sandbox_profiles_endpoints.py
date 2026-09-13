@@ -21,8 +21,12 @@ def sandbox_profile_client(db_session, admin_user):
         return admin_user
 
     app.dependency_overrides[get_db] = override_get_db
-    app.dependency_overrides[scientific_sandbox_profiles.get_current_active_user] = override_admin_user
-    app.dependency_overrides[scientific_sandbox_profiles.require_admin] = override_admin_user
+    app.dependency_overrides[
+        scientific_sandbox_profiles.get_current_active_user
+    ] = override_admin_user
+    app.dependency_overrides[
+        scientific_sandbox_profiles.require_admin
+    ] = override_admin_user
 
     with TestClient(app) as test_client:
         yield test_client
@@ -30,7 +34,9 @@ def sandbox_profile_client(db_session, admin_user):
     app.dependency_overrides.clear()
 
 
-def test_list_scientific_sandbox_profiles_seeds_builtin_profiles(sandbox_profile_client):
+def test_list_scientific_sandbox_profiles_seeds_builtin_profiles(
+    sandbox_profile_client,
+):
     response = sandbox_profile_client.get("/api/v1/scientific-sandbox-profiles")
 
     assert response.status_code == 200
@@ -44,7 +50,9 @@ def test_list_scientific_sandbox_profiles_seeds_builtin_profiles(sandbox_profile
     assert items["scientific-compiler-sandbox"]["track_type"] == "compiler"
 
 
-def test_create_update_and_delete_custom_scientific_sandbox_profile(sandbox_profile_client):
+def test_create_update_and_delete_custom_scientific_sandbox_profile(
+    sandbox_profile_client,
+):
     create_response = sandbox_profile_client.post(
         "/api/v1/scientific-sandbox-profiles",
         json={
@@ -98,7 +106,9 @@ def test_create_update_and_delete_custom_scientific_sandbox_profile(sandbox_prof
     assert get_response.status_code == 404
 
 
-def test_create_scientific_sandbox_profile_rejects_disallowed_docker_image(sandbox_profile_client):
+def test_create_scientific_sandbox_profile_rejects_disallowed_docker_image(
+    sandbox_profile_client,
+):
     response = sandbox_profile_client.post(
         "/api/v1/scientific-sandbox-profiles",
         json={

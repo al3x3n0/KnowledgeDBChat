@@ -254,3 +254,16 @@ const buildCodingSwarmQuickStartPayload = (args: {
     start_immediately: true,
   };
 };
+
+export const DOMAIN_TRACK_OPTIONS = [
+  { value: 'compiler', label: 'Compiler' },
+  { value: 'microarchitecture', label: 'Microarchitecture' },
+  { value: 'generic', label: 'Generic' },
+] as const;
+
+export const DOMAIN_SOURCE_SCOPE_OPTIONS = [
+  { value: 'kb_plus_arxiv_plus_repo', label: 'Knowledge DB + arXiv + Repos' },
+  { value: 'kb_plus_arxiv', label: 'Knowledge DB + arXiv' },
+  { value: 'kb_only', label: 'Knowledge DB only' },
+  { value: 'arxiv_only', label: 'arXiv only' },
+] as const;

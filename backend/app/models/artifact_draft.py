@@ -15,10 +15,10 @@ Approvals are recorded as JSON events and (by default) require:
 
 from __future__ import annotations
 
-from datetime import datetime
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, JSON, String, Text
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Index, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.database import Base
@@ -29,7 +29,12 @@ class ArtifactDraft(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
 
     # presentation | repo_report | other
     artifact_type = Column(String(32), nullable=False, index=True)
@@ -41,7 +46,9 @@ class ArtifactDraft(Base):
     title = Column(String(500), nullable=False)
     description = Column(Text, nullable=True)
 
-    status = Column(String(24), nullable=False, default="draft")  # draft|in_review|approved|published|rejected
+    status = Column(
+        String(24), nullable=False, default="draft"
+    )  # draft|in_review|approved|published|rejected
 
     # Draft payload (JSON) must include enough to render a preview/diff.
     draft_payload = Column(JSON, nullable=False, default=dict)
@@ -52,12 +59,18 @@ class ArtifactDraft(Base):
     # Approvals list: [{"user_id":"...", "role":"owner|admin", "at":"...", "note":"..."}]
     approvals = Column(JSON, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
     published_at = Column(DateTime(timezone=True), nullable=True)
 
     __table_args__ = (
         Index("ix_artifact_drafts_user_status", "user_id", "status"),
         Index("ix_artifact_drafts_user_created", "user_id", "created_at"),
     )
-

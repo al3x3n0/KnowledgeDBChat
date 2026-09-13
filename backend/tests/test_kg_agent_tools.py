@@ -44,10 +44,15 @@ class TestQueryKgEntities:
             "data": {
                 "query": "transformer",
                 "entities": [
-                    {"id": str(uuid.uuid4()), "canonical_name": "Transformer Architecture", "entity_type": "concept", "description": "Attention-based neural network architecture"},
+                    {
+                        "id": str(uuid.uuid4()),
+                        "canonical_name": "Transformer Architecture",
+                        "entity_type": "concept",
+                        "description": "Attention-based neural network architecture",
+                    },
                 ],
                 "count": 1,
-            }
+            },
         }
         assert result["data"]["count"] == 1
         assert result["data"]["entities"][0]["entity_type"] == "concept"
@@ -92,12 +97,20 @@ class TestGetEntityContext:
             "success": True,
             "data": {
                 "entities": [
-                    {"id": str(uuid.uuid4()), "canonical_name": "Python", "entity_type": "technology"},
+                    {
+                        "id": str(uuid.uuid4()),
+                        "canonical_name": "Python",
+                        "entity_type": "technology",
+                    },
                 ],
                 "relationships": [
-                    {"source": "Python", "target": "Django", "relation_type": "has_framework"},
+                    {
+                        "source": "Python",
+                        "target": "Django",
+                        "relation_type": "has_framework",
+                    },
                 ],
-            }
+            },
         }
         assert "entities" in result["data"]
         assert "relationships" in result["data"]
@@ -118,7 +131,11 @@ class TestCreateKgEntity:
         assert not entity_type
 
     def test_accepts_valid_params(self):
-        params = {"name": "OpenAI", "entity_type": "org", "description": "AI research company"}
+        params = {
+            "name": "OpenAI",
+            "entity_type": "org",
+            "description": "AI research company",
+        }
         name = str(params.get("name", "")).strip()
         entity_type = str(params.get("entity_type", "")).strip().lower()
         assert name == "OpenAI"
@@ -148,7 +165,7 @@ class TestCreateKgEntity:
                 "canonical_name": "OpenAI",
                 "entity_type": "org",
                 "description": "AI research company",
-            }
+            },
         }
         assert result["data"]["id"] == eid
         assert result["data"]["canonical_name"] == "OpenAI"
@@ -168,7 +185,10 @@ class TestCreateKgRelationship:
         assert not target
 
     def test_requires_relation_type(self):
-        params = {"source_entity_id": str(uuid.uuid4()), "target_entity_id": str(uuid.uuid4())}
+        params = {
+            "source_entity_id": str(uuid.uuid4()),
+            "target_entity_id": str(uuid.uuid4()),
+        }
         rel_type = str(params.get("relation_type", "")).strip()
         assert not rel_type
 
@@ -183,7 +203,11 @@ class TestCreateKgRelationship:
         assert str(params.get("relation_type", "")).strip() == "authored"
 
     def test_confidence_defaults_to_0_8(self):
-        params = {"source_entity_id": "a", "target_entity_id": "b", "relation_type": "related"}
+        params = {
+            "source_entity_id": "a",
+            "target_entity_id": "b",
+            "relation_type": "related",
+        }
         confidence = float(params.get("confidence", 0.8) or 0.8)
         assert confidence == 0.8
 
@@ -193,7 +217,11 @@ class TestCreateKgRelationship:
             assert confidence == expected
 
     def test_evidence_optional(self):
-        params = {"source_entity_id": "a", "target_entity_id": "b", "relation_type": "related"}
+        params = {
+            "source_entity_id": "a",
+            "target_entity_id": "b",
+            "relation_type": "related",
+        }
         evidence = str(params.get("evidence", "")).strip() or None
         assert evidence is None
 
@@ -211,7 +239,7 @@ class TestCreateKgRelationship:
                 "source_entity_id": str(uuid.uuid4()),
                 "target_entity_id": str(uuid.uuid4()),
                 "confidence": 0.9,
-            }
+            },
         }
         assert result["data"]["relation_type"] == "works_at"
         assert result["data"]["confidence"] == 0.9
@@ -223,17 +251,29 @@ class TestQueryKgGraph:
     def test_no_required_params(self):
         params = {}
         # All params optional — should not error
-        entity_types = params.get("entity_types") if isinstance(params.get("entity_types"), list) else None
+        entity_types = (
+            params.get("entity_types")
+            if isinstance(params.get("entity_types"), list)
+            else None
+        )
         assert entity_types is None
 
     def test_entity_types_filter(self):
         params = {"entity_types": ["person", "org"]}
-        entity_types = params.get("entity_types") if isinstance(params.get("entity_types"), list) else None
+        entity_types = (
+            params.get("entity_types")
+            if isinstance(params.get("entity_types"), list)
+            else None
+        )
         assert entity_types == ["person", "org"]
 
     def test_relation_types_filter(self):
         params = {"relation_types": ["works_at", "authored"]}
-        relation_types = params.get("relation_types") if isinstance(params.get("relation_types"), list) else None
+        relation_types = (
+            params.get("relation_types")
+            if isinstance(params.get("relation_types"), list)
+            else None
+        )
         assert relation_types == ["works_at", "authored"]
 
     def test_min_confidence_defaults_to_zero(self):
@@ -268,7 +308,11 @@ class TestQueryKgGraph:
 
     def test_non_list_entity_types_ignored(self):
         params = {"entity_types": "person"}
-        entity_types = params.get("entity_types") if isinstance(params.get("entity_types"), list) else None
+        entity_types = (
+            params.get("entity_types")
+            if isinstance(params.get("entity_types"), list)
+            else None
+        )
         assert entity_types is None
 
 
@@ -277,6 +321,7 @@ class TestKgToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "query_kg_entities" in names
         assert "get_entity_context" in names
@@ -286,18 +331,21 @@ class TestKgToolSchemas:
 
     def test_query_kg_entities_requires_query(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("query_kg_entities")
         assert tool is not None
         assert "query" in tool["parameters"].get("required", [])
 
     def test_get_entity_context_requires_entity_id(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_entity_context")
         assert tool is not None
         assert "entity_id" in tool["parameters"].get("required", [])
 
     def test_create_kg_entity_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("create_kg_entity")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -306,6 +354,7 @@ class TestKgToolSchemas:
 
     def test_create_kg_relationship_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("create_kg_relationship")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -315,6 +364,7 @@ class TestKgToolSchemas:
 
     def test_query_kg_graph_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("query_kg_graph")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -326,37 +376,49 @@ class TestKgToolRegistry:
 
     def test_query_kg_entities_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("query_kg_entities")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_get_entity_context_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("get_entity_context")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_query_kg_graph_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("query_kg_graph")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_create_kg_entity_is_write(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("create_kg_entity")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_create_kg_relationship_is_write(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("create_kg_relationship")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_kg_tools_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
-        for tool_name in ["query_kg_entities", "get_entity_context", "create_kg_entity", "create_kg_relationship", "query_kg_graph"]:
+
+        for tool_name in [
+            "query_kg_entities",
+            "get_entity_context",
+            "create_kg_entity",
+            "create_kg_relationship",
+            "query_kg_graph",
+        ]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.cost_tier == "low"

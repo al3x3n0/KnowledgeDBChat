@@ -1,12 +1,13 @@
 """Tests for scheduling tools (schedule_job, cancel_scheduled_job)."""
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone
 
 import pytest
 
 try:
     from croniter import croniter
+
     HAS_CRONITER = True
 except ImportError:
     HAS_CRONITER = False
@@ -82,7 +83,11 @@ class TestScheduleJob:
         assert config == {}
 
     def test_config_accepted(self):
-        params = {"goal": "test", "schedule_type": "once", "config": {"max_iterations": 50}}
+        params = {
+            "goal": "test",
+            "schedule_type": "once",
+            "config": {"max_iterations": 50},
+        }
         config = params.get("config") if isinstance(params.get("config"), dict) else {}
         assert config["max_iterations"] == 50
 
@@ -101,7 +106,7 @@ class TestScheduleJob:
                 "schedule_type": "recurring",
                 "next_run_at": "2026-04-01T09:00:00+00:00",
                 "cron": "0 9 * * 1",
-            }
+            },
         }
         assert result["data"]["schedule_type"] == "recurring"
         assert result["data"]["cron"] == "0 9 * * 1"
@@ -141,7 +146,7 @@ class TestCancelScheduledJob:
                 "id": str(uuid.uuid4()),
                 "status": "cancelled",
                 "goal": "Monitor papers",
-            }
+            },
         }
         assert result["data"]["status"] == "cancelled"
 
@@ -151,12 +156,14 @@ class TestSchedulingToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "schedule_job" in names
         assert "cancel_scheduled_job" in names
 
     def test_schedule_job_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("schedule_job")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -165,6 +172,7 @@ class TestSchedulingToolSchemas:
 
     def test_cancel_scheduled_job_requires_job_id(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("cancel_scheduled_job")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -172,11 +180,13 @@ class TestSchedulingToolSchemas:
 
     def test_schedule_job_has_cron_param(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("schedule_job")
         assert "cron" in tool["parameters"]["properties"]
 
     def test_schedule_job_has_run_at_param(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("schedule_job")
         assert "run_at" in tool["parameters"]["properties"]
 
@@ -186,18 +196,21 @@ class TestSchedulingToolRegistry:
 
     def test_schedule_job_is_write(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("schedule_job")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_cancel_scheduled_job_is_write(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("cancel_scheduled_job")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_scheduling_tools_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["schedule_job", "cancel_scheduled_job"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

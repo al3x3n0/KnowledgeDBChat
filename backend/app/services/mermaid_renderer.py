@@ -7,6 +7,7 @@ Renders Mermaid diagram code to PNG images using local or external Kroki service
 import base64
 import zlib
 from typing import Optional
+
 import httpx
 from loguru import logger
 
@@ -15,7 +16,6 @@ from app.core.config import settings
 
 class MermaidRenderError(Exception):
     """Raised when Mermaid rendering fails."""
-    pass
 
 
 class MermaidRenderer:
@@ -32,9 +32,9 @@ class MermaidRenderer:
     def __init__(self):
         self._client: Optional[httpx.AsyncClient] = None
         # Primary: local Kroki Docker container
-        self._kroki_url = settings.KROKI_URL.rstrip('/')
+        self._kroki_url = settings.KROKI_URL.rstrip("/")
         # Fallback: external kroki.io
-        self._fallback_url = settings.KROKI_FALLBACK_URL.rstrip('/')
+        self._fallback_url = settings.KROKI_FALLBACK_URL.rstrip("/")
         self._use_fallback = settings.KROKI_USE_FALLBACK
 
     async def _get_client(self) -> httpx.AsyncClient:
@@ -49,6 +49,16 @@ class MermaidRenderer:
             await self._client.aclose()
             self._client = None
 
+    def _is_companion(self, base_url: str) -> bool:
+        """Whether this endpoint is a Kroki companion rather than a gateway.
+
+        The two speak different shapes: a gateway takes
+        /mermaid/svg/<encoded>, a companion takes the raw source POSTed to
+        /svg. Configured rather than probed, because probing costs a failed
+        request on every render and the answer never changes at run time.
+        """
+        return bool(settings.KROKI_LOCAL_IS_COMPANION) and base_url == self._kroki_url
+
     def _encode_diagram(self, code: str) -> str:
         """
         Encode Mermaid code for Kroki API.
@@ -56,9 +66,9 @@ class MermaidRenderer:
         Uses deflate compression + base64 URL-safe encoding.
         """
         # Compress with zlib (deflate)
-        compressed = zlib.compress(code.encode('utf-8'), level=9)
+        compressed = zlib.compress(code.encode("utf-8"), level=9)
         # Base64 URL-safe encode
-        encoded = base64.urlsafe_b64encode(compressed).decode('ascii')
+        encoded = base64.urlsafe_b64encode(compressed).decode("ascii")
         return encoded
 
     def _validate_mermaid_code(self, code: str) -> tuple[bool, Optional[str]]:
@@ -74,13 +84,26 @@ class MermaidRenderer:
 
         # Check for valid diagram type declarations
         valid_starts = [
-            'flowchart', 'graph', 'sequenceDiagram', 'classDiagram',
-            'stateDiagram', 'erDiagram', 'gantt', 'pie', 'mindmap',
-            'journey', 'gitGraph', 'C4Context', 'sankey', 'timeline',
-            'quadrantChart', 'requirementDiagram', 'architecture'
+            "flowchart",
+            "graph",
+            "sequenceDiagram",
+            "classDiagram",
+            "stateDiagram",
+            "erDiagram",
+            "gantt",
+            "pie",
+            "mindmap",
+            "journey",
+            "gitGraph",
+            "C4Context",
+            "sankey",
+            "timeline",
+            "quadrantChart",
+            "requirementDiagram",
+            "architecture",
         ]
 
-        first_line = code.split('\n')[0].strip().lower()
+        first_line = code.split("\n")[0].strip().lower()
         has_valid_start = any(first_line.startswith(v.lower()) for v in valid_starts)
 
         if not has_valid_start:
@@ -97,12 +120,12 @@ class MermaidRenderer:
         code = code.strip()
 
         # Remove markdown code blocks if present
-        if code.startswith('```mermaid'):
-            code = code[len('```mermaid'):].strip()
-        elif code.startswith('```'):
+        if code.startswith("```mermaid"):
+            code = code[len("```mermaid") :].strip()
+        elif code.startswith("```"):
             code = code[3:].strip()
 
-        if code.endswith('```'):
+        if code.endswith("```"):
             code = code[:-3].strip()
 
         return code
@@ -126,20 +149,36 @@ class MermaidRenderer:
         if not is_valid:
             raise MermaidRenderError(f"Invalid Mermaid code: {error}")
 
+        self.last_render_used_fallback = False
         try:
             # Try local Kroki first
-            return await self._render_via_kroki(code, format="png", base_url=self._kroki_url)
+            return await self._render_via_kroki(
+                code, format="png", base_url=self._kroki_url
+            )
         except Exception as e:
             logger.warning(f"Local Kroki rendering failed: {e}")
 
             # Try fallback if enabled
             if self._use_fallback and self._fallback_url != self._kroki_url:
                 try:
-                    logger.info("Trying fallback Kroki service...")
-                    return await self._render_via_kroki(code, format="png", base_url=self._fallback_url)
+                    # The fallback is a public service by default, so the
+                    # diagram source leaves the deployment. Say so at warning
+                    # level: a local Kroki missing its Mermaid companion sent
+                    # every diagram to kroki.io and nothing recorded it.
+                    logger.warning(
+                        "Rendering diagram via the external fallback "
+                        f"{self._fallback_url}; diagram source leaves this "
+                        "deployment. Local Kroki failed: %s" % e
+                    )
+                    self.last_render_used_fallback = True
+                    return await self._render_via_kroki(
+                        code, format="png", base_url=self._fallback_url
+                    )
                 except Exception as fallback_error:
                     logger.error(f"Fallback Kroki also failed: {fallback_error}")
-                    raise MermaidRenderError(f"Failed to render diagram: {e} (fallback: {fallback_error})")
+                    raise MermaidRenderError(
+                        f"Failed to render diagram: {e} (fallback: {fallback_error})"
+                    )
 
             raise MermaidRenderError(f"Failed to render diagram: {e}")
 
@@ -164,8 +203,10 @@ class MermaidRenderer:
 
         try:
             # Try local Kroki first
-            result = await self._render_via_kroki(code, format="svg", base_url=self._kroki_url)
-            return result.decode('utf-8')
+            result = await self._render_via_kroki(
+                code, format="svg", base_url=self._kroki_url
+            )
+            return result.decode("utf-8")
         except Exception as e:
             logger.warning(f"Local Kroki SVG rendering failed: {e}")
 
@@ -173,15 +214,21 @@ class MermaidRenderer:
             if self._use_fallback and self._fallback_url != self._kroki_url:
                 try:
                     logger.info("Trying fallback Kroki service for SVG...")
-                    result = await self._render_via_kroki(code, format="svg", base_url=self._fallback_url)
-                    return result.decode('utf-8')
+                    result = await self._render_via_kroki(
+                        code, format="svg", base_url=self._fallback_url
+                    )
+                    return result.decode("utf-8")
                 except Exception as fallback_error:
                     logger.error(f"Fallback Kroki SVG also failed: {fallback_error}")
-                    raise MermaidRenderError(f"Failed to render diagram: {e} (fallback: {fallback_error})")
+                    raise MermaidRenderError(
+                        f"Failed to render diagram: {e} (fallback: {fallback_error})"
+                    )
 
             raise MermaidRenderError(f"Failed to render diagram: {e}")
 
-    async def _render_via_kroki(self, code: str, format: str = "png", base_url: Optional[str] = None) -> bytes:
+    async def _render_via_kroki(
+        self, code: str, format: str = "png", base_url: Optional[str] = None
+    ) -> bytes:
         """
         Render diagram using Kroki API.
 
@@ -195,25 +242,39 @@ class MermaidRenderer:
         """
         client = await self._get_client()
         kroki_base = base_url or self._kroki_url
+        companion = self._is_companion(kroki_base)
 
-        # Method 1: GET with encoded URL (preferred for caching)
-        encoded = self._encode_diagram(code)
-        url = f"{kroki_base}/mermaid/{format}/{encoded}"
+        if not companion:
+            # A full Kroki gateway. Method 1: GET with the encoded diagram in
+            # the path, which is cacheable.
+            encoded = self._encode_diagram(code)
+            url = f"{kroki_base}/mermaid/{format}/{encoded}"
 
-        try:
-            response = await client.get(url)
+            try:
+                response = await client.get(url)
 
-            if response.status_code == 200:
-                return response.content
+                if response.status_code == 200:
+                    return response.content
 
-            # If GET fails, try POST
-            logger.warning(f"Kroki GET failed with status {response.status_code}, trying POST")
+                # If GET fails, try POST
+                logger.warning(
+                    f"Kroki GET failed with status {response.status_code}, "
+                    "trying POST"
+                )
 
-        except httpx.TimeoutException:
-            logger.warning("Kroki GET timed out, trying POST")
+            except httpx.TimeoutException:
+                logger.warning("Kroki GET timed out, trying POST")
 
-        # Method 2: POST with raw code (fallback)
-        endpoint = f"{kroki_base}/mermaid/{format}"
+        # Method 2: POST the raw diagram.
+        #
+        # A Kroki companion renders one format and serves it at /svg and /png,
+        # with no `mermaid` segment and no encoded-URL form -- the gateway that
+        # provides those is 3.76 GB of diagram backends this project never
+        # asks for, since the only caller renders Mermaid. Talking to the
+        # companion directly drops it.
+        endpoint = (
+            f"{kroki_base}/{format}" if companion else f"{kroki_base}/mermaid/{format}"
+        )
         headers = {"Content-Type": "text/plain"}
 
         response = await client.post(endpoint, content=code, headers=headers)
@@ -226,10 +287,7 @@ class MermaidRenderer:
 
         return response.content
 
-    async def render_multiple(
-        self,
-        diagrams: dict[int, str]
-    ) -> dict[int, bytes]:
+    async def render_multiple(self, diagrams: dict[int, str]) -> dict[int, bytes]:
         """
         Render multiple diagrams concurrently.
 

@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 
 class TestListDocumentsByTag:
     """Tests for list_documents_by_tag tool logic."""
@@ -75,10 +73,17 @@ class TestListDocumentsByTag:
                 "tags": ["ml"],
                 "match_all": False,
                 "documents": [
-                    {"id": str(uuid.uuid4()), "title": "Paper 1", "tags": ["ml", "nlp"], "file_type": "pdf", "summary": "...", "created_at": "2026-01-01T00:00:00"},
+                    {
+                        "id": str(uuid.uuid4()),
+                        "title": "Paper 1",
+                        "tags": ["ml", "nlp"],
+                        "file_type": "pdf",
+                        "summary": "...",
+                        "created_at": "2026-01-01T00:00:00",
+                    },
                 ],
                 "count": 1,
-            }
+            },
         }
         assert result["data"]["count"] == 1
         assert "ml" in result["data"]["documents"][0]["tags"]
@@ -155,7 +160,7 @@ class TestMergeDocuments:
                 "title": "Merged Report",
                 "source_count": 3,
                 "content_length": 15000,
-            }
+            },
         }
         assert result["data"]["source_count"] == 3
         assert result["data"]["content_length"] > 0
@@ -176,12 +181,14 @@ class TestDocumentAuthoringToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "list_documents_by_tag" in names
         assert "merge_documents" in names
 
     def test_list_by_tag_requires_tags(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("list_documents_by_tag")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -189,6 +196,7 @@ class TestDocumentAuthoringToolSchemas:
 
     def test_merge_documents_requires_params(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("merge_documents")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -197,11 +205,13 @@ class TestDocumentAuthoringToolSchemas:
 
     def test_list_by_tag_has_match_all(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("list_documents_by_tag")
         assert "match_all" in tool["parameters"]["properties"]
 
     def test_merge_documents_has_separator(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("merge_documents")
         assert "separator" in tool["parameters"]["properties"]
 
@@ -211,18 +221,21 @@ class TestDocumentAuthoringToolRegistry:
 
     def test_list_by_tag_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("list_documents_by_tag")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_merge_documents_is_write(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("merge_documents")
         assert meta is not None
         assert meta.effects == "write"
 
     def test_both_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["list_documents_by_tag", "merge_documents"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

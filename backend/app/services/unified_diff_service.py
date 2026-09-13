@@ -14,7 +14,9 @@ _UNIFIED_HUNK_RE = re.compile(
 )
 
 
-def apply_unified_diff_to_text(*, original: str, diff_unified: str) -> Tuple[str, List[str]]:
+def apply_unified_diff_to_text(
+    *, original: str, diff_unified: str
+) -> Tuple[str, List[str]]:
     """
     Apply a unified diff to a single in-memory text buffer (paper.tex).
 
@@ -41,10 +43,15 @@ def apply_unified_diff_to_text(*, original: str, diff_unified: str) -> Tuple[str
     if file_pairs > 1:
         raise ValueError("Diff patches multiple files; only paper.tex is supported.")
     if file_pairs == 1:
-        if not (str(old_file or "").endswith("paper.tex") and str(new_file or "").endswith("paper.tex")):
+        if not (
+            str(old_file or "").endswith("paper.tex")
+            and str(new_file or "").endswith("paper.tex")
+        ):
             raise ValueError("Diff must target paper.tex only.")
 
-    def _find_subsequence(haystack: List[str], needle: List[str], *, expected_pos: Optional[int]) -> Optional[int]:
+    def _find_subsequence(
+        haystack: List[str], needle: List[str], *, expected_pos: Optional[int]
+    ) -> Optional[int]:
         if not needle:
             return expected_pos if expected_pos is not None else 0
         candidates: List[int] = []
@@ -56,7 +63,9 @@ def apply_unified_diff_to_text(*, original: str, diff_unified: str) -> Tuple[str
             return None
         if expected_pos is None:
             if len(candidates) > 1:
-                warnings.append(f"Hunk matched {len(candidates)} times; using first match at line {candidates[0] + 1}.")
+                warnings.append(
+                    f"Hunk matched {len(candidates)} times; using first match at line {candidates[0] + 1}."
+                )
             return candidates[0]
         best = min(candidates, key=lambda x: abs(x - expected_pos))
         if len(candidates) > 1:
@@ -110,19 +119,28 @@ def apply_unified_diff_to_text(*, original: str, diff_unified: str) -> Tuple[str
                     raise ValueError("Invalid unified diff line prefix.")
 
             if not old_chunk:
-                warnings.append("Hunk contained no base lines; inserting at expected position.")
+                warnings.append(
+                    "Hunk contained no base lines; inserting at expected position."
+                )
                 insert_at = min(len(original_lines), expected_pos)
                 original_lines[insert_at:insert_at] = new_chunk
                 continue
 
             # Try applying at expected position first; otherwise search by content.
             pos: Optional[int] = None
-            if original_lines[expected_pos : expected_pos + len(old_chunk)] == old_chunk:
+            if (
+                original_lines[expected_pos : expected_pos + len(old_chunk)]
+                == old_chunk
+            ):
                 pos = expected_pos
             else:
-                pos = _find_subsequence(original_lines, old_chunk, expected_pos=expected_pos)
+                pos = _find_subsequence(
+                    original_lines, old_chunk, expected_pos=expected_pos
+                )
             if pos is None:
-                raise ValueError("Failed to apply diff: hunk context not found in current paper.tex.")
+                raise ValueError(
+                    "Failed to apply diff: hunk context not found in current paper.tex."
+                )
 
             original_lines[pos : pos + len(old_chunk)] = new_chunk
             continue
@@ -133,4 +151,3 @@ def apply_unified_diff_to_text(*, original: str, diff_unified: str) -> Tuple[str
     if not patched.endswith("\n"):
         patched += "\n"
     return patched, warnings
-

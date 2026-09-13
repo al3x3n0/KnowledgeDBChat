@@ -9,21 +9,20 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import PlainTextResponse
-from sqlalchemy import select, desc, func, and_, or_
-from sqlalchemy.ext.asyncio import AsyncSession
 from loguru import logger
+from sqlalchemy import and_, desc, func, or_, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.code_patch_proposal import CodePatchProposal
 from app.models.user import User
 from app.schemas.code_patch import (
-    CodePatchProposalResponse,
-    CodePatchProposalListResponse,
     CodePatchProposalListItem,
+    CodePatchProposalListResponse,
+    CodePatchProposalResponse,
     CodePatchProposalUpdateRequest,
 )
 from app.services.auth_service import get_current_user
-
 
 router = APIRouter()
 
@@ -81,7 +80,9 @@ async def download_code_patch(
     proposal = await db.get(CodePatchProposal, proposal_id)
     if not proposal or proposal.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Not found")
-    return PlainTextResponse(content=proposal.diff_unified or "", media_type="text/plain")
+    return PlainTextResponse(
+        content=proposal.diff_unified or "", media_type="text/plain"
+    )
 
 
 @router.patch("/{proposal_id}", response_model=CodePatchProposalResponse)
@@ -125,14 +126,19 @@ async def apply_code_patch_to_kb(
     from hashlib import sha256
 
     from app.models.document import Document
-    from app.services.code_patch_apply_service import code_patch_apply_service, UnifiedDiffApplyError
+    from app.services.code_patch_apply_service import (
+        UnifiedDiffApplyError,
+        code_patch_apply_service,
+    )
     from app.services.document_service import DocumentService
 
     proposal = await db.get(CodePatchProposal, proposal_id)
     if not proposal or proposal.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Not found")
     if not proposal.source_id:
-        raise HTTPException(status_code=422, detail="Proposal missing source_id (cannot apply)")
+        raise HTTPException(
+            status_code=422, detail="Proposal missing source_id (cannot apply)"
+        )
 
     try:
         file_diffs = code_patch_apply_service.parse(proposal.diff_unified or "")
@@ -172,7 +178,9 @@ async def apply_code_patch_to_kb(
             continue
 
         try:
-            new_text, debug = code_patch_apply_service.apply_to_text(doc.content or "", fd)
+            new_text, debug = code_patch_apply_service.apply_to_text(
+                doc.content or "", fd
+            )
         except UnifiedDiffApplyError as exc:
             errors.append({"path": path, "error": str(exc)})
             continue
@@ -189,7 +197,11 @@ async def apply_code_patch_to_kb(
         except Exception:
             pass
 
-    proposal.proposal_metadata = proposal.proposal_metadata if isinstance(proposal.proposal_metadata, dict) else {}
+    proposal.proposal_metadata = (
+        proposal.proposal_metadata
+        if isinstance(proposal.proposal_metadata, dict)
+        else {}
+    )
     proposal.proposal_metadata["apply_results"] = {"applied": applied, "errors": errors}
     if errors:
         proposal.status = "proposed"

@@ -1,0 +1,137 @@
+; SMLALB -- widening multiply-accumulate straight from signed bytes.
+;
+; This is the candidate the miner ranked second by bounded benefit on the PCE
+; INT8 multi-head attention profile: `sxtl` followed by `smlal`, 1,572,864
+; occurrences, a bounded saving of 5.0 cycles each at neoverse-n1. It was found
+; from a dynamic profile without being told what to look for.
+;
+; What the pair does today. `sxtl v5.8h, v5.8b` sign-extends packed signed
+; bytes to halfwords; `smlal v1.4s, v0.4h, v22.4h` then multiplies halfword
+; lanes, widens each product to 32 bits and accumulates. Two instructions and
+; one intermediate register to move data up two width steps and multiply once.
+;
+; SMLALB collapses that: read the bytes, widen once, multiply, accumulate.
+;
+; Honesty about what is modelled here. Lanes are carried in a 128-bit register
+; as 4x32, with each input lane's significant value in its low 8 bits, so this
+; describes the *arithmetic* of the fusion and not NEON's byte packing or the
+; register-file plumbing that `sxtl` also performs. The arithmetic is where the
+; risk of fusing lives -- whether collapsing two widening steps into one
+; changes any result -- and that is what the proof obligation settles. The
+; packing is an encoding question and is not claimed to be proven.
+;
+; Arm already ships SDOT (v8.4-A), which is the four-way-reduction relative of
+; this shape. That is a feature of this exercise, not an embarrassment: there is
+; published ground truth that a byte-input widening MAC is worth building, and
+; the pipeline reached that neighbourhood from a profile on its own.
+
+(axis-module smlalb
+  (version "0.1.0")
+  (target rvmt)
+  (description "Widening multiply-accumulate from signed bytes, fusing sxtl+smlal")
+
+  (defisa smlalb_isa
+    (base rv64im)
+    (word-bits 64)
+    (registers "v[32]:i128" "pc:i64")
+    (features simd custom)
+    (memory-model rvwmo)
+    (endianness little))
+
+  (defformat SIMD_R
+    (bits 32)
+    (fields
+      (opcode 6 0)
+      (vd 11 7)
+      (func3 14 12)
+      (vn 19 15)
+      (vm 24 20)
+      (func7 31 25)))
+
+  ; --- the proposed instruction ----------------------------------------
+  (definstruction smlalb
+    (mnemonic SMLALB) (isa smlalb_isa) (category simd) (format SIMD_R)
+    (opcode 11) (func3 0) (func7 1)
+    (operands
+      (vd reg i128 inout)
+      (vn reg i128 in)
+      (vm reg i128 in))
+    (asm "smlalb $vd, $vn, $vm")
+    (semantics
+      "Sign-extend the low byte of each 32-bit lane of vn and vm, multiply the
+       two lanes, and accumulate the 32-bit product into the matching lane of
+       vd. One instruction for what sxtl+smlal do in two.")
+    (formal
+      (add v4i32 vd
+        (mul v4i32
+          (ashr v4i32 (sll v4i32 vn 1901475900785065960117163261976) 1901475900785065960117163261976)
+          (ashr v4i32 (sll v4i32 vm 1901475900785065960117163261976) 1901475900785065960117163261976))))
+    (latency 4) (throughput 1.0)
+    (area-estimate-um2 3000.0) (power-estimate-mw 4.0) (expected-speedup 1.0)
+    (rationale
+      "Ranked second by bounded benefit on a real INT8 attention profile:
+       1,572,864 dynamic occurrences, floor-to-ceiling saving 5.0 cycles at
+       neoverse-n1."))
+
+  ; --- the sequence it replaces, as two instructions --------------------
+  ; Kept in the same module so the proof obligation can call both by the names
+  ; emit-smt2 generates, and compare them rather than compare one against a
+  ; hand-written restatement of what the other is supposed to do.
+
+  (definstruction sxtl_b_h
+    (mnemonic SXTL_B_H) (isa smlalb_isa) (category simd) (format SIMD_R)
+    (opcode 11) (func3 1) (func7 1)
+    (operands
+      (vd reg i128 out)
+      (vn reg i128 in))
+    (asm "sxtl_b_h $vd, $vn")
+    (semantics "Sign-extend the low byte of each lane to a halfword value")
+    (formal (ashr v4i32 (sll v4i32 vn 1901475900785065960117163261976) 1901475900785065960117163261976))
+    (latency 2) (throughput 1.0)
+    (area-estimate-um2 800.0) (power-estimate-mw 1.0) (expected-speedup 1.0)
+    (rationale "First half of the mined pair."))
+
+  (definstruction smlal_h_s
+    (mnemonic SMLAL_H_S) (isa smlalb_isa) (category simd) (format SIMD_R)
+    (opcode 11) (func3 2) (func7 1)
+    (operands
+      (vd reg i128 inout)
+      (vn reg i128 in)
+      (vm reg i128 in))
+    (asm "smlal_h_s $vd, $vn, $vm")
+    (semantics
+      "Multiply halfword lane values, widen each product to 32 bits and
+       accumulate into the destination lane")
+    (formal
+      (add v4i32 vd
+        (mul v4i32
+          (ashr v4i32 (sll v4i32 vn 1267650600523377306744775507984) 1267650600523377306744775507984)
+          (ashr v4i32 (sll v4i32 vm 1267650600523377306744775507984) 1267650600523377306744775507984))))
+    (latency 4) (throughput 1.0)
+    (area-estimate-um2 2600.0) (power-estimate-mw 3.5) (expected-speedup 1.0)
+    (rationale "Second half of the mined pair."))
+
+  ; --- a deliberately wrong fusion --------------------------------------
+  ; A proof that cannot fail is not evidence. This is SMLALB with the sign
+  ; extension replaced by a zero extension -- the mistake a hardware
+  ; implementation could plausibly make on an INT8 pipeline where most
+  ; activations happen to be positive. The obligation against it must come back
+  ; `sat`, with a counterexample, or the equivalence check is vacuous.
+  (definstruction smlalb_zext_bug
+    (mnemonic SMLALB_ZEXT_BUG) (isa smlalb_isa) (category simd) (format SIMD_R)
+    (opcode 11) (func3 3) (func7 1)
+    (operands
+      (vd reg i128 inout)
+      (vn reg i128 in)
+      (vm reg i128 in))
+    (asm "smlalb_zext_bug $vd, $vn, $vm")
+    (semantics "SMLALB with unsigned widening: present to prove the check has teeth")
+    (formal
+      (add v4i32 vd
+        (mul v4i32
+          (srl v4i32 (sll v4i32 vn 1901475900785065960117163261976) 1901475900785065960117163261976)
+          (srl v4i32 (sll v4i32 vm 1901475900785065960117163261976) 1901475900785065960117163261976))))
+    (latency 4) (throughput 1.0)
+    (area-estimate-um2 3000.0) (power-estimate-mw 4.0) (expected-speedup 1.0)
+    (rationale "Negative control for the equivalence obligation."))
+)

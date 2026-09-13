@@ -4,9 +4,9 @@ from unittest.mock import AsyncMock
 
 import pytest
 
-from app.agent_core.planning import AgentExecutionPlanner, ExecutionPlan, PlanStep
-from app.agent_core.runtime import AgentRuntimeRunner
+from app.agent_core.planning import AgentExecutionPlanner, PlanStep
 from app.agent_core.routing import AgentRouter
+from app.agent_core.runtime import AgentRuntimeRunner
 from app.agent_core.tool_catalog import get_tool_metadata
 from app.agent_core.types import AgentSpec, agent_spec_from_model, job_spec_from_model
 
@@ -29,7 +29,9 @@ class DummyJob:
         self.goal = "Research quantum computing"
         self.job_type = "research"
         self.config = {"replan_enabled": True}
-        self.goal_criteria = {"criteria": [{"name": "Find papers", "description": "At least 5"}]}
+        self.goal_criteria = {
+            "criteria": [{"name": "Find papers", "description": "At least 5"}]
+        }
         self.max_iterations = 25
         self.iteration = 3
 
@@ -76,7 +78,9 @@ class _DummyRuntimeAdapter:
         self.events.append("evaluate")
         return {"progress": 100, "should_stop": False}
 
-    async def on_iteration_complete(self, observation, decision, action_bundle, evaluation) -> None:
+    async def on_iteration_complete(
+        self, observation, decision, action_bundle, evaluation
+    ) -> None:
         self.events.append("complete")
 
     async def on_iteration_error(self, exc: Exception) -> bool:
@@ -104,12 +108,18 @@ def test_job_spec_from_model_maps_fields():
 
 @pytest.mark.asyncio
 async def test_core_planner_fallback():
-    planner = AgentExecutionPlanner(AsyncMock(generate_response=AsyncMock(side_effect=Exception("down"))))
+    planner = AgentExecutionPlanner(
+        AsyncMock(generate_response=AsyncMock(side_effect=Exception("down")))
+    )
     plan = await planner.create_plan(
         job=DummyJob(),
         observation={},
         user_settings=None,
-        available_tools=["search_documents", "read_document_content", "summarize_document"],
+        available_tools=[
+            "search_documents",
+            "read_document_content",
+            "summarize_document",
+        ],
     )
     assert len(plan.steps) == 3
     assert plan.steps[0].title == "Gather information"
@@ -151,7 +161,9 @@ async def test_core_router_selects_specialist():
 @pytest.mark.asyncio
 async def test_core_router_keyword_analysis():
     router = AgentRouter()
-    result = await router.analyze_intent("Find documents about transformers", use_llm=False)
+    result = await router.analyze_intent(
+        "Find documents about transformers", use_llm=False
+    )
     assert "document_search" in result["capabilities_needed"]
     assert result["method"] == "keyword"
 
@@ -183,7 +195,9 @@ async def test_runtime_runner_completes_normal_iteration_flow():
 
 @pytest.mark.asyncio
 async def test_runtime_runner_stops_after_think_when_goal_achieved():
-    adapter = _DummyRuntimeAdapter(decision={"goal_achieved": True, "should_stop": False})
+    adapter = _DummyRuntimeAdapter(
+        decision={"goal_achieved": True, "should_stop": False}
+    )
     result = await AgentRuntimeRunner().run(adapter)
     assert result == {"status": "completed"}
     assert "act" not in adapter.events
@@ -192,7 +206,9 @@ async def test_runtime_runner_stops_after_think_when_goal_achieved():
 
 @pytest.mark.asyncio
 async def test_runtime_runner_returns_terminal_result_from_act():
-    adapter = _DummyRuntimeAdapter(action_bundle={"terminal_result": {"status": "paused"}})
+    adapter = _DummyRuntimeAdapter(
+        action_bundle={"terminal_result": {"status": "paused"}}
+    )
     result = await AgentRuntimeRunner().run(adapter)
     assert result == {"status": "paused"}
     assert "evaluate" not in adapter.events
@@ -200,7 +216,9 @@ async def test_runtime_runner_returns_terminal_result_from_act():
 
 @pytest.mark.asyncio
 async def test_runtime_runner_uses_error_handler_and_stops_when_requested():
-    adapter = _DummyRuntimeAdapter(observe_error=RuntimeError("boom"), continue_after_error=False)
+    adapter = _DummyRuntimeAdapter(
+        observe_error=RuntimeError("boom"), continue_after_error=False
+    )
     result = await AgentRuntimeRunner().run(adapter)
     assert result == {"status": "completed"}
     assert adapter.events == [

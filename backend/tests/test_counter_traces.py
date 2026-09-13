@@ -1,0 +1,497 @@
+"""Counters sampled over time, which is what a hardware predictor reads.
+
+Run totals cannot train or evaluate a predictor: "the program missed cache 4M
+times" and "here is the miss rate every 200k instructions" are different data,
+and only the second has a time axis.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+
+import pytest
+
+from app.services import agent_gem5_sandbox as gem5
+from app.services import gem5_stats
+
+STATS = """
+---------- Begin Simulation Statistics ----------
+system.cpu.numCycles                    1000    # cycles
+system.cpu.dcache.overallMisses          10     # misses
+system.clk_domain.clock                   500   # constant
+---------- End Simulation Statistics ----------
+---------- Begin Simulation Statistics ----------
+system.cpu.numCycles                    2000    # cycles
+system.cpu.dcache.overallMisses         900     # misses
+system.clk_domain.clock                   500   # constant
+---------- End Simulation Statistics ----------
+---------- Begin Simulation Statistics ----------
+system.cpu.numCycles                    1500    # cycles
+system.cpu.dcache.overallMisses          20     # misses
+system.clk_domain.clock                   500   # constant
+---------- End Simulation Statistics ----------
+"""
+
+
+def test_each_dump_is_one_interval():
+    intervals = gem5_stats.parse_intervals(STATS.splitlines())
+
+    assert len(intervals) == 3
+    assert intervals[1]["system.cpu.numCycles"] == 2000
+
+
+def test_a_run_that_never_sampled_is_a_trace_of_length_one():
+    """Not an error -- a total, and the caller can see that from the length."""
+    single = STATS.split("---------- Begin")[1]
+    intervals = gem5_stats.parse_intervals(("---------- Begin" + single).splitlines())
+
+    assert len(intervals) == 1
+
+
+def test_constant_counters_are_dropped():
+    """gem5 emits several hundred; clock periods and configured sizes are
+    identical in every interval and cannot predict anything that changes."""
+    intervals = gem5_stats.parse_intervals(STATS.splitlines())
+
+    varying = gem5_stats.varying_counters(intervals)
+
+    assert "system.clk_domain.clock" not in varying
+    assert "system.cpu.dcache.overallMisses" in varying
+
+
+def test_the_usual_prediction_targets_are_kept_whatever_their_rank():
+    """A trace that omits the thing you want to predict is not usable for
+    prediction, and on the first real trace numCycles did not make the top
+    forty -- it was crowded out by startup events."""
+    intervals = gem5_stats.parse_intervals(STATS.splitlines())
+
+    varying = gem5_stats.varying_counters(intervals)
+
+    assert varying[0] == "system.cpu.numCycles"
+
+
+def test_counters_are_ranked_by_relative_not_absolute_movement():
+    """Misses swing 10 -> 900 -> 20; cycles only 1000 -> 2000. Ranking by raw
+    spread would put cycles first purely for being measured in thousands."""
+    intervals = gem5_stats.parse_intervals(STATS.splitlines())
+
+    unpinned = [
+        n
+        for n in gem5_stats.varying_counters(intervals)
+        if n not in gem5_stats.CYCLE_KEYS
+    ]
+
+    assert unpinned[0] == "system.cpu.dcache.overallMisses"
+
+
+def test_a_counter_that_fires_once_is_an_event_not_a_level():
+    """Program startup fires dozens of these exactly once. Their coefficient
+    of variation is enormous and their predictive value is nil, so ranking by
+    it put the entire startup at the top of the first real trace."""
+    intervals = [
+        {"startup": 80.0},
+        {"startup": 0.0},
+        {"startup": 0.0},
+        {"startup": 0.0},
+    ]
+
+    assert gem5_stats.varying_counters(intervals) == []
+
+
+def test_a_counter_carrying_nan_is_dropped():
+    """gem5 prints nan for a statistic with no samples in an interval -- a
+    rate whose denominator was zero. Carrying it forward poisons every
+    arithmetic downstream, silently."""
+    intervals = [{"a": 1.0, "b": float("nan")}, {"a": 2.0, "b": 3.0}]
+
+    assert gem5_stats.varying_counters(intervals) == ["a"]
+
+
+def test_a_single_interval_has_nothing_to_vary():
+    assert gem5_stats.varying_counters([{"a": 1.0}]) == []
+
+
+def test_series_are_aligned_by_interval():
+    intervals = gem5_stats.parse_intervals(STATS.splitlines())
+
+    series = gem5_stats.as_series(intervals, ["system.cpu.numCycles"])
+
+    assert series["system.cpu.numCycles"] == [1000.0, 2000.0, 1500.0]
+
+
+def test_a_counter_absent_from_an_interval_reads_as_zero():
+    series = gem5_stats.as_series([{"a": 5.0}, {}], ["a"])
+
+    assert series["a"] == [5.0, 0.0]
+
+
+def test_the_sample_macro_is_the_verified_encoding():
+    """m5 pseudo-ops on AArch64 are `0xff000110 | (func << 16)` and
+    DUMP_RESET_STATS is func 0x42. util/m5 is absent from this image -- the
+    gem5 build was stripped to 574 MB -- so the instruction is emitted
+    directly. Verified against the image: four calls produced four stats
+    sections with counts reset between them."""
+    assert "0xff420110" in gem5.M5_SAMPLE_MACRO
+    assert 0xFF000110 | (0x42 << 16) == 0xFF420110
+
+
+def _probe(monkeypatch, returncode=0, stdout="CPP_STATIC_OK\n", stderr="", raises=None):
+    """Seam the sandbox runtime, recording what was asked of the image."""
+    from app.services import agent_sandbox_runtime
+
+    calls = []
+
+    async def _fake(script, workdir, **kwargs):
+        calls.append({"script": script, **kwargs})
+        if raises is not None:
+            raise raises
+        return returncode, stdout, stderr
+
+    monkeypatch.setattr(agent_sandbox_runtime, "run_in_sandbox", _fake)
+    gem5.forget_cpp_support()
+    return calls
+
+
+@pytest.mark.asyncio
+async def test_a_workload_that_never_samples_is_refused():
+    """Without a single M5_SAMPLE() this returns one total and would be read
+    as a trace. Refused before any simulation, so it costs nothing."""
+    result = await gem5.sample_counters(code="int main(void){return 0;}")
+
+    assert result["success"] is False
+    assert "never calls M5_SAMPLE()" in result["error"]
+    assert "one total rather than a trace" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_core_is_refused_with_the_list():
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", cpu_type="M1Ultra"
+    )
+
+    assert result["success"] is False
+    assert "Unknown cpu_type" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_a_staged_file_may_not_escape_the_workspace():
+    """These names come from a caller, and a 'header' called ../../etc is not
+    a header."""
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }",
+        extra_files={"../../etc/passwd": "x"},
+    )
+
+    assert result["success"] is False
+    assert "escapes the workspace" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_include_dir_may_not_escape_the_workspace():
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }",
+        include_dirs=["../../.."],
+    )
+
+    assert result["success"] is False
+    assert "escapes the workspace" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_cpp_refusal_names_the_tool_that_can_and_the_trap(monkeypatch):
+    """Left to the compiler this surfaces as 'g++: not found', an error about a
+    missing binary when the situation may be that this image cannot build C++
+    at all. What the refusal must not do is let a C result quietly stand in."""
+    monkeypatch.setattr(gem5.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        gem5.agent_sandbox_runtime, "allowed_images", lambda: [gem5.DEFAULT_IMAGE]
+    )
+    _probe(monkeypatch, returncode=1, stdout="", stderr="g++: not found")
+
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", language="c++"
+    )
+
+    assert result["success"] is False
+    assert "cannot build a static C++ binary" in result["error"]
+    assert "profile_c_workload" in result["error"], "name the tool that can"
+    assert "do not read a C result as standing in" in result["error"]
+
+
+@pytest.mark.asyncio
+async def test_an_unknown_language_is_refused():
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", language="rust"
+    )
+
+    assert result["success"] is False
+    assert "must be 'c' or 'c++'" in result["error"]
+
+
+def test_smt_carries_the_register_overrides_a_run_needs_to_start():
+    """O3CPU's physical register files are sized for one thread, and running
+    two panics one register class at a time -- a caller discovering this pays
+    a simulator startup per panic."""
+    assert any("numPhysVecPredRegs" in o for o in gem5.SMT_REGISTER_OVERRIDES)
+    assert any("numPhysMatRegs" in o for o in gem5.SMT_REGISTER_OVERRIDES)
+    for override in gem5.SMT_REGISTER_OVERRIDES:
+        assert gem5.SAFE_PARAM.match(override), f"{override} would be rejected"
+
+
+@pytest.mark.asyncio
+async def test_a_co_runner_that_fails_to_compile_says_which_program(monkeypatch):
+    """Two programs are compiled; "compilation failed" without saying which
+    sends the caller to the wrong source.
+
+    A compile failure can only be observed by compiling, so this needs the
+    sandbox seam its siblings use. Without it the test asserted a runtime
+    refusal against a server with execution disabled, and could never pass.
+    """
+    monkeypatch.setattr(gem5.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        gem5.agent_sandbox_runtime, "allowed_images", lambda: [gem5.DEFAULT_IMAGE]
+    )
+    # 93 is the exit status the staged script uses for the co-runner's compile.
+    _probe(monkeypatch, returncode=93, stdout="", stderr="co_runner.c:1: error")
+
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }",
+        co_runner="this is not C at all {{{",
+    )
+
+    assert result["success"] is False
+    assert "co-runner" in result["error"]
+
+
+# --- regime changes --------------------------------------------------------
+
+
+def test_a_trace_that_changes_regime_is_flagged():
+    """The defect a predictor evaluation found. The SMT run's co-runner was
+    present in every interval, so the presence check stayed silent -- it had
+    merely not finished initialising, and the first hundred intervals describe
+    a machine that never recurs. Persistence read 0.843 across that break and
+    0.405 after it."""
+    trace = [131080.0] * 104 + [509338.0] * 297
+
+    regime = gem5.find_regime_change(trace)
+
+    assert regime is not None
+    assert regime["ratio"] > 3.0
+    assert regime["at_interval"] == 104, "the break is located, not just noticed"
+
+
+def test_the_break_is_located_by_homogeneity_not_by_the_first_split_that_fits():
+    """On a clean step every split from the floor onwards separates the two
+    levels and reports the same ratio, so neither criterion locates anything.
+    The break is where the two sides are most internally homogeneous."""
+    early = gem5.find_regime_change([5.0] * 40 + [100.0] * 300)
+    late = gem5.find_regime_change([5.0] * 300 + [100.0] * 40)
+
+    assert early["at_interval"] == 40
+    assert late["at_interval"] == 300
+
+
+def test_a_workload_alternating_between_phases_is_not_a_regime_change():
+    """A workload alternating between two costs is doing what it was written
+    to do. Comparing medians alone condemns it: on a period-two alternation
+    each side's median lands on whichever level holds the majority there, and a
+    one-element parity difference flips it, which read as a clean 9x shift."""
+    assert gem5.find_regime_change([100.0, 900.0] * 100) is None
+    assert gem5.find_regime_change(([100.0] * 20 + [900.0] * 20) * 5) is None
+
+
+def test_a_steady_trace_has_no_regime_change():
+    assert gem5.find_regime_change([100.0 + (i % 7) for i in range(200)]) is None
+
+
+def test_a_trace_too_short_to_have_two_sides_is_not_judged():
+    """Below a floor per side every trace has a regime change at its second
+    sample, which is a statement about the floor and not about the trace."""
+    assert gem5.find_regime_change([1.0] * 10 + [900.0] * 10) is None
+
+
+# --- whether this image can build C++ --------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_the_image_is_asked_whether_it_can_build_cpp(monkeypatch):
+    """It used to be asserted. The refusal named its own fix -- add g++ and
+    libstdc++-static -- and would then have gone on refusing a caller who
+    applied it, because nothing in the code could notice."""
+    calls = _probe(monkeypatch)
+
+    support = await gem5.cpp_support("img")
+
+    assert support["supported"] is True
+    assert "g++" in calls[0]["script"]
+    assert "-static" in calls[0]["script"], (
+        "a compiler without a static libstdc++ fails differently and needs a "
+        "different fix, so the probe must compile rather than look for g++"
+    )
+
+
+@pytest.mark.asyncio
+async def test_an_image_without_a_cpp_toolchain_says_which_part_is_missing(
+    monkeypatch,
+):
+    _probe(monkeypatch, returncode=1, stdout="", stderr="g++: not found")
+
+    support = await gem5.cpp_support("img")
+
+    assert support["supported"] is False
+    assert "g++: not found" in support["detail"]
+
+
+@pytest.mark.asyncio
+async def test_a_definite_answer_is_asked_once(monkeypatch):
+    """It changes only when the image is rebuilt, and the probe is a container
+    start -- paying that per C++ call would be a tax on the fixed case."""
+    calls = _probe(monkeypatch)
+
+    await gem5.cpp_support("img")
+    await gem5.cpp_support("img")
+
+    assert len(calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_a_probe_that_could_not_run_is_not_remembered(monkeypatch):
+    """A docker hiccup must not disable C++ for the life of the process. That
+    is the difference between 'this image cannot' and 'we could not ask'."""
+    calls = _probe(monkeypatch, raises=TimeoutError("docker did not answer"))
+
+    first = await gem5.cpp_support("img")
+    await gem5.cpp_support("img")
+
+    assert first["supported"] is False
+    assert first["probed"] is False
+    assert len(calls) == 2, "an unanswered question is asked again"
+
+
+@pytest.mark.asyncio
+async def test_cpp_is_refused_with_what_the_probe_found(monkeypatch):
+    monkeypatch.setattr(gem5.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        gem5.agent_sandbox_runtime, "allowed_images", lambda: [gem5.DEFAULT_IMAGE]
+    )
+    _probe(monkeypatch, returncode=1, stdout="", stderr="g++: not found")
+
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", language="c++"
+    )
+
+    assert result["success"] is False
+    assert "g++: not found" in result["error"]
+    assert "lifts on its own" in result["error"], (
+        "the refusal must say that fixing the image is enough, because the "
+        "previous one required a code change nobody would remember to make"
+    )
+
+
+@pytest.mark.asyncio
+async def test_cpp_is_accepted_once_the_image_can_build_it(monkeypatch):
+    """The point of the change: no code edit is needed to lift the refusal."""
+    monkeypatch.setattr(gem5.agent_sandbox_runtime, "execution_enabled", lambda: True)
+    monkeypatch.setattr(
+        gem5.agent_sandbox_runtime, "allowed_images", lambda: [gem5.DEFAULT_IMAGE]
+    )
+    # The probe passes; the gem5 run that follows fails, which is fine -- what
+    # matters is that the C++ refusal is no longer what stops it.
+    calls = _probe(monkeypatch, returncode=0, stdout="CPP_STATIC_OK\n")
+
+    result = await gem5.sample_counters(
+        code="int main(void){ M5_SAMPLE(); return 0; }", language="c++"
+    )
+
+    assert "cannot build a static C++ binary" not in str(result.get("error") or "")
+    compiles = [c for c in calls if "workload.cc" in c["script"]]
+    assert compiles, "the workload must be compiled as C++, with g++"
+    assert "g++ " in compiles[0]["script"]
+
+
+def test_the_schema_offers_what_the_service_accepts():
+    """A capability the schema omits does not exist as far as an agent is
+    concerned. co_runner, language, extra_files and include_dirs were all
+    supported by the service and absent from the schema, so SMT experiments
+    and real C++ corpora -- the two things this tool was extended for -- were
+    unreachable from the loop while looking finished from the outside."""
+    import inspect
+
+    from app.services import agent_tools
+
+    schema = [
+        t for t in agent_tools.AGENT_TOOLS if t["name"] == "sample_hardware_counters"
+    ][0]
+    offered = set(schema["parameters"]["properties"])
+    accepted = set(inspect.signature(gem5.sample_counters).parameters)
+
+    # Not every parameter belongs in a model-facing schema: these are set by
+    # the harness or the operator, not decided by a run.
+    internal = {"image", "timeout_seconds", "preflight", "param_overrides", "run_args"}
+    missing = accepted - offered - internal
+
+    assert not missing, f"the service accepts {missing}, the schema does not offer it"
+
+
+def test_the_schema_offers_nothing_the_service_cannot_take():
+    """The other direction: a parameter a model is invited to send and the
+    service drops is a promise the tool does not keep."""
+    import inspect
+
+    from app.services import agent_tools
+
+    schema = [
+        t for t in agent_tools.AGENT_TOOLS if t["name"] == "sample_hardware_counters"
+    ][0]
+    offered = set(schema["parameters"]["properties"])
+    accepted = set(inspect.signature(gem5.sample_counters).parameters)
+
+    assert not (offered - accepted), f"schema offers {offered - accepted}"
+
+
+def test_every_refusal_carries_the_field_callers_check():
+    """One module, one refusal shape.
+
+    These tools return ``success: True`` when they work, so a refusal without
+    ``success`` is not merely inconsistent: anything reading
+    ``result.get("success", True)`` -- or ``result["success"]``, as eight tests
+    here do -- reads the refusal as a success. Eighteen returns were missing
+    it, six of these tests died on the KeyError, and the tools that lost the
+    field were the ones a run reaches first: every argument the caller got
+    wrong.
+    """
+    import ast
+
+    source = Path(gem5.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+    # Helpers whose refusal dicts are returned verbatim by the tools below, so
+    # they carry the tools' contract rather than one of their own.
+    carriers = {
+        "_check_arguments",
+        "_check_environment",
+        "_check_staged_paths",
+        "describe_model_parameters",
+        "simulate_c_workload",
+        "sample_counters",
+    }
+
+    offenders = []
+    for node in ast.walk(tree):
+        if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        if node.name not in carriers:
+            continue
+        for inner in ast.walk(node):
+            if not isinstance(inner, ast.Return) or not isinstance(
+                inner.value, ast.Dict
+            ):
+                continue
+            keys = [k.value for k in inner.value.keys if isinstance(k, ast.Constant)]
+            if "error" in keys and "success" not in keys:
+                offenders.append(f"{node.name}: line {inner.lineno}")
+
+    assert not offenders, (
+        "These refusals omit `success`, so a caller checking it reads them as "
+        "successes:\n" + "\n".join(f"  - {o}" for o in offenders)
+    )

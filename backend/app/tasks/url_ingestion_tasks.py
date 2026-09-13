@@ -66,7 +66,9 @@ def ingest_url(self, request: Dict[str, Any], user_id: str) -> Dict[str, Any]:
     return _run_async(_async_ingest_url(self, request, user_id))
 
 
-async def _async_ingest_url(task, request: Dict[str, Any], user_id: str) -> Dict[str, Any]:
+async def _async_ingest_url(
+    task, request: Dict[str, Any], user_id: str
+) -> Dict[str, Any]:
     task_id = current_task.request.id if current_task else None
     source_key = f"url_ingest:{task_id}" if task_id else "url_ingest:unknown"
 
@@ -81,7 +83,14 @@ async def _async_ingest_url(task, request: Dict[str, Any], user_id: str) -> Dict
         # Best-effort celery state updates for polling clients
         try:
             if isinstance(payload, dict) and "progress" in payload:
-                task.update_state(state="PROGRESS", meta={"progress": payload.get("progress"), "stage": payload.get("stage"), "status": payload.get("status")})
+                task.update_state(
+                    state="PROGRESS",
+                    meta={
+                        "progress": payload.get("progress"),
+                        "stage": payload.get("stage"),
+                        "status": payload.get("status"),
+                    },
+                )
         except Exception:
             pass
 
@@ -118,7 +127,9 @@ async def _async_ingest_url(task, request: Dict[str, Any], user_id: str) -> Dict
                 max_depth=int(request.get("max_depth", 0)),
                 same_domain_only=bool(request.get("same_domain_only", True)),
                 one_document_per_page=bool(request.get("one_document_per_page", False)),
-                allow_private_networks=bool(request.get("allow_private_networks", False)),
+                allow_private_networks=bool(
+                    request.get("allow_private_networks", False)
+                ),
                 max_content_chars=int(request.get("max_content_chars", 50_000)),
                 publish=publish,
                 cancel_check=cancel_check,

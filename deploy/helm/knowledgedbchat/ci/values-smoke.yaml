@@ -1,0 +1,118 @@
+# Values for deploy/smoke-test.sh — a live install that exercises the chart's
+# wiring on a throwaway cluster without needing the application images.
+#
+# Real Postgres/Redis/Qdrant/MinIO/gateway; lightweight stand-ins for the Python
+# app, because the backend image is multi-GB and CI runners are disk-bound. What
+# this proves is the part that broke in practice: hook ordering, Secret ->
+# connection-URL assembly, Service DNS and gateway routing.
+#
+# Not packaged with the chart (.helmignore excludes ci/).
+
+global:
+  storageClass: standard
+
+image:
+  backend:
+    repository: python
+    tag: 3.12-alpine
+    pullPolicy: IfNotPresent
+  frontend:
+    repository: nginx
+    tag: 1.27-alpine
+    pullPolicy: IfNotPresent
+
+backend:
+  replicaCount: 1
+  # Minimal /health server, so Service, probes, gateway /api routing and the
+  # chart's own helm test all run against a real pod.
+  command:
+    - python
+    - -c
+    - |
+      import http.server, os
+      class H(http.server.BaseHTTPRequestHandler):
+          def do_GET(self):
+              body = ("ok " + self.path + "\n").encode()
+              self.send_response(200)
+              self.send_header("Content-Length", str(len(body)))
+              self.end_headers()
+              self.wfile.write(body)
+          def log_message(self, *a): pass
+      http.server.HTTPServer(("0.0.0.0", 8000), H).serve_forever()
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {memory: 256Mi}
+  persistence:
+    enabled: true
+    # ReadWriteOnce, unlike the chart default: this test runs one backend
+    # replica with the workers disabled, so nothing needs shared access, and
+    # local-path provisioners (kind, k3s) reject RWX outright with
+    # "Only support ReadWriteOnce access mode". RWX support is a property of
+    # the cluster's StorageClass, not of the chart.
+    accessMode: ReadWriteOnce
+    size: 1Gi
+
+# Covered by rendering; a stand-in would only prove scheduling.
+celery: {enabled: false}
+celeryBeat: {enabled: false}
+celeryLatex: {enabled: false}
+videoStreamer: {enabled: false}
+kroki: {enabled: false}
+ollama: {enabled: false}
+
+frontend:
+  replicaCount: 1
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+gateway:
+  replicaCount: 1
+  resources:
+    requests: {cpu: 10m, memory: 32Mi}
+    limits: {memory: 128Mi}
+
+postgres:
+  persistence: {size: 1Gi}
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+redis:
+  persistence: {size: 1Gi}
+  resources:
+    requests: {cpu: 25m, memory: 64Mi}
+    limits: {memory: 256Mi}
+qdrant:
+  persistence: {size: 1Gi}
+  resources:
+    requests: {cpu: 50m, memory: 128Mi}
+    limits: {memory: 512Mi}
+minio:
+  persistence: {size: 1Gi}
+  resources:
+    requests: {cpu: 25m, memory: 128Mi}
+    limits: {memory: 512Mi}
+
+# Deliberately not the chart defaults, so the assertions prove the Secret is
+# really the source of these values.
+secrets:
+  secretKey: "smoke-secret-key-0123456789"
+  postgresPassword: "pgP4ss-w0rd_xyz"
+  redisPassword: "redisP4ss-xyz"
+  minioRootUser: "smokeminio"
+  minioRootPassword: "smoke-minio-secret"
+
+migrations:
+  # Prove the assembled DATABASE_URL authenticates, instead of running Alembic
+  # (whose image is not available in this test).
+  image:
+    repository: postgres
+    tag: 15-alpine
+  command:
+    - sh
+    - -c
+    - |
+      set -e
+      echo "DATABASE_URL=$DATABASE_URL"
+      psql "$DATABASE_URL" -c 'select 1 as connected'
+      echo "MIGRATE_JOB_OK"

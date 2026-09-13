@@ -1,14 +1,15 @@
+from datetime import datetime, timezone
+
+from app.models.notification import Notification
 from app.tasks.monitoring_tasks import (
+    _build_experiment_run_notification_action_url,
     _build_policy_guardrail_notification_action_url,
     _build_queue_urgency_notification_action_url,
-    _summarize_policy_guardrail_notification,
     _queue_alert_should_emit,
-    _build_experiment_run_notification_action_url,
-    _summarize_queue_urgency_notification,
     _summarize_experiment_run_notification,
+    _summarize_policy_guardrail_notification,
+    _summarize_queue_urgency_notification,
 )
-from app.models.notification import Notification
-from datetime import datetime, timezone
 
 
 def test_summarize_experiment_run_notification_tracks_open_recovery():
@@ -35,9 +36,11 @@ def test_summarize_experiment_run_notification_tracks_open_recovery():
                     }
                 ],
                 "execution_graph": {
-                    "graph_health": {"reasons": ["fallback verification still failing"]},
+                    "graph_health": {
+                        "reasons": ["fallback verification still failing"]
+                    },
                     "recommended_actions": ["Inspect failing fallback output"],
-                }
+                },
             },
         },
         "failed",
@@ -66,7 +69,10 @@ def test_summarize_experiment_run_notification_tracks_open_recovery():
     assert summary["data"]["latest_operator_status_after"] == "pending"
     assert summary["data"]["latest_operator_at"] == "2026-03-10T01:00:00Z"
     assert summary["data"]["latest_operator_outcome"] == "unresolved"
-    assert summary["data"]["latest_operator_outcome_reason"] == "Job failed after intervention"
+    assert (
+        summary["data"]["latest_operator_outcome_reason"]
+        == "Job failed after intervention"
+    )
 
 
 def test_summarize_experiment_run_notification_tracks_successful_fallback():
@@ -110,7 +116,10 @@ def test_summarize_experiment_run_notification_tracks_successful_fallback():
     assert summary["data"]["latest_operator_status_after"] == "running"
     assert summary["data"]["latest_operator_at"] == "2026-03-10T02:00:00Z"
     assert summary["data"]["latest_operator_outcome"] == "resolved"
-    assert summary["data"]["latest_operator_outcome_reason"] == "Job completed after intervention"
+    assert (
+        summary["data"]["latest_operator_outcome_reason"]
+        == "Job completed after intervention"
+    )
 
 
 def test_build_experiment_run_notification_action_url_prefers_agent_job():
@@ -150,7 +159,10 @@ def test_build_policy_guardrail_notification_action_url_includes_review_context(
         history_entry_id="history-2",
     )
 
-    assert action_url == "/autonomous-agents?tab=queue&queue_item_type=policy_review&job=job-42&policy_history=history-2"
+    assert (
+        action_url
+        == "/autonomous-agents?tab=queue&queue_item_type=policy_review&job=job-42&policy_history=history-2"
+    )
 
 
 def test_summarize_queue_urgency_notification_builds_payload():
@@ -198,7 +210,10 @@ def test_summarize_queue_urgency_notification_builds_payload():
     assert summary["data"]["age_minutes"] == 185
     assert summary["data"]["is_overdue"] is True
     assert summary["data"]["is_stale"] is True
-    assert summary["data"]["evidence_summary"] == "Human approval required before next action."
+    assert (
+        summary["data"]["evidence_summary"]
+        == "Human approval required before next action."
+    )
     assert summary["data"]["scheduler_state"] is not None
     assert summary["data"]["scheduler_state"]["queue_reason"] == "execution_failure"
     assert summary["data"]["scheduler_state"]["failure_streak"] == 3
@@ -227,13 +242,18 @@ def test_summarize_policy_guardrail_notification_builds_payload():
             "title": "Beta Watch",
             "policy_guardrail_action": "rollback",
             "policy_guardrail_target_history_entry_id": "history-2",
-            "policy_guardrail_reasons": ["More accepted items are getting blocked by policy"],
+            "policy_guardrail_reasons": [
+                "More accepted items are getting blocked by policy"
+            ],
             "customer": "Beta",
         }
     )
 
     assert summary["title"] == "Policy safeguard: Beta Watch"
-    assert summary["message"] == "degrading policy evaluation · suggested rollback · customer Beta · More accepted items are getting blocked by policy"
+    assert (
+        summary["message"]
+        == "degrading policy evaluation · suggested rollback · customer Beta · More accepted items are getting blocked by policy"
+    )
     assert summary["priority"] == "high"
     assert summary["data"]["monitor_job_id"] == "job-42"
     assert summary["data"]["history_entry_id"] == "history-2"
@@ -305,7 +325,11 @@ def test_policy_guardrail_alert_should_not_emit_duplicate_state():
     )
 
     should_emit = _queue_alert_should_emit(
-        item={"queue_key": "policy_review:job-1:history-2", "item_type": "policy_review", "sla_bucket": "overdue"},
+        item={
+            "queue_key": "policy_review:job-1:history-2",
+            "item_type": "policy_review",
+            "sla_bucket": "overdue",
+        },
         existing_notifications=[existing],
         reminder_cooldown_hours=6,
         now=datetime(2026, 3, 17, 18, 0, tzinfo=timezone.utc),

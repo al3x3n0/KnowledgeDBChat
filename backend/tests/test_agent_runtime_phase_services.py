@@ -1,16 +1,21 @@
 from datetime import datetime, timedelta
 from types import SimpleNamespace
-from uuid import uuid4
 from unittest.mock import AsyncMock
+from uuid import uuid4
 
 import pytest
 
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.agent_action_service import AgentActionService
 from app.services.agent_observation_service import AgentObservationService
-from app.services.agent_progress_evaluation_service import AgentProgressEvaluationService
+from app.services.agent_progress_evaluation_service import (
+    AgentProgressEvaluationService,
+)
 from app.services.agent_thinking_service import AgentThinkingService
-from app.services.autonomous_agent_executor import AutonomousAgentExecutor, _AutonomousRuntimeAdapter
+from app.services.autonomous_agent_executor import (
+    AutonomousAgentExecutor,
+    _AutonomousRuntimeAdapter,
+)
 
 
 def _make_job(*, job_type: str = "research", config=None) -> AgentJob:
@@ -40,11 +45,18 @@ async def test_observation_service_tracks_data_analysis_runtime():
         ]
     }
     executor._data_analysis_tools[str(job.id)] = SimpleNamespace(
-        list_datasets=lambda: {"count": 2, "datasets": [{"name": "sales"}, {"name": "profit"}]}
+        list_datasets=lambda: {
+            "count": 2,
+            "datasets": [{"name": "sales"}, {"name": "profit"}],
+        }
     )
-    executor._get_execution_graph_runtime_snapshot = lambda runtime_state: {"graph_health": {"score": 1.0}}
+    executor._get_execution_graph_runtime_snapshot = lambda runtime_state: {
+        "graph_health": {"score": 1.0}
+    }
 
-    observation = await AgentObservationService().observe(executor, job, state, db=AsyncMock())
+    observation = await AgentObservationService().observe(
+        executor, job, state, db=AsyncMock()
+    )
 
     assert observation["datasets_loaded"] == 2
     assert observation["charts_created"] == 1
@@ -90,7 +102,10 @@ async def test_action_service_blocks_cross_scope_write():
     result = await service.act(
         executor,
         job,
-        {"tool": "create_document_from_text", "params": {"source_id": "source-b", "text": "hello"}},
+        {
+            "tool": "create_document_from_text",
+            "params": {"source_id": "source-b", "text": "hello"},
+        },
         state,
         db=AsyncMock(),
     )
@@ -114,7 +129,9 @@ async def test_progress_service_marks_research_with_document_artifact_near_done(
         "artifacts": [{"type": "document", "id": "artifact-1"}],
     }
 
-    progress = await service.evaluate_progress(executor, job, state, user_settings=None, db=AsyncMock())
+    progress = await service.evaluate_progress(
+        executor, job, state, user_settings=None, db=AsyncMock()
+    )
 
     assert progress >= 85
 
@@ -130,7 +147,9 @@ async def test_runtime_adapter_observe_phase_uses_observation_service_directly()
             return {"context": [], "iteration": 1}
 
     executor.observation_service = _FakeObservationService()
-    executor._observe = AsyncMock(side_effect=AssertionError("wrapper should not be called"))
+    executor._observe = AsyncMock(
+        side_effect=AssertionError("wrapper should not be called")
+    )
     executor._resolve_default_source_scope = lambda job: None
     executor._resolve_scope_source = lambda job: "none"
     executor._append_scope_event = lambda state, event: None

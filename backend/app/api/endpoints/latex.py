@@ -4,18 +4,19 @@ LaTeX Studio API endpoints (compile + status).
 Security: server-side TeX compilation is disabled by default. Enable only in trusted environments.
 """
 
-import base64
 import asyncio
+import base64
 import hashlib
 import json
 import os
 import re
+import tempfile
 import zipfile
 from datetime import datetime
-import tempfile
 from typing import Any, Dict, List, Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException, UploadFile, File, Form, Request
+
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -25,14 +26,14 @@ from starlette.responses import FileResponse
 from app.core.config import settings
 from app.core.database import get_db
 from app.core.rate_limit import (
-    limiter,
+    LATEX_APPLY_DIFF_LIMIT,
     LATEX_CITATIONS_LIMIT,
     LATEX_COMPILE_LIMIT,
     LATEX_COPILOT_LIMIT,
-    LATEX_PROJECT_FILE_UPLOAD_LIMIT,
     LATEX_EXPORT_LIMIT,
+    LATEX_PROJECT_FILE_UPLOAD_LIMIT,
     LATEX_PUBLISH_LIMIT,
-    LATEX_APPLY_DIFF_LIMIT,
+    limiter,
 )
 from app.models.document import Document
 from app.models.latex_compile_job import LatexCompileJob
@@ -41,49 +42,51 @@ from app.models.latex_project_file import LatexProjectFile
 from app.models.memory import UserPreferences
 from app.models.user import User
 from app.schemas.latex import (
-    LatexCompileRequest,
-    LatexCompileResponse,
-    LatexCopilotSectionRequest,
-    LatexCopilotSectionResponse,
-    LatexCopilotFixRequest,
-    LatexCopilotFixResponse,
-    LatexMathCopilotRequest,
-    LatexMathCopilotResponse,
-    LatexCitationsRequest,
-    LatexCitationsResponse,
     LatexApplyUnifiedDiffRequest,
     LatexApplyUnifiedDiffResponse,
+    LatexCitationsRequest,
+    LatexCitationsResponse,
+    LatexCompileRequest,
+    LatexCompileResponse,
+    LatexCopilotFixRequest,
+    LatexCopilotFixResponse,
+    LatexCopilotSectionRequest,
+    LatexCopilotSectionResponse,
+    LatexMathCopilotRequest,
+    LatexMathCopilotResponse,
     LatexStatusResponse,
 )
-from app.schemas.latex_compile_job import LatexCompileJobCreateRequest, LatexCompileJobResponse
-from app.services.auth_service import get_current_user
-from app.services.latex_compiler_service import LatexSafetyError, latex_compiler_service
-from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.search_service import search_service
-from app.services.storage_service import storage_service
-from app.services.vector_store import vector_store_service
-from app.services.document_service import DocumentService
+from app.schemas.latex_compile_job import (
+    LatexCompileJobCreateRequest,
+    LatexCompileJobResponse,
+)
+from app.schemas.latex_project import (
+    LatexProjectCompileRequest,
+    LatexProjectCompileResponse,
+    LatexProjectCreate,
+    LatexProjectListItem,
+    LatexProjectListResponse,
+    LatexProjectPublishItem,
+    LatexProjectPublishRequest,
+    LatexProjectPublishResponse,
+    LatexProjectPublishSkipped,
+    LatexProjectResponse,
+    LatexProjectUpdate,
+)
 from app.schemas.latex_project_file import (
     LatexProjectFileListResponse,
     LatexProjectFileResponse,
     LatexProjectFileUploadResponse,
 )
-from app.schemas.latex_project import (
-    LatexProjectCompileResponse,
-    LatexProjectCompileRequest,
-    LatexProjectCreate,
-    LatexProjectListItem,
-    LatexProjectListResponse,
-    LatexProjectResponse,
-    LatexProjectPublishItem,
-    LatexProjectPublishRequest,
-    LatexProjectPublishResponse,
-    LatexProjectPublishSkipped,
-    LatexProjectUpdate,
-)
-from app.tasks.latex_tasks import compile_latex_project_job
+from app.services.auth_service import get_current_user
+from app.services.document_service import DocumentService
+from app.services.latex_compiler_service import LatexSafetyError, latex_compiler_service
+from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.search_service import search_service
+from app.services.storage_service import storage_service
 from app.services.unified_diff_service import apply_unified_diff_to_text
-
+from app.services.vector_store import vector_store_service
+from app.tasks.latex_tasks import compile_latex_project_job
 
 router = APIRouter()
 
@@ -139,7 +142,7 @@ async def _build_sources_payload(
                             "excerpt": text,
                         }
                     )
-                    snippet += (text + " ")
+                    snippet += text + " "
                 snippet = snippet.strip()[:max_source_chars]
             except Exception as exc:
                 logger.warning(f"Vector snippet search failed for doc {doc.id}: {exc}")
@@ -169,7 +172,9 @@ async def get_latex_status(
         enabled=bool(settings.LATEX_COMPILER_ENABLED),
         admin_only=bool(settings.LATEX_COMPILER_ADMIN_ONLY),
         use_celery_worker=bool(getattr(settings, "LATEX_COMPILER_USE_CELERY", False)),
-        celery_queue=str(getattr(settings, "LATEX_COMPILER_CELERY_QUEUE", "latex")) if bool(getattr(settings, "LATEX_COMPILER_USE_CELERY", False)) else None,
+        celery_queue=str(getattr(settings, "LATEX_COMPILER_CELERY_QUEUE", "latex"))
+        if bool(getattr(settings, "LATEX_COMPILER_USE_CELERY", False))
+        else None,
         timeout_seconds=int(settings.LATEX_COMPILER_TIMEOUT_SECONDS),
         max_source_chars=int(settings.LATEX_COMPILER_MAX_SOURCE_CHARS),
         available_engines=latex_compiler_service.available_engines(),
@@ -191,7 +196,9 @@ async def compile_latex(
         )
 
     if settings.LATEX_COMPILER_ADMIN_ONLY and (current_user.role or "") != "admin":
-        raise HTTPException(status_code=403, detail="LaTeX compilation is restricted to admins.")
+        raise HTTPException(
+            status_code=403, detail="LaTeX compilation is restricted to admins."
+        )
 
     try:
         result = await asyncio.wait_for(
@@ -292,7 +299,9 @@ async def latex_copilot_section(
     documents: List[Document] = []
     if doc_ids:
         result = await db.execute(select(Document).where(Document.id.in_(doc_ids)))
-        documents_by_id: Dict[str, Document] = {str(d.id): d for d in result.scalars().all()}
+        documents_by_id: Dict[str, Document] = {
+            str(d.id): d for d in result.scalars().all()
+        }
         for doc_id in doc_ids:
             doc = documents_by_id.get(str(doc_id))
             if doc:
@@ -320,7 +329,11 @@ async def latex_copilot_section(
         sources_block_lines.append(
             f"Source {i} (key={key})\nTitle: {title}\nURL: {url if url else 'N/A'}\nSnippet: {snippet}"
         )
-    sources_block = "\n\n---\n\n".join(sources_block_lines) if sources_block_lines else "No sources found."
+    sources_block = (
+        "\n\n---\n\n".join(sources_block_lines)
+        if sources_block_lines
+        else "No sources found."
+    )
 
     citation_mode = (payload.citation_mode or "thebibliography").strip().lower()
     citation_instructions = ""
@@ -357,7 +370,9 @@ async def latex_copilot_section(
 
     user_settings: Optional[UserLLMSettings] = None
     try:
-        prefs_result = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+        prefs_result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
         user_prefs = prefs_result.scalar_one_or_none()
         if user_prefs:
             user_settings = UserLLMSettings.from_preferences(user_prefs)
@@ -448,7 +463,9 @@ async def latex_copilot_fix(
 
     user_settings: Optional[UserLLMSettings] = None
     try:
-        prefs_result = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+        prefs_result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
         user_prefs = prefs_result.scalar_one_or_none()
         if user_prefs:
             user_settings = UserLLMSettings.from_preferences(user_prefs)
@@ -479,7 +496,9 @@ async def latex_copilot_fix(
 
     unsafe_warnings = latex_compiler_service.check_safe_mode(fixed)
     if safe_mode and unsafe_warnings:
-        notes = (notes + "\n\n" if notes else "") + "Warning: proposed fix may violate safe mode."
+        notes = (
+            notes + "\n\n" if notes else ""
+        ) + "Warning: proposed fix may violate safe mode."
 
     return LatexCopilotFixResponse(
         tex_source_fixed=fixed,
@@ -504,7 +523,9 @@ async def latex_math_copilot(
     if mode not in {"analyze", "autocomplete"}:
         mode = "analyze"
 
-    goal = (payload.goal or "").strip() or "Standardize math notation and fix equation references."
+    goal = (
+        payload.goal or ""
+    ).strip() or "Standardize math notation and fix equation references."
     selection = (payload.selection or "").strip()
     cursor_context = (payload.cursor_context or "").strip()
 
@@ -515,10 +536,16 @@ async def latex_math_copilot(
     # Quick static scan for equation/ref issues to ground the copilot.
     label_re = re.compile(r"\\label\{([^}]+)\}")
     ref_re = re.compile(r"\\(?:eqref|ref)\{([^}]+)\}")
-    begin_env_re = re.compile(r"\\begin\{(equation\*?|align\*?|gather\*?|multline\*?|eqnarray\*?)\}")
-    end_env_re = re.compile(r"\\end\{(equation\*?|align\*?|gather\*?|multline\*?|eqnarray\*?)\}")
+    begin_env_re = re.compile(
+        r"\\begin\{(equation\*?|align\*?|gather\*?|multline\*?|eqnarray\*?)\}"
+    )
+    end_env_re = re.compile(
+        r"\\end\{(equation\*?|align\*?|gather\*?|multline\*?|eqnarray\*?)\}"
+    )
 
-    labels = set(m.group(1).strip() for m in label_re.finditer(tex_trim) if m.group(1).strip())
+    labels = set(
+        m.group(1).strip() for m in label_re.finditer(tex_trim) if m.group(1).strip()
+    )
     refs = [m.group(1).strip() for m in ref_re.finditer(tex_trim) if m.group(1).strip()]
     missing_refs = sorted({r for r in refs if r not in labels})[:50]
 
@@ -544,7 +571,9 @@ async def latex_math_copilot(
         end = j if j < len(lines) else min(len(lines) - 1, start + 20)
         if not has_label:
             snippet = "\n".join(lines[start : min(end + 1, start + 8)])
-            missing_label_envs.append({"env": env, "start_line": start + 1, "snippet": snippet})
+            missing_label_envs.append(
+                {"env": env, "start_line": start + 1, "snippet": snippet}
+            )
         i = (j + 1) if j > i else (i + 1)
         if len(missing_label_envs) >= 30:
             break
@@ -552,7 +581,9 @@ async def latex_math_copilot(
     # Style heuristics (very rough)
     uses_boldsymbol = tex_trim.count(r"\boldsymbol")
     uses_mathbf = tex_trim.count(r"\mathbf")
-    uses_siunitx = (r"\SI{" in tex_trim) or (r"\si{" in tex_trim) or ("siunitx" in tex_trim)
+    uses_siunitx = (
+        (r"\SI{" in tex_trim) or (r"\si{" in tex_trim) or ("siunitx" in tex_trim)
+    )
 
     analysis = {
         "missing_refs": missing_refs,
@@ -565,7 +596,9 @@ async def latex_math_copilot(
         "preferences": {
             "enforce_siunitx": bool(payload.enforce_siunitx),
             "enforce_shapes": bool(payload.enforce_shapes),
-            "enforce_bold_italic_conventions": bool(payload.enforce_bold_italic_conventions),
+            "enforce_bold_italic_conventions": bool(
+                payload.enforce_bold_italic_conventions
+            ),
             "enforce_equation_labels": bool(payload.enforce_equation_labels),
         },
     }
@@ -618,7 +651,9 @@ async def latex_math_copilot(
 
     user_settings: Optional[UserLLMSettings] = None
     try:
-        prefs_result = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+        prefs_result = await db.execute(
+            select(UserPreferences).where(UserPreferences.user_id == current_user.id)
+        )
         user_prefs = prefs_result.scalar_one_or_none()
         if user_prefs:
             user_settings = UserLLMSettings.from_preferences(user_prefs)
@@ -639,10 +674,16 @@ async def latex_math_copilot(
         data = _extract_json(response_text)
     except Exception as exc:
         logger.error(f"LaTeX math copilot failed: {exc}")
-        raise HTTPException(status_code=500, detail="LaTeX math copilot failed") from exc
+        raise HTTPException(
+            status_code=500, detail="LaTeX math copilot failed"
+        ) from exc
 
-    conventions = data.get("conventions") if isinstance(data.get("conventions"), dict) else {}
-    suggestions = data.get("suggestions") if isinstance(data.get("suggestions"), list) else []
+    conventions = (
+        data.get("conventions") if isinstance(data.get("conventions"), dict) else {}
+    )
+    suggestions = (
+        data.get("suggestions") if isinstance(data.get("suggestions"), list) else []
+    )
     notes = str(data.get("notes") or "").strip()
     diff_unified = str(data.get("diff_unified") or "").strip()
     if mode == "autocomplete":
@@ -653,9 +694,13 @@ async def latex_math_copilot(
     patched_sha: Optional[str] = None
     tex_patched: Optional[str] = None
     diff_warnings: List[str] = []
-    if diff_unified and ("--- " in diff_unified and "+++ " in diff_unified and "@@ " in diff_unified):
+    if diff_unified and (
+        "--- " in diff_unified and "+++ " in diff_unified and "@@ " in diff_unified
+    ):
         try:
-            patched, warnings = apply_unified_diff_to_text(original=tex_source, diff_unified=diff_unified)
+            patched, warnings = apply_unified_diff_to_text(
+                original=tex_source, diff_unified=diff_unified
+            )
             diff_applies = True
             patched_sha = hashlib.sha256(patched.encode("utf-8")).hexdigest()
             if bool(payload.return_patched_source):
@@ -668,7 +713,8 @@ async def latex_math_copilot(
     return LatexMathCopilotResponse(
         conventions={str(k): str(v) for k, v in conventions.items()},
         suggestions=[
-            {str(kk): str(vv) for kk, vv in (s.items() if isinstance(s, dict) else [])} for s in suggestions[:50]
+            {str(kk): str(vv) for kk, vv in (s.items() if isinstance(s, dict) else [])}
+            for s in suggestions[:50]
         ],
         diff_unified=diff_unified,
         notes=notes,
@@ -742,7 +788,9 @@ def _extract_arxiv_id(url: str) -> Optional[str]:
     u = (url or "").strip()
     if not u:
         return None
-    m = re.search(r"arxiv\.org/(abs|pdf)/(?P<id>\d{4}\.\d{4,5}(v\d+)?)(?:\.pdf)?", u, flags=re.I)
+    m = re.search(
+        r"arxiv\.org/(abs|pdf)/(?P<id>\d{4}\.\d{4,5}(v\d+)?)(?:\.pdf)?", u, flags=re.I
+    )
     if not m:
         return None
     return (m.group("id") or "").strip() or None
@@ -801,7 +849,9 @@ async def generate_latex_citations_from_documents(
         if d:
             docs.append(d)
     if not docs:
-        raise HTTPException(status_code=404, detail="No documents found for provided IDs")
+        raise HTTPException(
+            status_code=404, detail="No documents found for provided IDs"
+        )
 
     mode = (payload.mode or "bibtex").strip().lower()
     bib_filename = _sanitize_bib_filename(payload.bib_filename)
@@ -820,7 +870,9 @@ async def generate_latex_citations_from_documents(
     references_tex = ""
 
     if mode == "bibtex":
-        bibliography_scaffold = "\\bibliographystyle{plain}\n\\bibliography{" + stem + "}"
+        bibliography_scaffold = (
+            "\\bibliographystyle{plain}\n\\bibliography{" + stem + "}"
+        )
         entries: List[str] = []
         for d in docs:
             key = cite_keys_by_doc_id[str(d.id)]
@@ -899,7 +951,9 @@ async def generate_latex_citations_from_documents(
     )
 
 
-def _project_to_response(p: LatexProject, *, pdf_download_url: Optional[str] = None) -> LatexProjectResponse:
+def _project_to_response(
+    p: LatexProject, *, pdf_download_url: Optional[str] = None
+) -> LatexProjectResponse:
     return LatexProjectResponse(
         id=p.id,
         user_id=p.user_id,
@@ -932,7 +986,6 @@ def _safe_unlink(path: str) -> None:
         logger.warning(f"Failed to remove temp file {path}: {exc}")
 
 
-
 @router.get("/projects", response_model=LatexProjectListResponse)
 async def list_latex_projects(
     limit: int = 50,
@@ -948,8 +1001,13 @@ async def list_latex_projects(
         offset = 0
 
     base = select(LatexProject).where(LatexProject.user_id == current_user.id)
-    total = int((await db.execute(select(func.count()).select_from(base.subquery()))).scalar() or 0)
-    result = await db.execute(base.order_by(LatexProject.updated_at.desc()).offset(offset).limit(limit))
+    total = int(
+        (await db.execute(select(func.count()).select_from(base.subquery()))).scalar()
+        or 0
+    )
+    result = await db.execute(
+        base.order_by(LatexProject.updated_at.desc()).offset(offset).limit(limit)
+    )
     items = [
         LatexProjectListItem(
             id=p.id,
@@ -959,7 +1017,9 @@ async def list_latex_projects(
         )
         for p in result.scalars().all()
     ]
-    return LatexProjectListResponse(items=items, total=total, limit=limit, offset=offset)
+    return LatexProjectListResponse(
+        items=items, total=total, limit=limit, offset=offset
+    )
 
 
 @router.post("/projects", response_model=LatexProjectResponse, status_code=201)
@@ -989,7 +1049,9 @@ async def create_latex_project(
         await db.commit()
         await db.refresh(project)
     except Exception as exc:
-        logger.warning(f"Failed to upload LaTeX source to MinIO for project {project.id}: {exc}")
+        logger.warning(
+            f"Failed to upload LaTeX source to MinIO for project {project.id}: {exc}"
+        )
 
     return _project_to_response(project)
 
@@ -1027,11 +1089,15 @@ async def export_latex_project_zip(
         raise HTTPException(status_code=404, detail="LaTeX project not found")
 
     export_name = _sanitize_export_basename(project.title or "latex_project")
-    tmp = tempfile.NamedTemporaryFile(prefix="latex_project_", suffix=".zip", delete=False)
+    tmp = tempfile.NamedTemporaryFile(
+        prefix="latex_project_", suffix=".zip", delete=False
+    )
     tmp_path = tmp.name
     tmp.close()
 
-    files_result = await db.execute(select(LatexProjectFile).where(LatexProjectFile.project_id == project.id))
+    files_result = await db.execute(
+        select(LatexProjectFile).where(LatexProjectFile.project_id == project.id)
+    )
     files = list(files_result.scalars().all())
 
     missing: List[str] = []
@@ -1042,7 +1108,9 @@ async def export_latex_project_zip(
         # Best-effort: include last compiled PDF if present.
         if project.pdf_file_path:
             try:
-                pdf_bytes = await storage_service.get_file_content(project.pdf_file_path)
+                pdf_bytes = await storage_service.get_file_content(
+                    project.pdf_file_path
+                )
                 if pdf_bytes:
                     zf.writestr("paper.pdf", pdf_bytes)
             except Exception:
@@ -1077,7 +1145,10 @@ async def export_latex_project_zip(
             "- or tectonic: tectonic paper.tex",
         ]
         if missing:
-            readme_lines += ["", "Missing from export (could not be fetched from storage):"] + [f"- {x}" for x in sorted(set(missing))]
+            readme_lines += [
+                "",
+                "Missing from export (could not be fetched from storage):",
+            ] + [f"- {x}" for x in sorted(set(missing))]
         zf.writestr("README.txt", "\n".join(readme_lines) + "\n")
 
     return FileResponse(
@@ -1088,7 +1159,9 @@ async def export_latex_project_zip(
     )
 
 
-def _project_file_to_response(f: LatexProjectFile, *, download_url: Optional[str] = None) -> LatexProjectFileResponse:
+def _project_file_to_response(
+    f: LatexProjectFile, *, download_url: Optional[str] = None
+) -> LatexProjectFileResponse:
     return LatexProjectFileResponse(
         id=f.id,
         project_id=f.project_id,
@@ -1102,7 +1175,9 @@ def _project_file_to_response(f: LatexProjectFile, *, download_url: Optional[str
     )
 
 
-def _compile_job_to_response(j: LatexCompileJob, *, pdf_download_url: Optional[str] = None) -> LatexCompileJobResponse:
+def _compile_job_to_response(
+    j: LatexCompileJob, *, pdf_download_url: Optional[str] = None
+) -> LatexCompileJobResponse:
     return LatexCompileJobResponse(
         id=j.id,
         project_id=j.project_id,
@@ -1131,7 +1206,11 @@ async def list_latex_project_files(
     if not project or project.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="LaTeX project not found")
 
-    result = await db.execute(select(LatexProjectFile).where(LatexProjectFile.project_id == project_id).order_by(LatexProjectFile.created_at.desc()))
+    result = await db.execute(
+        select(LatexProjectFile)
+        .where(LatexProjectFile.project_id == project_id)
+        .order_by(LatexProjectFile.created_at.desc())
+    )
     files = list(result.scalars().all())
     items: List[LatexProjectFileResponse] = []
     for f in files:
@@ -1163,7 +1242,10 @@ async def get_latex_compile_job(
 
     return _compile_job_to_response(job, pdf_download_url=url)
 
-@router.post("/projects/{project_id}/files", response_model=LatexProjectFileUploadResponse)
+
+@router.post(
+    "/projects/{project_id}/files", response_model=LatexProjectFileUploadResponse
+)
 @limiter.limit(LATEX_PROJECT_FILE_UPLOAD_LIMIT)
 async def upload_latex_project_file(
     request: Request,
@@ -1181,7 +1263,9 @@ async def upload_latex_project_file(
     if not filename:
         raise HTTPException(status_code=400, detail="Missing filename")
     if "/" in filename or "\\" in filename:
-        raise HTTPException(status_code=400, detail="Filenames must not contain path separators")
+        raise HTTPException(
+            status_code=400, detail="Filenames must not contain path separators"
+        )
 
     ext = filename.lower().rsplit(".", 1)[-1] if "." in filename else ""
     allowed_ext = {"png", "jpg", "jpeg", "pdf", "bib", "tex"}
@@ -1192,7 +1276,10 @@ async def upload_latex_project_file(
     if not data:
         raise HTTPException(status_code=400, detail="Empty file")
     if len(data) > int(settings.LATEX_PROJECT_MAX_FILE_SIZE):
-        raise HTTPException(status_code=413, detail=f"File too large (max {settings.LATEX_PROJECT_MAX_FILE_SIZE} bytes)")
+        raise HTTPException(
+            status_code=413,
+            detail=f"File too large (max {settings.LATEX_PROJECT_MAX_FILE_SIZE} bytes)",
+        )
 
     sha = hashlib.sha256(data).hexdigest()
     object_path = await storage_service.upload_file(
@@ -1205,7 +1292,8 @@ async def upload_latex_project_file(
     existing = (
         await db.execute(
             select(LatexProjectFile).where(
-                (LatexProjectFile.project_id == project.id) & (LatexProjectFile.filename == filename)
+                (LatexProjectFile.project_id == project.id)
+                & (LatexProjectFile.filename == filename)
             )
         )
     ).scalar_one_or_none()
@@ -1213,7 +1301,9 @@ async def upload_latex_project_file(
     replaced = False
     if existing:
         if not replace:
-            raise HTTPException(status_code=409, detail="A file with this name already exists")
+            raise HTTPException(
+                status_code=409, detail="A file with this name already exists"
+            )
         replaced = True
         existing.content_type = file.content_type
         existing.file_size = len(data)
@@ -1222,7 +1312,9 @@ async def upload_latex_project_file(
         await db.commit()
         await db.refresh(existing)
         url = await storage_service.get_presigned_url(existing.file_path)
-        return LatexProjectFileUploadResponse(file=_project_file_to_response(existing, download_url=url), replaced=True)
+        return LatexProjectFileUploadResponse(
+            file=_project_file_to_response(existing, download_url=url), replaced=True
+        )
 
     rec = LatexProjectFile(
         project_id=project.id,
@@ -1236,7 +1328,9 @@ async def upload_latex_project_file(
     await db.commit()
     await db.refresh(rec)
     url = await storage_service.get_presigned_url(rec.file_path)
-    return LatexProjectFileUploadResponse(file=_project_file_to_response(rec, download_url=url), replaced=replaced)
+    return LatexProjectFileUploadResponse(
+        file=_project_file_to_response(rec, download_url=url), replaced=replaced
+    )
 
 
 @router.delete("/projects/{project_id}/files/{file_id}", status_code=204)
@@ -1296,12 +1390,17 @@ async def update_latex_project(
         await db.commit()
         await db.refresh(project)
     except Exception as exc:
-        logger.warning(f"Failed to upload LaTeX source to MinIO for project {project.id}: {exc}")
+        logger.warning(
+            f"Failed to upload LaTeX source to MinIO for project {project.id}: {exc}"
+        )
 
     return _project_to_response(project)
 
 
-@router.post("/projects/{project_id}/apply-unified-diff", response_model=LatexApplyUnifiedDiffResponse)
+@router.post(
+    "/projects/{project_id}/apply-unified-diff",
+    response_model=LatexApplyUnifiedDiffResponse,
+)
 @limiter.limit(LATEX_APPLY_DIFF_LIMIT)
 async def apply_latex_project_unified_diff(
     request: Request,
@@ -1316,14 +1415,20 @@ async def apply_latex_project_unified_diff(
 
     base_tex = (project.tex_source or "").replace("\r\n", "\n")
     base_sha = hashlib.sha256(base_tex.encode("utf-8")).hexdigest()
-    if payload.expected_base_sha256 and payload.expected_base_sha256.strip() and payload.expected_base_sha256 != base_sha:
+    if (
+        payload.expected_base_sha256
+        and payload.expected_base_sha256.strip()
+        and payload.expected_base_sha256 != base_sha
+    ):
         raise HTTPException(
             status_code=409,
             detail="paper.tex changed since diff was generated (expected_base_sha256 mismatch). Refresh and try again.",
         )
 
     try:
-        patched, warnings = apply_unified_diff_to_text(original=base_tex, diff_unified=payload.diff_unified)
+        patched, warnings = apply_unified_diff_to_text(
+            original=base_tex, diff_unified=payload.diff_unified
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
@@ -1353,7 +1458,9 @@ async def apply_latex_project_unified_diff(
         await db.commit()
         await db.refresh(project)
     except Exception as exc:
-        logger.warning(f"Failed to upload updated LaTeX source to MinIO for project {project.id}: {exc}")
+        logger.warning(
+            f"Failed to upload updated LaTeX source to MinIO for project {project.id}: {exc}"
+        )
 
     return LatexApplyUnifiedDiffResponse(
         applied=True,
@@ -1378,7 +1485,11 @@ async def delete_latex_project(
     return None
 
 
-@router.post("/projects/{project_id}/compile-jobs", response_model=LatexCompileJobResponse, status_code=201)
+@router.post(
+    "/projects/{project_id}/compile-jobs",
+    response_model=LatexCompileJobResponse,
+    status_code=201,
+)
 @limiter.limit(LATEX_COMPILE_LIMIT)
 async def create_latex_project_compile_job(
     request: Request,
@@ -1397,7 +1508,9 @@ async def create_latex_project_compile_job(
             detail="LaTeX compiler is disabled on the server. Set LATEX_COMPILER_ENABLED=true to enable.",
         )
     if settings.LATEX_COMPILER_ADMIN_ONLY and (current_user.role or "") != "admin":
-        raise HTTPException(status_code=403, detail="LaTeX compilation is restricted to admins.")
+        raise HTTPException(
+            status_code=403, detail="LaTeX compilation is restricted to admins."
+        )
     if not bool(getattr(settings, "LATEX_COMPILER_USE_CELERY", False)):
         raise HTTPException(
             status_code=503,
@@ -1417,7 +1530,9 @@ async def create_latex_project_compile_job(
 
     queue = str(getattr(settings, "LATEX_COMPILER_CELERY_QUEUE", "latex") or "latex")
     try:
-        async_result = compile_latex_project_job.apply_async(args=[str(job.id)], queue=queue)
+        async_result = compile_latex_project_job.apply_async(
+            args=[str(job.id)], queue=queue
+        )
         job.celery_task_id = async_result.id
         await db.commit()
         await db.refresh(job)
@@ -1432,7 +1547,9 @@ async def create_latex_project_compile_job(
     return _compile_job_to_response(job)
 
 
-@router.post("/projects/{project_id}/compile", response_model=LatexProjectCompileResponse)
+@router.post(
+    "/projects/{project_id}/compile", response_model=LatexProjectCompileResponse
+)
 @limiter.limit(LATEX_COMPILE_LIMIT)
 async def compile_latex_project(
     request: Request,
@@ -1451,17 +1568,23 @@ async def compile_latex_project(
             detail="LaTeX compiler is disabled on the server. Set LATEX_COMPILER_ENABLED=true to enable.",
         )
     if settings.LATEX_COMPILER_ADMIN_ONLY and (current_user.role or "") != "admin":
-        raise HTTPException(status_code=403, detail="LaTeX compilation is restricted to admins.")
+        raise HTTPException(
+            status_code=403, detail="LaTeX compilation is restricted to admins."
+        )
 
     additional_files: Dict[str, bytes] = {}
     try:
-        files_result = await db.execute(select(LatexProjectFile).where(LatexProjectFile.project_id == project.id))
+        files_result = await db.execute(
+            select(LatexProjectFile).where(LatexProjectFile.project_id == project.id)
+        )
         for f in files_result.scalars().all():
             name = (f.filename or "").strip()
             if not name or "/" in name or "\\" in name:
                 continue
             try:
-                additional_files[name] = await storage_service.get_file_content(f.file_path)
+                additional_files[name] = await storage_service.get_file_content(
+                    f.file_path
+                )
             except Exception:
                 continue
     except Exception:
@@ -1551,7 +1674,9 @@ async def compile_latex_project(
         )
 
 
-@router.post("/projects/{project_id}/publish", response_model=LatexProjectPublishResponse)
+@router.post(
+    "/projects/{project_id}/publish", response_model=LatexProjectPublishResponse
+)
 @limiter.limit(LATEX_PUBLISH_LIMIT)
 async def publish_latex_project(
     request: Request,
@@ -1567,16 +1692,26 @@ async def publish_latex_project(
     document_service = DocumentService()
 
     if not (payload.include_tex or payload.include_pdf):
-        raise HTTPException(status_code=400, detail="Nothing to publish (include_tex/include_pdf are both false).")
+        raise HTTPException(
+            status_code=400,
+            detail="Nothing to publish (include_tex/include_pdf are both false).",
+        )
 
     if payload.include_tex and not (project.tex_source or "").strip():
-        raise HTTPException(status_code=400, detail="Project has empty LaTeX source; cannot publish .tex.")
+        raise HTTPException(
+            status_code=400,
+            detail="Project has empty LaTeX source; cannot publish .tex.",
+        )
 
     published: List[LatexProjectPublishItem] = []
     skipped: List[LatexProjectPublishSkipped] = []
 
     tags = payload.tags if isinstance(payload.tags, list) else None
-    author = (getattr(current_user, "full_name", None) or getattr(current_user, "username", None) or getattr(current_user, "email", None))
+    author = (
+        getattr(current_user, "full_name", None)
+        or getattr(current_user, "username", None)
+        or getattr(current_user, "email", None)
+    )
 
     source = await document_service._get_or_create_latex_projects_source(db)
 
@@ -1599,7 +1734,8 @@ async def publish_latex_project(
             existing = (
                 await db.execute(
                     select(Document).where(
-                        (Document.source_id == source.id) & (Document.source_identifier == source_identifier)
+                        (Document.source_id == source.id)
+                        & (Document.source_identifier == source_identifier)
                     )
                 )
             ).scalar_one_or_none()
@@ -1647,9 +1783,13 @@ async def publish_latex_project(
                 await db.refresh(tex_doc)
 
             try:
-                await document_service.reprocess_document(tex_doc.id, db, user_id=current_user.id)
+                await document_service.reprocess_document(
+                    tex_doc.id, db, user_id=current_user.id
+                )
             except Exception as exc:
-                logger.warning(f"Failed to index published LaTeX source doc {tex_doc.id}: {exc}")
+                logger.warning(
+                    f"Failed to index published LaTeX source doc {tex_doc.id}: {exc}"
+                )
 
             published.append(
                 LatexProjectPublishItem(
@@ -1661,32 +1801,55 @@ async def publish_latex_project(
                 )
             )
         except Exception as exc:
-            logger.error(f"Failed to publish LaTeX source for project {project.id}: {exc}")
-            skipped.append(LatexProjectPublishSkipped(kind="tex", reason="Failed to publish LaTeX source"))
+            logger.error(
+                f"Failed to publish LaTeX source for project {project.id}: {exc}"
+            )
+            skipped.append(
+                LatexProjectPublishSkipped(
+                    kind="tex", reason="Failed to publish LaTeX source"
+                )
+            )
     else:
-        skipped.append(LatexProjectPublishSkipped(kind="tex", reason="Disabled by request"))
+        skipped.append(
+            LatexProjectPublishSkipped(kind="tex", reason="Disabled by request")
+        )
 
     # Ensure PDF exists (compile if needed) and publish it.
     if payload.include_pdf:
         if not project.pdf_file_path:
             if not settings.LATEX_COMPILER_ENABLED:
-                skipped.append(LatexProjectPublishSkipped(kind="pdf", reason="Compiler disabled; no PDF to publish"))
-            elif settings.LATEX_COMPILER_ADMIN_ONLY and (current_user.role or "") != "admin":
-                skipped.append(LatexProjectPublishSkipped(kind="pdf", reason="Compile is admin-only; no PDF to publish"))
+                skipped.append(
+                    LatexProjectPublishSkipped(
+                        kind="pdf", reason="Compiler disabled; no PDF to publish"
+                    )
+                )
+            elif (
+                settings.LATEX_COMPILER_ADMIN_ONLY
+                and (current_user.role or "") != "admin"
+            ):
+                skipped.append(
+                    LatexProjectPublishSkipped(
+                        kind="pdf", reason="Compile is admin-only; no PDF to publish"
+                    )
+                )
             else:
                 try:
                     # Include project files when compiling during publish.
                     additional_files: Dict[str, bytes] = {}
                     try:
                         files_result = await db.execute(
-                            select(LatexProjectFile).where(LatexProjectFile.project_id == project.id)
+                            select(LatexProjectFile).where(
+                                LatexProjectFile.project_id == project.id
+                            )
                         )
                         for f in files_result.scalars().all():
                             name = (f.filename or "").strip()
                             if not name or "/" in name or "\\" in name:
                                 continue
                             try:
-                                additional_files[name] = await storage_service.get_file_content(f.file_path)
+                                additional_files[
+                                    name
+                                ] = await storage_service.get_file_content(f.file_path)
                             except Exception:
                                 continue
                     except Exception:
@@ -1696,8 +1859,12 @@ async def publish_latex_project(
                         asyncio.to_thread(
                             latex_compiler_service.compile_to_pdf,
                             tex_source=project.tex_source,
-                            timeout_seconds=int(settings.LATEX_COMPILER_TIMEOUT_SECONDS),
-                            max_source_chars=int(settings.LATEX_COMPILER_MAX_SOURCE_CHARS),
+                            timeout_seconds=int(
+                                settings.LATEX_COMPILER_TIMEOUT_SECONDS
+                            ),
+                            max_source_chars=int(
+                                settings.LATEX_COMPILER_MAX_SOURCE_CHARS
+                            ),
                             safe_mode=bool(payload.safe_mode),
                             preferred_engine=None,
                             additional_files=additional_files or None,
@@ -1718,16 +1885,32 @@ async def publish_latex_project(
                         await db.commit()
                         await db.refresh(project)
                     else:
-                        skipped.append(LatexProjectPublishSkipped(kind="pdf", reason="PDF compilation failed"))
+                        skipped.append(
+                            LatexProjectPublishSkipped(
+                                kind="pdf", reason="PDF compilation failed"
+                            )
+                        )
                 except LatexSafetyError as exc:
-                    skipped.append(LatexProjectPublishSkipped(kind="pdf", reason=f"Unsafe LaTeX blocked: {exc}"))
+                    skipped.append(
+                        LatexProjectPublishSkipped(
+                            kind="pdf", reason=f"Unsafe LaTeX blocked: {exc}"
+                        )
+                    )
                 except Exception as exc:
-                    logger.error(f"Failed to compile PDF for publish (project {project.id}): {exc}")
-                    skipped.append(LatexProjectPublishSkipped(kind="pdf", reason="Failed to compile PDF"))
+                    logger.error(
+                        f"Failed to compile PDF for publish (project {project.id}): {exc}"
+                    )
+                    skipped.append(
+                        LatexProjectPublishSkipped(
+                            kind="pdf", reason="Failed to compile PDF"
+                        )
+                    )
 
         if project.pdf_file_path:
             try:
-                pdf_bytes = await storage_service.get_file_content(project.pdf_file_path)
+                pdf_bytes = await storage_service.get_file_content(
+                    project.pdf_file_path
+                )
                 pdf_hash = hashlib.sha256(pdf_bytes).hexdigest()
 
                 extracted_text = ""
@@ -1735,19 +1918,25 @@ async def publish_latex_project(
                     with tempfile.NamedTemporaryFile(suffix=".pdf", delete=True) as tmp:
                         tmp.write(pdf_bytes)
                         tmp.flush()
-                        extracted_text, _ = await document_service.text_processor.extract_text(
+                        (
+                            extracted_text,
+                            _,
+                        ) = await document_service.text_processor.extract_text(
                             tmp.name,
                             content_type="application/pdf",
                         )
                 except Exception as exc:
-                    logger.warning(f"PDF text extraction failed for project {project.id}: {exc}")
+                    logger.warning(
+                        f"PDF text extraction failed for project {project.id}: {exc}"
+                    )
                     extracted_text = ""
 
                 source_identifier = f"latex_project:{project.id}:pdf"
                 existing = (
                     await db.execute(
                         select(Document).where(
-                            (Document.source_id == source.id) & (Document.source_identifier == source_identifier)
+                            (Document.source_id == source.id)
+                            & (Document.source_identifier == source_identifier)
                         )
                     )
                 ).scalar_one_or_none()
@@ -1795,9 +1984,13 @@ async def publish_latex_project(
                     await db.refresh(pdf_doc)
 
                 try:
-                    await document_service.reprocess_document(pdf_doc.id, db, user_id=current_user.id)
+                    await document_service.reprocess_document(
+                        pdf_doc.id, db, user_id=current_user.id
+                    )
                 except Exception as exc:
-                    logger.warning(f"Failed to index published PDF doc {pdf_doc.id}: {exc}")
+                    logger.warning(
+                        f"Failed to index published PDF doc {pdf_doc.id}: {exc}"
+                    )
 
                 published.append(
                     LatexProjectPublishItem(
@@ -1810,8 +2003,16 @@ async def publish_latex_project(
                 )
             except Exception as exc:
                 logger.error(f"Failed to publish PDF for project {project.id}: {exc}")
-                skipped.append(LatexProjectPublishSkipped(kind="pdf", reason="Failed to publish PDF"))
+                skipped.append(
+                    LatexProjectPublishSkipped(
+                        kind="pdf", reason="Failed to publish PDF"
+                    )
+                )
     else:
-        skipped.append(LatexProjectPublishSkipped(kind="pdf", reason="Disabled by request"))
+        skipped.append(
+            LatexProjectPublishSkipped(kind="pdf", reason="Disabled by request")
+        )
 
-    return LatexProjectPublishResponse(project_id=project.id, published=published, skipped=skipped)
+    return LatexProjectPublishResponse(
+        project_id=project.id, published=published, skipped=skipped
+    )

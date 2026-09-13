@@ -12,11 +12,11 @@ from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
 from app.models.user import User
 from app.schemas.training import (
-    ModelAdapterUpdate,
-    ModelAdapterResponse,
-    ModelAdapterListResponse,
     DeployAdapterRequest,
     DeploymentStatusResponse,
+    ModelAdapterListResponse,
+    ModelAdapterResponse,
+    ModelAdapterUpdate,
     TestAdapterRequest,
     TestAdapterResponse,
 )
@@ -56,7 +56,9 @@ def _adapter_to_response(adapter) -> ModelAdapterResponse:
 async def list_adapters(
     status: Optional[str] = Query(None, description="Filter by status"),
     base_model: Optional[str] = Query(None, description="Filter by base model"),
-    is_deployed: Optional[bool] = Query(None, description="Filter by deployment status"),
+    is_deployed: Optional[bool] = Query(
+        None, description="Filter by deployment status"
+    ),
     include_public: bool = Query(True, description="Include public adapters"),
     page: int = Query(1, ge=1, description="Page number"),
     page_size: int = Query(20, ge=1, le=100, description="Items per page"),
@@ -235,6 +237,7 @@ async def get_deployment_status(
     deployed_at = None
     if adapter.deployment_config and "deployed_at" in adapter.deployment_config:
         from datetime import datetime
+
         deployed_at = datetime.fromisoformat(adapter.deployment_config["deployed_at"])
 
     return DeploymentStatusResponse(

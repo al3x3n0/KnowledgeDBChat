@@ -1,7 +1,8 @@
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class GitBranchResponse(BaseModel):
@@ -15,7 +16,10 @@ class GitBranchResponse(BaseModel):
 
 
 class GitCompareRequest(BaseModel):
-    repository: str = Field(..., description="Repository identifier (owner/name for GitHub or project id/path for GitLab)")
+    repository: str = Field(
+        ...,
+        description="Repository identifier (owner/name for GitHub or project id/path for GitLab)",
+    )
     base_branch: str
     compare_branch: str
     include_files: bool = True
@@ -36,5 +40,4 @@ class GitCompareJobResponse(BaseModel):
     updated_at: datetime
     completed_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

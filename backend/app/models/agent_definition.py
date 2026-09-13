@@ -7,14 +7,20 @@ Supports:
 - Memory injection tracking
 """
 
-from datetime import datetime
-from typing import Optional, List
 from uuid import uuid4
 
 from sqlalchemy import (
-    Column, String, Text, Boolean, Integer, DateTime, Float, ForeignKey, Index
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    Text,
 )
-from sqlalchemy.dialects.postgresql import UUID, JSON
+from sqlalchemy.dialects.postgresql import JSON, UUID
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 
@@ -27,6 +33,7 @@ class AgentDefinition(Base):
 
     Defines agent personality, capabilities, and tool access.
     """
+
     __tablename__ = "agent_definitions"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
@@ -54,20 +61,31 @@ class AgentDefinition(Base):
     is_system = Column(Boolean, default=True, nullable=False)
 
     # Governance / lifecycle
-    owner_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True)
+    owner_user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
     version = Column(Integer, default=1, nullable=False)
-    lifecycle_status = Column(String(20), default="published", nullable=False)  # draft, published, archived
+    lifecycle_status = Column(
+        String(20), default="published", nullable=False
+    )  # draft, published, archived
 
     # Timestamps
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
+    )
 
     # Relationships
-    conversation_contexts = relationship("AgentConversationContext", back_populates="agent_definition")
-
-    __table_args__ = (
-        Index("ix_agent_definitions_is_active", "is_active"),
+    conversation_contexts = relationship(
+        "AgentConversationContext", back_populates="agent_definition"
     )
+
+    __table_args__ = (Index("ix_agent_definitions_is_active", "is_active"),)
 
     def has_tool(self, tool_name: str) -> bool:
         """Check if this agent can use a specific tool."""
@@ -89,11 +107,20 @@ class AgentConversationContext(Base):
     - Analyzing handoff patterns
     - Debugging agent routing decisions
     """
+
     __tablename__ = "agent_conversation_contexts"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    conversation_id = Column(UUID(as_uuid=True), ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False)
-    agent_definition_id = Column(UUID(as_uuid=True), ForeignKey("agent_definitions.id", ondelete="SET NULL"), nullable=True)
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    agent_definition_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_definitions.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # Which turn in the conversation (0-indexed)
     turn_number = Column(Integer, nullable=False)
@@ -105,10 +132,14 @@ class AgentConversationContext(Base):
     handoff_context = Column(JSON, nullable=True)
 
     # Timestamp
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
     # Relationships
-    agent_definition = relationship("AgentDefinition", back_populates="conversation_contexts")
+    agent_definition = relationship(
+        "AgentDefinition", back_populates="conversation_contexts"
+    )
     conversation = relationship("AgentConversation", back_populates="agent_contexts")
 
     __table_args__ = (
@@ -125,11 +156,20 @@ class AgentMemoryInjection(Base):
     - Improving memory relevance scoring
     - User transparency about what context was used
     """
+
     __tablename__ = "agent_memory_injections"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    conversation_id = Column(UUID(as_uuid=True), ForeignKey("agent_conversations.id", ondelete="CASCADE"), nullable=False)
-    memory_id = Column(UUID(as_uuid=True), ForeignKey("conversation_memories.id", ondelete="CASCADE"), nullable=False)
+    conversation_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("agent_conversations.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    memory_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("conversation_memories.id", ondelete="CASCADE"),
+        nullable=False,
+    )
 
     # Which turn in the conversation
     turn_number = Column(Integer, nullable=False)
@@ -144,7 +184,9 @@ class AgentMemoryInjection(Base):
     injection_type = Column(String(50), nullable=False, default="automatic")
 
     # Timestamp
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
 
     # Relationships
     conversation = relationship("AgentConversation", back_populates="memory_injections")

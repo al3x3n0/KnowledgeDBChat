@@ -23,11 +23,9 @@ import toast from 'react-hot-toast';
 
 import { apiClient } from '../services/api';
 import {
-  APIKey,
   MCPKeyConfigResponse,
   MCPToolInfo,
   MCPToolConfigResponse,
-  MCPSourceAccessResponse,
   DocumentSource,
 } from '../types';
 import Button from '../components/common/Button';

@@ -39,7 +39,9 @@ class TestParseOptionalDatetime:
         assert parsed.tzinfo is None
 
     def test_parses_naive(self):
-        assert parse_optional_datetime("2026-01-01T12:00:00") == datetime(2026, 1, 1, 12, 0, 0)
+        assert parse_optional_datetime("2026-01-01T12:00:00") == datetime(
+            2026, 1, 1, 12, 0, 0
+        )
 
 
 class TestQueueAgeMinutes:
@@ -86,7 +88,11 @@ class TestExtractApprovalCheckpoint:
     def test_reads_from_execution_strategy_pending(self):
         job = _job(
             status=AgentJobStatus.PAUSED.value,
-            results={"execution_strategy": {"approval_checkpoints": {"pending": {"message": "y"}}}},
+            results={
+                "execution_strategy": {
+                    "approval_checkpoints": {"pending": {"message": "y"}}
+                }
+            },
         )
         assert extract_approval_checkpoint(job)["message"] == "y"
 
@@ -99,7 +105,10 @@ class TestQueueCustomerForJob:
         assert queue_customer_for_job(_job(config={"customer": "Acme"})) == "Acme"
 
     def test_strips_customer_prefix(self):
-        assert queue_customer_for_job(_job(config={"customer": "customer: Acme"})) == "Acme"
+        assert (
+            queue_customer_for_job(_job(config={"customer": "customer: Acme"}))
+            == "Acme"
+        )
 
     def test_from_results_profile(self):
         job = _job(results={"customer_profile": {"name": "Globex"}})
@@ -116,7 +125,11 @@ class TestQueueEvidenceSummary:
 
     def test_falls_back_to_scheduler_reason(self):
         job = _job(
-            results={"execution_strategy": {"scheduler_state": {"queue_reason": "execution_failure"}}}
+            results={
+                "execution_strategy": {
+                    "scheduler_state": {"queue_reason": "execution_failure"}
+                }
+            }
         )
         summary = queue_evidence_summary_for_job(job)
         assert "Recovery reason" in summary
@@ -124,7 +137,9 @@ class TestQueueEvidenceSummary:
 
     def test_falls_back_to_error_then_phase(self):
         assert queue_evidence_summary_for_job(_job(error="boom")) == "boom"
-        assert queue_evidence_summary_for_job(_job(phase_details="thinking")) == "thinking"
+        assert (
+            queue_evidence_summary_for_job(_job(phase_details="thinking")) == "thinking"
+        )
 
     def test_none_when_nothing(self):
         assert queue_evidence_summary_for_job(_job()) is None

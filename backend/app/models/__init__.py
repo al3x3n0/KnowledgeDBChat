@@ -2,81 +2,116 @@
 Database models for the Knowledge Database application.
 """
 
-from .document import Document, DocumentChunk, DocumentSource
-from .chat import ChatSession, ChatMessage
-from .user import User
-from .knowledge_graph import Entity, EntityMention, Relationship
-from .upload_session import UploadSession
-from .persona import Persona, DocumentPersonaDetection, PersonaEditRequest
-from .template import TemplateJob
-from .memory import ConversationMemory, MemoryInteraction, UserPreferences, AgentConversation, AgentToolExecution
-from .agent_definition import AgentDefinition, AgentConversationContext, AgentMemoryInjection
-from .workflow import UserTool, Workflow, WorkflowNode, WorkflowEdge, WorkflowExecution, WorkflowNodeExecution
-from .presentation import PresentationJob, PresentationTemplate
-from .notification import Notification, NotificationPreferences, NotificationType
-from .reading_list import ReadingList, ReadingListItem
-from .secret import UserSecret
-from .tool_audit import ToolExecutionAudit
-from .tool_policy import ToolPolicy
-from .agent_tool_prior import AgentToolPrior
-from .saved_search import SavedSearch, SearchShare
-from .llm_usage import LLMUsageEvent
-from .export_job import ExportJob
-from .repo_report import RepoReportJob
-from .artifact_draft import ArtifactDraft
-from .retrieval_trace import RetrievalTrace
-from .llm_call_snapshot import LLMCallSnapshot
+from .agent_control_plane_view import AgentControlPlaneView
+from .agent_definition import (
+    AgentConversationContext,
+    AgentDefinition,
+    AgentMemoryInjection,
+)
+from .agent_external_call_outbox import AgentExternalCallOutbox
 from .agent_job import (
     AgentJob,
-    AgentJobCheckpoint,
-    AgentJobTemplate,
     AgentJobChainDefinition,
+    AgentJobCheckpoint,
     AgentJobStatus,
+    AgentJobTemplate,
     AgentJobType,
     ChainTriggerCondition,
 )
-from .synthesis_job import SynthesisJob, SynthesisJobType, SynthesisJobStatus
-from .research_note import ResearchNote
-from .research_paper import ResearchPaper, PaperClaim, PaperExtractionJob
-from .experiment import ExperimentPlan, ExperimentRun
-from .research_inbox import ResearchInboxItem
-from .research_monitor_profile import ResearchMonitorProfile
-from .domain_research_profile import DomainResearchProfile
-from .research_portfolio import ResearchPortfolio
-from .code_patch_proposal import CodePatchProposal
-from .patch_pr import PatchPR
-from .training_dataset import (
-    TrainingDataset,
-    DatasetSample,
-    DatasetType,
-    DatasetFormat,
-    DatasetStatus,
-)
-from .training_job import (
-    TrainingJob,
-    TrainingCheckpoint,
-    TrainingMethod,
-    TrainingBackend,
-    TrainingJobStatus,
-)
-from .model_registry import (
-    ModelAdapter,
-    AdapterType,
-    AdapterStatus,
-)
+from .agent_method_outcome import AgentMethodOutcome
+from .agent_pipeline import AgentPipeline
+from .agent_prediction import AgentPrediction
+from .agent_retraction import AgentRetraction, RetractionKind
+from .agent_tool_prior import AgentToolPrior
 from .ai_hub_recommendation_feedback import AIHubRecommendationFeedback
-from .latex_project import LatexProject
-from .latex_project_file import LatexProjectFile
-from .coding_backlog import CodingBacklogItem
-from .coding_swarm_profile import CodingSwarmProfile
-from .scientific_sandbox_profile import ScientificSandboxProfile
-from .benchmark import BenchmarkSuite, BenchmarkCase, BenchmarkBaseline
+from .api_key import APIKey, APIKeyUsageLog
+from .artifact_draft import ArtifactDraft
+from .autonomous_rnd_eval_launch import AutonomousRndEvalLaunch
+from .autonomous_rnd_eval_run import AutonomousRndEvalRun
+from .autonomous_rnd_verification_audit_snapshot import (
+    AutonomousRndVerificationAuditSnapshot,
+)
 from .autonomy_decision_event import AutonomyDecisionEvent
 from .autonomy_decision_trace_view import AutonomyDecisionTraceView
-from .agent_control_plane_view import AgentControlPlaneView
+from .benchmark import BenchmarkBaseline, BenchmarkCase, BenchmarkSuite
+from .chat import ChatMessage, ChatSession
+from .code_patch_proposal import CodePatchProposal
+from .coding_backlog import CodingBacklogItem
+from .coding_swarm_profile import CodingSwarmProfile
+from .coding_workspace import CodingWorkspaceRecord
+from .compops_evidence_subscription import (
+    CompOpsEvidenceSubscription,
+    CompOpsWebhookEvent,
+)
+from .document import Document, DocumentChunk, DocumentSource
+from .document_folder import DocumentFolder, DocumentFolderItem
+from .domain_research_profile import DomainResearchProfile
+from .experiment import ExperimentPlan, ExperimentRun
+from .export_job import ExportJob
+from .knowledge_graph import Entity, EntityMention, Relationship
+from .latex_compile_job import LatexCompileJob
+from .latex_project import LatexProject
+from .latex_project_file import LatexProjectFile
+from .llm_call_snapshot import LLMCallSnapshot
+from .llm_usage import LLMUsageEvent
+from .mcp_config import MCPSourceAccess, MCPToolConfig
+from .memory import (
+    AgentConversation,
+    AgentToolExecution,
+    ConversationMemory,
+    MemoryInteraction,
+    UserPreferences,
+)
+from .model_registry import AdapterStatus, AdapterType, ModelAdapter
+from .notification import Notification, NotificationPreferences, NotificationType
+from .patch_pr import PatchPR
+from .persona import DocumentPersonaDetection, Persona, PersonaEditRequest
+from .presentation import PresentationJob, PresentationTemplate
+from .reading_list import ReadingList, ReadingListItem
+from .repo_report import RepoReportJob
+from .research_inbox import ResearchInboxItem
+from .research_monitor_profile import ResearchMonitorProfile
+from .research_note import ResearchNote
+from .research_paper import PaperClaim, PaperExtractionJob, ResearchPaper
+from .research_portfolio import ResearchPortfolio
+from .retrieval_trace import RetrievalTrace
+from .saved_search import SavedSearch, SearchShare
+from .scientific_sandbox_profile import ScientificSandboxProfile
+from .secret import UserSecret
+from .synthesis_job import SynthesisJob, SynthesisJobStatus, SynthesisJobType
+from .template import TemplateJob
+from .tool_audit import ToolExecutionAudit
+from .tool_policy import ToolPolicy
+from .training_dataset import (
+    DatasetFormat,
+    DatasetSample,
+    DatasetStatus,
+    DatasetType,
+    TrainingDataset,
+)
+from .training_job import (
+    TrainingBackend,
+    TrainingCheckpoint,
+    TrainingJob,
+    TrainingJobStatus,
+    TrainingMethod,
+)
+from .upload_session import UploadSession
+from .user import User
+from .workflow import (
+    UserTool,
+    Workflow,
+    WorkflowEdge,
+    WorkflowExecution,
+    WorkflowNode,
+    WorkflowNodeExecution,
+)
 
 __all__ = [
+    "AgentPipeline",
     "Document",
+    "DocumentFolder",
+    "DocumentFolderItem",
     "DocumentChunk",
     "DocumentSource",
     "ChatSession",
@@ -97,6 +132,7 @@ __all__ = [
     "AgentToolExecution",
     # Agent definition models
     "AgentDefinition",
+    "AgentExternalCallOutbox",
     "AgentConversationContext",
     "AgentMemoryInjection",
     # Workflow models
@@ -118,6 +154,11 @@ __all__ = [
     "UserSecret",
     "ToolExecutionAudit",
     "AgentToolPrior",
+    "MCPToolConfig",
+    "MCPSourceAccess",
+    "LatexCompileJob",
+    "APIKeyUsageLog",
+    "APIKey",
     "SavedSearch",
     "SearchShare",
     "LLMUsageEvent",
@@ -126,6 +167,9 @@ __all__ = [
     # Repository report models
     "RepoReportJob",
     "ArtifactDraft",
+    "AutonomousRndEvalLaunch",
+    "AutonomousRndEvalRun",
+    "AutonomousRndVerificationAuditSnapshot",
     "RetrievalTrace",
     "LLMCallSnapshot",
     # Autonomous agent job models
@@ -173,11 +217,18 @@ __all__ = [
     "LatexProject",
     "LatexProjectFile",
     "CodingBacklogItem",
+    "CodingWorkspaceRecord",
     "CodingSwarmProfile",
+    "CompOpsEvidenceSubscription",
+    "CompOpsWebhookEvent",
     "ScientificSandboxProfile",
     "BenchmarkSuite",
     "BenchmarkCase",
     "BenchmarkBaseline",
+    "AgentMethodOutcome",
+    "AgentPrediction",
+    "AgentRetraction",
+    "RetractionKind",
     "AutonomyDecisionEvent",
     "AutonomyDecisionTraceView",
     "AgentControlPlaneView",

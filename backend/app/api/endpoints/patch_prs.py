@@ -93,7 +93,9 @@ async def create_patch_pr(
     db: AsyncSession = Depends(get_db),
 ):
     source_uuid = _as_uuid(payload.source_id, field="source_id")
-    initial_proposal_uuid = _as_uuid(payload.initial_proposal_id, field="initial_proposal_id")
+    initial_proposal_uuid = _as_uuid(
+        payload.initial_proposal_id, field="initial_proposal_id"
+    )
 
     proposal_ids: list[str] = []
     selected_proposal_id: Optional[UUID] = None
@@ -158,14 +160,22 @@ async def create_patch_pr_from_chain(
     for j in jobs:
         results = j.results if isinstance(j.results, dict) else {}
 
-        cp = results.get("code_patch") if isinstance(results.get("code_patch"), dict) else None
+        cp = (
+            results.get("code_patch")
+            if isinstance(results.get("code_patch"), dict)
+            else None
+        )
         if isinstance(cp, dict) and str(cp.get("proposal_id") or "").strip():
             pid = str(cp["proposal_id"]).strip()
             if pid not in proposal_ids_set:
                 proposal_ids.append(pid)
                 proposal_ids_set.add(pid)
 
-        hist = results.get("code_patches") if isinstance(results.get("code_patches"), list) else []
+        hist = (
+            results.get("code_patches")
+            if isinstance(results.get("code_patches"), list)
+            else []
+        )
         for item in hist:
             if isinstance(item, dict) and str(item.get("proposal_id") or "").strip():
                 pid = str(item["proposal_id"]).strip()
@@ -173,12 +183,20 @@ async def create_patch_pr_from_chain(
                     proposal_ids.append(pid)
                     proposal_ids_set.add(pid)
 
-        er = results.get("experiment_run") if isinstance(results.get("experiment_run"), dict) else None
+        er = (
+            results.get("experiment_run")
+            if isinstance(results.get("experiment_run"), dict)
+            else None
+        )
         if isinstance(er, dict):
             experiment_runs.append(
                 {
                     "job_id": str(j.id),
-                    "created_at": (j.created_at.isoformat() if getattr(j, "created_at", None) else None),
+                    "created_at": (
+                        j.created_at.isoformat()
+                        if getattr(j, "created_at", None)
+                        else None
+                    ),
                     "proposal_id": str(er.get("proposal_id") or "").strip() or None,
                     "ok": er.get("ok"),
                     "enabled": er.get("enabled"),
@@ -199,7 +217,9 @@ async def create_patch_pr_from_chain(
             proposals.append(p)
 
     if not proposals:
-        raise HTTPException(status_code=422, detail="No CodePatchProposal found in this chain")
+        raise HTTPException(
+            status_code=422, detail="No CodePatchProposal found in this chain"
+        )
 
     proposals.sort(key=lambda p: p.created_at or datetime.min)
 
@@ -231,7 +251,10 @@ async def create_patch_pr_from_chain(
         proposal_ids=[str(p.id) for p in proposals],
         approvals=[],
         checks={
-            "chain": {"root_job_id": str(root_uuid), "job_ids": [str(j.id) for j in jobs[:200]]},
+            "chain": {
+                "root_job_id": str(root_uuid),
+                "job_ids": [str(j.id) for j in jobs[:200]],
+            },
             "experiment_runs": experiment_runs[:50],
             "proposal_strategy": strategy,
             "selected_proposal_id": str(selected.id),
@@ -269,7 +292,9 @@ async def update_patch_pr(
         if sel_uuid:
             proposal = await db.get(CodePatchProposal, sel_uuid)
             if not proposal or proposal.user_id != current_user.id:
-                raise HTTPException(status_code=404, detail="selected_proposal_id not found")
+                raise HTTPException(
+                    status_code=404, detail="selected_proposal_id not found"
+                )
             pr.selected_proposal_id = proposal.id
             hist = pr.proposal_ids if isinstance(pr.proposal_ids, list) else []
             pid = str(proposal.id)
@@ -295,7 +320,13 @@ async def approve_patch_pr(
         raise HTTPException(status_code=404, detail="Not found")
 
     approvals = pr.approvals if isinstance(pr.approvals, list) else []
-    approvals.append({"user_id": str(current_user.id), "at": _now_iso(), "note": (payload.note or None)})
+    approvals.append(
+        {
+            "user_id": str(current_user.id),
+            "at": _now_iso(),
+            "note": (payload.note or None),
+        }
+    )
     pr.approvals = approvals
     if pr.status in {"draft", "open"}:
         pr.status = "approved"
@@ -315,7 +346,10 @@ async def merge_patch_pr(
     from hashlib import sha256
 
     from app.models.document import Document
-    from app.services.code_patch_apply_service import UnifiedDiffApplyError, code_patch_apply_service
+    from app.services.code_patch_apply_service import (
+        UnifiedDiffApplyError,
+        code_patch_apply_service,
+    )
     from app.services.document_service import DocumentService
 
     pr = await db.get(PatchPR, pr_id)
@@ -325,7 +359,9 @@ async def merge_patch_pr(
     if bool(payload.require_approved):
         approvals = pr.approvals if isinstance(pr.approvals, list) else []
         if not approvals:
-            raise HTTPException(status_code=422, detail="PR must be approved before merge")
+            raise HTTPException(
+                status_code=422, detail="PR must be approved before merge"
+            )
 
     if not pr.selected_proposal_id:
         raise HTTPException(status_code=422, detail="PR has no selected_proposal_id")
@@ -334,7 +370,9 @@ async def merge_patch_pr(
     if not proposal or proposal.user_id != current_user.id:
         raise HTTPException(status_code=404, detail="Selected proposal not found")
     if not proposal.source_id:
-        raise HTTPException(status_code=422, detail="Selected proposal missing source_id")
+        raise HTTPException(
+            status_code=422, detail="Selected proposal missing source_id"
+        )
 
     try:
         file_diffs = code_patch_apply_service.parse(proposal.diff_unified or "")
@@ -373,7 +411,9 @@ async def merge_patch_pr(
             continue
 
         try:
-            new_text, debug = code_patch_apply_service.apply_to_text(doc.content or "", fd)
+            new_text, debug = code_patch_apply_service.apply_to_text(
+                doc.content or "", fd
+            )
         except UnifiedDiffApplyError as exc:
             errors.append({"path": path, "error": str(exc)})
             continue

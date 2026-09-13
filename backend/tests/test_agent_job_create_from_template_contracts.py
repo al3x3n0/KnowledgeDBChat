@@ -19,7 +19,9 @@ def _assert_no_target_source_id(value):
 
 
 @pytest.mark.asyncio
-async def test_create_job_from_template_builtin_path_does_not_require_db_template_fields(db_session, test_user):
+async def test_create_job_from_template_builtin_path_does_not_require_db_template_fields(
+    db_session, test_user
+):
     payload = AgentJobFromTemplate(
         template_id=CLAUDE_CODE_BACKEND_TEMPLATE_ID,
         name="Builtin Template Job",
@@ -44,7 +46,9 @@ async def test_create_job_from_template_builtin_path_does_not_require_db_templat
 
 
 @pytest.mark.asyncio
-async def test_create_job_from_template_db_template_missing_default_chain_config_is_safe(db_session, test_user):
+async def test_create_job_from_template_db_template_missing_default_chain_config_is_safe(
+    db_session, test_user
+):
     tpl = AgentJobTemplate(
         name=f"db_tpl_{uuid4().hex[:8]}",
         display_name="DB Template",

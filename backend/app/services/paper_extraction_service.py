@@ -21,8 +21,24 @@ from app.services.llm_service import LLMService
 
 class PaperExtractionService:
     EXTRACTOR_VERSION = "paper_extraction_v1"
-    VALID_CLAIM_KINDS = {"performance", "compile_time", "code_size", "energy", "correctness", "robustness", "other"}
-    VALID_TARGET_LAYERS = {"source", "ir", "midend", "backend", "runtime", "hardware", "unknown"}
+    VALID_CLAIM_KINDS = {
+        "performance",
+        "compile_time",
+        "code_size",
+        "energy",
+        "correctness",
+        "robustness",
+        "other",
+    }
+    VALID_TARGET_LAYERS = {
+        "source",
+        "ir",
+        "midend",
+        "backend",
+        "runtime",
+        "hardware",
+        "unknown",
+    }
 
     def __init__(self) -> None:
         self.llm = LLMService()
@@ -39,12 +55,18 @@ class PaperExtractionService:
         await db.refresh(document, ["source"])
         self._validate_document(document)
 
-        existing_stmt = select(ResearchPaper).where(ResearchPaper.document_id == document.id)
+        existing_stmt = select(ResearchPaper).where(
+            ResearchPaper.document_id == document.id
+        )
         existing = (await db.execute(existing_stmt)).scalar_one_or_none()
-        had_completed_extraction = bool(existing and existing.extracted_at and existing.raw_extraction_payload)
+        had_completed_extraction = bool(
+            existing and existing.extracted_at and existing.raw_extraction_payload
+        )
 
         if existing and not force and existing.extraction_status == "completed":
-            raise PaperExtractionConflictError(f"Document {document.id} already has extracted structure")
+            raise PaperExtractionConflictError(
+                f"Document {document.id} already has extracted structure"
+            )
 
         job = PaperExtractionJob(
             user_id=user_id,
@@ -55,7 +77,9 @@ class PaperExtractionService:
             extractor_version=self.EXTRACTOR_VERSION,
             request_payload={
                 "force": force,
-                "previous_extraction_status": existing.extraction_status if existing else None,
+                "previous_extraction_status": existing.extraction_status
+                if existing
+                else None,
                 "had_completed_extraction": had_completed_extraction,
             },
         )
@@ -85,7 +109,9 @@ class PaperExtractionService:
         job.error = None
         await db.commit()
 
-        existing_stmt = select(ResearchPaper).where(ResearchPaper.document_id == document.id)
+        existing_stmt = select(ResearchPaper).where(
+            ResearchPaper.document_id == document.id
+        )
         existing = (await db.execute(existing_stmt)).scalar_one_or_none()
 
         if existing:
@@ -126,25 +152,41 @@ class PaperExtractionService:
         await db.refresh(paper)
         return paper
 
-    async def mark_failed(self, db: AsyncSession, *, job: PaperExtractionJob, error: str) -> None:
+    async def mark_failed(
+        self, db: AsyncSession, *, job: PaperExtractionJob, error: str
+    ) -> None:
         job.status = "failed"
         job.error = error[:20000]
         job.completed_at = datetime.utcnow()
-        request_payload = job.request_payload if isinstance(job.request_payload, dict) else {}
-        previous_status = str(request_payload.get("previous_extraction_status") or "").strip()
+        request_payload = (
+            job.request_payload if isinstance(job.request_payload, dict) else {}
+        )
+        previous_status = str(
+            request_payload.get("previous_extraction_status") or ""
+        ).strip()
         had_completed_extraction = bool(request_payload.get("had_completed_extraction"))
         if job.paper_id:
             paper = await db.get(ResearchPaper, job.paper_id)
             if paper:
-                if had_completed_extraction and paper.extracted_at and paper.raw_extraction_payload:
+                if (
+                    had_completed_extraction
+                    and paper.extracted_at
+                    and paper.raw_extraction_payload
+                ):
                     paper.extraction_status = previous_status or "completed"
                 else:
                     paper.extraction_status = "failed"
         else:
-            stmt = select(ResearchPaper).where(ResearchPaper.document_id == job.document_id)
+            stmt = select(ResearchPaper).where(
+                ResearchPaper.document_id == job.document_id
+            )
             paper = (await db.execute(stmt)).scalar_one_or_none()
             if paper:
-                if had_completed_extraction and paper.extracted_at and paper.raw_extraction_payload:
+                if (
+                    had_completed_extraction
+                    and paper.extracted_at
+                    and paper.raw_extraction_payload
+                ):
                     paper.extraction_status = previous_status or "completed"
                 else:
                     paper.extraction_status = "failed"
@@ -161,7 +203,10 @@ class PaperExtractionService:
     ) -> ResearchNote:
         claims = sorted(
             list(paper.claims or []),
-            key=lambda item: (item.rank is None, item.rank if item.rank is not None else 999999),
+            key=lambda item: (
+                item.rank is None,
+                item.rank if item.rank is not None else 999999,
+            ),
         )
         lines = [
             f"# {title or f'Paper Extraction: {paper.title}'}",
@@ -182,7 +227,13 @@ class PaperExtractionService:
         ):
             if values:
                 lines.extend(["", f"## {heading}", ""])
-                lines.extend([f"- {str(value).strip()}" for value in values if str(value).strip()])
+                lines.extend(
+                    [
+                        f"- {str(value).strip()}"
+                        for value in values
+                        if str(value).strip()
+                    ]
+                )
         if claims:
             lines.extend(["", "## Claims", ""])
             for claim in claims:
@@ -229,10 +280,14 @@ class PaperExtractionService:
     def _validate_document(self, document: Document) -> None:
         source = getattr(document, "source", None)
         if not source or getattr(source, "source_type", None) != "arxiv":
-            raise UnsupportedPaperSourceError("Only arXiv documents are supported for paper extraction")
+            raise UnsupportedPaperSourceError(
+                "Only arXiv documents are supported for paper extraction"
+            )
 
     def _build_prompt(self, document: Document) -> str:
-        metadata = document.extra_metadata if isinstance(document.extra_metadata, dict) else {}
+        metadata = (
+            document.extra_metadata if isinstance(document.extra_metadata, dict) else {}
+        )
         abstract = (document.summary or document.content or "").strip()
         if len(abstract) > 18000:
             abstract = abstract[:18000]
@@ -241,25 +296,25 @@ class PaperExtractionService:
             "Return valid JSON only.\n"
             "Schema:\n"
             "{"
-            "\"summary\": string,"
-            "\"mechanisms\": [string],"
-            "\"assumptions\": [string],"
-            "\"benchmarks\": [string],"
-            "\"metrics\": [string],"
-            "\"limitations\": [string],"
-            "\"claims\": ["
+            '"summary": string,'
+            '"mechanisms": [string],'
+            '"assumptions": [string],'
+            '"benchmarks": [string],'
+            '"metrics": [string],'
+            '"limitations": [string],'
+            '"claims": ['
             "{"
-            "\"kind\": \"performance|compile_time|code_size|energy|correctness|robustness|other\","
-            "\"statement\": string,"
-            "\"mechanism\": string|null,"
-            "\"target_layer\": \"source|ir|midend|backend|runtime|hardware|unknown\","
-            "\"conditions\": [string],"
-            "\"assumptions\": [string],"
-            "\"expected_effect\": string|null,"
-            "\"evidence_summary\": string|null,"
-            "\"confidence\": number|null,"
-            "\"tags\": [string],"
-            "\"rank\": integer"
+            '"kind": "performance|compile_time|code_size|energy|correctness|robustness|other",'
+            '"statement": string,'
+            '"mechanism": string|null,'
+            '"target_layer": "source|ir|midend|backend|runtime|hardware|unknown",'
+            '"conditions": [string],'
+            '"assumptions": [string],'
+            '"expected_effect": string|null,'
+            '"evidence_summary": string|null,'
+            '"confidence": number|null,'
+            '"tags": [string],'
+            '"rank": integer'
             "}"
             "]"
             "}\n"
@@ -306,7 +361,9 @@ class PaperExtractionService:
         payload: Dict[str, Any],
         existing: Optional[ResearchPaper],
     ) -> ResearchPaper:
-        metadata = document.extra_metadata if isinstance(document.extra_metadata, dict) else {}
+        metadata = (
+            document.extra_metadata if isinstance(document.extra_metadata, dict) else {}
+        )
         paper = existing or ResearchPaper(
             user_id=user_id,
             document_id=document.id,
@@ -321,10 +378,18 @@ class PaperExtractionService:
         paper.source_id = document.source_id
         paper.title = document.title
         paper.arxiv_id = document.source_identifier
-        paper.authors = self._normalize_string_list(metadata.get("authors") or ([document.author] if document.author else []))
-        paper.abstract = (document.summary or document.content or "")[:20000] if (document.summary or document.content) else None
+        paper.authors = self._normalize_string_list(
+            metadata.get("authors") or ([document.author] if document.author else [])
+        )
+        paper.abstract = (
+            (document.summary or document.content or "")[:20000]
+            if (document.summary or document.content)
+            else None
+        )
         paper.categories = self._normalize_string_list(metadata.get("categories"))
-        paper.paper_url = document.url or f"https://arxiv.org/abs/{document.source_identifier}"
+        paper.paper_url = (
+            document.url or f"https://arxiv.org/abs/{document.source_identifier}"
+        )
         paper.pdf_url = f"https://arxiv.org/pdf/{document.source_identifier}.pdf"
         paper.summary = self._normalize_optional_string(payload.get("summary"))
         paper.mechanisms = self._normalize_string_list(payload.get("mechanisms"))
@@ -350,24 +415,38 @@ class PaperExtractionService:
             kind = str(claim_payload.get("kind") or "other").strip().lower()
             if kind not in self.VALID_CLAIM_KINDS:
                 kind = "other"
-            target_layer = str(claim_payload.get("target_layer") or "unknown").strip().lower()
+            target_layer = (
+                str(claim_payload.get("target_layer") or "unknown").strip().lower()
+            )
             if target_layer not in self.VALID_TARGET_LAYERS:
                 target_layer = "unknown"
             confidence = claim_payload.get("confidence")
             try:
-                confidence_value = max(0.0, min(1.0, float(confidence))) if confidence is not None else None
+                confidence_value = (
+                    max(0.0, min(1.0, float(confidence)))
+                    if confidence is not None
+                    else None
+                )
             except Exception:
                 confidence_value = None
             claim = PaperClaim(
                 paper_id=paper.id,
                 kind=kind,
                 statement=statement,
-                mechanism=self._normalize_optional_string(claim_payload.get("mechanism")),
+                mechanism=self._normalize_optional_string(
+                    claim_payload.get("mechanism")
+                ),
                 target_layer=target_layer,
                 conditions=self._normalize_string_list(claim_payload.get("conditions")),
-                assumptions=self._normalize_string_list(claim_payload.get("assumptions")),
-                expected_effect=self._normalize_optional_string(claim_payload.get("expected_effect")),
-                evidence_summary=self._normalize_optional_string(claim_payload.get("evidence_summary")),
+                assumptions=self._normalize_string_list(
+                    claim_payload.get("assumptions")
+                ),
+                expected_effect=self._normalize_optional_string(
+                    claim_payload.get("expected_effect")
+                ),
+                evidence_summary=self._normalize_optional_string(
+                    claim_payload.get("evidence_summary")
+                ),
                 confidence=confidence_value,
                 tags=self._normalize_string_list(claim_payload.get("tags")),
                 rank=int(claim_payload.get("rank") or index),

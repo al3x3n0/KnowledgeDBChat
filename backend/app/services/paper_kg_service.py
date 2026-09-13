@@ -9,13 +9,12 @@ from typing import Any, Dict, Iterable, Optional
 from uuid import UUID
 
 from loguru import logger
-from sqlalchemy import select, delete
+from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models.document import Document, DocumentSource
 from app.models.knowledge_graph import Entity, EntityMention, Relationship
-
 
 REL_USES_METHOD = "uses_method"
 REL_EVALUATED_ON = "evaluated_on"
@@ -58,7 +57,9 @@ def _arxiv_id_from_source_identifier(source_identifier: Optional[str]) -> Option
 
 
 class PaperKnowledgeGraphService:
-    async def upsert_from_document(self, db: AsyncSession, document_id: UUID, force: bool = False) -> Dict[str, Any]:
+    async def upsert_from_document(
+        self, db: AsyncSession, document_id: UUID, force: bool = False
+    ) -> Dict[str, Any]:
         doc = await db.get(Document, document_id)
         if not doc:
             raise ValueError("Document not found")
@@ -75,8 +76,10 @@ class PaperKnowledgeGraphService:
             await db.execute(
                 delete(Relationship).where(
                     Relationship.document_id == doc.id,
-                    Relationship.relation_type.in_([REL_USES_METHOD, REL_EVALUATED_ON, REL_TARGETS_TASK]),
-                    Relationship.inferred == True,
+                    Relationship.relation_type.in_(
+                        [REL_USES_METHOD, REL_EVALUATED_ON, REL_TARGETS_TASK]
+                    ),
+                    Relationship.inferred.is_(True),
                     Relationship.evidence == "paper_insights",
                 )
             )
@@ -112,17 +115,23 @@ class PaperKnowledgeGraphService:
         created_mentions = 0
         created_relationships = 0
 
-        async def link_many(items: Iterable[str], entity_type: str, relation_type: str) -> None:
+        async def link_many(
+            items: Iterable[str], entity_type: str, relation_type: str
+        ) -> None:
             nonlocal created_entities, created_mentions, created_relationships
             for name in items:
-                ent, created = await self._get_or_create_entity(db, canonical_name=name, entity_type=entity_type)
+                ent, created = await self._get_or_create_entity(
+                    db, canonical_name=name, entity_type=entity_type
+                )
                 if created:
                     created_entities += 1
 
                 if await self._ensure_mention(db, ent.id, doc.id, text=name):
                     created_mentions += 1
 
-                if await self._ensure_relationship(db, relation_type, paper.id, ent.id, doc.id):
+                if await self._ensure_relationship(
+                    db, relation_type, paper.id, ent.id, doc.id
+                ):
                     created_relationships += 1
 
         await link_many(methods, "method", REL_USES_METHOD)
@@ -148,7 +157,10 @@ class PaperKnowledgeGraphService:
         properties: Optional[Dict[str, Any]] = None,
     ) -> tuple[Entity, bool]:
         q = await db.execute(
-            select(Entity).where(Entity.canonical_name == canonical_name, Entity.entity_type == entity_type)
+            select(Entity).where(
+                Entity.canonical_name == canonical_name,
+                Entity.entity_type == entity_type,
+            )
         )
         ent = q.scalar_one_or_none()
         if ent:
@@ -157,13 +169,17 @@ class PaperKnowledgeGraphService:
             canonical_name=canonical_name[:512],
             entity_type=entity_type[:64],
             description=description,
-            properties=json.dumps(properties, ensure_ascii=False) if properties else None,
+            properties=json.dumps(properties, ensure_ascii=False)
+            if properties
+            else None,
         )
         db.add(ent)
         await db.flush()
         return ent, True
 
-    async def _ensure_mention(self, db: AsyncSession, entity_id: UUID, document_id: UUID, text: str) -> bool:
+    async def _ensure_mention(
+        self, db: AsyncSession, entity_id: UUID, document_id: UUID, text: str
+    ) -> bool:
         q = await db.execute(
             select(EntityMention.id).where(
                 EntityMention.entity_id == entity_id,

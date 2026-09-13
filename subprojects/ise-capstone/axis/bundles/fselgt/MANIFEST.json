@@ -1,0 +1,34 @@
+{
+  "bundle": "fselgt",
+  "candidate": "fcmgt + bit -> FSELGT (branchless select on a float compare)",
+  "source": "fselgt.axisl",
+  "provenance": {
+    "corpus": "Godot 4.4.1 core/math (Vector3/AABB inline methods, 4096 vertices x 24 frames)",
+    "dynamic_occurrences": 98280,
+    "bounded_saving_cycles_each": 8.0,
+    "cost_model": "llvm-mca, neoverse-n1",
+    "found_by": "isa_candidate_mining.find_fusion_candidates over a callgrind profile"
+  },
+  "tools": {
+    "axis": "7acc8be (working tree +2 modified)",
+    "z3": "4.16.0",
+    "smt_logic": "QF_BVFP"
+  },
+  "modelled": "one lane. AXIS lane-parallel float ops are fadd/fsub/fmul/fdiv/fsqrt only -- compares are deliberately excluded because a NEON lane compare writes a mask, not 1/0 -- so the vector form is not expressible and is not claimed to be proven.",
+  "source_sha256": "ab5394c2ba13fd7c772304be979e15b1e4c7b455074067839b27844e5c271b67",
+  "semantics_sha256": "dea28dfacb275349b43009a4946de521e4494261c81e38cf00b3fdb9d70bf00d",
+  "obligations": [
+    {
+      "file": "proof/fusion_equivalence.smt2",
+      "expect": "unsat",
+      "claim": "the fused select equals fcmgt+bit for every input, NaN included",
+      "sha256": "8fe4704c3bfc9c1048fe8c30e03f1c402558c3be09437e2258369c1da6317415"
+    },
+    {
+      "file": "proof/nan_control.smt2",
+      "expect": "sat",
+      "claim": "the obvious alternative implementation differs on a NaN",
+      "sha256": "024fe17529553894a3aebedf5408426c21e5e91db0e99b5dc2e73854734b09d7"
+    }
+  ]
+}

@@ -1,0 +1,46 @@
+{{- if .Values.frontend.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-frontend-nginx" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "frontend") | nindent 4 }}
+data:
+  # Replaces the nginx.conf baked into frontend/Dockerfile, which is the *dev*
+  # proxy config (it forwards / to the CRA dev server on :3000). In-cluster the
+  # frontend pod only serves the static build; all proxying is the gateway's job.
+  default.conf: |
+    server {
+        listen 80;
+        server_name _;
+        root /usr/share/nginx/html;
+        index index.html;
+
+        gzip on;
+        gzip_vary on;
+        gzip_min_length 1024;
+        gzip_proxied any;
+        gzip_types text/plain text/css text/xml text/javascript application/javascript application/json;
+
+        add_header X-Frame-Options "SAMEORIGIN" always;
+        add_header X-Content-Type-Options "nosniff" always;
+        add_header Referrer-Policy "no-referrer-when-downgrade" always;
+
+        location = /healthz {
+            access_log off;
+            return 200 "healthy\n";
+            add_header Content-Type text/plain;
+        }
+
+        # Hashed CRA build assets are immutable.
+        location /static/ {
+            expires 1y;
+            add_header Cache-Control "public, immutable";
+        }
+
+        # SPA fallback: React Router owns client-side routes.
+        location / {
+            try_files $uri $uri/ /index.html;
+        }
+    }
+{{- end }}

@@ -9,27 +9,49 @@ Provides advanced multi-document synthesis capabilities including:
 - Research report generation
 """
 
-from datetime import datetime
 import json
 import re
-from typing import List, Dict, Any, Optional, Tuple
+from datetime import datetime
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
+
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import selectinload
 
 from app.models.document import Document, DocumentSource
 from app.models.experiment import ExperimentPlan, ExperimentRun
 from app.models.research_note import ResearchNote
 from app.models.research_paper import ResearchPaper
-from app.models.synthesis_job import SynthesisJob, SynthesisJobType, SynthesisJobStatus
-from app.services.llm_service import LLMService, UserLLMSettings
-from app.services.vector_store import vector_store_service
-from app.services.search_service import search_service
-from app.services.visualization_service import visualization_service
+from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus, SynthesisJobType
 from app.services.diagram_service import diagram_service
-from app.services.research_note_reevaluation_notification_service import maybe_emit_reevaluation_notification
+from app.services.llm_service import LLMService, UserLLMSettings
+from app.services.research_note_reevaluation_notification_service import (
+    maybe_emit_reevaluation_notification,
+)
+from app.services.search_service import search_service
+from app.services.vector_store import vector_store_service
+
+#: Finding types that record what a run *read*, not what it established. A
+#: retrieval hit is already a Library document and citable as one; passed to a
+#: synthesis as a run's finding it reads as evidence the run produced. One real
+#: run recorded twelve findings of which eleven were search results and one was
+#: the measurement -- which is the ratio a document would have been written
+#: from.
+RETRIEVAL_FINDING_TYPES = {"document", "paper"}
+
+
+def _findings_the_run_established(findings: Any) -> List[Dict[str, Any]]:
+    """The run's own contributions, in order, minus what it merely retrieved."""
+    if not isinstance(findings, list):
+        return []
+    return [
+        f
+        for f in findings
+        if isinstance(f, dict)
+        and str(f.get("type") or "").strip().lower() not in RETRIEVAL_FINDING_TYPES
+    ]
 
 
 class SynthesisService:
@@ -47,6 +69,7 @@ class SynthesisService:
         title: str,
         document_ids: List[str],
         paper_ids: Optional[List[str]] = None,
+        agent_job_ids: Optional[List[str]] = None,
         research_note_id: Optional[UUID] = None,
         description: Optional[str] = None,
         search_query: Optional[str] = None,
@@ -63,6 +86,7 @@ class SynthesisService:
             description=description,
             document_ids=document_ids,
             paper_ids=paper_ids or [],
+            agent_job_ids=agent_job_ids or [],
             research_note_id=research_note_id,
             search_query=search_query,
             topic=topic,
@@ -113,27 +137,79 @@ class SynthesisService:
             run_context: Optional[Dict[str, Any]] = None
             source_kind = "documents"
 
-            if job.job_type == SynthesisJobType.GAP_ANALYSIS_HYPOTHESES.value and job.paper_ids:
+            if (
+                job.job_type == SynthesisJobType.GAP_ANALYSIS_HYPOTHESES.value
+                and job.paper_ids
+            ):
                 papers = await self._load_research_papers(db, job.paper_ids)
                 if papers:
                     source_kind = "papers"
-            elif job.job_type == SynthesisJobType.HYPOTHESIS_REEVALUATION.value and job.research_note_id:
-                note_context = await self._load_research_note_context(db, job.research_note_id)
+            elif (
+                job.job_type == SynthesisJobType.HYPOTHESIS_REEVALUATION.value
+                and job.research_note_id
+            ):
+                note_context = await self._load_research_note_context(
+                    db, job.research_note_id
+                )
                 source_kind = "research_note"
-            elif job.job_type == SynthesisJobType.COMPILER_PATCH_PROPOSAL.value and job.research_note_id:
-                note_context = await self._load_research_note_context(db, job.research_note_id)
+            elif (
+                job.job_type == SynthesisJobType.COMPILER_PATCH_PROPOSAL.value
+                and job.research_note_id
+            ):
+                note_context = await self._load_research_note_context(
+                    db, job.research_note_id
+                )
                 source_kind = "research_note"
-            elif job.job_type == SynthesisJobType.COMPILER_PATCH_DRAFT.value and job.research_note_id:
-                note_context = await self._load_research_note_context(db, job.research_note_id)
+            elif (
+                job.job_type == SynthesisJobType.COMPILER_PATCH_DRAFT.value
+                and job.research_note_id
+            ):
+                note_context = await self._load_research_note_context(
+                    db, job.research_note_id
+                )
                 source_kind = "research_note"
             elif job.job_type == SynthesisJobType.COMPILER_REGRESSION_EXPLANATION.value:
-                run_context = await self._load_experiment_run_comparison_context(db, job.options or {})
+                run_context = await self._load_experiment_run_comparison_context(
+                    db, job.options or {}
+                )
                 source_kind = "experiment_runs"
 
-            if job.document_ids or job.search_query or (not papers and job.job_type not in {SynthesisJobType.HYPOTHESIS_REEVALUATION.value, SynthesisJobType.COMPILER_REGRESSION_EXPLANATION.value, SynthesisJobType.COMPILER_PATCH_PROPOSAL.value, SynthesisJobType.COMPILER_PATCH_DRAFT.value}):
-                documents = await self._load_documents(db, job.document_ids, job.search_query)
+            if (
+                job.document_ids
+                or job.search_query
+                or (
+                    not papers
+                    and job.job_type
+                    not in {
+                        SynthesisJobType.HYPOTHESIS_REEVALUATION.value,
+                        SynthesisJobType.COMPILER_REGRESSION_EXPLANATION.value,
+                        SynthesisJobType.COMPILER_PATCH_PROPOSAL.value,
+                        SynthesisJobType.COMPILER_PATCH_DRAFT.value,
+                    }
+                )
+            ):
+                documents = await self._load_documents(
+                    db, job.document_ids, job.search_query
+                )
 
-            sources = [note_context] if note_context else ([run_context] if run_context else (papers if papers else documents))
+            # A run's findings are source material alongside documents and
+            # papers, not instead of them: the point of citing a run is to
+            # write about its measurements next to the literature.
+            agent_runs = (
+                await self._load_agent_runs(db, job.agent_job_ids, job.user_id)
+                if job.agent_job_ids
+                else []
+            )
+
+            sources = (
+                [note_context]
+                if note_context
+                else (
+                    [run_context]
+                    if run_context
+                    else (papers if papers else documents) + agent_runs
+                )
+            )
             if not sources:
                 raise ValueError("No sources found for synthesis")
 
@@ -248,17 +324,40 @@ class SynthesisService:
             job.completed_at = datetime.utcnow()
             await db.commit()
 
-            if job.job_type == SynthesisJobType.HYPOTHESIS_REEVALUATION.value and job.research_note_id:
+            if (
+                job.job_type == SynthesisJobType.HYPOTHESIS_REEVALUATION.value
+                and job.research_note_id
+            ):
                 note = await db.get(ResearchNote, job.research_note_id)
                 if note and note.user_id == job.user_id:
-                    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
-                    source_run_ids = payload.get("pending_reevaluation_source_run_ids") if isinstance(payload.get("pending_reevaluation_source_run_ids"), list) else []
-                    completed_at = job.completed_at.isoformat() if job.completed_at else datetime.utcnow().isoformat()
+                    payload = (
+                        note.structured_payload
+                        if isinstance(note.structured_payload, dict)
+                        else {}
+                    )
+                    source_run_ids = (
+                        payload.get("pending_reevaluation_source_run_ids")
+                        if isinstance(
+                            payload.get("pending_reevaluation_source_run_ids"), list
+                        )
+                        else []
+                    )
+                    completed_at = (
+                        job.completed_at.isoformat()
+                        if job.completed_at
+                        else datetime.utcnow().isoformat()
+                    )
                     status = "completed"
-                    last_appended_at = str(payload.get("last_appended_at") or "").strip()
+                    last_appended_at = str(
+                        payload.get("last_appended_at") or ""
+                    ).strip()
                     if last_appended_at:
                         try:
-                            if datetime.fromisoformat(last_appended_at.replace("Z", "+00:00")) > datetime.fromisoformat(completed_at.replace("Z", "+00:00")):
+                            if datetime.fromisoformat(
+                                last_appended_at.replace("Z", "+00:00")
+                            ) > datetime.fromisoformat(
+                                completed_at.replace("Z", "+00:00")
+                            ):
                                 status = "stale"
                         except Exception:
                             pass
@@ -268,9 +367,16 @@ class SynthesisService:
                         user_id=job.user_id,
                         reevaluation_job_id=str(job.id),
                         status=status,
-                        summary=str(job.result_metadata.get("reprioritization_summary") or job.result_metadata.get("summary") or "").strip(),
+                        summary=str(
+                            job.result_metadata.get("reprioritization_summary")
+                            or job.result_metadata.get("summary")
+                            or ""
+                        ).strip(),
                         source_run_ids=[str(item) for item in source_run_ids],
-                        created_at=str(payload.get("pending_reevaluation_created_at") or "").strip() or None,
+                        created_at=str(
+                            payload.get("pending_reevaluation_created_at") or ""
+                        ).strip()
+                        or None,
                         completed_at=completed_at,
                         commit=True,
                         push=True,
@@ -292,11 +398,24 @@ class SynthesisService:
             job.error = str(e)
             job.completed_at = datetime.utcnow()
             await db.commit()
-            if job.job_type == SynthesisJobType.HYPOTHESIS_REEVALUATION.value and job.research_note_id:
+            if (
+                job.job_type == SynthesisJobType.HYPOTHESIS_REEVALUATION.value
+                and job.research_note_id
+            ):
                 note = await db.get(ResearchNote, job.research_note_id)
                 if note and note.user_id == job.user_id:
-                    payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
-                    source_run_ids = payload.get("pending_reevaluation_source_run_ids") if isinstance(payload.get("pending_reevaluation_source_run_ids"), list) else []
+                    payload = (
+                        note.structured_payload
+                        if isinstance(note.structured_payload, dict)
+                        else {}
+                    )
+                    source_run_ids = (
+                        payload.get("pending_reevaluation_source_run_ids")
+                        if isinstance(
+                            payload.get("pending_reevaluation_source_run_ids"), list
+                        )
+                        else []
+                    )
                     await maybe_emit_reevaluation_notification(
                         db,
                         note=note,
@@ -305,12 +424,99 @@ class SynthesisService:
                         status="failed",
                         source_run_ids=[str(item) for item in source_run_ids],
                         error=str(e),
-                        created_at=str(payload.get("pending_reevaluation_created_at") or "").strip() or None,
-                        completed_at=job.completed_at.isoformat() if job.completed_at else datetime.utcnow().isoformat(),
+                        created_at=str(
+                            payload.get("pending_reevaluation_created_at") or ""
+                        ).strip()
+                        or None,
+                        completed_at=job.completed_at.isoformat()
+                        if job.completed_at
+                        else datetime.utcnow().isoformat(),
                         commit=True,
                         push=True,
                     )
             raise
+
+    async def _load_agent_runs(
+        self,
+        db: AsyncSession,
+        agent_job_ids: List[str],
+        user_id: UUID,
+    ) -> List[Dict[str, Any]]:
+        """Render a run's findings as source material, with its numbers intact.
+
+        The formatting is `agent_run_synthesis_service`'s, not a second one
+        written here: it already renders a finding's metrics rather than only
+        its title, which is the difference between a document that can cite
+        "fastest_ms=15 (n=5)" and one that says the values were not recorded.
+
+        Every run is scoped to the requesting user, because a synthesis is not
+        a way to read someone else's runs.
+        """
+        from app.models.agent_job import AgentJob
+        from app.services.agent_run_synthesis_service import (
+            summarize_findings_for_prompt,
+        )
+
+        runs: List[Dict[str, Any]] = []
+        for raw_id in agent_job_ids or []:
+            try:
+                job_id = UUID(str(raw_id))
+            except (ValueError, TypeError):
+                logger.warning(f"Skipping malformed agent job id {raw_id!r}")
+                continue
+            try:
+                result = await db.execute(
+                    select(AgentJob).where(
+                        AgentJob.id == job_id, AgentJob.user_id == user_id
+                    )
+                )
+                job = result.scalar_one_or_none()
+                if not job:
+                    logger.warning(f"Agent job {job_id} not found for this user")
+                    continue
+
+                findings = (job.results or {}).get("findings")
+                established = _findings_the_run_established(findings)
+                lines = summarize_findings_for_prompt(established)
+                if not lines:
+                    # A run with nothing of its own contributes nothing to
+                    # write from, and an empty source in a prompt reads as
+                    # evidence that there was nothing to find.
+                    logger.info(
+                        f"Agent job {job_id} established no findings of its own; skipped"
+                    )
+                    continue
+
+                body = "\n".join(f"- {line}" for line in lines)
+                runs.append(
+                    {
+                        "id": str(job.id),
+                        "title": f"Run: {job.name}",
+                        "content": (
+                            f"Goal: {job.goal}\n\n"
+                            f"Findings recorded by this run:\n{body}"
+                        ),
+                        "summary": job.goal or "",
+                        "metadata": {
+                            "source_kind": "agent_run",
+                            "agent_job_id": str(job.id),
+                            "job_type": job.job_type,
+                            "status": job.status,
+                            "iterations": job.iteration,
+                            "finding_count": len(findings)
+                            if isinstance(findings, list)
+                            else 0,
+                            "cited_finding_count": len(established),
+                        },
+                        "created_at": job.created_at.isoformat()
+                        if job.created_at
+                        else None,
+                    }
+                )
+            except Exception as e:  # noqa: BLE001 - one bad run must not sink the job
+                logger.warning(f"Failed to load agent job {raw_id}: {e}")
+
+        return runs
 
     async def _load_documents(
         self,
@@ -329,14 +535,18 @@ class SynthesisService:
                 )
                 doc = result.scalar_one_or_none()
                 if doc:
-                    documents.append({
-                        "id": str(doc.id),
-                        "title": doc.title,
-                        "content": doc.content or "",
-                        "summary": doc.summary or "",
-                        "metadata": doc.extra_metadata or {},
-                        "created_at": doc.created_at.isoformat() if doc.created_at else None,
-                    })
+                    documents.append(
+                        {
+                            "id": str(doc.id),
+                            "title": doc.title,
+                            "content": doc.content or "",
+                            "summary": doc.summary or "",
+                            "metadata": doc.extra_metadata or {},
+                            "created_at": doc.created_at.isoformat()
+                            if doc.created_at
+                            else None,
+                        }
+                    )
             except Exception as e:
                 logger.warning(f"Failed to load document {doc_id}: {e}")
 
@@ -345,21 +555,19 @@ class SynthesisService:
             remaining = 20 - len(documents)
             try:
                 results, _, _ = await search_service.search(
-                    query=search_query,
-                    mode="smart",
-                    page=1,
-                    page_size=remaining,
-                    db=db
+                    query=search_query, mode="smart", page=1, page_size=remaining, db=db
                 )
                 for r in results:
                     if r.get("id") not in [d["id"] for d in documents]:
-                        documents.append({
-                            "id": r.get("id", ""),
-                            "title": r.get("title", "Unknown"),
-                            "content": r.get("content", r.get("snippet", "")),
-                            "summary": r.get("summary", ""),
-                            "metadata": r.get("metadata", {}),
-                        })
+                        documents.append(
+                            {
+                                "id": r.get("id", ""),
+                                "title": r.get("title", "Unknown"),
+                                "content": r.get("content", r.get("snippet", "")),
+                                "summary": r.get("summary", ""),
+                                "metadata": r.get("metadata", {}),
+                            }
+                        )
             except Exception as e:
                 logger.warning(f"Search query failed: {e}")
 
@@ -386,7 +594,10 @@ class SynthesisService:
 
                 sorted_claims = sorted(
                     list(paper.claims or []),
-                    key=lambda claim: (claim.rank if claim.rank is not None else 9999, str(claim.id)),
+                    key=lambda claim: (
+                        claim.rank if claim.rank is not None else 9999,
+                        str(claim.id),
+                    ),
                 )
                 claim_lines = []
                 for claim in sorted_claims[:8]:
@@ -401,11 +612,21 @@ class SynthesisService:
 
                 summary_parts = [
                     paper.summary or paper.abstract or "",
-                    f"Mechanisms: {', '.join(paper.mechanisms or [])}" if paper.mechanisms else "",
-                    f"Assumptions: {', '.join(paper.assumptions or [])}" if paper.assumptions else "",
-                    f"Benchmarks: {', '.join(paper.benchmarks or [])}" if paper.benchmarks else "",
-                    f"Metrics: {', '.join(paper.metrics or [])}" if paper.metrics else "",
-                    f"Limitations: {', '.join(paper.limitations or [])}" if paper.limitations else "",
+                    f"Mechanisms: {', '.join(paper.mechanisms or [])}"
+                    if paper.mechanisms
+                    else "",
+                    f"Assumptions: {', '.join(paper.assumptions or [])}"
+                    if paper.assumptions
+                    else "",
+                    f"Benchmarks: {', '.join(paper.benchmarks or [])}"
+                    if paper.benchmarks
+                    else "",
+                    f"Metrics: {', '.join(paper.metrics or [])}"
+                    if paper.metrics
+                    else "",
+                    f"Limitations: {', '.join(paper.limitations or [])}"
+                    if paper.limitations
+                    else "",
                     "Claims:\n" + "\n".join(claim_lines) if claim_lines else "",
                 ]
 
@@ -415,7 +636,9 @@ class SynthesisService:
                         "document_id": str(paper.document_id),
                         "title": paper.title,
                         "content": paper.abstract or paper.summary or "",
-                        "summary": "\n".join(part for part in summary_parts if part).strip(),
+                        "summary": "\n".join(
+                            part for part in summary_parts if part
+                        ).strip(),
                         "metadata": {
                             "source_type": "research_paper",
                             "arxiv_id": paper.arxiv_id,
@@ -449,12 +672,20 @@ class SynthesisService:
         db: AsyncSession,
         research_note_id: UUID,
     ) -> Dict[str, Any]:
-        result = await db.execute(select(ResearchNote).where(ResearchNote.id == research_note_id))
+        result = await db.execute(
+            select(ResearchNote).where(ResearchNote.id == research_note_id)
+        )
         note = result.scalar_one_or_none()
         if not note:
             return {}
-        structured_payload = note.structured_payload if isinstance(note.structured_payload, dict) else {}
-        hypotheses = structured_payload.get("hypotheses") if isinstance(structured_payload.get("hypotheses"), list) else []
+        structured_payload = (
+            note.structured_payload if isinstance(note.structured_payload, dict) else {}
+        )
+        hypotheses = (
+            structured_payload.get("hypotheses")
+            if isinstance(structured_payload.get("hypotheses"), list)
+            else []
+        )
         return {
             "id": str(note.id),
             "title": note.title,
@@ -464,37 +695,99 @@ class SynthesisService:
                 "source_type": "research_note",
                 "research_mode": structured_payload.get("research_mode"),
                 "artifact_type": structured_payload.get("artifact_type"),
-                "source_paper_ids": structured_payload.get("source_paper_ids") if isinstance(structured_payload.get("source_paper_ids"), list) else [],
-                "source_document_ids": structured_payload.get("source_document_ids") if isinstance(structured_payload.get("source_document_ids"), list) else [],
-                "scoring_policy": structured_payload.get("scoring_policy") if isinstance(structured_payload.get("scoring_policy"), dict) else {},
-                "selection_policy": structured_payload.get("selection_policy") if isinstance(structured_payload.get("selection_policy"), dict) else {},
+                "source_paper_ids": structured_payload.get("source_paper_ids")
+                if isinstance(structured_payload.get("source_paper_ids"), list)
+                else [],
+                "source_document_ids": structured_payload.get("source_document_ids")
+                if isinstance(structured_payload.get("source_document_ids"), list)
+                else [],
+                "scoring_policy": structured_payload.get("scoring_policy")
+                if isinstance(structured_payload.get("scoring_policy"), dict)
+                else {},
+                "selection_policy": structured_payload.get("selection_policy")
+                if isinstance(structured_payload.get("selection_policy"), dict)
+                else {},
                 "hypotheses": [item for item in hypotheses if isinstance(item, dict)],
                 "last_appended_run_id": structured_payload.get("last_appended_run_id"),
                 "last_appended_at": structured_payload.get("last_appended_at"),
-                "regression_type": str(structured_payload.get("regression_type") or "").strip() or None,
-                "source_run_ids": structured_payload.get("source_run_ids") if isinstance(structured_payload.get("source_run_ids"), list) else [],
-                "primary_run_id": str(structured_payload.get("primary_run_id") or "").strip() or None,
-                "comparison_run_id": str(structured_payload.get("comparison_run_id") or "").strip() or None,
-                "metric_deltas": structured_payload.get("metric_deltas") if isinstance(structured_payload.get("metric_deltas"), list) else [],
-                "artifact_deltas": structured_payload.get("artifact_deltas") if isinstance(structured_payload.get("artifact_deltas"), list) else [],
-                "likely_causes": structured_payload.get("likely_causes") if isinstance(structured_payload.get("likely_causes"), list) else [],
-                "supporting_signals": structured_payload.get("supporting_signals") if isinstance(structured_payload.get("supporting_signals"), list) else [],
-                "confounders": structured_payload.get("confounders") if isinstance(structured_payload.get("confounders"), list) else [],
-                "recommended_next_steps": structured_payload.get("recommended_next_steps") if isinstance(structured_payload.get("recommended_next_steps"), list) else [],
-                "benchmark_family": str(structured_payload.get("benchmark_family") or "").strip() or None,
-                "benchmark_suite_id": str(structured_payload.get("benchmark_suite_id") or "").strip() or None,
-                "benchmark_case_ids": structured_payload.get("benchmark_case_ids") if isinstance(structured_payload.get("benchmark_case_ids"), list) else [],
-                "benchmark_baseline_id": str(structured_payload.get("benchmark_baseline_id") or "").strip() or None,
-                "proposal_summary": str(structured_payload.get("proposal_summary") or "").strip(),
-                "target_area": str(structured_payload.get("target_area") or "").strip() or None,
-                "candidate_change": str(structured_payload.get("candidate_change") or "").strip(),
-                "expected_effect": str(structured_payload.get("expected_effect") or "").strip(),
+                "regression_type": str(
+                    structured_payload.get("regression_type") or ""
+                ).strip()
+                or None,
+                "source_run_ids": structured_payload.get("source_run_ids")
+                if isinstance(structured_payload.get("source_run_ids"), list)
+                else [],
+                "primary_run_id": str(
+                    structured_payload.get("primary_run_id") or ""
+                ).strip()
+                or None,
+                "comparison_run_id": str(
+                    structured_payload.get("comparison_run_id") or ""
+                ).strip()
+                or None,
+                "metric_deltas": structured_payload.get("metric_deltas")
+                if isinstance(structured_payload.get("metric_deltas"), list)
+                else [],
+                "artifact_deltas": structured_payload.get("artifact_deltas")
+                if isinstance(structured_payload.get("artifact_deltas"), list)
+                else [],
+                "likely_causes": structured_payload.get("likely_causes")
+                if isinstance(structured_payload.get("likely_causes"), list)
+                else [],
+                "supporting_signals": structured_payload.get("supporting_signals")
+                if isinstance(structured_payload.get("supporting_signals"), list)
+                else [],
+                "confounders": structured_payload.get("confounders")
+                if isinstance(structured_payload.get("confounders"), list)
+                else [],
+                "recommended_next_steps": structured_payload.get(
+                    "recommended_next_steps"
+                )
+                if isinstance(structured_payload.get("recommended_next_steps"), list)
+                else [],
+                "benchmark_family": str(
+                    structured_payload.get("benchmark_family") or ""
+                ).strip()
+                or None,
+                "benchmark_suite_id": str(
+                    structured_payload.get("benchmark_suite_id") or ""
+                ).strip()
+                or None,
+                "benchmark_case_ids": structured_payload.get("benchmark_case_ids")
+                if isinstance(structured_payload.get("benchmark_case_ids"), list)
+                else [],
+                "benchmark_baseline_id": str(
+                    structured_payload.get("benchmark_baseline_id") or ""
+                ).strip()
+                or None,
+                "proposal_summary": str(
+                    structured_payload.get("proposal_summary") or ""
+                ).strip(),
+                "target_area": str(structured_payload.get("target_area") or "").strip()
+                or None,
+                "candidate_change": str(
+                    structured_payload.get("candidate_change") or ""
+                ).strip(),
+                "expected_effect": str(
+                    structured_payload.get("expected_effect") or ""
+                ).strip(),
                 "mechanism": str(structured_payload.get("mechanism") or "").strip(),
-                "supporting_evidence": structured_payload.get("supporting_evidence") if isinstance(structured_payload.get("supporting_evidence"), list) else [],
-                "validation_plan": structured_payload.get("validation_plan") if isinstance(structured_payload.get("validation_plan"), list) else [],
-                "risk_assessment": structured_payload.get("risk_assessment") if isinstance(structured_payload.get("risk_assessment"), list) else [],
-                "rollback_or_guardrail": str(structured_payload.get("rollback_or_guardrail") or "").strip(),
-                "source_explanation_note_id": str(structured_payload.get("source_explanation_note_id") or "").strip() or None,
+                "supporting_evidence": structured_payload.get("supporting_evidence")
+                if isinstance(structured_payload.get("supporting_evidence"), list)
+                else [],
+                "validation_plan": structured_payload.get("validation_plan")
+                if isinstance(structured_payload.get("validation_plan"), list)
+                else [],
+                "risk_assessment": structured_payload.get("risk_assessment")
+                if isinstance(structured_payload.get("risk_assessment"), list)
+                else [],
+                "rollback_or_guardrail": str(
+                    structured_payload.get("rollback_or_guardrail") or ""
+                ).strip(),
+                "source_explanation_note_id": str(
+                    structured_payload.get("source_explanation_note_id") or ""
+                ).strip()
+                or None,
             },
         }
 
@@ -507,7 +800,11 @@ class SynthesisService:
         comparison_run_id = str(options.get("comparison_run_id") or "").strip()
         run_ids = [
             str(item).strip()
-            for item in (options.get("experiment_run_ids") if isinstance(options.get("experiment_run_ids"), list) else [])
+            for item in (
+                options.get("experiment_run_ids")
+                if isinstance(options.get("experiment_run_ids"), list)
+                else []
+            )
             if str(item).strip()
         ]
         for item in (primary_run_id, comparison_run_id):
@@ -518,13 +815,19 @@ class SynthesisService:
 
         result = await db.execute(
             select(ExperimentRun)
-            .options(selectinload(ExperimentRun.plan).selectinload(ExperimentPlan.research_note))
+            .options(
+                selectinload(ExperimentRun.plan).selectinload(
+                    ExperimentPlan.research_note
+                )
+            )
             .where(ExperimentRun.id.in_([UUID(run_ids[0]), UUID(run_ids[1])]))
         )
         runs = list(result.scalars().all())
         runs_by_id = {str(run.id): run for run in runs}
         primary_run = runs_by_id.get(primary_run_id) or (runs[0] if runs else None)
-        comparison_run = runs_by_id.get(comparison_run_id) or (runs[1] if len(runs) > 1 else None)
+        comparison_run = runs_by_id.get(comparison_run_id) or (
+            runs[1] if len(runs) > 1 else None
+        )
         if primary_run is None or comparison_run is None:
             return {}
 
@@ -548,7 +851,9 @@ class SynthesisService:
                 if isinstance(results.get("measurement_summary"), dict)
                 else (
                     scientific_validation.get("measurement_summary")
-                    if isinstance(scientific_validation.get("measurement_summary"), dict)
+                    if isinstance(
+                        scientific_validation.get("measurement_summary"), dict
+                    )
                     else {}
                 )
             )
@@ -565,44 +870,93 @@ class SynthesisService:
                 "id": str(run.id),
                 "name": run.name,
                 "status": run.status,
-                "summary": str(run.summary or results.get("summary") or results.get("note") or "").strip(),
+                "summary": str(
+                    run.summary or results.get("summary") or results.get("note") or ""
+                ).strip(),
                 "experiment_plan_id": str(run.experiment_plan_id),
                 "plan_title": plan.title if plan is not None else None,
-                "research_note_id": str(plan.research_note_id) if plan is not None and plan.research_note_id else None,
+                "research_note_id": str(plan.research_note_id)
+                if plan is not None and plan.research_note_id
+                else None,
                 "research_note_title": note.title if note is not None else None,
                 "measurement_summary": measurement_summary,
-                "compiler_artifacts": results.get("compiler_artifacts") if isinstance(results.get("compiler_artifacts"), dict) else {},
+                "compiler_artifacts": results.get("compiler_artifacts")
+                if isinstance(results.get("compiler_artifacts"), dict)
+                else {},
                 "perf_counters": perf_counters,
-                "benchmark_family": str(scientific_validation.get("benchmark_family") or execution_handoff.get("benchmark_family") or "").strip() or None,
-                "benchmark_suite_id": str(scientific_validation.get("benchmark_suite_id") or execution_handoff.get("benchmark_suite_id") or "").strip() or None,
+                "benchmark_family": str(
+                    scientific_validation.get("benchmark_family")
+                    or execution_handoff.get("benchmark_family")
+                    or ""
+                ).strip()
+                or None,
+                "benchmark_suite_id": str(
+                    scientific_validation.get("benchmark_suite_id")
+                    or execution_handoff.get("benchmark_suite_id")
+                    or ""
+                ).strip()
+                or None,
                 "benchmark_case_ids": [
                     str(item).strip()
                     for item in (
                         scientific_validation.get("benchmark_case_ids")
-                        if isinstance(scientific_validation.get("benchmark_case_ids"), list)
-                        else (execution_handoff.get("benchmark_case_ids") if isinstance(execution_handoff.get("benchmark_case_ids"), list) else [])
+                        if isinstance(
+                            scientific_validation.get("benchmark_case_ids"), list
+                        )
+                        else (
+                            execution_handoff.get("benchmark_case_ids")
+                            if isinstance(
+                                execution_handoff.get("benchmark_case_ids"), list
+                            )
+                            else []
+                        )
                     )
                     if str(item).strip()
                 ],
-                "benchmark_baseline_id": str(scientific_validation.get("benchmark_baseline_id") or execution_handoff.get("benchmark_baseline_id") or "").strip() or None,
+                "benchmark_baseline_id": str(
+                    scientific_validation.get("benchmark_baseline_id")
+                    or execution_handoff.get("benchmark_baseline_id")
+                    or ""
+                ).strip()
+                or None,
                 "selected_hypothesis_ids": [
                     str(item).strip()
-                    for item in (execution_handoff.get("selected_hypothesis_ids") if isinstance(execution_handoff.get("selected_hypothesis_ids"), list) else [])
+                    for item in (
+                        execution_handoff.get("selected_hypothesis_ids")
+                        if isinstance(
+                            execution_handoff.get("selected_hypothesis_ids"), list
+                        )
+                        else []
+                    )
                     if str(item).strip()
                 ],
                 "supporting_sources": [
                     dict(item)
-                    for item in (execution_handoff.get("supporting_sources") if isinstance(execution_handoff.get("supporting_sources"), list) else [])
+                    for item in (
+                        execution_handoff.get("supporting_sources")
+                        if isinstance(execution_handoff.get("supporting_sources"), list)
+                        else []
+                    )
                     if isinstance(item, dict)
                 ],
                 "source_paper_ids": [
                     str(item).strip()
-                    for item in (execution_handoff.get("source_paper_ids") if isinstance(execution_handoff.get("source_paper_ids"), list) else [])
+                    for item in (
+                        execution_handoff.get("source_paper_ids")
+                        if isinstance(execution_handoff.get("source_paper_ids"), list)
+                        else []
+                    )
                     if str(item).strip()
                 ],
                 "source_document_ids": [
                     str(item).strip()
-                    for item in (execution_handoff.get("source_document_ids") if isinstance(execution_handoff.get("source_document_ids"), list) else [])
+                    for item in (
+                        execution_handoff.get("source_document_ids")
+                        if isinstance(
+                            execution_handoff.get("source_document_ids"), list
+                        )
+                        else []
+                    )
                     if str(item).strip()
                 ],
             }
@@ -697,7 +1051,9 @@ Generate a well-structured summary with these sections:
 
         criteria_text = ""
         if criteria:
-            criteria_text = f"\n\nCompare specifically on these criteria:\n" + "\n".join(f"- {c}" for c in criteria)
+            criteria_text = "\n\nCompare specifically on these criteria:\n" + "\n".join(
+                f"- {c}" for c in criteria
+            )
 
         system_prompt = """You are an expert analyst skilled at comparing and contrasting information.
 Your analysis should:
@@ -765,7 +1121,9 @@ Generate a comprehensive comparison including:
 
         category_text = ""
         if theme_categories:
-            category_text = f"\n\nFocus on themes in these categories:\n" + "\n".join(f"- {c}" for c in theme_categories)
+            category_text = "\n\nFocus on themes in these categories:\n" + "\n".join(
+                f"- {c}" for c in theme_categories
+            )
 
         system_prompt = """You are an expert at thematic analysis and pattern recognition.
 Your analysis should:
@@ -817,18 +1175,20 @@ Extract up to {max_themes} key themes and provide:
             try:
                 mindmap_data = {
                     "root": topic or "Themes",
-                    "children": [{"text": theme} for theme in themes[:8]]
+                    "children": [{"text": theme} for theme in themes[:8]],
                 }
                 mindmap = diagram_service.create_mermaid_diagram(
                     "mindmap", mindmap_data, {"title": "Theme Map"}
                 )
                 if mindmap.get("success"):
-                    artifacts.append({
-                        "type": "diagram",
-                        "format": "mermaid",
-                        "code": mindmap.get("mermaid_code"),
-                        "title": "Theme Map",
-                    })
+                    artifacts.append(
+                        {
+                            "type": "diagram",
+                            "format": "mermaid",
+                            "code": mindmap.get("mermaid_code"),
+                            "title": "Theme Map",
+                        }
+                    )
             except Exception as e:
                 logger.warning(f"Failed to generate theme mindmap: {e}")
 
@@ -863,7 +1223,9 @@ Extract up to {max_themes} key themes and provide:
 
         focus_text = ""
         if focus_areas:
-            focus_text = f"\n\nFocus synthesis on:\n" + "\n".join(f"- {f}" for f in focus_areas)
+            focus_text = "\n\nFocus synthesis on:\n" + "\n".join(
+                f"- {f}" for f in focus_areas
+            )
 
         system_prompt = """You are an expert knowledge synthesizer.
 Your synthesis should:
@@ -927,12 +1289,18 @@ Generate a knowledge synthesis including:
         progress_callback: Optional[callable],
     ) -> Dict[str, Any]:
         """Generate a formal research report from documents."""
-        sections = options.get("output_sections", [
-            "Abstract", "Introduction", "Literature Review",
-            "Methodology", "Findings", "Discussion", "Conclusion"
-        ])
-        include_charts = options.get("include_charts", False)
-
+        sections = options.get(
+            "output_sections",
+            [
+                "Abstract",
+                "Introduction",
+                "Literature Review",
+                "Methodology",
+                "Findings",
+                "Discussion",
+                "Conclusion",
+            ],
+        )
         doc_context = self._prepare_document_context(documents, max_chars=60000)
 
         sections_text = "\n".join(f"- {s}" for s in sections)
@@ -976,17 +1344,6 @@ For each section:
             await progress_callback(70, "Processing report")
 
         artifacts = []
-
-        # Generate charts if requested
-        if include_charts:
-            try:
-                # Simple document distribution chart
-                doc_titles = [d["title"][:20] for d in documents[:5]]
-                doc_lengths = [len(d.get("content", "")) for d in documents[:5]]
-                chart_data = {"labels": doc_titles, "values": doc_lengths}
-                # This would generate a chart showing document contribution
-            except Exception as e:
-                logger.warning(f"Failed to generate charts: {e}")
 
         return {
             "content": response,
@@ -1155,7 +1512,9 @@ Be specific, pragmatic, and research-lab oriented. Prefer falsifiable claims ove
         word_count = len(response.split())
         hypotheses_count_estimate = response.lower().count("hypothesis")
         gaps_count_estimate = response.lower().count("gap")
-        structured = await self._extract_gap_analysis_structure(response, documents, user_settings)
+        structured = await self._extract_gap_analysis_structure(
+            response, documents, user_settings
+        )
 
         return {
             "content": response,
@@ -1233,12 +1592,20 @@ Schema:
             parsed = self._parse_json_object(raw)
             return {
                 "summary": str(parsed.get("summary") or "").strip(),
-                "structured_hypotheses": parsed.get("hypotheses") if isinstance(parsed.get("hypotheses"), list) else [],
-                "structured_gaps": parsed.get("gaps") if isinstance(parsed.get("gaps"), list) else [],
-                "structured_solution_sketches": parsed.get("solution_sketches") if isinstance(parsed.get("solution_sketches"), list) else [],
+                "structured_hypotheses": parsed.get("hypotheses")
+                if isinstance(parsed.get("hypotheses"), list)
+                else [],
+                "structured_gaps": parsed.get("gaps")
+                if isinstance(parsed.get("gaps"), list)
+                else [],
+                "structured_solution_sketches": parsed.get("solution_sketches")
+                if isinstance(parsed.get("solution_sketches"), list)
+                else [],
             }
         except Exception as exc:
-            logger.warning(f"Failed to extract structured hypotheses from synthesis output: {exc}")
+            logger.warning(
+                f"Failed to extract structured hypotheses from synthesis output: {exc}"
+            )
             return {
                 "summary": self._first_nonempty_line(response),
                 "structured_hypotheses": [],
@@ -1333,15 +1700,37 @@ Rules:
         user_settings: Optional[UserLLMSettings],
         progress_callback: Optional[callable],
     ) -> Dict[str, Any]:
-        hypotheses = note_context.get("metadata", {}).get("hypotheses") if isinstance(note_context.get("metadata"), dict) else []
+        hypotheses = (
+            note_context.get("metadata", {}).get("hypotheses")
+            if isinstance(note_context.get("metadata"), dict)
+            else []
+        )
         if not isinstance(hypotheses, list) or not hypotheses:
-            raise ValueError("Research note has no structured hypotheses to re-evaluate")
+            raise ValueError(
+                "Research note has no structured hypotheses to re-evaluate"
+            )
 
         summary = str(note_context.get("summary") or "").strip()
-        source_paper_ids = note_context.get("metadata", {}).get("source_paper_ids") if isinstance(note_context.get("metadata"), dict) else []
-        source_document_ids = note_context.get("metadata", {}).get("source_document_ids") if isinstance(note_context.get("metadata"), dict) else []
-        scoring_policy = note_context.get("metadata", {}).get("scoring_policy") if isinstance(note_context.get("metadata"), dict) else {}
-        selection_policy = note_context.get("metadata", {}).get("selection_policy") if isinstance(note_context.get("metadata"), dict) else {}
+        source_paper_ids = (
+            note_context.get("metadata", {}).get("source_paper_ids")
+            if isinstance(note_context.get("metadata"), dict)
+            else []
+        )
+        source_document_ids = (
+            note_context.get("metadata", {}).get("source_document_ids")
+            if isinstance(note_context.get("metadata"), dict)
+            else []
+        )
+        scoring_policy = (
+            note_context.get("metadata", {}).get("scoring_policy")
+            if isinstance(note_context.get("metadata"), dict)
+            else {}
+        )
+        selection_policy = (
+            note_context.get("metadata", {}).get("selection_policy")
+            if isinstance(note_context.get("metadata"), dict)
+            else {}
+        )
 
         prior_hypotheses_payload = []
         for hypothesis in hypotheses:
@@ -1356,13 +1745,23 @@ Rules:
                     "rationale": str(hypothesis.get("rationale") or "").strip(),
                     "scores": {
                         "novelty_score": float(hypothesis.get("novelty_score") or 0.0),
-                        "evidence_score": float(hypothesis.get("evidence_score") or 0.0),
-                        "testability_score": float(hypothesis.get("testability_score") or 0.0),
+                        "evidence_score": float(
+                            hypothesis.get("evidence_score") or 0.0
+                        ),
+                        "testability_score": float(
+                            hypothesis.get("testability_score") or 0.0
+                        ),
                         "overall_score": float(hypothesis.get("overall_score") or 0.0),
                     },
-                    "recommended_next_step": str(hypothesis.get("recommended_next_step") or "").strip(),
-                    "supporting_sources": hypothesis.get("supporting_sources") if isinstance(hypothesis.get("supporting_sources"), list) else [],
-                    "experiment_evidence": hypothesis.get("experiment_evidence") if isinstance(hypothesis.get("experiment_evidence"), list) else [],
+                    "recommended_next_step": str(
+                        hypothesis.get("recommended_next_step") or ""
+                    ).strip(),
+                    "supporting_sources": hypothesis.get("supporting_sources")
+                    if isinstance(hypothesis.get("supporting_sources"), list)
+                    else [],
+                    "experiment_evidence": hypothesis.get("experiment_evidence")
+                    if isinstance(hypothesis.get("experiment_evidence"), list)
+                    else [],
                 }
             )
 
@@ -1418,7 +1817,9 @@ Schema:
         )
 
         if progress_callback:
-            await progress_callback(40, "Re-evaluating hypotheses with experiment evidence")
+            await progress_callback(
+                40, "Re-evaluating hypotheses with experiment evidence"
+            )
 
         raw = await self.llm.generate_response(
             query=user_prompt,
@@ -1430,18 +1831,32 @@ Schema:
         )
         parsed = self._parse_json_object(raw)
 
-        hypotheses_out = parsed.get("hypotheses") if isinstance(parsed.get("hypotheses"), list) else []
-        priority_deltas = parsed.get("priority_deltas") if isinstance(parsed.get("priority_deltas"), list) else []
-        archived_hypothesis_ids = parsed.get("archived_hypothesis_ids") if isinstance(parsed.get("archived_hypothesis_ids"), list) else []
+        hypotheses_out = (
+            parsed.get("hypotheses")
+            if isinstance(parsed.get("hypotheses"), list)
+            else []
+        )
+        priority_deltas = (
+            parsed.get("priority_deltas")
+            if isinstance(parsed.get("priority_deltas"), list)
+            else []
+        )
+        archived_hypothesis_ids = (
+            parsed.get("archived_hypothesis_ids")
+            if isinstance(parsed.get("archived_hypothesis_ids"), list)
+            else []
+        )
 
         markdown_lines = [
             "# Hypothesis Re-evaluation",
             "",
             "## Summary",
-            str(parsed.get("summary") or "").strip() or "Evidence-aware re-evaluation completed.",
+            str(parsed.get("summary") or "").strip()
+            or "Evidence-aware re-evaluation completed.",
             "",
             "## Reprioritization",
-            str(parsed.get("reprioritization_summary") or "").strip() or "Hypotheses were re-scored using attached experiment evidence.",
+            str(parsed.get("reprioritization_summary") or "").strip()
+            or "Hypotheses were re-scored using attached experiment evidence.",
             "",
             "## Updated Hypotheses",
             "",
@@ -1470,7 +1885,14 @@ Schema:
                 )
             markdown_lines.append("")
         if archived_hypothesis_ids:
-            markdown_lines.extend(["## Archived Hypotheses", "", ", ".join(str(item) for item in archived_hypothesis_ids[:20]), ""])
+            markdown_lines.extend(
+                [
+                    "## Archived Hypotheses",
+                    "",
+                    ", ".join(str(item) for item in archived_hypothesis_ids[:20]),
+                    "",
+                ]
+            )
 
         if progress_callback:
             await progress_callback(75, "Formatting re-evaluation results")
@@ -1479,13 +1901,19 @@ Schema:
             "content": "\n".join(markdown_lines).strip(),
             "metadata": {
                 "summary": str(parsed.get("summary") or "").strip(),
-                "reprioritization_summary": str(parsed.get("reprioritization_summary") or "").strip(),
+                "reprioritization_summary": str(
+                    parsed.get("reprioritization_summary") or ""
+                ).strip(),
                 "structured_hypotheses": hypotheses_out,
                 "priority_deltas": priority_deltas,
                 "archived_hypothesis_ids": archived_hypothesis_ids,
                 "source_note_id": note_context.get("id"),
-                "source_document_ids": source_document_ids if isinstance(source_document_ids, list) else [],
-                "source_paper_ids": source_paper_ids if isinstance(source_paper_ids, list) else [],
+                "source_document_ids": source_document_ids
+                if isinstance(source_document_ids, list)
+                else [],
+                "source_paper_ids": source_paper_ids
+                if isinstance(source_paper_ids, list)
+                else [],
                 "hypotheses_analyzed": len(prior_hypotheses_payload),
                 "word_count": len("\n".join(markdown_lines).split()),
             },
@@ -1500,8 +1928,16 @@ Schema:
         user_settings: Optional[UserLLMSettings],
         progress_callback: Optional[callable],
     ) -> Dict[str, Any]:
-        primary_run = run_context.get("primary_run") if isinstance(run_context.get("primary_run"), dict) else {}
-        comparison_run = run_context.get("comparison_run") if isinstance(run_context.get("comparison_run"), dict) else {}
+        primary_run = (
+            run_context.get("primary_run")
+            if isinstance(run_context.get("primary_run"), dict)
+            else {}
+        )
+        comparison_run = (
+            run_context.get("comparison_run")
+            if isinstance(run_context.get("comparison_run"), dict)
+            else {}
+        )
         if not primary_run or not comparison_run:
             raise ValueError("Missing run comparison context")
 
@@ -1538,7 +1974,9 @@ Schema:
         )
 
         if progress_callback:
-            await progress_callback(40, "Comparing benchmark measurements and compiler artifacts")
+            await progress_callback(
+                40, "Comparing benchmark measurements and compiler artifacts"
+            )
 
         raw = await self.llm.generate_response(
             query=user_prompt,
@@ -1550,12 +1988,36 @@ Schema:
         )
         parsed = self._parse_json_object(raw)
 
-        metric_deltas = parsed.get("metric_deltas") if isinstance(parsed.get("metric_deltas"), list) else []
-        artifact_deltas = parsed.get("artifact_deltas") if isinstance(parsed.get("artifact_deltas"), list) else []
-        likely_causes = parsed.get("likely_causes") if isinstance(parsed.get("likely_causes"), list) else []
-        supporting_signals = parsed.get("supporting_signals") if isinstance(parsed.get("supporting_signals"), list) else []
-        confounders = parsed.get("confounders") if isinstance(parsed.get("confounders"), list) else []
-        recommended_next_steps = parsed.get("recommended_next_steps") if isinstance(parsed.get("recommended_next_steps"), list) else []
+        metric_deltas = (
+            parsed.get("metric_deltas")
+            if isinstance(parsed.get("metric_deltas"), list)
+            else []
+        )
+        artifact_deltas = (
+            parsed.get("artifact_deltas")
+            if isinstance(parsed.get("artifact_deltas"), list)
+            else []
+        )
+        likely_causes = (
+            parsed.get("likely_causes")
+            if isinstance(parsed.get("likely_causes"), list)
+            else []
+        )
+        supporting_signals = (
+            parsed.get("supporting_signals")
+            if isinstance(parsed.get("supporting_signals"), list)
+            else []
+        )
+        confounders = (
+            parsed.get("confounders")
+            if isinstance(parsed.get("confounders"), list)
+            else []
+        )
+        recommended_next_steps = (
+            parsed.get("recommended_next_steps")
+            if isinstance(parsed.get("recommended_next_steps"), list)
+            else []
+        )
 
         markdown_lines = [
             "# Compiler Regression Explanation",
@@ -1582,7 +2044,9 @@ Schema:
             for item in artifact_deltas[:12]:
                 if not isinstance(item, dict):
                     continue
-                markdown_lines.append(f"- {str(item.get('kind') or 'artifact')}: {str(item.get('summary') or '').strip()}".rstrip())
+                markdown_lines.append(
+                    f"- {str(item.get('kind') or 'artifact')}: {str(item.get('summary') or '').strip()}".rstrip()
+                )
             markdown_lines.append("")
         if likely_causes:
             markdown_lines.extend(["## Likely Causes", ""])
@@ -1616,23 +2080,40 @@ Schema:
             "content": "\n".join(markdown_lines).strip(),
             "metadata": {
                 "summary": str(parsed.get("summary") or "").strip(),
-                "regression_type": str(parsed.get("regression_type") or "mixed").strip() or "mixed",
+                "regression_type": str(parsed.get("regression_type") or "mixed").strip()
+                or "mixed",
                 "metric_deltas": metric_deltas,
                 "artifact_deltas": artifact_deltas,
                 "likely_causes": likely_causes,
                 "supporting_signals": supporting_signals,
                 "confounders": confounders,
                 "recommended_next_steps": recommended_next_steps,
-                "source_run_ids": [str(primary_run.get("id") or "").strip(), str(comparison_run.get("id") or "").strip()],
+                "source_run_ids": [
+                    str(primary_run.get("id") or "").strip(),
+                    str(comparison_run.get("id") or "").strip(),
+                ],
                 "primary_run_id": str(primary_run.get("id") or "").strip(),
                 "comparison_run_id": str(comparison_run.get("id") or "").strip(),
-                "benchmark_family": str(primary_run.get("benchmark_family") or "").strip(),
-                "benchmark_suite_id": str(primary_run.get("benchmark_suite_id") or "").strip(),
-                "benchmark_case_ids": primary_run.get("benchmark_case_ids") if isinstance(primary_run.get("benchmark_case_ids"), list) else [],
-                "benchmark_baseline_id": str(primary_run.get("benchmark_baseline_id") or "").strip() or None,
+                "benchmark_family": str(
+                    primary_run.get("benchmark_family") or ""
+                ).strip(),
+                "benchmark_suite_id": str(
+                    primary_run.get("benchmark_suite_id") or ""
+                ).strip(),
+                "benchmark_case_ids": primary_run.get("benchmark_case_ids")
+                if isinstance(primary_run.get("benchmark_case_ids"), list)
+                else [],
+                "benchmark_baseline_id": str(
+                    primary_run.get("benchmark_baseline_id") or ""
+                ).strip()
+                or None,
                 "source_note_id": primary_run.get("research_note_id"),
-                "source_document_ids": primary_run.get("source_document_ids") if isinstance(primary_run.get("source_document_ids"), list) else [],
-                "source_paper_ids": primary_run.get("source_paper_ids") if isinstance(primary_run.get("source_paper_ids"), list) else [],
+                "source_document_ids": primary_run.get("source_document_ids")
+                if isinstance(primary_run.get("source_document_ids"), list)
+                else [],
+                "source_paper_ids": primary_run.get("source_paper_ids")
+                if isinstance(primary_run.get("source_paper_ids"), list)
+                else [],
                 "primary_run_summary": primary_run,
                 "comparison_run_summary": comparison_run,
                 "word_count": len("\n".join(markdown_lines).split()),
@@ -1648,9 +2129,18 @@ Schema:
         user_settings: Optional[UserLLMSettings],
         progress_callback: Optional[callable],
     ) -> Dict[str, Any]:
-        metadata = note_context.get("metadata") if isinstance(note_context.get("metadata"), dict) else {}
-        if str(metadata.get("artifact_type") or "").strip() != "compiler_regression_explanation":
-            raise ValueError("Compiler patch proposal requires a compiler regression explanation note")
+        metadata = (
+            note_context.get("metadata")
+            if isinstance(note_context.get("metadata"), dict)
+            else {}
+        )
+        if (
+            str(metadata.get("artifact_type") or "").strip()
+            != "compiler_regression_explanation"
+        ):
+            raise ValueError(
+                "Compiler patch proposal requires a compiler regression explanation note"
+            )
 
         system_prompt = """You are a compiler engineer proposing a bounded patch direction.
 Return JSON only.
@@ -1696,16 +2186,29 @@ Schema:
         candidate_change = str(parsed.get("candidate_change") or "").strip()
         expected_effect = str(parsed.get("expected_effect") or "").strip()
         mechanism = str(parsed.get("mechanism") or "").strip()
-        supporting_evidence = parsed.get("supporting_evidence") if isinstance(parsed.get("supporting_evidence"), list) else []
-        validation_plan = parsed.get("validation_plan") if isinstance(parsed.get("validation_plan"), list) else []
-        risk_assessment = parsed.get("risk_assessment") if isinstance(parsed.get("risk_assessment"), list) else []
+        supporting_evidence = (
+            parsed.get("supporting_evidence")
+            if isinstance(parsed.get("supporting_evidence"), list)
+            else []
+        )
+        validation_plan = (
+            parsed.get("validation_plan")
+            if isinstance(parsed.get("validation_plan"), list)
+            else []
+        )
+        risk_assessment = (
+            parsed.get("risk_assessment")
+            if isinstance(parsed.get("risk_assessment"), list)
+            else []
+        )
         rollback_or_guardrail = str(parsed.get("rollback_or_guardrail") or "").strip()
 
         markdown_lines = [
             "# Compiler Patch Proposal",
             "",
             "## Proposal Summary",
-            proposal_summary or "Draft a bounded compiler change based on the regression explanation.",
+            proposal_summary
+            or "Draft a bounded compiler change based on the regression explanation.",
             "",
             "## Target Area",
             target_area,
@@ -1742,7 +2245,9 @@ Schema:
                     markdown_lines.append(f"- {text}")
             markdown_lines.append("")
         if rollback_or_guardrail:
-            markdown_lines.extend(["## Rollback Or Guardrail", rollback_or_guardrail, ""])
+            markdown_lines.extend(
+                ["## Rollback Or Guardrail", rollback_or_guardrail, ""]
+            )
 
         if progress_callback:
             await progress_callback(75, "Formatting compiler patch proposal")
@@ -1759,14 +2264,29 @@ Schema:
                 "validation_plan": validation_plan,
                 "risk_assessment": risk_assessment,
                 "rollback_or_guardrail": rollback_or_guardrail,
-                "source_run_ids": metadata.get("source_run_ids") if isinstance(metadata.get("source_run_ids"), list) else [],
+                "source_run_ids": metadata.get("source_run_ids")
+                if isinstance(metadata.get("source_run_ids"), list)
+                else [],
                 "source_explanation_note_id": note_context.get("id"),
-                "source_document_ids": metadata.get("source_document_ids") if isinstance(metadata.get("source_document_ids"), list) else [],
-                "source_paper_ids": metadata.get("source_paper_ids") if isinstance(metadata.get("source_paper_ids"), list) else [],
-                "benchmark_family": str(metadata.get("benchmark_family") or "").strip() or None,
-                "benchmark_suite_id": str(metadata.get("benchmark_suite_id") or "").strip() or None,
-                "benchmark_case_ids": metadata.get("benchmark_case_ids") if isinstance(metadata.get("benchmark_case_ids"), list) else [],
-                "benchmark_baseline_id": str(metadata.get("benchmark_baseline_id") or "").strip() or None,
+                "source_document_ids": metadata.get("source_document_ids")
+                if isinstance(metadata.get("source_document_ids"), list)
+                else [],
+                "source_paper_ids": metadata.get("source_paper_ids")
+                if isinstance(metadata.get("source_paper_ids"), list)
+                else [],
+                "benchmark_family": str(metadata.get("benchmark_family") or "").strip()
+                or None,
+                "benchmark_suite_id": str(
+                    metadata.get("benchmark_suite_id") or ""
+                ).strip()
+                or None,
+                "benchmark_case_ids": metadata.get("benchmark_case_ids")
+                if isinstance(metadata.get("benchmark_case_ids"), list)
+                else [],
+                "benchmark_baseline_id": str(
+                    metadata.get("benchmark_baseline_id") or ""
+                ).strip()
+                or None,
                 "word_count": len("\n".join(markdown_lines).split()),
             },
             "artifacts": [],
@@ -1795,12 +2315,25 @@ Schema:
         tokens = {
             token
             for token in re.findall(r"[a-zA-Z_]{3,}", query_text.lower())
-            if token not in {"the", "and", "for", "with", "from", "that", "this", "compiler", "patch"}
+            if token
+            not in {
+                "the",
+                "and",
+                "for",
+                "with",
+                "from",
+                "that",
+                "this",
+                "compiler",
+                "patch",
+            }
         }
 
         ranked: List[tuple[int, Document]] = []
         for doc in documents:
-            path = str(doc.file_path or doc.source_identifier or doc.title or "").strip()
+            path = str(
+                doc.file_path or doc.source_identifier or doc.title or ""
+            ).strip()
             title = str(doc.title or "").strip()
             excerpt = str(doc.content or "")[:2000]
             haystack = f"{path}\n{title}\n{excerpt}".lower()
@@ -1824,7 +2357,9 @@ Schema:
             sample_documents.append(
                 {
                     "id": str(doc.id),
-                    "path": str(doc.file_path or doc.source_identifier or doc.title or "").strip(),
+                    "path": str(
+                        doc.file_path or doc.source_identifier or doc.title or ""
+                    ).strip(),
                     "title": str(doc.title or "").strip(),
                     "excerpt": str(doc.content or "")[:1200],
                 }
@@ -1837,7 +2372,9 @@ Schema:
             text = str(item).strip()
             if text:
                 repo_hints.append(text)
-        projects = config.get("projects") if isinstance(config.get("projects"), list) else []
+        projects = (
+            config.get("projects") if isinstance(config.get("projects"), list) else []
+        )
         for item in projects[:3]:
             if isinstance(item, dict):
                 text = str(item.get("id") or item.get("name") or "").strip()
@@ -1861,9 +2398,18 @@ Schema:
         user_settings: Optional[UserLLMSettings],
         progress_callback: Optional[callable],
     ) -> Dict[str, Any]:
-        metadata = note_context.get("metadata") if isinstance(note_context.get("metadata"), dict) else {}
-        if str(metadata.get("artifact_type") or "").strip() != "compiler_patch_proposal":
-            raise ValueError("Compiler patch draft requires a compiler patch proposal note")
+        metadata = (
+            note_context.get("metadata")
+            if isinstance(note_context.get("metadata"), dict)
+            else {}
+        )
+        if (
+            str(metadata.get("artifact_type") or "").strip()
+            != "compiler_patch_proposal"
+        ):
+            raise ValueError(
+                "Compiler patch draft requires a compiler patch proposal note"
+            )
 
         source_id = str(options.get("source_id") or "").strip()
         if not source_id:
@@ -1882,7 +2428,9 @@ Schema:
         )
         source_context = await self._load_repo_source_context(db, source_id, query_text)
         if not source_context:
-            raise ValueError("Could not load repo source context for compiler patch draft")
+            raise ValueError(
+                "Could not load repo source context for compiler patch draft"
+            )
 
         system_prompt = """You are a compiler engineer preparing a reviewable patch draft.
 Return JSON only.
@@ -1924,20 +2472,53 @@ Schema:
         parsed = self._parse_json_object(raw)
 
         draft_summary = str(parsed.get("draft_summary") or "").strip()
-        target_files = parsed.get("target_files") if isinstance(parsed.get("target_files"), list) else []
-        target_symbols = parsed.get("target_symbols") if isinstance(parsed.get("target_symbols"), list) else []
-        change_plan = parsed.get("change_plan") if isinstance(parsed.get("change_plan"), list) else []
-        proposed_code_regions = parsed.get("proposed_code_regions") if isinstance(parsed.get("proposed_code_regions"), list) else []
-        validation_commands = parsed.get("validation_commands") if isinstance(parsed.get("validation_commands"), list) else []
-        benchmark_validation_scope = parsed.get("benchmark_validation_scope") if isinstance(parsed.get("benchmark_validation_scope"), list) else []
-        risk_checks = parsed.get("risk_checks") if isinstance(parsed.get("risk_checks"), list) else []
-        rollback_steps = parsed.get("rollback_steps") if isinstance(parsed.get("rollback_steps"), list) else []
+        target_files = (
+            parsed.get("target_files")
+            if isinstance(parsed.get("target_files"), list)
+            else []
+        )
+        target_symbols = (
+            parsed.get("target_symbols")
+            if isinstance(parsed.get("target_symbols"), list)
+            else []
+        )
+        change_plan = (
+            parsed.get("change_plan")
+            if isinstance(parsed.get("change_plan"), list)
+            else []
+        )
+        proposed_code_regions = (
+            parsed.get("proposed_code_regions")
+            if isinstance(parsed.get("proposed_code_regions"), list)
+            else []
+        )
+        validation_commands = (
+            parsed.get("validation_commands")
+            if isinstance(parsed.get("validation_commands"), list)
+            else []
+        )
+        benchmark_validation_scope = (
+            parsed.get("benchmark_validation_scope")
+            if isinstance(parsed.get("benchmark_validation_scope"), list)
+            else []
+        )
+        risk_checks = (
+            parsed.get("risk_checks")
+            if isinstance(parsed.get("risk_checks"), list)
+            else []
+        )
+        rollback_steps = (
+            parsed.get("rollback_steps")
+            if isinstance(parsed.get("rollback_steps"), list)
+            else []
+        )
 
         markdown_lines = [
             "# Compiler Patch Draft",
             "",
             "## Draft Summary",
-            draft_summary or "Draft a repo-aware compiler patch from the proposal note.",
+            draft_summary
+            or "Draft a repo-aware compiler patch from the proposal note.",
             "",
         ]
         for heading, items in [
@@ -1980,7 +2561,9 @@ Schema:
             "metadata": {
                 "draft_summary": draft_summary,
                 "source_proposal_note_id": note_context.get("id"),
-                "source_explanation_note_id": metadata.get("source_explanation_note_id"),
+                "source_explanation_note_id": metadata.get(
+                    "source_explanation_note_id"
+                ),
                 "source_id": source_context.get("id"),
                 "source_name": source_context.get("name"),
                 "target_files": target_files,
@@ -2050,10 +2633,11 @@ Text:
 
             # Parse JSON array
             import json
+
             start = response.find("[")
             end = response.rfind("]")
             if start != -1 and end != -1:
-                themes = json.loads(response[start:end+1])
+                themes = json.loads(response[start : end + 1])
                 if isinstance(themes, list):
                     return [str(t) for t in themes[:15]]
         except Exception as e:
@@ -2084,10 +2668,11 @@ Text:
             )
 
             import json
+
             start = response.find("[")
             end = response.rfind("]")
             if start != -1 and end != -1:
-                findings = json.loads(response[start:end+1])
+                findings = json.loads(response[start : end + 1])
                 if isinstance(findings, list):
                     return [str(f) for f in findings[:10]]
         except Exception as e:
@@ -2158,6 +2743,7 @@ Text:
             elif job.output_format == "pptx":
                 # Build PPTX - simplified for synthesis
                 from app.services.pptx_builder import pptx_builder
+
                 slides = self._content_to_slides(content, job.title)
                 file_bytes = pptx_builder.build(slides, style=job.output_style)
                 ext = "pptx"
@@ -2209,7 +2795,9 @@ Text:
 
     def _content_to_slides(self, content: str, title: str) -> List[Dict[str, Any]]:
         """Convert content to presentation slides."""
-        slides = [{"type": "title", "title": title, "subtitle": "Document Synthesis Report"}]
+        slides = [
+            {"type": "title", "title": title, "subtitle": "Document Synthesis Report"}
+        ]
 
         # Split by major headings
         sections = content.split("\n## ")
@@ -2227,11 +2815,13 @@ Text:
                     bullets.append(line[:100])
 
             if bullets:
-                slides.append({
-                    "type": "content",
-                    "title": section_title,
-                    "bullets": bullets[:5],
-                })
+                slides.append(
+                    {
+                        "type": "content",
+                        "title": section_title,
+                        "bullets": bullets[:5],
+                    }
+                )
 
         return slides
 

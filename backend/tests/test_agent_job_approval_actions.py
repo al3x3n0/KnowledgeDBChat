@@ -1,11 +1,11 @@
 from app.api.endpoints.agent_jobs import (
-    _apply_checkpoint_action_patch,
     _append_operator_intervention,
     _append_step_event,
+    _apply_checkpoint_action_patch,
     _approval_payload_from_results,
     _normalize_checkpoint_action_patch,
-    _sync_execution_strategy_state,
     _set_current_plan_step_status,
+    _sync_execution_strategy_state,
 )
 
 
@@ -26,7 +26,10 @@ def test_approval_payload_from_results_prefers_execution_pending_then_direct_fal
     assert int(pending.get("iteration", 0)) == 2
 
     direct_only = {
-        "approval_checkpoint": {"iteration": 7, "action": {"tool": "create_document_from_text"}},
+        "approval_checkpoint": {
+            "iteration": 7,
+            "action": {"tool": "create_document_from_text"},
+        },
     }
     _, _, pending_direct = _approval_payload_from_results(direct_only)
     assert pending_direct is not None
@@ -116,7 +119,9 @@ def test_append_step_event_and_sync_execution_strategy_state():
 
     payload = {}
     approval = {"pending": {"iteration": 3}}
-    execution = _sync_execution_strategy_state(payload, approval_payload=approval, state=state)
+    execution = _sync_execution_strategy_state(
+        payload, approval_payload=approval, state=state
+    )
 
     assert isinstance(execution, dict)
     assert execution.get("approval_checkpoints") == approval

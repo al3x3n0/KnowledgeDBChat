@@ -2,17 +2,18 @@
 Common Pydantic schemas for API responses.
 """
 
-from typing import Generic, TypeVar, List, Optional, Dict, Any
-from pydantic import BaseModel, Field
 from datetime import datetime
+from typing import Any, Dict, Generic, List, Optional, TypeVar
 
-T = TypeVar('T')
+from pydantic import BaseModel, Field
+
+T = TypeVar("T")
 
 
 class PaginatedResponse(BaseModel, Generic[T]):
     """
     Standard paginated response schema.
-    
+
     Attributes:
         items: List of items in the current page
         total: Total number of items
@@ -20,29 +21,26 @@ class PaginatedResponse(BaseModel, Generic[T]):
         page_size: Number of items per page
         total_pages: Total number of pages
     """
+
     items: List[T]
     total: int = Field(..., ge=0, description="Total number of items")
     page: int = Field(..., ge=1, description="Current page number (1-indexed)")
     page_size: int = Field(..., ge=1, le=2000, description="Number of items per page")
     total_pages: int = Field(..., ge=0, description="Total number of pages")
-    
+
     @classmethod
     def create(
-        cls,
-        items: List[T],
-        total: int,
-        page: int,
-        page_size: int
+        cls, items: List[T], total: int, page: int, page_size: int
     ) -> "PaginatedResponse[T]":
         """
         Create a paginated response.
-        
+
         Args:
             items: List of items for current page
             total: Total number of items
             page: Current page number (1-indexed)
             page_size: Number of items per page
-            
+
         Returns:
             PaginatedResponse instance
         """
@@ -52,20 +50,21 @@ class PaginatedResponse(BaseModel, Generic[T]):
             total=total,
             page=page,
             page_size=page_size,
-            total_pages=total_pages
+            total_pages=total_pages,
         )
 
 
 class SuccessResponse(BaseModel):
     """
     Standard success response schema.
-    
+
     Attributes:
         success: Whether the operation was successful
         message: Success message
         data: Optional response data
         timestamp: Response timestamp
     """
+
     success: bool = True
     message: str
     data: Optional[Dict[str, Any]] = None
@@ -74,6 +73,7 @@ class SuccessResponse(BaseModel):
 
 class ErrorDetail(BaseModel):
     """Error detail schema."""
+
     field: Optional[str] = None
     message: str
     code: Optional[str] = None
@@ -82,7 +82,7 @@ class ErrorDetail(BaseModel):
 class ErrorResponse(BaseModel):
     """
     Standard error response schema.
-    
+
     Attributes:
         error: Error type/name
         detail: Error message
@@ -91,6 +91,7 @@ class ErrorResponse(BaseModel):
         correlation_id: Request correlation ID
         timestamp: Error timestamp
     """
+
     error: str
     detail: str
     status_code: int
@@ -102,10 +103,11 @@ class ErrorResponse(BaseModel):
 class MetadataResponse(BaseModel, Generic[T]):
     """
     Response with metadata.
-    
+
     Attributes:
         data: Response data
         metadata: Additional metadata
     """
+
     data: T
     metadata: Optional[Dict[str, Any]] = None

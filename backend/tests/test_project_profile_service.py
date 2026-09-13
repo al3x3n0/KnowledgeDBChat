@@ -22,7 +22,10 @@ def test_infer_project_profile_from_paths_detects_stack_and_commands():
     assert profile["sampled_files"] == 7
     assert "python" in profile["detected_stack"]
     assert "typescript" in profile["detected_stack"]
-    assert any(cmd.startswith("cd backend &&") or cmd.startswith("python -m pytest") for cmd in profile["command_groups"]["test"])
+    assert any(
+        cmd.startswith("cd backend &&") or cmd.startswith("python -m pytest")
+        for cmd in profile["command_groups"]["test"]
+    )
     assert "Makefile" in profile["marker_files"]
 
 

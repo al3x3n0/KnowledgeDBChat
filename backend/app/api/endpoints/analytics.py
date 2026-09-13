@@ -3,16 +3,17 @@ Analytics API endpoints for data analysis and visualization.
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional
 from uuid import UUID
-from fastapi import APIRouter, Depends, Query, HTTPException
+
+from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.services.auth_service import get_current_user
 from app.models.user import User
 from app.services.analytics_service import analytics_service
+from app.services.auth_service import get_current_user
 
 router = APIRouter()
 
@@ -77,8 +78,12 @@ async def get_trending_topics(
 
 @router.get("/chart")
 async def get_chart_data(
-    metric: str = Query(..., description="Metric: document_count, file_size, content_size"),
-    group_by: str = Query(..., description="Group by: source_type, file_type, author, date"),
+    metric: str = Query(
+        ..., description="Metric: document_count, file_size, content_size"
+    ),
+    group_by: str = Query(
+        ..., description="Group by: source_type, file_type, author, date"
+    ),
     chart_type: str = Query("bar", description="Chart type: bar, line, pie, area"),
     date_from: Optional[str] = Query(None, description="Start date"),
     date_to: Optional[str] = Query(None, description="End date"),
@@ -146,5 +151,5 @@ async def export_data(
     return Response(
         content=content,
         media_type=content_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'}
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )

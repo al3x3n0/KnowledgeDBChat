@@ -27,6 +27,7 @@ from app.models.agent_job import AgentJob, AgentJobStatus
 from app.services.autonomous_agent_executor import AutonomousAgentExecutor
 from app.utils.exceptions import LLMServiceError
 
+
 @pytest.fixture(autouse=True)
 def _no_redis_feature_flags(monkeypatch):
     """Serve feature-flag defaults without Redis (no localhost:6379 retries)."""
@@ -88,7 +89,9 @@ def decision(
     reasoning="scripted",
     assessment=None,
 ):
-    action = {"tool": tool, "params": params or {}, "purpose": "scripted"} if tool else None
+    action = (
+        {"tool": tool, "params": params or {}, "purpose": "scripted"} if tool else None
+    )
     return json.dumps(
         {
             "goal_achieved": goal_achieved,
@@ -211,7 +214,9 @@ async def test_golden_research_job_completes_goal(db_session):
         db_session,
         decisions=[
             decision(tool="search_documents", params={"query": "reranking"}),
-            decision(tool="save_research_finding", params={"title": "t", "content": "c"}),
+            decision(
+                tool="save_research_finding", params={"title": "t", "content": "c"}
+            ),
             decision(goal_achieved=True, reasoning="Evidence gathered and saved."),
         ],
         tool_results={
@@ -278,7 +283,9 @@ async def test_golden_goal_contract_blocks_false_completion(db_session):
         db_session,
         decisions=[
             decision(goal_achieved=True, reasoning="premature claim"),
-            decision(tool="save_research_finding", params={"title": "t", "content": "c"}),
+            decision(
+                tool="save_research_finding", params={"title": "t", "content": "c"}
+            ),
             decision(goal_achieved=True, reasoning="now with evidence"),
         ],
         tool_results={"save_research_finding": FINDING_RESULT},
@@ -318,3 +325,141 @@ async def test_golden_job_survives_tool_failure(db_session):
     assert run.job.status == AgentJobStatus.COMPLETED.value
     assert run.actions.tools_called.count("search_documents") == 2
     assert run.job.error_count in (0, 1)  # tool failure must not fail the job
+
+
+@pytest.mark.asyncio
+async def test_golden_repeated_identical_failure_escalates_to_a_protocol(db_session):
+    """The real loop must tell a run to stop retrying what cannot work.
+
+    One run called the compiler with an unsupported flag four times, reading a
+    message that could not help because no retry could have fixed it. By the
+    third identical failure the run's own record should show the escalation.
+    """
+    params = {"code": "int main(void){return 0;}", "flags": "-O3 -march=native"}
+    failure = {
+        "success": False,
+        "error": "Compilation failed: clang: error: unsupported argument 'native'",
+    }
+
+    run = await run_golden_job(
+        db_session,
+        decisions=[
+            decision(tool="compile_c_snippet", params=params),
+            decision(tool="compile_c_snippet", params=params),
+            decision(tool="compile_c_snippet", params=params),
+            decision(goal_achieved=True, reasoning="done"),
+        ],
+        tool_results={"compile_c_snippet": failure},
+        max_iterations=6,
+    )
+
+    ledger = (run.job.results or {}).get("actions") or []
+    repeats = [
+        row
+        for row in ledger
+        if row.get("tool") == "compile_c_snippet" and row.get("repeat_attempt")
+    ]
+    assert repeats, "a thrice-repeated identical failure left no trace in the ledger"
+    assert max(row["repeat_attempt"] for row in repeats) >= 3
+    assert any(row.get("diagnosis_escalated") for row in repeats)
+    assert all(row.get("failure_class") == "compilation" for row in repeats)
+
+
+@pytest.mark.asyncio
+async def test_golden_varied_retries_are_not_flagged_as_repeats(db_session):
+    """Changing the call between attempts is the wanted behaviour."""
+    failure = {"success": False, "error": "Compilation failed: some error"}
+
+    run = await run_golden_job(
+        db_session,
+        decisions=[
+            decision(tool="compile_c_snippet", params={"code": "a", "flags": "-O1"}),
+            decision(tool="compile_c_snippet", params={"code": "a", "flags": "-O2"}),
+            decision(tool="compile_c_snippet", params={"code": "a", "flags": "-O3"}),
+            decision(goal_achieved=True, reasoning="done"),
+        ],
+        tool_results={"compile_c_snippet": failure},
+        max_iterations=6,
+    )
+
+    ledger = (run.job.results or {}).get("actions") or []
+    assert not [row for row in ledger if row.get("repeat_attempt")]
+
+
+@pytest.mark.asyncio
+async def test_golden_a_voluntary_stop_cannot_skip_the_contract(db_session):
+    """Deciding the answer is "no" is a reason to stop, not a reason to skip
+    settling the prediction that produced it.
+
+    A live run stopped at iteration 6 with its predictions unsettled and no
+    method recorded, and still reported completed: the contract gated
+    goal_achieved and left this path open.
+    """
+    run = await run_golden_job(
+        db_session,
+        decisions=[
+            decision(tool="search_documents", params={"query": "x"}),
+            decision(should_stop=True, reasoning="nothing worth proposing"),
+            decision(tool="search_documents", params={"query": "y"}),
+            decision(goal_achieved=True, reasoning="done"),
+        ],
+        tool_results={"search_documents": SEARCH_RESULT},
+        config={
+            "goal_contract": {
+                "enabled": True,
+                "min_progress": 0,
+                "required_finding_types": ["never_produced"],
+            }
+        },
+        max_iterations=6,
+    )
+
+    assert run.job.iteration > 2, "the run stopped despite an unmet contract"
+    blocked = [
+        entry
+        for entry in run.job.execution_log or []
+        if entry.get("phase") == "voluntary_stop_blocked"
+    ]
+    contract = (run.job.results or {}).get("goal_contract") or {}
+    assert contract.get("satisfied") is False
+    assert blocked or contract.get("stopped_short"), (
+        "a voluntary stop under an unmet contract must be blocked or recorded "
+        "as stopping short"
+    )
+
+
+@pytest.mark.asyncio
+async def test_golden_an_insistent_stop_is_honoured_and_recorded(db_session):
+    """The contract holds a run to its requirements; it must not trap one
+    whose tools have genuinely stopped working."""
+    run = await run_golden_job(
+        db_session,
+        decisions=[decision(should_stop=True, reasoning="cannot proceed")] * 6,
+        tool_results={},
+        config={
+            "goal_contract": {
+                "enabled": True,
+                "min_progress": 0,
+                "required_finding_types": ["never_produced"],
+            }
+        },
+        max_iterations=8,
+    )
+
+    contract = (run.job.results or {}).get("goal_contract") or {}
+    assert contract.get("satisfied") is False
+    assert (
+        contract.get("stopped_short") is True
+    ), "an insistent stop must be honoured, and recorded as short of contract"
+
+
+@pytest.mark.asyncio
+async def test_golden_a_stop_with_no_contract_is_left_alone(db_session):
+    run = await run_golden_job(
+        db_session,
+        decisions=[decision(should_stop=True, reasoning="done here")],
+        tool_results={},
+        max_iterations=6,
+    )
+
+    assert run.job.iteration == 1, "an ungated run should stop when it says so"

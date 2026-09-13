@@ -61,11 +61,15 @@ class CodePatchApplyService:
             if line.startswith("--- "):
                 # expect +++ next
                 if i + 1 >= len(lines) or not lines[i + 1].startswith("+++ "):
-                    raise UnifiedDiffApplyError("Invalid unified diff: missing +++ line")
+                    raise UnifiedDiffApplyError(
+                        "Invalid unified diff: missing +++ line"
+                    )
                 old_path = lines[i][4:].strip()
                 new_path = lines[i + 1][4:].strip()
                 if old_path == "/dev/null" or new_path == "/dev/null":
-                    raise UnifiedDiffApplyError("Patch adds/deletes files; not supported in MVP")
+                    raise UnifiedDiffApplyError(
+                        "Patch adds/deletes files; not supported in MVP"
+                    )
                 _flush()
                 current_path = _clean_path(new_path)
                 i += 2
@@ -124,14 +128,18 @@ class CodePatchApplyService:
             if applied:
                 debug["applied"] += 1
             else:
-                raise UnifiedDiffApplyError(f"Failed to apply hunk for {file_diff.path}: {info.get('error')}")
+                raise UnifiedDiffApplyError(
+                    f"Failed to apply hunk for {file_diff.path}: {info.get('error')}"
+                )
 
         new_text = "\n".join(lines)
         if original.endswith("\n"):
             new_text += "\n"
         return new_text, debug
 
-    def _apply_hunk(self, lines: List[str], hunk: DiffHunk) -> Tuple[bool, dict, List[str]]:
+    def _apply_hunk(
+        self, lines: List[str], hunk: DiffHunk
+    ) -> Tuple[bool, dict, List[str]]:
         expected_idx = max(0, int(hunk.old_start) - 1)
         window = 8
 
@@ -163,7 +171,11 @@ class CodePatchApplyService:
                     break
 
         if start_idx is None:
-            return False, {"hunk": self._hunk_id(hunk), "error": "context mismatch"}, lines
+            return (
+                False,
+                {"hunk": self._hunk_id(hunk), "error": "context mismatch"},
+                lines,
+            )
 
         out_prefix = lines[:start_idx]
         idx = start_idx
@@ -181,7 +193,11 @@ class CodePatchApplyService:
 
         out_suffix = lines[idx:]
         new_lines = out_prefix + out_mid + out_suffix
-        return True, {"hunk": self._hunk_id(hunk), "applied_at": start_idx + 1}, new_lines
+        return (
+            True,
+            {"hunk": self._hunk_id(hunk), "applied_at": start_idx + 1},
+            new_lines,
+        )
 
     @staticmethod
     def _hunk_id(h: DiffHunk) -> str:
@@ -189,4 +205,3 @@ class CodePatchApplyService:
 
 
 code_patch_apply_service = CodePatchApplyService()
-

@@ -26,7 +26,10 @@ const api = require('../../services/api').default;
 
 const renderPage = (initialEntry = '/workflows') =>
   render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <Routes>
         <Route path="/workflows" element={<WorkflowsPage />} />
         <Route path="/workflows/:workflowId/executions" element={<div>Executions page</div>} />

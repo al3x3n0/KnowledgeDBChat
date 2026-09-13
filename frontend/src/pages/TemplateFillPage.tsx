@@ -2,8 +2,8 @@
  * Template Fill page for AI-powered document generation
  */
 
-import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { useQuery, useMutation, useQueryClient } from 'react-query';
+import React, { useState, useEffect, useRef } from 'react';
+import { useQuery, useMutation } from 'react-query';
 import {
   Upload,
   FileText,
@@ -14,7 +14,6 @@ import {
   Trash2,
   RefreshCw,
   Loader2,
-  Search,
   Plus,
   X,
   FileCheck,
@@ -23,21 +22,12 @@ import { formatDistanceToNow } from 'date-fns';
 import toast from 'react-hot-toast';
 
 import { apiClient } from '../services/api';
-import type {
-  Document as KnowledgeDocument,
-  TemplateJob,
-  TemplateProgressUpdate,
-} from '../types';
-import { useAuth } from '../contexts/AuthContext';
+import type { TemplateJob, TemplateProgressUpdate } from '../types';
 import Button from '../components/common/Button';
 import Input from '../components/common/Input';
 import LoadingSpinner from '../components/common/LoadingSpinner';
-import { formatFileSize } from '../utils/formatting';
 
 const TemplateFillPage: React.FC = () => {
-  const { user } = useAuth();
-  const queryClient = useQueryClient();
-
   // State
   const [templateFile, setTemplateFile] = useState<File | null>(null);
   const [selectedDocuments, setSelectedDocuments] = useState<string[]>([]);

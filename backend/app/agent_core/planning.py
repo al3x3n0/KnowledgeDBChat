@@ -68,7 +68,9 @@ class ExecutionPlan(BaseModel):
     steps: List[PlanStep]
     subgoals: List[Subgoal] = Field(default_factory=list)
     version: int = 1
-    created_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+    created_at: str = Field(
+        default_factory=lambda: datetime.now(timezone.utc).isoformat()
+    )
     last_replanned_at: Optional[str] = None
     replan_count: int = 0
 
@@ -179,7 +181,9 @@ class AgentExecutionPlanner:
                 user_settings=user_settings,
                 routing=routing,
             )
-            plan = self._parse_plan_response(str(response or ""), available_tools, max_steps)
+            plan = self._parse_plan_response(
+                str(response or ""), available_tools, max_steps
+            )
             if plan:
                 plan.steps = self.annotate_dependencies(plan.steps)
                 return plan
@@ -217,7 +221,10 @@ class AgentExecutionPlanner:
         plan_progress = state.get("plan_progress", 0)
         goal_progress = state.get("goal_progress", 0)
         divergence_threshold = cfg.get("replan_progress_divergence_threshold", 30)
-        if plan_progress > 80 and (plan_progress - goal_progress) > divergence_threshold:
+        if (
+            plan_progress > 80
+            and (plan_progress - goal_progress) > divergence_threshold
+        ):
             return "progress_divergence"
         return None
 
@@ -233,8 +240,12 @@ class AgentExecutionPlanner:
         max_steps: int = 6,
     ) -> ExecutionPlan:
         old_plan = state.get("execution_plan") or []
-        completed = [s for s in old_plan if isinstance(s, dict) and s.get("status") == "done"]
-        remaining = [s for s in old_plan if isinstance(s, dict) and s.get("status") != "done"]
+        completed = [
+            s for s in old_plan if isinstance(s, dict) and s.get("status") == "done"
+        ]
+        remaining = [
+            s for s in old_plan if isinstance(s, dict) and s.get("status") != "done"
+        ]
         findings = state.get("findings", [])
 
         prompt = _REPLAN_PROMPT.format(
@@ -263,7 +274,9 @@ class AgentExecutionPlanner:
                 user_settings=user_settings,
                 routing=routing,
             )
-            plan = self._parse_plan_response(str(response or ""), available_tools, max_steps)
+            plan = self._parse_plan_response(
+                str(response or ""), available_tools, max_steps
+            )
             if plan:
                 plan.version = state.get("execution_plan_version", 1) + 1
                 plan.replan_count = replan_count
@@ -274,7 +287,9 @@ class AgentExecutionPlanner:
             logger.error(f"Replan LLM call failed: {exc}")
 
         return ExecutionPlan(
-            steps=[PlanStep.model_validate(s) for s in remaining if isinstance(s, dict)],
+            steps=[
+                PlanStep.model_validate(s) for s in remaining if isinstance(s, dict)
+            ],
             version=state.get("execution_plan_version", 1) + 1,
             replan_count=replan_count,
             last_replanned_at=datetime.now(timezone.utc).isoformat(),
@@ -300,7 +315,10 @@ class AgentExecutionPlanner:
                         )
                     else:
                         subgoals.append(
-                            Subgoal(title=str(criterion)[:220], success_criteria=str(criterion))
+                            Subgoal(
+                                title=str(criterion)[:220],
+                                success_criteria=str(criterion),
+                            )
                         )
                 return subgoals
 
@@ -333,7 +351,8 @@ class AgentExecutionPlanner:
         return [
             step
             for step in plan.steps
-            if step.status == "pending" and all(dep in done_ids for dep in step.depends_on)
+            if step.status == "pending"
+            and all(dep in done_ids for dep in step.depends_on)
         ]
 
     @staticmethod
@@ -389,7 +408,11 @@ class AgentExecutionPlanner:
             return None
 
         subgoals: List[Subgoal] = []
-        for raw_subgoal in payload.get("subgoals", []) if isinstance(payload.get("subgoals", []), list) else []:
+        for raw_subgoal in (
+            payload.get("subgoals", [])
+            if isinstance(payload.get("subgoals", []), list)
+            else []
+        ):
             if isinstance(raw_subgoal, dict):
                 try:
                     subgoals.append(Subgoal.model_validate(raw_subgoal))
@@ -419,7 +442,10 @@ class AgentExecutionPlanner:
                     title="Synthesize results",
                     objective="Compile findings into a coherent result",
                     exit_criteria="Final result produced",
-                    suggested_tools=["save_research_finding", "create_synthesis_document"],
+                    suggested_tools=[
+                        "save_research_finding",
+                        "create_synthesis_document",
+                    ],
                 ),
             ]
         )
@@ -428,9 +454,23 @@ class AgentExecutionPlanner:
     def _tool_family(tools: List[str]) -> str:
         if not tools:
             return "general"
-        search_tools = {"search_documents", "search_arxiv", "search_with_filters", "web_scrape"}
-        doc_tools = {"read_document_content", "get_document_details", "summarize_document", "find_similar_documents"}
-        synthesis_tools = {"create_synthesis_document", "save_research_finding", "compare_methodologies"}
+        search_tools = {
+            "search_documents",
+            "search_arxiv",
+            "search_with_filters",
+            "web_scrape",
+        }
+        doc_tools = {
+            "read_document_content",
+            "get_document_details",
+            "summarize_document",
+            "find_similar_documents",
+        }
+        synthesis_tools = {
+            "create_synthesis_document",
+            "save_research_finding",
+            "compare_methodologies",
+        }
         code_tools = {"execute_python", "execute_data_pipeline", "write_and_run_script"}
 
         tools_set = set(tools)
@@ -449,7 +489,9 @@ class AgentExecutionPlanner:
         return Subgoal(
             title=" + ".join(step.title for step in steps)[:220],
             success_criteria=(
-                "; ".join(step.exit_criteria for step in steps if step.exit_criteria)[:400]
+                "; ".join(step.exit_criteria for step in steps if step.exit_criteria)[
+                    :400
+                ]
                 or "All linked steps completed"
             ),
             linked_step_ids=[step.step_id for step in steps],

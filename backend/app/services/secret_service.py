@@ -32,4 +32,3 @@ class SecretService:
             return raw.decode("utf-8")
         except InvalidToken:
             return None
-

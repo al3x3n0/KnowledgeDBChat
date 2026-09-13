@@ -1,0 +1,230 @@
+"""Read a gem5 stats.txt into the numbers a measurement needs.
+
+gem5 emits several hundred statistics per run. A referee that hands all of them
+back buries the two or three that settle a prediction, and one that hands back
+a hand-picked few silently decides what the question was. This parses the file
+whole and names the handful that answer "how long did this take", leaving the
+rest addressable by name.
+
+Cycles are the measurement to prefer over seconds: gem5's simSeconds depends on
+the clock the config assigned, so comparing two runs by seconds compares their
+configurations as much as their code.
+"""
+
+from __future__ import annotations
+
+import math
+import re
+from typing import Any, Dict, Iterable, List, Mapping, Optional, Sequence
+
+# "name    value    # description", with values that may be ints, floats, nan
+# or inf. Distribution rows carry extra columns and are skipped by taking only
+# the first value.
+_STAT_LINE = re.compile(
+    r"^(?P<name>[A-Za-z_][\w.:]*)\s+(?P<value>-?[\d.]+(?:[eE][-+]?\d+)?|nan|inf)\b"
+)
+
+# Names differ across gem5 versions, so each metric lists the spellings seen
+# rather than assuming one. A referee that reports None because a key moved is
+# worse than no referee.
+CYCLE_KEYS = (
+    "system.cpu.numCycles",
+    "system.cpu0.numCycles",
+    "system.switch_cpus.numCycles",
+)
+INSTRUCTION_KEYS = (
+    "simInsts",
+    "system.cpu.commitStats0.numInsts",
+    "system.cpu.committedInsts",
+    "system.cpu.commit.committedInsts",
+)
+SECONDS_KEYS = ("simSeconds",)
+TICK_KEYS = ("simTicks",)
+
+
+def parse(lines: Iterable[str]) -> Dict[str, float]:
+    """Parse every scalar statistic in a stats.txt."""
+    stats: Dict[str, float] = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("-"):
+            continue
+        match = _STAT_LINE.match(line)
+        if not match:
+            continue
+        text = match.group("value")
+        try:
+            value = float(text)
+        except ValueError:
+            continue
+        stats.setdefault(match.group("name"), value)
+    return stats
+
+
+def first_present(stats: Dict[str, float], keys: Iterable[str]) -> Optional[float]:
+    for key in keys:
+        if key in stats:
+            return stats[key]
+    return None
+
+
+def summarize(stats: Dict[str, float]) -> Dict[str, Any]:
+    """Pull out the few numbers that settle a performance claim."""
+    cycles = first_present(stats, CYCLE_KEYS)
+    instructions = first_present(stats, INSTRUCTION_KEYS)
+    ipc: Optional[float] = None
+    if cycles and instructions is not None and cycles != 0:
+        ipc = round(instructions / cycles, 4)
+
+    return {
+        "cycles": cycles,
+        "instructions": instructions,
+        "ipc": ipc,
+        "sim_seconds": first_present(stats, SECONDS_KEYS),
+        "sim_ticks": first_present(stats, TICK_KEYS),
+        "stats_parsed": len(stats),
+        # Say which spelling was found: comparing a cycle count from one gem5
+        # version against another's is only safe if they came from the same
+        # statistic.
+        "cycles_stat": next((k for k in CYCLE_KEYS if k in stats), None),
+        "instructions_stat": next((k for k in INSTRUCTION_KEYS if k in stats), None),
+    }
+
+
+def speedup(
+    baseline_cycles: Optional[float], variant_cycles: Optional[float]
+) -> Optional[float]:
+    """Baseline over variant, or None when either side is missing or zero.
+
+    Reporting a speedup against a missing measurement would invent a result;
+    reporting one against zero cycles would invent an infinite one.
+    """
+    if not baseline_cycles or not variant_cycles:
+        return None
+    return round(baseline_cycles / variant_cycles, 4)
+
+
+# --- counters over time ---------------------------------------------------
+#
+# A hardware predictor does not see run totals. It sees counters sampled while
+# the program runs, and decides from the recent past what to do next. gem5
+# gives that shape when the workload calls the m5 dump-and-reset pseudo-op:
+# stats.txt then holds one section per interval, each holding the counts since
+# the previous one.
+#
+# This is the difference between "the program missed cache 4M times" and "here
+# is the miss rate every 200k instructions", and only the second can train or
+# evaluate a predictor.
+
+DUMP_MARKER = "Begin Simulation Statistics"
+
+
+def parse_intervals(lines: Iterable[str]) -> List[Dict[str, float]]:
+    """Every dump in a stats.txt, in order, as one dict per interval.
+
+    A run that never called the pseudo-op yields a single interval, which is
+    the same thing `parse` returns and is not an error -- it is a trace of
+    length one, and the caller can see that from its length.
+    """
+    intervals: List[Dict[str, float]] = []
+    current: Dict[str, float] = {}
+    started = False
+
+    for raw in lines:
+        line = raw.strip()
+        if DUMP_MARKER in line:
+            if started and current:
+                intervals.append(current)
+            current = {}
+            started = True
+            continue
+        if not line or line.startswith("-"):
+            continue
+        match = _STAT_LINE.match(line)
+        if not match:
+            continue
+        try:
+            value = float(match.group("value"))
+        except ValueError:
+            continue
+        current.setdefault(match.group("name"), value)
+
+    if current:
+        intervals.append(current)
+    return intervals
+
+
+def varying_counters(
+    intervals: Sequence[Mapping[str, float]], limit: int = 60
+) -> List[str]:
+    """Counters that actually move across the trace, most variable first.
+
+    A counter with the same value in every interval cannot predict anything
+    that changes, and gem5 emits several hundred of them -- clock periods,
+    configured sizes, totals that never reset. Returning them all buries the
+    signal in constants, so they are dropped here rather than left for whatever
+    reads this to notice.
+
+    Ranked by coefficient of variation rather than raw spread, so a counter
+    measured in millions does not outrank one measured in tens purely for being
+    large.
+
+    Two filters, both learned from the first real trace. A counter carrying
+    NaN is dropped, because gem5 prints that for a statistic with no samples
+    and it poisons every arithmetic downstream. And a counter that is zero in
+    most intervals is dropped, because it describes an *event* rather than a
+    level -- program startup fires dozens of them exactly once, and ranking by
+    coefficient of variation puts precisely those at the top while burying the
+    counters that track the workload. On the first trace tried, the entire top
+    of the list was startup noise and `numCycles` did not make the first forty.
+
+    The usual prediction targets -- cycles and committed instructions -- are
+    kept at the front regardless of rank, since a trace that omits the thing
+    you want to predict is not usable for prediction.
+    """
+    if len(intervals) < 2:
+        return []
+
+    names = set()
+    for interval in intervals:
+        names.update(interval)
+
+    scored: List[tuple] = []
+    for name in names:
+        values = [float(i.get(name, 0.0)) for i in intervals]
+        # gem5 prints `nan` for statistics with no samples in an interval --
+        # a rate whose denominator was zero, say. Carrying those forward
+        # poisons every arithmetic downstream of here silently, and a counter
+        # that reports NaN is the measurement saying it has nothing, which is
+        # not a value to predict from.
+        if any(math.isnan(v) or math.isinf(v) for v in values):
+            continue
+        if len(set(values)) < 2:
+            continue
+        if sum(1 for v in values if v != 0) * 2 < len(values):
+            continue
+        mean = sum(values) / len(values)
+        if mean == 0:
+            continue
+        spread = (max(values) - min(values)) / abs(mean)
+        scored.append((spread, name))
+
+    scored.sort(reverse=True)
+    ranked = [name for _, name in scored]
+
+    # Keep the usual targets whatever their rank.
+    pinned = [
+        name for name in list(CYCLE_KEYS) + list(INSTRUCTION_KEYS) if name in ranked
+    ]
+    rest = [name for name in ranked if name not in pinned]
+    return (pinned + rest)[: max(1, limit)]
+
+
+def as_series(
+    intervals: Sequence[Mapping[str, float]], names: Sequence[str]
+) -> Dict[str, List[float]]:
+    """The named counters as one list per counter, aligned by interval."""
+    return {
+        name: [float(interval.get(name, 0.0)) for interval in intervals]
+        for name in names
+    }

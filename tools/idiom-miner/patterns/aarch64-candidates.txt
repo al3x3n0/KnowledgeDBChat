@@ -1,0 +1,34 @@
+# Candidate idioms for AArch64 instruction-set extension analysis.
+#
+# Each line is `name: pattern`. `$id` is any identifier, `$num` any numeric
+# literal, `$any` any single token; anything else matches a token exactly.
+#
+# These count STATIC OCCURRENCES in source. A high count is a reason to measure
+# an idiom, never on its own a reason to propose an instruction: the saxpy loop
+# measured today lost 300 instructions and zero cycles. Pair every count with a
+# per-occurrence cost from analyze_snippet_cycles before ranking anything.
+
+# Dot-product / multiply-accumulate shapes, the classic fusion candidates.
+indexed_product: $id [ $id ] * $id [ $id ]
+accumulate_indexed_product: $id += $id [ $id ] * $id [ $id ]
+scalar_multiply_add: $id = $id * $id + $id
+fma_call: fmaf ( $any
+
+# Reciprocal and root, where an approximation instruction may already exist.
+divide_by_sqrt: / sqrtf ( $any
+reciprocal: $num / $id
+sqrt_call: sqrtf ( $any
+rsqrt_idiom: 1.0f / sqrtf ( $any
+
+# Saturating and clamping, common in engine maths and pixel work.
+clamp_call: Clamp ( $any
+min_of_max: min ( max ( $any
+
+# Fixed-point and packing, where a fused pack/shift could pay.
+shift_then_mask: $id >> $num & $num
+mask_then_shift: $id & $num >> $num
+byte_extract: ( $id >> $num ) & 0xff
+
+# Horizontal reductions, which vectorize poorly and cost a chain of adds.
+loop_sum_index: $id += $id [ $id ]
+loop_max_index: $id = max ( $id , $id [ $id ]

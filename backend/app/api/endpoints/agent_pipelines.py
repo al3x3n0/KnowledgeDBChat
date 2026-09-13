@@ -1,0 +1,737 @@
+"""Pipeline specs: check one before it runs, and compile it to a chain.
+
+`agent_pipeline_spec` and `agent_pipeline_binding` have existed and been tested
+for a while with no way to reach them: no endpoint, no client method, nothing
+in the UI. The capability they carry is the one that saves the most — every
+check here is decidable from the spec alone, before anything expensive starts:
+
+  - a contract asking for evidence no tool produces
+  - a budget that sounded generous and is two orders of magnitude short
+  - a stage built on a measurement the stage before it never takes
+  - a loop with no bound
+
+Those are the failures that otherwise cost a full run to discover.
+
+Nothing here launches anything. `/check` is read-only, and `/bind` returns the
+chain a pipeline compiles to so it can be inspected before it is used —
+launching stays with the existing chain endpoints, which already carry the
+authorisation and budget checks a launch needs.
+"""
+
+from datetime import datetime
+from typing import Optional
+from uuid import UUID
+
+from fastapi import APIRouter, Depends, HTTPException
+from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.core.database import get_db
+from app.models.agent_job import AgentJobStatus
+from app.models.agent_pipeline import AgentPipeline
+from app.models.user import User
+from app.schemas.agent_job import AgentJobCreate
+from app.schemas.agent_pipeline import (
+    PipelineBindResponse,
+    PipelineCheckResponse,
+    PipelineDraftRequest,
+    PipelineDraftResponse,
+    PipelineEvidenceType,
+    PipelineInsertStageRequest,
+    PipelineInsertStageResponse,
+    PipelineLaunchRequest,
+    PipelineLaunchResponse,
+    PipelinePlanResponse,
+    PipelineRestartRequest,
+    PipelineRestartResponse,
+    PipelineRunStage,
+    PipelineRunStagesResponse,
+    PipelineSpecRequest,
+    PipelineVocabularyResponse,
+    SavedPipelineCreate,
+    SavedPipelineResponse,
+    SavedPipelineUpdate,
+    StagePlanResponse,
+)
+from app.services import (
+    agent_pipeline_binding,
+    agent_pipeline_draft,
+    agent_pipeline_restart,
+    agent_pipeline_spec,
+    agent_pipeline_vocabulary,
+)
+from app.services.agent_job_creation_service import agent_job_creation_service
+from app.services.auth_service import get_current_user
+from app.tasks.agent_job_tasks import execute_agent_job_task
+
+router = APIRouter()
+
+
+def _normalized(spec):
+    """Parse a spec, refusing the shapes `normalize` would quietly swallow.
+
+    `normalize` is deliberately lenient: `stages: "oops"` becomes no stages at
+    all, and `validate` then reports "pipeline has no stages". That is true and
+    useless — the author did write stages, they wrote them wrongly, and being
+    told the opposite sends them looking in the wrong place. The one structural
+    check that leniency hides belongs here rather than as a second declaration
+    of the whole spec shape.
+    """
+    if not isinstance(spec, dict):
+        raise HTTPException(
+            status_code=400, detail="Not a pipeline spec: expected an object"
+        )
+    stages = spec.get("stages")
+    if stages is not None and not isinstance(stages, (list, tuple)):
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                "Not a pipeline spec: 'stages' must be a list, got "
+                f"{type(stages).__name__}"
+            ),
+        )
+    try:
+        return agent_pipeline_spec.normalize(spec)
+    except (ValueError, TypeError, AttributeError) as error:
+        # A spec too malformed to parse is still an answer about the spec, not
+        # a server fault.
+        raise HTTPException(status_code=400, detail=f"Not a pipeline spec: {error}")
+
+
+@router.post("/check", response_model=PipelineCheckResponse)
+async def check_pipeline(
+    payload: PipelineSpecRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Say everything that is wrong with a pipeline, without running it.
+
+    Deliberately not fail-fast. An author wants the whole list — fixing one
+    problem only to be told about the next one is the slow way to find out a
+    spec is unusable.
+    """
+    pipeline = _normalized(payload.spec)
+    problems = agent_pipeline_spec.validate(pipeline)
+    valid = not problems
+
+    # Only ask the later questions once the earlier ones are settled: binding
+    # and planning a spec that is already invalid produces noise, not answers.
+    binding_problems: list[str] = []
+    plan_response = None
+    budget = None
+    description: list[str] = []
+
+    if valid:
+        binding_problems = agent_pipeline_binding.expressible(pipeline)
+        description = agent_pipeline_spec.describe(pipeline)
+        compiled = agent_pipeline_spec.plan(pipeline)
+        plan_response = PipelinePlanResponse(
+            order=list(compiled.order),
+            stages=[
+                StagePlanResponse(
+                    stage_id=s.stage_id,
+                    tools=list(s.tools),
+                    iterations=s.iterations,
+                    seconds=s.seconds,
+                    checkpoint=s.checkpoint,
+                    unpriced=list(s.unpriced),
+                )
+                for s in compiled.stages
+            ],
+            total_seconds=compiled.total_seconds,
+            critical_path_seconds=compiled.critical_path_seconds,
+            checkpoints=list(compiled.checkpoints),
+        )
+        if payload.budget_seconds:
+            budget = agent_pipeline_spec.check_budget(pipeline, payload.budget_seconds)
+
+    return PipelineCheckResponse(
+        valid=valid,
+        problems=problems,
+        expressible=valid and not binding_problems,
+        binding_problems=binding_problems,
+        description=description,
+        plan=plan_response,
+        budget=budget,
+    )
+
+
+@router.get("/vocabulary", response_model=PipelineVocabularyResponse)
+async def get_pipeline_vocabulary(
+    current_user: User = Depends(get_current_user),
+):
+    """The finding types a contract may require, and the job types available.
+
+    Served rather than duplicated in the frontend: a stage editor that offers
+    a list of its own drifts from the tools the first time one is added, and
+    the failure it causes -- a contract asking for evidence nothing produces --
+    is the most common way an authored pipeline fails its own check.
+    """
+    vocabulary = agent_pipeline_vocabulary.as_dict()
+    return PipelineVocabularyResponse(
+        evidence_types=[
+            PipelineEvidenceType(**e) for e in vocabulary["evidence_types"]
+        ],
+        job_types=list(vocabulary["job_types"]),
+    )
+
+
+@router.post("/draft", response_model=PipelineDraftResponse)
+async def draft_pipeline(
+    payload: PipelineDraftRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Draft a pipeline from a description. Launches nothing.
+
+    The blank state of the studio is a JSON document in a format nobody knows,
+    and the worked examples only help an author whose question resembles one of
+    them. The draft lands in the editor and is checked there like anything
+    else -- this endpoint spends one LLM call and starts no run.
+    """
+    from app.services.llm_service import LLMService
+
+    try:
+        spec, problems, repaired = await agent_pipeline_draft.draft_pipeline(
+            description=payload.description,
+            llm_service=LLMService(),
+            user_id=current_user.id,
+            db=db,
+            budget_seconds=payload.budget_seconds,
+        )
+    except agent_pipeline_draft.PipelineDraftError as error:
+        raise HTTPException(status_code=502, detail=str(error))
+
+    logger.info(
+        f"Drafted pipeline '{spec.get('name')}' with "
+        f"{len(spec.get('stages') or [])} stages, {len(problems)} problems"
+    )
+    return PipelineDraftResponse(spec=spec, problems=problems, repaired=repaired)
+
+
+@router.post("/bind", response_model=PipelineBindResponse)
+async def bind_pipeline(
+    payload: PipelineSpecRequest,
+    current_user: User = Depends(get_current_user),
+):
+    """Compile a pipeline to the job chain it would run as.
+
+    Returns the chain rather than launching it, so the shape can be read before
+    anything is committed to it.
+    """
+    pipeline = _normalized(payload.spec)
+    problems = agent_pipeline_spec.validate(pipeline)
+    if problems:
+        # 422 rather than 400: the request was well-formed and the pipeline is
+        # not, which is a different thing for a caller to handle.
+        raise HTTPException(status_code=422, detail="; ".join(problems))
+
+    try:
+        bound = agent_pipeline_binding.bind(pipeline)
+    except ValueError as error:
+        raise HTTPException(status_code=422, detail=str(error))
+
+    compiled = agent_pipeline_spec.plan(pipeline)
+    return PipelineBindResponse(
+        name=pipeline.name,
+        chain_config={"roots": bound.roots},
+        deferred_edges=[
+            {"after": edge.after, "launch": edge.launch, "reason": edge.reason}
+            for edge in bound.deferred
+        ],
+        checkpoints=list(compiled.checkpoints),
+        description=agent_pipeline_binding.describe(pipeline),
+    )
+
+
+@router.post("/launch", response_model=PipelineLaunchResponse, status_code=201)
+async def launch_pipeline(
+    payload: PipelineLaunchRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Start a pipeline. The first thing here that actually spends anything.
+
+    Every check `/check` performs runs again, and none of them are advisory at
+    this point: a pipeline that cannot be satisfied, cannot be expressed as a
+    chain, or cannot afford itself is refused rather than started. Re-running
+    them is deliberate — the spec that arrives here is not necessarily the one
+    the caller last checked.
+    """
+    pipeline = _normalized(payload.spec)
+
+    problems = agent_pipeline_spec.validate(pipeline)
+    if problems:
+        raise HTTPException(status_code=422, detail="; ".join(problems))
+
+    binding_problems = agent_pipeline_binding.expressible(pipeline)
+    if binding_problems:
+        raise HTTPException(status_code=422, detail="; ".join(binding_problems))
+
+    compiled = agent_pipeline_spec.plan(pipeline)
+
+    if payload.budget_seconds:
+        budget = agent_pipeline_spec.check_budget(pipeline, payload.budget_seconds)
+        if not budget.get("affordable"):
+            raise HTTPException(
+                status_code=422,
+                detail=(
+                    f"Needs {compiled.total_seconds}s and the budget is "
+                    f"{payload.budget_seconds}s"
+                ),
+            )
+
+    # The estimate the caller agreed to must be the estimate that is about to
+    # be spent. A spec edited between checking and launching is the ordinary
+    # way someone starts a run they have not actually seen priced.
+    if (
+        payload.acknowledged_seconds is not None
+        and payload.acknowledged_seconds != compiled.total_seconds
+    ):
+        raise HTTPException(
+            status_code=409,
+            detail=(
+                f"This pipeline now costs {compiled.total_seconds}s, not "
+                f"{payload.acknowledged_seconds}s. Check it again before launching."
+            ),
+        )
+
+    bound = agent_pipeline_binding.bind(pipeline)
+    if not bound.roots:
+        raise HTTPException(status_code=422, detail="Pipeline compiled to no jobs")
+    if len(bound.roots) > 1:
+        # A chain has one head. A pipeline with several independent roots is a
+        # real shape, and launching only the first of them silently would run
+        # part of what was asked for.
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"This pipeline has {len(bound.roots)} independent starting stages; "
+                "a chain runs from one. Give them a common first stage."
+            ),
+        )
+
+    saved = None
+    if payload.pipeline_id is not None:
+        # Refuses a pipeline that is not this user's, the same as any other
+        # read of one.
+        saved = await _owned(db, current_user.id, payload.pipeline_id)
+
+    root = bound.roots[0]
+    chain_config = root.get("chain_config") or {}
+    job = await agent_job_creation_service.create_from_request(
+        request=AgentJobCreate(
+            name=root.get("name") or pipeline.name,
+            description=root.get("description"),
+            goal=root.get("goal") or "",
+            job_type=root.get("job_type") or "research",
+            config={
+                **(root.get("config") or {}),
+                # Carried in the job config so a running job can say which saved
+                # pipeline it came from, not only which pipeline by name.
+                **({"saved_pipeline_id": str(saved.id)} if saved else {}),
+            },
+            chain_config=chain_config,
+            max_iterations=root.get("max_iterations") or 100,
+        ),
+        user_id=current_user.id,
+        db=db,
+    )
+
+    if saved is not None:
+        saved.launch_count = (saved.launch_count or 0) + 1
+        saved.last_launched_at = datetime.utcnow()
+        saved.last_job_id = job.id
+        await db.commit()
+
+    # Actually start it. Creating the head job is not launching a pipeline:
+    # nothing sweeps PENDING -- `process_scheduled_agent_jobs` only picks up
+    # jobs that carry a schedule_type and a next_run_at, and a pipeline head
+    # has neither -- so without this the job sits pending for ever while this
+    # endpoint returns 201 with a stage list and a cost estimate. Found with a
+    # pipeline that had been pending for three days, and the launch that
+    # created it had reported success.
+    #
+    # Dispatched after the commit above, and mirroring the job-creation route:
+    # a task that starts before its row is visible to the worker races the
+    # transaction that created it.
+    execute_agent_job_task.delay(str(job.id), str(current_user.id))
+    await agent_job_creation_service.mark_immediately_dispatched(job=job, db=db)
+
+    logger.info(
+        f"Launched pipeline '{pipeline.name}' as job {job.id} "
+        f"({len(compiled.order)} stages, ~{compiled.total_seconds}s), queued"
+    )
+    return PipelineLaunchResponse(
+        job_id=str(job.id),
+        pipeline_id=str(saved.id) if saved else None,
+        name=pipeline.name,
+        stages=list(compiled.order),
+        estimated_seconds=compiled.total_seconds,
+        checkpoints=list(compiled.checkpoints),
+    )
+
+
+@router.get("/runs/{root_job_id}/stages", response_model=PipelineRunStagesResponse)
+async def get_pipeline_run_stages(
+    root_job_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """What a run's stages did, so a caller can choose where to restart.
+
+    Restarting from a stage you cannot see the state of is guesswork, and the
+    state that matters is not the status: a stage can complete without meeting
+    its contract, and that is precisely the one you must not build on.
+    """
+    stages = await agent_pipeline_restart.load_run(root_job_id, db)
+    if not stages:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    owner_ids = {str(stage.job.user_id) for stage in stages}
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    latest = agent_pipeline_restart.latest_per_stage(stages)
+    # Rejections a person recorded against any stage of this run. One query
+    # for the whole run rather than one per stage: a six-stage pipeline should
+    # not cost six round trips to say nothing was rejected.
+    from app.models.agent_retraction import RetractionKind
+    from app.services import agent_retraction_service
+
+    disputed_jobs: set = set()
+    try:
+        rows = await agent_retraction_service.retractions(
+            db, user_id=stages[0].job.user_id, kind=RetractionKind.FINDING
+        )
+        disputed_jobs = {str(r.subject_ref).split("#", 1)[0] for r in rows}
+    except Exception as error:  # noqa: BLE001
+        # The stage view is how someone decides where to restart; losing the
+        # disputed marker is worse than nothing but far better than a 500.
+        logger.warning(f"Could not read disputes for run {root_job_id}: {error}")
+
+    attempts: dict = {}
+    for entry in stages:
+        attempts[entry.stage_id] = attempts.get(entry.stage_id, 0) + 1
+
+    # The head of the chain, which is the only job holding the run's identity:
+    # which pipeline it came from, and the plan it was bound with.
+    root = next((s.job for s in stages if s.job.id == root_job_id), None)
+    if root is None:
+        root = stages[0].job
+    root_config = root.config if isinstance(root.config, dict) else {}
+
+    rendered: list = []
+    for planned in agent_pipeline_restart.stage_plan(root, latest):
+        entry = latest.get(planned.stage_id)
+        if entry is None:
+            # Planned, not started. Reported rather than omitted: a run is six
+            # stages long from the moment it launches, and a view that only
+            # counts the started ones cannot say how far through it is.
+            rendered.append(
+                PipelineRunStage(
+                    stage=planned.stage_id,
+                    status=AgentJobStatus.PENDING.value,
+                    iteration=0,
+                    contract_satisfied=False,
+                    restartable=False,
+                    goal=planned.goal,
+                    checkpoint=planned.checkpoint,
+                    attempts=0,
+                )
+            )
+            continue
+
+        job = entry.job
+        status = str(job.status or "")
+        phase = str(job.current_phase or "")
+        rendered.append(
+            PipelineRunStage(
+                stage=planned.stage_id,
+                job_id=str(job.id),
+                status=status,
+                iteration=int(job.iteration or 0),
+                contract_satisfied=entry.contract_met,
+                # Every stage that has run is restartable: one with a
+                # predecessor re-fires the chain from it, and the head is
+                # re-run from its own definition. This reported False for the
+                # head while the endpoint had just learned to do it -- a
+                # capability the API denied having. A stage still running is
+                # not offered, because the service refuses it: two runners on
+                # one stage is what the execution lease exists to stop.
+                restartable=status != AgentJobStatus.RUNNING.value,
+                goal=planned.goal or str(job.goal or ""),
+                checkpoint=planned.checkpoint,
+                waiting_on_person=phase in agent_pipeline_restart.WAITING_ON_A_PERSON,
+                attempts=attempts.get(planned.stage_id, 1),
+                disputed=str(job.id) in disputed_jobs,
+                progress=int(job.progress or 0),
+                started_at=job.started_at.isoformat() if job.started_at else None,
+                completed_at=job.completed_at.isoformat() if job.completed_at else None,
+                error=str(job.error) if job.error else None,
+            )
+        )
+
+    as_dicts = [stage.model_dump() for stage in rendered]
+    completed = sum(
+        1 for s in as_dicts if s["status"] == AgentJobStatus.COMPLETED.value
+    )
+    # The stage the run is on: the first that is not finished. A run whose
+    # every stage completed has none, and saying so is the difference between
+    # "on the last stage" and "done".
+    current = next(
+        (s["stage"] for s in as_dicts if s["status"] != AgentJobStatus.COMPLETED.value),
+        None,
+    )
+
+    return PipelineRunStagesResponse(
+        root_job_id=str(root_job_id),
+        stages=rendered,
+        pipeline=str(root_config.get("pipeline") or root.name or ""),
+        saved_pipeline_id=(
+            str(root_config.get("saved_pipeline_id"))
+            if root_config.get("saved_pipeline_id")
+            else None
+        ),
+        status=agent_pipeline_restart.run_status(as_dicts),
+        total_stages=len(rendered),
+        completed_stages=completed,
+        current_stage=current,
+    )
+
+
+@router.post("/runs/{root_job_id}/restart", response_model=PipelineRestartResponse)
+async def restart_pipeline_run(
+    root_job_id: UUID,
+    payload: PipelineRestartRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Run one stage again on the evidence the stages before it established.
+
+    Re-launching the whole pipeline to retry its last stage pays for every
+    earlier stage again and produces a different run, so the evidence the
+    retry builds on is not the evidence that was already established. This
+    re-fires the chain from the completed predecessor instead, which is the
+    same path that connected the stages the first time.
+    """
+    stages = await agent_pipeline_restart.load_run(root_job_id, db)
+    if not stages:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+    owner_ids = {str(stage.job.user_id) for stage in stages}
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    try:
+        child = await agent_pipeline_restart.restart_from_stage(
+            root_job_id=root_job_id,
+            stage_id=payload.stage,
+            executor=AutonomousAgentExecutor(),
+            db=db,
+            note=payload.note or "",
+        )
+    except agent_pipeline_restart.PipelineRestartError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail)
+
+    return PipelineRestartResponse(
+        root_job_id=str(root_job_id),
+        stage=payload.stage,
+        job_id=str(child.id),
+        note_attached=bool((payload.note or "").strip()),
+    )
+
+
+@router.post(
+    "/runs/{root_job_id}/insert-stage", response_model=PipelineInsertStageResponse
+)
+async def insert_pipeline_stage(
+    root_job_id: UUID,
+    payload: PipelineInsertStageRequest,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Add a stage the plan did not have, without redoing the stages that worked.
+
+    A run stops for a reason belonging to one place, and the fix is often a step
+    nobody thought to include -- a finer profile, a conversion, a check. Both
+    other repairs are worse here: restarting the failed stage runs it again on
+    the same inputs that already defeated it, and relaunching pays for every
+    earlier stage to reach the same point in a different run.
+    """
+    stages = await agent_pipeline_restart.load_run(root_job_id, db)
+    if not stages:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+    owner_ids = {str(stage.job.user_id) for stage in stages}
+    if owner_ids != {str(current_user.id)} and not current_user.is_admin:
+        raise HTTPException(status_code=404, detail=f"No pipeline run {root_job_id}")
+
+    from app.services.autonomous_agent_executor import AutonomousAgentExecutor
+
+    try:
+        child = await agent_pipeline_restart.insert_stage_after(
+            root_job_id=root_job_id,
+            after_stage=payload.after,
+            stage=payload.stage,
+            executor=AutonomousAgentExecutor(),
+            db=db,
+            note=payload.note or "",
+        )
+    except agent_pipeline_restart.PipelineRestartError as error:
+        raise HTTPException(status_code=error.status_code, detail=error.detail)
+
+    return PipelineInsertStageResponse(
+        root_job_id=str(root_job_id),
+        stage=str(payload.stage.get("id") or ""),
+        after=payload.after,
+        job_id=str(child.id),
+        # Read off the job the service just wrote, rather than recomputed
+        # here: two derivations of what was displaced would disagree the
+        # first time the rule changed.
+        displaced=[
+            str(d)
+            for d in (child.config or {}).get("displaced_stages", [])
+            if str(d).strip()
+        ],
+    )
+
+
+# ------------------------------------------------------------ saved pipelines
+
+
+async def _owned(db: AsyncSession, user_id, pipeline_id: UUID) -> AgentPipeline:
+    """Fetch a saved pipeline, or refuse.
+
+    404 rather than 403 for someone else's: whether a pipeline exists should
+    not be discoverable by asking for it.
+    """
+    row = (
+        await db.execute(
+            select(AgentPipeline).where(
+                AgentPipeline.id == pipeline_id, AgentPipeline.user_id == user_id
+            )
+        )
+    ).scalar_one_or_none()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Pipeline not found")
+    return row
+
+
+@router.get("", response_model=list[SavedPipelineResponse])
+async def list_pipelines(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """This user's saved pipelines, most recently touched first."""
+    rows = (
+        (
+            await db.execute(
+                select(AgentPipeline)
+                .where(AgentPipeline.user_id == current_user.id)
+                .order_by(AgentPipeline.updated_at.desc().nullslast())
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return [SavedPipelineResponse.of(row) for row in rows]
+
+
+@router.post("", response_model=SavedPipelineResponse, status_code=201)
+async def save_pipeline(
+    payload: SavedPipelineCreate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Save a pipeline, valid or not.
+
+    A spec that does not check is still worth keeping — it is work in
+    progress, and refusing to save it would mean the only way to keep a
+    half-written pipeline is to leave the tab open. What is recorded alongside
+    it is whether it checked, so a list can say which ones are not ready.
+    """
+    verdict, estimate = _verdict_for(payload.spec)
+
+    row = AgentPipeline(
+        user_id=current_user.id,
+        name=payload.name.strip(),
+        description=payload.description,
+        spec=payload.spec,
+        last_check_valid=verdict,
+        last_estimated_seconds=estimate,
+    )
+    db.add(row)
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="You already have a pipeline with that name"
+        ) from error
+    await db.refresh(row)
+    return SavedPipelineResponse.of(row)
+
+
+@router.get("/{pipeline_id}", response_model=SavedPipelineResponse)
+async def get_pipeline(
+    pipeline_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    return SavedPipelineResponse.of(await _owned(db, current_user.id, pipeline_id))
+
+
+@router.patch("/{pipeline_id}", response_model=SavedPipelineResponse)
+async def update_pipeline(
+    pipeline_id: UUID,
+    payload: SavedPipelineUpdate,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    row = await _owned(db, current_user.id, pipeline_id)
+    if payload.name is not None:
+        row.name = payload.name.strip()
+    if payload.description is not None:
+        row.description = payload.description or None
+    if payload.spec is not None:
+        row.spec = payload.spec
+        # Re-checked on every save of the spec, so the cached verdict is never
+        # older than the spec it describes.
+        row.last_check_valid, row.last_estimated_seconds = _verdict_for(payload.spec)
+    try:
+        await db.commit()
+    except IntegrityError as error:
+        await db.rollback()
+        raise HTTPException(
+            status_code=409, detail="You already have a pipeline with that name"
+        ) from error
+    await db.refresh(row)
+    return SavedPipelineResponse.of(row)
+
+
+@router.delete("/{pipeline_id}")
+async def delete_pipeline(
+    pipeline_id: UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Delete a saved pipeline. The runs it launched are not touched."""
+    row = await _owned(db, current_user.id, pipeline_id)
+    name = row.name
+    await db.delete(row)
+    await db.commit()
+    return {"deleted": str(pipeline_id), "name": name}
+
+
+def _verdict_for(spec) -> tuple[Optional[str], Optional[int]]:
+    """Check a spec for the record, without letting a bad one block a save."""
+    try:
+        pipeline = agent_pipeline_spec.normalize(spec)
+        problems = agent_pipeline_spec.validate(pipeline)
+        if problems:
+            return "invalid", None
+        return "valid", agent_pipeline_spec.plan(pipeline).total_seconds
+    except Exception:  # noqa: BLE001 - a spec too broken to check is still savable
+        return "unknown", None

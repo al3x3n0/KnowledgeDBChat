@@ -2,23 +2,23 @@
 Research endpoints (external sources).
 """
 
-import httpx
-from pydantic import BaseModel, Field
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query
-from loguru import logger
-import sqlalchemy as sa
-from sqlalchemy import select, desc
-from sqlalchemy.ext.asyncio import AsyncSession
 from uuid import UUID
 
+import httpx
+import sqlalchemy as sa
+from fastapi import APIRouter, Depends, HTTPException, Query
+from loguru import logger
+from pydantic import BaseModel, Field
+from sqlalchemy import desc, select
+from sqlalchemy.ext.asyncio import AsyncSession
+
 from app.core.database import get_db
-from app.models.document import Document
-from app.models.document import DocumentSource
-from app.models.user import User
+from app.models.document import Document, DocumentSource
 from app.models.memory import UserPreferences
-from app.services.auth_service import get_current_user
+from app.models.user import User
 from app.services.arxiv_search_service import ArxivSearchService
+from app.services.auth_service import get_current_user
 from app.services.llm_service import LLMService, UserLLMSettings
 
 router = APIRouter()
@@ -26,10 +26,14 @@ router = APIRouter()
 
 @router.get("/arxiv/search")
 async def search_arxiv(
-    q: str = Query(..., min_length=2, max_length=500, description="arXiv search query (API syntax)"),
+    q: str = Query(
+        ..., min_length=2, max_length=500, description="arXiv search query (API syntax)"
+    ),
     start: int = Query(0, ge=0, le=1000),
     max_results: int = Query(10, ge=1, le=50),
-    sort_by: str = Query("relevance", pattern="^(relevance|lastUpdatedDate|submittedDate)$"),
+    sort_by: str = Query(
+        "relevance", pattern="^(relevance|lastUpdatedDate|submittedDate)$"
+    ),
     sort_order: str = Query("descending", pattern="^(ascending|descending)$"),
     current_user: User = Depends(get_current_user),
 ):
@@ -44,7 +48,10 @@ async def search_arxiv(
     q_clean = (q or "").strip()
     # Prevent common placeholder queries like "all:" which cause arXiv 400s.
     if q_clean.endswith(":"):
-        raise HTTPException(status_code=422, detail="Invalid arXiv query: missing term after ':' (e.g. all:transformers)")
+        raise HTTPException(
+            status_code=422,
+            detail="Invalid arXiv query: missing term after ':' (e.g. all:transformers)",
+        )
     try:
         service = ArxivSearchService()
         result = await service.search(
@@ -65,7 +72,9 @@ async def search_arxiv(
         status = getattr(exc.response, "status_code", None)
         if status and 400 <= int(status) < 500:
             logger.warning(f"ArXiv search rejected query '{q_clean}': {exc}")
-            raise HTTPException(status_code=422, detail="arXiv rejected the query (check syntax)")
+            raise HTTPException(
+                status_code=422, detail="arXiv rejected the query (check syntax)"
+            )
         logger.warning(f"ArXiv search failed: {exc}")
         raise HTTPException(status_code=502, detail="Failed to query arXiv")
     except httpx.HTTPError as exc:
@@ -77,8 +86,15 @@ async def search_arxiv(
 
 
 class ArxivTranslateQueryRequest(BaseModel):
-    text: str = Field(..., min_length=2, max_length=500, description="Natural language query to translate")
-    categories: Optional[list[str]] = Field(default=None, description="Optional arXiv categories like cs.CL, cs.CV")
+    text: str = Field(
+        ...,
+        min_length=2,
+        max_length=500,
+        description="Natural language query to translate",
+    )
+    categories: Optional[list[str]] = Field(
+        default=None, description="Optional arXiv categories like cs.CL, cs.CV"
+    )
 
 
 class ArxivTranslateQueryResponse(BaseModel):
@@ -98,11 +114,17 @@ async def translate_arxiv_query(
     """
     _ = current_user  # authenticated access required
     text = (payload.text or "").strip()
-    categories = [c.strip() for c in (payload.categories or []) if isinstance(c, str) and c.strip()]
+    categories = [
+        c.strip()
+        for c in (payload.categories or [])
+        if isinstance(c, str) and c.strip()
+    ]
 
     cat_hint = ""
     if categories:
-        cat_hint = " If categories are provided, constrain with AND (cat:... OR cat:...)."
+        cat_hint = (
+            " If categories are provided, constrain with AND (cat:... OR cat:...)."
+        )
 
     prompt = (
         "Convert the user's request into a valid arXiv API query string for the `search_query` parameter.\n"
@@ -115,9 +137,9 @@ async def translate_arxiv_query(
         "- Keep it concise.\n"
         f"{cat_hint}\n\n"
         "Examples:\n"
-        "User: \"papers about diffusion models for image segmentation\"\n"
-        "Query: all:\"diffusion model\" AND (all:segmentation OR all:\"image segmentation\")\n"
-        "User: \"transformer pruning in vision\"\n"
+        'User: "papers about diffusion models for image segmentation"\n'
+        'Query: all:"diffusion model" AND (all:segmentation OR all:"image segmentation")\n'
+        'User: "transformer pruning in vision"\n'
         "Query: (ti:transformer OR abs:transformer) AND (all:pruning OR all:sparsity) AND (all:vision OR cat:cs.CV)\n\n"
         f"User request: {text}\n"
         f"Categories: {categories}\n"
@@ -129,7 +151,11 @@ async def translate_arxiv_query(
         # Use per-user LLM settings for query translation.
         user_settings = None
         try:
-            prefs_res = await db.execute(select(UserPreferences).where(UserPreferences.user_id == current_user.id))
+            prefs_res = await db.execute(
+                select(UserPreferences).where(
+                    UserPreferences.user_id == current_user.id
+                )
+            )
             prefs = prefs_res.scalar_one_or_none()
             user_settings = UserLLMSettings.from_preferences(prefs) if prefs else None
         except Exception:
@@ -178,12 +204,17 @@ async def list_arxiv_imports(
             if not isinstance(cfg, dict):
                 return False
             requested_by = cfg.get("requested_by") or cfg.get("requestedBy")
-            requested_by_user_id = cfg.get("requested_by_user_id") or cfg.get("requestedByUserId")
-            return requested_by in {current_user.username, str(current_user.id)} or requested_by_user_id == str(current_user.id)
+            requested_by_user_id = cfg.get("requested_by_user_id") or cfg.get(
+                "requestedByUserId"
+            )
+            return requested_by in {
+                current_user.username,
+                str(current_user.id),
+            } or requested_by_user_id == str(current_user.id)
 
         owned = [s for s in sources if is_owned_by_user(s)]
         total = len(owned)
-        page_items = owned[offset:offset + limit]
+        page_items = owned[offset : offset + limit]
 
         items = []
         for s in page_items:
@@ -193,7 +224,11 @@ async def list_arxiv_imports(
             review_doc_id = None
             review_doc_title = None
             try:
-                count_result = await db.execute(select(sa.func.count()).select_from(Document).where(Document.source_id == s.id))
+                count_result = await db.execute(
+                    select(sa.func.count())
+                    .select_from(Document)
+                    .where(Document.source_id == s.id)
+                )
                 doc_count = int(count_result.scalar() or 0)
             except Exception:
                 pass
@@ -242,8 +277,12 @@ def _is_source_owned_by_user(source: DocumentSource, user: User) -> bool:
     if not isinstance(cfg, dict):
         return False
     requested_by = cfg.get("requested_by") or cfg.get("requestedBy")
-    requested_by_user_id = cfg.get("requested_by_user_id") or cfg.get("requestedByUserId")
-    return requested_by in {user.username, str(user.id)} or requested_by_user_id == str(user.id)
+    requested_by_user_id = cfg.get("requested_by_user_id") or cfg.get(
+        "requestedByUserId"
+    )
+    return requested_by in {user.username, str(user.id)} or requested_by_user_id == str(
+        user.id
+    )
 
 
 class ImportSummarizeRequest(BaseModel):
@@ -266,7 +305,11 @@ async def summarize_arxiv_import(
         raise HTTPException(status_code=400, detail="Invalid source id")
 
     src = await db.get(DocumentSource, src_uuid)
-    if not src or src.source_type != "arxiv" or not _is_source_owned_by_user(src, current_user):
+    if (
+        not src
+        or src.source_type != "arxiv"
+        or not _is_source_owned_by_user(src, current_user)
+    ):
         raise HTTPException(status_code=404, detail="Import not found")
 
     from app.tasks.summarization_tasks import summarize_document as summarize_task
@@ -285,7 +328,12 @@ async def summarize_arxiv_import(
         summarize_task.delay(str(doc_id), payload.force, user_id=str(current_user.id))
         queued += 1
 
-    return {"message": "queued", "source_id": source_id, "queued": queued, "considered": len(rows)}
+    return {
+        "message": "queued",
+        "source_id": source_id,
+        "queued": queued,
+        "considered": len(rows),
+    }
 
 
 class ImportReviewRequest(BaseModel):
@@ -305,7 +353,11 @@ async def generate_review_for_arxiv_import(
         raise HTTPException(status_code=400, detail="Invalid source id")
 
     src = await db.get(DocumentSource, src_uuid)
-    if not src or src.source_type != "arxiv" or not _is_source_owned_by_user(src, current_user):
+    if (
+        not src
+        or src.source_type != "arxiv"
+        or not _is_source_owned_by_user(src, current_user)
+    ):
         raise HTTPException(status_code=404, detail="Import not found")
 
     if payload.topic and isinstance(src.config, dict):
@@ -315,6 +367,7 @@ async def generate_review_for_arxiv_import(
         await db.commit()
 
     from app.tasks.research_tasks import generate_literature_review
+
     task = generate_literature_review.delay(source_id, user_id=str(current_user.id))
     return {"message": "queued", "source_id": source_id, "task_id": task.id}
 
@@ -341,7 +394,11 @@ async def generate_slides_for_arxiv_import(
         raise HTTPException(status_code=400, detail="Invalid source id")
 
     src = await db.get(DocumentSource, src_uuid)
-    if not src or src.source_type != "arxiv" or not _is_source_owned_by_user(src, current_user):
+    if (
+        not src
+        or src.source_type != "arxiv"
+        or not _is_source_owned_by_user(src, current_user)
+    ):
         raise HTTPException(status_code=404, detail="Import not found")
 
     title = payload.title or f"Slides: {src.name}"
@@ -395,7 +452,11 @@ async def generate_slides_for_arxiv_import(
     await db.refresh(job)
 
     generate_presentation_task.delay(str(job.id), str(current_user.id))
-    return {"message": "queued", "source_id": source_id, "presentation_job_id": str(job.id)}
+    return {
+        "message": "queued",
+        "source_id": source_id,
+        "presentation_job_id": str(job.id),
+    }
 
 
 class ImportEnrichRequest(BaseModel):
@@ -416,9 +477,14 @@ async def enrich_metadata_for_arxiv_import(
         raise HTTPException(status_code=400, detail="Invalid source id")
 
     src = await db.get(DocumentSource, src_uuid)
-    if not src or src.source_type != "arxiv" or not _is_source_owned_by_user(src, current_user):
+    if (
+        not src
+        or src.source_type != "arxiv"
+        or not _is_source_owned_by_user(src, current_user)
+    ):
         raise HTTPException(status_code=404, detail="Import not found")
 
     from app.tasks.paper_enrichment_tasks import enrich_arxiv_source
+
     task = enrich_arxiv_source.delay(source_id, payload.force, payload.limit)
     return {"message": "queued", "source_id": source_id, "task_id": task.id}

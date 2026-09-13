@@ -2,32 +2,30 @@
 API endpoints for DOCX/PDF export functionality.
 """
 
-from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import Response
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select, func
 from loguru import logger
+from sqlalchemy import func, select
+from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.database import get_db
 from app.api.endpoints.users import get_current_user
-from app.models.user import User
-from app.models.export_job import ExportJob
+from app.core.database import get_db
 from app.models.chat import ChatSession
 from app.models.document import Document
+from app.models.export_job import ExportJob
+from app.models.user import User
 from app.schemas.export import (
     ExportChatRequest,
-    ExportDocumentSummaryRequest,
     ExportCustomRequest,
-    ExportJobResponse,
+    ExportDocumentSummaryRequest,
     ExportJobCreatedResponse,
-    ExportJobStatusResponse,
     ExportJobListResponse,
+    ExportJobResponse,
+    ExportJobStatusResponse,
 )
 from app.services.export_service import export_service
-
 
 router = APIRouter()
 
@@ -56,12 +54,16 @@ def _job_to_response(job: ExportJob) -> ExportJobResponse:
     )
 
 
-@router.post("/chat/{session_id}", response_model=ExportJobCreatedResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/chat/{session_id}",
+    response_model=ExportJobCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def export_chat_session(
     session_id: UUID,
     request: ExportChatRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Export a chat session to DOCX or PDF.
@@ -72,20 +74,22 @@ async def export_chat_session(
     # Verify chat session exists and belongs to user
     result = await db.execute(
         select(ChatSession).where(
-            ChatSession.id == session_id,
-            ChatSession.user_id == current_user.id
+            ChatSession.id == session_id, ChatSession.user_id == current_user.id
         )
     )
     session = result.scalar_one_or_none()
 
     if not session:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Chat session not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Chat session not found"
         )
 
     # Determine title
-    title = request.title or session.topic or f"Chat Export - {session.created_at.strftime('%Y-%m-%d')}"
+    title = (
+        request.title
+        or session.topic
+        or f"Chat Export - {session.created_at.strftime('%Y-%m-%d')}"
+    )
 
     # Create export job
     job = await export_service.create_export_job(
@@ -97,11 +101,14 @@ async def export_chat_session(
         source_id=session_id,
         title=title,
         style=request.style,
-        custom_theme=request.custom_theme.model_dump() if request.custom_theme else None
+        custom_theme=request.custom_theme.model_dump()
+        if request.custom_theme
+        else None,
     )
 
     # Dispatch Celery task
     from app.tasks.export_tasks import process_export_task
+
     process_export_task.delay(str(job.id))
 
     logger.info(f"Created chat export job {job.id} for session {session_id}")
@@ -109,16 +116,20 @@ async def export_chat_session(
     return ExportJobCreatedResponse(
         job_id=job.id,
         status="pending",
-        message="Export job created. Use GET /export/{job_id} to check status."
+        message="Export job created. Use GET /export/{job_id} to check status.",
     )
 
 
-@router.post("/document/{document_id}/summary", response_model=ExportJobCreatedResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/document/{document_id}/summary",
+    response_model=ExportJobCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def export_document_summary(
     document_id: UUID,
     request: ExportDocumentSummaryRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Export a document summary to DOCX or PDF.
@@ -127,19 +138,20 @@ async def export_document_summary(
     Use GET /export/{job_id} to check status.
     """
     # Verify document exists
-    result = await db.execute(
-        select(Document).where(Document.id == document_id)
-    )
+    result = await db.execute(select(Document).where(Document.id == document_id))
     document = result.scalar_one_or_none()
 
     if not document:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Document not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Document not found"
         )
 
     # Determine title
-    title = request.title or document.title or f"Document Summary - {document.created_at.strftime('%Y-%m-%d')}"
+    title = (
+        request.title
+        or document.title
+        or f"Document Summary - {document.created_at.strftime('%Y-%m-%d')}"
+    )
 
     # Create export job
     job = await export_service.create_export_job(
@@ -151,11 +163,14 @@ async def export_document_summary(
         source_id=document_id,
         title=title,
         style=request.style,
-        custom_theme=request.custom_theme.model_dump() if request.custom_theme else None
+        custom_theme=request.custom_theme.model_dump()
+        if request.custom_theme
+        else None,
     )
 
     # Dispatch Celery task
     from app.tasks.export_tasks import process_export_task
+
     process_export_task.delay(str(job.id))
 
     logger.info(f"Created document export job {job.id} for document {document_id}")
@@ -163,15 +178,19 @@ async def export_document_summary(
     return ExportJobCreatedResponse(
         job_id=job.id,
         status="pending",
-        message="Export job created. Use GET /export/{job_id} to check status."
+        message="Export job created. Use GET /export/{job_id} to check status.",
     )
 
 
-@router.post("/custom", response_model=ExportJobCreatedResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/custom",
+    response_model=ExportJobCreatedResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def export_custom_content(
     request: ExportCustomRequest,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Export custom/LLM-generated content to DOCX or PDF.
@@ -191,11 +210,14 @@ async def export_custom_content(
         content=request.content,
         content_format=request.content_format,
         style=request.style,
-        custom_theme=request.custom_theme.model_dump() if request.custom_theme else None
+        custom_theme=request.custom_theme.model_dump()
+        if request.custom_theme
+        else None,
     )
 
     # Dispatch Celery task
     from app.tasks.export_tasks import process_export_task
+
     process_export_task.delay(str(job.id))
 
     logger.info(f"Created custom export job {job.id} for user {current_user.id}")
@@ -203,7 +225,7 @@ async def export_custom_content(
     return ExportJobCreatedResponse(
         job_id=job.id,
         status="pending",
-        message="Export job created. Use GET /export/{job_id} to check status."
+        message="Export job created. Use GET /export/{job_id} to check status.",
     )
 
 
@@ -211,7 +233,7 @@ async def export_custom_content(
 async def get_export_job(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get export job status and details.
@@ -220,8 +242,7 @@ async def get_export_job(
 
     if not job:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Export job not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Export job not found"
         )
 
     return _job_to_response(job)
@@ -231,7 +252,7 @@ async def get_export_job(
 async def get_export_status(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Get minimal export job status (for polling).
@@ -240,8 +261,7 @@ async def get_export_status(
 
     if not job:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Export job not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Export job not found"
         )
 
     return ExportJobStatusResponse(
@@ -252,7 +272,7 @@ async def get_export_status(
         error=job.error,
         file_path=job.file_path,
         file_size=job.file_size,
-        completed_at=job.completed_at
+        completed_at=job.completed_at,
     )
 
 
@@ -260,7 +280,7 @@ async def get_export_status(
 async def download_export(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Download the exported file.
@@ -271,20 +291,18 @@ async def download_export(
 
     if not job:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Export job not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Export job not found"
         )
 
     if job.status != "completed":
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"Export job is not completed (status: {job.status})"
+            detail=f"Export job is not completed (status: {job.status})",
         )
 
     if not job.file_path:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Export file not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Export file not found"
         )
 
     # Get file content
@@ -293,12 +311,14 @@ async def download_export(
     if not content:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
-            detail="Export file not found in storage"
+            detail="Export file not found in storage",
         )
 
     # Determine content type and filename
     if job.output_format == "docx":
-        content_type = "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        content_type = (
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        )
         extension = "docx"
     else:
         content_type = "application/pdf"
@@ -313,8 +333,8 @@ async def download_export(
         media_type=content_type,
         headers={
             "Content-Disposition": f'attachment; filename="{filename}"',
-            "Content-Length": str(len(content))
-        }
+            "Content-Length": str(len(content)),
+        },
     )
 
 
@@ -323,24 +343,23 @@ async def list_export_jobs(
     page: int = 1,
     page_size: int = 20,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     List export jobs for the current user.
     """
     # Get total count
     count_result = await db.execute(
-        select(func.count()).select_from(ExportJob).where(ExportJob.user_id == current_user.id)
+        select(func.count())
+        .select_from(ExportJob)
+        .where(ExportJob.user_id == current_user.id)
     )
     total = count_result.scalar()
 
     # Get jobs with pagination
     offset = (page - 1) * page_size
     jobs = await export_service.get_user_export_jobs(
-        db=db,
-        user_id=current_user.id,
-        limit=page_size,
-        offset=offset
+        db=db, user_id=current_user.id, limit=page_size, offset=offset
     )
 
     total_pages = (total + page_size - 1) // page_size if total > 0 else 0
@@ -350,7 +369,7 @@ async def list_export_jobs(
         total=total,
         page=page,
         page_size=page_size,
-        total_pages=total_pages
+        total_pages=total_pages,
     )
 
 
@@ -358,7 +377,7 @@ async def list_export_jobs(
 async def delete_export_job(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Delete an export job and its associated file.
@@ -367,14 +386,14 @@ async def delete_export_job(
 
     if not job:
         raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail="Export job not found"
+            status_code=status.HTTP_404_NOT_FOUND, detail="Export job not found"
         )
 
     # Delete file from storage if exists
     if job.file_path:
         try:
             from app.services.storage_service import StorageService
+
             storage = StorageService()
             await storage.initialize()
             await storage.delete_file(job.file_path)

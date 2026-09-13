@@ -93,7 +93,9 @@ class AnthropicProvider(BaseLLMProvider):
         if system_text:
             kwargs["system"] = self._system_param(system_text, cache_enabled)
 
-        anthropic_tools: List[Dict[str, Any]] = to_anthropic_tools(tools) if tools else []
+        anthropic_tools: List[Dict[str, Any]] = (
+            to_anthropic_tools(tools) if tools else []
+        )
         if response_schema and not tools:
             anthropic_tools.append(
                 {
@@ -267,7 +269,11 @@ class AnthropicProvider(BaseLLMProvider):
             total_tokens=total_tokens,
             raw={
                 "id": getattr(response, "id", None),
-                "cache_read_input_tokens": getattr(usage, "cache_read_input_tokens", None),
-                "cache_creation_input_tokens": getattr(usage, "cache_creation_input_tokens", None),
+                "cache_read_input_tokens": getattr(
+                    usage, "cache_read_input_tokens", None
+                ),
+                "cache_creation_input_tokens": getattr(
+                    usage, "cache_creation_input_tokens", None
+                ),
             },
         )

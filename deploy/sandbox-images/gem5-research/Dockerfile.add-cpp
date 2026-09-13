@@ -1,0 +1,80 @@
+# Adds a C++ toolchain to the existing gem5 image, without rebuilding gem5.
+#
+# THIS IS A BRIDGE, NOT THE DEFINITION. `Dockerfile` beside this one builds
+# gem5 from source and is what the image should eventually be. This exists
+# because that build needs ~20 GB of object files and several hours, and the
+# thing actually blocking the study is one missing package.
+#
+# Inspected before writing this, in the image it derives from:
+#   gcc          present
+#   g++          MISSING          <- the blocker
+#   libstdc++.a  MISSING          <- and its other half
+#   gem5.opt     present, 78 MB, stripped
+#   python3      present
+#   se.py        at the path the tool hardcodes
+#   Debian 12 (bookworm)
+#
+# What it inherits, and what that costs: the base was assembled by hand, so
+# nothing here can say how it was made or what else is in it. A result produced
+# in this image is as auditable as that one was -- which is to say, not. The
+# `gem5.opt` it carries is also stripped, so a gem5 panic gives a backtrace
+# without symbols; the from-source Dockerfile keeps them deliberately, and that
+# is one of the reasons to finish it.
+#
+#   docker build --platform linux/arm64 \
+#     -f deploy/sandbox-images/gem5-research/Dockerfile.add-cpp \
+#     -t ghcr.io/al3x3n0/kdbc-gem5-research:latest \
+#     deploy/sandbox-images/gem5-research
+FROM ghcr.io/al3x3n0/kdbc-gem5-research:latest
+
+# Installed from .deb files fetched on the HOST by fetch-cpp-debs.sh, not with
+# apt inside the build. On this network deb.debian.org resolves to 198.18.0.71
+# -- RFC 2544 benchmarking space, the synthetic address a VPN or intercept
+# layer hands out -- and apt in the VM managed 1416 B/s, fetching 581 kB in
+# 6m51s before the 9 MB Packages index failed with "Connection failed". The
+# host reaches the same mirror at ~62 kB/s. So the fetch happens outside and
+# the build needs no network, which the sandbox has none of at run time anyway.
+#
+# A side effect worth keeping even on a good link: the versions are pinned, and
+# g++-12 must match the image's installed gcc-12 exactly or dpkg refuses it.
+# That is more reproducible than `apt-get install g++`, not less.
+#
+# Run fetch-cpp-debs.sh before building, or the COPY below fails with no
+# matching files -- which is the correct failure, since silently building an
+# image without a C++ compiler is what this is here to end.
+COPY *.deb /tmp/debs/
+
+# dpkg rather than apt: nothing here needs resolving, the set is complete, and
+# apt would try to reach the network to confirm that. All three are unpacked
+# before any is configured, so g++ depending on g++-12 depending on
+# libstdc++-12-dev is satisfied within the set.
+RUN set -eux; \
+    dpkg -i /tmp/debs/*.deb; \
+    rm -rf /tmp/debs
+
+# Asserted here rather than discovered in an agent's run. The C++ probe is the
+# same one agent_gem5_sandbox.cpp_support() runs against the finished image, so
+# an image that passes here cannot refuse C++ there.
+RUN set -eux; \
+    cd /tmp; \
+    printf 'int main(void){return 0;}\n' > probe.c; \
+    gcc -O2 -static -o probe_c probe.c; \
+    printf '#include <string>\nint main(){ std::string s="x"; return (int)s.size()-1; }\n' > probe.cc; \
+    g++ -O2 -static -std=c++17 -o probe_cc probe.cc; \
+    ./probe_c; \
+    ./probe_cc
+
+# gem5 must still run, and must still run a workload -- adding a compiler to an
+# image is not supposed to disturb either, which is exactly why it is checked.
+# No `gem5.opt --version` here: this build does not have that option and it
+# would only have proved the binary starts. Running a workload proves that and
+# the thing actually wanted.
+RUN set -eux; \
+    /opt/gem5/build/ARM/gem5.opt --outdir=/tmp/m5out \
+        /opt/gem5/configs/deprecated/example/se.py \
+        --cmd=/tmp/probe_cc --cpu-type=O3CPU --caches --l2cache; \
+    grep -q 'simInsts' /tmp/m5out/stats.txt; \
+    rm -rf /tmp/m5out /tmp/probe*
+
+ENV HOME=/work
+WORKDIR /work

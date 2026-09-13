@@ -9,7 +9,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
 from app.models.user import User
-from app.schemas.langgraph_issue_pr import LangGraphIssuePrRequest, LangGraphIssuePrResponse
+from app.schemas.langgraph_issue_pr import (
+    LangGraphIssuePrRequest,
+    LangGraphIssuePrResponse,
+)
 from app.services.langgraph_issue_pr_service import LangGraphIssuePrService
 
 router = APIRouter()
@@ -29,10 +32,16 @@ async def generate_issue_pr_draft(
     try:
         return await service.run(request, user_id=current_user.id, db=db)
     except RuntimeError as exc:
-        logger.warning(f"LangGraph workflow unavailable for user={current_user.id}: {exc}")
-        raise HTTPException(status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc))
+        logger.warning(
+            f"LangGraph workflow unavailable for user={current_user.id}: {exc}"
+        )
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE, detail=str(exc)
+        )
     except Exception as exc:
-        logger.exception(f"LangGraph issue-pr orchestration failed for user={current_user.id}: {exc}")
+        logger.exception(
+            f"LangGraph issue-pr orchestration failed for user={current_user.id}: {exc}"
+        )
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
             detail="LangGraph issue-pr orchestration failed.",

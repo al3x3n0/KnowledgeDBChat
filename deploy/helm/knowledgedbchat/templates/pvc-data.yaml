@@ -1,0 +1,19 @@
+{{- if and .Values.backend.persistence.enabled (not .Values.backend.persistence.existingClaim) }}
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ printf "%s-data" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "data") | nindent 4 }}
+  annotations:
+    # Survives `helm uninstall` so uploaded documents and model caches are not
+    # destroyed by a release rollback.
+    helm.sh/resource-policy: keep
+spec:
+  accessModes:
+    - {{ .Values.backend.persistence.accessMode }}
+  resources:
+    requests:
+      storage: {{ .Values.backend.persistence.size }}
+  {{- include "kdbc.storageClass" (dict "ctx" . "sc" .Values.backend.persistence.storageClass) | nindent 2 }}
+{{- end }}

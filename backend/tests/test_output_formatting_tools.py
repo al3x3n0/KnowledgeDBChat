@@ -2,8 +2,6 @@
 
 import uuid
 
-import pytest
-
 
 class TestFormatAsTableCustom:
     """Tests for format_as_table with custom data."""
@@ -65,7 +63,7 @@ class TestFormatAsTableCustom:
     def test_long_rows_trimmed(self):
         columns = ["A", "B"]
         row = ["1", "2", "3", "4"]
-        cells = row[:len(columns)]
+        cells = row[: len(columns)]
         assert len(cells) == 2
 
 
@@ -118,13 +116,15 @@ class TestFormatAsTableState:
 
     def test_stored_in_formatted_outputs(self):
         state: dict = {}
-        state.setdefault("formatted_outputs", []).append({
-            "type": "table",
-            "title": "My Table",
-            "markdown": "| A |\n| --- |\n| 1 |",
-            "columns": ["A"],
-            "row_count": 1,
-        })
+        state.setdefault("formatted_outputs", []).append(
+            {
+                "type": "table",
+                "title": "My Table",
+                "markdown": "| A |\n| --- |\n| 1 |",
+                "columns": ["A"],
+                "row_count": 1,
+            }
+        )
         assert len(state["formatted_outputs"]) == 1
         assert state["formatted_outputs"][0]["type"] == "table"
 
@@ -190,7 +190,12 @@ class TestFormatAsReport:
 
     def test_findings_rendering(self):
         findings = [
-            {"title": "Finding A", "content": "Content A", "category": "key_insight", "confidence": 0.9},
+            {
+                "title": "Finding A",
+                "content": "Content A",
+                "category": "key_insight",
+                "confidence": 0.9,
+            },
         ]
         md = "## Findings\n\n"
         for i, f in enumerate(findings[:30], 1):
@@ -345,10 +350,12 @@ class TestFinalizationIntegration:
         assert "structured_output" not in results
 
     def test_formatted_outputs_in_results(self):
-        state = {"formatted_outputs": [
-            {"type": "table", "title": "Table 1"},
-            {"type": "report", "title": "Report 1"},
-        ]}
+        state = {
+            "formatted_outputs": [
+                {"type": "table", "title": "Table 1"},
+                {"type": "report", "title": "Report 1"},
+            ]
+        }
         results: dict = {}
         formatted = state.get("formatted_outputs", [])
         if isinstance(formatted, list) and formatted:
@@ -357,7 +364,11 @@ class TestFinalizationIntegration:
         assert len(results["formatted_outputs"]) == 2
 
     def test_formatted_outputs_capped_at_20(self):
-        state = {"formatted_outputs": [{"type": "table", "title": f"T{i}"} for i in range(25)]}
+        state = {
+            "formatted_outputs": [
+                {"type": "table", "title": f"T{i}"} for i in range(25)
+            ]
+        }
         results: dict = {}
         formatted = state.get("formatted_outputs", [])
         if isinstance(formatted, list) and formatted:
@@ -378,6 +389,7 @@ class TestOutputFormattingSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "format_as_table" in names
         assert "format_as_report" in names
@@ -385,6 +397,7 @@ class TestOutputFormattingSchemas:
 
     def test_format_as_table_requires_title(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("format_as_table")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -392,6 +405,7 @@ class TestOutputFormattingSchemas:
 
     def test_format_as_table_has_source_enum(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("format_as_table")
         source_prop = tool["parameters"]["properties"]["source"]
         assert "enum" in source_prop
@@ -400,6 +414,7 @@ class TestOutputFormattingSchemas:
 
     def test_format_as_report_requires_title(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("format_as_report")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -407,11 +422,13 @@ class TestOutputFormattingSchemas:
 
     def test_format_as_report_has_persist(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("format_as_report")
         assert "persist" in tool["parameters"]["properties"]
 
     def test_set_output_schema_requires_schema(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("set_output_schema")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -423,6 +440,7 @@ class TestOutputFormattingRegistry:
 
     def test_all_are_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["format_as_table", "format_as_report", "set_output_schema"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
@@ -430,6 +448,7 @@ class TestOutputFormattingRegistry:
 
     def test_all_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["format_as_table", "format_as_report", "set_output_schema"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
@@ -437,6 +456,7 @@ class TestOutputFormattingRegistry:
 
     def test_none_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["format_as_table", "format_as_report", "set_output_schema"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

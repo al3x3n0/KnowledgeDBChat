@@ -13,7 +13,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.database import get_db
 from app.models.secret import UserSecret
 from app.models.user import User
-from app.schemas.secrets import SecretCreateRequest, SecretResponse, SecretRevealResponse
+from app.schemas.secrets import (
+    SecretCreateRequest,
+    SecretResponse,
+    SecretRevealResponse,
+)
 from app.services.auth_service import get_current_user
 from app.services.secret_service import SecretService
 
@@ -26,7 +30,9 @@ async def list_secrets(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(UserSecret).where(UserSecret.user_id == current_user.id).order_by(UserSecret.name)
+        select(UserSecret)
+        .where(UserSecret.user_id == current_user.id)
+        .order_by(UserSecret.name)
     )
     items = result.scalars().all()
     return [
@@ -52,7 +58,9 @@ async def upsert_secret(
         raise HTTPException(status_code=422, detail="Secret name is required")
 
     result = await db.execute(
-        select(UserSecret).where(UserSecret.user_id == current_user.id, UserSecret.name == name)
+        select(UserSecret).where(
+            UserSecret.user_id == current_user.id, UserSecret.name == name
+        )
     )
     secret = result.scalar_one_or_none()
     if secret:
@@ -85,7 +93,9 @@ async def delete_secret(
     db: AsyncSession = Depends(get_db),
 ):
     result = await db.execute(
-        select(UserSecret).where(UserSecret.id == secret_id, UserSecret.user_id == current_user.id)
+        select(UserSecret).where(
+            UserSecret.id == secret_id, UserSecret.user_id == current_user.id
+        )
     )
     secret = result.scalar_one_or_none()
     if not secret:
@@ -94,4 +104,3 @@ async def delete_secret(
     await db.delete(secret)
     await db.commit()
     return {"success": True}
-

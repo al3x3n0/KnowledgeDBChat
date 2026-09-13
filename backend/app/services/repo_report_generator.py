@@ -5,9 +5,7 @@ Converts repository analysis data into DOCX/PDF content items.
 """
 
 from datetime import datetime
-from typing import Dict, Any, List, Optional
-from io import BytesIO
-from loguru import logger
+from typing import Any, Dict, List, Optional
 
 from app.schemas.repo_report import RepoAnalysisResult
 from app.services.docx_builder import DOCXBuilder
@@ -23,9 +21,7 @@ class RepoReportGenerator:
     """
 
     def __init__(
-        self,
-        style: str = "professional",
-        custom_theme: Optional[Dict[str, Any]] = None
+        self, style: str = "professional", custom_theme: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize the report generator.
@@ -42,7 +38,7 @@ class RepoReportGenerator:
         analysis: RepoAnalysisResult,
         title: str,
         sections: List[str],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
     ) -> bytes:
         """
         Generate a DOCX report from analysis data.
@@ -69,7 +65,7 @@ class RepoReportGenerator:
             title=title,
             content_items=content_items,
             author="KnowledgeDB Repository Report",
-            subject=f"Repository analysis for {analysis.repo_info.full_name}"
+            subject=f"Repository analysis for {analysis.repo_info.full_name}",
         )
 
         if progress_callback:
@@ -82,7 +78,7 @@ class RepoReportGenerator:
         analysis: RepoAnalysisResult,
         title: str,
         sections: List[str],
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
     ) -> bytes:
         """
         Generate a PDF report from analysis data.
@@ -109,7 +105,7 @@ class RepoReportGenerator:
             title=title,
             content_items=content_items,
             author="KnowledgeDB Repository Report",
-            subject=f"Repository analysis for {analysis.repo_info.full_name}"
+            subject=f"Repository analysis for {analysis.repo_info.full_name}",
         )
 
         if progress_callback:
@@ -118,9 +114,7 @@ class RepoReportGenerator:
         return pdf_bytes
 
     def _build_content_items(
-        self,
-        analysis: RepoAnalysisResult,
-        sections: List[str]
+        self, analysis: RepoAnalysisResult, sections: List[str]
     ) -> List[Dict[str, Any]]:
         """
         Build content items from analysis data.
@@ -176,14 +170,18 @@ class RepoReportGenerator:
 
         # Add generation timestamp at the end
         items.append({"type": "horizontal_rule"})
-        items.append({
-            "type": "paragraph",
-            "text": f"Report generated on {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} by KnowledgeDB"
-        })
+        items.append(
+            {
+                "type": "paragraph",
+                "text": f"Report generated on {datetime.utcnow().strftime('%Y-%m-%d %H:%M UTC')} by KnowledgeDB",
+            }
+        )
 
         return items
 
-    def _build_overview_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_overview_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the overview section."""
         items = []
         repo = analysis.repo_info
@@ -216,16 +214,16 @@ class RepoReportGenerator:
         if repo.updated_at:
             stats_rows.append(["Last Updated", repo.updated_at.strftime("%Y-%m-%d")])
 
-        items.append({
-            "type": "table",
-            "headers": ["Property", "Value"],
-            "rows": stats_rows
-        })
+        items.append(
+            {"type": "table", "headers": ["Property", "Value"], "rows": stats_rows}
+        )
 
         items.append({"type": "paragraph", "text": ""})  # Spacer
         return items
 
-    def _build_readme_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_readme_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the README section."""
         items = []
         items.append({"type": "page_break"})
@@ -241,32 +239,44 @@ class RepoReportGenerator:
             # Heading detection
             if stripped.startswith("# "):
                 if current_paragraph:
-                    items.append({"type": "paragraph", "text": " ".join(current_paragraph)})
+                    items.append(
+                        {"type": "paragraph", "text": " ".join(current_paragraph)}
+                    )
                     current_paragraph = []
                 items.append({"type": "heading", "level": 2, "text": stripped[2:]})
             elif stripped.startswith("## "):
                 if current_paragraph:
-                    items.append({"type": "paragraph", "text": " ".join(current_paragraph)})
+                    items.append(
+                        {"type": "paragraph", "text": " ".join(current_paragraph)}
+                    )
                     current_paragraph = []
                 items.append({"type": "heading", "level": 2, "text": stripped[3:]})
             elif stripped.startswith("### "):
                 if current_paragraph:
-                    items.append({"type": "paragraph", "text": " ".join(current_paragraph)})
+                    items.append(
+                        {"type": "paragraph", "text": " ".join(current_paragraph)}
+                    )
                     current_paragraph = []
                 items.append({"type": "heading", "level": 3, "text": stripped[4:]})
             elif stripped.startswith("- ") or stripped.startswith("* "):
                 if current_paragraph:
-                    items.append({"type": "paragraph", "text": " ".join(current_paragraph)})
+                    items.append(
+                        {"type": "paragraph", "text": " ".join(current_paragraph)}
+                    )
                     current_paragraph = []
                 items.append({"type": "bullet_list", "items": [stripped[2:]]})
             elif stripped.startswith("```"):
                 if current_paragraph:
-                    items.append({"type": "paragraph", "text": " ".join(current_paragraph)})
+                    items.append(
+                        {"type": "paragraph", "text": " ".join(current_paragraph)}
+                    )
                     current_paragraph = []
                 # We'll just note there's a code block - proper parsing would be more complex
             elif stripped == "":
                 if current_paragraph:
-                    items.append({"type": "paragraph", "text": " ".join(current_paragraph)})
+                    items.append(
+                        {"type": "paragraph", "text": " ".join(current_paragraph)}
+                    )
                     current_paragraph = []
             else:
                 current_paragraph.append(stripped)
@@ -276,16 +286,20 @@ class RepoReportGenerator:
 
         return items
 
-    def _build_file_structure_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_file_structure_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the file structure section."""
         items = []
         items.append({"type": "page_break"})
         items.append({"type": "heading", "level": 1, "text": "File Structure"})
 
-        items.append({
-            "type": "paragraph",
-            "text": "The repository has the following directory structure:"
-        })
+        items.append(
+            {
+                "type": "paragraph",
+                "text": "The repository has the following directory structure:",
+            }
+        )
 
         # Truncate tree if too long
         tree_text = analysis.file_tree_text
@@ -293,86 +307,95 @@ class RepoReportGenerator:
             lines = tree_text.split("\n")[:100]
             tree_text = "\n".join(lines) + "\n... (truncated)"
 
-        items.append({
-            "type": "code_block",
-            "code": tree_text,
-            "language": "text"
-        })
+        items.append({"type": "code_block", "code": tree_text, "language": "text"})
 
         return items
 
-    def _build_commits_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_commits_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the commits section."""
         items = []
         items.append({"type": "page_break"})
         items.append({"type": "heading", "level": 1, "text": "Recent Commits"})
 
-        items.append({
-            "type": "paragraph",
-            "text": f"The following table shows the {len(analysis.commits)} most recent commits:"
-        })
+        items.append(
+            {
+                "type": "paragraph",
+                "text": f"The following table shows the {len(analysis.commits)} most recent commits:",
+            }
+        )
 
         commit_rows = []
         for commit in analysis.commits[:20]:
             date_str = commit.date.strftime("%Y-%m-%d") if commit.date else "N/A"
-            message = commit.message[:60] + "..." if len(commit.message) > 60 else commit.message
-            commit_rows.append([
-                commit.sha[:8],
-                message,
-                commit.author,
-                date_str
-            ])
+            message = (
+                commit.message[:60] + "..."
+                if len(commit.message) > 60
+                else commit.message
+            )
+            commit_rows.append([commit.sha[:8], message, commit.author, date_str])
 
-        items.append({
-            "type": "table",
-            "headers": ["SHA", "Message", "Author", "Date"],
-            "rows": commit_rows
-        })
+        items.append(
+            {
+                "type": "table",
+                "headers": ["SHA", "Message", "Author", "Date"],
+                "rows": commit_rows,
+            }
+        )
 
         return items
 
-    def _build_issues_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_issues_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the issues section."""
         items = []
         items.append({"type": "page_break"})
         items.append({"type": "heading", "level": 1, "text": "Open Issues"})
 
-        items.append({
-            "type": "paragraph",
-            "text": f"There are currently {len(analysis.issues)} open issues:"
-        })
+        items.append(
+            {
+                "type": "paragraph",
+                "text": f"There are currently {len(analysis.issues)} open issues:",
+            }
+        )
 
         issue_rows = []
         for issue in analysis.issues[:20]:
-            date_str = issue.created_at.strftime("%Y-%m-%d") if issue.created_at else "N/A"
+            date_str = (
+                issue.created_at.strftime("%Y-%m-%d") if issue.created_at else "N/A"
+            )
             title = issue.title[:50] + "..." if len(issue.title) > 50 else issue.title
             labels = ", ".join(issue.labels[:3]) if issue.labels else "-"
-            issue_rows.append([
-                f"#{issue.number}",
-                title,
-                issue.author,
-                labels,
-                date_str
-            ])
+            issue_rows.append(
+                [f"#{issue.number}", title, issue.author, labels, date_str]
+            )
 
-        items.append({
-            "type": "table",
-            "headers": ["#", "Title", "Author", "Labels", "Created"],
-            "rows": issue_rows
-        })
+        items.append(
+            {
+                "type": "table",
+                "headers": ["#", "Title", "Author", "Labels", "Created"],
+                "rows": issue_rows,
+            }
+        )
 
         return items
 
-    def _build_pull_requests_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_pull_requests_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the pull requests section."""
         items = []
         items.append({"type": "page_break"})
         items.append({"type": "heading", "level": 1, "text": "Open Pull Requests"})
 
-        items.append({
-            "type": "paragraph",
-            "text": f"There are currently {len(analysis.pull_requests)} open pull requests:"
-        })
+        items.append(
+            {
+                "type": "paragraph",
+                "text": f"There are currently {len(analysis.pull_requests)} open pull requests:",
+            }
+        )
 
         pr_rows = []
         for pr in analysis.pull_requests[:20]:
@@ -381,30 +404,30 @@ class RepoReportGenerator:
             branches = f"{pr.source_branch} → {pr.target_branch}"
             if len(branches) > 30:
                 branches = branches[:27] + "..."
-            pr_rows.append([
-                f"#{pr.number}",
-                title,
-                pr.author,
-                branches,
-                date_str
-            ])
+            pr_rows.append([f"#{pr.number}", title, pr.author, branches, date_str])
 
-        items.append({
-            "type": "table",
-            "headers": ["#", "Title", "Author", "Branches", "Created"],
-            "rows": pr_rows
-        })
+        items.append(
+            {
+                "type": "table",
+                "headers": ["#", "Title", "Author", "Branches", "Created"],
+                "rows": pr_rows,
+            }
+        )
 
         return items
 
-    def _build_code_stats_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_code_stats_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the code statistics section."""
         items = []
         items.append({"type": "page_break"})
         items.append({"type": "heading", "level": 1, "text": "Code Statistics"})
 
         if not analysis.language_stats:
-            items.append({"type": "paragraph", "text": "No language statistics available."})
+            items.append(
+                {"type": "paragraph", "text": "No language statistics available."}
+            )
             return items
 
         items.append({"type": "heading", "level": 2, "text": "Language Breakdown"})
@@ -419,11 +442,13 @@ class RepoReportGenerator:
             bar = "█" * bar_length
             lang_rows.append([lang, f"{pct:.1f}%", bar])
 
-        items.append({
-            "type": "table",
-            "headers": ["Language", "Percentage", "Distribution"],
-            "rows": lang_rows
-        })
+        items.append(
+            {
+                "type": "table",
+                "headers": ["Language", "Percentage", "Distribution"],
+                "rows": lang_rows,
+            }
+        )
 
         if analysis.language_stats.total_bytes > 0:
             total_kb = analysis.language_stats.total_bytes / 1024
@@ -431,14 +456,13 @@ class RepoReportGenerator:
                 total_str = f"{total_kb / 1024:.1f} MB"
             else:
                 total_str = f"{total_kb:.1f} KB"
-            items.append({
-                "type": "paragraph",
-                "text": f"Total code size: {total_str}"
-            })
+            items.append({"type": "paragraph", "text": f"Total code size: {total_str}"})
 
         return items
 
-    def _build_contributors_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_contributors_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the contributors section."""
         items = []
         items.append({"type": "page_break"})
@@ -447,21 +471,21 @@ class RepoReportGenerator:
         contrib_rows = []
         for i, contrib in enumerate(analysis.contributors[:10], 1):
             name = contrib.name or contrib.username
-            contrib_rows.append([
-                str(i),
-                name,
-                str(contrib.contributions)
-            ])
+            contrib_rows.append([str(i), name, str(contrib.contributions)])
 
-        items.append({
-            "type": "table",
-            "headers": ["Rank", "Contributor", "Contributions"],
-            "rows": contrib_rows
-        })
+        items.append(
+            {
+                "type": "table",
+                "headers": ["Rank", "Contributor", "Contributions"],
+                "rows": contrib_rows,
+            }
+        )
 
         return items
 
-    def _build_architecture_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_architecture_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the architecture analysis section."""
         items = []
 
@@ -472,21 +496,21 @@ class RepoReportGenerator:
         items.append({"type": "heading", "level": 1, "text": "Architecture Analysis"})
 
         if analysis.insights.architecture_summary:
-            items.append({
-                "type": "paragraph",
-                "text": analysis.insights.architecture_summary
-            })
+            items.append(
+                {"type": "paragraph", "text": analysis.insights.architecture_summary}
+            )
 
         if analysis.insights.key_features:
             items.append({"type": "heading", "level": 2, "text": "Key Features"})
-            items.append({
-                "type": "bullet_list",
-                "items": analysis.insights.key_features
-            })
+            items.append(
+                {"type": "bullet_list", "items": analysis.insights.key_features}
+            )
 
         return items
 
-    def _build_tech_stack_section(self, analysis: RepoAnalysisResult) -> List[Dict[str, Any]]:
+    def _build_tech_stack_section(
+        self, analysis: RepoAnalysisResult
+    ) -> List[Dict[str, Any]]:
         """Build the technology stack section."""
         items = []
 
@@ -496,15 +520,16 @@ class RepoReportGenerator:
         items.append({"type": "page_break"})
         items.append({"type": "heading", "level": 1, "text": "Technology Stack"})
 
-        items.append({
-            "type": "paragraph",
-            "text": "The following technologies, frameworks, and tools were detected in this repository:"
-        })
+        items.append(
+            {
+                "type": "paragraph",
+                "text": "The following technologies, frameworks, and tools were detected in this repository:",
+            }
+        )
 
-        items.append({
-            "type": "bullet_list",
-            "items": analysis.insights.technology_stack
-        })
+        items.append(
+            {"type": "bullet_list", "items": analysis.insights.technology_stack}
+        )
 
         return items
 

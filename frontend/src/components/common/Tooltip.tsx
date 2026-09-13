@@ -1,5 +1,10 @@
 /**
- * Reusable tooltip component
+ * The app's tooltip.
+ *
+ * A tooltip is the highest thing on screen at the moment it appears, so it
+ * takes the top of the elevation scale and a scrim-free entrance — it should
+ * arrive quickly enough not to feel like a page change (180ms) and sit clearly
+ * above whatever it explains.
  */
 
 import React, { useState, useRef, useEffect } from 'react';
@@ -93,10 +98,10 @@ const Tooltip: React.FC<TooltipProps> = ({
   };
 
   const arrowClasses = {
-    top: 'top-full left-1/2 transform -translate-x-1/2 border-t-gray-50 border-l-transparent border-r-transparent border-b-transparent',
-    bottom: 'bottom-full left-1/2 transform -translate-x-1/2 border-b-gray-50 border-l-transparent border-r-transparent border-t-transparent',
-    left: 'left-full top-1/2 transform -translate-y-1/2 border-l-gray-50 border-t-transparent border-b-transparent border-r-transparent',
-    right: 'right-full top-1/2 transform -translate-y-1/2 border-r-gray-50 border-t-transparent border-b-transparent border-l-transparent',
+    top: 'top-full left-1/2 transform -translate-x-1/2 border-t-gray-200 border-l-transparent border-r-transparent border-b-transparent',
+    bottom: 'bottom-full left-1/2 transform -translate-x-1/2 border-b-gray-200 border-l-transparent border-r-transparent border-t-transparent',
+    left: 'left-full top-1/2 transform -translate-y-1/2 border-l-gray-200 border-t-transparent border-b-transparent border-r-transparent',
+    right: 'right-full top-1/2 transform -translate-y-1/2 border-r-gray-200 border-t-transparent border-b-transparent border-l-transparent',
   };
 
   return (
@@ -114,7 +119,8 @@ const Tooltip: React.FC<TooltipProps> = ({
           ref={tooltipRef}
           role="tooltip"
           className={clsx(
-            'absolute z-50 px-3 py-2 text-sm text-primary-700 bg-gray-50 border border-gray-200 rounded-md shadow-none whitespace-nowrap pointer-events-none',
+            'absolute z-50 px-3 py-2 text-sm text-gray-900 whitespace-nowrap pointer-events-none',
+            'surface-2 rounded-lg animate-scale-in',
             'animate-in fade-in-0 zoom-in-95 duration-200',
             positionClasses[tooltipPosition],
             className

@@ -3,7 +3,9 @@ Utility helpers for managing ingestion state flags in Redis.
 """
 
 from typing import Optional
+
 from loguru import logger
+
 from app.core.cache import get_redis_client
 
 
@@ -21,7 +23,9 @@ async def _decode(value):
     return value
 
 
-async def set_ingestion_task_mapping(source_id: str, task_id: str, ttl: int = 3600) -> None:
+async def set_ingestion_task_mapping(
+    source_id: str, task_id: str, ttl: int = 3600
+) -> None:
     """Store the celery task id for an ingestion request."""
     try:
         client = await get_redis_client()
@@ -60,6 +64,7 @@ async def set_force_full_flag(source_id: str, ttl: int = 600) -> None:
 
 
 # Git comparison helpers -----------------------------------------------------
+
 
 async def set_git_compare_task(diff_id: str, task_id: str, ttl: int = 3600) -> None:
     """Store Celery task id for a git branch comparison job."""

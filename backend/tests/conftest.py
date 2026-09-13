@@ -2,22 +2,52 @@
 Pytest configuration and fixtures for backend tests.
 """
 
-import sys
-import types
-import importlib.machinery
-import pytest
 import asyncio
+import importlib.machinery
+import importlib.util
+import os
+import sys
+import tempfile
+import types
+from pathlib import Path
 from typing import AsyncGenerator
+
+import pytest
 from fastapi.testclient import TestClient
+from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.ext.compiler import compiles
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
-from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.pool import StaticPool
 
-from app.core.database import Base, get_db
-from app.models.user import User
-from app.services.auth_service import AuthService
+# Importing the app configures loguru with settings.LOG_FILE, so this has to be
+# set before that import happens. Without it every test run appends to
+# backend/data/logs/app.log with 10MB rotation and 30-day retention: hundreds of
+# megabytes of test noise, and concurrent runs racing each other on rotation
+# (which produces failures that look like real ones and are not).
+os.environ.setdefault(
+    "LOG_FILE", str(Path(tempfile.gettempdir()) / "kdbchat-tests" / "test.log")
+)
 
+# Celery's broker, before app.core.celery reads settings to build the app.
+#
+# The suite needs no Redis -- it runs on in-memory SQLite and stubs the heavy
+# optional dependencies -- but an endpoint that queues a job calls .delay(),
+# and kombu then opens a real socket. On a developer's machine the dev stack's
+# Redis is listening, so this passed; in CI, where no service is started,
+# six tests failed with "Connection refused" against whatever port
+# CELERY_BROKER_URL happened to name. The port in that message was a red
+# herring: the tests need a broker, not a particular one.
+#
+# kombu's in-memory transport makes .delay() succeed and enqueue nowhere, which
+# is what a test asserting "the endpoint queued the job" actually wants. Tests
+# that need to SEE the dispatch still monkeypatch .delay themselves, and that
+# keeps working.
+os.environ.setdefault("CELERY_BROKER_URL", "memory://")
+os.environ.setdefault("CELERY_RESULT_BACKEND", "cache+memory://")
+
+from app.core.database import Base, get_db  # noqa: E402
+from app.models.user import User  # noqa: E402
+from app.services.auth_service import AuthService  # noqa: E402
 
 if "pptx" not in sys.modules:
     pptx_stub = types.ModuleType("pptx")
@@ -26,8 +56,32 @@ if "pptx" not in sys.modules:
     pptx_enum_stub = types.ModuleType("pptx.enum")
     pptx_shapes_stub = types.ModuleType("pptx.enum.shapes")
     pptx_shapes_stub.PP_PLACEHOLDER = object()
+    pptx_shapes_stub.MSO_SHAPE = object()
+    pptx_text_stub = types.ModuleType("pptx.enum.text")
+    pptx_text_stub.PP_ALIGN = object()
+    pptx_text_stub.MSO_ANCHOR = object()
+
+    def _pptx_dimension(*args, **kwargs):
+        return 0
+
+    pptx_util_stub = types.ModuleType("pptx.util")
+    pptx_util_stub.Inches = _pptx_dimension
+    pptx_util_stub.Pt = _pptx_dimension
+    pptx_util_stub.Emu = _pptx_dimension
+    pptx_dml_stub = types.ModuleType("pptx.dml")
+    pptx_dml_color_stub = types.ModuleType("pptx.dml.color")
+
+    class _RGBColor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+    pptx_dml_color_stub.RGBColor = _RGBColor
     sys.modules["pptx.enum"] = pptx_enum_stub
     sys.modules["pptx.enum.shapes"] = pptx_shapes_stub
+    sys.modules["pptx.enum.text"] = pptx_text_stub
+    sys.modules["pptx.util"] = pptx_util_stub
+    sys.modules["pptx.dml"] = pptx_dml_stub
+    sys.modules["pptx.dml.color"] = pptx_dml_color_stub
 
 if "sentence_transformers" not in sys.modules:
     sentence_transformers_stub = types.ModuleType("sentence_transformers")
@@ -45,7 +99,16 @@ if "sentence_transformers" not in sys.modules:
     sentence_transformers_stub.SentenceTransformer = _DummySentenceTransformer
     sys.modules["sentence_transformers"] = sentence_transformers_stub
 
-if "bs4" not in sys.modules:
+
+def _real_module_available(name: str) -> bool:
+    """True if the real (non-stubbed) package is importable."""
+    try:
+        return importlib.util.find_spec(name) is not None
+    except (ImportError, ValueError):
+        return False
+
+
+if "bs4" not in sys.modules and not _real_module_available("bs4"):
     bs4_stub = types.ModuleType("bs4")
     bs4_stub.__spec__ = importlib.machinery.ModuleSpec("bs4", loader=None)
 
@@ -67,7 +130,7 @@ if "bs4" not in sys.modules:
     bs4_stub.NavigableString = _DummyNavigableString
     sys.modules["bs4"] = bs4_stub
 
-if "croniter" not in sys.modules:
+if "croniter" not in sys.modules and not _real_module_available("croniter"):
     croniter_stub = types.ModuleType("croniter")
 
     class _DummyCronIter:
@@ -121,6 +184,11 @@ def _compile_jsonb_sqlite(_element, _compiler, **_kwargs):
     return "JSON"
 
 
+@compiles(UUID, "sqlite")
+def _compile_uuid_sqlite(_element, _compiler, **_kwargs):
+    return "CHAR(36)"
+
+
 # Test database URL (in-memory SQLite for testing)
 TEST_DATABASE_URL = "sqlite+aiosqlite:///:memory:"
 
@@ -147,32 +215,87 @@ def event_loop():
     loop.close()
 
 
+@pytest.fixture(autouse=True)
+def _restore_current_event_loop(event_loop):
+    """Keep Python 3.11 sync tests attached to pytest-asyncio's session loop."""
+    asyncio.set_event_loop(event_loop)
+    yield
+    if not event_loop.is_closed():
+        asyncio.set_event_loop(event_loop)
+
+
+@pytest.fixture(autouse=True)
+def _no_live_llm_calls(monkeypatch: pytest.MonkeyPatch):
+    """Keep the suite off real providers, whatever the developer has configured.
+
+    Tests stub the LLM by patching one entry point, usually generate_response.
+    `llm_structured.ask_for_json` tries generate_structured first and only falls
+    back to the prompted path when it fails, so on a machine with a provider key
+    the unpatched call succeeds against the live API: the stub is bypassed, the
+    test spends real credits and its result changes run to run. CI has no keys,
+    so this only ever bit developers who had one.
+
+    Clearing the credentials makes every machine behave like CI. A test that
+    wants a model must stub it.
+    """
+    from app.core.config import settings
+
+    for name in (
+        "DEEPSEEK_API_KEY",
+        "OPENAI_API_KEY",
+        "ANTHROPIC_API_KEY",
+        "QWEN_API_KEY",
+        "KIMI_API_KEY",
+    ):
+        if hasattr(settings, name):
+            monkeypatch.setattr(settings, name, None, raising=False)
+    # Ollama needs no key, so point it at an address nothing answers on.
+    monkeypatch.setattr(
+        settings, "OLLAMA_BASE_URL", "http://127.0.0.1:1", raising=False
+    )
+    yield
+
+
 @pytest.fixture(scope="function")
 async def db_session() -> AsyncGenerator[AsyncSession, None]:
     """Create a test database session."""
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
-    
+
     async with TestSessionLocal() as session:
         yield session
-    
+
     async with test_engine.begin() as conn:
         await conn.run_sync(Base.metadata.drop_all)
 
 
 @pytest.fixture(scope="function")
-def client(db_session: AsyncSession) -> TestClient:
-    """Create a test client."""
+def client(
+    db_session: AsyncSession,
+    monkeypatch: pytest.MonkeyPatch,
+) -> TestClient:
+    """Create a test client without contacting production infrastructure."""
+    from app.services.storage_service import storage_service
+    from app.services.vector_store import vector_store_service
+    from app.utils.redis_subscriber import redis_subscriber
     from main import app
+
+    async def _noop(*args, **kwargs):
+        return None
+
+    monkeypatch.setattr(vector_store_service, "initialize", _noop)
+    monkeypatch.setattr(storage_service, "initialize", _noop)
+    monkeypatch.setattr(redis_subscriber, "start", _noop)
+    monkeypatch.setattr(redis_subscriber, "stop", _noop)
 
     def override_get_db():
         return db_session
-    
+
     app.dependency_overrides[get_db] = override_get_db
-    
+
     with TestClient(app) as test_client:
         yield test_client
-    
+
     app.dependency_overrides.clear()
 
 
@@ -180,15 +303,15 @@ def client(db_session: AsyncSession) -> TestClient:
 async def test_user(db_session: AsyncSession) -> User:
     """Create a test user."""
     auth_service = AuthService()
-    
+
     user = await auth_service.create_user(
         username="testuser",
         email="test@example.com",
         password="testpassword123",
         full_name="Test User",
-        db=db_session
+        db=db_session,
     )
-    
+
     return user
 
 
@@ -196,20 +319,20 @@ async def test_user(db_session: AsyncSession) -> User:
 async def admin_user(db_session: AsyncSession) -> User:
     """Create an admin test user."""
     auth_service = AuthService()
-    
+
     user = await auth_service.create_user(
         username="admin",
         email="admin@example.com",
         password="adminpassword123",
         full_name="Admin User",
-        db=db_session
+        db=db_session,
     )
-    
+
     # Set admin role
     user.role = "admin"
     await db_session.commit()
     await db_session.refresh(user)
-    
+
     return user
 
 

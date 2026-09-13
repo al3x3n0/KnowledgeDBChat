@@ -418,6 +418,8 @@ const PapersPage: React.FC = () => {
 	                <div
                     id={`arxiv-import-${imp.id}`}
                     key={imp.id}
+                    role="article"
+                    aria-label={imp.name}
                     className={`border rounded-lg p-3 ${isHighlighted ? 'ring-2 ring-primary-400 bg-primary-50' : ''}`}
                   >
 	                  <div className="flex items-start justify-between gap-3">

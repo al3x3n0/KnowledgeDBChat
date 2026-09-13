@@ -4,12 +4,11 @@ ArXiv search service (interactive research use-cases).
 
 from __future__ import annotations
 
+import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from datetime import datetime
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Tuple
 
 import httpx
-import xml.etree.ElementTree as ET
 
 
 @dataclass
@@ -74,21 +73,33 @@ class ArxivSearchService:
             "opensearch": "http://a9.com/-/spec/opensearch/1.1/",
         }
 
-        total_text = root.findtext("opensearch:totalResults", default="0", namespaces=ns) or "0"
+        total_text = (
+            root.findtext("opensearch:totalResults", default="0", namespaces=ns) or "0"
+        )
         try:
             total = int(total_text)
         except Exception:
             total = 0
 
         for entry in root.findall("atom:entry", ns):
-            entry_url = (entry.findtext("atom:id", default="", namespaces=ns) or "").strip()
+            entry_url = (
+                entry.findtext("atom:id", default="", namespaces=ns) or ""
+            ).strip()
             if not entry_url:
                 continue
 
-            title = (entry.findtext("atom:title", default="", namespaces=ns) or "").strip()
-            summary = (entry.findtext("atom:summary", default="", namespaces=ns) or "").strip()
-            published = (entry.findtext("atom:published", default="", namespaces=ns) or "").strip()
-            updated = (entry.findtext("atom:updated", default="", namespaces=ns) or "").strip()
+            title = (
+                entry.findtext("atom:title", default="", namespaces=ns) or ""
+            ).strip()
+            summary = (
+                entry.findtext("atom:summary", default="", namespaces=ns) or ""
+            ).strip()
+            published = (
+                entry.findtext("atom:published", default="", namespaces=ns) or ""
+            ).strip()
+            updated = (
+                entry.findtext("atom:updated", default="", namespaces=ns) or ""
+            ).strip()
 
             authors = [
                 (author.findtext("atom:name", default="", namespaces=ns) or "").strip()
@@ -97,7 +108,8 @@ class ArxivSearchService:
             authors = [a for a in authors if a]
 
             categories = [
-                cat.get("term") for cat in entry.findall("atom:category", ns)
+                cat.get("term")
+                for cat in entry.findall("atom:category", ns)
                 if cat.get("term")
             ]
 
@@ -106,8 +118,12 @@ class ArxivSearchService:
             if primary_node is not None:
                 primary_category = primary_node.get("term")
 
-            doi = (entry.findtext("arxiv:doi", default="", namespaces=ns) or "").strip() or None
-            comments = (entry.findtext("arxiv:comment", default="", namespaces=ns) or "").strip() or None
+            doi = (
+                entry.findtext("arxiv:doi", default="", namespaces=ns) or ""
+            ).strip() or None
+            comments = (
+                entry.findtext("arxiv:comment", default="", namespaces=ns) or ""
+            ).strip() or None
 
             pdf_url = None
             for link in entry.findall("atom:link", ns):
@@ -135,4 +151,3 @@ class ArxivSearchService:
             )
 
         return total, items
-

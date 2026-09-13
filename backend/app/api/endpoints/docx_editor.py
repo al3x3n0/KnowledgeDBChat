@@ -2,31 +2,28 @@
 API endpoints for DOCX document editing.
 """
 
-import tempfile
 import hashlib
-from uuid import UUID
+import tempfile
 from pathlib import Path
-from typing import Optional
+from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
-from sqlalchemy.ext.asyncio import AsyncSession
-from sqlalchemy import select
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
 from app.models.document import Document
-from app.services.storage_service import storage_service
+from app.schemas.docx_editor import DocxEditRequest, DocxEditResponse, DocxSaveResponse
 from app.services.docx_editor_service import docx_editor_service
-from app.schemas.docx_editor import DocxEditResponse, DocxEditRequest, DocxSaveResponse
-
+from app.services.storage_service import storage_service
 
 router = APIRouter()
 
 
 @router.get("/{document_id}/edit", response_model=DocxEditResponse)
 async def get_document_for_editing(
-    document_id: str,
-    db: AsyncSession = Depends(get_db)
+    document_id: str, db: AsyncSession = Depends(get_db)
 ):
     """
     Get a DOCX document converted to HTML for editing.
@@ -53,7 +50,7 @@ async def get_document_for_editing(
     if file_ext not in [".docx", ".doc"]:
         raise HTTPException(
             status_code=400,
-            detail=f"Only DOCX files can be edited. This file is: {file_ext}"
+            detail=f"Only DOCX files can be edited. This file is: {file_ext}",
         )
 
     # Download file from MinIO to temp location
@@ -66,7 +63,9 @@ async def get_document_for_editing(
         # Download from storage
         file_data = await storage_service.download_file(document.file_path)
         if not file_data:
-            raise HTTPException(status_code=404, detail="Document file not found in storage")
+            raise HTTPException(
+                status_code=404, detail="Document file not found in storage"
+            )
 
         with open(temp_path, "wb") as f:
             f.write(file_data)
@@ -80,14 +79,16 @@ async def get_document_for_editing(
             document_id=str(document.id),
             version=conversion_result["version"],
             editable=True,
-            warnings=conversion_result.get("warnings")
+            warnings=conversion_result.get("warnings"),
         )
 
     except HTTPException:
         raise
     except Exception as e:
         logger.error(f"Failed to prepare document for editing: {e}")
-        raise HTTPException(status_code=500, detail=f"Failed to load document: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to load document: {str(e)}"
+        )
     finally:
         # Cleanup temp file
         if temp_file:
@@ -102,7 +103,7 @@ async def save_document_edits(
     document_id: str,
     request: DocxEditRequest,
     background_tasks: BackgroundTasks,
-    db: AsyncSession = Depends(get_db)
+    db: AsyncSession = Depends(get_db),
 ):
     """
     Save edited HTML content back to DOCX format.
@@ -126,7 +127,6 @@ async def save_document_edits(
 
     # Download original to use as template (preserves styles)
     temp_original = None
-    temp_new = None
 
     try:
         # Download original file
@@ -148,21 +148,20 @@ async def save_document_edits(
             await storage_service.upload_file(
                 backup_path,
                 original_data,
-                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
             logger.info(f"Created backup at {backup_path}")
 
         # Convert HTML to DOCX
         docx_bytes = await docx_editor_service.html_to_docx(
-            request.html_content,
-            original_path=temp_original_path
+            request.html_content, original_path=temp_original_path
         )
 
         # Upload new version to MinIO
         await storage_service.upload_file(
             document.file_path,
             docx_bytes,
-            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+            content_type="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
         )
 
         # Update document metadata
@@ -183,7 +182,7 @@ async def save_document_edits(
             document_id=str(document.id),
             new_version=new_version,
             message="Document saved successfully",
-            backup_path=backup_path
+            backup_path=backup_path,
         )
 
     except HTTPException:
@@ -191,7 +190,9 @@ async def save_document_edits(
     except Exception as e:
         logger.error(f"Failed to save document edits: {e}")
         await db.rollback()
-        raise HTTPException(status_code=500, detail=f"Failed to save document: {str(e)}")
+        raise HTTPException(
+            status_code=500, detail=f"Failed to save document: {str(e)}"
+        )
     finally:
         # Cleanup temp files
         if temp_original:

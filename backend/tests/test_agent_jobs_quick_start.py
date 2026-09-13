@@ -1,45 +1,47 @@
-from types import SimpleNamespace
-from datetime import datetime, timedelta
 import asyncio
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 from uuid import uuid4
 
 from app.api.endpoints.agent_jobs import (
-    _build_relaunch_children_counts,
-    _build_relaunch_children_counts_for_user,
-    _build_launch_mode_stats,
-    _build_relaunch_lineage,
-    _chain_definition_to_response,
-    _build_chain_config_for_step,
     _append_launch_log_if_present,
+    _build_chain_config_for_step,
     _build_launch_mode_counts,
+    _build_launch_mode_stats,
     _build_quick_start_bug_triage_swarm_config,
+    _build_quick_start_bug_triage_swarm_relaunch_request,
     _build_quick_start_claude_backend_config,
     _build_quick_start_domain_research_config,
-    _build_quick_start_bug_triage_swarm_relaunch_request,
-    _build_quick_start_repo_bug_triage_config,
-    _build_quick_start_role_workflow_config,
-    _build_quick_start_relaunch_request,
     _build_quick_start_domain_research_relaunch_request,
+    _build_quick_start_relaunch_request,
+    _build_quick_start_repo_bug_triage_config,
     _build_quick_start_repo_bug_triage_relaunch_request,
+    _build_quick_start_role_workflow_config,
     _build_quick_start_role_workflow_relaunch_request,
+    _build_relaunch_children_counts,
+    _build_relaunch_children_counts_for_user,
+    _build_relaunch_lineage,
+    _chain_definition_to_response,
+    _derive_repair_verification_status,
+    _derive_swarm_outcome_case,
     _extract_launch_mode,
     _extract_relaunch_parent_job_id,
     _extract_source_id_from_config,
-    _infer_coding_swarm_preset_key,
-    _derive_repair_verification_status,
-    _derive_swarm_outcome_case,
     _find_unsafe_commands,
+    _infer_coding_swarm_preset_key,
     _is_none_launch_mode,
     _is_source_owned_by_user,
     _matches_launch_mode_filter,
     _normalize_scope_keys_deep,
     _swarm_confidence_bucket,
 )
-from app.schemas.agent_job import AgentJobQuickStartClaudeBackendRequest
-from app.schemas.agent_job import AgentJobQuickStartBugTriageSwarmRequest
-from app.schemas.agent_job import AgentJobQuickStartDomainResearchRequest
-from app.schemas.agent_job import AgentJobQuickStartRepoBugTriageRequest
-from app.schemas.agent_job import AgentJobQuickStartRoleWorkflowRequest
+from app.schemas.agent_job import (
+    AgentJobQuickStartBugTriageSwarmRequest,
+    AgentJobQuickStartClaudeBackendRequest,
+    AgentJobQuickStartDomainResearchRequest,
+    AgentJobQuickStartRepoBugTriageRequest,
+    AgentJobQuickStartRoleWorkflowRequest,
+)
 
 
 def test_is_source_owned_by_user_matches_requested_by_user_id():
@@ -240,7 +242,10 @@ def test_build_quick_start_domain_research_config_includes_launch_metadata():
     assert cfg["track_type"] == "compiler"
     assert cfg["research_mode"] == "literature_to_hypothesis"
     assert cfg["repo_source_ids"] == ["00000000-0000-0000-0000-000000000111"]
-    assert cfg["benchmark_queries"] == ["compile time regression", "vectorization benchmark"]
+    assert cfg["benchmark_queries"] == [
+        "compile time regression",
+        "vectorization benchmark",
+    ]
     assert cfg["sandbox_profile_id"] == "scientific-compiler-sandbox"
     assert cfg["persist_target"] == "research_notes"
     assert cfg["automation_profile"] == "max_autonomy"
@@ -262,7 +267,10 @@ def test_build_quick_start_domain_research_config_does_not_seed_legacy_validatio
         domain="Compiler",
         objective="Track compiler opportunities",
         automation_profile="balanced",
-        automation_policy={"confidence_threshold": 0.81, "auto_launch_follow_up": False},
+        automation_policy={
+            "confidence_threshold": 0.81,
+            "auto_launch_follow_up": False,
+        },
         start_immediately=True,
     )
 
@@ -333,7 +341,9 @@ def test_build_quick_start_bug_triage_swarm_config_includes_swarm_defaults():
     assert cfg["quick_start"]["profile"] == "bug_triage_swarm"
     assert cfg["quick_start"]["autonomy_mode"] == "max_autonomy"
     assert cfg["quick_start"]["max_agents"] == 4
-    assert cfg["search_query"] == "frontend Frontend save action returns 500 bug symptom"
+    assert (
+        cfg["search_query"] == "frontend Frontend save action returns 500 bug symptom"
+    )
 
 
 def test_build_quick_start_role_workflow_config_applies_memory_extraction_overrides():
@@ -384,8 +394,14 @@ def test_build_quick_start_domain_research_relaunch_request_preserves_context():
             "max_papers": 7,
             "profile_id": str(uuid4()),
             "automation_profile": "max_autonomy",
-            "automation_policy": {"confidence_threshold": 0.83, "experiment_readiness_threshold": 0.9},
-            "validation_policy": {"confidence_threshold": 0.83, "experiment_readiness_threshold": 0.9},
+            "automation_policy": {
+                "confidence_threshold": 0.83,
+                "experiment_readiness_threshold": 0.9,
+            },
+            "validation_policy": {
+                "confidence_threshold": 0.83,
+                "experiment_readiness_threshold": 0.9,
+            },
             "confidence_threshold": 0.8,
         },
     )
@@ -614,7 +630,12 @@ def test_append_launch_log_if_present_adds_log_entry():
     job = SimpleNamespace(
         config={
             "launch_mode": "quick_start_claude_backend",
-            "quick_start": {"profile": "claude_backend", "version": "v1", "source_name": "Repo Source", "source_type": "github"},
+            "quick_start": {
+                "profile": "claude_backend",
+                "version": "v1",
+                "source_name": "Repo Source",
+                "source_type": "github",
+            },
         },
         execution_log=[],
         iteration=0,
@@ -694,7 +715,10 @@ def test_build_repo_bug_triage_relaunch_request_preserves_failure_context():
     assert request.file_paths == ["frontend/src/pages/DocumentsPage.tsx"]
     assert request.error_output == "TypeError: save is undefined"
     assert request.config_overrides is not None
-    assert request.config_overrides.get("relaunch_from_job_id") == "00000000-0000-0000-0000-000000000abc"
+    assert (
+        request.config_overrides.get("relaunch_from_job_id")
+        == "00000000-0000-0000-0000-000000000abc"
+    )
 
 
 def test_build_bug_triage_swarm_relaunch_request_preserves_failure_context():
@@ -723,11 +747,16 @@ def test_build_bug_triage_swarm_relaunch_request_preserves_failure_context():
     assert request.failure_symptom == "Save fails"
     assert request.scope == "frontend"
     assert request.max_agents == 4
-    assert request.commands == ["CI=true npm --prefix frontend test -- --watchAll=false"]
+    assert request.commands == [
+        "CI=true npm --prefix frontend test -- --watchAll=false"
+    ]
     assert request.file_paths == ["frontend/src/pages/DocumentsPage.tsx"]
     assert request.error_output == "TypeError: save is undefined"
     assert request.config_overrides is not None
-    assert request.config_overrides.get("relaunch_from_job_id") == "00000000-0000-0000-0000-000000000bbb"
+    assert (
+        request.config_overrides.get("relaunch_from_job_id")
+        == "00000000-0000-0000-0000-000000000bbb"
+    )
 
 
 def test_build_repo_bug_triage_refined_retry_request_carries_recovery_context():
@@ -746,7 +775,9 @@ def test_build_repo_bug_triage_refined_retry_request_carries_recovery_context():
             "experiment_run": {
                 "ok": False,
                 "final_phase": "fallback",
-                "failed_commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+                "failed_commands": [
+                    "CI=true npm --prefix frontend test -- --watchAll=false"
+                ],
                 "runs": [
                     {
                         "phase": "fallback",
@@ -758,7 +789,9 @@ def test_build_repo_bug_triage_refined_retry_request_carries_recovery_context():
             },
             "execution_strategy": {
                 "execution_graph": {
-                    "graph_health": {"reasons": ["fallback verification still failing"]},
+                    "graph_health": {
+                        "reasons": ["fallback verification still failing"]
+                    },
                 }
             },
         },
@@ -774,15 +807,24 @@ def test_build_repo_bug_triage_refined_retry_request_carries_recovery_context():
         },
     )
 
-    request = _build_quick_start_repo_bug_triage_relaunch_request(job, retry_strategy="refined_retry")
+    request = _build_quick_start_repo_bug_triage_relaunch_request(
+        job, retry_strategy="refined_retry"
+    )
 
     assert request is not None
     assert request.config_overrides is not None
-    assert request.config_overrides.get("relaunch_from_job_id") == "00000000-0000-0000-0000-000000000abc"
+    assert (
+        request.config_overrides.get("relaunch_from_job_id")
+        == "00000000-0000-0000-0000-000000000abc"
+    )
     recovery = request.config_overrides.get("coding_recovery") or {}
     assert recovery.get("strategy") == "refined_retry"
-    assert recovery.get("retry_reason") == "Verification failed and needs a refined retry."
-    assert recovery.get("last_failed_commands") == ["CI=true npm --prefix frontend test -- --watchAll=false"]
+    assert (
+        recovery.get("retry_reason") == "Verification failed and needs a refined retry."
+    )
+    assert recovery.get("last_failed_commands") == [
+        "CI=true npm --prefix frontend test -- --watchAll=false"
+    ]
     assert request.error_output == "TypeError: saveDocument is not a function"
 
 
@@ -860,7 +902,10 @@ def test_build_quick_start_relaunch_request_builds_payload():
     assert req.file_paths == ["backend/app/api/endpoints/agent_jobs.py"]
     assert isinstance(req.config_overrides, dict)
     assert req.config_overrides.get("temperature") == 0.2
-    assert req.config_overrides.get("relaunch_from_job_id") == "00000000-0000-0000-0000-000000000999"
+    assert (
+        req.config_overrides.get("relaunch_from_job_id")
+        == "00000000-0000-0000-0000-000000000999"
+    )
     assert "quick_start" not in req.config_overrides
 
 
@@ -868,7 +913,10 @@ def test_build_quick_start_relaunch_request_returns_none_for_non_quick_start():
     job = SimpleNamespace(
         name="Manual Job",
         goal="Do thing",
-        config={"launch_mode": "manual", "source_id": "00000000-0000-0000-0000-000000000111"},
+        config={
+            "launch_mode": "manual",
+            "source_id": "00000000-0000-0000-0000-000000000111",
+        },
     )
 
     req = _build_quick_start_relaunch_request(job)  # type: ignore[arg-type]
@@ -891,7 +939,11 @@ def test_build_quick_start_role_workflow_relaunch_request_builds_payload():
                 "completed_extraction_types": ["finding", "summary"],
             },
             "approval_checkpoints": {"enabled": True},
-            "quick_start": {"profile": "role_workflow", "version": "v1", "execution_mode": "adaptive"},
+            "quick_start": {
+                "profile": "role_workflow",
+                "version": "v1",
+                "execution_mode": "adaptive",
+            },
             "temperature": 0.3,
         },
     )
@@ -910,7 +962,10 @@ def test_build_quick_start_role_workflow_relaunch_request_builds_payload():
     assert req.memory_completed_types == ["finding", "summary"]
     assert isinstance(req.config_overrides, dict)
     assert req.config_overrides.get("temperature") == 0.3
-    assert req.config_overrides.get("relaunch_from_job_id") == "00000000-0000-0000-0000-000000000555"
+    assert (
+        req.config_overrides.get("relaunch_from_job_id")
+        == "00000000-0000-0000-0000-000000000555"
+    )
 
 
 def test_build_quick_start_role_workflow_relaunch_request_returns_none_for_other_modes():
@@ -994,21 +1049,30 @@ def test_build_relaunch_lineage_returns_ancestors_and_descendants():
         name="mid",
         status="completed",
         created_at=t0 + timedelta(minutes=1),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(root_id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(root_id),
+        },
     )
     leaf = SimpleNamespace(
         id=leaf_id,
         name="leaf",
         status="running",
         created_at=t0 + timedelta(minutes=2),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(mid_id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(mid_id),
+        },
     )
     side = SimpleNamespace(
         id=side_id,
         name="side",
         status="failed",
         created_at=t0 + timedelta(minutes=3),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(root_id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(root_id),
+        },
     )
 
     jobs_by_id = {root.id: root, mid.id: mid, leaf.id: leaf, side.id: side}
@@ -1040,21 +1104,30 @@ def test_build_relaunch_lineage_latest_child_is_newest_by_created_at():
         name="child-a",
         status="completed",
         created_at=t0 + timedelta(minutes=1),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(root_id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(root_id),
+        },
     )
     child_b = SimpleNamespace(
         id=child_b_id,
         name="child-b-newest",
         status="completed",
         created_at=t0 + timedelta(minutes=3),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(root_id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(root_id),
+        },
     )
     grandchild_old = SimpleNamespace(
         id=grandchild_old_id,
         name="grandchild-old",
         status="failed",
         created_at=t0 + timedelta(minutes=2),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(child_a_id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(child_a_id),
+        },
     )
 
     jobs_by_id = {
@@ -1082,21 +1155,30 @@ def test_build_relaunch_lineage_respects_limits():
         name="c1",
         status="completed",
         created_at=t0 + timedelta(minutes=1),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(root_id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(root_id),
+        },
     )
     c2 = SimpleNamespace(
         id=uuid4(),
         name="c2",
         status="completed",
         created_at=t0 + timedelta(minutes=2),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(c1.id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(c1.id),
+        },
     )
     c3 = SimpleNamespace(
         id=uuid4(),
         name="c3",
         status="completed",
         created_at=t0 + timedelta(minutes=3),
-        config={"launch_mode": "quick_start_claude_backend", "relaunch_from_job_id": str(c2.id)},
+        config={
+            "launch_mode": "quick_start_claude_backend",
+            "relaunch_from_job_id": str(c2.id),
+        },
     )
     jobs_by_id = {root.id: root, c1.id: c1, c2.id: c2, c3.id: c3}
 

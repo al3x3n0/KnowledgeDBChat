@@ -80,7 +80,10 @@ const renderWithProviders = (initialEntry: string = '/research-notes?note=note-1
   });
 
   return render(
-    <MemoryRouter initialEntries={[initialEntry]}>
+    <MemoryRouter
+      initialEntries={[initialEntry]}
+      future={{ v7_startTransition: true, v7_relativeSplatPath: true }}
+    >
       <QueryClientProvider client={queryClient}>
         <ResearchNotesPage />
       </QueryClientProvider>
@@ -280,11 +283,11 @@ describe('ResearchNotesPage', () => {
   it('highlights deep-linked experiment plan and run targets', async () => {
     renderWithProviders('/research-notes?note=note-1&plan=plan-1&run=run-1');
 
-    const latestPlanText = await screen.findByText('Bootstrap Validation Plan');
-    const runText = await screen.findByText('Bootstrap Retry Run');
+    const latestPlan = await screen.findByRole('region', { name: 'Experiment plan Bootstrap Validation Plan' });
+    const run = await screen.findByRole('article', { name: 'Experiment run Bootstrap Retry Run' });
 
-    expect(latestPlanText.closest('div.border-primary-400')).toBeInTheDocument();
-    expect(runText.closest('div.border-primary-400')).toBeInTheDocument();
+    expect(latestPlan).toHaveClass('border-primary-400');
+    expect(run).toHaveClass('border-primary-400');
   });
 
   it('renders typed experiment run bootstrap and fallback summary', async () => {
@@ -293,9 +296,8 @@ describe('ResearchNotesPage', () => {
     expect(await screen.findAllByText('Autonomous Agent Validation')).toHaveLength(2);
     expect(await screen.findByText('Bootstrap Retry Run')).toBeInTheDocument();
 
-    await waitFor(() => {
-      expect(screen.getByText('Final retry_primary')).toBeInTheDocument();
-      expect(screen.getByText('Bootstrap ok')).toBeInTheDocument();
+    expect(await screen.findByText('Final retry_primary')).toBeInTheDocument();
+    expect(screen.getByText('Bootstrap ok')).toBeInTheDocument();
       expect(screen.getByText('Fallback attempted')).toBeInTheDocument();
       expect(screen.getByText('Recovery open')).toBeInTheDocument();
       expect(screen.getAllByText(/fallback verification still failing/i).length).toBeGreaterThan(0);
@@ -330,8 +332,7 @@ describe('ResearchNotesPage', () => {
       expect(screen.getByText('Restart job')).toBeInTheDocument();
       expect(screen.getByText('Relaunch clean run')).toBeInTheDocument();
       expect(screen.getByText('Copy failed command')).toBeInTheDocument();
-      expect(screen.getByText('Copy next step')).toBeInTheDocument();
-    });
+    expect(screen.getByText('Copy next step')).toBeInTheDocument();
 
     fireEvent.click(screen.getByText('Restart job'));
 
@@ -446,17 +447,15 @@ describe('ResearchNotesPage', () => {
 
     fireEvent.click(screen.getByText('Scientific validation details'));
 
-    await waitFor(() => {
-      expect(screen.getByText(/Capability check: blocked/i)).toBeInTheDocument();
-      expect(screen.getByText(/Profile snapshot: Compiler Validation Sandbox/i)).toBeInTheDocument();
+    expect(await screen.findByText(/Capability check: blocked/i)).toBeInTheDocument();
+    expect(screen.getByText(/Profile snapshot: Compiler Validation Sandbox/i)).toBeInTheDocument();
       expect(screen.getByText(/Recipe snapshot commands: python -m pytest -q tests/i)).toBeInTheDocument();
       expect(screen.getByText(/Measurement summary: compile_time_ms=1180/i)).toBeInTheDocument();
       expect(screen.getByText(/Artifact inventory: compiler_logs, compiler_remarks, ir_or_codegen_artifacts/i)).toBeInTheDocument();
       expect(screen.getByText(/Compiler observability: IR captured · ASM captured · Pass remarks captured · Perf counters captured/i)).toBeInTheDocument();
       expect(screen.getByText(/Perf counters: instructions=1024 · branch_misses=12/i)).toBeInTheDocument();
       expect(screen.getByText(/Latest action: requeue · applied/i)).toBeInTheDocument();
-      expect(screen.getByText(/Retry lineage: attempt 2 · parent run-1/i)).toBeInTheDocument();
-    });
+    expect(screen.getByText(/Retry lineage: attempt 2 · parent run-1/i)).toBeInTheDocument();
 
     expect(screen.queryByText('Run')).not.toBeInTheDocument();
     expect(screen.queryByText('Done')).not.toBeInTheDocument();
@@ -476,13 +475,11 @@ describe('ResearchNotesPage', () => {
       expect(apiClient.appendExperimentRunToNote).toHaveBeenCalledWith('run-1');
     });
 
-    await waitFor(() => {
-      expect(screen.getByText('Latest experiment evidence')).toBeInTheDocument();
-      expect(screen.getByText(/Run run-1 · completed · aggregate_note/i)).toBeInTheDocument();
+    expect(await screen.findByText('Latest experiment evidence')).toBeInTheDocument();
+    expect(screen.getByText(/Run run-1 · completed · aggregate_note/i)).toBeInTheDocument();
       expect(screen.getByText('Bootstrap recovered the environment.')).toBeInTheDocument();
       expect(screen.getByText(/Final phase: retry_primary · Bootstrap: ok/i)).toBeInTheDocument();
-      expect(screen.getByText('Appended')).toBeInTheDocument();
-    });
+    expect(screen.getByText('Appended')).toBeInTheDocument();
   });
 
   it('starts a compiler regression explanation from comparable benchmark-backed runs', async () => {
@@ -1031,7 +1028,7 @@ describe('ResearchNotesPage', () => {
     renderWithProviders();
 
     expect(await screen.findByText('Start loop from recommended')).toBeInTheDocument();
-    fireEvent.click(screen.getByText('Runner settings (repo + commands)'));
+    fireEvent.click(await screen.findByText('Runner settings (repo + commands)'));
     fireEvent.change(screen.getByPlaceholderText(/123e4567-e89b-12d3-a456-426614174000/i), {
       target: { value: 'repo-1' },
     });

@@ -1,0 +1,286 @@
+name: CI
+
+# The Makefile gates (make lint, make test-backend-coverage, make typecheck-frontend)
+# all shell into a running Docker stack, so nothing ran them automatically. These
+# jobs run the same checks directly against the source.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # Matches backend/Dockerfile; development runs newer, so deprecations differ.
+  PYTHON_VERSION: "3.11"
+  # Matches frontend/Dockerfile.
+  NODE_VERSION: "18"
+
+jobs:
+  backend-lint:
+    name: Backend lint and format
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install lint tools
+        # Formatting and linting need no application dependencies.
+        # Pinned to backend/requirements.txt, which is what the container
+        # and every developer's `make fmt` actually run. They had drifted to
+        # different majors, so black 24's 2024 style rejected 127 files that
+        # black 23 had just formatted -- CI failing on code that passes the
+        # project's own formatter is worse than no check. Bump both together.
+        run: pip install black==23.11.0 isort==5.12.0 flake8==6.1.0
+      # Gated on app/ and tests/, which are clean. alembic/, scripts/, and
+      # seed_data/ carry ~80 unformatted files and ~195 flake8 findings that
+      # predate this workflow; they are reported, not enforced, until someone
+      # sweeps them in a dedicated commit.
+      - name: black (app, tests)
+        working-directory: backend
+        run: black --check app tests
+      - name: isort (app, tests)
+        working-directory: backend
+        run: isort --check-only app tests
+      - name: flake8 (app, tests)
+        working-directory: backend
+        run: flake8 app tests
+      - name: Report lint debt elsewhere
+        if: always()
+        working-directory: backend
+        run: |
+          black --check alembic scripts seed_data 2>&1 | tail -1 || true
+          echo "flake8 findings outside app/tests: $(flake8 alembic scripts seed_data | wc -l)"
+
+  backend-tests:
+    name: Backend tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        working-directory: backend
+        # This used to install torch, and was slow even cached. Embeddings now
+        # run under ONNX Runtime and torch moved to the transcription worker's
+        # own requirements, so the set this job installs is ~600 MB smaller.
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Run tests with coverage gate
+        working-directory: backend
+        # Tests use in-memory SQLite and stub the heavy optional dependencies,
+        # so no Postgres, Redis, Qdrant, or MinIO service is needed here.
+        # 48% is the measured floor today, not a target: the suite reports
+        # 49.55% (4031 passed, 1 skipped), and the gate sits just under that
+        # so a small regression is caught rather than absorbed. It was 44 when
+        # the number was 44. Ratchet it up as coverage improves; never lower it.
+        run: pytest --cov=app --cov-report=term-missing --cov-fail-under=48
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-coverage
+          path: backend/htmlcov/
+          retention-days: 7
+
+  migrations:
+    name: Migration graph
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+      - name: Install alembic
+        run: pip install "alembic>=1.13" "sqlalchemy>=2.0"
+      - name: Assert a single migration head
+        working-directory: backend
+        # Two heads means two branches of history that never merged; the next
+        # `alembic upgrade head` then fails or silently applies only one line.
+        run: |
+          heads=$(alembic heads 2>/dev/null | grep -c '(head)' || true)
+          echo "alembic heads: $heads"
+          alembic heads
+          test "$heads" -eq 1
+      - name: Assert unique migration revision prefixes
+        id: prefixes
+        working-directory: backend/alembic/versions
+        # Sequential numeric prefixes are the convention in CLAUDE.md; 0018 and
+        # 0060 are already duplicated, so this starts as a warning, not a gate.
+        run: |
+          dupes=$(ls *.py | cut -d_ -f1 | sort | uniq -d || true)
+          if [ -n "$dupes" ]; then
+            echo "::warning::duplicate migration prefixes: $dupes"
+          fi
+
+  frontend:
+    name: Frontend typecheck and tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ env.NODE_VERSION }}
+          cache: npm
+          cache-dependency-path: frontend/package-lock.json
+      - name: Install dependencies
+        working-directory: frontend
+        # See frontend/.npmrc: react-scripts 5.0.1 declares peerOptional
+        # typescript ^3 || ^4 and this project is on 5.x, so strict resolution
+        # refuses to install at all.
+        run: npm ci
+      - name: Typecheck
+        working-directory: frontend
+        run: npx tsc --noEmit -p tsconfig.json
+      - name: Tests
+        working-directory: frontend
+        # test:ci collects coverage but enforces no threshold: package.json has
+        # no coverageThreshold. Adding one is a separate decision.
+        run: npm run test:ci
+
+  schema-truth:
+    name: Migrations build the schema the models expect
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # This is the guard that keeps Alembic authoritative. Before it existed, the
+    # real schema came from create_all plus hand-written startup DDL, and the
+    # migration history had silently drifted 12 tables and 46 columns behind.
+    services:
+      postgres:
+        image: postgres:15
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: schema_check
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
+          cache-dependency-path: backend/requirements.txt
+      - name: Install dependencies
+        working-directory: backend
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+      - name: Apply every migration to an empty database
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/schema_check
+        run: alembic upgrade head
+      - name: Assert the result matches the models
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/schema_check
+        # An empty autogenerate diff means `alembic upgrade head` produces
+        # exactly what the models describe. A non-empty one means a model
+        # changed without a migration — the drift this whole change removes.
+        run: python scripts/check_schema_drift.py
+      - name: Assert migrations are re-runnable
+        working-directory: backend
+        env:
+          DATABASE_URL: postgresql+asyncpg://postgres:postgres@localhost:5432/schema_check
+        # 0082 is idempotent by construction; running head twice must be a no-op.
+        run: alembic upgrade head
+
+  helm-chart:
+    name: Helm chart lint and schema validation
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - name: Install kubeconform
+        run: |
+          curl -sSfL https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz \
+            | tar -xz -C /usr/local/bin kubeconform
+      - name: Lint every values profile
+        run: |
+          helm lint deploy/helm/knowledgedbchat
+          helm lint deploy/helm/knowledgedbchat -f deploy/helm/knowledgedbchat/values-minikube.yaml
+          helm lint deploy/helm/knowledgedbchat -f deploy/helm/knowledgedbchat/values-prod.example.yaml
+      # Rendering alone catches template errors; kubeconform catches manifests
+      # that render cleanly but the API server would reject.
+      - name: Validate rendered manifests (minikube profile)
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat \
+            -f deploy/helm/knowledgedbchat/values-minikube.yaml \
+            | kubeconform -strict -summary -kubernetes-version 1.31.0
+      - name: Validate rendered manifests (all optional components on)
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat \
+            --set ollama.enabled=true --set celeryLatex.enabled=true \
+            --set celeryTranscription.enabled=true \
+            --set networkPolicy.enabled=true --set ingress.enabled=true \
+            --set backend.autoscaling.enabled=true --set celery.autoscaling.enabled=true \
+            --set backend.podDisruptionBudget.enabled=true --set secrets.redisPassword=test \
+            | kubeconform -strict -summary -kubernetes-version 1.31.0
+      - name: Validate rendered manifests (external data services)
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat \
+            -f deploy/helm/knowledgedbchat/values-prod.example.yaml \
+            | kubeconform -strict -summary -kubernetes-version 1.31.0
+      - name: Check the gateway nginx config parses
+        run: |
+          helm template kdbc deploy/helm/knowledgedbchat --set gateway.resolver=10.96.0.10 \
+            | python3 -c "
+          import sys, yaml
+          for d in yaml.safe_load_all(sys.stdin):
+              if d and d['kind'] == 'ConfigMap' and d['metadata']['name'].endswith(('-gateway', '-frontend-nginx')):
+                  open(d['metadata']['name'] + '.conf', 'w').write(d['data']['default.conf'])
+          "
+          for f in *.conf; do
+            docker run --rm -v "$PWD/$f:/etc/nginx/conf.d/default.conf:ro" nginx:1.27-alpine nginx -t
+          done
+
+  helm-smoke:
+    name: Helm chart live smoke test
+    runs-on: ubuntu-latest
+    # Rendering and schema validation cannot catch hook ordering, Secret ->
+    # connection-URL assembly, or proxy path handling. This installs the chart
+    # on a real ephemeral cluster and asserts those, using lightweight
+    # stand-ins for the multi-GB application images.
+    needs: helm-chart
+    steps:
+      - uses: actions/checkout@v4
+      - uses: azure/setup-helm@v4
+        with:
+          version: v3.16.2
+      - uses: helm/kind-action@v1
+        with:
+          cluster_name: kdbc-smoke
+          node_image: kindest/node:v1.31.0
+      - name: Smoke test the chart
+        env:
+          # kind's default StorageClass; the chart's own default is empty
+          # (cluster default), which values-smoke.yaml overrides for minikube.
+          SMOKE_STORAGE_CLASS: standard
+        run: ./deploy/smoke-test.sh
+      - name: Dump diagnostics on failure
+        if: failure()
+        run: |
+          kubectl -n kdbc-smoke get pods,jobs,pvc,events --sort-by=.metadata.creationTimestamp || true
+          kubectl -n kdbc-smoke describe pods || true
+          for d in $(kubectl -n kdbc-smoke get deploy -o name 2>/dev/null); do
+            echo "=== $d ==="; kubectl -n kdbc-smoke logs "$d" --tail=50 || true
+          done

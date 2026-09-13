@@ -29,6 +29,27 @@ The system now supports uploading and transcribing video and audio files. Transc
    - Triggers transcription task for supported formats
    - Regular documents continue to be processed normally
 
+5. **Dedicated Worker** (`backend/Dockerfile.transcription-worker`,
+   `backend/app/core/celery_transcription.py`)
+   - Whisper, librosa, speechbrain and resemblyzer -- and numba/llvmlite
+     underneath them, ~250 MB in all -- live in this image and nowhere else.
+     Every API, Celery and beat container used to carry them to run a feature
+     only one worker performs.
+   - `transcribe_document` is routed to the `transcription` queue
+     (`TRANSCRIPTION_CELERY_QUEUE`). The general worker still imports the task
+     module, so dispatch works from anywhere; it simply never runs the body.
+   - **With the worker stopped, transcriptions queue rather than fail.** A
+     document uploaded meanwhile stays untranscribed with no error, exactly as
+     LaTeX compilation does with its worker down. Check
+     `docker compose ps celery_transcription` before concluding a file is at
+     fault.
+   - The image builds `FROM knowledge_db_backend:latest` for the application
+     code, database/storage clients and ffmpeg -- not for torch, which left the
+     API image when embeddings moved to ONNX Runtime. This is now the only
+     image in the stack with a torch in it. Build the backend first --
+     `make build` does; a bare `docker compose build celery_transcription` on a
+     clean machine fails looking for a base image that does not exist yet.
+
 ## Supported Formats
 
 ### Video
@@ -73,10 +94,20 @@ TRANSCRIPTION_LANGUAGE=ru
 
 ## Dependencies
 
-Required packages (already in `requirements.txt`):
+Required packages, in `requirements.transcription-worker.txt` -- **not** in
+`requirements.txt`, which is what the API and general worker install:
 - `openai-whisper>=20230918`
 - `ffmpeg-python>=0.2.0`
 - `librosa>=0.10.0`
+- `speechbrain>=0.5.14`, `resemblyzer>=0.1.1` (diarization)
+
+`torch` and `torchaudio` are installed by `Dockerfile.transcription-worker` in
+their own step, from the CPU wheel index. Put them in a requirements file
+installed against PyPI and pip resolves the CUDA build -- about 2 GB no compose
+file here can use.
+
+Running transcription outside Docker means installing these into the same
+environment as `requirements.txt`.
 
 System requirements:
 - FFmpeg must be installed on the system
@@ -95,10 +126,12 @@ First transcription will download the model (can be several GB for larger models
 
 Models can be preloaded during container startup to avoid delays on first transcription:
 
-- Set `PRELOAD_WHISPER_MODEL=true` in docker-compose.yml (already configured)
-- Models are preloaded when containers start
-- Preloaded models are cached in the `whisper_models` Docker volume
-- Shared between backend and celery containers
+- Set `PRELOAD_WHISPER_MODEL=true` on the `celery_transcription` service.
+  It is the only image with Whisper in it: set anywhere else, the preload
+  reports a failure it can do nothing about.
+- Models are preloaded when the container starts
+- Preloaded models are cached under `./data/whisper_models`, mounted at
+  `/root/.cache/knowledge_db_transcriber`
 
 To disable preloading, set `PRELOAD_WHISPER_MODEL=false` or remove the environment variable.
 

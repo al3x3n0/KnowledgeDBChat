@@ -5,7 +5,10 @@ from typing import Any, Dict, List, Optional
 
 from pydantic import BaseModel, Field
 
-from app.schemas.agent_job import AgentDecisionTraceEventResponse, AgentJobMemoryGraphResponse
+from app.schemas.agent_job import (
+    AgentDecisionTraceEventResponse,
+    AgentJobMemoryGraphResponse,
+)
 
 
 class AgentControlRunRoutingSummary(BaseModel):
@@ -176,7 +179,9 @@ class AgentControlRunBulkReviewActionResponse(BaseModel):
     requested_count: int
     applied: int
     failed: int
-    results: List[AgentControlRunBulkReviewActionResultResponse] = Field(default_factory=list)
+    results: List[AgentControlRunBulkReviewActionResultResponse] = Field(
+        default_factory=list
+    )
 
 
 class AgentControlRunSummary(BaseModel):
@@ -255,6 +260,8 @@ class AgentControlRunDetail(BaseModel):
     replay: AgentControlRunReplaySummary
     related_links: List[AgentControlRunLinkResponse] = Field(default_factory=list)
     queued_operator_review_count: int = 0
-    queued_operator_reviews: List[AgentControlRunReviewItemResponse] = Field(default_factory=list)
+    queued_operator_reviews: List[AgentControlRunReviewItemResponse] = Field(
+        default_factory=list
+    )
     policy_summary: Dict[str, Any] = Field(default_factory=dict)
     metadata: Dict[str, Any] = Field(default_factory=dict)

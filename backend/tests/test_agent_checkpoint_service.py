@@ -31,7 +31,9 @@ async def test_checkpoint_service_round_trip(db_session):
     service = AgentCheckpointService()
     state = {"goal_progress": 45, "findings": [{"id": "f1"}]}
 
-    await service.save_checkpoint(job=job, state=state, db=db_session)
+    await service.save_checkpoint(
+        job=job, state=state, db=db_session, reason="test_checkpoint"
+    )
     checkpoint = await service.load_latest_checkpoint(job_id=job.id, db=db_session)
 
     assert checkpoint is not None
@@ -39,3 +41,4 @@ async def test_checkpoint_service_round_trip(db_session):
     assert checkpoint.iteration == 3
     assert checkpoint.phase == "thinking"
     assert checkpoint.state["goal_progress"] == 45
+    assert checkpoint.context["reason"] == "test_checkpoint"

@@ -9,34 +9,37 @@ Executes workflow graphs with support for:
 - Real-time progress updates via Redis pub/sub
 """
 
-import json
 import asyncio
-import time
-import re
 import copy
+import json
+import re
+import time
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Dict, Any, Optional, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 from uuid import UUID
-from collections import defaultdict
 
 from loguru import logger
-from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
-from app.models.workflow import (
-    Workflow, WorkflowNode, WorkflowEdge,
-    WorkflowExecution, WorkflowNodeExecution, UserTool
-)
-from app.models.user import User
-from app.services.custom_tool_service import CustomToolService, ToolExecutionError
-from app.services.agent_tools import AGENT_TOOLS
 from app.core.config import settings
+from app.models.user import User
+from app.models.workflow import (
+    Workflow,
+    WorkflowEdge,
+    WorkflowExecution,
+    WorkflowNode,
+    WorkflowNodeExecution,
+)
+from app.services.agent_tools import AGENT_TOOLS
+from app.services.custom_tool_service import CustomToolService, ToolExecutionError
 
 # Try to import redis for pub/sub
 try:
     import redis.asyncio as aioredis
+
     REDIS_AVAILABLE = True
 except ImportError:
     REDIS_AVAILABLE = False
@@ -52,6 +55,7 @@ class ResolvedValue:
     - value=None, exists=False -> the path doesn't exist
     - error is set -> syntax or resolution error occurred
     """
+
     value: Any
     exists: bool = True
     path: Optional[str] = None
@@ -60,6 +64,7 @@ class ResolvedValue:
 
 class InputResolutionError(Exception):
     """Raised when input resolution fails."""
+
     def __init__(self, message: str, errors: Dict[str, str]):
         super().__init__(message)
         self.errors = errors
@@ -67,12 +72,10 @@ class InputResolutionError(Exception):
 
 class WorkflowExecutionError(Exception):
     """Raised when workflow execution fails."""
-    pass
 
 
 class WorkflowCancelledError(Exception):
     """Raised when workflow execution is cancelled."""
-    pass
 
 
 class WorkflowEngine:
@@ -100,9 +103,7 @@ class WorkflowEngine:
         if self._redis_client is None:
             try:
                 self._redis_client = await aioredis.from_url(
-                    settings.REDIS_URL,
-                    encoding="utf-8",
-                    decode_responses=True
+                    settings.REDIS_URL, encoding="utf-8", decode_responses=True
                 )
             except Exception as e:
                 logger.warning(f"Could not connect to Redis for workflow updates: {e}")
@@ -116,7 +117,7 @@ class WorkflowEngine:
         status: Optional[str] = None,
         progress: Optional[int] = None,
         output: Optional[Dict[str, Any]] = None,
-        error: Optional[str] = None
+        error: Optional[str] = None,
     ):
         """Publish progress update via Redis pub/sub."""
         redis = await self._get_redis()
@@ -132,7 +133,7 @@ class WorkflowEngine:
                 "progress": progress,
                 "output": output,
                 "error": error,
-                "timestamp": datetime.utcnow().isoformat()
+                "timestamp": datetime.utcnow().isoformat(),
             }
             channel = f"workflow:{execution_id}"
             await redis.publish(channel, json.dumps(message))
@@ -144,7 +145,7 @@ class WorkflowEngine:
         workflow_id: UUID,
         trigger_type: str = "manual",
         trigger_data: Optional[Dict[str, Any]] = None,
-        initial_context: Optional[Dict[str, Any]] = None
+        initial_context: Optional[Dict[str, Any]] = None,
     ) -> WorkflowExecution:
         """
         Execute a workflow.
@@ -163,7 +164,7 @@ class WorkflowEngine:
             select(Workflow)
             .options(
                 selectinload(Workflow.nodes).selectinload(WorkflowNode.tool),
-                selectinload(Workflow.edges)
+                selectinload(Workflow.edges),
             )
             .where(Workflow.id == workflow_id, Workflow.user_id == self.user.id)
         )
@@ -183,17 +184,14 @@ class WorkflowEngine:
             trigger_data=trigger_data or {},
             status="pending",
             progress=0,
-            context=initial_context or {}
+            context=initial_context or {},
         )
         self.db.add(execution)
         await self.db.commit()
         await self.db.refresh(execution)
 
         try:
-            await self._run_workflow(
-                workflow=workflow,
-                execution=execution
-            )
+            await self._run_workflow(workflow=workflow, execution=execution)
         except WorkflowCancelledError:
             return execution
         except Exception:
@@ -202,8 +200,7 @@ class WorkflowEngine:
         return execution
 
     async def execute_existing_execution(
-        self,
-        execution: WorkflowExecution
+        self, execution: WorkflowExecution
     ) -> WorkflowExecution:
         """
         Execute an existing WorkflowExecution without creating a new record.
@@ -224,9 +221,11 @@ class WorkflowEngine:
             select(Workflow)
             .options(
                 selectinload(Workflow.nodes).selectinload(WorkflowNode.tool),
-                selectinload(Workflow.edges)
+                selectinload(Workflow.edges),
             )
-            .where(Workflow.id == execution.workflow_id, Workflow.user_id == self.user.id)
+            .where(
+                Workflow.id == execution.workflow_id, Workflow.user_id == self.user.id
+            )
         )
         workflow = result.scalar_one_or_none()
 
@@ -234,10 +233,7 @@ class WorkflowEngine:
             raise WorkflowExecutionError(f"Workflow {execution.workflow_id} not found")
 
         try:
-            await self._run_workflow(
-                workflow=workflow,
-                execution=execution
-            )
+            await self._run_workflow(workflow=workflow, execution=execution)
         except WorkflowCancelledError:
             return execution
         except Exception:
@@ -246,9 +242,7 @@ class WorkflowEngine:
         return execution
 
     async def _run_workflow(
-        self,
-        workflow: Workflow,
-        execution: WorkflowExecution
+        self, workflow: Workflow, execution: WorkflowExecution
     ) -> None:
         """
         Execute a workflow using an existing execution record.
@@ -260,7 +254,9 @@ class WorkflowEngine:
             # Validate graph
             start_nodes = [n for n in workflow.nodes if n.node_type == "start"]
             if len(start_nodes) != 1:
-                raise WorkflowExecutionError("Workflow must have exactly one start node")
+                raise WorkflowExecutionError(
+                    "Workflow must have exactly one start node"
+                )
 
             # Detect output key collisions
             collision_warnings = self._detect_output_key_collisions(workflow.nodes)
@@ -278,8 +274,7 @@ class WorkflowEngine:
             await self.db.commit()
 
             await self._publish_progress(
-                execution.id, "progress",
-                status="running", progress=0
+                execution.id, "progress", status="running", progress=0
             )
 
             # Execute from start node
@@ -295,8 +290,7 @@ class WorkflowEngine:
             await self.db.commit()
 
             await self._publish_progress(
-                execution.id, "complete",
-                status="completed", progress=100
+                execution.id, "complete", status="completed", progress=100
             )
 
         except WorkflowCancelledError as exc:
@@ -306,8 +300,7 @@ class WorkflowEngine:
             await self.db.commit()
 
             await self._publish_progress(
-                execution.id, "cancelled",
-                status="cancelled", error=str(exc)
+                execution.id, "cancelled", status="cancelled", error=str(exc)
             )
             raise
 
@@ -319,8 +312,7 @@ class WorkflowEngine:
             await self.db.commit()
 
             await self._publish_progress(
-                execution.id, "error",
-                status="failed", error=str(e)
+                execution.id, "error", status="failed", error=str(e)
             )
             raise
 
@@ -330,10 +322,7 @@ class WorkflowEngine:
         if execution.status == "cancelled":
             raise WorkflowCancelledError("Cancelled by user")
 
-    def _detect_output_key_collisions(
-        self,
-        nodes: List[WorkflowNode]
-    ) -> List[str]:
+    def _detect_output_key_collisions(self, nodes: List[WorkflowNode]) -> List[str]:
         """
         Detect potential output key collisions.
 
@@ -370,9 +359,7 @@ class WorkflowEngine:
         return warnings
 
     def _build_graph(
-        self,
-        nodes: List[WorkflowNode],
-        edges: List[WorkflowEdge]
+        self, nodes: List[WorkflowNode], edges: List[WorkflowEdge]
     ) -> Dict[str, Dict[str, Any]]:
         """
         Build an adjacency graph from nodes and edges.
@@ -387,11 +374,7 @@ class WorkflowEngine:
 
         # Initialize all nodes
         for node in nodes:
-            graph[node.node_id] = {
-                "node": node,
-                "outgoing": [],
-                "incoming": []
-            }
+            graph[node.node_id] = {"node": node, "outgoing": [], "incoming": []}
 
         # Add edges
         for edge in edges:
@@ -399,9 +382,7 @@ class WorkflowEngine:
                 graph[edge.source_node_id]["outgoing"].append(
                     (edge.target_node_id, edge)
                 )
-                graph[edge.target_node_id]["incoming"].append(
-                    edge.source_node_id
-                )
+                graph[edge.target_node_id]["incoming"].append(edge.source_node_id)
 
         return graph
 
@@ -413,7 +394,7 @@ class WorkflowEngine:
         start_node_id: str,
         loop_context: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
-        written_keys: Optional[Set[str]] = None
+        written_keys: Optional[Set[str]] = None,
     ):
         """
         Execute a chain of nodes starting from start_node_id.
@@ -431,7 +412,9 @@ class WorkflowEngine:
                 # Prevent infinite loops (unless it's a loop node)
                 node_info = graph.get(current_node_id)
                 if node_info and node_info["node"].node_type != "loop":
-                    logger.warning(f"Cycle detected at node {current_node_id}, breaking")
+                    logger.warning(
+                        f"Cycle detected at node {current_node_id}, breaking"
+                    )
                     break
 
             visited.add(current_node_id)
@@ -471,7 +454,7 @@ class WorkflowEngine:
         node: WorkflowNode,
         loop_context: Optional[Dict[str, Any]] = None,
         context: Optional[Dict[str, Any]] = None,
-        written_keys: Optional[Set[str]] = None
+        written_keys: Optional[Set[str]] = None,
     ) -> Optional[str]:
         """
         Execute a single node and return the next node ID.
@@ -488,14 +471,13 @@ class WorkflowEngine:
             execution_id=execution.id,
             node_id=node.node_id,
             status="running",
-            started_at=datetime.utcnow()
+            started_at=datetime.utcnow(),
         )
         self.db.add(node_execution)
         await self.db.commit()
 
         await self._publish_progress(
-            execution.id, "node_start",
-            node_id=node.node_id, status="running"
+            execution.id, "node_start", node_id=node.node_id, status="running"
         )
 
         start_time = time.time()
@@ -514,15 +496,17 @@ class WorkflowEngine:
                 k: v.error for k, v in resolution_details.items() if v.error
             }
             missing_paths = {
-                k: v.path for k, v in resolution_details.items() if not v.exists and not v.error
+                k: v.path
+                for k, v in resolution_details.items()
+                if not v.exists and not v.error
             }
             if resolution_errors or missing_paths:
                 node_execution.input_data = {
                     **input_data,
                     "_resolution_issues": {
                         "errors": resolution_errors,
-                        "missing_paths": missing_paths
-                    }
+                        "missing_paths": missing_paths,
+                    },
                 }
 
             # Execute based on node type
@@ -588,8 +572,11 @@ class WorkflowEngine:
             await self.db.commit()
 
             await self._publish_progress(
-                execution.id, "node_complete",
-                node_id=node.node_id, status="completed", output=output
+                execution.id,
+                "node_complete",
+                node_id=node.node_id,
+                status="completed",
+                output=output,
             )
 
             # Determine next node
@@ -614,8 +601,7 @@ class WorkflowEngine:
             await self.db.commit()
 
             await self._publish_progress(
-                execution.id, "node_cancelled",
-                node_id=node.node_id, status="cancelled"
+                execution.id, "node_cancelled", node_id=node.node_id, status="cancelled"
             )
             raise
 
@@ -629,8 +615,11 @@ class WorkflowEngine:
             await self.db.commit()
 
             await self._publish_progress(
-                execution.id, "node_error",
-                node_id=node.node_id, status="failed", error=str(e)
+                execution.id,
+                "node_error",
+                node_id=node.node_id,
+                status="failed",
+                error=str(e),
             )
 
             raise WorkflowExecutionError(f"Node {node.node_id} failed: {e}")
@@ -640,7 +629,7 @@ class WorkflowEngine:
         config: Dict[str, Any],
         context: Dict[str, Any],
         loop_context: Optional[Dict[str, Any]] = None,
-        node_id: Optional[str] = None
+        node_id: Optional[str] = None,
     ) -> Tuple[Dict[str, Any], Dict[str, ResolvedValue]]:
         """
         Resolve input mappings from config using context.
@@ -699,9 +688,11 @@ class WorkflowEngine:
                 return "Empty path in template expression"
 
             # Validate path format (alphanumeric, dots, underscores, digits)
-            if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)*$', path):
+            if not re.match(r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+)*$", path):
                 # Allow array indexing like items.0.name
-                if not re.match(r'^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+|\.\d+)*$', path):
+                if not re.match(
+                    r"^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z0-9_]+|\.\d+)*$", path
+                ):
                     return f"Invalid path format: '{path}'"
 
         return None
@@ -721,20 +712,14 @@ class WorkflowEngine:
             syntax_error = self._validate_template_syntax(value)
             if syntax_error:
                 return ResolvedValue(
-                    value=None,
-                    exists=False,
-                    path=value,
-                    error=syntax_error
+                    value=None, exists=False, path=value, error=syntax_error
                 )
 
             path = value[2:-2].strip()
             resolved_val, exists = self._get_nested_value(context, path)
 
             return ResolvedValue(
-                value=resolved_val,
-                exists=exists,
-                path=path,
-                error=None
+                value=resolved_val, exists=exists, path=path, error=None
             )
 
         # Plain string value
@@ -828,10 +813,7 @@ class WorkflowEngine:
         return None
 
     def _validate_inputs_against_schema(
-        self,
-        inputs: Dict[str, Any],
-        schema: Dict[str, Any],
-        node_id: str
+        self, inputs: Dict[str, Any], schema: Dict[str, Any], node_id: str
     ) -> Tuple[Dict[str, Any], List[str]]:
         """
         Validate inputs against a JSON Schema.
@@ -881,10 +863,7 @@ class WorkflowEngine:
         return coerced, errors
 
     def _coerce_type(
-        self,
-        value: Any,
-        expected_type: str,
-        field_name: str
+        self, value: Any, expected_type: str, field_name: str
     ) -> Tuple[Any, Optional[str]]:
         """
         Attempt to coerce a value to the expected type.
@@ -908,7 +887,10 @@ class WorkflowEngine:
                     return int(value), None
                 if isinstance(value, str) and value.isdigit():
                     return int(value), None
-                return value, f"Field '{field_name}' expects integer, got {type(value).__name__}"
+                return (
+                    value,
+                    f"Field '{field_name}' expects integer, got {type(value).__name__}",
+                )
 
             elif expected_type == "number":
                 if isinstance(value, (int, float)) and not isinstance(value, bool):
@@ -918,7 +900,10 @@ class WorkflowEngine:
                         return float(value), None
                     except ValueError:
                         pass
-                return value, f"Field '{field_name}' expects number, got {type(value).__name__}"
+                return (
+                    value,
+                    f"Field '{field_name}' expects number, got {type(value).__name__}",
+                )
 
             elif expected_type == "boolean":
                 if isinstance(value, bool):
@@ -928,17 +913,26 @@ class WorkflowEngine:
                         return True, None
                     if value.lower() in ("false", "0", "no"):
                         return False, None
-                return value, f"Field '{field_name}' expects boolean, got {type(value).__name__}"
+                return (
+                    value,
+                    f"Field '{field_name}' expects boolean, got {type(value).__name__}",
+                )
 
             elif expected_type == "array":
                 if isinstance(value, (list, tuple)):
                     return list(value), None
-                return value, f"Field '{field_name}' expects array, got {type(value).__name__}"
+                return (
+                    value,
+                    f"Field '{field_name}' expects array, got {type(value).__name__}",
+                )
 
             elif expected_type == "object":
                 if isinstance(value, dict):
                     return value, None
-                return value, f"Field '{field_name}' expects object, got {type(value).__name__}"
+                return (
+                    value,
+                    f"Field '{field_name}' expects object, got {type(value).__name__}",
+                )
 
             else:
                 # Unknown type - pass through
@@ -951,7 +945,7 @@ class WorkflowEngine:
         self,
         node: WorkflowNode,
         input_data: Dict[str, Any],
-        execution: WorkflowExecution
+        execution: WorkflowExecution,
     ) -> Dict[str, Any]:
         """Execute a tool node (custom or built-in)."""
         # Get tool schema and validate inputs
@@ -968,17 +962,16 @@ class WorkflowEngine:
                 # Store validation errors in execution context for debugging
                 if "_validation_warnings" not in execution.context:
                     execution.context["_validation_warnings"] = {}
-                execution.context["_validation_warnings"][node.node_id] = validation_errors
+                execution.context["_validation_warnings"][
+                    node.node_id
+                ] = validation_errors
 
             # Use validated (potentially coerced) inputs
             input_data = validated_inputs
         if node.tool_id and node.tool:
             # Custom user tool
             result = await self.custom_tool_service.execute_tool(
-                tool=node.tool,
-                inputs=input_data,
-                user=self.user,
-                db=self.db
+                tool=node.tool, inputs=input_data, user=self.user, db=self.db
             )
             return result.get("output", {})
 
@@ -992,9 +985,7 @@ class WorkflowEngine:
             )
 
     async def _execute_builtin_tool(
-        self,
-        tool_name: str,
-        inputs: Dict[str, Any]
+        self, tool_name: str, inputs: Dict[str, Any]
     ) -> Dict[str, Any]:
         """
         Execute a built-in agent tool.
@@ -1008,10 +999,7 @@ class WorkflowEngine:
 
         try:
             result = await agent_service.execute_tool(
-                tool_name=tool_name,
-                tool_input=inputs,
-                user_id=self.user.id,
-                db=self.db
+                tool_name=tool_name, tool_input=inputs, user_id=self.user.id, db=self.db
             )
             return result
         except Exception as e:
@@ -1024,7 +1012,7 @@ class WorkflowEngine:
         execution: WorkflowExecution,
         graph: Dict[str, Dict[str, Any]],
         node_info: Dict[str, Any],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Execute a condition node and determine the next branch.
@@ -1049,14 +1037,15 @@ class WorkflowEngine:
 
         # Default: use first outgoing if no match
         if node_info["outgoing"]:
-            return {"condition_result": result, "_next_node": node_info["outgoing"][0][0]}
+            return {
+                "condition_result": result,
+                "_next_node": node_info["outgoing"][0][0],
+            }
 
         return {"condition_result": result, "_next_node": None}
 
     def _evaluate_condition(
-        self,
-        condition: Dict[str, Any],
-        context: Dict[str, Any]
+        self, condition: Dict[str, Any], context: Dict[str, Any]
     ) -> bool:
         """
         Evaluate a condition expression.
@@ -1071,17 +1060,25 @@ class WorkflowEngine:
         right = condition.get("right")
 
         # Resolve values (extract .value from ResolvedValue)
-        left_resolved = self._resolve_value(left, context) if left else ResolvedValue(value=None)
-        right_resolved = self._resolve_value(right, context) if right else ResolvedValue(value=None)
+        left_resolved = (
+            self._resolve_value(left, context) if left else ResolvedValue(value=None)
+        )
+        right_resolved = (
+            self._resolve_value(right, context) if right else ResolvedValue(value=None)
+        )
 
         left_val = left_resolved.value
         right_val = right_resolved.value
 
         # Log warnings for resolution issues
         if left_resolved.error:
-            logger.warning(f"Left condition value resolution error: {left_resolved.error}")
+            logger.warning(
+                f"Left condition value resolution error: {left_resolved.error}"
+            )
         if right_resolved.error:
-            logger.warning(f"Right condition value resolution error: {right_resolved.error}")
+            logger.warning(
+                f"Right condition value resolution error: {right_resolved.error}"
+            )
 
         try:
             if cond_type == "equals":
@@ -1116,7 +1113,7 @@ class WorkflowEngine:
         graph: Dict[str, Dict[str, Any]],
         node: WorkflowNode,
         input_data: Dict[str, Any],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Execute parallel branches and wait for all to complete.
@@ -1142,14 +1139,14 @@ class WorkflowEngine:
                     graph,
                     target_node_id,
                     context=branch_context,
-                    written_keys=branch_written
+                    written_keys=branch_written,
                 )
 
                 return {
                     "branch": target_node_id,
                     "status": "completed",
                     "context": branch_context,
-                    "written_keys": list(branch_written)
+                    "written_keys": list(branch_written),
                 }
             except Exception as e:
                 return {"branch": target_node_id, "status": "failed", "error": str(e)}
@@ -1166,11 +1163,13 @@ class WorkflowEngine:
             if isinstance(result, Exception):
                 branch_results.append({"status": "failed", "error": str(result)})
             else:
-                branch_results.append({
-                    "branch": result.get("branch"),
-                    "status": result.get("status"),
-                    "error": result.get("error")
-                })
+                branch_results.append(
+                    {
+                        "branch": result.get("branch"),
+                        "status": result.get("status"),
+                        "error": result.get("error"),
+                    }
+                )
                 if result.get("status") == "completed":
                     branch_context = result.get("context", context)
                     written_keys = result.get("written_keys", [])
@@ -1180,20 +1179,28 @@ class WorkflowEngine:
                     }
 
                     for key in written_keys:
-                        if key in context and context.get(key) != branch_context.get(key):
-                            merge_conflicts.append({
-                                "key": key,
-                                "existing": self._trim_for_context(context.get(key)),
-                                "incoming": self._trim_for_context(branch_context.get(key)),
-                                "branch": result["branch"]
-                            })
+                        if key in context and context.get(key) != branch_context.get(
+                            key
+                        ):
+                            merge_conflicts.append(
+                                {
+                                    "key": key,
+                                    "existing": self._trim_for_context(
+                                        context.get(key)
+                                    ),
+                                    "incoming": self._trim_for_context(
+                                        branch_context.get(key)
+                                    ),
+                                    "branch": result["branch"],
+                                }
+                            )
                             continue
                         context[key] = branch_context.get(key)
 
         return {
             "parallel_results": branch_results,
             "branch_outputs": branch_outputs,
-            "merge_conflicts": merge_conflicts
+            "merge_conflicts": merge_conflicts,
         }
 
     async def _execute_loop_node(
@@ -1203,7 +1210,7 @@ class WorkflowEngine:
         graph: Dict[str, Dict[str, Any]],
         node: WorkflowNode,
         input_data: Dict[str, Any],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Execute a loop node - iterate over a collection.
@@ -1242,7 +1249,7 @@ class WorkflowEngine:
                 "index": index,
                 "total": len(items),
                 "is_first": index == 0,
-                "is_last": index == len(items) - 1
+                "is_last": index == len(items) - 1,
             }
 
             # Execute the loop body (first outgoing node)
@@ -1254,19 +1261,15 @@ class WorkflowEngine:
                     graph,
                     body_node_id,
                     loop_context=loop_context,
-                    context=context
+                    context=context,
                 )
 
-            loop_results.append({
-                "index": index,
-                "item": item,
-                "completed": True
-            })
+            loop_results.append({"index": index, "item": item, "completed": True})
 
         return {
             "loop_completed": True,
             "iterations": len(items),
-            "results": loop_results
+            "results": loop_results,
         }
 
     async def _execute_switch_node(
@@ -1276,7 +1279,7 @@ class WorkflowEngine:
         execution: WorkflowExecution,
         graph: Dict[str, Dict[str, Any]],
         node_info: Dict[str, Any],
-        context: Dict[str, Any]
+        context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Execute a switch node - multi-way branch based on value matching.
@@ -1317,7 +1320,7 @@ class WorkflowEngine:
                     "switch_value": switch_value,
                     "matched_case": matched_handle,
                     "matched_label": matched_label,
-                    "_next_node": target_node_id
+                    "_next_node": target_node_id,
                 }
 
         # Fallback to default edge
@@ -1327,7 +1330,7 @@ class WorkflowEngine:
                     "switch_value": switch_value,
                     "matched_case": "default",
                     "matched_label": matched_label,
-                    "_next_node": target_node_id
+                    "_next_node": target_node_id,
                 }
 
         # No matching edge found
@@ -1336,7 +1339,7 @@ class WorkflowEngine:
             "switch_value": switch_value,
             "matched_case": None,
             "matched_label": None,
-            "_next_node": None
+            "_next_node": None,
         }
 
     async def _execute_subworkflow_node(
@@ -1344,7 +1347,7 @@ class WorkflowEngine:
         node: WorkflowNode,
         input_data: Dict[str, Any],
         execution: WorkflowExecution,
-        context: Dict[str, Any]
+        context: Dict[str, Any],
     ) -> Dict[str, Any]:
         """
         Execute a sub-workflow as a node.
@@ -1374,7 +1377,7 @@ class WorkflowEngine:
             select(Workflow)
             .options(
                 selectinload(Workflow.nodes).selectinload(WorkflowNode.tool),
-                selectinload(Workflow.edges)
+                selectinload(Workflow.edges),
             )
             .where(Workflow.id == UUID(workflow_id))
         )
@@ -1391,10 +1394,13 @@ class WorkflowEngine:
             workflow_id=child_workflow.id,
             user_id=execution.user_id,
             trigger_type="subworkflow",
-            trigger_data={"parent_execution_id": str(execution.id), "parent_node_id": node.node_id},
+            trigger_data={
+                "parent_execution_id": str(execution.id),
+                "parent_node_id": node.node_id,
+            },
             status="pending",
             context={"trigger_data": input_data},
-            parent_execution_id=execution.id
+            parent_execution_id=execution.id,
         )
         self.db.add(child_execution)
         await self.db.commit()
@@ -1408,8 +1414,7 @@ class WorkflowEngine:
         try:
             # Execute child workflow with timeout
             await asyncio.wait_for(
-                self._run_workflow(child_workflow, child_execution),
-                timeout=timeout
+                self._run_workflow(child_workflow, child_execution), timeout=timeout
             )
 
             # Refresh to get final state
@@ -1420,7 +1425,7 @@ class WorkflowEngine:
                 "subworkflow_name": child_workflow.name,
                 "execution_id": str(child_execution.id),
                 "status": child_execution.status,
-                "output": self._trim_for_context(child_execution.context)
+                "output": self._trim_for_context(child_execution.context),
             }
 
         except asyncio.TimeoutError:
@@ -1441,7 +1446,7 @@ class WorkflowEngine:
                 "subworkflow_name": child_workflow.name,
                 "execution_id": str(child_execution.id),
                 "status": "timeout",
-                "error": f"Timeout after {timeout} seconds"
+                "error": f"Timeout after {timeout} seconds",
             }
 
         except WorkflowCancelledError:
@@ -1467,7 +1472,7 @@ class WorkflowEngine:
                 "subworkflow_name": child_workflow.name,
                 "execution_id": str(child_execution.id),
                 "status": "failed",
-                "error": str(e)
+                "error": str(e),
             }
 
     async def _check_recursion_depth(self, execution: WorkflowExecution) -> int:
@@ -1478,7 +1483,7 @@ class WorkflowEngine:
             Current depth (0 for top-level execution)
         """
         depth = 0
-        current_id = getattr(execution, 'parent_execution_id', None)
+        current_id = getattr(execution, "parent_execution_id", None)
 
         while current_id:
             depth += 1
@@ -1486,8 +1491,9 @@ class WorkflowEngine:
                 break
 
             result = await self.db.execute(
-                select(WorkflowExecution.parent_execution_id)
-                .where(WorkflowExecution.id == current_id)
+                select(WorkflowExecution.parent_execution_id).where(
+                    WorkflowExecution.id == current_id
+                )
             )
             row = result.first()
             if not row:
@@ -1503,7 +1509,7 @@ async def execute_workflow_async(
     workflow_id: UUID,
     trigger_type: str = "manual",
     trigger_data: Optional[Dict[str, Any]] = None,
-    initial_context: Optional[Dict[str, Any]] = None
+    initial_context: Optional[Dict[str, Any]] = None,
 ) -> WorkflowExecution:
     """
     Convenience function to execute a workflow.
@@ -1515,5 +1521,5 @@ async def execute_workflow_async(
         workflow_id=workflow_id,
         trigger_type=trigger_type,
         trigger_data=trigger_data,
-        initial_context=initial_context
+        initial_context=initial_context,
     )

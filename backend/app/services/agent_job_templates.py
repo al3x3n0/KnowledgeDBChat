@@ -38,7 +38,9 @@ class BuiltinAgentJobTemplate:
 
 AI_HUB_SCIENTIST_TEMPLATE_ID = UUID("b5967d2e-2f8c-4d65-9c6b-1a4f8c0a5d2d")
 CUSTOMER_RESEARCH_SCOUT_TEMPLATE_ID = UUID("4b2b7a57-4c2f-4e2b-8b10-6d041a1a41df")
-CUSTOMER_RESEARCH_SCOUT_DEEP_DIVE_TEMPLATE_ID = UUID("9c4a92a2-36a6-4f0a-8d19-7f9dcaf26434")
+CUSTOMER_RESEARCH_SCOUT_DEEP_DIVE_TEMPLATE_ID = UUID(
+    "9c4a92a2-36a6-4f0a-8d19-7f9dcaf26434"
+)
 RESEARCH_INBOX_MONITOR_TEMPLATE_ID = UUID("2a4f2b12-3e7a-4a64-9f1a-6b4b0f0b3b52")
 CODE_PATCH_PROPOSER_TEMPLATE_ID = UUID("6b5ddc3b-2d6c-4a48-9a70-8b6a4c1f55a9")
 LATEX_CITATION_SYNC_TEMPLATE_ID = UUID("c6c6e9c2-0f6d-4e64-9e70-9d0d5a5c1a11")
@@ -82,8 +84,7 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
         default_max_tool_calls=0,
         default_max_llm_calls=0,
         default_max_runtime_minutes=2,
-    )
-    ,
+    ),
     BuiltinAgentJobTemplate(
         id=CUSTOMER_RESEARCH_SCOUT_TEMPLATE_ID,
         name="customer_research_scout",
@@ -452,7 +453,9 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
                                 "name": "Claude-Code Backend — Refine (Round 2)",
                                 "job_type": "analysis",
                                 "goal": "Refine the backend patch using experiment output.",
-                                "config": {"deterministic_runner": "code_patch_proposer"},
+                                "config": {
+                                    "deterministic_runner": "code_patch_proposer"
+                                },
                                 "chain_config": {
                                     "trigger_condition": "on_complete",
                                     "inherit_results": True,
@@ -462,7 +465,9 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
                                             "name": "Claude-Code Backend — Verify (Round 2)",
                                             "job_type": "analysis",
                                             "goal": "Re-run backend verification commands/tests for the refined patch.",
-                                            "config": {"deterministic_runner": "experiment_runner"},
+                                            "config": {
+                                                "deterministic_runner": "experiment_runner"
+                                            },
                                         }
                                     ],
                                 },
@@ -538,7 +543,9 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
                                 "name": "Repo Bug Triage — Refine (Round 2)",
                                 "job_type": "analysis",
                                 "goal": "Refine the bug-fix patch using verification output.",
-                                "config": {"deterministic_runner": "code_patch_proposer"},
+                                "config": {
+                                    "deterministic_runner": "code_patch_proposer"
+                                },
                                 "chain_config": {
                                     "trigger_condition": "on_complete",
                                     "inherit_results": True,
@@ -548,7 +555,9 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
                                             "name": "Repo Bug Triage — Verify (Round 2)",
                                             "job_type": "analysis",
                                             "goal": "Re-run verification commands/tests for the refined patch.",
-                                            "config": {"deterministic_runner": "experiment_runner"},
+                                            "config": {
+                                                "deterministic_runner": "experiment_runner"
+                                            },
                                         }
                                     ],
                                 },
@@ -672,14 +681,18 @@ BUILTIN_AGENT_JOB_TEMPLATES: List[BuiltinAgentJobTemplate] = [
 ]
 
 
-def list_builtin_agent_job_templates(category: Optional[str] = None) -> List[BuiltinAgentJobTemplate]:
+def list_builtin_agent_job_templates(
+    category: Optional[str] = None,
+) -> List[BuiltinAgentJobTemplate]:
     templates = [t for t in BUILTIN_AGENT_JOB_TEMPLATES if t.is_active]
     if category:
         templates = [t for t in templates if t.category == category]
     return templates
 
 
-def get_builtin_agent_job_template(template_id: UUID) -> Optional[BuiltinAgentJobTemplate]:
+def get_builtin_agent_job_template(
+    template_id: UUID,
+) -> Optional[BuiltinAgentJobTemplate]:
     for t in BUILTIN_AGENT_JOB_TEMPLATES:
         if t.id == template_id and t.is_active:
             return t

@@ -7,10 +7,19 @@ Research Inbox triage (accept/reject) so continuous monitors improve over time.
 
 from __future__ import annotations
 
-from datetime import datetime
 import uuid
+from datetime import datetime
 
-from sqlalchemy import Column, DateTime, ForeignKey, JSON, String, Text, UniqueConstraint, Index
+from sqlalchemy import (
+    JSON,
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    String,
+    Text,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.database import Base
@@ -21,7 +30,12 @@ class ResearchMonitorProfile(Base):
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
 
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="CASCADE"),
+        nullable=False,
+        index=True,
+    )
     # customer tag used by inbox items; NULL means "global defaults for this user"
     customer = Column(String(255), nullable=True, index=True)
 
@@ -40,10 +54,19 @@ class ResearchMonitorProfile(Base):
 
     notes = Column(Text, nullable=True)
 
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
     __table_args__ = (
-        UniqueConstraint("user_id", "customer", name="uq_research_monitor_profile_user_customer"),
+        UniqueConstraint(
+            "user_id", "customer", name="uq_research_monitor_profile_user_customer"
+        ),
         Index("ix_research_monitor_profiles_user_customer", "user_id", "customer"),
     )

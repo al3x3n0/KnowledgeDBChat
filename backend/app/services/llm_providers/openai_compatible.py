@@ -20,9 +20,35 @@ from loguru import logger
 
 from app.utils.exceptions import LLMServiceError
 
-from .base import BaseLLMProvider, LLMCompletion, LLMToolCall, to_openai_tools, try_parse_json_object
+from .base import (
+    BaseLLMProvider,
+    LLMCompletion,
+    LLMToolCall,
+    to_openai_tools,
+    try_parse_json_object,
+)
 
 _CLIENT_CACHE: Dict[tuple, Any] = {}
+
+
+def _mentions_json(messages: List[Dict[str, Any]]) -> bool:
+    """Whether any message contains the word json, in any case.
+
+    The condition the OpenAI-compatible `json_object` response format imposes
+    on the request. Checked over the converted messages, which are what is
+    actually sent.
+    """
+    for message in messages or []:
+        content = message.get("content") if isinstance(message, dict) else None
+        if isinstance(content, str) and "json" in content.lower():
+            return True
+        if isinstance(content, list):
+            # Multimodal content arrives as parts; only the text ones count.
+            for part in content:
+                text = part.get("text") if isinstance(part, dict) else None
+                if isinstance(text, str) and "json" in text.lower():
+                    return True
+    return False
 
 
 class OpenAICompatibleProvider(BaseLLMProvider):
@@ -78,7 +104,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
     ) -> LLMCompletion:
         resolved_model = model or self.default_model
         if not resolved_model:
-            raise LLMServiceError(f"No model configured for provider '{self.provider_label}'")
+            raise LLMServiceError(
+                f"No model configured for provider '{self.provider_label}'"
+            )
 
         kwargs: Dict[str, Any] = {
             "model": resolved_model,
@@ -102,6 +130,23 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 # json_object mode guarantees valid JSON but not schema shape;
                 # callers keep validating the payload downstream.
                 kwargs["response_format"] = {"type": "json_object"}
+                # DeepSeek (and OpenAI itself) REJECT json_object mode with a
+                # bare 400 unless some message contains the word "json". The
+                # error names nothing, so a caller who did not know the rule
+                # sees only "deepseek API error: 400" and reasonably blames the
+                # schema, the model name, or their key. Measured: a pipeline
+                # drafter failed exactly this way, and the fix is a word.
+                #
+                # Guaranteed here rather than asked of every caller, because a
+                # requirement that is invisible until it fails is not one a
+                # caller can be expected to remember.
+                if not _mentions_json(kwargs["messages"]):
+                    kwargs["messages"] = list(kwargs["messages"]) + [
+                        {
+                            "role": "system",
+                            "content": "Reply with a single valid JSON object.",
+                        }
+                    ]
 
         client = self._get_client()
         if timeout_seconds:
@@ -191,7 +236,24 @@ class OpenAICompatibleProvider(BaseLLMProvider):
                 )
             )
 
+        # The chain of thought, on the path the agent's decisions actually take.
+        # The prompted-text client already records this; the structured client
+        # did not, so the thinking phase -- the one call whose reasoning is
+        # worth having -- was the only one still discarding it.
+        reasoning = getattr(message, "reasoning_content", None) or getattr(
+            message, "reasoning", None
+        )
         usage = getattr(response, "usage", None)
+        details = getattr(usage, "completion_tokens_details", None)
+        reasoning_tokens = getattr(details, "reasoning_tokens", None)
+        if reasoning:
+            try:
+                from app.services.llm_service import _LAST_REASONING
+
+                _LAST_REASONING.set((str(reasoning), reasoning_tokens))
+            except Exception:  # pragma: no cover - capture must never break a call
+                pass
+
         return LLMCompletion(
             text=text,
             tool_calls=tool_calls,
@@ -202,5 +264,9 @@ class OpenAICompatibleProvider(BaseLLMProvider):
             prompt_tokens=getattr(usage, "prompt_tokens", None),
             completion_tokens=getattr(usage, "completion_tokens", None),
             total_tokens=getattr(usage, "total_tokens", None),
-            raw={"id": getattr(response, "id", None)},
+            raw={
+                "id": getattr(response, "id", None),
+                "reasoning_tokens": reasoning_tokens,
+                "reasoning_chars": len(str(reasoning)) if reasoning else 0,
+            },
         )

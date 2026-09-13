@@ -18,15 +18,21 @@ from app.core.database import create_celery_session
 from app.models.latex_compile_job import LatexCompileJob
 
 
-@celery_app.task(bind=True, name="app.tasks.latex_maintenance_tasks.fail_stale_latex_compile_jobs")
+@celery_app.task(
+    bind=True, name="app.tasks.latex_maintenance_tasks.fail_stale_latex_compile_jobs"
+)
 def fail_stale_latex_compile_jobs(self) -> Dict[str, Any]:
     return asyncio.run(_async_fail_stale_latex_compile_jobs())
 
 
 async def _async_fail_stale_latex_compile_jobs() -> Dict[str, Any]:
     now = datetime.utcnow()
-    queued_seconds = int(getattr(settings, "LATEX_COMPILER_JOB_QUEUED_STALE_SECONDS", 600) or 600)
-    running_seconds = int(getattr(settings, "LATEX_COMPILER_JOB_RUNNING_STALE_SECONDS", 300) or 300)
+    queued_seconds = int(
+        getattr(settings, "LATEX_COMPILER_JOB_QUEUED_STALE_SECONDS", 600) or 600
+    )
+    running_seconds = int(
+        getattr(settings, "LATEX_COMPILER_JOB_RUNNING_STALE_SECONDS", 300) or 300
+    )
 
     queued_cutoff = now - timedelta(seconds=queued_seconds)
     running_cutoff = now - timedelta(seconds=running_seconds)
@@ -36,24 +42,36 @@ async def _async_fail_stale_latex_compile_jobs() -> Dict[str, Any]:
         # Queued jobs that never started
         result = await db.execute(
             select(LatexCompileJob).where(
-                (LatexCompileJob.status == "queued") & (LatexCompileJob.created_at < queued_cutoff)
+                (LatexCompileJob.status == "queued")
+                & (LatexCompileJob.created_at < queued_cutoff)
             )
         )
         for job in result.scalars().all():
             job.status = "failed"
-            job.log = (job.log or "").strip() or "Compile job timed out in queue (no worker picked it up)."
+            job.log = (
+                job.log or ""
+            ).strip() or "Compile job timed out in queue (no worker picked it up)."
             job.finished_at = now
             updated += 1
 
         # Running jobs that exceeded expected runtime
         result = await db.execute(
             select(LatexCompileJob).where(
-                (LatexCompileJob.status == "running") & ((LatexCompileJob.started_at < running_cutoff) | ((LatexCompileJob.started_at == None) & (LatexCompileJob.created_at < running_cutoff)))  # noqa: E711
+                (LatexCompileJob.status == "running")
+                & (
+                    (LatexCompileJob.started_at < running_cutoff)
+                    | (
+                        LatexCompileJob.started_at.is_(None)
+                        & (LatexCompileJob.created_at < running_cutoff)
+                    )
+                )
             )
         )
         for job in result.scalars().all():
             job.status = "failed"
-            job.log = (job.log or "").strip() or "Compile job timed out (worker exceeded limits)."
+            job.log = (
+                job.log or ""
+            ).strip() or "Compile job timed out (worker exceeded limits)."
             job.finished_at = now
             updated += 1
 
@@ -62,5 +80,8 @@ async def _async_fail_stale_latex_compile_jobs() -> Dict[str, Any]:
 
     if updated:
         logger.warning(f"Marked {updated} stale LaTeX compile job(s) as failed.")
-    return {"updated": updated, "queued_stale_seconds": queued_seconds, "running_stale_seconds": running_seconds}
-
+    return {
+        "updated": updated,
+        "queued_stale_seconds": queued_seconds,
+        "running_stale_seconds": running_seconds,
+    }

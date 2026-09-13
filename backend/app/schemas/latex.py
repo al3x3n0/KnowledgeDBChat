@@ -21,9 +21,15 @@ class LatexStatusResponse(BaseModel):
 
 
 class LatexCompileRequest(BaseModel):
-    tex_source: str = Field(..., min_length=1, description="LaTeX source (single-file) to compile")
-    safe_mode: bool = Field(default=True, description="Restrict dangerous TeX features (recommended)")
-    preferred_engine: Optional[str] = Field(default=None, description="Optional: 'tectonic' or 'pdflatex'")
+    tex_source: str = Field(
+        ..., min_length=1, description="LaTeX source (single-file) to compile"
+    )
+    safe_mode: bool = Field(
+        default=True, description="Restrict dangerous TeX features (recommended)"
+    )
+    preferred_engine: Optional[str] = Field(
+        default=None, description="Optional: 'tectonic' or 'pdflatex'"
+    )
 
 
 class LatexCompileResponse(BaseModel):
@@ -35,15 +41,23 @@ class LatexCompileResponse(BaseModel):
 
 
 class LatexCopilotSectionRequest(BaseModel):
-    prompt: str = Field(..., min_length=1, max_length=4000, description="What to write in LaTeX")
-    search_query: Optional[str] = Field(default=None, max_length=4000, description="Optional KB search query")
-    document_ids: Optional[List[str]] = Field(default=None, description="Optional explicit document IDs to ground on")
+    prompt: str = Field(
+        ..., min_length=1, max_length=4000, description="What to write in LaTeX"
+    )
+    search_query: Optional[str] = Field(
+        default=None, max_length=4000, description="Optional KB search query"
+    )
+    document_ids: Optional[List[str]] = Field(
+        default=None, description="Optional explicit document IDs to ground on"
+    )
     max_sources: int = Field(default=8, ge=1, le=20)
     use_vector_snippets: bool = True
     chunks_per_source: int = Field(default=3, ge=1, le=8)
     chunk_max_chars: int = Field(default=500, ge=100, le=2000)
     max_source_chars: int = Field(default=2000, ge=200, le=8000)
-    citation_mode: str = Field(default="thebibliography", pattern="^(thebibliography|bibtex)$")
+    citation_mode: str = Field(
+        default="thebibliography", pattern="^(thebibliography|bibtex)$"
+    )
 
 
 class LatexCopilotSectionResponse(BaseModel):
@@ -57,8 +71,12 @@ class LatexCopilotSectionResponse(BaseModel):
 
 class LatexCopilotFixRequest(BaseModel):
     tex_source: str = Field(..., min_length=1, description="Current LaTeX source")
-    compile_log: str = Field(..., min_length=1, description="Compiler log / error output")
-    safe_mode: bool = Field(default=True, description="Avoid introducing unsafe TeX primitives")
+    compile_log: str = Field(
+        ..., min_length=1, description="Compiler log / error output"
+    )
+    safe_mode: bool = Field(
+        default=True, description="Avoid introducing unsafe TeX primitives"
+    )
 
 
 class LatexCopilotFixResponse(BaseModel):
@@ -68,23 +86,44 @@ class LatexCopilotFixResponse(BaseModel):
 
 
 class LatexMathCopilotRequest(BaseModel):
-    tex_source: str = Field(..., min_length=1, description="Current LaTeX source (paper.tex)")
+    tex_source: str = Field(
+        ..., min_length=1, description="Current LaTeX source (paper.tex)"
+    )
     mode: str = Field(default="analyze", pattern="^(analyze|autocomplete)$")
     goal: str = Field(
         default="Standardize math notation and fix equation references.",
         max_length=2000,
         description="What to improve (math style, units, shapes, refs)",
     )
-    selection: Optional[str] = Field(default=None, max_length=8000, description="Optional: selected LaTeX fragment")
-    cursor_context: Optional[str] = Field(default=None, max_length=8000, description="Optional: local context around cursor")
+    selection: Optional[str] = Field(
+        default=None, max_length=8000, description="Optional: selected LaTeX fragment"
+    )
+    cursor_context: Optional[str] = Field(
+        default=None,
+        max_length=8000,
+        description="Optional: local context around cursor",
+    )
 
-    enforce_siunitx: bool = Field(default=True, description="Prefer siunitx for units formatting")
-    enforce_shapes: bool = Field(default=True, description="Prefer consistent tensor/matrix/vector shape notation")
-    enforce_bold_italic_conventions: bool = Field(default=True, description="Prefer consistent scalar/vector/matrix styling")
-    enforce_equation_labels: bool = Field(default=True, description="Prefer labeling displayed equations and using (eq)refs")
+    enforce_siunitx: bool = Field(
+        default=True, description="Prefer siunitx for units formatting"
+    )
+    enforce_shapes: bool = Field(
+        default=True,
+        description="Prefer consistent tensor/matrix/vector shape notation",
+    )
+    enforce_bold_italic_conventions: bool = Field(
+        default=True, description="Prefer consistent scalar/vector/matrix styling"
+    )
+    enforce_equation_labels: bool = Field(
+        default=True,
+        description="Prefer labeling displayed equations and using (eq)refs",
+    )
 
     max_source_chars: int = Field(default=60000, ge=500, le=120000)
-    return_patched_source: bool = Field(default=True, description="If diff applies, include patched tex_source in response")
+    return_patched_source: bool = Field(
+        default=True,
+        description="If diff applies, include patched tex_source in response",
+    )
 
 
 class LatexMathCopilotResponse(BaseModel):
@@ -115,7 +154,12 @@ class LatexCitationsResponse(BaseModel):
 
 
 class LatexApplyUnifiedDiffRequest(BaseModel):
-    diff_unified: str = Field(..., min_length=1, max_length=200000, description="Unified diff that patches paper.tex")
+    diff_unified: str = Field(
+        ...,
+        min_length=1,
+        max_length=200000,
+        description="Unified diff that patches paper.tex",
+    )
     expected_base_sha256: Optional[str] = Field(
         default=None,
         max_length=128,

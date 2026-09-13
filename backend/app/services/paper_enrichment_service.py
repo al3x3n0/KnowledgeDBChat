@@ -6,7 +6,6 @@ Adds structured fields like BibTeX, DOI metadata (venue/publisher/year), and key
 
 from __future__ import annotations
 
-import json
 from typing import Any, Dict, Optional, Tuple
 from uuid import UUID
 
@@ -27,7 +26,9 @@ def _arxiv_id_from_source_identifier(source_identifier: Optional[str]) -> Option
     return last or None
 
 
-def _merge_unique_strings(existing: Any, additions: Any, *, limit: int = 50) -> list[str]:
+def _merge_unique_strings(
+    existing: Any, additions: Any, *, limit: int = 50
+) -> list[str]:
     out: list[str] = []
     for src in (existing, additions):
         if not src:
@@ -57,7 +58,9 @@ def _merge_unique_strings(existing: Any, additions: Any, *, limit: int = 50) -> 
 
 
 class PaperEnrichmentService:
-    async def enrich_arxiv_document(self, db: AsyncSession, document_id: UUID, force: bool = False) -> Dict[str, Any]:
+    async def enrich_arxiv_document(
+        self, db: AsyncSession, document_id: UUID, force: bool = False
+    ) -> Dict[str, Any]:
         doc = await db.get(Document, document_id)
         if not doc:
             raise ValueError("Document not found")
@@ -73,7 +76,11 @@ class PaperEnrichmentService:
             return {"skipped": True, "reason": "already_enriched"}
 
         arxiv_id = _arxiv_id_from_source_identifier(doc.source_identifier)
-        doi = (meta.get("doi") or paper_meta.get("doi")) if isinstance(meta, dict) else None
+        doi = (
+            (meta.get("doi") or paper_meta.get("doi"))
+            if isinstance(meta, dict)
+            else None
+        )
 
         bibtex = None
         if arxiv_id and (force or not paper_meta.get("bibtex")):
@@ -84,9 +91,21 @@ class PaperEnrichmentService:
             crossref = await self._fetch_crossref(doi)
 
         if crossref:
-            venue, publisher, year, keywords, author_affiliations = self._normalize_crossref(crossref)
+            (
+                venue,
+                publisher,
+                year,
+                keywords,
+                author_affiliations,
+            ) = self._normalize_crossref(crossref)
         else:
-            venue, publisher, year, keywords, author_affiliations = (None, None, None, [], [])
+            venue, publisher, year, keywords, author_affiliations = (
+                None,
+                None,
+                None,
+                [],
+                [],
+            )
 
         # Keywords: arXiv categories + Crossref subject
         categories = meta.get("categories") if isinstance(meta, dict) else None
@@ -94,6 +113,7 @@ class PaperEnrichmentService:
         keywords_merged = _merge_unique_strings(keywords_merged, categories)
 
         from datetime import datetime as _dt
+
         updated_paper_meta = {
             **paper_meta,
             "arxiv_id": arxiv_id or paper_meta.get("arxiv_id"),
@@ -103,7 +123,9 @@ class PaperEnrichmentService:
             "publisher": publisher or paper_meta.get("publisher"),
             "year": year or paper_meta.get("year"),
             "keywords": keywords_merged,
-            "author_affiliations": author_affiliations or paper_meta.get("author_affiliations") or [],
+            "author_affiliations": author_affiliations
+            or paper_meta.get("author_affiliations")
+            or [],
             "enriched_at": _dt.utcnow().isoformat(),
         }
 
@@ -117,12 +139,19 @@ class PaperEnrichmentService:
             doc.tags = _merge_unique_strings(doc.tags, keywords_merged, limit=50)
 
         await db.commit()
-        return {"skipped": False, "document_id": str(doc.id), "arxiv_id": arxiv_id, "doi": doi}
+        return {
+            "skipped": False,
+            "document_id": str(doc.id),
+            "arxiv_id": arxiv_id,
+            "doi": doi,
+        }
 
     async def _fetch_arxiv_bibtex(self, arxiv_id: str) -> Optional[str]:
         url = f"https://arxiv.org/bibtex/{arxiv_id}"
         try:
-            async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": "KnowledgeDBChat/1.0"}) as client:
+            async with httpx.AsyncClient(
+                timeout=20.0, headers={"User-Agent": "KnowledgeDBChat/1.0"}
+            ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 html = resp.text or ""
@@ -138,7 +167,7 @@ class PaperEnrichmentService:
         end = html.find("</pre>", start)
         if start == -1 or end == -1:
             return None
-        pre = html[start + 1:end]
+        pre = html[start + 1 : end]
         pre = pre.replace("&amp;", "&").replace("&lt;", "<").replace("&gt;", ">")
         bib = pre.strip()
         return bib or None
@@ -149,7 +178,9 @@ class PaperEnrichmentService:
             return None
         url = f"https://api.crossref.org/works/{doi}"
         try:
-            async with httpx.AsyncClient(timeout=20.0, headers={"User-Agent": "KnowledgeDBChat/1.0"}) as client:
+            async with httpx.AsyncClient(
+                timeout=20.0, headers={"User-Agent": "KnowledgeDBChat/1.0"}
+            ) as client:
                 resp = await client.get(url)
                 resp.raise_for_status()
                 payload = resp.json()
@@ -161,7 +192,9 @@ class PaperEnrichmentService:
 
     def _normalize_crossref(
         self, msg: Dict[str, Any]
-    ) -> Tuple[Optional[str], Optional[str], Optional[int], list[str], list[Dict[str, Any]]]:
+    ) -> Tuple[
+        Optional[str], Optional[str], Optional[int], list[str], list[Dict[str, Any]]
+    ]:
         venue = None
         publisher = None
         year = None
@@ -187,14 +220,21 @@ class PaperEnrichmentService:
                         continue
                     given = (a.get("given") or "").strip()
                     family = (a.get("family") or "").strip()
-                    name = " ".join([p for p in [given, family] if p]) or (a.get("name") or "").strip()
+                    name = (
+                        " ".join([p for p in [given, family] if p])
+                        or (a.get("name") or "").strip()
+                    )
                     if not name:
                         continue
                     affs = a.get("affiliation")
                     aff_names: list[str] = []
                     if isinstance(affs, list):
                         for aff in affs:
-                            if isinstance(aff, dict) and isinstance(aff.get("name"), str) and aff.get("name").strip():
+                            if (
+                                isinstance(aff, dict)
+                                and isinstance(aff.get("name"), str)
+                                and aff.get("name").strip()
+                            ):
                                 aff_names.append(aff["name"].strip())
                     # Dedup affiliations
                     seen = set()
@@ -215,9 +255,18 @@ class PaperEnrichmentService:
 
             issued = msg.get("issued", {})
             parts = issued.get("date-parts") if isinstance(issued, dict) else None
-            if isinstance(parts, list) and parts and isinstance(parts[0], list) and parts[0]:
+            if (
+                isinstance(parts, list)
+                and parts
+                and isinstance(parts[0], list)
+                and parts[0]
+            ):
                 y = parts[0][0]
-                year = int(y) if isinstance(y, (int, float, str)) and str(y).isdigit() else None
+                year = (
+                    int(y)
+                    if isinstance(y, (int, float, str)) and str(y).isdigit()
+                    else None
+                )
         except Exception:
             pass
 

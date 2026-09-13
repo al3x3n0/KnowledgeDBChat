@@ -10,6 +10,7 @@ from typing import Any, Dict
 from uuid import UUID
 
 from loguru import logger
+from sqlalchemy import select
 
 from app.core.celery_latex import celery_app
 from app.core.config import settings
@@ -19,7 +20,6 @@ from app.models.latex_project import LatexProject
 from app.models.latex_project_file import LatexProjectFile
 from app.services.latex_compiler_service import LatexSafetyError, latex_compiler_service
 from app.services.storage_service import storage_service
-from sqlalchemy import select
 
 
 @celery_app.task(bind=True, name="app.tasks.latex_tasks.compile_latex_project_job")
@@ -53,13 +53,19 @@ async def _async_compile_latex_project_job(task, job_id: str) -> Dict[str, Any]:
 
         additional_files: Dict[str, bytes] = {}
         try:
-            files_result = await db.execute(select(LatexProjectFile).where(LatexProjectFile.project_id == project.id))
+            files_result = await db.execute(
+                select(LatexProjectFile).where(
+                    LatexProjectFile.project_id == project.id
+                )
+            )
             for f in files_result.scalars().all():
                 name = (f.filename or "").strip()
                 if not name or "/" in name or "\\" in name:
                     continue
                 try:
-                    additional_files[name] = await storage_service.get_file_content(f.file_path)
+                    additional_files[name] = await storage_service.get_file_content(
+                        f.file_path
+                    )
                 except Exception:
                     continue
         except Exception:
@@ -105,7 +111,12 @@ async def _async_compile_latex_project_job(task, job_id: str) -> Dict[str, Any]:
             project.pdf_file_path = pdf_path
             await db.commit()
 
-            return {"job_id": job_id, "status": job.status, "success": True, "engine": result.engine}
+            return {
+                "job_id": job_id,
+                "status": job.status,
+                "success": True,
+                "engine": result.engine,
+            }
 
         except LatexSafetyError as exc:
             job.engine = None

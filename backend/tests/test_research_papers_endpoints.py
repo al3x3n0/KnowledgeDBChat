@@ -1,6 +1,7 @@
 import asyncio
 import hashlib
 from datetime import datetime
+from uuid import UUID
 
 from app.models.document import Document, DocumentSource
 from app.models.research_note import ResearchNote
@@ -58,7 +59,10 @@ def test_queue_document_extraction_job_preserves_previous_completed_state_on_fai
             extractor_version="paper_extraction_v1",
             summary="Existing extracted summary",
             mechanisms=["layout transform"],
-            raw_extraction_payload={"summary": "Existing extracted summary", "claims": []},
+            raw_extraction_payload={
+                "summary": "Existing extracted summary",
+                "claims": [],
+            },
         )
         db_session.add(paper)
         await db_session.commit()
@@ -76,7 +80,9 @@ def test_queue_document_extraction_job_preserves_previous_completed_state_on_fai
             force=True,
             dispatch_task=lambda job_id: dispatched.append(job_id),
         )
-        await paper_extraction_service.mark_failed(db_session, job=job, error="llm failure")
+        await paper_extraction_service.mark_failed(
+            db_session, job=job, error="llm failure"
+        )
         paper = await db_session.get(ResearchPaper, original_paper.id)
         return job, paper
 
@@ -87,7 +93,10 @@ def test_queue_document_extraction_job_preserves_previous_completed_state_on_fai
     assert paper is not None
     assert paper.extraction_status == "completed"
     assert paper.summary == "Existing extracted summary"
-    assert paper.raw_extraction_payload == {"summary": "Existing extracted summary", "claims": []}
+    assert paper.raw_extraction_payload == {
+        "summary": "Existing extracted summary",
+        "claims": [],
+    }
 
 
 def test_extract_research_papers_endpoint_queues_jobs_from_source(
@@ -145,7 +154,10 @@ def test_save_research_paper_as_note_persists_structured_payload(
             benchmarks=["PolyBench"],
             metrics=["runtime"],
             limitations=["not evaluated on irregular kernels"],
-            raw_extraction_payload={"summary": "Structured paper summary", "claims": [{"statement": "Claim"}]},
+            raw_extraction_payload={
+                "summary": "Structured paper summary",
+                "claims": [{"statement": "Claim"}],
+            },
         )
         db_session.add(paper)
         await db_session.flush()
@@ -174,10 +186,13 @@ def test_save_research_paper_as_note_persists_structured_payload(
     payload = response.json()
 
     async def _load_note():
-        return await db_session.get(ResearchNote, payload["id"])
+        return await db_session.get(ResearchNote, UUID(payload["id"]))
 
     note = asyncio.get_event_loop().run_until_complete(_load_note())
     assert note is not None
     assert note.structured_payload["artifact_type"] == "paper_extraction"
     assert note.structured_payload["paper_id"] == str(paper.id)
-    assert note.structured_payload["claims"][0]["statement"] == "If layout is optimized, runtime improves."
+    assert (
+        note.structured_payload["claims"][0]["statement"]
+        == "If layout is optimized, runtime improves."
+    )

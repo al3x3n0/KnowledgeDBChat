@@ -18,7 +18,7 @@
    ```
 
 4. **Upload a video file:**
-   - Navigate to http://localhost:3000
+   - Navigate to http://localhost:23000
    - Login to the application
    - Go to Documents page
    - Click "Upload Document"
@@ -99,7 +99,7 @@ MAX_VIDEO_SIZE: int = 2000 * 1024 * 1024  # 2GB
 
 ### Transcription Fails
 - Check Celery logs for errors: `docker-compose logs celery`
-- Verify file was uploaded correctly: Check MinIO console at http://localhost:9001
+- Verify file was uploaded correctly: Check MinIO console at http://localhost:29001
 - Check document metadata: Look for `processing_error` in document record
 
 ## Testing with Sample Video
@@ -116,7 +116,7 @@ ffmpeg -f lavfi -i testsrc=duration=10:size=320x240:rate=1 -f lavfi -i sine=freq
 TOKEN="your-auth-token"
 
 # Upload video
-curl -X POST http://localhost:3000/api/v1/documents/upload \
+curl -X POST http://localhost:23000/api/v1/documents/upload \
   -H "Authorization: Bearer $TOKEN" \
   -F "file=@test_video.mp4" \
   -F "title=Test Video"
@@ -127,7 +127,7 @@ curl -X POST http://localhost:3000/api/v1/documents/upload \
 ### Check Document Status
 ```bash
 # Via API
-curl -X GET http://localhost:3000/api/v1/documents/{document_id} \
+curl -X GET http://localhost:23000/api/v1/documents/{document_id} \
   -H "Authorization: Bearer $TOKEN"
 ```
 

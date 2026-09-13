@@ -3,6 +3,7 @@ Runtime feature flags with Redis-backed overrides and settings fallback.
 """
 
 from typing import Dict, Optional
+
 from app.core.cache import cache_service
 from app.core.config import settings
 
@@ -65,8 +66,12 @@ async def get_flags() -> Dict[str, bool]:
         "knowledge_graph_enabled": bool(await get_flag("knowledge_graph_enabled")),
         "summarization_enabled": bool(await get_flag("summarization_enabled")),
         "auto_summarize_on_process": bool(await get_flag("auto_summarize_on_process")),
-        "unsafe_code_execution_enabled": bool(await get_flag("unsafe_code_execution_enabled")),
-        "repo_symbol_retrieval_enabled": bool(await get_flag("repo_symbol_retrieval_enabled")),
+        "unsafe_code_execution_enabled": bool(
+            await get_flag("unsafe_code_execution_enabled")
+        ),
+        "repo_symbol_retrieval_enabled": bool(
+            await get_flag("repo_symbol_retrieval_enabled")
+        ),
     }
 
 

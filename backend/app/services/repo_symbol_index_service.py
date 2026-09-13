@@ -43,14 +43,23 @@ class RepoSymbolIndexService:
             if file_path.suffix.lower() not in self._allowed_exts:
                 continue
             rel_path = file_path.relative_to(repo_root).as_posix()
-            if include_prefixes and not any(rel_path.startswith(prefix) for prefix in include_prefixes):
+            if include_prefixes and not any(
+                rel_path.startswith(prefix) for prefix in include_prefixes
+            ):
                 continue
             scanned += 1
-            symbol_rows.extend(self._extract_symbols(file_path, rel_path, query_keywords))
+            symbol_rows.extend(
+                self._extract_symbols(file_path, rel_path, query_keywords)
+            )
 
-        symbol_rows.sort(key=lambda row: (-int(row.get("score", 0)), str(row.get("path", ""))))
+        symbol_rows.sort(
+            key=lambda row: (-int(row.get("score", 0)), str(row.get("path", "")))
+        )
         top_symbols = symbol_rows[:max_symbols]
-        top_snippets = [self._symbol_to_snippet(repo_root, row) for row in top_symbols[:max_snippets]]
+        top_snippets = [
+            self._symbol_to_snippet(repo_root, row)
+            for row in top_symbols[:max_snippets]
+        ]
         top_snippets = [row for row in top_snippets if row]
 
         related_tests: List[Dict[str, Any]] = []
@@ -157,12 +166,16 @@ class RepoSymbolIndexService:
                         "start_line": idx,
                         "end_line": min(idx + 4, len(lines)),
                         "score": score,
-                        "why_relevant": self._why_relevant(rel_path, name, query_keywords),
+                        "why_relevant": self._why_relevant(
+                            rel_path, name, query_keywords
+                        ),
                     }
                 )
         return rows
 
-    def _score_symbol(self, path: str, symbol: str, kind: str, query_keywords: List[str]) -> int:
+    def _score_symbol(
+        self, path: str, symbol: str, kind: str, query_keywords: List[str]
+    ) -> int:
         path_l = path.lower()
         symbol_l = symbol.lower()
         score = 0
@@ -196,7 +209,9 @@ class RepoSymbolIndexService:
             return "Scored by structural relevance."
         return f"Matched query keywords: {', '.join(matches)}."
 
-    def _symbol_to_snippet(self, repo_root: Path, row: Dict[str, Any]) -> Dict[str, Any]:
+    def _symbol_to_snippet(
+        self, repo_root: Path, row: Dict[str, Any]
+    ) -> Dict[str, Any]:
         path = str(row.get("path") or "").strip()
         if not path:
             return {}
@@ -209,7 +224,7 @@ class RepoSymbolIndexService:
         end = max(start, int(row.get("end_line", start) or start))
         start_clip = max(1, start - 2)
         end_clip = min(len(lines), end + 2)
-        excerpt = "\n".join(lines[start_clip - 1:end_clip])[:2000]
+        excerpt = "\n".join(lines[start_clip - 1 : end_clip])[:2000]
         return {
             "path": path,
             "symbol": str(row.get("symbol") or ""),

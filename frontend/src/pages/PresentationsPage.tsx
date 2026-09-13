@@ -352,9 +352,6 @@ const CreatePresentationModal: React.FC<CreateModalProps> = ({
     bg_color: '#ffffff',
   });
 
-  // Get selected template for preview
-  const selectedTemplate = templates.find(t => t.id === selectedTemplateId);
-
   const filteredDocs = documents.filter(
     (doc) =>
       doc.title.toLowerCase().includes(searchQuery.toLowerCase()) ||

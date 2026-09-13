@@ -8,6 +8,7 @@ import { BrowserRouter } from 'react-router-dom';
 import { QueryClient, QueryClientProvider } from 'react-query';
 import ChatPage from '../ChatPage';
 import { AuthProvider } from '../../contexts/AuthContext';
+import { apiClient } from '../../services/api';
 
 // Mock the auth context
 jest.mock('../../contexts/AuthContext', () => ({
@@ -30,15 +31,14 @@ jest.mock('../../services/api', () => ({
   },
 }));
 
-const queryClient = new QueryClient({
-  defaultOptions: {
-    queries: { retry: false },
-  },
-});
-
 const renderWithProviders = (component: React.ReactElement) => {
+  const queryClient = new QueryClient({
+    defaultOptions: {
+      queries: { retry: false, cacheTime: 0 },
+    },
+  });
   return render(
-    <BrowserRouter>
+    <BrowserRouter future={{ v7_startTransition: true, v7_relativeSplatPath: true }}>
       <QueryClientProvider client={queryClient}>
         <AuthProvider>
           {component}
@@ -49,15 +49,27 @@ const renderWithProviders = (component: React.ReactElement) => {
 };
 
 describe('ChatPage', () => {
+  beforeEach(() => {
+    window.history.replaceState({}, '', '/chat');
+    (apiClient.getChatSessions as jest.Mock).mockResolvedValue([]);
+    (apiClient.getChatSession as jest.Mock).mockResolvedValue(null);
+    (apiClient.createChatSession as jest.Mock).mockResolvedValue({ id: '1', title: 'New Session' });
+    (apiClient.updateChatSession as jest.Mock).mockResolvedValue({ id: '1', title: 'New Session' });
+    (apiClient.deleteChatSession as jest.Mock).mockResolvedValue({});
+    (apiClient.sendMessage as jest.Mock).mockResolvedValue({ id: '1', content: 'Response', role: 'assistant' });
+  });
+
   it('renders chat interface', async () => {
     renderWithProviders(<ChatPage />);
 
-    const apiClient = require('../../services/api').apiClient;
     const newChatButton = await screen.findByRole('button', { name: /^new chat$/i });
     fireEvent.click(newChatButton);
 
     await waitFor(() => {
       expect(apiClient.createChatSession).toHaveBeenCalled();
+    });
+    await waitFor(() => {
+      expect(window.location.pathname).toBe('/chat/1');
     });
   });
 

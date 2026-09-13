@@ -9,7 +9,15 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from sqlalchemy import Column, DateTime, ForeignKey, Index, Integer, String, UniqueConstraint
+from sqlalchemy import (
+    Column,
+    DateTime,
+    ForeignKey,
+    Index,
+    Integer,
+    String,
+    UniqueConstraint,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.sql import func
 
@@ -33,11 +41,22 @@ class AgentToolPrior(Base):
     success_count = Column(Integer, nullable=False, default=0)
     failure_count = Column(Integer, nullable=False, default=0)
 
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), nullable=False)
-    updated_at = Column(DateTime(timezone=True), server_default=func.now(), onupdate=func.now(), nullable=False)
-
-    __table_args__ = (
-        UniqueConstraint("user_id", "job_type", "tool_name", name="uq_agent_tool_priors_user_job_tool"),
-        Index("ix_agent_tool_priors_user_job", "user_id", "job_type"),
+    created_at = Column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+        nullable=False,
     )
 
+    __table_args__ = (
+        UniqueConstraint(
+            "user_id",
+            "job_type",
+            "tool_name",
+            name="uq_agent_tool_priors_user_job_tool",
+        ),
+        Index("ix_agent_tool_priors_user_job", "user_id", "job_type"),
+    )

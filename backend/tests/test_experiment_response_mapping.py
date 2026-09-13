@@ -1,6 +1,9 @@
 from uuid import uuid4
 
-from app.api.endpoints.experiments import _build_experiment_run_note_block, _run_to_response
+from app.api.endpoints.experiments import (
+    _build_experiment_run_note_block,
+    _run_to_response,
+)
 from app.models.experiment import ExperimentRun
 
 
@@ -18,7 +21,9 @@ def test_run_to_response_projects_typed_experiment_run_payload():
             "final_phase": "retry_primary",
             "bootstrap_attempted": True,
             "bootstrap_ok": True,
-            "verification_commands": ["CI=true npm --prefix frontend test -- --watchAll=false"],
+            "verification_commands": [
+                "CI=true npm --prefix frontend test -- --watchAll=false"
+            ],
         },
     )
 
@@ -68,7 +73,10 @@ def test_run_to_response_projects_typed_operator_interventions():
     assert response.operator_interventions[0].job_status_after == "pending"
     assert response.operator_interventions[0].note == "Retry after fallback failure"
     assert response.operator_interventions[0].outcome_status == "applied"
-    assert response.operator_interventions[0].outcome_reason == "Job resumed after intervention"
+    assert (
+        response.operator_interventions[0].outcome_reason
+        == "Job resumed after intervention"
+    )
 
 
 def test_run_to_response_ignores_invalid_operator_intervention_shapes():
@@ -83,7 +91,11 @@ def test_run_to_response_ignores_invalid_operator_intervention_shapes():
             "execution_strategy": {
                 "operator_interventions": [
                     "bad-payload",
-                    {"action": "resume", "job_status_before": "paused", "job_status_after": "running"},
+                    {
+                        "action": "resume",
+                        "job_status_before": "paused",
+                        "job_status_after": "running",
+                    },
                 ]
             }
         },
@@ -137,7 +149,7 @@ def test_build_experiment_run_note_block_includes_summary_and_bootstrap_context(
                         "reasons": ["fallback verification still failing"],
                     },
                     "recommended_actions": ["Inspect failing fallback output"],
-                }
+                },
             },
         },
     )

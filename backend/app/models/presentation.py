@@ -3,10 +3,18 @@ Presentation job models for AI-powered presentation generation.
 """
 
 from datetime import datetime
-from typing import Optional, List
 from uuid import uuid4
 
-from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, JSON, Boolean
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -21,10 +29,13 @@ class PresentationTemplate(Base):
     - Custom PPTX files uploaded by users
     - Built-in theme configurations (color schemes, fonts)
     """
+
     __tablename__ = "presentation_templates"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True)  # NULL = system template
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
+    )  # NULL = system template
 
     # Template info
     name = Column(String(255), nullable=False)
@@ -77,25 +88,38 @@ class PresentationJob(Base):
     Tracks the status and progress of AI-powered presentation creation,
     including the generated outline, source documents, and output file.
     """
+
     __tablename__ = "presentation_jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
-    template_id = Column(UUID(as_uuid=True), ForeignKey("presentation_templates.id", ondelete="SET NULL"), nullable=True)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    template_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("presentation_templates.id", ondelete="SET NULL"),
+        nullable=True,
+    )
 
     # Request parameters
     title = Column(String(255), nullable=False)
     topic = Column(Text, nullable=False)
     source_document_ids = Column(JSON, default=list)  # List of document UUIDs for RAG
     slide_count = Column(Integer, default=10)
-    style = Column(String(50), default="professional")  # professional, casual, technical (used if no template)
-    include_diagrams = Column(Integer, default=1)  # Boolean as int for SQLite compatibility
+    style = Column(
+        String(50), default="professional"
+    )  # professional, casual, technical (used if no template)
+    include_diagrams = Column(
+        Integer, default=1
+    )  # Boolean as int for SQLite compatibility
 
     # Custom theme override (if not using a template)
     custom_theme = Column(JSON, nullable=True)  # Inline theme config
 
     # Job status
-    status = Column(String(50), default="pending")  # pending, generating, rendering, completed, failed
+    status = Column(
+        String(50), default="pending"
+    )  # pending, generating, rendering, completed, failed
     progress = Column(Integer, default=0)  # 0-100
     current_stage = Column(String(100), nullable=True)  # Current processing stage
 
@@ -107,7 +131,12 @@ class PresentationJob(Base):
     file_size = Column(Integer, nullable=True)  # File size in bytes
 
     # Observability / provenance (optional)
-    retrieval_trace_id = Column(UUID(as_uuid=True), ForeignKey("retrieval_traces.id", ondelete="SET NULL"), nullable=True, index=True)
+    retrieval_trace_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("retrieval_traces.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
 
     # Error handling
     error = Column(Text, nullable=True)

@@ -5,45 +5,63 @@ Tracks autonomous agent executions that run independently in the background,
 working toward defined goals without requiring continuous user interaction.
 """
 
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from sqlalchemy import Column, String, Text, DateTime, Boolean, Integer, ForeignKey, JSON, Enum as SQLEnum
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
-import uuid
 import enum
+import uuid
+from datetime import datetime
+from typing import Any, Dict, List, Optional
+
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
+from app.models.mutable_json import NestedMutableDict, NestedMutableList
 
 
 class AgentJobStatus(str, enum.Enum):
     """Status of an autonomous agent job."""
-    PENDING = "pending"          # Job created, waiting to start
-    RUNNING = "running"          # Currently executing
-    PAUSED = "paused"           # Paused by user or system
-    COMPLETED = "completed"      # Successfully finished
-    FAILED = "failed"           # Failed with error
-    CANCELLED = "cancelled"      # Cancelled by user
+
+    PENDING = "pending"  # Job created, waiting to start
+    RUNNING = "running"  # Currently executing
+    PAUSED = "paused"  # Paused by user or system
+    COMPLETED = "completed"  # Successfully finished
+    FAILED = "failed"  # Failed with error
+    CANCELLED = "cancelled"  # Cancelled by user
 
 
 class AgentJobType(str, enum.Enum):
     """Type of autonomous agent job."""
-    RESEARCH = "research"                    # Research a topic, find papers, synthesize
-    MONITOR = "monitor"                      # Monitor for changes/updates
-    ANALYSIS = "analysis"                    # Analyze documents/data
-    SYNTHESIS = "synthesis"                  # Synthesize information from sources
+
+    RESEARCH = "research"  # Research a topic, find papers, synthesize
+    MONITOR = "monitor"  # Monitor for changes/updates
+    ANALYSIS = "analysis"  # Analyze documents/data
+    SYNTHESIS = "synthesis"  # Synthesize information from sources
     KNOWLEDGE_EXPANSION = "knowledge_expansion"  # Expand knowledge base
-    DATA_ANALYSIS = "data_analysis"          # Data analysis, ETL, visualization
-    CUSTOM = "custom"                        # Custom goal-driven task
+    DATA_ANALYSIS = "data_analysis"  # Data analysis, ETL, visualization
+    CUSTOM = "custom"  # Custom goal-driven task
 
 
 class ChainTriggerCondition(str, enum.Enum):
     """Conditions for triggering chained jobs."""
-    ON_COMPLETE = "on_complete"              # Trigger when parent completes successfully
-    ON_FAIL = "on_fail"                      # Trigger when parent fails
-    ON_ANY_END = "on_any_end"                # Trigger on any completion (success or failure)
-    ON_PROGRESS = "on_progress"              # Trigger when parent reaches progress threshold
-    ON_FINDINGS = "on_findings"              # Trigger when parent finds certain number of findings
+
+    ON_COMPLETE = "on_complete"  # Trigger when parent completes successfully
+    ON_FAIL = "on_fail"  # Trigger when parent fails
+    ON_ANY_END = "on_any_end"  # Trigger on any completion (success or failure)
+    ON_PROGRESS = "on_progress"  # Trigger when parent reaches progress threshold
+    ON_FINDINGS = "on_findings"  # Trigger when parent finds certain number of findings
+    # Trigger only when a person says so. Every condition above fires on its
+    # own, which means a chain could not be gated on human judgement at all:
+    # a pipeline stage that should stop for review had no way to say it.
+    ON_APPROVAL = "on_approval"
 
 
 class AgentJob(Base):
@@ -84,15 +102,13 @@ class AgentJob(Base):
     agent_definition_id = Column(
         UUID(as_uuid=True),
         ForeignKey("agent_definitions.id", ondelete="SET NULL"),
-        nullable=True
+        nullable=True,
     )
     agent_definition = relationship("AgentDefinition")
 
     # Ownership
     user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
     user = relationship("User", backref="agent_jobs")
 
@@ -107,14 +123,19 @@ class AgentJob(Base):
     max_iterations = Column(Integer, default=100)  # Maximum iterations before stopping
 
     # Execution log - stores the agent's thought process and actions
-    execution_log = Column(JSON, nullable=True)
+    # Mutable: every writer appends in place via add_log_entry, and a plain
+    # Column(JSON) does not notice, so the entries were never written.
+    execution_log = Column(NestedMutableList.as_mutable(JSON), nullable=True)
     # Structure: [
     #   {"iteration": 1, "phase": "planning", "thought": "...", "action": "...", "result": "...", "timestamp": "..."},
     #   ...
     # ]
 
     # Results and outputs
-    results = Column(JSON, nullable=True)  # Structured results
+    # Mutable: written by key, including nested (results['research'][...]).
+    results = Column(
+        NestedMutableDict.as_mutable(JSON), nullable=True
+    )  # Structured results
     # Example results for research job:
     # {
     #   "papers_found": 45,
@@ -124,7 +145,10 @@ class AgentJob(Base):
     #   "knowledge_graph_nodes_added": 150
     # }
 
-    output_artifacts = Column(JSON, nullable=True)  # References to created artifacts
+    # Mutable: appended in place by the runners.
+    output_artifacts = Column(
+        NestedMutableList.as_mutable(JSON), nullable=True
+    )  # References to created artifacts
     # Example: [
     #   {"type": "document", "id": "...", "title": "Research Synthesis"},
     #   {"type": "presentation", "id": "...", "title": "Research Summary"}
@@ -136,13 +160,15 @@ class AgentJob(Base):
     last_error_at = Column(DateTime(timezone=True), nullable=True)
 
     # Scheduling
-    schedule_type = Column(String(20), nullable=True)  # "once", "recurring", "continuous"
+    schedule_type = Column(
+        String(20), nullable=True
+    )  # "once", "recurring", "continuous"
     schedule_cron = Column(String(100), nullable=True)  # Cron expression for recurring
     next_run_at = Column(DateTime(timezone=True), nullable=True)
 
     # Resource limits
     max_tool_calls = Column(Integer, default=500)  # Max tool calls per job
-    max_llm_calls = Column(Integer, default=200)   # Max LLM calls per job
+    max_llm_calls = Column(Integer, default=200)  # Max LLM calls per job
     max_runtime_minutes = Column(Integer, default=60)  # Max runtime in minutes
 
     # Usage tracking
@@ -158,19 +184,21 @@ class AgentJob(Base):
 
     # Celery task tracking
     celery_task_id = Column(String(100), nullable=True)
+    execution_lease_owner = Column(String(200), nullable=True)
+    execution_lease_token = Column(String(64), nullable=True)
+    execution_lease_expires_at = Column(DateTime(timezone=True), nullable=True)
+    execution_lease_heartbeat_at = Column(DateTime(timezone=True), nullable=True)
+    execution_fence = Column(Integer, nullable=False, default=0, server_default="0")
 
     # Job chaining - allows jobs to trigger other jobs on completion
     parent_job_id = Column(
         UUID(as_uuid=True),
         ForeignKey("agent_jobs.id", ondelete="SET NULL"),
-        nullable=True
+        nullable=True,
     )
     # Self-referential relationship for chained jobs
     chained_jobs = relationship(
-        "AgentJob",
-        backref="parent_job",
-        remote_side=[id],
-        foreign_keys=[parent_job_id]
+        "AgentJob", backref="parent_job", remote_side=[id], foreign_keys=[parent_job_id]
     )
 
     # Chain configuration
@@ -186,12 +214,14 @@ class AgentJob(Base):
     # }
 
     # Chain status tracking
-    chain_triggered = Column(Boolean, default=False)  # Whether this job has triggered its children
+    chain_triggered = Column(
+        Boolean, default=False
+    )  # Whether this job has triggered its children
     chain_depth = Column(Integer, default=0)  # Depth in chain hierarchy (0 = root)
     root_job_id = Column(
         UUID(as_uuid=True),
         ForeignKey("agent_jobs.id", ondelete="SET NULL"),
-        nullable=True
+        nullable=True,
     )  # Reference to the original root job in a chain
 
     # Memory integration
@@ -201,14 +231,21 @@ class AgentJob(Base):
     memories_created_count = Column(Integer, default=0)  # Number of memories created
 
     # Memories relationship (defined in ConversationMemory)
-    memories = relationship("ConversationMemory", back_populates="source_job", foreign_keys="ConversationMemory.job_id")
+    memories = relationship(
+        "ConversationMemory",
+        back_populates="source_job",
+        foreign_keys="ConversationMemory.job_id",
+    )
 
     def __repr__(self):
         return f"<AgentJob(id={self.id}, name='{self.name}', status={self.status})>"
 
     def can_continue(self) -> bool:
         """Check if the job can continue executing."""
-        if self.status not in [AgentJobStatus.RUNNING.value, AgentJobStatus.PENDING.value]:
+        if self.status not in [
+            AgentJobStatus.RUNNING.value,
+            AgentJobStatus.PENDING.value,
+        ]:
             return False
         if self.iteration >= self.max_iterations:
             return False
@@ -252,6 +289,39 @@ class AgentJob(Base):
             return ChainTriggerCondition(condition)
         return ChainTriggerCondition.ON_COMPLETE
 
+    def goal_contract_satisfied(self) -> bool:
+        """Whether this run met the contract it declared, if it declared one.
+
+        True when no contract was in force: a run with nothing to prove has
+        nothing outstanding, and treating that as a failure would stop every
+        chain that never used contracts.
+        """
+        results = self.results if isinstance(self.results, dict) else {}
+        contract = results.get("goal_contract")
+        if not isinstance(contract, dict) or not contract.get("enabled"):
+            return True
+        if contract.get("satisfied"):
+            return True
+
+        # Only the EVIDENCE requirements gate the chain. A contract also
+        # requires progress>=100, which is the agent's own report of how far
+        # it thinks it got -- and a run can produce every finding the next
+        # stage needs while never declaring itself finished. Seen exactly so:
+        # a scoring run delivered implementation_verified, two
+        # benchmark_measurements and a reproduction_verdict, and its contract
+        # still read unsatisfied with `progress>=100` the only thing missing.
+        # Gating on that would stop chains for a self-assessment rather than
+        # for anything the downstream stage actually lacks.
+        missing = contract.get("missing")
+        if not isinstance(missing, list):
+            return False
+        substantive = [
+            str(item)
+            for item in missing
+            if not str(item).strip().lower().startswith("progress")
+        ]
+        return not substantive
+
     def should_trigger_chain(self, event: str, value: int = 0) -> bool:
         """
         Check if chained jobs should be triggered based on an event.
@@ -274,13 +344,27 @@ class AgentJob(Base):
 
         if event == "complete" and condition in [
             ChainTriggerCondition.ON_COMPLETE,
-            ChainTriggerCondition.ON_ANY_END
+            ChainTriggerCondition.ON_ANY_END,
         ]:
+            # ON_ANY_END means exactly that, and fires either way. ON_COMPLETE
+            # is a claim about the outcome, so a run that ended with its goal
+            # contract unsatisfied does not satisfy it.
+            #
+            # A run that exhausts its iterations is still marked completed --
+            # deliberately, since nothing failed -- and that made the next
+            # stage start on premises nobody had established. Seen end to end:
+            # a measure stage spent its whole budget getting an implementation
+            # right, never benchmarked, reported completed at 49% progress
+            # with `benchmark_measurement` and `reproduction_verdict` missing,
+            # and the compare stage duly began scoring a measurement that did
+            # not exist.
+            if condition == ChainTriggerCondition.ON_COMPLETE:
+                return self.goal_contract_satisfied()
             return True
 
         if event == "fail" and condition in [
             ChainTriggerCondition.ON_FAIL,
-            ChainTriggerCondition.ON_ANY_END
+            ChainTriggerCondition.ON_ANY_END,
         ]:
             return True
 
@@ -291,6 +375,12 @@ class AgentJob(Base):
         if event == "findings" and condition == ChainTriggerCondition.ON_FINDINGS:
             threshold = config.get("findings_threshold", 10)
             return value >= threshold
+
+        # An approval-gated chain fires on the approval and on nothing else.
+        # Completing is what makes it *ready* to be approved, not what starts
+        # the next stage.
+        if event == "approval" and condition == ChainTriggerCondition.ON_APPROVAL:
+            return True
 
         return False
 
@@ -348,7 +438,7 @@ class AgentJobCheckpoint(Base):
     job_id = Column(
         UUID(as_uuid=True),
         ForeignKey("agent_jobs.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
     job = relationship("AgentJob", backref="checkpoints")
 
@@ -393,7 +483,7 @@ class AgentJobTemplate(Base):
     agent_definition_id = Column(
         UUID(as_uuid=True),
         ForeignKey("agent_definitions.id", ondelete="SET NULL"),
-        nullable=True
+        nullable=True,
     )
 
     # Resource defaults
@@ -408,14 +498,14 @@ class AgentJobTemplate(Base):
 
     # Ownership (null for system templates)
     owner_user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
     )
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     def __repr__(self):
         return f"<AgentJobTemplate(name='{self.name}', type={self.job_type})>"
@@ -465,16 +555,16 @@ class AgentJobChainDefinition(Base):
 
     # Ownership
     owner_user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=True
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=True
     )
     is_system = Column(Boolean, default=False)
     is_active = Column(Boolean, default=True)
 
     # Timestamps
     created_at = Column(DateTime(timezone=True), default=datetime.utcnow)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow)
+    updated_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow
+    )
 
     def __repr__(self):
         return f"<AgentJobChainDefinition(name='{self.name}')>"
@@ -493,7 +583,7 @@ class AgentJobChainDefinition(Base):
         self,
         step_index: int,
         variables: Dict[str, str],
-        parent_results: Optional[Dict[str, Any]] = None
+        parent_results: Optional[Dict[str, Any]] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Create job configuration for a specific step.
@@ -537,7 +627,6 @@ class AgentJobChainDefinition(Base):
 
         # Add chain configuration for next step trigger
         if step_index < len(self.chain_steps) - 1:
-            next_step = self.chain_steps[step_index + 1]
             job_config["chain_config"] = {
                 "trigger_condition": step.get("trigger_condition", "on_complete"),
                 "inherit_results": config.get("inherit_results", True),
@@ -547,8 +636,6 @@ class AgentJobChainDefinition(Base):
 
         # Pass parent results if configured
         if parent_results and config.get("inherit_results", True):
-            job_config["inherited_data"] = {
-                "parent_results": parent_results
-            }
+            job_config["inherited_data"] = {"parent_results": parent_results}
 
         return job_config

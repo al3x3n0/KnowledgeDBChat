@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 
 def _normalize_string(value: Any) -> Optional[str]:
@@ -48,8 +48,7 @@ class ScientificSandboxProfileResponse(BaseModel):
     created_at: Optional[datetime] = None
     updated_at: Optional[datetime] = None
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class ScientificSandboxProfileCreate(BaseModel):
@@ -69,7 +68,15 @@ class ScientificSandboxProfileCreate(BaseModel):
     enabled: bool = True
     is_default: bool = False
 
-    @field_validator("id", "name", "description", "track_type", "backend", "docker_image", mode="before")
+    @field_validator(
+        "id",
+        "name",
+        "description",
+        "track_type",
+        "backend",
+        "docker_image",
+        mode="before",
+    )
     @classmethod
     def _normalize_text(cls, value: Any) -> Optional[str]:
         return _normalize_string(value)
@@ -102,7 +109,9 @@ class ScientificSandboxProfileUpdate(BaseModel):
     enabled: Optional[bool] = None
     is_default: Optional[bool] = None
 
-    @field_validator("name", "description", "track_type", "backend", "docker_image", mode="before")
+    @field_validator(
+        "name", "description", "track_type", "backend", "docker_image", mode="before"
+    )
     @classmethod
     def _normalize_optional_text(cls, value: Any) -> Optional[str]:
         return _normalize_string(value)

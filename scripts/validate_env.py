@@ -13,8 +13,35 @@ OPTIONAL_VARS = [
     "GITLAB_TOKEN",
     "CONFLUENCE_URL",
     "CONFLUENCE_USER",
-    "CONFLUENCE_API_TOKEN"
+    "CONFLUENCE_API_TOKEN",
 ]
+
+
+def load_env_file(env_file: str) -> None:
+    """Load a dotenv file, even when python-dotenv is unavailable."""
+    try:
+        from dotenv import load_dotenv  # type: ignore
+    except ImportError:
+        with open(env_file, encoding="utf-8") as handle:
+            for raw_line in handle:
+                line = raw_line.strip()
+                if not line or line.startswith("#"):
+                    continue
+                if line.startswith("export "):
+                    line = line[7:].lstrip()
+                key, separator, value = line.partition("=")
+                if not separator or not key.strip():
+                    continue
+                value = value.strip()
+                if (
+                    len(value) >= 2
+                    and value[0] == value[-1]
+                    and value[0] in {'"', "'"}
+                ):
+                    value = value[1:-1]
+                os.environ.setdefault(key.strip(), value)
+    else:
+        load_dotenv(env_file)
 
 
 def validate_url(url_string: str) -> bool:
@@ -121,12 +148,7 @@ def main():
     env_file = os.path.join("backend", ".env")
     if os.path.exists(env_file):
         print(f"📄 Loading environment from {env_file}")
-        try:
-            from dotenv import load_dotenv  # type: ignore
-        except ImportError:
-            print("⚠️  python-dotenv is not installed; skipping .env loading (using system environment).")
-        else:
-            load_dotenv(env_file)
+        load_env_file(env_file)
     else:
         print(f"⚠️  {env_file} not found. Using system environment variables.")
     print()

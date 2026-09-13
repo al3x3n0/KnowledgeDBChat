@@ -9,7 +9,6 @@ from uuid import UUID
 
 from pydantic import BaseModel, Field
 
-
 ItemType = Literal["dataset_preset", "eval_template"]
 
 
@@ -29,5 +28,6 @@ class AIHubFeedbackStatsResponse(BaseModel):
 class AIHubFeedbackBackfillResponse(BaseModel):
     ok: bool
     profile_id: UUID
-    updated: int = Field(0, description="Number of rows updated (customer_profile_id backfilled)")
-
+    updated: int = Field(
+        0, description="Number of rows updated (customer_profile_id backfilled)"
+    )

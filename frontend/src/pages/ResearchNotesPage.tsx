@@ -1524,7 +1524,7 @@ const ResearchNotesPage: React.FC = () => {
               {filteredNotes.map((note: any) => (
                 <div
                   key={note.id}
-                  className={`bg-white border rounded-lg p-4 hover:shadow-md transition-shadow cursor-pointer ${
+                  className={`bg-white border rounded-lg p-4 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400 active:translate-y-0 active:shadow-level-1 cursor-pointer ${
                     selectedNote?.id === note.id ? 'border-primary-500 ring-2 ring-primary-200' : 'border-gray-200'
                   }`}
                   onClick={() => {
@@ -2612,6 +2612,8 @@ const ResearchNotesPage: React.FC = () => {
                   {latestExperimentPlan ? (
                     <div
                       ref={latestPlanRef}
+                      role="region"
+                      aria-label={`Experiment plan ${latestExperimentPlan.title}`}
                       className={`space-y-3 rounded border px-3 py-2 transition-colors ${isDeepLinkedLatestPlan ? 'border-primary-400 bg-primary-50/40' : 'border-transparent'}`}
                     >
                       <div className="text-xs text-gray-600">
@@ -2991,6 +2993,8 @@ const ResearchNotesPage: React.FC = () => {
                                 <div
                                   key={r.id}
                                   ref={registerExperimentRunRef(String(r.id))}
+                                  role="article"
+                                  aria-label={`Experiment run ${r.name}`}
                                   className={`border rounded bg-white p-2 transition-colors ${deepLinkedRunId === String(r.id) ? 'border-primary-400 bg-primary-50/40' : 'border-gray-200'}`}
                                 >
                                   <div className="flex items-center justify-between gap-2">
@@ -3072,7 +3076,7 @@ const ResearchNotesPage: React.FC = () => {
                                             </span>
                                           ) : null}
                                           {finalPhase ? (
-                                            <span className="px-2 py-0.5 rounded-full bg-slate-100 text-slate-700 border border-slate-200">
+                                            <span className="px-2 py-0.5 rounded-full bg-gray-200 text-gray-700 border border-gray-200">
                                               Final {finalPhase}
                                             </span>
                                           ) : null}
@@ -3224,7 +3228,7 @@ const ResearchNotesPage: React.FC = () => {
                                         </details>
                                       ) : null}
                                       {isScientificValidation && operatorActions.length > 0 ? (
-                                        <div className="mt-2 text-[11px] text-slate-700 border border-slate-200 rounded bg-slate-50 p-2">
+                                        <div className="mt-2 text-[11px] text-gray-700 border border-gray-200 rounded bg-gray-100 p-2">
                                           <div className="font-medium mb-1">Run control history</div>
                                           <ul className="space-y-1">
                                             {operatorActions.slice(-3).reverse().map((actionRow, idx) => (
@@ -3523,7 +3527,7 @@ const ResearchNotesPage: React.FC = () => {
                                   {isScientificValidation ? (
                                     <div className="mt-2">
                                       <input
-                                        className="w-full border border-slate-200 rounded px-2 py-1 text-[11px]"
+                                        className="w-full border border-gray-200 rounded px-2 py-1 text-[11px]"
                                         placeholder="Operator note for pause/cancel/retry/requeue"
                                         value={scientificActionNote}
                                         onChange={(e) =>

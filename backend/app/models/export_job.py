@@ -3,10 +3,9 @@ Export job models for DOCX/PDF document generation.
 """
 
 from datetime import datetime
-from typing import Optional
 from uuid import uuid4
 
-from sqlalchemy import Column, String, Integer, Text, DateTime, ForeignKey, JSON
+from sqlalchemy import JSON, Column, DateTime, ForeignKey, Integer, String, Text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import relationship
 
@@ -20,32 +19,45 @@ class ExportJob(Base):
     Tracks the status and progress of exporting content to DOCX or PDF format.
     Content can come from chat sessions, document summaries, or custom LLM-generated text.
     """
+
     __tablename__ = "export_jobs"
 
     id = Column(UUID(as_uuid=True), primary_key=True, default=uuid4)
-    user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False)
+    user_id = Column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
 
     # Export type: what kind of content is being exported
-    export_type = Column(String(50), nullable=False)  # 'chat', 'document_summary', 'custom'
+    export_type = Column(
+        String(50), nullable=False
+    )  # 'chat', 'document_summary', 'custom'
 
     # Output format
     output_format = Column(String(20), nullable=False)  # 'docx', 'pdf'
 
     # Source reference (what content to export)
-    source_type = Column(String(50), nullable=False)  # 'chat_session', 'document', 'llm_content'
-    source_id = Column(UUID(as_uuid=True), nullable=True)  # ID of chat session or document
+    source_type = Column(
+        String(50), nullable=False
+    )  # 'chat_session', 'document', 'llm_content'
+    source_id = Column(
+        UUID(as_uuid=True), nullable=True
+    )  # ID of chat session or document
 
     # For custom/LLM content export - the actual content
     content = Column(Text, nullable=True)
 
     # Content format hint
-    content_format = Column(String(20), default="markdown")  # 'markdown', 'html', 'plain'
+    content_format = Column(
+        String(20), default="markdown"
+    )  # 'markdown', 'html', 'plain'
 
     # Document metadata
     title = Column(String(255), nullable=False)
 
     # Style configuration
-    style = Column(String(50), default="professional")  # 'professional', 'casual', 'technical'
+    style = Column(
+        String(50), default="professional"
+    )  # 'professional', 'casual', 'technical'
     custom_theme = Column(JSON, nullable=True)
     # Example custom_theme:
     # {
@@ -59,7 +71,9 @@ class ExportJob(Base):
     # }
 
     # Job status
-    status = Column(String(50), default="pending")  # pending, processing, completed, failed
+    status = Column(
+        String(50), default="pending"
+    )  # pending, processing, completed, failed
     progress = Column(Integer, default=0)  # 0-100
     current_stage = Column(String(100), nullable=True)  # Current processing stage
 

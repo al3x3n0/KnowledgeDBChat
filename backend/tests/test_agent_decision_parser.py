@@ -1,21 +1,21 @@
 """Tests for agent_decision_parser module."""
 
 import json
-import pytest
 from unittest.mock import AsyncMock, MagicMock
+
+import pytest
 
 from app.services.agent_decision_parser import (
     AgentActionDecision,
     AgentDecision,
     AgentDecisionParser,
     extract_first_json_object,
-    DECISION_JSON_SCHEMA,
 )
-
 
 # ---------------------------------------------------------------------------
 # extract_first_json_object
 # ---------------------------------------------------------------------------
+
 
 class TestExtractFirstJsonObject:
     def test_direct_json(self):
@@ -46,10 +46,12 @@ class TestExtractFirstJsonObject:
         assert extract_first_json_object("There is no JSON here at all.") is None
 
     def test_array_not_object(self):
-        assert extract_first_json_object('[1, 2, 3]') is None
+        assert extract_first_json_object("[1, 2, 3]") is None
 
     def test_nested_braces(self):
-        text = '{"action": {"tool": "search", "params": {"query": "test {with} braces"}}}'
+        text = (
+            '{"action": {"tool": "search", "params": {"query": "test {with} braces"}}}'
+        )
         result = extract_first_json_object(text)
         assert result is not None
         assert result["action"]["tool"] == "search"
@@ -59,47 +61,62 @@ class TestExtractFirstJsonObject:
 # AgentDecision model
 # ---------------------------------------------------------------------------
 
+
 class TestAgentDecisionModel:
     def test_valid_decision(self):
-        d = AgentDecision.model_validate({
-            "goal_achieved": False,
-            "should_stop": False,
-            "reasoning": "Continuing research",
-            "action": {"tool": "search_documents", "params": {"query": "test"}, "purpose": "find docs"},
-        })
+        d = AgentDecision.model_validate(
+            {
+                "goal_achieved": False,
+                "should_stop": False,
+                "reasoning": "Continuing research",
+                "action": {
+                    "tool": "search_documents",
+                    "params": {"query": "test"},
+                    "purpose": "find docs",
+                },
+            }
+        )
         assert d.goal_achieved is False
         assert d.action is not None
         assert d.action.tool == "search_documents"
 
     def test_string_bool_coercion(self):
-        d = AgentDecision.model_validate({
-            "goal_achieved": "true",
-            "should_stop": "no",
-        })
+        d = AgentDecision.model_validate(
+            {
+                "goal_achieved": "true",
+                "should_stop": "no",
+            }
+        )
         assert d.goal_achieved is True
         assert d.should_stop is False
 
     def test_numeric_bool_coercion(self):
-        d = AgentDecision.model_validate({
-            "goal_achieved": 1,
-            "should_stop": 0,
-        })
+        d = AgentDecision.model_validate(
+            {
+                "goal_achieved": 1,
+                "should_stop": 0,
+            }
+        )
         assert d.goal_achieved is True
         assert d.should_stop is False
 
     def test_action_from_string(self):
-        d = AgentDecision.model_validate({
-            "action": "search_documents",
-        })
+        d = AgentDecision.model_validate(
+            {
+                "action": "search_documents",
+            }
+        )
         assert d.action is not None
         assert d.action.tool == "search_documents"
         assert d.action.params == {}
 
     def test_null_action(self):
-        d = AgentDecision.model_validate({
-            "goal_achieved": True,
-            "action": None,
-        })
+        d = AgentDecision.model_validate(
+            {
+                "goal_achieved": True,
+                "action": None,
+            }
+        )
         assert d.action is None
 
     def test_reasoning_truncation(self):
@@ -114,15 +131,18 @@ class TestAgentDecisionModel:
         assert d.action is None
 
     def test_action_params_coerced(self):
-        d = AgentDecision.model_validate({
-            "action": {"tool": "test", "params": "not_a_dict"},
-        })
+        d = AgentDecision.model_validate(
+            {
+                "action": {"tool": "test", "params": "not_a_dict"},
+            }
+        )
         assert d.action.params == {}
 
 
 # ---------------------------------------------------------------------------
 # AgentDecisionParser
 # ---------------------------------------------------------------------------
+
 
 class TestAgentDecisionParser:
     def setup_method(self):
@@ -131,20 +151,24 @@ class TestAgentDecisionParser:
         self.tools = ["search_documents", "read_document_content", "summarize_document"]
 
     def test_parse_valid_json(self):
-        text = json.dumps({
-            "goal_achieved": False,
-            "reasoning": "searching",
-            "action": {"tool": "search_documents", "params": {"query": "test"}},
-        })
+        text = json.dumps(
+            {
+                "goal_achieved": False,
+                "reasoning": "searching",
+                "action": {"tool": "search_documents", "params": {"query": "test"}},
+            }
+        )
         decision, err = self.parser.parse(text, self.tools)
         assert decision is not None
         assert err == ""
         assert decision.action.tool == "search_documents"
 
     def test_parse_validates_tool(self):
-        text = json.dumps({
-            "action": {"tool": "nonexistent_tool", "params": {}},
-        })
+        text = json.dumps(
+            {
+                "action": {"tool": "nonexistent_tool", "params": {}},
+            }
+        )
         decision, err = self.parser.parse(text, self.tools)
         assert decision is not None
         assert decision.action is None  # cleared
@@ -166,15 +190,15 @@ class TestAgentDecisionParser:
         assert len(schema) > 50
 
     def test_validate_action_tool_clears_unavailable(self):
-        decision = AgentDecision(
-            action=AgentActionDecision(tool="bad_tool", params={})
-        )
+        decision = AgentDecision(action=AgentActionDecision(tool="bad_tool", params={}))
         result = AgentDecisionParser.validate_action_tool(decision, self.tools)
         assert result.action is None
 
     def test_validate_action_tool_keeps_available(self):
         decision = AgentDecision(
-            action=AgentActionDecision(tool="search_documents", params={"query": "test"})
+            action=AgentActionDecision(
+                tool="search_documents", params={"query": "test"}
+            )
         )
         result = AgentDecisionParser.validate_action_tool(decision, self.tools)
         assert result.action is not None
@@ -185,6 +209,7 @@ class TestAgentDecisionParser:
 # Async tests
 # ---------------------------------------------------------------------------
 
+
 @pytest.mark.asyncio
 class TestAgentDecisionParserAsync:
     async def test_parse_with_retry_success_first_attempt(self):
@@ -192,7 +217,12 @@ class TestAgentDecisionParserAsync:
         parser = AgentDecisionParser(llm)
         tools = ["search_documents"]
 
-        text = json.dumps({"goal_achieved": False, "action": {"tool": "search_documents", "params": {"query": "x"}}})
+        text = json.dumps(
+            {
+                "goal_achieved": False,
+                "action": {"tool": "search_documents", "params": {"query": "x"}},
+            }
+        )
         result = await parser.parse_with_retry(
             raw_response=text,
             available_tools=tools,

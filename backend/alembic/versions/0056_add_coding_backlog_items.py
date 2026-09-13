@@ -13,7 +13,7 @@ from sqlalchemy.dialects import postgresql
 
 
 revision = "0056_add_coding_backlog_items"
-down_revision = "0055_add_agent_jobs_relaunch_indexes"
+down_revision = "0055a_create_tables_missing_from_history"
 branch_labels = None
 depends_on = None
 

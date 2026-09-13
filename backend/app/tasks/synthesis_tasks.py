@@ -6,16 +6,17 @@ Handles async execution of synthesis jobs.
 
 import asyncio
 import json
-from typing import Dict, Any, Optional
+from typing import Any, Dict, Optional
 from uuid import UUID
-from loguru import logger
+
 import redis
+from loguru import logger
 
 from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import create_celery_session
-from app.services.synthesis_service import synthesis_service
 from app.services.llm_service import UserLLMSettings
+from app.services.synthesis_service import synthesis_service
 
 
 async def _load_user_settings(db, user_id: str) -> Optional[UserLLMSettings]:
@@ -24,7 +25,9 @@ async def _load_user_settings(db, user_id: str) -> Optional[UserLLMSettings]:
         return None
     try:
         from sqlalchemy import select
+
         from app.models.memory import UserPreferences
+
         result = await db.execute(
             select(UserPreferences).where(UserPreferences.user_id == UUID(user_id))
         )
@@ -51,12 +54,14 @@ def _publish_progress(job_id: str, progress: int, stage: str):
         client = _get_redis_client()
         if client:
             channel = f"synthesis_progress:{job_id}"
-            msg = json.dumps({
-                "type": "progress",
-                "job_id": job_id,
-                "progress": progress,
-                "stage": stage,
-            })
+            msg = json.dumps(
+                {
+                    "type": "progress",
+                    "job_id": job_id,
+                    "progress": progress,
+                    "stage": stage,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish synthesis progress: {e}")
@@ -68,14 +73,18 @@ def _publish_complete(job_id: str, result: dict):
         client = _get_redis_client()
         if client:
             channel = f"synthesis_progress:{job_id}"
-            msg = json.dumps({
-                "type": "complete",
-                "job_id": job_id,
-                "result": {
-                    "word_count": result.get("metadata", {}).get("word_count", 0),
-                    "documents_analyzed": result.get("metadata", {}).get("documents_analyzed", 0),
-                },
-            })
+            msg = json.dumps(
+                {
+                    "type": "complete",
+                    "job_id": job_id,
+                    "result": {
+                        "word_count": result.get("metadata", {}).get("word_count", 0),
+                        "documents_analyzed": result.get("metadata", {}).get(
+                            "documents_analyzed", 0
+                        ),
+                    },
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish synthesis complete: {e}")
@@ -87,11 +96,13 @@ def _publish_error(job_id: str, error: str):
         client = _get_redis_client()
         if client:
             channel = f"synthesis_progress:{job_id}"
-            msg = json.dumps({
-                "type": "error",
-                "job_id": job_id,
-                "error": error,
-            })
+            msg = json.dumps(
+                {
+                    "type": "error",
+                    "job_id": job_id,
+                    "error": error,
+                }
+            )
             client.publish(channel, msg)
     except Exception as e:
         logger.debug(f"Failed to publish synthesis error: {e}")
@@ -111,6 +122,7 @@ async def _async_execute_synthesis(task, job_id: str, user_id: str) -> Dict[str,
 
             # Load job
             from sqlalchemy import select
+
             from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus
 
             result = await db.execute(
@@ -161,8 +173,9 @@ async def _async_execute_synthesis(task, job_id: str, user_id: str) -> Dict[str,
 
             # Update job status
             try:
-                from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus
                 from datetime import datetime
+
+                from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus
 
                 result = await db.execute(
                     select(SynthesisJob).where(SynthesisJob.id == UUID(job_id))
@@ -190,7 +203,9 @@ async def _async_cleanup_old_jobs(days: int) -> Dict[str, Any]:
     async with create_celery_session()() as db:
         try:
             from datetime import datetime, timedelta
-            from sqlalchemy import select, delete
+
+            from sqlalchemy import select
+
             from app.models.synthesis_job import SynthesisJob, SynthesisJobStatus
             from app.services.storage_service import storage_service
 
@@ -200,11 +215,13 @@ async def _async_cleanup_old_jobs(days: int) -> Dict[str, Any]:
             result = await db.execute(
                 select(SynthesisJob).where(
                     SynthesisJob.created_at < cutoff,
-                    SynthesisJob.status.in_([
-                        SynthesisJobStatus.COMPLETED.value,
-                        SynthesisJobStatus.FAILED.value,
-                        SynthesisJobStatus.CANCELLED.value,
-                    ])
+                    SynthesisJob.status.in_(
+                        [
+                            SynthesisJobStatus.COMPLETED.value,
+                            SynthesisJobStatus.FAILED.value,
+                            SynthesisJobStatus.CANCELLED.value,
+                        ]
+                    ),
                 )
             )
             old_jobs = result.scalars().all()
@@ -220,7 +237,9 @@ async def _async_cleanup_old_jobs(days: int) -> Dict[str, Any]:
                             await storage_service.delete_file(job.file_path)
                             files_deleted += 1
                         except Exception as e:
-                            logger.warning(f"Failed to delete file {job.file_path}: {e}")
+                            logger.warning(
+                                f"Failed to delete file {job.file_path}: {e}"
+                            )
 
                     await db.delete(job)
                     deleted_count += 1
@@ -229,7 +248,9 @@ async def _async_cleanup_old_jobs(days: int) -> Dict[str, Any]:
 
             await db.commit()
 
-            logger.info(f"Cleaned up {deleted_count} old synthesis jobs, {files_deleted} files")
+            logger.info(
+                f"Cleaned up {deleted_count} old synthesis jobs, {files_deleted} files"
+            )
             return {
                 "success": True,
                 "jobs_deleted": deleted_count,

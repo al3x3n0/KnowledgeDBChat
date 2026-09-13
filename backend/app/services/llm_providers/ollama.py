@@ -15,7 +15,13 @@ from loguru import logger
 from app.core.config import settings
 from app.utils.exceptions import LLMServiceError
 
-from .base import BaseLLMProvider, LLMCompletion, LLMToolCall, to_openai_tools, try_parse_json_object
+from .base import (
+    BaseLLMProvider,
+    LLMCompletion,
+    LLMToolCall,
+    to_openai_tools,
+    try_parse_json_object,
+)
 
 
 class OllamaProvider(BaseLLMProvider):
@@ -46,7 +52,9 @@ class OllamaProvider(BaseLLMProvider):
             "messages": self._convert_messages(messages),
             "stream": False,
             "options": {
-                "temperature": temperature if temperature is not None else settings.TEMPERATURE,
+                "temperature": temperature
+                if temperature is not None
+                else settings.TEMPERATURE,
                 "num_predict": max_tokens or settings.MAX_RESPONSE_LENGTH,
                 "top_p": settings.TOP_P,
             },
@@ -68,7 +76,9 @@ class OllamaProvider(BaseLLMProvider):
             response.raise_for_status()
             data = response.json()
         except httpx.HTTPStatusError as e:
-            logger.error(f"Ollama chat API error: {e.response.status_code} - {e.response.text}")
+            logger.error(
+                f"Ollama chat API error: {e.response.status_code} - {e.response.text}"
+            )
             raise LLMServiceError(f"Ollama API error: {e.response.status_code}")
         except httpx.TimeoutException:
             logger.error("Ollama chat request timed out")
@@ -80,7 +90,9 @@ class OllamaProvider(BaseLLMProvider):
             if owns_client and client is not None:
                 await client.aclose()
 
-        return self._parse_chat_response(data, resolved_model, expect_structured=bool(response_schema))
+        return self._parse_chat_response(
+            data, resolved_model, expect_structured=bool(response_schema)
+        )
 
     @staticmethod
     def _convert_messages(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:

@@ -1,9 +1,5 @@
 """Tests for conditional execution tools (evaluate_condition, count_findings, check_goal_status)."""
 
-import uuid
-
-import pytest
-
 
 class TestEvaluateConditionFindingsCount:
     """Tests for evaluate_condition with findings_count."""
@@ -42,28 +38,34 @@ class TestEvaluateConditionFindingsHasCategory:
     """Tests for evaluate_condition with findings_has_category."""
 
     def test_category_found(self):
-        state = {"findings": [
-            {"category": "key_insight", "title": "A"},
-            {"category": "methodology", "title": "B"},
-            {"category": "key_insight", "title": "C"},
-        ]}
+        state = {
+            "findings": [
+                {"category": "key_insight", "title": "A"},
+                {"category": "methodology", "title": "B"},
+                {"category": "key_insight", "title": "C"},
+            ]
+        }
         cat = "key_insight"
         matches = [f for f in state.get("findings", []) if f.get("category") == cat]
         assert len(matches) == 2
 
     def test_category_not_found(self):
-        state = {"findings": [
-            {"category": "methodology", "title": "A"},
-        ]}
+        state = {
+            "findings": [
+                {"category": "methodology", "title": "A"},
+            ]
+        }
         cat = "key_insight"
         matches = [f for f in state.get("findings", []) if f.get("category") == cat]
         assert len(matches) == 0
 
     def test_threshold_on_category(self):
-        state = {"findings": [
-            {"category": "result", "title": "A"},
-            {"category": "result", "title": "B"},
-        ]}
+        state = {
+            "findings": [
+                {"category": "result", "title": "A"},
+                {"category": "result", "title": "B"},
+            ]
+        }
         cat = "result"
         threshold = 3
         matches = [f for f in state.get("findings", []) if f.get("category") == cat]
@@ -111,13 +113,25 @@ class TestEvaluateConditionValidation:
     """Tests for evaluate_condition validation."""
 
     def test_unknown_condition_rejected(self):
-        valid_conditions = {"findings_count", "findings_has_category", "documents_count",
-                           "search_has_results", "actions_count", "progress_above"}
+        valid_conditions = {
+            "findings_count",
+            "findings_has_category",
+            "documents_count",
+            "search_has_results",
+            "actions_count",
+            "progress_above",
+        }
         assert "nonexistent" not in valid_conditions
 
     def test_all_conditions_recognized(self):
-        valid = {"findings_count", "findings_has_category", "documents_count",
-                 "search_has_results", "actions_count", "progress_above"}
+        valid = {
+            "findings_count",
+            "findings_has_category",
+            "documents_count",
+            "search_has_results",
+            "actions_count",
+            "progress_above",
+        }
         assert len(valid) == 6
 
     def test_default_threshold_is_1(self):
@@ -166,7 +180,9 @@ class TestCountFindings:
             {"category": "result", "confidence": 0.8},
         ]
         min_conf = 0.5
-        filtered = [f for f in findings if float(f.get("confidence", 0.8) or 0.8) >= min_conf]
+        filtered = [
+            f for f in findings if float(f.get("confidence", 0.8) or 0.8) >= min_conf
+        ]
         assert len(filtered) == 2
 
     def test_group_by_category(self):
@@ -239,7 +255,9 @@ class TestCheckGoalStatus:
             "plan_step_index": 1,
         }
         exec_plan = state.get("execution_plan")
-        steps_total = len(exec_plan.get("steps", [])) if isinstance(exec_plan, dict) else 0
+        steps_total = (
+            len(exec_plan.get("steps", [])) if isinstance(exec_plan, dict) else 0
+        )
         assert steps_total == 3
         assert state.get("plan_step_index", 0) == 1
 
@@ -247,7 +265,9 @@ class TestCheckGoalStatus:
         state = {}
         exec_plan = state.get("execution_plan")
         has_plan = bool(exec_plan)
-        steps_total = len(exec_plan.get("steps", [])) if isinstance(exec_plan, dict) else 0
+        steps_total = (
+            len(exec_plan.get("steps", [])) if isinstance(exec_plan, dict) else 0
+        )
         assert has_plan is False
         assert steps_total == 0
 
@@ -266,8 +286,14 @@ class TestCheckGoalStatus:
             "plan_steps_completed": 2,
             "plan_steps_total": 5,
         }
-        assert result["iterations_remaining"] == result["max_iterations"] - result["iteration"]
-        assert result["tool_calls_remaining"] == result["max_tool_calls"] - result["tool_calls_used"]
+        assert (
+            result["iterations_remaining"]
+            == result["max_iterations"] - result["iteration"]
+        )
+        assert (
+            result["tool_calls_remaining"]
+            == result["max_tool_calls"] - result["tool_calls_used"]
+        )
         assert len(result) == 12
 
 
@@ -276,6 +302,7 @@ class TestConditionalToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "evaluate_condition" in names
         assert "count_findings" in names
@@ -283,6 +310,7 @@ class TestConditionalToolSchemas:
 
     def test_evaluate_condition_requires_condition(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("evaluate_condition")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -290,6 +318,7 @@ class TestConditionalToolSchemas:
 
     def test_evaluate_condition_has_enum(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("evaluate_condition")
         condition_prop = tool["parameters"]["properties"]["condition"]
         assert "enum" in condition_prop
@@ -298,6 +327,7 @@ class TestConditionalToolSchemas:
 
     def test_count_findings_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("count_findings")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -305,6 +335,7 @@ class TestConditionalToolSchemas:
 
     def test_check_goal_status_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("check_goal_status")
         assert tool is not None
         required = tool["parameters"].get("required", [])
@@ -316,24 +347,28 @@ class TestConditionalToolRegistry:
 
     def test_evaluate_condition_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("evaluate_condition")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_count_findings_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("count_findings")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_check_goal_status_is_read(self):
         from app.services.tool_registry import get_tool_metadata
+
         meta = get_tool_metadata("check_goal_status")
         assert meta is not None
         assert meta.effects == "read"
 
     def test_all_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["evaluate_condition", "count_findings", "check_goal_status"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
@@ -341,6 +376,7 @@ class TestConditionalToolRegistry:
 
     def test_none_is_network_tool(self):
         from app.services.tool_registry import get_tool_metadata
+
         for tool_name in ["evaluate_condition", "count_findings", "check_goal_status"]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None

@@ -2,12 +2,13 @@ import asyncio
 from datetime import datetime, timedelta
 from uuid import UUID
 
-
 from app.models.research_note import ResearchNote
 from app.models.synthesis_job import SynthesisJob
 
 
-def test_get_research_note_marks_completed_pending_reevaluation_as_review_ready(client, db_session, test_user, auth_headers):
+def test_get_research_note_marks_completed_pending_reevaluation_as_review_ready(
+    client, db_session, test_user, auth_headers
+):
     completed_at = datetime.utcnow()
     note = ResearchNote(
         user_id=test_user.id,
@@ -31,7 +32,9 @@ def test_get_research_note_marks_completed_pending_reevaluation_as_review_ready(
                 }
             ],
             "pending_reevaluation_job_id": "11111111-1111-1111-1111-111111111111",
-            "pending_reevaluation_created_at": (completed_at - timedelta(minutes=5)).isoformat(),
+            "pending_reevaluation_created_at": (
+                completed_at - timedelta(minutes=5)
+            ).isoformat(),
             "pending_reevaluation_status": "pending",
         },
     )
@@ -66,10 +69,14 @@ def test_get_research_note_marks_completed_pending_reevaluation_as_review_ready(
     assert response.status_code == 200
     payload = response.json()
     assert payload["structured_payload"]["pending_reevaluation_status"] == "completed"
-    assert payload["structured_payload"]["pending_reevaluation_completed_at"] is not None
+    assert (
+        payload["structured_payload"]["pending_reevaluation_completed_at"] is not None
+    )
 
 
-def test_get_research_note_marks_failed_pending_reevaluation_with_error(client, db_session, test_user, auth_headers):
+def test_get_research_note_marks_failed_pending_reevaluation_with_error(
+    client, db_session, test_user, auth_headers
+):
     note = ResearchNote(
         user_id=test_user.id,
         title="Failed Draft Note",
@@ -128,10 +135,14 @@ def test_get_research_note_marks_failed_pending_reevaluation_with_error(client, 
     assert response.status_code == 200
     payload = response.json()
     assert payload["structured_payload"]["pending_reevaluation_status"] == "failed"
-    assert "timeout" in payload["structured_payload"]["pending_reevaluation_error"].lower()
+    assert (
+        "timeout" in payload["structured_payload"]["pending_reevaluation_error"].lower()
+    )
 
 
-def test_get_research_note_marks_completed_pending_reevaluation_as_stale_when_newer_evidence_exists(client, db_session, test_user, auth_headers):
+def test_get_research_note_marks_completed_pending_reevaluation_as_stale_when_newer_evidence_exists(
+    client, db_session, test_user, auth_headers
+):
     completed_at = datetime.utcnow() - timedelta(minutes=10)
     last_appended_at = datetime.utcnow().isoformat()
     note = ResearchNote(
@@ -157,7 +168,9 @@ def test_get_research_note_marks_completed_pending_reevaluation_as_stale_when_ne
             ],
             "last_appended_at": last_appended_at,
             "pending_reevaluation_job_id": "33333333-3333-3333-3333-333333333333",
-            "pending_reevaluation_created_at": (completed_at - timedelta(minutes=5)).isoformat(),
+            "pending_reevaluation_created_at": (
+                completed_at - timedelta(minutes=5)
+            ).isoformat(),
             "pending_reevaluation_status": "pending",
         },
     )

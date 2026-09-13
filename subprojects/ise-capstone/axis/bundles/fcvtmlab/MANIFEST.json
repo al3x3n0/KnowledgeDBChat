@@ -1,0 +1,35 @@
+{
+  "bundle": "fcvtmlab",
+  "candidate": "sxtl + scvtf + fmla -> FCVTMLAB (convert a signed byte to float and multiply-accumulate)",
+  "source": "fcvtmlab.axisl",
+  "provenance": {
+    "corpus": "KevinAI/pce/software INT8 multi-head attention (xnn_transformer_mha_i8 + softmax)",
+    "dynamic_occurrences": 786432,
+    "bounded_saving_cycles_each": 13.0,
+    "cost_model": "llvm-mca, neoverse-n1",
+    "found_by": "isa_candidate_mining.find_fusion_candidates over a callgrind profile"
+  },
+  "tools": {
+    "axis": "7acc8be (working tree +2 modified)",
+    "z3": "4.16.0",
+    "smt_logic": "QF_BVFP"
+  },
+  "modelled": "one lane. Neither fcvt_s2f nor fma is in AXIS's lane-parallel float set (fadd/fsub/fmul/fdiv/fsqrt), so the vector form is not expressible and is not claimed to be proven.",
+  "proof_structure": "The obligation is stated at the conversion, not the whole instruction: all forms end in the same fma over the same fm and fd, so equal operands give equal results. The undecomposed form with three symbolic operands under an IEEE-754 fma did not terminate in a usable time.",
+  "source_sha256": "89f27d70c731a90c10b6d783b0ae80465a5ee8a0bb7fef6dbe24afcc354b5c59",
+  "semantics_sha256": "85d65410b1c6088eb42b8d9ac33a74e2234b70262eb8171f9270faa0f99056ea",
+  "obligations": [
+    {
+      "file": "proof/operand_equivalence.smt2",
+      "expect": "unsat",
+      "claim": "the fused conversion equals the two-step one for every byte, which settles the instruction by substitution",
+      "sha256": "8fb53d4a54fef92c81631a126339513a75457278b5b7da168b3f7d1c092b52e5"
+    },
+    {
+      "file": "proof/unsigned_control.smt2",
+      "expect": "sat",
+      "claim": "reading the byte as unsigned is caught",
+      "sha256": "d4c454c8395ec31a856c1a05e59ab290b56541e26761e188723c5e1eeb45b548"
+    }
+  ]
+}

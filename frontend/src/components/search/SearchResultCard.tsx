@@ -93,7 +93,9 @@ const SearchResultCard: React.FC<SearchResultCardProps> = ({ result, query, onVi
   const relevancePercent = Math.round(result.relevance_score * 100);
 
   return (
-    <div className="bg-white border border-gray-200 rounded-lg p-4 hover:shadow-md transition-shadow">
+    <div className="bg-white border border-gray-200 rounded-lg p-4
+      transition-all duration-fast ease-ui
+      hover:shadow-level-2 hover:border-gray-400">
       {/* Header */}
       <div className="flex items-start justify-between gap-4">
         <div className="flex items-start gap-3 min-w-0">

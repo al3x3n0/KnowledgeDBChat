@@ -72,8 +72,12 @@ Key environment variables (see `docker-compose.yml` for full list):
 - `PRELOAD_WHISPER_MODEL`: Preload models on startup (true/false)
 
 ### LLM
-- `DEFAULT_MODEL`: Ollama model name
-- `OLLAMA_BASE_URL`: Ollama service URL
+- `LLM_PROVIDER`: `deepseek` (default), `openai`, `anthropic`, `qwen`, `kimi`, `ollama`
+- `DEFAULT_MODEL`: a model the chosen provider serves — it reaches the request
+  as `model or <PROVIDER>_MODEL`, so an Ollama model name under
+  `LLM_PROVIDER=deepseek` is sent to DeepSeek and rejected
+- `OLLAMA_BASE_URL`: only for `LLM_PROVIDER=ollama`, and only an instance you
+  run yourself; the stack no longer bundles Ollama
 
 ### Storage
 - `MINIO_ENDPOINT`: MinIO endpoint

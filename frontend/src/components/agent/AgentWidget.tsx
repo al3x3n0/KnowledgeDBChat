@@ -41,12 +41,11 @@ import {
   Brain,
   Users,
   Workflow,
-  Info,
 } from 'lucide-react';
 import MermaidDiagram from '../common/MermaidDiagram';
 import ReactMarkdown from 'react-markdown';
 import toast from 'react-hot-toast';
-import { useAgentWebSocket, AgentMessage, AgentToolCall, StreamingState, ConnectionStatus, TemplateUploadContext, TemplateJobProgress, AgentInfo, AgentRoutingInfo } from './useAgentWebSocket';
+import { useAgentWebSocket, AgentMessage, AgentToolCall, StreamingState, ConnectionStatus } from './useAgentWebSocket';
 
 // ============================================================================
 // AgentToggleButton Component
@@ -1431,7 +1430,6 @@ const AgentChatWindow: React.FC<AgentChatWindowProps> = ({
     uploadContext,
     handleFileUpload,
     clearPendingUpload,
-    clearMessages,
     confirmDelete,
     pendingDelete,
     clearPendingDelete,

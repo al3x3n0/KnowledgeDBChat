@@ -4,6 +4,84 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from app.services import agent_measurement_validity
+
+
+def _required_type_counts(contract: Dict[str, Any], kind: str) -> Dict[str, int]:
+    """Read required finding/artifact types as {type: how many are needed}.
+
+    Contracts normalized by the executor carry the counts; a contract passed in
+    by hand may still be a plain list, which means one of each.
+    """
+    counts = contract.get(f"required_{kind}_type_counts")
+    if isinstance(counts, dict):
+        return {
+            str(name).strip(): max(1, int(needed or 1))
+            for name, needed in counts.items()
+            if str(name).strip()
+        }
+    names = contract.get(f"required_{kind}_types")
+    if isinstance(names, list):
+        return {str(x).strip(): 1 for x in names if str(x).strip()}
+    if isinstance(names, dict):
+        return {
+            str(name).strip(): max(1, int(needed or 1))
+            for name, needed in names.items()
+            if str(name).strip()
+        }
+    return {}
+
+
+def _as_threshold(value: Any, default: int) -> int:
+    """Read a contract threshold, keeping an explicit zero as zero."""
+    if value is None:
+        return default
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+#: Categories a finding uses to say "this could not be established". A finding
+#: that self-declares one of these is a report about the work, not the work.
+_ABSENCE_CATEGORIES = frozenset({"gap", "blocker", "blocked", "limitation"})
+
+
+#: Fields by which a finding declares, in its own words, that the thing it is
+#: typed as did not happen. `verified` is `check_implementation`'s: it emits an
+#: `implementation_verified` finding whether or not the check passed, on
+#: purpose, so `compare_to_claim` can refuse to score unverified code. That
+#: design is right and this is its other half -- the finding must be readable
+#: downstream without also COUNTING as the evidence it reports the absence of.
+_SELF_DECLARED_FAILURE_FIELDS = ("verified", "succeeded", "passed")
+
+
+def _is_a_report_of_absence(finding: Dict[str, Any], ftype: str) -> bool:
+    """True when a finding says the thing it is typed as could not be produced.
+
+    Deliberately narrow: it fires on the finding's own self-declaration, never
+    on the prose. A run that measures something and calls the result
+    disappointing still measured it.
+    """
+    if str(finding.get("category") or "").strip().lower() in _ABSENCE_CATEGORIES:
+        return True
+    # An explicitly null metric under its own type name: the finding declared
+    # the number it exists to carry and then carried nothing.
+    metrics = finding.get("metrics")
+    if isinstance(metrics, dict) and ftype in metrics and metrics[ftype] is None:
+        return True
+    # A finding that says outright that it failed. Measured live: a
+    # `check_implementation` whose sandbox run raised produced
+    # `{"type": "implementation_verified", "verified": false, "ran": false,
+    #   "cases_run": 0}` -- and that satisfied a contract requiring
+    # `implementation_verified` at 100%, which fired the chain and started the
+    # benchmark stage on code nothing had verified. The gate between "it works"
+    # and "time it" opened for a check that never ran.
+    for field in _SELF_DECLARED_FAILURE_FIELDS:
+        if finding.get(field) is False:
+            return True
+    return False
+
 
 class AgentGoalContractService:
     """Evaluate deterministic completion contracts and build operator digests."""
@@ -26,22 +104,51 @@ class AgentGoalContractService:
                 "contract": contract,
                 "metrics": {
                     "progress": int(state.get("goal_progress", 0) or 0),
-                    "findings_count": len(state.get("findings", []) if isinstance(state.get("findings"), list) else []),
-                    "artifacts_count": len(state.get("artifacts", []) if isinstance(state.get("artifacts"), list) else []),
+                    "findings_count": len(
+                        state.get("findings", [])
+                        if isinstance(state.get("findings"), list)
+                        else []
+                    ),
+                    "artifacts_count": len(
+                        state.get("artifacts", [])
+                        if isinstance(state.get("artifacts"), list)
+                        else []
+                    ),
                 },
             }
 
-        findings = state.get("findings") if isinstance(state.get("findings"), list) else []
-        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), list) else []
+        findings = (
+            state.get("findings") if isinstance(state.get("findings"), list) else []
+        )
+        artifacts = (
+            state.get("artifacts") if isinstance(state.get("artifacts"), list) else []
+        )
         progress = int(state.get("goal_progress", 0) or 0)
 
         finding_types: Dict[str, int] = {}
         for finding in findings:
             if not isinstance(finding, dict):
                 continue
+            # Findings recalled from an earlier run are citable evidence but
+            # not work this run did. Counting them would make the cheapest way
+            # to satisfy any contract a lookup, and a contract a lookup can
+            # satisfy has stopped asking for anything.
+            if finding.get("recalled"):
+                continue
             ftype = str(finding.get("type") or "").strip()
-            if ftype:
-                finding_types[ftype] = int(finding_types.get(ftype, 0) or 0) + 1
+            if not ftype:
+                continue
+            # A finding that reports the ABSENCE of the thing is not the thing.
+            # A live run asked for a throughput_bound from an actual benchmark,
+            # correctly established that the repository did not exist, and
+            # filed that conclusion honestly -- as a finding of type
+            # `throughput_bound`, category `gap`, with `metrics` null. Counting
+            # by type alone read it as the measurement and autocompleted the
+            # job at 100%. The run was not lying; the count could not tell a
+            # measurement from a note saying no measurement was possible.
+            if _is_a_report_of_absence(finding, ftype):
+                continue
+            finding_types[ftype] = int(finding_types.get(ftype, 0) or 0) + 1
 
         artifact_types: Dict[str, int] = {}
         for artifact in artifacts:
@@ -52,9 +159,16 @@ class AgentGoalContractService:
                 artifact_types[atype] = int(artifact_types.get(atype, 0) or 0) + 1
 
         missing: List[str] = []
-        min_progress = int(contract.get("min_progress", 100) or 100)
-        min_findings = int(contract.get("min_findings", 0) or 0)
-        min_artifacts = int(contract.get("min_artifacts", 0) or 0)
+        # `x or default` turns an explicit 0 into the default, which read as the
+        # opposite of what the contract said: a job asking for no progress
+        # minimum -- because its real requirement is the measurement types
+        # below -- was held to progress>=100 and could never satisfy its
+        # contract, however much it measured. The default that reaches here is
+        # decided by the normaliser, which drops the progress floor entirely
+        # for a contract that names the evidence it wants.
+        min_progress = _as_threshold(contract.get("min_progress"), 100)
+        min_findings = _as_threshold(contract.get("min_findings"), 0)
+        min_artifacts = _as_threshold(contract.get("min_artifacts"), 0)
 
         if progress < min_progress:
             missing.append(f"progress>={min_progress}")
@@ -63,17 +177,26 @@ class AgentGoalContractService:
         if len(artifacts) < min_artifacts:
             missing.append(f"artifacts>={min_artifacts}")
 
-        required_finding_types = contract.get("required_finding_types")
-        if isinstance(required_finding_types, list):
-            for ftype in [str(x).strip() for x in required_finding_types if str(x).strip()]:
-                if int(finding_types.get(ftype, 0) or 0) <= 0:
-                    missing.append(f"finding_type:{ftype}")
-
-        required_artifact_types = contract.get("required_artifact_types")
-        if isinstance(required_artifact_types, list):
-            for atype in [str(x).strip() for x in required_artifact_types if str(x).strip()]:
-                if int(artifact_types.get(atype, 0) or 0) <= 0:
-                    missing.append(f"artifact_type:{atype}")
+        for label, counts, seen in (
+            (
+                "finding_type",
+                _required_type_counts(contract, "finding"),
+                finding_types,
+            ),
+            (
+                "artifact_type",
+                _required_type_counts(contract, "artifact"),
+                artifact_types,
+            ),
+        ):
+            for type_name, needed in counts.items():
+                have = int(seen.get(type_name, 0) or 0)
+                if have < needed:
+                    missing.append(
+                        f"{label}:{type_name}"
+                        if needed <= 1
+                        else f"{label}:{type_name}>={needed}"
+                    )
 
         required_result_keys = contract.get("required_result_keys")
         if include_result_keys and isinstance(required_result_keys, list):
@@ -81,6 +204,12 @@ class AgentGoalContractService:
             for key in [str(x).strip() for x in required_result_keys if str(x).strip()]:
                 if key not in results:
                     missing.append(f"result_key:{key}")
+
+        # Everything above counts outputs, which cannot distinguish a
+        # measurement from an artifact of the harness that produced it. A
+        # contract may additionally declare what makes its numbers sound.
+        validity = agent_measurement_validity.evaluate(contract, state)
+        missing.extend(validity["missing"])
 
         return {
             "enabled": True,
@@ -93,21 +222,41 @@ class AgentGoalContractService:
                 "artifacts_count": len(artifacts),
                 "finding_types": finding_types,
                 "artifact_types": artifact_types,
+                "validity": validity,
             },
         }
 
-    def build_executive_digest(self, executor: Any, job: Any, state: Dict[str, Any]) -> Dict[str, Any]:
+    def build_executive_digest(
+        self, executor: Any, job: Any, state: Dict[str, Any]
+    ) -> Dict[str, Any]:
         """Build a compact deterministic run digest for operators."""
-        findings = state.get("findings") if isinstance(state.get("findings"), list) else []
-        artifacts = state.get("artifacts") if isinstance(state.get("artifacts"), list) else []
-        actions = state.get("actions_taken") if isinstance(state.get("actions_taken"), list) else []
-        critic_notes = state.get("critic_notes") if isinstance(state.get("critic_notes"), list) else []
+        findings = (
+            state.get("findings") if isinstance(state.get("findings"), list) else []
+        )
+        artifacts = (
+            state.get("artifacts") if isinstance(state.get("artifacts"), list) else []
+        )
+        actions = (
+            state.get("actions_taken")
+            if isinstance(state.get("actions_taken"), list)
+            else []
+        )
+        critic_notes = (
+            state.get("critic_notes")
+            if isinstance(state.get("critic_notes"), list)
+            else []
+        )
 
         key_findings: List[str] = []
         for finding in findings:
             if not isinstance(finding, dict):
                 continue
-            title = str(finding.get("title") or finding.get("summary") or finding.get("id") or "").strip()
+            title = str(
+                finding.get("title")
+                or finding.get("summary")
+                or finding.get("id")
+                or ""
+            ).strip()
             if title and title not in key_findings:
                 key_findings.append(title[:220])
             if len(key_findings) >= 5:
@@ -130,7 +279,9 @@ class AgentGoalContractService:
             sev = str(note.get("severity") or "").strip().lower()
             if sev not in {"high", "medium"}:
                 continue
-            pivot = str(note.get("pivot") or note.get("trajectory_assessment") or "").strip()
+            pivot = str(
+                note.get("pivot") or note.get("trajectory_assessment") or ""
+            ).strip()
             if not pivot:
                 continue
             risks.append(f"critic_{sev}: {pivot[:180]}")
@@ -138,21 +289,45 @@ class AgentGoalContractService:
                 break
 
         contract_eval = self.evaluate_goal_contract(executor, job, state)
-        if bool(contract_eval.get("enabled")) and not bool(contract_eval.get("satisfied")):
-            missing = contract_eval.get("missing") if isinstance(contract_eval.get("missing"), list) else []
+        if bool(contract_eval.get("enabled")) and not bool(
+            contract_eval.get("satisfied")
+        ):
+            missing = (
+                contract_eval.get("missing")
+                if isinstance(contract_eval.get("missing"), list)
+                else []
+            )
             if missing:
-                risks.append(f"goal contract unmet: {', '.join([str(x)[:60] for x in missing[:3]])}")
+                risks.append(
+                    f"goal contract unmet: {', '.join([str(x)[:60] for x in missing[:3]])}"
+                )
 
         next_actions: List[str] = []
-        causal_plan = state.get("causal_experiment_plan") if isinstance(state.get("causal_experiment_plan"), dict) else {}
-        causal_experiments = causal_plan.get("experiments") if isinstance(causal_plan.get("experiments"), list) else []
-        causal_priority = causal_plan.get("priority_order") if isinstance(causal_plan.get("priority_order"), list) else []
+        causal_plan = (
+            state.get("causal_experiment_plan")
+            if isinstance(state.get("causal_experiment_plan"), dict)
+            else {}
+        )
+        causal_experiments = (
+            causal_plan.get("experiments")
+            if isinstance(causal_plan.get("experiments"), list)
+            else []
+        )
+        causal_priority = (
+            causal_plan.get("priority_order")
+            if isinstance(causal_plan.get("priority_order"), list)
+            else []
+        )
         exp_index = {
             str(exp.get("id") or "").strip(): exp
             for exp in causal_experiments
             if isinstance(exp, dict) and str(exp.get("id") or "").strip()
         }
-        ordered = [str(x).strip() for x in causal_priority if str(x).strip() in set(exp_index.keys())]
+        ordered = [
+            str(x).strip()
+            for x in causal_priority
+            if str(x).strip() in set(exp_index.keys())
+        ]
         if not ordered:
             ordered = list(exp_index.keys())
         for eid in ordered[:2]:
@@ -162,24 +337,48 @@ class AgentGoalContractService:
             name = str(exp.get("name") or "").strip()
             if name:
                 next_actions.append(f"Execute causal experiment {eid}: {name[:160]}")
-            expected = exp.get("expected_evidence") if isinstance(exp.get("expected_evidence"), dict) else {}
-            supports = expected.get("supports") if isinstance(expected.get("supports"), list) else []
+            expected = (
+                exp.get("expected_evidence")
+                if isinstance(exp.get("expected_evidence"), dict)
+                else {}
+            )
+            supports = (
+                expected.get("supports")
+                if isinstance(expected.get("supports"), list)
+                else []
+            )
             if supports:
                 next_actions.append(f"Evidence to confirm: {str(supports[0])[:160]}")
             if len(next_actions) >= 4:
                 break
 
         results = job.results if isinstance(job.results, dict) else {}
-        research_bundle = results.get("research_bundle") if isinstance(results.get("research_bundle"), dict) else {}
-        rb_steps = research_bundle.get("next_steps") if isinstance(research_bundle.get("next_steps"), list) else []
+        research_bundle = (
+            results.get("research_bundle")
+            if isinstance(results.get("research_bundle"), dict)
+            else {}
+        )
+        rb_steps = (
+            research_bundle.get("next_steps")
+            if isinstance(research_bundle.get("next_steps"), list)
+            else []
+        )
         for step in rb_steps:
             txt = str(step).strip()
             if txt and txt not in next_actions:
                 next_actions.append(txt[:200])
             if len(next_actions) >= 4:
                 break
-        if not next_actions and bool(contract_eval.get("enabled")) and not bool(contract_eval.get("satisfied")):
-            missing = contract_eval.get("missing") if isinstance(contract_eval.get("missing"), list) else []
+        if (
+            not next_actions
+            and bool(contract_eval.get("enabled"))
+            and not bool(contract_eval.get("satisfied"))
+        ):
+            missing = (
+                contract_eval.get("missing")
+                if isinstance(contract_eval.get("missing"), list)
+                else []
+            )
             for req in missing[:3]:
                 next_actions.append(f"Satisfy contract requirement: {str(req)[:120]}")
         if not next_actions:
@@ -213,6 +412,8 @@ class AgentGoalContractService:
             "goal_contract": {
                 "enabled": bool(contract_eval.get("enabled")),
                 "satisfied": bool(contract_eval.get("satisfied")),
-                "missing": contract_eval.get("missing") if isinstance(contract_eval.get("missing"), list) else [],
+                "missing": contract_eval.get("missing")
+                if isinstance(contract_eval.get("missing"), list)
+                else [],
             },
         }

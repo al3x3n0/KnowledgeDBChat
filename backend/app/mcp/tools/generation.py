@@ -2,12 +2,12 @@
 MCP Generation tools for creating presentations and reports.
 """
 
-from typing import List, Optional, Any, Dict
+from typing import Any, Dict, List, Optional
 from uuid import UUID
 
+from loguru import logger
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
-from loguru import logger
 
 from app.mcp.auth import MCPAuthContext
 from app.models.presentation import PresentationJob
@@ -32,34 +32,42 @@ class GenerationTool:
                 "properties": {
                     "topic": {
                         "type": "string",
-                        "description": "The topic for the presentation"
+                        "description": "The topic for the presentation",
                     },
                     "slide_count": {
                         "type": "integer",
                         "default": 10,
                         "minimum": 3,
                         "maximum": 30,
-                        "description": "Number of slides"
+                        "description": "Number of slides",
                     },
                     "style": {
                         "type": "string",
-                        "enum": ["professional", "technical", "modern", "minimal", "corporate", "creative", "dark"],
+                        "enum": [
+                            "professional",
+                            "technical",
+                            "modern",
+                            "minimal",
+                            "corporate",
+                            "creative",
+                            "dark",
+                        ],
                         "default": "professional",
-                        "description": "Visual style"
+                        "description": "Visual style",
                     },
                     "source_ids": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Optional: Source IDs for context"
+                        "description": "Optional: Source IDs for context",
                     },
                     "include_diagrams": {
                         "type": "boolean",
                         "default": True,
-                        "description": "Include Mermaid diagrams"
-                    }
+                        "description": "Include Mermaid diagrams",
+                    },
                 },
-                "required": ["topic"]
-            }
+                "required": ["topic"],
+            },
         },
         "create_repo_report": {
             "description": "Create a report from a GitHub/GitLab repository",
@@ -68,49 +76,43 @@ class GenerationTool:
                 "properties": {
                     "repo_url": {
                         "type": "string",
-                        "description": "Repository URL (GitHub or GitLab)"
+                        "description": "Repository URL (GitHub or GitLab)",
                     },
                     "output_format": {
                         "type": "string",
                         "enum": ["docx", "pdf", "pptx"],
                         "default": "docx",
-                        "description": "Output format"
+                        "description": "Output format",
                     },
-                    "title": {
-                        "type": "string",
-                        "description": "Optional custom title"
-                    },
+                    "title": {"type": "string", "description": "Optional custom title"},
                     "sections": {
                         "type": "array",
                         "items": {"type": "string"},
-                        "description": "Sections to include (e.g., overview, readme, commits, issues)"
+                        "description": "Sections to include (e.g., overview, readme, commits, issues)",
                     },
                     "style": {
                         "type": "string",
                         "enum": ["professional", "technical", "modern", "minimal"],
-                        "default": "professional"
-                    }
+                        "default": "professional",
+                    },
                 },
-                "required": ["repo_url"]
-            }
+                "required": ["repo_url"],
+            },
         },
         "get_job_status": {
             "description": "Get status of a generation job",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "job_id": {
-                        "type": "string",
-                        "description": "Job UUID"
-                    },
+                    "job_id": {"type": "string", "description": "Job UUID"},
                     "job_type": {
                         "type": "string",
                         "enum": ["presentation", "repo_report"],
-                        "description": "Type of job"
-                    }
+                        "description": "Type of job",
+                    },
                 },
-                "required": ["job_id", "job_type"]
-            }
+                "required": ["job_id", "job_type"],
+            },
         },
         "list_jobs": {
             "description": "List generation jobs",
@@ -120,16 +122,12 @@ class GenerationTool:
                     "job_type": {
                         "type": "string",
                         "enum": ["presentation", "repo_report", "all"],
-                        "default": "all"
+                        "default": "all",
                     },
-                    "limit": {
-                        "type": "integer",
-                        "default": 20,
-                        "maximum": 50
-                    }
-                }
-            }
-        }
+                    "limit": {"type": "integer", "default": 20, "maximum": 50},
+                },
+            },
+        },
     }
 
     async def create_presentation(
@@ -145,7 +143,9 @@ class GenerationTool:
         """Create a presentation job."""
         auth.require_scope("write")
 
-        logger.info(f"MCP create_presentation: topic='{topic[:50]}', user={auth.user.username}")
+        logger.info(
+            f"MCP create_presentation: topic='{topic[:50]}', user={auth.user.username}"
+        )
 
         try:
             from uuid import uuid4
@@ -155,7 +155,9 @@ class GenerationTool:
                 user_id=auth.user_id,
                 title=(topic.strip()[:255] or "Presentation"),
                 topic=topic,
-                source_document_ids=[str(x).strip() for x in (source_ids or []) if str(x).strip()],
+                source_document_ids=[
+                    str(x).strip() for x in (source_ids or []) if str(x).strip()
+                ],
                 slide_count=slide_count,
                 style=style,
                 include_diagrams=1 if include_diagrams else 0,
@@ -169,6 +171,7 @@ class GenerationTool:
 
             # Dispatch Celery task
             from app.tasks.presentation_tasks import generate_presentation_task
+
             generate_presentation_task.delay(str(job.id), str(auth.user_id))
 
             return {
@@ -176,7 +179,7 @@ class GenerationTool:
                 "job_type": "presentation",
                 "status": "pending",
                 "topic": topic,
-                "message": "Presentation generation started. Use get_job_status to check progress."
+                "message": "Presentation generation started. Use get_job_status to check progress.",
             }
 
         except Exception as e:
@@ -196,7 +199,9 @@ class GenerationTool:
         """Create a repository report job."""
         auth.require_scope("write")
 
-        logger.info(f"MCP create_repo_report: url={repo_url}, user={auth.user.username}")
+        logger.info(
+            f"MCP create_repo_report: url={repo_url}, user={auth.user.username}"
+        )
 
         try:
             import re
@@ -216,11 +221,19 @@ class GenerationTool:
                 repo_type = "gitlab"
                 repo_name = f"{gitlab_match.group(1)}/{gitlab_match.group(2).removesuffix('.git')}"
             else:
-                return {"error": "Could not parse repository URL. Supported: GitHub and GitLab"}
+                return {
+                    "error": "Could not parse repository URL. Supported: GitHub and GitLab"
+                }
 
             # Default sections
             if not sections:
-                sections = ["overview", "readme", "file_structure", "commits", "architecture"]
+                sections = [
+                    "overview",
+                    "readme",
+                    "file_structure",
+                    "commits",
+                    "architecture",
+                ]
 
             job = RepoReportJob(
                 id=uuid4(),
@@ -244,6 +257,7 @@ class GenerationTool:
 
             # Dispatch Celery task
             from app.tasks.repo_report_tasks import generate_repo_report_task
+
             generate_repo_report_task.delay(str(job.id), str(auth.user_id))
 
             return {
@@ -252,7 +266,7 @@ class GenerationTool:
                 "status": "pending",
                 "repo_name": repo_name,
                 "output_format": output_format,
-                "message": "Repository report generation started. Use get_job_status to check progress."
+                "message": "Repository report generation started. Use get_job_status to check progress.",
             }
 
         except Exception as e:
@@ -276,7 +290,7 @@ class GenerationTool:
                 result = await db.execute(
                     select(PresentationJob).where(
                         PresentationJob.id == job_uuid,
-                        PresentationJob.user_id == auth.user_id
+                        PresentationJob.user_id == auth.user_id,
                     )
                 )
                 job = result.scalar_one_or_none()
@@ -290,7 +304,9 @@ class GenerationTool:
                     "status": job.status,
                     "progress": job.progress,
                     "topic": job.topic,
-                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "created_at": job.created_at.isoformat()
+                    if job.created_at
+                    else None,
                 }
 
                 if job.status == "completed":
@@ -305,7 +321,7 @@ class GenerationTool:
                 result = await db.execute(
                     select(RepoReportJob).where(
                         RepoReportJob.id == job_uuid,
-                        RepoReportJob.user_id == auth.user_id
+                        RepoReportJob.user_id == auth.user_id,
                     )
                 )
                 job = result.scalar_one_or_none()
@@ -321,7 +337,9 @@ class GenerationTool:
                     "current_stage": job.current_stage,
                     "repo_name": job.repo_name,
                     "output_format": job.output_format,
-                    "created_at": job.created_at.isoformat() if job.created_at else None,
+                    "created_at": job.created_at.isoformat()
+                    if job.created_at
+                    else None,
                 }
 
                 if job.status == "completed":
@@ -365,14 +383,18 @@ class GenerationTool:
                 pres_jobs = result.scalars().all()
 
                 for job in pres_jobs:
-                    jobs.append({
-                        "job_id": str(job.id),
-                        "job_type": "presentation",
-                        "status": job.status,
-                        "progress": job.progress,
-                        "topic": job.topic,
-                        "created_at": job.created_at.isoformat() if job.created_at else None,
-                    })
+                    jobs.append(
+                        {
+                            "job_id": str(job.id),
+                            "job_type": "presentation",
+                            "status": job.status,
+                            "progress": job.progress,
+                            "topic": job.topic,
+                            "created_at": job.created_at.isoformat()
+                            if job.created_at
+                            else None,
+                        }
+                    )
 
             if job_type in ("all", "repo_report"):
                 result = await db.execute(
@@ -384,15 +406,19 @@ class GenerationTool:
                 report_jobs = result.scalars().all()
 
                 for job in report_jobs:
-                    jobs.append({
-                        "job_id": str(job.id),
-                        "job_type": "repo_report",
-                        "status": job.status,
-                        "progress": job.progress,
-                        "repo_name": job.repo_name,
-                        "output_format": job.output_format,
-                        "created_at": job.created_at.isoformat() if job.created_at else None,
-                    })
+                    jobs.append(
+                        {
+                            "job_id": str(job.id),
+                            "job_type": "repo_report",
+                            "status": job.status,
+                            "progress": job.progress,
+                            "repo_name": job.repo_name,
+                            "output_format": job.output_format,
+                            "created_at": job.created_at.isoformat()
+                            if job.created_at
+                            else None,
+                        }
+                    )
 
             # Sort by created_at
             jobs.sort(key=lambda x: x.get("created_at", ""), reverse=True)

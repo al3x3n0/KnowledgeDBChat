@@ -3,7 +3,17 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Any
 
-from sqlalchemy import JSON, Boolean, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy import (
+    JSON,
+    Boolean,
+    Column,
+    DateTime,
+    Float,
+    ForeignKey,
+    Integer,
+    String,
+    Text,
+)
 from sqlalchemy.dialects.postgresql import UUID
 
 from app.core.database import Base
@@ -28,9 +38,21 @@ class ScientificSandboxProfile(Base):
     enabled = Column(Boolean, nullable=False, default=True, index=True)
     system_managed = Column(Boolean, nullable=False, default=False, index=True)
     is_default = Column(Boolean, nullable=False, default=False)
-    created_by_user_id = Column(UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True, index=True)
-    created_at = Column(DateTime(timezone=True), default=datetime.utcnow, nullable=False)
-    updated_at = Column(DateTime(timezone=True), default=datetime.utcnow, onupdate=datetime.utcnow, nullable=False)
+    created_by_user_id = Column(
+        UUID(as_uuid=True),
+        ForeignKey("users.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at = Column(
+        DateTime(timezone=True), default=datetime.utcnow, nullable=False
+    )
+    updated_at = Column(
+        DateTime(timezone=True),
+        default=datetime.utcnow,
+        onupdate=datetime.utcnow,
+        nullable=False,
+    )
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -50,7 +72,13 @@ class ScientificSandboxProfile(Base):
             "enabled": bool(self.enabled),
             "system_managed": bool(self.system_managed),
             "is_default": bool(self.is_default),
-            "created_by_user_id": str(self.created_by_user_id) if self.created_by_user_id else None,
-            "created_at": self.created_at.isoformat() if isinstance(self.created_at, datetime) else None,
-            "updated_at": self.updated_at.isoformat() if isinstance(self.updated_at, datetime) else None,
+            "created_by_user_id": str(self.created_by_user_id)
+            if self.created_by_user_id
+            else None,
+            "created_at": self.created_at.isoformat()
+            if isinstance(self.created_at, datetime)
+            else None,
+            "updated_at": self.updated_at.isoformat()
+            if isinstance(self.updated_at, datetime)
+            else None,
         }

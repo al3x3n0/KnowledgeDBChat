@@ -17,15 +17,14 @@ from uuid import UUID
 
 from celery import current_task
 from loguru import logger
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
 from app.core.celery import celery_app
 from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.training_job import TrainingJob, TrainingJobStatus
-from app.models.training_dataset import TrainingDataset
 from app.services.trainers.base_trainer import TrainingProgress
-from sqlalchemy import select
-from sqlalchemy.orm import selectinload
 
 
 def _run_async(coroutine):
@@ -145,7 +144,10 @@ async def _execute_training_async(job_id: str, user_id: str):
             dataset = job.dataset
             if not dataset or not dataset.file_path:
                 # Export dataset first
-                from app.services.training_dataset_service import training_dataset_service
+                from app.services.training_dataset_service import (
+                    training_dataset_service,
+                )
+
                 await training_dataset_service.export_to_jsonl(db, dataset.id)
                 await db.refresh(dataset)
 
@@ -174,7 +176,9 @@ async def _execute_training_async(job_id: str, user_id: str):
             job.status = TrainingJobStatus.TRAINING.value
             await db.commit()
 
-            await _publish_training_progress(job_id, 5, TrainingJobStatus.TRAINING.value)
+            await _publish_training_progress(
+                job_id, 5, TrainingJobStatus.TRAINING.value
+            )
 
             # Progress bridging: trainer runs in a thread; we must not touch the async DB session from that thread.
             progress_queue: asyncio.Queue[TrainingProgress | None] = asyncio.Queue()
@@ -190,19 +194,29 @@ async def _execute_training_async(job_id: str, user_id: str):
                     try:
                         await db.refresh(job)
                         if job.status == TrainingJobStatus.CANCELLED.value:
-                            logger.info(f"Training job {job_id} cancelled during training")
+                            logger.info(
+                                f"Training job {job_id} cancelled during training"
+                            )
                             return
                     except Exception:
                         pass
 
                     # Persist progress to DB
                     try:
-                        await training_service.update_job_progress(db, job_uuid, progress)
+                        await training_service.update_job_progress(
+                            db, job_uuid, progress
+                        )
                     except Exception as e:
-                        logger.warning(f"Failed to update training job progress in DB: {e}")
+                        logger.warning(
+                            f"Failed to update training job progress in DB: {e}"
+                        )
 
                     # Publish progress (cap below 100; completion is a separate event)
-                    pct = int((progress.step / progress.total_steps) * 95) if progress.total_steps > 0 else 0
+                    pct = (
+                        int((progress.step / progress.total_steps) * 95)
+                        if progress.total_steps > 0
+                        else 0
+                    )
                     await _publish_training_progress(
                         job_id=job_id,
                         progress=pct,
@@ -228,7 +242,9 @@ async def _execute_training_async(job_id: str, user_id: str):
                             },
                         )
 
-            consumer_task: Optional[asyncio.Task] = asyncio.create_task(progress_consumer())
+            consumer_task: Optional[asyncio.Task] = asyncio.create_task(
+                progress_consumer()
+            )
 
             def progress_callback(progress: TrainingProgress):
                 try:
@@ -241,6 +257,7 @@ async def _execute_training_async(job_id: str, user_id: str):
             def cancel_check() -> bool:
                 # Check Redis for cancellation signal
                 import redis
+
                 r = redis.from_url(settings.REDIS_URL)
                 return r.get(f"training_job:{job_id}:cancel") is not None
 
@@ -280,17 +297,23 @@ async def _execute_training_async(job_id: str, user_id: str):
                 job.status = TrainingJobStatus.SAVING.value
                 await db.commit()
 
-                await _publish_training_progress(job_id, 95, TrainingJobStatus.SAVING.value)
+                await _publish_training_progress(
+                    job_id, 95, TrainingJobStatus.SAVING.value
+                )
 
                 # Upload adapter to MinIO
                 adapter_minio_path = f"training/adapters/{job.user_id}/{job.id}"
 
-                if training_result.adapter_path and os.path.exists(training_result.adapter_path):
+                if training_result.adapter_path and os.path.exists(
+                    training_result.adapter_path
+                ):
                     # Upload all files in adapter directory
                     for root, dirs, files in os.walk(training_result.adapter_path):
                         for file in files:
                             local_path = os.path.join(root, file)
-                            rel_path = os.path.relpath(local_path, training_result.adapter_path)
+                            rel_path = os.path.relpath(
+                                local_path, training_result.adapter_path
+                            )
                             minio_path = f"{adapter_minio_path}/{rel_path}"
 
                             with open(local_path, "rb") as f:
@@ -335,6 +358,7 @@ async def _execute_training_async(job_id: str, user_id: str):
             logger.exception(f"Training job {job_id} failed: {e}")
 
             from app.services.training_service import training_service
+
             await training_service.fail_job(
                 db=db,
                 job_id=job_uuid,
@@ -396,8 +420,8 @@ def generate_dataset_from_documents_task(
     """Generate training dataset from documents using LLM."""
 
     async def _generate():
-        from app.services.training_dataset_service import training_dataset_service
         from app.schemas.training import GenerateDatasetRequest
+        from app.services.training_dataset_service import training_dataset_service
 
         session_factory = create_celery_session()
         async with session_factory() as db:
@@ -415,7 +439,9 @@ def generate_dataset_from_documents_task(
                 request=request,
             )
 
-            logger.info(f"Generated dataset {dataset.id} with {dataset.sample_count} samples")
+            logger.info(
+                f"Generated dataset {dataset.id} with {dataset.sample_count} samples"
+            )
             return str(dataset.id)
 
     return _run_async(_generate())

@@ -4,8 +4,6 @@ import tempfile
 import uuid
 from pathlib import Path
 
-import pytest
-
 from app.services.coding_workspace_manager import (
     CodingWorkspace,
     CodingWorkspaceManager,
@@ -99,10 +97,12 @@ class TestRepoSymbolIndexService:
         assert "helper_function" in names
 
     def test_retrieve_with_include_paths(self):
-        mgr, ws = _make_workspace_with_code({
-            "src/a.py": "def foo(): pass\n",
-            "lib/b.py": "def bar(): pass\n",
-        })
+        mgr, ws = _make_workspace_with_code(
+            {
+                "src/a.py": "def foo(): pass\n",
+                "lib/b.py": "def bar(): pass\n",
+            }
+        )
         svc = RepoSymbolIndexService()
         result = svc.retrieve(
             repo_root=ws.base_path,
@@ -142,19 +142,29 @@ class TestRetrieveRepoSymbols:
 
     def test_query_keyword_splitting(self):
         query = "user-service create"
-        keywords = [t.strip() for t in query.replace("-", " ").replace("_", " ").split() if t.strip()]
+        keywords = [
+            t.strip()
+            for t in query.replace("-", " ").replace("_", " ").split()
+            if t.strip()
+        ]
         assert keywords == ["user", "service", "create"]
 
     def test_language_filter_ext_map(self):
-        ext_map = {"python": {".py"}, "typescript": {".ts", ".tsx"}, "javascript": {".js", ".jsx"}}
+        ext_map = {
+            "python": {".py"},
+            "typescript": {".ts", ".tsx"},
+            "javascript": {".js", ".jsx"},
+        }
         assert ".py" in ext_map["python"]
         assert ".tsx" in ext_map["typescript"]
 
     def test_language_filter_applied(self):
-        mgr, ws = _make_workspace_with_code({
-            "a.py": "def foo(): pass\n",
-            "b.ts": "function bar() {}\n",
-        })
+        mgr, ws = _make_workspace_with_code(
+            {
+                "a.py": "def foo(): pass\n",
+                "b.ts": "function bar() {}\n",
+            }
+        )
         svc = RepoSymbolIndexService()
         result = svc.retrieve(
             repo_root=ws.base_path,
@@ -165,7 +175,8 @@ class TestRetrieveRepoSymbols:
         # Apply python filter post-hoc
         allowed_exts = {".py"}
         filtered = [
-            s for s in result["symbol_matches"]
+            s
+            for s in result["symbol_matches"]
             if any(str(s.get("path", "")).endswith(ext) for ext in allowed_exts)
         ]
         assert all(s["path"].endswith(".py") for s in filtered)
@@ -220,7 +231,8 @@ class TestGetSymbolContext:
         target = exact[0]
         # Read surrounding context
         content, err = mgr.read_file(
-            ws, "src/service.py",
+            ws,
+            "src/service.py",
             start_line=max(1, target.get("start_line", 1) - 5),
             end_line=(target.get("end_line") or target.get("start_line", 1)) + 5,
         )
@@ -243,10 +255,12 @@ class TestGetSymbolContext:
         assert "get_user" in all_names
 
     def test_symbol_not_found_in_wrong_file(self):
-        mgr, ws = _make_workspace_with_code({
-            "a.py": "def foo(): pass\n",
-            "b.py": "def bar(): pass\n",
-        })
+        mgr, ws = _make_workspace_with_code(
+            {
+                "a.py": "def foo(): pass\n",
+                "b.py": "def bar(): pass\n",
+            }
+        )
         svc = RepoSymbolIndexService()
         result = svc.retrieve(
             repo_root=ws.base_path,
@@ -263,10 +277,12 @@ class TestFindTestsForSymbol:
     """Tests for find_tests_for_symbol tool handler logic."""
 
     def test_finds_test_files(self):
-        mgr, ws = _make_workspace_with_code({
-            "src/service.py": SAMPLE_PYTHON,
-            "src/tests/test_service.py": SAMPLE_TEST,
-        })
+        mgr, ws = _make_workspace_with_code(
+            {
+                "src/service.py": SAMPLE_PYTHON,
+                "src/tests/test_service.py": SAMPLE_TEST,
+            }
+        )
         svc = RepoSymbolIndexService()
         result = svc.retrieve(
             repo_root=ws.base_path,
@@ -279,7 +295,11 @@ class TestFindTestsForSymbol:
         for sym in result.get("symbol_matches", []):
             path_lower = str(sym.get("path", "")).lower()
             if svc._looks_like_test(path_lower):
-                entry = {"path": sym["path"], "symbol": sym["symbol"], "score": sym.get("score", 0)}
+                entry = {
+                    "path": sym["path"],
+                    "symbol": sym["symbol"],
+                    "score": sym.get("score", 0),
+                }
                 if entry not in test_matches:
                     test_matches.append(entry)
 
@@ -287,10 +307,12 @@ class TestFindTestsForSymbol:
         assert "src/tests/test_service.py" in test_paths
 
     def test_finds_specific_test_functions(self):
-        mgr, ws = _make_workspace_with_code({
-            "src/service.py": SAMPLE_PYTHON,
-            "src/tests/test_service.py": SAMPLE_TEST,
-        })
+        mgr, ws = _make_workspace_with_code(
+            {
+                "src/service.py": SAMPLE_PYTHON,
+                "src/tests/test_service.py": SAMPLE_TEST,
+            }
+        )
         svc = RepoSymbolIndexService()
         result = svc.retrieve(
             repo_root=ws.base_path,
@@ -303,9 +325,11 @@ class TestFindTestsForSymbol:
         assert "test_helper_function" in all_symbols or "helper_function" in all_symbols
 
     def test_no_tests_returns_empty(self):
-        mgr, ws = _make_workspace_with_code({
-            "src/service.py": SAMPLE_PYTHON,
-        })
+        mgr, ws = _make_workspace_with_code(
+            {
+                "src/service.py": SAMPLE_PYTHON,
+            }
+        )
         svc = RepoSymbolIndexService()
         result = svc.retrieve(
             repo_root=ws.base_path,
@@ -336,7 +360,9 @@ class TestSymbolToolState:
         mgr, ws1 = _make_workspace_with_code({"a.py": "x = 1\n"})
         ws2_id = str(uuid.uuid4())
         ws2_path = Path(tempfile.mkdtemp(prefix="test_sym2_")).resolve()
-        ws2 = CodingWorkspace(workspace_id=ws2_id, base_path=ws2_path, original_hashes={})
+        ws2 = CodingWorkspace(
+            workspace_id=ws2_id, base_path=ws2_path, original_hashes={}
+        )
         mgr._workspaces[ws2_id] = ws2
 
         state = {"coding_workspace_id": ws1.workspace_id}

@@ -84,7 +84,11 @@ async def get_artifact_draft(
     return ArtifactDraftResponse.model_validate(draft)
 
 
-@router.post("/from-presentation/{job_id}", response_model=ArtifactDraftResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/from-presentation/{job_id}",
+    response_model=ArtifactDraftResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_draft_from_presentation(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -96,7 +100,9 @@ async def create_draft_from_presentation(
     if job.status != "completed":
         raise HTTPException(status_code=422, detail="Presentation is not completed")
     if not job.generated_outline:
-        raise HTTPException(status_code=422, detail="Presentation has no generated outline")
+        raise HTTPException(
+            status_code=422, detail="Presentation has no generated outline"
+        )
 
     draft = ArtifactDraft(
         user_id=job.user_id,
@@ -114,12 +120,16 @@ async def create_draft_from_presentation(
             "slide_count": job.slide_count,
             "include_diagrams": bool(job.include_diagrams),
             "source_document_ids": job.source_document_ids or [],
-            "retrieval_trace_id": str(job.retrieval_trace_id) if getattr(job, "retrieval_trace_id", None) else None,
+            "retrieval_trace_id": str(job.retrieval_trace_id)
+            if getattr(job, "retrieval_trace_id", None)
+            else None,
             "generated_outline": job.generated_outline,
             "file_path": job.file_path,
             "sources_used": {
                 "source_document_ids": job.source_document_ids or [],
-                "retrieval_trace_id": str(job.retrieval_trace_id) if getattr(job, "retrieval_trace_id", None) else None,
+                "retrieval_trace_id": str(job.retrieval_trace_id)
+                if getattr(job, "retrieval_trace_id", None)
+                else None,
             },
         },
     )
@@ -129,7 +139,11 @@ async def create_draft_from_presentation(
     return ArtifactDraftResponse.model_validate(draft)
 
 
-@router.post("/from-repo-report/{job_id}", response_model=ArtifactDraftResponse, status_code=status.HTTP_201_CREATED)
+@router.post(
+    "/from-repo-report/{job_id}",
+    response_model=ArtifactDraftResponse,
+    status_code=status.HTTP_201_CREATED,
+)
 async def create_draft_from_repo_report(
     job_id: UUID,
     current_user: User = Depends(get_current_user),
@@ -192,7 +206,14 @@ async def submit_draft_for_review(
 
     approvals = draft.approvals if isinstance(draft.approvals, list) else []
     if payload.note:
-        approvals.append({"user_id": str(current_user.id), "role": "submitter", "at": _now_iso(), "note": payload.note})
+        approvals.append(
+            {
+                "user_id": str(current_user.id),
+                "role": "submitter",
+                "at": _now_iso(),
+                "note": payload.note,
+            }
+        )
     draft.approvals = approvals
     draft.status = "in_review"
 
@@ -222,11 +243,20 @@ async def approve_draft(
         raise HTTPException(status_code=403, detail="Not allowed")
 
     approvals = draft.approvals if isinstance(draft.approvals, list) else []
-    approvals.append({"user_id": str(current_user.id), "role": role, "at": _now_iso(), "note": (payload.note or None)})
+    approvals.append(
+        {
+            "user_id": str(current_user.id),
+            "role": role,
+            "at": _now_iso(),
+            "note": (payload.note or None),
+        }
+    )
     draft.approvals = approvals
 
     owner_ok = any(a.get("role") == "owner" for a in approvals)
-    admin_ok = any(a.get("role") == "admin" for a in approvals) or (role == "owner" and _is_admin(current_user))
+    admin_ok = any(a.get("role") == "admin" for a in approvals) or (
+        role == "owner" and _is_admin(current_user)
+    )
     if owner_ok and admin_ok and draft.status in {"draft", "in_review"}:
         draft.status = "approved"
 
@@ -246,7 +276,9 @@ async def publish_draft(
         raise HTTPException(status_code=404, detail="Not found")
 
     if draft.status != "approved":
-        raise HTTPException(status_code=422, detail="Draft must be approved before publishing")
+        raise HTTPException(
+            status_code=422, detail="Draft must be approved before publishing"
+        )
 
     draft.status = "published"
     draft.published_payload = draft.draft_payload
@@ -268,9 +300,13 @@ async def download_published_artifact(
         raise HTTPException(status_code=404, detail="Not found")
 
     if draft.status not in {"approved", "published"}:
-        raise HTTPException(status_code=422, detail="Draft must be approved before download")
+        raise HTTPException(
+            status_code=422, detail="Draft must be approved before download"
+        )
 
-    payload = draft.published_payload if draft.status == "published" else draft.draft_payload
+    payload = (
+        draft.published_payload if draft.status == "published" else draft.draft_payload
+    )
     file_path = (payload or {}).get("file_path")
     if not file_path:
         raise HTTPException(status_code=404, detail="Artifact has no file")
@@ -284,7 +320,9 @@ async def download_published_artifact(
     filename = str(file_path).split("/")[-1]
     media_type = "application/octet-stream"
     if draft.artifact_type == "presentation":
-        media_type = "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        media_type = (
+            "application/vnd.openxmlformats-officedocument.presentationml.presentation"
+        )
         if not filename.endswith(".pptx"):
             filename = f"{draft.title}.pptx"
     elif draft.artifact_type == "repo_report":
@@ -299,5 +337,8 @@ async def download_published_artifact(
     return Response(
         content=content,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"', "Content-Length": str(len(content))},
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "Content-Length": str(len(content)),
+        },
     )

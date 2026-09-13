@@ -1,7 +1,5 @@
 """Tests for multi-agent coordination tools (delegate_subtask, wait_for_subtask, share_findings, request_review)."""
 
-import pytest
-
 
 def _make_state():
     """Create a minimal state dict with coordination-related fields."""
@@ -127,10 +125,12 @@ class TestRequestReview:
 
     def test_review_response_recorded(self):
         state = _make_state()
-        state["review_responses"].append({
-            "review_request_idx": 0,
-            "approved": True,
-            "feedback": "Looks good",
-        })
+        state["review_responses"].append(
+            {
+                "review_request_idx": 0,
+                "approved": True,
+                "feedback": "Looks good",
+            }
+        )
         assert len(state["review_responses"]) == 1
         assert state["review_responses"][0]["approved"] is True

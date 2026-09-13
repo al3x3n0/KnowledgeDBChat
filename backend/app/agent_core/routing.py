@@ -10,43 +10,108 @@ from loguru import logger
 
 from .types import AgentSpec, agent_spec_from_model
 
-
 CAPABILITY_KEYWORDS = {
     "paper_search": [
-        "arxiv", "paper", "papers", "preprint", "publication",
-        "literature", "scientific", "research paper", "find papers", "search papers",
+        "arxiv",
+        "paper",
+        "papers",
+        "preprint",
+        "publication",
+        "literature",
+        "scientific",
+        "research paper",
+        "find papers",
+        "search papers",
     ],
     "document_search": [
-        "search", "find", "look for", "locate", "where is", "documents about",
-        "files about", "what documents", "find documents",
+        "search",
+        "find",
+        "look for",
+        "locate",
+        "where is",
+        "documents about",
+        "files about",
+        "what documents",
+        "find documents",
     ],
     "document_crud": [
-        "delete", "remove", "create document", "upload", "add document",
-        "edit document", "update document",
+        "delete",
+        "remove",
+        "create document",
+        "upload",
+        "add document",
+        "edit document",
+        "update document",
     ],
     "document_compare": ["compare", "difference", "similar", "diff between", "versus"],
     "tag_management": ["tag", "tags", "categorize", "label", "organize"],
     "rag_qa": [
-        "what is", "how does", "explain", "why", "when", "who",
-        "tell me about", "describe", "what do you know", "based on",
+        "what is",
+        "how does",
+        "explain",
+        "why",
+        "when",
+        "who",
+        "tell me about",
+        "describe",
+        "what do you know",
+        "based on",
     ],
-    "summarization": ["summarize", "summary", "tldr", "overview", "key points", "main points"],
+    "summarization": [
+        "summarize",
+        "summary",
+        "tldr",
+        "overview",
+        "key points",
+        "main points",
+    ],
     "knowledge_synthesis": [
-        "analyze", "insight", "pattern", "trend", "relationship between",
-        "connection", "how are", "related",
+        "analyze",
+        "insight",
+        "pattern",
+        "trend",
+        "relationship between",
+        "connection",
+        "how are",
+        "related",
     ],
     "workflow_exec": ["workflow", "automate", "run workflow", "execute workflow"],
-    "template_fill": ["template", "fill template", "generate from template", "document template"],
-    "diagram_gen": ["diagram", "chart", "visualization", "visualize", "draw", "mermaid"],
+    "template_fill": [
+        "template",
+        "fill template",
+        "generate from template",
+        "document template",
+    ],
+    "diagram_gen": [
+        "diagram",
+        "chart",
+        "visualization",
+        "visualize",
+        "draw",
+        "mermaid",
+    ],
     "automation": ["automate", "schedule", "recurring", "batch process"],
     "code_analysis": [
-        "code", "function", "class", "method", "implementation",
-        "algorithm", "logic", "debug", "refactor", "code structure",
-        "code pattern", "code review",
+        "code",
+        "function",
+        "class",
+        "method",
+        "implementation",
+        "algorithm",
+        "logic",
+        "debug",
+        "refactor",
+        "code structure",
+        "code pattern",
+        "code review",
     ],
     "code_explanation": [
-        "explain code", "how does this code", "what does this code",
-        "understand code", "walk through code", "code walkthrough",
+        "explain code",
+        "how does this code",
+        "what does this code",
+        "understand code",
+        "walk through code",
+        "code walkthrough",
     ],
 }
 
@@ -154,7 +219,11 @@ Only include capabilities that are clearly needed. If unsure, include "general".
         if not json_match:
             return None
         result = json.loads(json_match.group())
-        valid_caps = [c for c in result.get("capabilities_needed", []) if c in available_capabilities]
+        valid_caps = [
+            c
+            for c in result.get("capabilities_needed", [])
+            if c in available_capabilities
+        ]
         if not valid_caps:
             return None
         return {
@@ -176,7 +245,9 @@ Only include capabilities that are clearly needed. If unsure, include "general".
         agent_scores: List[Tuple[Any, float, str]] = []
 
         for agent in agents.values():
-            spec = agent if isinstance(agent, AgentSpec) else agent_spec_from_model(agent)
+            spec = (
+                agent if isinstance(agent, AgentSpec) else agent_spec_from_model(agent)
+            )
             if not spec.is_active:
                 continue
 
@@ -203,7 +274,9 @@ Only include capabilities that are clearly needed. If unsure, include "general".
 
         agent_scores.sort(key=lambda item: item[1], reverse=True)
         selected, score, reason = agent_scores[0]
-        logger.info(f"Selected agent '{getattr(selected, 'name', 'unknown')}' with score {score:.2f}: {reason}")
+        logger.info(
+            f"Selected agent '{getattr(selected, 'name', 'unknown')}' with score {score:.2f}: {reason}"
+        )
         return selected, reason
 
     async def should_handoff(
@@ -219,12 +292,20 @@ Only include capabilities that are clearly needed. If unsure, include "general".
         qa_tools = {"answer_question", "summarize_document"}
         doc_tools = {"search_documents", "get_document_details", "delete_document"}
 
-        if getattr(current_agent, "name", "") == "document_expert" and set(tool_names) & qa_tools and not set(tool_names) & doc_tools:
+        if (
+            getattr(current_agent, "name", "") == "document_expert"
+            and set(tool_names) & qa_tools
+            and not set(tool_names) & doc_tools
+        ):
             qa_agent = self._agent_cache.get("qa_specialist")
             if qa_agent and getattr(qa_agent, "is_active", True):
                 return qa_agent, "Detected Q&A intent after document search"
 
-        if getattr(current_agent, "name", "") == "qa_specialist" and set(tool_names) & doc_tools and not set(tool_names) & qa_tools:
+        if (
+            getattr(current_agent, "name", "") == "qa_specialist"
+            and set(tool_names) & doc_tools
+            and not set(tool_names) & qa_tools
+        ):
             doc_agent = self._agent_cache.get("document_expert")
             if doc_agent and getattr(doc_agent, "is_active", True):
                 return doc_agent, "Detected document management intent"

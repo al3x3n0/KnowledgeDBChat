@@ -3,13 +3,15 @@ Notification-related Pydantic schemas.
 """
 
 from datetime import datetime
-from typing import Optional, List, Dict, Any
+from typing import Any, Dict, List, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class NotificationBase(BaseModel):
     """Base notification schema."""
+
     id: UUID
     notification_type: str
     title: str
@@ -23,17 +25,16 @@ class NotificationBase(BaseModel):
     read_at: Optional[datetime] = None
     created_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class NotificationResponse(NotificationBase):
     """Notification response schema."""
-    pass
 
 
 class NotificationListResponse(BaseModel):
     """Paginated notification list response."""
+
     items: List[NotificationResponse]
     total: int
     page: int
@@ -43,6 +44,7 @@ class NotificationListResponse(BaseModel):
 
 class NotificationCreate(BaseModel):
     """Schema for creating a notification (internal use)."""
+
     user_id: UUID
     notification_type: str
     title: str = Field(..., min_length=1, max_length=255)
@@ -57,6 +59,7 @@ class NotificationCreate(BaseModel):
 
 class NotificationPreferencesBase(BaseModel):
     """Base notification preferences schema."""
+
     # Document event preferences
     notify_document_processing: bool = True
     notify_document_errors: bool = True
@@ -74,7 +77,9 @@ class NotificationPreferencesBase(BaseModel):
     notify_policy_guardrail_alerts: bool = True
     notify_autonomy_budget_alerts: bool = True
     notify_customer_autonomy_budget_alerts: bool = True
-    research_note_citation_coverage_threshold: float = Field(default=0.7, ge=0.0, le=1.0)
+    research_note_citation_coverage_threshold: float = Field(
+        default=0.7, ge=0.0, le=1.0
+    )
     research_note_citation_notify_cooldown_hours: int = Field(default=12, ge=0, le=720)
     queue_urgency_alert_reminder_cooldown_hours: int = Field(default=6, ge=1, le=720)
     research_note_citation_notify_on_unknown_keys: bool = True
@@ -98,6 +103,7 @@ class NotificationPreferencesBase(BaseModel):
 
 class NotificationPreferencesUpdate(BaseModel):
     """Schema for updating notification preferences."""
+
     notify_document_processing: Optional[bool] = None
     notify_document_errors: Optional[bool] = None
     notify_sync_complete: Optional[bool] = None
@@ -112,9 +118,15 @@ class NotificationPreferencesUpdate(BaseModel):
     notify_policy_guardrail_alerts: Optional[bool] = None
     notify_autonomy_budget_alerts: Optional[bool] = None
     notify_customer_autonomy_budget_alerts: Optional[bool] = None
-    research_note_citation_coverage_threshold: Optional[float] = Field(default=None, ge=0.0, le=1.0)
-    research_note_citation_notify_cooldown_hours: Optional[int] = Field(default=None, ge=0, le=720)
-    queue_urgency_alert_reminder_cooldown_hours: Optional[int] = Field(default=None, ge=1, le=720)
+    research_note_citation_coverage_threshold: Optional[float] = Field(
+        default=None, ge=0.0, le=1.0
+    )
+    research_note_citation_notify_cooldown_hours: Optional[int] = Field(
+        default=None, ge=0, le=720
+    )
+    queue_urgency_alert_reminder_cooldown_hours: Optional[int] = Field(
+        default=None, ge=1, le=720
+    )
     research_note_citation_notify_on_unknown_keys: Optional[bool] = None
     research_note_citation_notify_on_low_coverage: Optional[bool] = None
     research_note_citation_notify_on_missing_bibliography: Optional[bool] = None
@@ -130,17 +142,18 @@ class NotificationPreferencesUpdate(BaseModel):
 
 class NotificationPreferencesResponse(NotificationPreferencesBase):
     """Notification preferences response schema."""
+
     id: UUID
     user_id: UUID
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class BroadcastNotificationRequest(BaseModel):
     """Schema for admin broadcast notification."""
+
     title: str = Field(..., min_length=1, max_length=255)
     message: str = Field(..., min_length=1, max_length=2000)
     priority: str = Field(default="normal", pattern="^(low|normal|high|urgent)$")
@@ -150,4 +163,5 @@ class BroadcastNotificationRequest(BaseModel):
 
 class UnreadCountResponse(BaseModel):
     """Response for unread count endpoint."""
+
     unread_count: int

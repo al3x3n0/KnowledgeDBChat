@@ -1,7 +1,7 @@
 """Tests for agent self-reflection and tool analytics tools."""
 
 import uuid
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timedelta, timezone
 
 import pytest
 
@@ -51,7 +51,11 @@ class TestGetJobHistory:
     def test_duration_none_if_not_completed(self):
         started = datetime(2026, 3, 20, 10, 0, 0, tzinfo=timezone.utc)
         completed = None
-        duration = round((completed - started).total_seconds() / 60, 1) if started and completed else None
+        duration = (
+            round((completed - started).total_seconds() / 60, 1)
+            if started and completed
+            else None
+        )
         assert duration is None
 
     def test_error_truncated(self):
@@ -80,7 +84,7 @@ class TestGetJobHistory:
                     },
                 ],
                 "count": 1,
-            }
+            },
         }
         assert result["data"]["count"] == 1
         assert result["data"]["jobs"][0]["tool_calls_used"] == 42
@@ -157,7 +161,7 @@ class TestGetJobMetrics:
                 "created_at": "2026-03-20T10:00:00",
                 "started_at": "2026-03-20T10:00:01",
                 "completed_at": "2026-03-20T10:12:31",
-            }
+            },
         }
         assert result["data"]["tool_usage_breakdown"]["search_documents"] == 15
         assert result["data"]["duration_minutes"] == 12.5
@@ -199,7 +203,9 @@ class TestGetToolUsageStats:
             tool = entry.get("action")
             if not tool:
                 continue
-            stats = tool_stats.setdefault(tool, {"calls": 0, "successes": 0, "failures": 0})
+            stats = tool_stats.setdefault(
+                tool, {"calls": 0, "successes": 0, "failures": 0}
+            )
             stats["calls"] += 1
             if entry.get("error"):
                 stats["failures"] += 1
@@ -235,10 +241,22 @@ class TestGetToolUsageStats:
                 "period_days": 7,
                 "total_jobs_analyzed": 15,
                 "tools": [
-                    {"name": "search_documents", "calls": 45, "successes": 43, "failures": 2, "success_rate": 0.956},
-                    {"name": "get_document_details", "calls": 20, "successes": 20, "failures": 0, "success_rate": 1.0},
+                    {
+                        "name": "search_documents",
+                        "calls": 45,
+                        "successes": 43,
+                        "failures": 2,
+                        "success_rate": 0.956,
+                    },
+                    {
+                        "name": "get_document_details",
+                        "calls": 20,
+                        "successes": 20,
+                        "failures": 0,
+                        "success_rate": 1.0,
+                    },
                 ],
-            }
+            },
         }
         assert result["data"]["total_jobs_analyzed"] == 15
         assert result["data"]["tools"][0]["success_rate"] > 0.9
@@ -317,7 +335,7 @@ class TestGetToolFailureAnalysis:
                     {"pattern": "Rate limit exceeded", "count": 2, "examples": []},
                 ],
                 "recent_failures": [],
-            }
+            },
         }
         assert result["data"]["failure_rate"] == 0.1
         assert len(result["data"]["error_patterns"]) == 2
@@ -328,6 +346,7 @@ class TestSelfReflectionToolSchemas:
 
     def test_schemas_exist(self):
         from app.services.agent_tools import AGENT_TOOLS
+
         names = {t["name"] for t in AGENT_TOOLS}
         assert "get_job_history" in names
         assert "get_job_metrics" in names
@@ -336,24 +355,28 @@ class TestSelfReflectionToolSchemas:
 
     def test_get_job_history_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_job_history")
         assert tool is not None
         assert tool["parameters"].get("required", []) == []
 
     def test_get_job_metrics_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_job_metrics")
         assert tool is not None
         assert tool["parameters"].get("required", []) == []
 
     def test_get_tool_usage_stats_no_required(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_tool_usage_stats")
         assert tool is not None
         assert tool["parameters"].get("required", []) == []
 
     def test_get_tool_failure_analysis_requires_tool_name(self):
         from app.services.agent_tools import get_tool_by_name
+
         tool = get_tool_by_name("get_tool_failure_analysis")
         assert tool is not None
         assert "tool_name" in tool["parameters"].get("required", [])
@@ -364,21 +387,39 @@ class TestSelfReflectionToolRegistry:
 
     def test_all_are_read_tools(self):
         from app.services.tool_registry import get_tool_metadata
-        for tool_name in ["get_job_history", "get_job_metrics", "get_tool_usage_stats", "get_tool_failure_analysis"]:
+
+        for tool_name in [
+            "get_job_history",
+            "get_job_metrics",
+            "get_tool_usage_stats",
+            "get_tool_failure_analysis",
+        ]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.effects == "read", f"{tool_name} should be read-only"
 
     def test_all_are_low_cost(self):
         from app.services.tool_registry import get_tool_metadata
-        for tool_name in ["get_job_history", "get_job_metrics", "get_tool_usage_stats", "get_tool_failure_analysis"]:
+
+        for tool_name in [
+            "get_job_history",
+            "get_job_metrics",
+            "get_tool_usage_stats",
+            "get_tool_failure_analysis",
+        ]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.cost_tier == "low", f"{tool_name} should be low cost"
 
     def test_none_are_network_tools(self):
         from app.services.tool_registry import get_tool_metadata
-        for tool_name in ["get_job_history", "get_job_metrics", "get_tool_usage_stats", "get_tool_failure_analysis"]:
+
+        for tool_name in [
+            "get_job_history",
+            "get_job_metrics",
+            "get_tool_usage_stats",
+            "get_tool_failure_analysis",
+        ]:
             meta = get_tool_metadata(tool_name)
             assert meta is not None
             assert meta.network == "none", f"{tool_name} should not require network"

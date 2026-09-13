@@ -7,7 +7,6 @@ import { useNavigate } from 'react-router-dom';
 import toast from 'react-hot-toast';
 import apiClient from '../services/api';
 import {
-  RepoReportJob,
   RepoReportJobListItem,
   RepoReportStatus,
   RepoReportOutputFormat,
@@ -26,28 +25,6 @@ const STATUS_COLORS: Record<RepoReportStatus, string> = {
   completed: 'bg-green-100 text-green-800',
   failed: 'bg-red-100 text-red-800',
   cancelled: 'bg-gray-100 text-gray-800',
-};
-
-// Stage labels for display
-const STAGE_LABELS: Record<string, string> = {
-  'Starting analysis': 'Starting...',
-  'Fetching repository info': 'Fetching repo info...',
-  'Fetching README': 'Loading README...',
-  'Fetching file tree': 'Building file tree...',
-  'Fetching commits': 'Loading commits...',
-  'Fetching issues': 'Loading issues...',
-  'Fetching pull requests': 'Loading PRs...',
-  'Fetching contributors': 'Loading contributors...',
-  'Fetching languages': 'Analyzing languages...',
-  'Generating insights': 'Generating insights...',
-  'Building document content': 'Building content...',
-  'Rendering DOCX document': 'Rendering DOCX...',
-  'Rendering PDF document': 'Rendering PDF...',
-  'Generating presentation outline': 'Creating outline...',
-  'Generating diagrams': 'Generating diagrams...',
-  'Building PPTX presentation': 'Building slides...',
-  'Uploading to storage': 'Uploading...',
-  'Completed': 'Completed',
 };
 
 // Output format options

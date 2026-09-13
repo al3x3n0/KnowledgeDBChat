@@ -53,6 +53,12 @@ class UrlIngestionService:
         if not url:
             return {"error": "Missing required parameter: url"}
 
+        # Held as a plain value: the per-page loop below rolls the session back
+        # when a page fails, which expires `user`, and reading an expired
+        # attribute is IO that fails outside an awaitable context. Without this
+        # a single bad page makes every remaining page fail too.
+        acting_user_id = user.id
+
         publish = publish or (lambda _t, _p: None)
         cancel_check = cancel_check or (lambda: False)
 
@@ -85,7 +91,9 @@ class UrlIngestionService:
             elif is_allowlisted:
                 allow_private_effective = True
             else:
-                return {"error": "allow_private_networks requires admin role (or an active web source allowlist)"}
+                return {
+                    "error": "allow_private_networks requires admin role (or an active web source allowlist)"
+                }
         else:
             allow_private_effective = bool(is_allowlisted)
 
@@ -93,7 +101,10 @@ class UrlIngestionService:
             return {"error": "canceled"}
 
         # Scrape
-        publish("status", {"stage": "scraping", "status": "Scraping pages...", "progress": 5})
+        publish(
+            "status",
+            {"stage": "scraping", "status": "Scraping pages...", "progress": 5},
+        )
         scraper = WebScraperService(enforce_network_safety=True)
         try:
             scrape_result = await scraper.scrape(
@@ -114,6 +125,8 @@ class UrlIngestionService:
             return {"error": "No pages scraped (blocked, unreachable, or empty)"}
 
         ingest_source = await self.document_service._get_or_create_url_ingest_source(db)
+        # Same reason as acting_user_id: read before the loop can expire it.
+        ingest_source_id = ingest_source.id
         owner_display_name = user.full_name or user.username or user.email
 
         created: List[Dict[str, Any]] = []
@@ -132,14 +145,20 @@ class UrlIngestionService:
             content_hash = hashlib.sha256(page_content.encode("utf-8")).hexdigest()
             existing_res = await db.execute(
                 select(Document).where(
-                    Document.source_id == ingest_source.id,
+                    Document.source_id == ingest_source_id,
                     Document.source_identifier == page_url,
                 )
             )
             existing = existing_res.scalar_one_or_none()
 
             if existing and existing.content_hash == content_hash:
-                skipped.append({"document_id": str(existing.id), "url": page_url, "reason": "unchanged"})
+                skipped.append(
+                    {
+                        "document_id": str(existing.id),
+                        "url": page_url,
+                        "reason": "unchanged",
+                    }
+                )
                 return
 
             try:
@@ -163,8 +182,16 @@ class UrlIngestionService:
                     }
                     existing.is_processed = False
                     await db.commit()
-                    await self.document_service.reprocess_document(existing.id, db, user_id=user.id)
-                    updated.append({"document_id": str(existing.id), "url": page_url, "title": existing.title})
+                    await self.document_service.reprocess_document(
+                        existing.id, db, user_id=acting_user_id
+                    )
+                    updated.append(
+                        {
+                            "document_id": str(existing.id),
+                            "url": page_url,
+                            "title": existing.title,
+                        }
+                    )
                 else:
                     doc = Document(
                         title=page_title,
@@ -174,7 +201,7 @@ class UrlIngestionService:
                         file_path=None,
                         file_type="text/html",
                         file_size=len(page_content.encode("utf-8")),
-                        source_id=ingest_source.id,
+                        source_id=ingest_source_id,
                         source_identifier=page_url,
                         author=owner_display_name,
                         tags=tags,
@@ -190,24 +217,52 @@ class UrlIngestionService:
                     db.add(doc)
                     await db.commit()
                     await db.refresh(doc)
-                    await self.document_service.reprocess_document(doc.id, db, user_id=user.id)
-                    created.append({"document_id": str(doc.id), "url": page_url, "title": doc.title})
+                    await self.document_service.reprocess_document(
+                        doc.id, db, user_id=acting_user_id
+                    )
+                    created.append(
+                        {
+                            "document_id": str(doc.id),
+                            "url": page_url,
+                            "title": doc.title,
+                        }
+                    )
             except Exception as e:
                 await db.rollback()
                 errors.append({"url": page_url, "error": str(e)})
 
-        publish("status", {"stage": "ingesting", "status": "Saving pages into KnowledgeDB...", "progress": 50})
+        publish(
+            "status",
+            {
+                "stage": "ingesting",
+                "status": "Saving pages into KnowledgeDB...",
+                "progress": 50,
+            },
+        )
 
         if follow_links and one_document_per_page:
             total = len(pages)
             for i, page in enumerate(pages, start=1):
                 if cancel_check():
-                    publish("status", {"stage": "canceled", "status": "Canceled", "progress": 100})
+                    publish(
+                        "status",
+                        {"stage": "canceled", "status": "Canceled", "progress": 100},
+                    )
                     return {"error": "canceled"}
-                publish("progress", {"stage": "ingesting", "current": i, "total": total, "progress": 50 + int(50 * (i / max(1, total)))})
+                publish(
+                    "progress",
+                    {
+                        "stage": "ingesting",
+                        "current": i,
+                        "total": total,
+                        "progress": 50 + int(50 * (i / max(1, total))),
+                    },
+                )
                 await upsert_page(page)
         else:
-            combined_title = (title or "").strip() or (pages[0].get("title") or "").strip() or url
+            combined_title = (
+                (title or "").strip() or (pages[0].get("title") or "").strip() or url
+            )
             combined_url = pages[0].get("url") or url
             combined_parts: List[str] = []
             for p in pages:
@@ -222,9 +277,15 @@ class UrlIngestionService:
                 combined_parts.append(f"{header}\n\n{p_content}")
             combined_content = "\n\n---\n\n".join(combined_parts).strip()
 
-            publish("progress", {"stage": "ingesting", "current": 1, "total": 1, "progress": 90})
+            publish(
+                "progress",
+                {"stage": "ingesting", "current": 1, "total": 1, "progress": 90},
+            )
             if cancel_check():
-                publish("status", {"stage": "canceled", "status": "Canceled", "progress": 100})
+                publish(
+                    "status",
+                    {"stage": "canceled", "status": "Canceled", "progress": 100},
+                )
                 return {"error": "canceled"}
             await upsert_page(
                 {
@@ -288,7 +349,14 @@ class UrlIngestionService:
         publish: Callable[[str, Dict[str, Any]], None],
         cancel_check: Callable[[], bool],
     ) -> Dict[str, Any]:
-        publish("status", {"stage": "youtube", "status": "Fetching YouTube metadata...", "progress": 5})
+        publish(
+            "status",
+            {
+                "stage": "youtube",
+                "status": "Fetching YouTube metadata...",
+                "progress": 5,
+            },
+        )
 
         try:
             import yt_dlp  # type: ignore
@@ -299,7 +367,11 @@ class UrlIngestionService:
             return {"error": "canceled"}
 
         with tempfile.TemporaryDirectory(prefix="yt_ingest_") as tmpdir:
-            format_selector = "bestaudio[ext=m4a]/bestaudio/best" if youtube_audio_only else "best[ext=mp4]/best"
+            format_selector = (
+                "bestaudio[ext=m4a]/bestaudio/best"
+                if youtube_audio_only
+                else "best[ext=mp4]/best"
+            )
             ydl_opts = {
                 "format": format_selector,
                 "outtmpl": str(Path(tmpdir) / "%(id)s.%(ext)s"),
@@ -310,7 +382,10 @@ class UrlIngestionService:
                 "socket_timeout": 30,
             }
 
-            publish("status", {"stage": "youtube", "status": "Downloading media...", "progress": 25})
+            publish(
+                "status",
+                {"stage": "youtube", "status": "Downloading media...", "progress": 25},
+            )
             try:
                 with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                     info = ydl.extract_info(url, download=True)
@@ -337,7 +412,9 @@ class UrlIngestionService:
                         files = sorted(Path(tmpdir).glob("*"))
                         media_files = [f for f in files if f.is_file()]
                         if media_files:
-                            media_path = max(media_files, key=lambda p: p.stat().st_size)
+                            media_path = max(
+                                media_files, key=lambda p: p.stat().st_size
+                            )
 
                     if media_path is None or not media_path.exists():
                         return {"error": "Downloaded YouTube file not found"}
@@ -352,19 +429,30 @@ class UrlIngestionService:
             if not data:
                 return {"error": "Downloaded YouTube file is empty"}
 
-            content_type = mimetypes.guess_type(str(media_path))[0] or ("audio/mp4" if youtube_audio_only else "video/mp4")
+            content_type = mimetypes.guess_type(str(media_path))[0] or (
+                "audio/mp4" if youtube_audio_only else "video/mp4"
+            )
             upload_file = UploadFile(
                 filename=media_path.name,
                 file=BytesIO(data),
                 headers=Headers({"content-type": content_type}),
             )
 
-            doc_title = (title or "").strip() or str(info.get("title") or media_path.stem or "YouTube Media")
+            doc_title = (title or "").strip() or str(
+                info.get("title") or media_path.stem or "YouTube Media"
+            )
             doc_tags = list(tags or [])
             if "youtube" not in [t.lower() for t in doc_tags]:
                 doc_tags.append("youtube")
 
-            publish("status", {"stage": "youtube", "status": "Saving document and queueing transcription...", "progress": 70})
+            publish(
+                "status",
+                {
+                    "stage": "youtube",
+                    "status": "Saving document and queueing transcription...",
+                    "progress": 70,
+                },
+            )
             document = await self.document_service.upload_file(
                 file=upload_file,
                 title=doc_title,
@@ -406,7 +494,9 @@ class UrlIngestionService:
             publish("complete", {"progress": 100, **result})
             return result
 
-    async def _is_url_allowlisted_for_internal_scrape(self, url: str, db: AsyncSession) -> bool:
+    async def _is_url_allowlisted_for_internal_scrape(
+        self, url: str, db: AsyncSession
+    ) -> bool:
         parsed = urlparse(url)
         host = (parsed.hostname or "").lower()
         if not host:
@@ -415,7 +505,7 @@ class UrlIngestionService:
         res = await db.execute(
             select(DocumentSource).where(
                 DocumentSource.source_type == "web",
-                DocumentSource.is_active == True,
+                DocumentSource.is_active.is_(True),
             )
         )
         sources = res.scalars().all()
@@ -428,10 +518,10 @@ class UrlIngestionService:
 
         for source in sources:
             cfg = source.config or {}
-            for d in (cfg.get("allowed_domains") or []):
+            for d in cfg.get("allowed_domains") or []:
                 if host_matches(d):
                     return True
-            for base in (cfg.get("base_urls") or []):
+            for base in cfg.get("base_urls") or []:
                 try:
                     base_host = (urlparse(str(base)).hostname or "").lower()
                 except Exception:

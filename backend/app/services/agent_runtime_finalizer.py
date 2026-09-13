@@ -5,26 +5,451 @@ from __future__ import annotations
 import hashlib
 import uuid
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, List, Optional
 
 from loguru import logger
 from sqlalchemy import func, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.agent_job import AgentJob, AgentJobStatus
+from app.core.config import settings
+from app.models.agent_job import AgentJob, AgentJobStatus, ChainTriggerCondition
+from app.services import agent_swarm_review_gate
 from app.services.agent_job_memory_service import agent_job_memory_service
+from app.services.agent_run_synthesis_service import synthesize_conclusion
+from app.services.autonomous_rnd_trajectory_service import (
+    autonomous_rnd_trajectory_adapter,
+)
+
+#: Marks the approval payload written when a chain waits on a person, so the
+#: approve handler can tell it from a mid-run checkpoint and start the chain
+#: instead of re-running a job that has already done its work.
+CHAIN_GATE_CHECKPOINT = "chain_gate"
+
+#: Marks the approval payload written when a swarm's merged verdict wants a
+#: person's eyes. Distinct from CHAIN_GATE_CHECKPOINT because the two release
+#: differently: a chain gate fires the chain on the `approval` event, which is
+#: the only event an ON_APPROVAL chain answers, while this one holds a job
+#: whose chain may be waiting on plain completion -- and firing the wrong
+#: event would leave those stages stranded with the parent marked done.
+SWARM_REVIEW_CHECKPOINT = "swarm_review"
 
 
-async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession) -> Dict[str, Any]:
+def hold_for_swarm_review(job: AgentJob) -> None:
+    """Pause a finished swarm merge whose verdict a person should see.
+
+    A swarm costs several agents and produces one judgement. Completing
+    silently means the expensive part ran and the answer went unread -- which
+    is what happened to the first swarm whose roles both benchmarked: it
+    reported agreement over two measurements taken on a saturated host, and
+    only a hand-written SQL query ever looked at it.
+
+    Runs BEFORE `_hold_for_chain_approval`, which requires a COMPLETED job, so
+    at most one of the two holds. That ordering is deliberate rather than
+    incidental: one approval should release the run, not two in sequence.
+    """
+    if getattr(job, "status", None) != AgentJobStatus.COMPLETED.value:
+        return
+    raw_results = getattr(job, "results", None)
+    results = raw_results if isinstance(raw_results, dict) else {}
+    fan_in = results.get("swarm_fan_in")
+    if not isinstance(fan_in, dict) or not fan_in:
+        return  # not a swarm merge; there is no verdict to review
+
+    raw_config = getattr(job, "config", None)
+    config = raw_config if isinstance(raw_config, dict) else {}
+    policy = config.get("swarm_review_gate")
+    if policy is None:
+        policy = getattr(
+            settings, "AGENT_SWARM_REVIEW_GATE", agent_swarm_review_gate.ON_DISPUTE
+        )
+
+    decision = agent_swarm_review_gate.decide(fan_in, policy)
+    if not decision.hold:
+        return
+
+    results["approval_checkpoint"] = {
+        "checkpoint_type": SWARM_REVIEW_CHECKPOINT,
+        "message": (
+            "The swarm merged its roles and the verdict wants review: "
+            + "; ".join(decision.reasons)
+        )[:300],
+        "iteration": int(getattr(job, "iteration", 0) or 0),
+        "reasons": list(decision.reasons),
+        "policy": decision.policy,
+    }
+    job.results = results
+    job.status = AgentJobStatus.PAUSED.value
+    job.current_phase = "awaiting_approval"
+    job.phase_details = "Swarm verdict awaiting review."
+    log = getattr(job, "add_log_entry", None)
+    if callable(log):
+        log({"phase": "swarm_review_gate", "reasons": list(decision.reasons)})
+
+
+def hold_for_chain_approval(job: AgentJob) -> None:
+    """Pause a completed job whose chain waits on a person.
+
+    Writes the payload ``extract_approval_checkpoint`` reads, so the job
+    appears in the approval queue exactly as a mid-run checkpoint does. The
+    ``checkpoint_type`` is what tells the approve handler to start the chain
+    rather than re-run this job, whose work is already done.
+    """
+    # Read defensively: finalize_job is exercised with stand-in jobs that carry
+    # only the fields a test needs, and a gate that has nothing to hold should
+    # not be the thing that breaks them.
+    if getattr(job, "status", None) != AgentJobStatus.COMPLETED.value:
+        return
+    raw_chain = getattr(job, "chain_config", None)
+    chain_config = raw_chain if isinstance(raw_chain, dict) else {}
+    if not chain_config.get("child_jobs"):
+        return
+    if str(chain_config.get("trigger_condition") or "") != (
+        ChainTriggerCondition.ON_APPROVAL.value
+    ):
+        return
+    if getattr(job, "chain_triggered", False):
+        return
+
+    raw_results = getattr(job, "results", None)
+    results = raw_results if isinstance(raw_results, dict) else {}
+    waiting = [
+        str(
+            (child.get("config") or {}).get("pipeline_stage") or child.get("name") or ""
+        )
+        for child in chain_config.get("child_jobs") or []
+    ]
+    results["approval_checkpoint"] = {
+        "checkpoint_type": CHAIN_GATE_CHECKPOINT,
+        "message": (
+            "This stage is finished and the next one waits for approval: "
+            + ", ".join(name for name in waiting if name)
+        )[:300],
+        "iteration": int(getattr(job, "iteration", 0) or 0),
+        "waiting_stages": [name for name in waiting if name],
+    }
+    job.results = results
+    job.status = AgentJobStatus.PAUSED.value
+    job.current_phase = "awaiting_approval"
+    job.phase_details = "Approval required before the next stage starts."
+    log = getattr(job, "add_log_entry", None)
+    if callable(log):
+        log({"phase": "chain_gate", "waiting_stages": [n for n in waiting if n]})
+
+
+#: Finding types that record what a run READ rather than what it established.
+#: Shared with synthesis_service, which learned the same lesson: one real run
+#: recorded twelve findings of which eleven were search results.
+RETRIEVAL_FINDING_TYPES = {"document", "paper"}
+
+
+def _established_findings(job: AgentJob) -> list:
+    """The run's own contributions, minus what it merely retrieved."""
+    findings = (job.results or {}).get("findings")
+    if not isinstance(findings, list):
+        return []
+    return [
+        f
+        for f in findings
+        if isinstance(f, dict)
+        and str(f.get("type") or "").strip().lower() not in RETRIEVAL_FINDING_TYPES
+    ]
+
+
+async def _record_what_the_run_established(
+    executor, job: AgentJob, db, artifacts: list
+) -> None:
+    """Write one searchable document for a run, if it established anything.
+
+    Deliberately not a summary the model writes: the conclusion it already
+    wrote at finalization, plus the findings and methods verbatim. A run's
+    record should be readable back as what it recorded, not as a second-hand
+    account that could drift from it.
+    """
+    from app.models.document import Document
+    from app.services.agent_run_synthesis_service import summarize_findings_for_prompt
+
+    established = _established_findings(job)
+    methods = [
+        m
+        for m in ((job.results or {}).get("methods") or [])
+        if isinstance(m, dict) and str(m.get("procedure") or "").strip()
+    ]
+    if not established and not methods:
+        # Nothing of its own: a document here would say a run happened, which
+        # search does not need to know.
+        return
+
+    # One record per run. Re-finalizing must not leave two.
+    existing = ((job.results or {}).get("library_record") or {}).get("document_id")
+    if existing:
+        return
+
+    lines = [f"# {job.name}", "", f"**Goal:** {job.goal}", ""]
+    conclusion = (job.results or {}).get("conclusion")
+    if isinstance(conclusion, dict) and str(conclusion.get("answer") or "").strip():
+        lines += ["## What it concluded", "", str(conclusion["answer"]).strip(), ""]
+    if established:
+        lines += ["## What it established", ""]
+        lines += [f"- {row}" for row in summarize_findings_for_prompt(established)]
+        lines.append("")
+    if methods:
+        lines += ["## Methods it recorded", ""]
+        for method in methods:
+            name = str(method.get("name") or "method").strip()
+            lines.append(f"### {name}")
+            lines.append("")
+            lines.append(str(method.get("procedure") or "").strip())
+            prevents = str(method.get("prevents") or "").strip()
+            if prevents:
+                lines.append("")
+                lines.append(f"Prevents: {prevents}")
+            lines.append("")
+    content = "\n".join(lines).strip()
+
+    notes_source = await executor.document_service._get_or_create_agent_notes_source(db)
+    doc = Document(
+        title=f"Run: {job.name}",
+        content=content,
+        content_hash=hashlib.sha256(content.encode("utf-8")).hexdigest(),
+        file_type="text/markdown",
+        file_size=len(content.encode("utf-8")),
+        source_id=notes_source.id,
+        source_identifier=f"agent_run_record:{job.id}",
+        tags=["autonomous_job", "run_record", str(job.job_type or "custom")],
+        extra_metadata={
+            "agent_job_id": str(job.id),
+            "job_type": job.job_type,
+            "finding_count": len(established),
+            "method_count": len(methods),
+        },
+    )
+    db.add(doc)
+    await db.commit()
+    await db.refresh(doc)
+
+    try:
+        await executor.document_service.reprocess_document(
+            doc.id, db, user_id=job.user_id
+        )
+    except Exception as exc:  # noqa: BLE001 - the document stands unindexed
+        logger.warning(f"Failed to index the run record for {job.id}: {exc}")
+
+    artifacts.append({"type": "document", "id": str(doc.id), "title": doc.title})
+    job.results.setdefault("library_record", {})["document_id"] = str(doc.id)
+
+
+def _why_it_gave_up(job: AgentJob, state: Dict[str, Any]) -> str:
+    """The run's own account of why it stopped, or "" if it did not give up.
+
+    Only a run that ENDED ITSELF is stuck. One that ran out of iterations or
+    tool calls hit a budget, which is an ordinary ending -- pausing those would
+    put a person in the loop of every short run. The three ways a run ends
+    itself: its loop policy fires, it insists on stopping with the contract
+    unmet, or the stall detector stops it. The first live run to exercise this
+    took the second path while only the first was being checked, and was filed
+    `completed` with nothing measured.
+    """
+    reason = str(state.get("loop_policy_stop_reason") or "").strip()
+    if reason:
+        return reason
+
+    reason = str(state.get("stopped_short_reason") or "").strip()
+    if reason:
+        return reason
+
+    # The stall detector logs a voluntary stop without touching state.
+    for entry in reversed(list(getattr(job, "execution_log", None) or [])[-12:]):
+        if isinstance(entry, dict) and entry.get("phase") == "voluntary_stop":
+            return str(entry.get("reason") or "").strip() or "the run stopped itself"
+
+    if state.get("stopped_short_of_contract"):
+        return "the run stopped with its goal contract unmet"
+    return ""
+
+
+async def _send_the_work_back(
+    executor: Any, job: AgentJob, request: Dict[str, Any], db: AsyncSession
+) -> bool:
+    """Re-run an earlier stage on this stage's correction. True if it went.
+
+    Reuses the restart path rather than starting a job here: that path already
+    re-fires the chain from the target's completed predecessor, which is what
+    makes the earlier stage inherit the same evidence it had the first time,
+    and it already refuses to build on a predecessor whose contract went unmet.
+    A second way to start a stage would be a second definition of what a stage
+    inherits.
+
+    Returning False rather than raising when it cannot go: a stage that has
+    done its work and cannot get the detour it asked for should still finish
+    and record what it found, which is more than the run had before.
+    """
+    from sqlalchemy.orm.attributes import flag_modified
+
+    from app.services import agent_pipeline_restart, agent_stage_rerun
+
+    target = str(request.get("stage") or "").strip()
+    reason = str(request.get("reason") or "").strip()
+    root_id = job.root_job_id or job.parent_job_id or job.id
+
+    try:
+        child = await agent_pipeline_restart.restart_from_stage(
+            root_job_id=root_id,
+            stage_id=target,
+            executor=executor,
+            db=db,
+            note=reason,
+        )
+    except agent_pipeline_restart.PipelineRestartError as error:
+        # The request was valid when the tool accepted it and is not now --
+        # the predecessor did not finish, most likely. Said in the log rather
+        # than swallowed: a run whose detour was refused looks identical to one
+        # that never asked.
+        job.add_log_entry(
+            {
+                "phase": "stage_rerun_refused",
+                "stage": target,
+                "reason": error.detail[:400],
+            }
+        )
+        return False
+
+    job.results = job.results if isinstance(job.results, dict) else {}
+    agent_stage_rerun.record(
+        job.results,
+        from_stage=str((job.config or {}).get("pipeline_stage") or job.name),
+        to_stage=target,
+        reason=reason,
+        iteration=int(request.get("iteration") or job.iteration or 0),
+    )
+    flag_modified(job, "results")
+    job.add_log_entry(
+        {"phase": "stage_rerun_requested", "stage": target, "job_id": str(child.id)}
+    )
+    logger.info(f"Job {job.id} sent the work back to stage {target} as job {child.id}")
+    return True
+
+
+async def finalize_job(
+    executor: Any, job: AgentJob, state: Dict[str, Any], db: AsyncSession
+) -> Dict[str, Any]:
     """Finalize a runtime job and build the terminal result payload."""
     # Determine final status
     limited, limit_reason = job.is_resource_limited()
+
+    # Close the instrument bracket before the contract is judged, for a run
+    # ending any way at all. A run stopped at its iteration cap never claims
+    # goal_achieved, so the think phase's closing control never fires, and the
+    # contract would refuse it for a bracket it was given no chance to close.
+    try:
+        from app.services import agent_tool_controls
+
+        await agent_tool_controls.close_bracket(executor, job, db, state)
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Could not close the control bracket for job {job.id}: {exc}")
+
     contract_eval = executor._evaluate_goal_contract(job, state)
     state["goal_contract_last"] = contract_eval
+
+    # Attach this run's outcome to every method it carried. Methods were
+    # recorded and recalled and never scored, so one that misleads was recalled
+    # with the authority of one that works. Scoring must never fail the run:
+    # a job that did its work and could not be graded still did its work.
+    try:
+        from app.services import agent_method_standing_service
+
+        await agent_method_standing_service.record_outcomes_for_job(
+            db, job, state, contract_eval
+        )
+    except Exception as exc:  # pragma: no cover - defensive
+        logger.warning(f"Failed to score methods for job {job.id}: {exc}")
     existing_status = str(job.status or "")
 
-    if existing_status == AgentJobStatus.PAUSED.value:
+    # An enabled contract that is not satisfied cannot be filed as a finished
+    # goal, whatever the run believes about itself. The contract already gates
+    # the two places a run declares victory -- `goal_achieved` and the
+    # autocomplete when it is satisfied -- but `goal_progress` is a third road
+    # to the same verdict: the progress evaluator is an LLM judgement, free to
+    # return 100, and this function used to read >= 100 as "done" without ever
+    # consulting the contract it evaluates immediately above. A live run
+    # measured nothing at all, recalled fifty numbers other runs had measured,
+    # and was recorded `completed` at 100% with `mechanism_comparison>=2` still
+    # missing. The unmet requirement was written into the results, correctly,
+    # where nothing read it.
+    #
+    # This is the same "completed with limits" the resource caps use: the run
+    # is over and it did work, so it is not a failure -- but the goal is not
+    # met, and the record has to say so in the field a reader actually sees.
+    contract_unmet = bool(contract_eval.get("enabled")) and not bool(
+        contract_eval.get("satisfied")
+    )
+    # A run that errored its way to a stop is still a failure; an unmet
+    # contract does not upgrade it to "completed with an unmet contract".
+    blocked_payload: Optional[Dict[str, Any]] = None
+    if (
+        contract_unmet
+        and existing_status
+        not in (
+            AgentJobStatus.PAUSED.value,
+            AgentJobStatus.CANCELLED.value,
+        )
+        and int(getattr(job, "error_count", 0) or 0) < 5
+    ):
+        missing = [str(x)[:80] for x in (contract_eval.get("missing") or [])[:6]]
+
+        # A loop that ended because nothing new was found, with its contract
+        # still unmet, has not completed anything. It is stuck, and often the
+        # run itself knows why: one pointed at a repository that does not
+        # exist diagnosed the git failure correctly, tried to stop, and was
+        # refused because its contract was unmet -- then spent its remaining
+        # rounds proving the same thing.
+        #
+        # So it pauses instead, saying what is missing and what it was doing
+        # when it gave up. A person can then supply the one thing it lacked --
+        # the right path, a credential, a corrected assumption -- and resume
+        # it from its checkpoint. `blocked_needs_input` keeps the stalled-job
+        # sweep from marching it back into the same wall.
+        stuck_reason = _why_it_gave_up(job, state)
+        if stuck_reason:
+            job.status = AgentJobStatus.PAUSED.value
+            job.current_phase = "blocked_needs_input"
+            job.phase_details = (
+                "Stopped without meeting its contract; a correction would let "
+                "it continue."
+            )
+            job.add_log_entry(
+                {
+                    "phase": "blocked_needs_input",
+                    "reason": stuck_reason,
+                    "missing": missing,
+                }
+            )
+            state["goal_progress"] = min(int(state.get("goal_progress", 0) or 0), 99)
+            # Attached after the results payload is built below -- that
+            # assignment replaces `job.results` wholesale, and a blocked run
+            # still did work worth compiling: its findings are most of what
+            # the person answering it needs to see.
+            blocked_payload = {
+                "reason": stuck_reason,
+                "missing": missing,
+                "resumable": True,
+            }
+        else:
+            job.status = AgentJobStatus.COMPLETED.value
+            job.add_log_entry(
+                {
+                    "phase": "completed_contract_unmet",
+                    "reason": (
+                        "The run ended with its goal contract unsatisfied: "
+                        + (", ".join(missing) or "requirements not met")
+                    ),
+                    "missing": missing,
+                }
+            )
+            # Not 100. The goal was not reached, and a progress bar that says
+            # it was is the part a reader believes without opening the results.
+            state["goal_progress"] = min(int(state.get("goal_progress", 0) or 0), 99)
+    elif existing_status == AgentJobStatus.PAUSED.value:
         job.status = AgentJobStatus.PAUSED.value
     elif existing_status == AgentJobStatus.CANCELLED.value:
         job.status = AgentJobStatus.CANCELLED.value
@@ -32,10 +457,12 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         job.status = AgentJobStatus.COMPLETED.value
     elif limited:
         job.status = AgentJobStatus.COMPLETED.value  # Completed with limits
-        job.add_log_entry({
-            "phase": "completed_with_limits",
-            "reason": limit_reason,
-        })
+        job.add_log_entry(
+            {
+                "phase": "completed_with_limits",
+                "reason": limit_reason,
+            }
+        )
     elif job.error_count >= 5:
         job.status = AgentJobStatus.FAILED.value
     else:
@@ -55,7 +482,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         except Exception:
             return ""
 
-    def _take_titles(items: list[dict[str, Any]], key: str, limit: int = 6) -> list[str]:
+    def _take_titles(
+        items: list[dict[str, Any]], key: str, limit: int = 6
+    ) -> list[str]:
         out: list[str] = []
         for it in items:
             if not isinstance(it, dict):
@@ -71,16 +500,34 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 break
         return out
 
-    paper_findings = [f for f in findings if isinstance(f, dict) and f.get("type") == "paper"]
-    doc_findings = [f for f in findings if isinstance(f, dict) and f.get("type") == "document"]
+    paper_findings = [
+        f for f in findings if isinstance(f, dict) and f.get("type") == "paper"
+    ]
+    doc_findings = [
+        f for f in findings if isinstance(f, dict) and f.get("type") == "document"
+    ]
     insight_findings = [
-        f for f in findings
-        if isinstance(f, dict) and f.get("category") in {"key_insight", "methodology", "result", "gap", "connection", "contradiction", "trend"}
+        f
+        for f in findings
+        if isinstance(f, dict)
+        and f.get("category")
+        in {
+            "key_insight",
+            "methodology",
+            "result",
+            "gap",
+            "connection",
+            "contradiction",
+            "trend",
+        }
     ]
 
     job.results = {
         "findings_count": len(state.get("findings", [])),
         "actions_count": len(state.get("actions_taken", [])),
+        "actions": autonomous_rnd_trajectory_adapter.compact_action_ledger(
+            state.get("actions_taken", [])
+        ),
         "iterations": job.iteration,
         "findings": state.get("findings", [])[:50],  # Limit stored findings
         "goal_progress": state.get("goal_progress", 0),
@@ -96,6 +543,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
     formatted_outputs = state.get("formatted_outputs", [])
     if isinstance(formatted_outputs, list) and formatted_outputs:
         job.results["formatted_outputs"] = formatted_outputs[-20:]
+
+    if blocked_payload is not None:
+        job.results["blocked"] = blocked_payload
 
     job.results["goal_contract"] = {
         "enabled": bool(contract_eval.get("enabled", False)),
@@ -115,8 +565,27 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             if isinstance(contract_eval.get("metrics"), dict)
             else {}
         ),
-        "satisfied_iteration": int(state.get("goal_contract_satisfied_iteration", 0) or 0),
+        "satisfied_iteration": int(
+            state.get("goal_contract_satisfied_iteration", 0) or 0
+        ),
+        # A run that chose to stop with its contract unmet, after being told
+        # twice what was missing. Recorded because the job still finishes with
+        # status "completed", and an operator reading that alone would take it
+        # for a run that met its requirements.
+        "stopped_short": bool(state.get("stopped_short_of_contract", False)),
     }
+    job_config = job.config if isinstance(job.config, dict) else {}
+    if bool(job_config.get("coding_harness_enabled")):
+        from app.services.agent_coding_harness_service import (
+            agent_coding_harness_service,
+        )
+
+        job.results[
+            "coding_harness"
+        ] = agent_coding_harness_service.build_execution_evidence(
+            job_config,
+            state,
+        )
     execution_graph_nodes = (
         state.get("execution_graph_nodes")
         if isinstance(state.get("execution_graph_nodes"), list)
@@ -131,17 +600,27 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         execution_graph_nodes,
         execution_graph_edges,
     )
-    execution_graph_health = executor._build_execution_graph_health(execution_graph_dag_stats)
-    execution_graph_recommendations = executor._build_execution_graph_recommendations(execution_graph_health)
+    execution_graph_health = executor._build_execution_graph_health(
+        execution_graph_dag_stats
+    )
+    execution_graph_recommendations = executor._build_execution_graph_recommendations(
+        execution_graph_health
+    )
 
     job.results["execution_strategy"] = {
         "execution_mode": str(state.get("execution_mode") or "adaptive"),
-        "execution_plan": (state.get("execution_plan") or [])[:12] if isinstance(state.get("execution_plan"), list) else [],
+        "execution_plan": (state.get("execution_plan") or [])[:12]
+        if isinstance(state.get("execution_plan"), list)
+        else [],
         "plan_step_index": int(state.get("plan_step_index", 0) or 0),
         "plan_completed": bool(state.get("plan_completed", False)),
-        "step_events": (state.get("step_events") or [])[-300:] if isinstance(state.get("step_events"), list) else [],
+        "step_events": (state.get("step_events") or [])[-300:]
+        if isinstance(state.get("step_events"), list)
+        else [],
         "causal_experiment_planner": {
-            "enabled": bool((job.config or {}).get("causal_experiment_planner_enabled", True)),
+            "enabled": bool(
+                (job.config or {}).get("causal_experiment_planner_enabled", True)
+            ),
             "attempted": bool(state.get("causal_plan_generation_attempted", False)),
             "plan": (
                 state.get("causal_experiment_plan")
@@ -150,16 +629,22 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             ),
             "hypothesis_count": len(
                 (state.get("causal_experiment_plan") or {}).get("hypotheses", [])
-                if isinstance((state.get("causal_experiment_plan") or {}).get("hypotheses"), list)
+                if isinstance(
+                    (state.get("causal_experiment_plan") or {}).get("hypotheses"), list
+                )
                 else []
             ),
             "experiment_count": len(
                 (state.get("causal_experiment_plan") or {}).get("experiments", [])
-                if isinstance((state.get("causal_experiment_plan") or {}).get("experiments"), list)
+                if isinstance(
+                    (state.get("causal_experiment_plan") or {}).get("experiments"), list
+                )
                 else []
             ),
         },
-        "subgoals": (state.get("subgoals") or [])[:12] if isinstance(state.get("subgoals"), list) else [],
+        "subgoals": (state.get("subgoals") or [])[:12]
+        if isinstance(state.get("subgoals"), list)
+        else [],
         "subgoal_index": int(state.get("subgoal_index", 0) or 0),
         "subgoal_chain_configured": bool(state.get("subgoal_chain_configured", False)),
         "swarm": {
@@ -174,7 +659,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 else []
             ),
         },
-        "critic_notes": (state.get("critic_notes") or [])[-5:] if isinstance(state.get("critic_notes"), list) else [],
+        "critic_notes": (state.get("critic_notes") or [])[-5:]
+        if isinstance(state.get("critic_notes"), list)
+        else [],
         "critic_last_trigger": (
             state.get("critic_last_trigger")
             if isinstance(state.get("critic_last_trigger"), dict)
@@ -208,7 +695,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             "verification_attempts": int(state.get("verification_attempts", 0) or 0),
             "verification_successes": int(state.get("verification_successes", 0) or 0),
             "summarization_attempts": int(state.get("summarization_attempts", 0) or 0),
-            "summarization_successes": int(state.get("summarization_successes", 0) or 0),
+            "summarization_successes": int(
+                state.get("summarization_successes", 0) or 0
+            ),
             "nodes": execution_graph_nodes[-200:],
             "edges": execution_graph_edges[-400:],
             "dag_stats": execution_graph_dag_stats,
@@ -225,8 +714,12 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 else []
             )[-50:],
         },
-        "tool_stats": state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {},
-        "tool_priors": state.get("tool_priors") if isinstance(state.get("tool_priors"), dict) else {},
+        "tool_stats": state.get("tool_stats")
+        if isinstance(state.get("tool_stats"), dict)
+        else {},
+        "tool_priors": state.get("tool_priors")
+        if isinstance(state.get("tool_priors"), dict)
+        else {},
         "scope_guard": {
             **executor._get_scope_guard_config(job),
             "blocks": int(state.get("scope_guard_blocks", 0) or 0),
@@ -247,20 +740,26 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             "event_counts": {
                 "resolved_scope": len(
                     [
-                        e for e in (state.get("scope_events") or [])
-                        if isinstance(e, dict) and str(e.get("type") or "") == "resolved_scope"
+                        e
+                        for e in (state.get("scope_events") or [])
+                        if isinstance(e, dict)
+                        and str(e.get("type") or "") == "resolved_scope"
                     ]
                 ),
                 "tool_scope": len(
                     [
-                        e for e in (state.get("scope_events") or [])
-                        if isinstance(e, dict) and str(e.get("type") or "") == "tool_scope"
+                        e
+                        for e in (state.get("scope_events") or [])
+                        if isinstance(e, dict)
+                        and str(e.get("type") or "") == "tool_scope"
                     ]
                 ),
                 "tool_result_scope": len(
                     [
-                        e for e in (state.get("scope_events") or [])
-                        if isinstance(e, dict) and str(e.get("type") or "") == "tool_result_scope"
+                        e
+                        for e in (state.get("scope_events") or [])
+                        if isinstance(e, dict)
+                        and str(e.get("type") or "") == "tool_result_scope"
                     ]
                 ),
             },
@@ -269,7 +768,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             **executor._get_tool_selection_config(job),
             "forced_exploration": executor._get_forced_exploration_config(job),
             "cooldown": executor._get_tool_cooldown_config(job),
-            "policy_mode_effective": str(state.get("tool_selection_effective_mode") or ""),
+            "policy_mode_effective": str(
+                state.get("tool_selection_effective_mode") or ""
+            ),
             "goal_stage": str(state.get("tool_selection_goal_stage") or ""),
             "mode_override": str(state.get("tool_selection_mode_override") or ""),
             "ab_assignment": (
@@ -278,13 +779,23 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 else {}
             ),
             "runtime": {
-                "forced_exploration_attempts": int(state.get("forced_exploration_attempts", 0) or 0),
-                "forced_exploration_used": int(state.get("forced_exploration_used", 0) or 0),
-                "forced_exploration_successes": int(state.get("forced_exploration_successes", 0) or 0),
-                "forced_exploration_failures": int(state.get("forced_exploration_failures", 0) or 0),
+                "forced_exploration_attempts": int(
+                    state.get("forced_exploration_attempts", 0) or 0
+                ),
+                "forced_exploration_used": int(
+                    state.get("forced_exploration_used", 0) or 0
+                ),
+                "forced_exploration_successes": int(
+                    state.get("forced_exploration_successes", 0) or 0
+                ),
+                "forced_exploration_failures": int(
+                    state.get("forced_exploration_failures", 0) or 0
+                ),
                 "forced_exploration_rate": (
                     float(int(state.get("forced_exploration_used", 0) or 0))
-                    / float(max(1, int(state.get("forced_exploration_attempts", 0) or 0)))
+                    / float(
+                        max(1, int(state.get("forced_exploration_attempts", 0) or 0))
+                    )
                 ),
                 "forced_exploration_success_rate": (
                     float(int(state.get("forced_exploration_successes", 0) or 0))
@@ -311,14 +822,20 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                     if isinstance(state.get("tool_selection_fallback_events"), list)
                     else []
                 ),
-                "counterfactual_logged_iterations": int(state.get("counterfactual_logged_iterations", 0) or 0),
-                "counterfactual_last_iteration": int(state.get("counterfactual_last_iteration", 0) or 0),
+                "counterfactual_logged_iterations": int(
+                    state.get("counterfactual_logged_iterations", 0) or 0
+                ),
+                "counterfactual_last_iteration": int(
+                    state.get("counterfactual_last_iteration", 0) or 0
+                ),
                 "counterfactual_last": (
                     state.get("counterfactual_last", [])[:10]
                     if isinstance(state.get("counterfactual_last"), list)
                     else []
                 ),
-                "selection_explainability_logged_iterations": int(state.get("selection_explainability_logged_iterations", 0) or 0),
+                "selection_explainability_logged_iterations": int(
+                    state.get("selection_explainability_logged_iterations", 0) or 0
+                ),
                 "selection_explainability_last": (
                     state.get("selection_explainability_last")
                     if isinstance(state.get("selection_explainability_last"), dict)
@@ -327,21 +844,48 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             },
         },
         "skill_profile": {
-            "role": str(((state.get("skill_profile") or {}).get("role") or "researcher")),
-            "display_name": str(((state.get("skill_profile") or {}).get("display_name") or "")),
+            "role": str(
+                ((state.get("skill_profile") or {}).get("role") or "researcher")
+            ),
+            "display_name": str(
+                ((state.get("skill_profile") or {}).get("display_name") or "")
+            ),
             "prompt_directives": (
-                [str(x) for x in ((state.get("skill_profile") or {}).get("prompt_directives") or [])[:6]]
-                if isinstance((state.get("skill_profile") or {}).get("prompt_directives"), list)
+                [
+                    str(x)
+                    for x in (
+                        (state.get("skill_profile") or {}).get("prompt_directives")
+                        or []
+                    )[:6]
+                ]
+                if isinstance(
+                    (state.get("skill_profile") or {}).get("prompt_directives"), list
+                )
                 else []
             ),
             "preferred_tools": (
-                [str(x) for x in ((state.get("skill_profile") or {}).get("preferred_tools") or [])[:20]]
-                if isinstance((state.get("skill_profile") or {}).get("preferred_tools"), list)
+                [
+                    str(x)
+                    for x in (
+                        (state.get("skill_profile") or {}).get("preferred_tools") or []
+                    )[:20]
+                ]
+                if isinstance(
+                    (state.get("skill_profile") or {}).get("preferred_tools"), list
+                )
                 else []
             ),
             "discouraged_tools": (
-                [str(x) for x in ((state.get("skill_profile") or {}).get("discouraged_tools") or [])[:20]]
-                if isinstance((state.get("skill_profile") or {}).get("discouraged_tools"), list)
+                [
+                    str(x)
+                    for x in (
+                        (state.get("skill_profile") or {}).get("discouraged_tools")
+                        or []
+                    )[:20]
+                ]
+                if isinstance(
+                    (state.get("skill_profile") or {}).get("discouraged_tools"), list
+                )
                 else []
             ),
             "metrics": (
@@ -367,7 +911,11 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 if isinstance(state.get("memory_extraction_policy"), dict)
                 else executor._resolve_memory_extraction_policy(job)
             ),
-            "injected_count": len(state.get("injected_memories", []) if isinstance(state.get("injected_memories"), list) else []),
+            "injected_count": len(
+                state.get("injected_memories", [])
+                if isinstance(state.get("injected_memories"), list)
+                else []
+            ),
             "injected_memory_ids": (
                 [str(x) for x in (state.get("injected_memories") or [])[:20]]
                 if isinstance(state.get("injected_memories"), list)
@@ -383,7 +931,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
     if bool((job.config or {}).get("tool_selection_replay_enabled", False)):
         replay_steps = 200
         try:
-            replay_steps = int((job.config or {}).get("tool_selection_replay_steps", 200) or 200)
+            replay_steps = int(
+                (job.config or {}).get("tool_selection_replay_steps", 200) or 200
+            )
         except Exception:
             replay_steps = 200
         replay_steps = max(25, min(replay_steps, 5000))
@@ -394,13 +944,19 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
 
         replay_seed = 42
         try:
-            replay_seed = int((job.config or {}).get("tool_selection_replay_seed", 42) or 42)
+            replay_seed = int(
+                (job.config or {}).get("tool_selection_replay_seed", 42) or 42
+            )
         except Exception:
             replay_seed = 42
 
         merged_for_replay = executor._merge_tool_stats(
-            state.get("tool_priors") if isinstance(state.get("tool_priors"), dict) else {},
-            state.get("tool_stats") if isinstance(state.get("tool_stats"), dict) else {},
+            state.get("tool_priors")
+            if isinstance(state.get("tool_priors"), dict)
+            else {},
+            state.get("tool_stats")
+            if isinstance(state.get("tool_stats"), dict)
+            else {},
         )
         replay = executor.simulate_tool_selection_replay(
             merged_for_replay,
@@ -427,31 +983,77 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         created_doc_ids = [
             _as_str(a.get("id") or a.get("document_id"))
             for a in artifacts
-            if isinstance(a, dict) and a.get("type") == "document" and (a.get("id") or a.get("document_id"))
+            if isinstance(a, dict)
+            and a.get("type") == "document"
+            and (a.get("id") or a.get("document_id"))
         ]
         created_doc_ids = [x for x in created_doc_ids if x]
+
+        # Findings this summary has no named bucket for. Counting only
+        # documents, papers and insights meant a compiler experiment that
+        # recorded nine measurements summarised itself as having found
+        # nothing, because none of them were documents.
+        counted_ids = {
+            id(f) for f in (*doc_findings, *paper_findings, *insight_findings)
+        }
+        other_by_type: dict[str, int] = {}
+        other_titles: list[str] = []
+        for finding in findings:
+            if not isinstance(finding, dict) or id(finding) in counted_ids:
+                continue
+            kind = _as_str(finding.get("type") or "finding") or "finding"
+            other_by_type[kind] = other_by_type.get(kind, 0) + 1
+            title = _as_str(finding.get("title"))
+            if title and len(other_titles) < 8:
+                other_titles.append(title)
 
         job.results["research"] = {
             "documents_found": len(doc_findings),
             "papers_found": len(paper_findings),
             "insights_saved": len(insight_findings),
+            "other_findings": sum(other_by_type.values()),
+            "other_findings_by_type": other_by_type,
             "top_documents": doc_titles,
             "top_papers": paper_titles,
             "top_insights": insight_titles,
+            "top_other_findings": other_titles,
             "created_documents": created_doc_ids[:10],
         }
+
+        parts: list[str] = []
+        if doc_findings:
+            parts.append(f"{len(doc_findings)} KB docs")
+        if paper_findings:
+            parts.append(f"{len(paper_findings)} papers")
+        if insight_findings:
+            parts.append(f"{len(insight_findings)} saved insights")
+        parts.extend(
+            f"{count} {kind.replace('_', ' ')}"
+            for kind, count in sorted(other_by_type.items())
+        )
         job.results["summary"] = (
-            f"Research run completed: {len(doc_findings)} KB docs, {len(paper_findings)} papers, "
-            f"{len(insight_findings)} saved insights."
+            "Research run completed: " + ", ".join(parts) + "."
+            if parts
+            else "Research run completed: no findings were recorded."
         )
 
         # Standardized schema for downstream UX/workflows.
-        customer_profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else None
-        customer_name = (customer_profile or {}).get("name") if customer_profile else None
-        customer_keywords = (customer_profile or {}).get("keywords") if customer_profile else None
+        customer_profile = (
+            state.get("customer_profile")
+            if isinstance(state.get("customer_profile"), dict)
+            else None
+        )
+        customer_name = (
+            (customer_profile or {}).get("name") if customer_profile else None
+        )
+        customer_keywords = (
+            (customer_profile or {}).get("keywords") if customer_profile else None
+        )
         if not isinstance(customer_keywords, list):
             customer_keywords = []
-        customer_keywords = [str(x).strip() for x in customer_keywords if str(x).strip()]
+        customer_keywords = [
+            str(x).strip() for x in customer_keywords if str(x).strip()
+        ]
 
         def _suggest_queries() -> list[str]:
             goal = (job.goal or "").strip()
@@ -466,7 +1068,11 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                     out.append(f"{kw} {goal[:120]}".strip()[:140])
             # Add a customer-name anchored query.
             if customer_name:
-                out.append(f"{customer_name} {goal[:120]}".strip()[:140] if goal else str(customer_name)[:140])
+                out.append(
+                    f"{customer_name} {goal[:120]}".strip()[:140]
+                    if goal
+                    else str(customer_name)[:140]
+                )
             # Deduplicate preserve order.
             seen: set[str] = set()
             deduped: list[str] = []
@@ -487,7 +1093,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             if not did or did in seen_doc_ids:
                 continue
             seen_doc_ids.add(did)
-            top_docs_struct.append({"id": did, "title": _as_str(f.get("title")).strip()[:300]})
+            top_docs_struct.append(
+                {"id": did, "title": _as_str(f.get("title")).strip()[:300]}
+            )
             if len(top_docs_struct) >= 12:
                 break
 
@@ -532,15 +1140,31 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             if len(top_insights_struct) >= 20:
                 break
 
-        causal_plan = state.get("causal_experiment_plan") if isinstance(state.get("causal_experiment_plan"), dict) else {}
-        causal_experiments = causal_plan.get("experiments") if isinstance(causal_plan.get("experiments"), list) else []
-        causal_priority = causal_plan.get("priority_order") if isinstance(causal_plan.get("priority_order"), list) else []
+        causal_plan = (
+            state.get("causal_experiment_plan")
+            if isinstance(state.get("causal_experiment_plan"), dict)
+            else {}
+        )
+        causal_experiments = (
+            causal_plan.get("experiments")
+            if isinstance(causal_plan.get("experiments"), list)
+            else []
+        )
+        causal_priority = (
+            causal_plan.get("priority_order")
+            if isinstance(causal_plan.get("priority_order"), list)
+            else []
+        )
         exp_map = {
             str(e.get("id") or "").strip(): e
             for e in causal_experiments
             if isinstance(e, dict) and str(e.get("id") or "").strip()
         }
-        ordered_experiment_ids = [str(x).strip() for x in causal_priority if str(x).strip() in set(exp_map.keys())]
+        ordered_experiment_ids = [
+            str(x).strip()
+            for x in causal_priority
+            if str(x).strip() in set(exp_map.keys())
+        ]
         if not ordered_experiment_ids:
             ordered_experiment_ids = list(exp_map.keys())
         prioritized_experiments = []
@@ -551,10 +1175,16 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             prioritized_experiments.append(
                 {
                     "id": eid,
-                    "hypothesis_id": str(exp.get("hypothesis_id") or "").strip() or None,
+                    "hypothesis_id": str(exp.get("hypothesis_id") or "").strip()
+                    or None,
                     "name": str(exp.get("name") or "").strip()[:220],
-                    "minimal_design": str(exp.get("minimal_design") or "").strip()[:280],
-                    "estimated_effort": str(exp.get("estimated_effort") or "").strip()[:20] or None,
+                    "minimal_design": str(exp.get("minimal_design") or "").strip()[
+                        :280
+                    ],
+                    "estimated_effort": str(exp.get("estimated_effort") or "").strip()[
+                        :20
+                    ]
+                    or None,
                     "expected_evidence": (
                         exp.get("expected_evidence")
                         if isinstance(exp.get("expected_evidence"), dict)
@@ -569,10 +1199,16 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             "Design a minimal experiment plan (data, evaluation, timeline).",
         ]
         if prioritized_experiments:
-            next_steps = [f"Run prioritized causal experiment: {str(prioritized_experiments[0].get('name') or '')[:120]}"]
+            next_steps = [
+                f"Run prioritized causal experiment: {str(prioritized_experiments[0].get('name') or '')[:120]}"
+            ]
             if len(prioritized_experiments) > 1:
-                next_steps.append(f"Then run: {str(prioritized_experiments[1].get('name') or '')[:120]}")
-            next_steps.append("Update hypothesis confidence based on support/falsification evidence.")
+                next_steps.append(
+                    f"Then run: {str(prioritized_experiments[1].get('name') or '')[:120]}"
+                )
+            next_steps.append(
+                "Update hypothesis confidence based on support/falsification evidence."
+            )
 
         job.results["research_bundle"] = {
             "customer": {"name": customer_name, "keywords": customer_keywords[:30]},
@@ -600,11 +1236,15 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         }
 
         # Optional reading list auto-population (deterministic; no extra LLM calls).
-        reading_list_name = str((job.config or {}).get("reading_list_name") or "").strip()
-        if reading_list_name and not any(isinstance(a, dict) and a.get("type") == "reading_list" for a in artifacts):
+        reading_list_name = str(
+            (job.config or {}).get("reading_list_name") or ""
+        ).strip()
+        if reading_list_name and not any(
+            isinstance(a, dict) and a.get("type") == "reading_list" for a in artifacts
+        ):
             try:
-                from app.models.reading_list import ReadingList, ReadingListItem
                 from app.models.document import Document
+                from app.models.reading_list import ReadingList, ReadingListItem
 
                 rl_res = await db.execute(
                     select(ReadingList).where(
@@ -614,14 +1254,24 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 )
                 rl = rl_res.scalar_one_or_none()
                 if not rl:
-                    rl = ReadingList(user_id=job.user_id, name=reading_list_name, description=None, source_id=None)
+                    rl = ReadingList(
+                        user_id=job.user_id,
+                        name=reading_list_name,
+                        description=None,
+                        source_id=None,
+                    )
                     db.add(rl)
                     await db.flush()
 
                 max_pos = int(
-                    (await db.execute(
-                        select(func.max(ReadingListItem.position)).where(ReadingListItem.reading_list_id == rl.id)
-                    )).scalar() or 0
+                    (
+                        await db.execute(
+                            select(func.max(ReadingListItem.position)).where(
+                                ReadingListItem.reading_list_id == rl.id
+                            )
+                        )
+                    ).scalar()
+                    or 0
                 )
 
                 added = 0
@@ -661,11 +1311,13 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                         position=max_pos + 1,
                         notes="Added automatically by customer research job",
                     )
-                    db.add(item)
                     try:
-                        await db.flush()
+                        # Savepoint: a rollback here would drop the items added
+                        # earlier in this loop while `added` kept counting them,
+                        # and expire `rl`, whose id the next iteration reads.
+                        async with db.begin_nested():
+                            db.add(item)
                     except IntegrityError:
-                        await db.rollback()
                         continue
 
                     max_pos += 1
@@ -673,17 +1325,38 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
 
                 await db.commit()
                 if added > 0 or rl:
-                    artifacts.append({"type": "reading_list", "id": str(rl.id), "name": rl.name, "items_added": added})
-                    job.results["research_bundle"]["reading_list"] = {"id": str(rl.id), "name": rl.name, "items_added": added}
+                    artifacts.append(
+                        {
+                            "type": "reading_list",
+                            "id": str(rl.id),
+                            "name": rl.name,
+                            "items_added": added,
+                        }
+                    )
+                    job.results["research_bundle"]["reading_list"] = {
+                        "id": str(rl.id),
+                        "name": rl.name,
+                        "items_added": added,
+                    }
             except Exception as exc:
                 logger.warning(f"Failed to auto-populate reading list: {exc}")
 
         # Optional auto-brief persistence (deterministic; no extra LLM calls).
         persist = bool((job.config or {}).get("persist_artifacts", False))
         if persist and not created_doc_ids:
-            customer_profile = state.get("customer_profile") if isinstance(state.get("customer_profile"), dict) else None
-            profile_name = (customer_profile or {}).get("name") if customer_profile else None
-            title = f"Customer Research Brief — {profile_name}" if profile_name else "Customer Research Brief"
+            customer_profile = (
+                state.get("customer_profile")
+                if isinstance(state.get("customer_profile"), dict)
+                else None
+            )
+            profile_name = (
+                (customer_profile or {}).get("name") if customer_profile else None
+            )
+            title = (
+                f"Customer Research Brief — {profile_name}"
+                if profile_name
+                else "Customer Research Brief"
+            )
 
             customer_context = (state.get("customer_context") or "").strip()
             brief_lines: list[str] = []
@@ -712,14 +1385,22 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                     brief_lines.append(f"- {t}")
             brief_lines.append("")
             brief_lines.append("## Next steps")
-            brief_lines.append("- Validate the top insights against the customer constraints.")
-            brief_lines.append("- Turn the most promising direction into an experiment plan (metrics + timeline).")
+            brief_lines.append(
+                "- Validate the top insights against the customer constraints."
+            )
+            brief_lines.append(
+                "- Turn the most promising direction into an experiment plan (metrics + timeline)."
+            )
 
             content = "\n".join(brief_lines).strip() + "\n"
             try:
                 from app.models.document import Document
 
-                notes_source = await executor.document_service._get_or_create_agent_notes_source(db)
+                notes_source = (
+                    await executor.document_service._get_or_create_agent_notes_source(
+                        db
+                    )
+                )
                 content_hash = hashlib.sha256(content.encode("utf-8")).hexdigest()
                 doc = Document(
                     title=title,
@@ -745,31 +1426,97 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 await db.refresh(doc)
 
                 try:
-                    await executor.document_service.reprocess_document(doc.id, db, user_id=job.user_id)
+                    await executor.document_service.reprocess_document(
+                        doc.id, db, user_id=job.user_id
+                    )
                 except Exception as exc:
-                    logger.warning(f"Failed to process research brief embeddings: {exc}")
+                    logger.warning(
+                        f"Failed to process research brief embeddings: {exc}"
+                    )
 
-                artifacts.append({"type": "document", "id": str(doc.id), "title": doc.title})
+                artifacts.append(
+                    {"type": "document", "id": str(doc.id), "title": doc.title}
+                )
                 job.results["research"]["created_documents"] = [str(doc.id)]
                 job.results["research"]["brief_document_id"] = str(doc.id)
             except Exception as exc:
                 logger.warning(f"Failed to persist research brief: {exc}")
 
+    # R&D -> Library. A finished run established things, and until now they
+    # lived only inside the job: readable by whoever opened that run, invisible
+    # to search, to a chat answer, and to the next run's recall. One document
+    # per run closes that — the same machinery the research brief above uses,
+    # generalised past the one job type that had it.
+    #
+    # Only at a real end: a paused run finalizes again when it resumes, and two
+    # records of one run is one record too many. Off with
+    # `config.record_run_in_library = false`.
+    if job.status in (
+        AgentJobStatus.COMPLETED.value,
+        AgentJobStatus.FAILED.value,
+    ) and job_config.get("record_run_in_library", True):
+        try:
+            await _record_what_the_run_established(executor, job, db, artifacts)
+        except Exception as exc:  # noqa: BLE001 - never fail a run over its record
+            logger.warning(f"Failed to record what job {job.id} established: {exc}")
+
     # Ensure any finalize-time artifact additions are visible to callers.
     state["artifacts"] = artifacts
     job.output_artifacts = artifacts
+    if (
+        bool(job_config.get("coding_harness_enabled"))
+        and job.status == AgentJobStatus.PAUSED.value
+    ):
+        try:
+            from app.services.agent_coding_durable_checkpoint_service import (
+                agent_coding_durable_checkpoint_service,
+            )
+
+            await agent_coding_durable_checkpoint_service.persist(
+                executor,
+                job,
+                state,
+                label=f"Paused at iteration {int(job.iteration or 0)}",
+                reason="paused",
+                db=None,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Failed to persist paused coding checkpoint for job {job.id}: {exc}"
+            )
+    if bool(job_config.get("coding_harness_enabled")):
+        try:
+            from app.services.agent_coding_workspace_session_service import (
+                agent_coding_workspace_session_service,
+            )
+
+            await agent_coding_workspace_session_service.persist_candidate_snapshot(
+                executor,
+                job,
+                state,
+            )
+        except Exception as exc:
+            logger.warning(
+                f"Failed to persist coding candidate snapshot for job {job.id}: {exc}"
+            )
 
     # Re-evaluate contract after finalize-time result/artifact mutations.
     final_contract_eval = executor._evaluate_goal_contract(job, state)
     state["goal_contract_last"] = final_contract_eval
-    strict_contract = bool((final_contract_eval.get("contract") or {}).get("strict_completion", False))
+    strict_contract = bool(
+        (final_contract_eval.get("contract") or {}).get("strict_completion", False)
+    )
     if (
         job.status not in {AgentJobStatus.PAUSED.value, AgentJobStatus.CANCELLED.value}
         and strict_contract
         and bool(final_contract_eval.get("enabled"))
         and not bool(final_contract_eval.get("satisfied"))
     ):
-        missing = final_contract_eval.get("missing") if isinstance(final_contract_eval.get("missing"), list) else []
+        missing = (
+            final_contract_eval.get("missing")
+            if isinstance(final_contract_eval.get("missing"), list)
+            else []
+        )
         job.status = AgentJobStatus.FAILED.value
         job.error = f"Goal contract unmet: {', '.join([str(x) for x in missing[:5]])}"
 
@@ -791,12 +1538,49 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             if isinstance(final_contract_eval.get("metrics"), dict)
             else {}
         ),
-        "satisfied_iteration": int(state.get("goal_contract_satisfied_iteration", 0) or 0),
+        "satisfied_iteration": int(
+            state.get("goal_contract_satisfied_iteration", 0) or 0
+        ),
+        # A run that chose to stop with its contract unmet, after being told
+        # twice what was missing. Recorded because the job still finishes with
+        # status "completed", and an operator reading that alone would take it
+        # for a run that met its requirements.
+        "stopped_short": bool(state.get("stopped_short_of_contract", False)),
     }
 
     if job.status != AgentJobStatus.PAUSED.value and not job.completed_at:
         job.completed_at = datetime.utcnow()
     job.results["executive_digest"] = executor._build_executive_digest(job, state)
+    job.results["evaluation_outcome"] = autonomous_rnd_trajectory_adapter.build_outcome(
+        job
+    )
+
+    # State what the run concluded, not only what it collected. The digest
+    # above lists finding titles; a reader still has to work out what they
+    # mean, which is how a run that measured nine kernels ended as a table
+    # with no answer. Best-effort by construction: synthesize_conclusion never
+    # raises, because an optional summary that aborts finalization would also
+    # skip the chain trigger that follows it.
+    conclusion_enabled = (job.config or {}).get("run_conclusion_enabled")
+    if conclusion_enabled is None:
+        conclusion_enabled = True
+    if conclusion_enabled and job.status != AgentJobStatus.PAUSED.value:
+        # synthesize_conclusion swallows its own errors, and this guards the
+        # call site as well: an optional summary must not be able to abort
+        # finalization, because the chain trigger comes after it.
+        try:
+            job.results["conclusion"] = await synthesize_conclusion(
+                executor, job, state, db
+            )
+        except Exception as exc:
+            logger.warning(f"Conclusion step failed for job {job.id}: {exc}")
+            job.results["conclusion"] = {
+                "answer": None,
+                "confidence": "low",
+                "evidence": [],
+                "gaps": [f"Conclusion step failed: {str(exc)[:200]}"],
+                "generated_by": "error",
+            }
 
     # Persist tool-learning signal for future jobs.
     try:
@@ -809,6 +1593,7 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
     if job_id_str in executor._data_analysis_tools:
         try:
             from app.services.data_sandbox_service import sandbox_manager
+
             sandbox_manager.cleanup(job_id_str)
         except Exception as e:
             logger.warning(f"Failed to cleanup data sandbox for job {job.id}: {e}")
@@ -824,7 +1609,11 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
     )
     job_status_token = str(job.status or "").strip().lower()
     extract_statuses = (
-        [str(x).strip().lower() for x in (memory_policy.get("extract_on_statuses") or []) if str(x).strip()]
+        [
+            str(x).strip().lower()
+            for x in (memory_policy.get("extract_on_statuses") or [])
+            if str(x).strip()
+        ]
         if isinstance(memory_policy, dict)
         else []
     )
@@ -837,15 +1626,33 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         try:
             allowlist: Optional[List[str]] = None
             if job_status_token == AgentJobStatus.FAILED.value:
-                failed_types = memory_policy.get("failed_extraction_types") if isinstance(memory_policy, dict) else None
+                failed_types = (
+                    memory_policy.get("failed_extraction_types")
+                    if isinstance(memory_policy, dict)
+                    else None
+                )
                 if isinstance(failed_types, list):
-                    allowlist = [str(x).strip().lower() for x in failed_types if str(x).strip()]
+                    allowlist = [
+                        str(x).strip().lower() for x in failed_types if str(x).strip()
+                    ]
             elif job_status_token == AgentJobStatus.COMPLETED.value:
-                completed_types = memory_policy.get("completed_extraction_types") if isinstance(memory_policy, dict) else None
+                completed_types = (
+                    memory_policy.get("completed_extraction_types")
+                    if isinstance(memory_policy, dict)
+                    else None
+                )
                 if isinstance(completed_types, list) and completed_types:
-                    allowlist = [str(x).strip().lower() for x in completed_types if str(x).strip()]
+                    allowlist = [
+                        str(x).strip().lower()
+                        for x in completed_types
+                        if str(x).strip()
+                    ]
 
-            plan_rows = state.get("execution_plan") if isinstance(state.get("execution_plan"), list) else []
+            plan_rows = (
+                state.get("execution_plan")
+                if isinstance(state.get("execution_plan"), list)
+                else []
+            )
             extraction_context = {
                 "execution_mode": str(state.get("execution_mode") or "adaptive"),
                 "plan_completed": bool(state.get("plan_completed", False)),
@@ -853,43 +1660,60 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 "plan_steps_total": len(plan_rows),
             }
             extraction_stats: Dict[str, Any] = {}
-            extracted_memories = await agent_job_memory_service.extract_memories_from_job(
-                job=job,
-                user_id=str(job.user_id),
-                db=db,
-                memory_types_allowlist=allowlist,
-                context_overrides=extraction_context,
-                extraction_reason=f"auto_{job_status_token}",
-                stats_out=extraction_stats,
+            extracted_memories = (
+                await agent_job_memory_service.extract_memories_from_job(
+                    job=job,
+                    user_id=str(job.user_id),
+                    db=db,
+                    memory_types_allowlist=allowlist,
+                    context_overrides=extraction_context,
+                    extraction_reason=f"auto_{job_status_token}",
+                    stats_out=extraction_stats,
+                )
             )
             extraction_summary = {
                 "status": "completed",
                 "reason": f"auto_{job_status_token}",
                 "created_count": len(extracted_memories),
                 "allowlist": allowlist[:12] if isinstance(allowlist, list) else [],
-                "extracted_types": list(set(str(m.memory_type) for m in extracted_memories))[:12],
+                "extracted_types": list(
+                    set(str(m.memory_type) for m in extracted_memories)
+                )[:12],
                 "parsed_count": int(extraction_stats.get("parsed_count", 0) or 0),
                 "candidate_count": int(extraction_stats.get("candidate_count", 0) or 0),
-                "skipped_duplicates": int(extraction_stats.get("skipped_duplicates", 0) or 0),
+                "skipped_duplicates": int(
+                    extraction_stats.get("skipped_duplicates", 0) or 0
+                ),
                 "dedup_existing_signature_count": int(
                     extraction_stats.get("dedup_existing_signature_count", 0) or 0
                 ),
-                "is_relaunch_chain": bool(extraction_stats.get("is_relaunch_chain", False)),
+                "is_relaunch_chain": bool(
+                    extraction_stats.get("is_relaunch_chain", False)
+                ),
                 "relaunch_root_job_id": (
-                    str(extraction_stats.get("relaunch_root_job_id") or "").strip() or None
+                    str(extraction_stats.get("relaunch_root_job_id") or "").strip()
+                    or None
                 ),
                 "at": datetime.utcnow().isoformat(),
             }
             state["memory_extraction"] = extraction_summary
             if extracted_memories:
-                logger.info(f"Extracted {len(extracted_memories)} memories from job {job.id}")
-                job.add_log_entry({
-                    "phase": "memory_extraction",
-                    "memories_created": len(extracted_memories),
-                    "memory_types": list(set(m.memory_type for m in extracted_memories)),
-                    "reason": extraction_summary.get("reason"),
-                    "skipped_duplicates": int(extraction_summary.get("skipped_duplicates", 0) or 0),
-                })
+                logger.info(
+                    f"Extracted {len(extracted_memories)} memories from job {job.id}"
+                )
+                job.add_log_entry(
+                    {
+                        "phase": "memory_extraction",
+                        "memories_created": len(extracted_memories),
+                        "memory_types": list(
+                            set(m.memory_type for m in extracted_memories)
+                        ),
+                        "reason": extraction_summary.get("reason"),
+                        "skipped_duplicates": int(
+                            extraction_summary.get("skipped_duplicates", 0) or 0
+                        ),
+                    }
+                )
             results_payload = job.results if isinstance(job.results, dict) else {}
             exec_strategy = (
                 results_payload.get("execution_strategy")
@@ -901,7 +1725,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 if isinstance(exec_strategy.get("memory_persistence"), dict)
                 else {}
             )
-            mem_persistence["policy"] = memory_policy if isinstance(memory_policy, dict) else {}
+            mem_persistence["policy"] = (
+                memory_policy if isinstance(memory_policy, dict) else {}
+            )
             mem_persistence["extraction"] = extraction_summary
             mem_persistence["injected_count"] = len(
                 state.get("injected_memories", [])
@@ -933,7 +1759,9 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                     if isinstance(exec_strategy.get("memory_persistence"), dict)
                     else {}
                 )
-                mem_persistence["policy"] = memory_policy if isinstance(memory_policy, dict) else {}
+                mem_persistence["policy"] = (
+                    memory_policy if isinstance(memory_policy, dict) else {}
+                )
                 mem_persistence["extraction"] = extraction_error
                 exec_strategy["memory_persistence"] = mem_persistence
                 results_payload["execution_strategy"] = exec_strategy
@@ -941,6 +1769,35 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
                 await db.commit()
             except Exception:
                 pass
+
+        # Memory extraction is best-effort bookkeeping and must never cost the
+        # job its chain. If it left the session rolled back, `job` is expired
+        # and every attribute read below is IO that raises MissingGreenlet from
+        # sync context, which would skip the chain trigger at the end of this
+        # function. Probe one attribute and reload if that is where we are.
+        try:
+            _ = job.status
+        except Exception:
+            try:
+                await db.rollback()
+                await db.refresh(job)
+            except Exception as reload_error:
+                logger.error(
+                    f"Job {job.id} is unusable after memory extraction; "
+                    f"chained jobs may not be triggered: {reload_error}"
+                )
+
+    # A stage whose chain is gated on approval stops here rather than starting
+    # what comes next. Completing is what makes it ready to be approved; the
+    # approval is what starts the next stage. The job pauses instead of
+    # completing so the existing checkpoint machinery -- the queue item, the
+    # approve/reject actions, the resume path -- applies unchanged, and the
+    # early return below carries it out.
+    # A swarm merge worth a person's attention stops here too, and is checked
+    # first: both write the same checkpoint payload, and holding twice for one
+    # run would mean approving the same finished work in two places.
+    hold_for_swarm_review(job)
+    hold_for_chain_approval(job)
 
     if job.status == AgentJobStatus.PAUSED.value:
         return {
@@ -953,6 +1810,26 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
             "memories_injected": job.memory_injection_count or 0,
             "memories_created": job.memories_created_count or 0,
         }
+
+    # A stage that asked to go back goes back INSTEAD of forward. Both would
+    # be wrong: the next stage would start on the output this one just said was
+    # the problem, while the earlier stage redid it underneath -- two versions
+    # of the same evidence in one run, and nothing to say which the result came
+    # from.
+    rerun_request = state.get("stage_rerun_request")
+    if isinstance(rerun_request, dict) and rerun_request.get("stage"):
+        handled = await _send_the_work_back(executor, job, rerun_request, db)
+        if handled:
+            return {
+                "status": job.status,
+                "progress": job.progress,
+                "results": job.results,
+                "iterations": job.iteration,
+                "tool_calls": job.tool_calls_used,
+                "llm_calls": job.llm_calls_used,
+                "memories_injected": job.memory_injection_count or 0,
+                "memories_created": job.memories_created_count or 0,
+            }
 
     # Check if we should trigger chained jobs
     event = "complete" if job.status == AgentJobStatus.COMPLETED.value else "fail"
@@ -968,3 +1845,8 @@ async def finalize_job(executor: Any, job: AgentJob, state: Dict[str, Any], db: 
         "memories_injected": job.memory_injection_count or 0,
         "memories_created": job.memories_created_count or 0,
     }
+
+
+#: Was private until the deterministic-runner path needed it too.
+_hold_for_swarm_review = hold_for_swarm_review
+_hold_for_chain_approval = hold_for_chain_approval

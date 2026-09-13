@@ -4,15 +4,14 @@ Repository Presentation Generator Service.
 Converts repository analysis data into PPTX presentations.
 """
 
-from datetime import datetime
-from typing import Dict, Any, List, Optional
-from io import BytesIO
+from typing import Any, Dict, List, Optional
+
 from loguru import logger
 
-from app.schemas.repo_report import RepoAnalysisResult
 from app.schemas.presentation import PresentationOutline, SlideContent
-from app.services.pptx_builder import PPTXBuilder
+from app.schemas.repo_report import RepoAnalysisResult
 from app.services.llm_service import LLMService
+from app.services.pptx_builder import PPTXBuilder
 
 
 class RepoPresentationGenerator:
@@ -24,9 +23,7 @@ class RepoPresentationGenerator:
     """
 
     def __init__(
-        self,
-        style: str = "professional",
-        custom_theme: Optional[Dict[str, Any]] = None
+        self, style: str = "professional", custom_theme: Optional[Dict[str, Any]] = None
     ):
         """
         Initialize the presentation generator.
@@ -46,7 +43,7 @@ class RepoPresentationGenerator:
         sections: List[str],
         slide_count: int = 10,
         include_diagrams: bool = True,
-        progress_callback: Optional[callable] = None
+        progress_callback: Optional[callable] = None,
     ) -> bytes:
         """
         Generate a PPTX presentation from analysis data.
@@ -71,7 +68,7 @@ class RepoPresentationGenerator:
             title=title,
             sections=sections,
             slide_count=slide_count,
-            include_diagrams=include_diagrams
+            include_diagrams=include_diagrams,
         )
 
         if progress_callback:
@@ -100,7 +97,7 @@ class RepoPresentationGenerator:
         title: str,
         sections: List[str],
         slide_count: int,
-        include_diagrams: bool
+        include_diagrams: bool,
     ) -> PresentationOutline:
         """
         Generate presentation outline using LLM.
@@ -119,13 +116,16 @@ class RepoPresentationGenerator:
         slide_num = 1
 
         # Slide 1: Title slide
-        slides.append(SlideContent(
-            slide_number=slide_num,
-            slide_type="title",
-            title=title,
-            subtitle=analysis.repo_info.description or f"Analysis of {analysis.repo_info.full_name}",
-            content=[]
-        ))
+        slides.append(
+            SlideContent(
+                slide_number=slide_num,
+                slide_type="title",
+                title=title,
+                subtitle=analysis.repo_info.description
+                or f"Analysis of {analysis.repo_info.full_name}",
+                content=[],
+            )
+        )
         slide_num += 1
 
         # Slide 2: Overview
@@ -141,79 +141,109 @@ class RepoPresentationGenerator:
             if analysis.repo_info.license:
                 overview_content.append(f"License: {analysis.repo_info.license}")
             if analysis.repo_info.language:
-                overview_content.append(f"Primary Language: {analysis.repo_info.language}")
+                overview_content.append(
+                    f"Primary Language: {analysis.repo_info.language}"
+                )
 
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Repository Overview",
-                content=overview_content
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Repository Overview",
+                    content=overview_content,
+                )
+            )
             slide_num += 1
 
         # Slide: Architecture (if available)
-        if "architecture" in sections and analysis.insights and analysis.insights.architecture_summary:
+        if (
+            "architecture" in sections
+            and analysis.insights
+            and analysis.insights.architecture_summary
+        ):
             # Split architecture summary into bullet points
             arch_summary = analysis.insights.architecture_summary
             arch_points = self._split_to_bullets(arch_summary, max_bullets=5)
 
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Architecture Overview",
-                content=arch_points
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Architecture Overview",
+                    content=arch_points,
+                )
+            )
             slide_num += 1
 
             # Architecture diagram slide
             if include_diagrams:
-                slides.append(SlideContent(
-                    slide_number=slide_num,
-                    slide_type="diagram",
-                    title="Project Structure",
-                    content=["Visual representation of the project architecture"],
-                    diagram_description="architecture diagram showing main components"
-                ))
+                slides.append(
+                    SlideContent(
+                        slide_number=slide_num,
+                        slide_type="diagram",
+                        title="Project Structure",
+                        content=["Visual representation of the project architecture"],
+                        diagram_description="architecture diagram showing main components",
+                    )
+                )
                 slide_num += 1
 
         # Slide: Key Features
-        if "architecture" in sections and analysis.insights and analysis.insights.key_features:
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Key Features",
-                content=analysis.insights.key_features[:6]
-            ))
+        if (
+            "architecture" in sections
+            and analysis.insights
+            and analysis.insights.key_features
+        ):
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Key Features",
+                    content=analysis.insights.key_features[:6],
+                )
+            )
             slide_num += 1
 
         # Slide: Technology Stack
-        if "technology_stack" in sections and analysis.insights and analysis.insights.technology_stack:
+        if (
+            "technology_stack" in sections
+            and analysis.insights
+            and analysis.insights.technology_stack
+        ):
             tech_list = analysis.insights.technology_stack[:8]
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Technology Stack",
-                content=tech_list
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Technology Stack",
+                    content=tech_list,
+                )
+            )
             slide_num += 1
 
         # Slide: Code Statistics
-        if "code_stats" in sections and analysis.language_stats and analysis.language_stats.percentages:
+        if (
+            "code_stats" in sections
+            and analysis.language_stats
+            and analysis.language_stats.percentages
+        ):
             lang_items = []
             sorted_langs = sorted(
                 analysis.language_stats.percentages.items(),
                 key=lambda x: x[1],
-                reverse=True
+                reverse=True,
             )[:6]
             for lang, pct in sorted_langs:
                 lang_items.append(f"{lang}: {pct:.1f}%")
 
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Language Breakdown",
-                content=lang_items
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Language Breakdown",
+                    content=lang_items,
+                )
+            )
             slide_num += 1
 
         # Slide: File Structure
@@ -223,27 +253,35 @@ class RepoPresentationGenerator:
             dir_structure = [line for line in tree_lines if line.strip()][:6]
 
             if dir_structure:
-                slides.append(SlideContent(
-                    slide_number=slide_num,
-                    slide_type="content",
-                    title="Project Structure",
-                    content=dir_structure
-                ))
+                slides.append(
+                    SlideContent(
+                        slide_number=slide_num,
+                        slide_type="content",
+                        title="Project Structure",
+                        content=dir_structure,
+                    )
+                )
                 slide_num += 1
 
         # Slide: Recent Activity
         if "commits" in sections and analysis.commits:
             commit_items = []
             for commit in analysis.commits[:5]:
-                msg = commit.message[:50] + "..." if len(commit.message) > 50 else commit.message
+                msg = (
+                    commit.message[:50] + "..."
+                    if len(commit.message) > 50
+                    else commit.message
+                )
                 commit_items.append(f"{commit.sha[:7]}: {msg}")
 
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Recent Commits",
-                content=commit_items
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Recent Commits",
+                    content=commit_items,
+                )
+            )
             slide_num += 1
 
         # Slide: Contributors
@@ -253,27 +291,33 @@ class RepoPresentationGenerator:
                 name = contrib.name or contrib.username
                 contrib_items.append(f"{name}: {contrib.contributions} contributions")
 
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Top Contributors",
-                content=contrib_items
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Top Contributors",
+                    content=contrib_items,
+                )
+            )
             slide_num += 1
 
         # Slide: Issues Summary
         if "issues" in sections and analysis.issues:
             issue_items = [f"Open issues: {len(analysis.issues)}"]
             for issue in analysis.issues[:4]:
-                title_short = issue.title[:40] + "..." if len(issue.title) > 40 else issue.title
+                title_short = (
+                    issue.title[:40] + "..." if len(issue.title) > 40 else issue.title
+                )
                 issue_items.append(f"#{issue.number}: {title_short}")
 
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Open Issues",
-                content=issue_items
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Open Issues",
+                    content=issue_items,
+                )
+            )
             slide_num += 1
 
         # Slide: Pull Requests
@@ -283,12 +327,14 @@ class RepoPresentationGenerator:
                 title_short = pr.title[:40] + "..." if len(pr.title) > 40 else pr.title
                 pr_items.append(f"#{pr.number}: {title_short}")
 
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title="Open Pull Requests",
-                content=pr_items
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title="Open Pull Requests",
+                    content=pr_items,
+                )
+            )
             slide_num += 1
 
         # Summary slide
@@ -298,28 +344,30 @@ class RepoPresentationGenerator:
         if analysis.repo_info.description:
             summary_points.append(analysis.repo_info.description[:80])
         if analysis.language_stats and analysis.language_stats.percentages:
-            top_lang = max(analysis.language_stats.percentages.items(), key=lambda x: x[1])
+            top_lang = max(
+                analysis.language_stats.percentages.items(), key=lambda x: x[1]
+            )
             summary_points.append(f"Primary language: {top_lang[0]}")
         if analysis.insights and analysis.insights.technology_stack:
-            summary_points.append(f"Key technologies: {', '.join(analysis.insights.technology_stack[:3])}")
+            summary_points.append(
+                f"Key technologies: {', '.join(analysis.insights.technology_stack[:3])}"
+            )
 
-        slides.append(SlideContent(
-            slide_number=slide_num,
-            slide_type="summary",
-            title="Summary",
-            content=summary_points
-        ))
+        slides.append(
+            SlideContent(
+                slide_number=slide_num,
+                slide_type="summary",
+                title="Summary",
+                content=summary_points,
+            )
+        )
 
         return PresentationOutline(
-            title=title,
-            subtitle=analysis.repo_info.description,
-            slides=slides
+            title=title, subtitle=analysis.repo_info.description, slides=slides
         )
 
     async def _generate_diagrams(
-        self,
-        outline: PresentationOutline,
-        analysis: RepoAnalysisResult
+        self, outline: PresentationOutline, analysis: RepoAnalysisResult
     ) -> Dict[int, bytes]:
         """
         Generate Mermaid diagrams for diagram slides.
@@ -347,7 +395,9 @@ class RepoPresentationGenerator:
                     if png_bytes:
                         diagrams[slide.slide_number] = png_bytes
             except Exception as e:
-                logger.warning(f"Failed to generate diagram for slide {slide.slide_number}: {e}")
+                logger.warning(
+                    f"Failed to generate diagram for slide {slide.slide_number}: {e}"
+                )
 
         return diagrams
 
@@ -406,12 +456,12 @@ class RepoPresentationGenerator:
             PNG bytes or None if rendering fails
         """
         try:
-            import httpx
-
             # Use Kroki.io for rendering (public service)
             # In production, consider self-hosting Kroki
             import base64
             import zlib
+
+            import httpx
 
             # Compress and encode for Kroki
             compressed = zlib.compress(mermaid_code.encode("utf-8"), 9)

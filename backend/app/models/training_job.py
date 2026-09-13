@@ -4,41 +4,45 @@ Training Job models for AI Hub.
 Tracks training job execution for LoRA/PEFT fine-tuning.
 """
 
-from datetime import datetime
-from typing import Optional, List, Dict, Any
-from sqlalchemy import Column, String, Text, DateTime, Boolean, Integer, Float, ForeignKey, JSON
-from sqlalchemy.orm import relationship
-from sqlalchemy.dialects.postgresql import UUID
-import uuid
 import enum
+import uuid
+from datetime import datetime
+from typing import Any, Dict, Optional
+
+from sqlalchemy import JSON, Column, DateTime, Float, ForeignKey, Integer, String, Text
+from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.orm import relationship
 
 from app.core.database import Base
 
 
 class TrainingMethod(str, enum.Enum):
     """Training method/algorithm."""
-    LORA = "lora"                   # Low-Rank Adaptation
-    QLORA = "qlora"                 # Quantized LoRA (4-bit)
-    FULL_FINETUNE = "full_finetune" # Full model fine-tuning
+
+    LORA = "lora"  # Low-Rank Adaptation
+    QLORA = "qlora"  # Quantized LoRA (4-bit)
+    FULL_FINETUNE = "full_finetune"  # Full model fine-tuning
 
 
 class TrainingBackend(str, enum.Enum):
     """Training compute backend."""
-    LOCAL = "local"     # Local machine with PEFT
-    MODAL = "modal"     # Modal.com cloud training
-    RUNPOD = "runpod"   # RunPod cloud training
+
+    LOCAL = "local"  # Local machine with PEFT
+    MODAL = "modal"  # Modal.com cloud training
+    RUNPOD = "runpod"  # RunPod cloud training
 
 
 class TrainingJobStatus(str, enum.Enum):
     """Status of a training job."""
-    PENDING = "pending"       # Job created, waiting to start
-    QUEUED = "queued"         # Queued in Celery
-    PREPARING = "preparing"   # Downloading model/data
-    TRAINING = "training"     # Actively training
-    SAVING = "saving"         # Saving adapter weights
-    COMPLETED = "completed"   # Successfully finished
-    FAILED = "failed"         # Failed with error
-    CANCELLED = "cancelled"   # Cancelled by user
+
+    PENDING = "pending"  # Job created, waiting to start
+    QUEUED = "queued"  # Queued in Celery
+    PREPARING = "preparing"  # Downloading model/data
+    TRAINING = "training"  # Actively training
+    SAVING = "saving"  # Saving adapter weights
+    COMPLETED = "completed"  # Successfully finished
+    FAILED = "failed"  # Failed with error
+    CANCELLED = "cancelled"  # Cancelled by user
 
 
 class TrainingJob(Base):
@@ -58,18 +62,24 @@ class TrainingJob(Base):
     description = Column(Text, nullable=True)
 
     # Training configuration
-    training_method = Column(String(30), nullable=False, default=TrainingMethod.LORA.value)
-    training_backend = Column(String(30), nullable=False, default=TrainingBackend.LOCAL.value)
+    training_method = Column(
+        String(30), nullable=False, default=TrainingMethod.LORA.value
+    )
+    training_backend = Column(
+        String(30), nullable=False, default=TrainingBackend.LOCAL.value
+    )
 
     # Base model
-    base_model = Column(String(200), nullable=False)  # e.g., "llama3.2:3b", "mistral:7b"
+    base_model = Column(
+        String(200), nullable=False
+    )  # e.g., "llama3.2:3b", "mistral:7b"
     base_model_provider = Column(String(50), nullable=False, default="ollama")
 
     # Dataset
     dataset_id = Column(
         UUID(as_uuid=True),
         ForeignKey("training_datasets.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
 
     # Hyperparameters
@@ -100,9 +110,7 @@ class TrainingJob(Base):
 
     # Ownership
     user_id = Column(
-        UUID(as_uuid=True),
-        ForeignKey("users.id", ondelete="CASCADE"),
-        nullable=False
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
     )
 
     # Status and progress
@@ -143,7 +151,7 @@ class TrainingJob(Base):
     output_adapter_id = Column(
         UUID(as_uuid=True),
         ForeignKey("model_adapters.id", ondelete="SET NULL"),
-        nullable=True
+        nullable=True,
     )
 
     # Celery task tracking
@@ -160,7 +168,9 @@ class TrainingJob(Base):
     # Relationships
     user = relationship("User", backref="training_jobs")
     dataset = relationship("TrainingDataset")
-    checkpoints = relationship("TrainingCheckpoint", back_populates="job", cascade="all, delete-orphan")
+    checkpoints = relationship(
+        "TrainingCheckpoint", back_populates="job", cascade="all, delete-orphan"
+    )
     output_adapter = relationship("ModelAdapter", foreign_keys=[output_adapter_id])
 
     def __repr__(self):
@@ -168,7 +178,10 @@ class TrainingJob(Base):
 
     def can_start(self) -> bool:
         """Check if job can be started."""
-        return self.status in [TrainingJobStatus.PENDING.value, TrainingJobStatus.QUEUED.value]
+        return self.status in [
+            TrainingJobStatus.PENDING.value,
+            TrainingJobStatus.QUEUED.value,
+        ]
 
     def can_cancel(self) -> bool:
         """Check if job can be cancelled."""
@@ -237,7 +250,10 @@ class TrainingJob(Base):
             self.training_metrics["current_loss"] = loss
             if "loss_history" in self.training_metrics:
                 self.training_metrics["loss_history"].append(loss)
-            if "best_loss" not in self.training_metrics or loss < self.training_metrics["best_loss"]:
+            if (
+                "best_loss" not in self.training_metrics
+                or loss < self.training_metrics["best_loss"]
+            ):
                 self.training_metrics["best_loss"] = loss
 
 
@@ -256,7 +272,7 @@ class TrainingCheckpoint(Base):
     job_id = Column(
         UUID(as_uuid=True),
         ForeignKey("training_jobs.id", ondelete="CASCADE"),
-        nullable=False
+        nullable=False,
     )
 
     # Checkpoint info

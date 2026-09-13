@@ -1,0 +1,42 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "kdbc.configMapName" . }}
+  labels:
+    {{- include "kdbc.labels" . | nindent 4 }}
+data:
+  LOG_LEVEL: {{ .Values.config.logLevel | quote }}
+  DEBUG: {{ .Values.config.debug | quote }}
+
+  LLM_PROVIDER: {{ .Values.config.llmProvider | quote }}
+  DEFAULT_MODEL: {{ .Values.config.defaultModel | quote }}
+  EMBEDDING_MODEL: {{ .Values.config.embeddingModel | quote }}
+
+  VECTOR_STORE_PROVIDER: {{ .Values.config.vectorStoreProvider | quote }}
+  QDRANT_COLLECTION_NAME: {{ .Values.config.qdrantCollectionName | quote }}
+  CHROMA_PERSIST_DIRECTORY: "/app/data/chroma_db"
+  CHROMA_TELEMETRY_ENABLED: "false"
+
+  MINIO_BUCKET_NAME: {{ .Values.config.minioBucketName | quote }}
+  MINIO_PRESIGNED_URL_EXPIRY: {{ .Values.config.minioPresignedUrlExpiry | quote }}
+  MINIO_PROXY_BASE_URL: {{ .Values.config.minioProxyBaseUrl | quote }}
+
+  WHISPER_MODEL_SIZE: {{ .Values.config.whisperModelSize | quote }}
+  WHISPER_DEVICE: "auto"
+  WHISPER_OFFLINE: "1"
+  TRANSCRIPTION_LANGUAGE: {{ .Values.config.transcriptionLanguage | quote }}
+  TRANSCRIPTION_SPEAKER_DIARIZATION: {{ .Values.config.transcriptionSpeakerDiarization | quote }}
+  PRELOAD_WHISPER_MODEL: {{ .Values.config.preloadWhisperModel | quote }}
+
+  # Alembic is the only source of schema truth: the migration Job owns it, so
+  # every long-running pod starts with migrations disabled.
+  RUN_ALEMBIC_MIGRATIONS: "false"
+
+  # Prevent OpenBLAS from hanging in forked Celery workers.
+  OPENBLAS_MAIN_FREE: "1"
+  OMP_NUM_THREADS: "4"
+  MKL_NUM_THREADS: "4"
+  GOTO_NUM_THREADS: "4"
+{{- range $key, $value := .Values.config.extra }}
+  {{ $key }}: {{ $value | quote }}
+{{- end }}

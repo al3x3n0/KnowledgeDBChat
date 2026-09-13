@@ -1,0 +1,124 @@
+{
+ "source": "apple-m3-host",
+ "supersedes": "m3-truth.json",
+ "method": "value-stable dependent/independent chains with neutral operands passed as inputs; median of 31 per-round ratios against a one-cycle dependent add; two runs, each bracketed by a passing null control and scale control",
+ "host_state": "compose stack stopped, load 0.96 per CPU at preflight",
+ "gates": {
+  "null_control": 1.0,
+  "scale_control": 1.9979,
+  "required": "both"
+ },
+ "discarded_runs": [
+  {
+   "run": "C",
+   "reason": "the scale control taken immediately after read 2.2012 against a required 2.000, so the host drifted during the run",
+   "evidence": "fsqrt_s 16.91 against 10.01 and 10.43; fdiv_s 10.13 against 8.01 twice"
+  }
+ ],
+ "caveats": [
+  "Latencies reproduce across the two accepted runs and land on integers, which is what a correct measurement of a real pipeline should do.",
+  "Reciprocal throughputs do NOT reproduce -- run-to-run spread of 12% to 55% on a host whose controls passed -- and must not be used. The independent chain, the loop overhead for cheap operations, or both, need work before a throughput number here means anything.",
+  "mul is the least reproducible latency at 12% and is reported but should be re-taken."
+ ],
+ "per_instruction": {
+  "add": {
+   "latency_cycles": 1.0,
+   "latency_run_spread": 0.0,
+   "latency_reproducible": true,
+   "recip_throughput_cycles": 0.15,
+   "recip_throughput_run_spread": 0.288,
+   "recip_throughput_reproducible": false,
+   "previous_latency_cycles": 1.01,
+   "previous_measured_on_infinity": false,
+   "runs": 2
+  },
+  "mul": {
+   "latency_cycles": 3.18,
+   "latency_run_spread": 0.114,
+   "latency_reproducible": false,
+   "recip_throughput_cycles": 0.722,
+   "recip_throughput_run_spread": 0.43,
+   "recip_throughput_reproducible": false,
+   "previous_latency_cycles": 2.78,
+   "previous_measured_on_infinity": false,
+   "runs": 2
+  },
+  "fadd_s": {
+   "latency_cycles": 2.81,
+   "latency_run_spread": 0.03,
+   "latency_reproducible": true,
+   "recip_throughput_cycles": 0.284,
+   "recip_throughput_run_spread": 0.232,
+   "recip_throughput_reproducible": false,
+   "previous_latency_cycles": 2.62,
+   "previous_measured_on_infinity": true,
+   "runs": 2
+  },
+  "fmul_s": {
+   "latency_cycles": 4.0,
+   "latency_run_spread": 0.002,
+   "latency_reproducible": true,
+   "recip_throughput_cycles": 0.424,
+   "recip_throughput_run_spread": 0.118,
+   "recip_throughput_reproducible": false,
+   "previous_latency_cycles": 3.75,
+   "previous_measured_on_infinity": false,
+   "runs": 2
+  },
+  "fmadd_s": {
+   "latency_cycles": 4.01,
+   "latency_run_spread": 0.003,
+   "latency_reproducible": true,
+   "recip_throughput_cycles": 0.271,
+   "recip_throughput_run_spread": 0.026,
+   "recip_throughput_reproducible": true,
+   "previous_latency_cycles": 4.14,
+   "previous_measured_on_infinity": true,
+   "runs": 2
+  },
+  "fdiv_s": {
+   "latency_cycles": 8.01,
+   "latency_run_spread": 0.0,
+   "latency_reproducible": true,
+   "recip_throughput_cycles": 1.458,
+   "recip_throughput_run_spread": 0.323,
+   "recip_throughput_reproducible": false,
+   "previous_latency_cycles": 8.0,
+   "previous_measured_on_infinity": false,
+   "runs": 2
+  },
+  "fsqrt_s": {
+   "latency_cycles": 10.22,
+   "latency_run_spread": 0.04,
+   "latency_reproducible": true,
+   "recip_throughput_cycles": 2.247,
+   "recip_throughput_run_spread": 0.178,
+   "recip_throughput_reproducible": false,
+   "previous_latency_cycles": 10.14,
+   "previous_measured_on_infinity": false,
+   "runs": 2
+  },
+  "fadd_v": {
+   "latency_cycles": 2.79,
+   "latency_run_spread": 0.018,
+   "latency_reproducible": true,
+   "recip_throughput_cycles": 0.29,
+   "recip_throughput_run_spread": 0.052,
+   "recip_throughput_reproducible": false,
+   "previous_latency_cycles": 3.03,
+   "previous_measured_on_infinity": true,
+   "runs": 2
+  },
+  "fmla_v": {
+   "latency_cycles": 4.05,
+   "latency_run_spread": 0.02,
+   "latency_reproducible": true,
+   "recip_throughput_cycles": 0.321,
+   "recip_throughput_run_spread": 0.393,
+   "recip_throughput_reproducible": false,
+   "previous_latency_cycles": 4.29,
+   "previous_measured_on_infinity": true,
+   "runs": 2
+  }
+ }
+}

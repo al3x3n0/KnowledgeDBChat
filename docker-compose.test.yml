@@ -10,7 +10,7 @@ services:
       POSTGRES_USER: test_user
       POSTGRES_PASSWORD: test_password
     ports:
-      - "5433:5432"
+      - "${KDBC_TEST_POSTGRES_PORT:-35432}:5432"
     volumes:
       - postgres_test_data:/var/lib/postgresql/data
     networks:
@@ -26,7 +26,7 @@ services:
     image: redis:7-alpine
     container_name: knowledge_db_redis_test
     ports:
-      - "6380:6379"
+      - "${KDBC_TEST_REDIS_PORT:-36379}:6379"
     volumes:
       - redis_test_data:/data
     command: redis-server --appendonly yes
@@ -43,7 +43,7 @@ services:
     image: qdrant/qdrant:latest
     container_name: knowledge_db_qdrant_test
     ports:
-      - "6334:6333"
+      - "${KDBC_TEST_QDRANT_PORT:-36333}:6333"
     volumes:
       - qdrant_test_data:/qdrant/storage
     networks:
@@ -58,7 +58,6 @@ services:
     environment:
       - DATABASE_URL=postgresql://test_user:test_password@postgres_test:5432/knowledge_db_test
       - REDIS_URL=redis://redis_test:6379/0
-      - OLLAMA_BASE_URL=http://ollama_test:11434
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db_test
       - VECTOR_STORE_PROVIDER=${VECTOR_STORE_PROVIDER:-qdrant}
       - QDRANT_URL=${QDRANT_URL:-http://qdrant_test:6333}
@@ -67,7 +66,7 @@ services:
       - DEBUG=True
       - LOG_LEVEL=DEBUG
     ports:
-      - "8001:8000"
+      - "${KDBC_TEST_BACKEND_PORT:-38000}:8000"
     volumes:
       - ./data/test:/app/data
       - ./backend:/app
@@ -89,22 +88,6 @@ services:
       timeout: 5s
       retries: 3
 
-  # Ollama for Testing (optional, can use mock)
-  ollama_test:
-    image: ollama/ollama:latest
-    container_name: knowledge_db_ollama_test
-    ports:
-      - "11435:11434"
-    volumes:
-      - ollama_test_data:/root/.ollama
-    networks:
-      - knowledge_test_net
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-    profiles:
-      - with-llm
-
-  # Celery worker for Testing
   celery_test:
     build:
       context: ./backend
@@ -138,7 +121,6 @@ services:
 volumes:
   postgres_test_data:
   redis_test_data:
-  ollama_test_data:
   qdrant_test_data:
 
 networks:

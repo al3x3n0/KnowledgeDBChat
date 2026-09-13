@@ -17,38 +17,54 @@ class ToolMetadata:
     pii_risk: str
 
 
-def _default_metadata(*, name: str, description: str, input_schema: Dict[str, Any]) -> ToolMetadata:
+def _default_metadata(
+    *, name: str, description: str, input_schema: Dict[str, Any]
+) -> ToolMetadata:
     base = name.split("mcp:", 1)[1] if name.startswith("mcp:") else name
+
+    # Every builtin tool declares its own governance, and is believed.
+    from app.agent_core.tool_specs import spec_for
+
+    spec = spec_for(base)
+    if spec is not None:
+        return ToolMetadata(
+            name=name,
+            description=description or spec.description,
+            input_schema=input_schema or spec.parameters,
+            effects=spec.effects,
+            network=spec.network,
+            cost_tier=spec.cost_tier,
+            pii_risk=spec.pii_risk,
+        )
+
+    # Below here is the MCP surface only, which has no specs. This is the older
+    # form of classification -- a tool is whatever these lists remember to say
+    # it is, so omitting one silently classifies it read-safe, cheap and
+    # private. That is how 25 mutating tools were once classified read.
+    #
+    # These lists held 158 names until the builtin tools moved to specs. The
+    # other 149 named tools that now carry their own classification, so editing
+    # one here would have changed nothing while looking like a fix. Only the
+    # names that still decide something are left.
     write_tools = {
-        "delete_document", "batch_delete_documents", "update_document_tags",
-        "create_document_from_text", "ingest_url", "merge_entities", "delete_entity",
-        "rebuild_document_knowledge_graph", "run_custom_tool", "run_workflow",
-        "docker_execute", "delegate_subtask", "share_findings", "request_review",
-        "execute_data_pipeline", "write_and_run_script", "write_file", "apply_patch",
-        "run_command", "export_document", "create_memory", "execute_workflow",
-        "send_message_to_agent", "send_notification", "send_email_alert", "create_chart",
-        "render_diagram", "create_kg_entity", "create_kg_relationship", "schedule_job",
-        "cancel_scheduled_job", "merge_documents", "create_handoff", "broadcast_to_siblings",
-        "transcribe_document",
+        "create_presentation",
+        "create_repo_report",
+        "docker_execute",
     }
     network_tools = {
-        "web_scrape", "ingest_url", "search_arxiv", "ingest_arxiv_papers",
-        "literature_review_arxiv", "create_repo_report", "docker_execute",
-        "clone_and_index_repo", "search_web", "fetch_url_content", "summarize_url",
-        "render_diagram",
+        "create_repo_report",
+        "docker_execute",
     }
-    high_pii = {"docker_execute", "write_and_run_script"}
-    medium_pii = {
-        "web_scrape", "ingest_url", "run_custom_tool", "execute_python",
-        "execute_data_pipeline", "run_command", "search_code",
+    high_pii = {
+        "docker_execute",
     }
-    high_cost = {"docker_execute", "execute_data_pipeline", "write_and_run_script", "run_command"}
+    medium_pii: set[str] = set()
+    high_cost = {
+        "docker_execute",
+    }
     medium_cost = {
-        "generate_report", "create_repo_report", "create_presentation", "delegate_subtask",
-        "request_review", "execute_python", "clone_and_index_repo", "export_document",
-        "execute_workflow", "search_web", "summarize_url", "create_chart", "batch_search",
-        "batch_summarize", "compress_history", "summarize_findings", "create_handoff",
-        "transcribe_document", "analyze_image",
+        "create_presentation",
+        "create_repo_report",
     }
     return ToolMetadata(
         name=name,
@@ -56,12 +72,25 @@ def _default_metadata(*, name: str, description: str, input_schema: Dict[str, An
         input_schema=input_schema,
         effects="write" if base in write_tools else "read",
         network="egress" if base in network_tools else "none",
-        cost_tier="high" if base in high_cost else ("medium" if base in medium_cost else "low"),
-        pii_risk="high" if base in high_pii else ("medium" if base in medium_pii else "low"),
+        cost_tier="high"
+        if base in high_cost
+        else ("medium" if base in medium_cost else "low"),
+        pii_risk="high"
+        if base in high_pii
+        else ("medium" if base in medium_pii else "low"),
     )
 
 
 def iter_builtin_tools() -> Iterable[ToolMetadata]:
+    """Every tool a run can execute.
+
+    There is one registry to read now. There were several, and the
+    data-analysis tools were in a different one from this, so 21 tools an agent
+    job could call had no metadata at all: invisible to the tool-policy UI,
+    unclassifiable by effects, and denied as "unknown" by any policy carrying
+    constraints. The guard written for exactly that failure could not see them
+    either, because it derived its universe from the same partial registry.
+    """
     try:
         from app.services.agent_tools import AGENT_TOOLS
     except Exception:
@@ -74,7 +103,9 @@ def iter_builtin_tools() -> Iterable[ToolMetadata]:
         yield _default_metadata(
             name=name,
             description=str(tool.get("description") or "").strip(),
-            input_schema=tool.get("parameters") if isinstance(tool.get("parameters"), dict) else {},
+            input_schema=tool.get("parameters")
+            if isinstance(tool.get("parameters"), dict)
+            else {},
         )
 
 
@@ -99,11 +130,26 @@ def get_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
                 pii_risk=meta.pii_risk,
             )
 
-    mcp_fallback: Dict[str, ToolMetadata] = {
+    return iter_mcp_tools().get(base_name) if is_mcp else None
+
+
+def iter_mcp_tools() -> Dict[str, ToolMetadata]:
+    """Metadata for MCP-exposed tools, keyed by unprefixed name.
+
+    Module level so the classification guard can enumerate this surface too.
+    It previously lived inside get_tool_metadata, which put it out of reach of
+    the test that checks tools are classified deliberately — and that is exactly
+    where two mutating tools were found classified read-safe.
+    """
+    return {
         "search": _default_metadata(
             name="mcp:search",
             description="Semantic search over the knowledge base",
-            input_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
         ),
         "list_documents": _default_metadata(
             name="mcp:list_documents",
@@ -113,7 +159,11 @@ def get_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
         "get_document": _default_metadata(
             name="mcp:get_document",
             description="Get document by id",
-            input_schema={"type": "object", "properties": {"document_id": {"type": "string"}}, "required": ["document_id"]},
+            input_schema={
+                "type": "object",
+                "properties": {"document_id": {"type": "string"}},
+                "required": ["document_id"],
+            },
         ),
         "list_sources": _default_metadata(
             name="mcp:list_sources",
@@ -123,22 +173,38 @@ def get_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
         "chat": _default_metadata(
             name="mcp:chat",
             description="Ask a question and get an answer grounded in the KB",
-            input_schema={"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"]},
+            input_schema={
+                "type": "object",
+                "properties": {"query": {"type": "string"}},
+                "required": ["query"],
+            },
         ),
         "create_presentation": _default_metadata(
             name="mcp:create_presentation",
             description="Create a presentation job",
-            input_schema={"type": "object", "properties": {"topic": {"type": "string"}}, "required": ["topic"]},
+            input_schema={
+                "type": "object",
+                "properties": {"topic": {"type": "string"}},
+                "required": ["topic"],
+            },
         ),
         "create_repo_report": _default_metadata(
             name="mcp:create_repo_report",
             description="Create a repo report job",
-            input_schema={"type": "object", "properties": {"repo_url": {"type": "string"}}, "required": ["repo_url"]},
+            input_schema={
+                "type": "object",
+                "properties": {"repo_url": {"type": "string"}},
+                "required": ["repo_url"],
+            },
         ),
         "get_job_status": _default_metadata(
             name="mcp:get_job_status",
             description="Get status of a generation job",
-            input_schema={"type": "object", "properties": {"job_id": {"type": "string"}}, "required": ["job_id"]},
+            input_schema={
+                "type": "object",
+                "properties": {"job_id": {"type": "string"}},
+                "required": ["job_id"],
+            },
         ),
         "list_jobs": _default_metadata(
             name="mcp:list_jobs",
@@ -158,4 +224,3 @@ def get_tool_metadata(tool_name: str) -> Optional[ToolMetadata]:
             },
         ),
     }
-    return mcp_fallback.get(base_name) if is_mcp else None

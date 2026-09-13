@@ -1,0 +1,106 @@
+{{- if .Values.videoStreamer.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "kdbc.videoStreamer.serviceName" . }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "video-streamer") | nindent 4 }}
+spec:
+  replicas: {{ .Values.videoStreamer.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "video-streamer") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "video-streamer") | nindent 8 }}
+      annotations:
+        {{- include "kdbc.configChecksums" . | nindent 8 }}
+    spec:
+      {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
+      containers:
+        - name: video-streamer
+          image: "{{ .Values.image.videoStreamer.repository }}:{{ .Values.image.videoStreamer.tag }}"
+          imagePullPolicy: {{ .Values.image.videoStreamer.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+          env:
+            - name: POSTGRES_PASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kdbc.secretName" . }}
+                  key: POSTGRES_PASSWORD
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kdbc.secretName" . }}
+                  key: MINIO_ACCESS_KEY
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kdbc.secretName" . }}
+                  key: MINIO_SECRET_KEY
+            # The streamer validates the same JWTs the API issues, so this must
+            # stay equal to the backend's SECRET_KEY.
+            - name: JWT_SECRET
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "kdbc.secretName" . }}
+                  key: SECRET_KEY
+            - name: DATABASE_URL
+              value: "postgresql://{{ include "kdbc.postgres.username" . }}:$(POSTGRES_PASSWORD)@{{ include "kdbc.postgres.host" . }}:{{ include "kdbc.postgres.port" . }}/{{ include "kdbc.postgres.database" . }}"
+            - name: MINIO_ENDPOINT
+              value: {{ include "kdbc.minio.endpoint" . | quote }}
+            - name: MINIO_USE_SSL
+              value: {{ include "kdbc.minio.useSSL" . | quote }}
+            - name: MINIO_BUCKET_NAME
+              value: {{ .Values.config.minioBucketName | quote }}
+            - name: BACKEND_API_URL
+              value: "http://{{ include "kdbc.backend.serviceName" . }}:{{ .Values.backend.service.port }}/api/v1/documents"
+            - name: PORT
+              value: "8080"
+            - name: CORS_ORIGIN
+              value: {{ .Values.videoStreamer.corsOrigin | quote }}
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 30
+          resources:
+            {{- toYaml .Values.videoStreamer.resources | nindent 12 }}
+      {{- with .Values.videoStreamer.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.videoStreamer.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.videoStreamer.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: {{ include "kdbc.videoStreamer.serviceName" . }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "video-streamer") | nindent 4 }}
+spec:
+  type: {{ .Values.videoStreamer.service.type }}
+  ports:
+    - name: http
+      port: {{ .Values.videoStreamer.service.port }}
+      targetPort: http
+  selector:
+    {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "video-streamer") | nindent 4 }}
+{{- end }}

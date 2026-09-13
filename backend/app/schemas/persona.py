@@ -3,9 +3,10 @@ Persona-related Pydantic schemas.
 """
 
 from datetime import datetime
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 from uuid import UUID
-from pydantic import BaseModel, Field
+
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class PersonaBase(BaseModel):
@@ -23,8 +24,6 @@ class PersonaBase(BaseModel):
 
 class PersonaCreate(PersonaBase):
     """Schema for creating personas."""
-
-    pass
 
 
 class PersonaUpdate(BaseModel):
@@ -47,8 +46,7 @@ class PersonaResponse(PersonaBase):
     created_at: datetime
     updated_at: datetime
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class DocumentPersonaDetectionBase(BaseModel):
@@ -66,8 +64,6 @@ class DocumentPersonaDetectionBase(BaseModel):
 class DocumentPersonaDetectionCreate(DocumentPersonaDetectionBase):
     """Schema for creating persona detections."""
 
-    pass
-
 
 class DocumentPersonaDetectionResponse(DocumentPersonaDetectionBase):
     """Response schema for persona detections."""
@@ -76,8 +72,7 @@ class DocumentPersonaDetectionResponse(DocumentPersonaDetectionBase):
     created_at: datetime
     persona: PersonaResponse
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 class PersonaEditRequestCreate(BaseModel):
@@ -100,5 +95,4 @@ class PersonaEditRequestResponse(BaseModel):
     created_at: datetime
     resolved_at: Optional[datetime]
 
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)

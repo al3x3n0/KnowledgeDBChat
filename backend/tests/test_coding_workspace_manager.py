@@ -1,6 +1,5 @@
 """Tests for CodingWorkspaceManager."""
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -10,8 +9,6 @@ from app.services.coding_workspace_manager import (
     CodingWorkspace,
     CodingWorkspaceManager,
     _sha256,
-    MAX_FILE_BYTES,
-    MAX_WORKSPACE_BYTES,
 )
 
 
@@ -22,7 +19,9 @@ def manager():
     mgr.cleanup_all()
 
 
-def _make_workspace(manager: CodingWorkspaceManager, files: dict[str, str] | None = None) -> CodingWorkspace:
+def _make_workspace(
+    manager: CodingWorkspaceManager, files: dict[str, str] | None = None
+) -> CodingWorkspace:
     """Create a workspace manually (without DB or git) for testing."""
     import uuid
 
@@ -127,22 +126,28 @@ class TestFileOperations:
         assert "traversal" in err.lower()
 
     def test_browse_files_lists_contents(self, manager):
-        ws = _make_workspace(manager, {
-            "src/a.py": "a",
-            "src/b.py": "b",
-            "README.md": "readme",
-        })
+        ws = _make_workspace(
+            manager,
+            {
+                "src/a.py": "a",
+                "src/b.py": "b",
+                "README.md": "readme",
+            },
+        )
         entries = manager.browse_files(ws)
         paths = {e["path"] for e in entries}
         assert "README.md" in paths
         assert "src" in paths
 
     def test_browse_files_with_glob(self, manager):
-        ws = _make_workspace(manager, {
-            "src/a.py": "a",
-            "src/b.js": "b",
-            "lib/c.py": "c",
-        })
+        ws = _make_workspace(
+            manager,
+            {
+                "src/a.py": "a",
+                "src/b.js": "b",
+                "lib/c.py": "c",
+            },
+        )
         entries = manager.browse_files(ws, glob_pattern="*.py")
         paths = {e["path"] for e in entries}
         assert "src/a.py" in paths
@@ -150,10 +155,13 @@ class TestFileOperations:
         assert "src/b.js" not in paths
 
     def test_search_code_finds_pattern(self, manager):
-        ws = _make_workspace(manager, {
-            "src/main.py": "def hello():\n    return 'world'\n",
-            "src/other.py": "x = 42\n",
-        })
+        ws = _make_workspace(
+            manager,
+            {
+                "src/main.py": "def hello():\n    return 'world'\n",
+                "src/other.py": "x = 42\n",
+            },
+        )
         results = manager.search_code(ws, r"def \w+")
         assert len(results) == 1
         assert results[0]["file"] == "src/main.py"

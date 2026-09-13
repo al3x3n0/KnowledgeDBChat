@@ -3,7 +3,7 @@
  */
 
 import React, { useState } from 'react';
-import { Link, useNavigate } from 'react-router-dom';
+import { useNavigate } from 'react-router-dom';
 import { useForm } from 'react-hook-form';
 import { Database, Mail, Lock, User } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
@@ -233,7 +233,6 @@ const LoginPage: React.FC = () => {
 };
 
 export default LoginPage;
-
 
 
 

@@ -4,11 +4,11 @@ LaTeX compilation service for LaTeX Studio.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import subprocess
 import tempfile
-import os
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, List, Optional, Tuple
@@ -31,10 +31,19 @@ class LatexCompileResult:
 
 _FORBIDDEN_PATTERNS: List[Tuple[str, str]] = [
     (r"\\write18\b", "Disallowed: \\write18"),
-    (r"\\(?:openin|openout|read|write)\b", "Disallowed: low-level I/O (\\openin/\\openout/\\read/\\write)"),
+    (
+        r"\\(?:openin|openout|read|write)\b",
+        "Disallowed: low-level I/O (\\openin/\\openout/\\read/\\write)",
+    ),
 ]
 
-_INCLUDE_COMMANDS = ("input", "include", "includegraphics", "bibliography", "addbibresource")
+_INCLUDE_COMMANDS = (
+    "input",
+    "include",
+    "includegraphics",
+    "bibliography",
+    "addbibresource",
+)
 
 
 def _check_safe_mode(tex_source: str) -> List[str]:
@@ -108,7 +117,11 @@ def _check_includes_allowed(
     violations: List[str] = []
     for cmd, arg in _extract_includes(tex_source):
         # Some commands accept comma-separated lists.
-        parts = [p.strip() for p in arg.split(",") if p.strip()] if cmd in ("bibliography",) else [arg]
+        parts = (
+            [p.strip() for p in arg.split(",") if p.strip()]
+            if cmd in ("bibliography",)
+            else [arg]
+        )
         for part in parts:
             if not _is_safe_relative_path(part):
                 violations.append(f"Disallowed path in \\{cmd}{{...}}: {part}")
@@ -116,11 +129,15 @@ def _check_includes_allowed(
             if cmd in ("input", "include"):
                 target = _normalize_tex_input_name(part)
                 if target not in allowed_set:
-                    violations.append(f"Missing project file for \\{cmd}{{{part}}} (expected {target})")
+                    violations.append(
+                        f"Missing project file for \\{cmd}{{{part}}} (expected {target})"
+                    )
             elif cmd == "includegraphics":
                 candidates = _possible_graphics_names(part)
                 if not candidates or not any(c in allowed_set for c in candidates):
-                    violations.append(f"Missing project image for \\includegraphics{{{part}}}")
+                    violations.append(
+                        f"Missing project image for \\includegraphics{{{part}}}"
+                    )
             elif cmd in ("bibliography", "addbibresource"):
                 target = part
                 if cmd == "bibliography" and "." not in Path(target).name:
@@ -198,7 +215,9 @@ class LatexCompilerService:
         if safe_mode:
             violations = _check_safe_mode(tex_source)
             if violations:
-                raise LatexSafetyError("Unsafe LaTeX detected in safe_mode.", violations=violations)
+                raise LatexSafetyError(
+                    "Unsafe LaTeX detected in safe_mode.", violations=violations
+                )
 
         additional_files = additional_files or {}
         if safe_mode:
@@ -219,10 +238,19 @@ class LatexCompilerService:
                 include_violations.extend(_check_safe_mode(included_text))
 
             if include_violations:
-                raise LatexSafetyError("Unsafe or missing project file references detected in safe_mode.", violations=include_violations)
+                raise LatexSafetyError(
+                    "Unsafe or missing project file references detected in safe_mode.",
+                    violations=include_violations,
+                )
 
         engines = self.available_engines()
-        engine = preferred_engine or ("tectonic" if engines.get("tectonic") else "pdflatex" if engines.get("pdflatex") else None)
+        engine = preferred_engine or (
+            "tectonic"
+            if engines.get("tectonic")
+            else "pdflatex"
+            if engines.get("pdflatex")
+            else None
+        )
         if engine not in ("tectonic", "pdflatex"):
             return LatexCompileResult(
                 success=False,
@@ -238,7 +266,10 @@ class LatexCompilerService:
             out_dir.mkdir(parents=True, exist_ok=True)
 
             main_tex = tmp_path / "main.tex"
-            main_tex.write_text(tex_source + ("\n" if not tex_source.endswith("\n") else ""), encoding="utf-8")
+            main_tex.write_text(
+                tex_source + ("\n" if not tex_source.endswith("\n") else ""),
+                encoding="utf-8",
+            )
 
             # Write additional project files (no subdirectories for now).
             for name, data in additional_files.items():
@@ -256,7 +287,9 @@ class LatexCompilerService:
 
             if engine == "tectonic":
                 cmd = ["tectonic", "--outdir", str(out_dir), str(main_tex.name)]
-                rc, output = self._run(cmd, cwd=tmp_path, timeout_seconds=timeout_seconds)
+                rc, output = self._run(
+                    cmd, cwd=tmp_path, timeout_seconds=timeout_seconds
+                )
                 pdf_path = out_dir / "main.pdf"
             else:
                 cmd = [
@@ -268,7 +301,9 @@ class LatexCompilerService:
                     f"-output-directory={out_dir}",
                     str(main_tex.name),
                 ]
-                rc, output = self._run(cmd, cwd=tmp_path, timeout_seconds=timeout_seconds)
+                rc, output = self._run(
+                    cmd, cwd=tmp_path, timeout_seconds=timeout_seconds
+                )
                 pdf_path = out_dir / "main.pdf"
 
             log_parts = [output.strip()]
@@ -283,7 +318,9 @@ class LatexCompilerService:
                 want_bibtex = True
                 if settings is not None:
                     try:
-                        want_bibtex = bool(getattr(settings, "LATEX_COMPILER_RUN_BIBTEX", True))
+                        want_bibtex = bool(
+                            getattr(settings, "LATEX_COMPILER_RUN_BIBTEX", True)
+                        )
                     except Exception:
                         want_bibtex = True
 
@@ -294,7 +331,9 @@ class LatexCompilerService:
                         if re.search(r"\\bibliography\\s*\\{", tex_source):
                             needs_bib = True
                         elif aux_path.exists():
-                            aux_text = aux_path.read_text(encoding="utf-8", errors="replace")
+                            aux_text = aux_path.read_text(
+                                encoding="utf-8", errors="replace"
+                            )
                             if "\\bibdata" in aux_text or "\\citation" in aux_text:
                                 needs_bib = True
                     except Exception:
@@ -304,24 +343,35 @@ class LatexCompilerService:
                         env = dict(os.environ or {})
                         # Help bibtex find .bib files stored alongside the project.
                         env.setdefault("BIBINPUTS", f"{tmp_path}:{out_dir}:")
-                        bib_rc, bib_out = self._run(["bibtex", "main"], cwd=out_dir, timeout_seconds=timeout_seconds, env=env)
+                        bib_rc, bib_out = self._run(
+                            ["bibtex", "main"],
+                            cwd=out_dir,
+                            timeout_seconds=timeout_seconds,
+                            env=env,
+                        )
                         log_parts.append((bib_out or "").strip())
                         if bib_rc == 0:
                             # Rerun pdflatex twice to resolve refs/citations.
                             for _ in range(2):
-                                rc, out = self._run(cmd, cwd=tmp_path, timeout_seconds=timeout_seconds)
+                                rc, out = self._run(
+                                    cmd, cwd=tmp_path, timeout_seconds=timeout_seconds
+                                )
                                 log_parts.append((out or "").strip())
                         else:
                             # Keep rc non-zero if bibtex failed; the PDF may still exist but citations won't resolve.
                             rc = bib_rc
                 elif want_bibtex and re.search(r"\\bibliography\\s*\\{", tex_source):
-                    log_parts.append("BibTeX requested but `bibtex` binary is not available on the server.")
+                    log_parts.append(
+                        "BibTeX requested but `bibtex` binary is not available on the server."
+                    )
 
             # Some compilers write a .log file; append if present.
             log_file = out_dir / "main.log"
             if log_file.exists():
                 try:
-                    log_parts.append(log_file.read_text(encoding="utf-8", errors="replace").strip())
+                    log_parts.append(
+                        log_file.read_text(encoding="utf-8", errors="replace").strip()
+                    )
                 except Exception:
                     pass
 

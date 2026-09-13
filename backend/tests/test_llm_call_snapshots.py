@@ -1,7 +1,6 @@
 """Tests for LLM call snapshots: capture in LLMService + read-only API."""
 
 import asyncio
-from types import SimpleNamespace
 from uuid import uuid4
 
 import pytest
@@ -34,7 +33,9 @@ def _fake_completion():
     return LLMCompletion(
         text='{"ok": true}',
         structured={"ok": True},
-        tool_calls=[LLMToolCall(id="tc1", name="search_documents", arguments={"q": "x"})],
+        tool_calls=[
+            LLMToolCall(id="tc1", name="search_documents", arguments={"q": "x"})
+        ],
         provider="anthropic",
         model="claude-opus-4-8",
         prompt_tokens=100,
@@ -83,7 +84,9 @@ async def test_generate_structured_records_snapshot(db_session, test_user, monke
 
 
 @pytest.mark.asyncio
-async def test_generate_structured_records_error_snapshot(db_session, test_user, monkeypatch):
+async def test_generate_structured_records_error_snapshot(
+    db_session, test_user, monkeypatch
+):
     import app.services.llm_providers as providers_module
 
     monkeypatch.setattr(
@@ -191,9 +194,7 @@ class TestSnapshotEndpoints:
         assert items[0]["phase"] == "thinking"
         assert "request" not in items[0]  # summaries exclude payloads
 
-        detail = client.get(
-            f"/api/v1/llm-snapshots/{snap.id}", headers=auth_headers
-        )
+        detail = client.get(f"/api/v1/llm-snapshots/{snap.id}", headers=auth_headers)
         assert detail.status_code == 200
         body = detail.json()
         assert body["response_text"] == "hello"

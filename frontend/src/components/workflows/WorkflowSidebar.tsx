@@ -8,9 +8,6 @@
 
 import React, { useState } from 'react';
 import {
-  Play,
-  Square,
-  Wrench,
   GitBranch,
   GitFork,
   GitMerge,
@@ -23,7 +20,6 @@ import {
   Globe,
   FileText,
   Trash2,
-  Upload,
   List,
   Tags,
   Bot,
@@ -34,7 +30,7 @@ import {
   Plus,
   X,
 } from 'lucide-react';
-import { useWorkflowStore, WorkflowNodeData, ToolParameter, SwitchCase } from './useWorkflowStore';
+import { useWorkflowStore, ToolParameter } from './useWorkflowStore';
 import InputMapper from './InputMapper';
 import { ContextVariable } from './ContextAutocomplete';
 import WorkflowSelector from './WorkflowSelector';

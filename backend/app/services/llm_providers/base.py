@@ -81,10 +81,14 @@ class BaseLLMProvider(ABC):
 
 def normalize_tool(tool: Dict[str, Any]) -> Dict[str, Any]:
     """Coerce a registry tool dict to {name, description, parameters}."""
-    parameters = tool.get("parameters") or tool.get("input_schema") or {
-        "type": "object",
-        "properties": {},
-    }
+    parameters = (
+        tool.get("parameters")
+        or tool.get("input_schema")
+        or {
+            "type": "object",
+            "properties": {},
+        }
+    )
     return {
         "name": str(tool.get("name") or ""),
         "description": str(tool.get("description") or ""),

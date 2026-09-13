@@ -8,7 +8,7 @@ from datetime import datetime
 from typing import List, Optional
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 
 
 class LatexProjectFileResponse(BaseModel):
@@ -31,4 +31,3 @@ class LatexProjectFileListResponse(BaseModel):
 class LatexProjectFileUploadResponse(BaseModel):
     file: LatexProjectFileResponse
     replaced: bool = False
-

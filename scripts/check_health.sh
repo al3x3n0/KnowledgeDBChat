@@ -9,6 +9,18 @@ echo ""
 
 ERRORS=0
 
+# Host ports the stack publishes. Defaults mirror docker-compose.yml; a value
+# set in .env (or the environment) moves the check along with the stack.
+kdbc_port() {
+    local value=""
+    [ -f .env ] && value="$(grep -E "^$1=" .env | tail -n 1 | cut -d= -f2- | tr -d '"'"'"'[:space:]')"
+    echo "${!1:-${value:-$2}}"
+}
+KDBC_UI_PORT="$(kdbc_port KDBC_UI_PORT 23000)"
+KDBC_BACKEND_PORT="$(kdbc_port KDBC_BACKEND_PORT 28000)"
+KDBC_MINIO_PORT="$(kdbc_port KDBC_MINIO_PORT 29000)"
+KDBC_VIDEO_PORT="$(kdbc_port KDBC_VIDEO_PORT 28080)"
+
 # Detect Docker Compose command
 if command -v docker-compose &> /dev/null; then
     COMPOSE=(docker-compose)
@@ -70,7 +82,7 @@ if [ "$SERVICES_RUNNING" -eq 1 ]; then
     echo "Checking running services (via Docker Compose)..."
     
     # Backend
-    if curl -s http://localhost:8000/health > /dev/null 2>&1; then
+    if curl -s http://localhost:${KDBC_BACKEND_PORT}/health > /dev/null 2>&1; then
         echo "✅ Backend API is responding"
     else
         echo "❌ Backend API is not responding"
@@ -78,7 +90,7 @@ if [ "$SERVICES_RUNNING" -eq 1 ]; then
     fi
     
     # Nginx (frontend reverse proxy)
-    if curl -s http://localhost:3000/health > /dev/null 2>&1; then
+    if curl -s http://localhost:${KDBC_UI_PORT}/health > /dev/null 2>&1; then
         echo "✅ Nginx is responding"
     else
         echo "❌ Nginx is not responding"
@@ -86,7 +98,7 @@ if [ "$SERVICES_RUNNING" -eq 1 ]; then
     fi
 
     # Frontend app (served via nginx)
-    if curl -s http://localhost:3000 > /dev/null 2>&1; then
+    if curl -s http://localhost:${KDBC_UI_PORT} > /dev/null 2>&1; then
         echo "✅ Frontend is responding"
     else
         echo "❌ Frontend is not responding"
@@ -110,7 +122,7 @@ if [ "$SERVICES_RUNNING" -eq 1 ]; then
     fi
 
     # MinIO
-    if curl -s http://localhost:9000/minio/health/live > /dev/null 2>&1; then
+    if curl -s http://localhost:${KDBC_MINIO_PORT}/minio/health/live > /dev/null 2>&1; then
         echo "✅ MinIO is responding"
     else
         echo "❌ MinIO is not responding"
@@ -118,7 +130,7 @@ if [ "$SERVICES_RUNNING" -eq 1 ]; then
     fi
 
     # Video streamer
-    if curl -s http://localhost:8080/health > /dev/null 2>&1; then
+    if curl -s http://localhost:${KDBC_VIDEO_PORT}/health > /dev/null 2>&1; then
         echo "✅ Video streamer is responding"
     else
         echo "❌ Video streamer is not responding"

@@ -7,23 +7,19 @@ Supports multiple output formats and visualization types.
 
 from __future__ import annotations
 
-import io
-import json
 import base64
-import tempfile
-import subprocess
-from pathlib import Path
-from typing import Any, Dict, List, Optional, Union, Tuple
-from uuid import uuid4
+import io
+from typing import Any, Dict, List, Optional, Union
 
 from loguru import logger
 
 _IMPORT_ERROR: str | None = None
 try:
     import matplotlib
+
     matplotlib.use("Agg")  # Non-interactive backend
-    import matplotlib.pyplot as plt
     import matplotlib.colors as mcolors
+    import matplotlib.pyplot as plt
     import numpy as np
     import pandas as pd
 except Exception as e:
@@ -35,15 +31,141 @@ except Exception as e:
     _IMPORT_ERROR = str(e)
 
 
+def _gaussian_kde(samples: "np.ndarray", grid: "np.ndarray") -> Optional["np.ndarray"]:
+    """A 1-D Gaussian KDE, evaluated on `grid`.
+
+    This is scipy's `stats.gaussian_kde` with its default Scott bandwidth --
+    `n ** (-1 / (d + 4))` scaled by the sample standard deviation -- written out
+    in numpy because it was the only call into scipy left in this codebase, and
+    scipy is 120 MB. Returns None when the sample cannot support a density
+    (fewer than two points, or no spread), which is what a caller must draw
+    nothing for rather than a flat line.
+    """
+    samples = np.asarray(samples, dtype=float)
+    samples = samples[np.isfinite(samples)]
+    if samples.size < 2:
+        return None
+    spread = float(np.std(samples, ddof=1))
+    if not spread or not np.isfinite(spread):
+        return None
+    bandwidth = spread * samples.size ** (-1.0 / 5.0)
+    z = (grid[:, None] - samples[None, :]) / bandwidth
+    return np.exp(-0.5 * z**2).sum(axis=1) / (
+        samples.size * bandwidth * np.sqrt(2.0 * np.pi)
+    )
+
+
+def normalize_chart_data(data: Dict[str, Any]) -> "pd.DataFrame":
+    """Turn the documented chart-data shapes into a frame the charts can read.
+
+    The ``create_chart`` tool schema advertises ``{labels, values}``,
+    ``{labels, datasets: [...]}``, ``{points: [{x, y}]}`` and
+    ``{labels, matrix}``, but the only shape the frame constructor ever accepted
+    was a plain column mapping: every other one raised "All arrays must be of
+    the same length" — a caller that followed the documentation could not chart
+    anything. The chart builders are column-oriented (first column is x, the
+    rest are series), so each shape is reshaped to that here.
+    """
+    points = data.get("points")
+    if isinstance(points, list) and points:
+        return pd.DataFrame([point for point in points if isinstance(point, dict)])
+
+    labels = data.get("labels")
+    matrix = data.get("matrix")
+    if isinstance(matrix, list) and matrix:
+        matrix_columns = (
+            [str(label) for label in labels]
+            if isinstance(labels, list) and len(labels) == len(matrix[0] or [])
+            else None
+        )
+        frame = pd.DataFrame(matrix, columns=matrix_columns)
+        if isinstance(labels, list) and len(labels) == len(frame.index):
+            frame.index = [str(label) for label in labels]
+        return frame
+
+    if not isinstance(labels, list):
+        # Already a column mapping, or a shape only pandas can judge.
+        return pd.DataFrame(data)
+
+    columns: Dict[str, Any] = {"label": [str(label) for label in labels]}
+
+    def _add_series(name: str, values: Any) -> None:
+        if not isinstance(values, list):
+            raise ValueError(f"chart series '{name}' must be a list of numbers")
+        if len(values) != len(labels):
+            # Say which series is wrong. Pandas reports only "All arrays must be
+            # of the same length", which does not tell a caller what to fix.
+            raise ValueError(
+                f"chart series '{name}' has {len(values)} values "
+                f"but there are {len(labels)} labels"
+            )
+        columns[name] = values
+
+    datasets = data.get("datasets")
+    if isinstance(datasets, list) and datasets:
+        for index, dataset in enumerate(datasets, start=1):
+            if isinstance(dataset, dict):
+                # Chart.js writes the series as "data"; the schema calls it
+                # "values". Models send both, and both mean the same thing.
+                _add_series(
+                    str(dataset.get("label") or f"series_{index}"),
+                    dataset.get("values", dataset.get("data")),
+                )
+            else:
+                _add_series(f"series_{index}", dataset)
+    elif "values" in data:
+        _add_series("value", data.get("values"))
+    else:
+        return pd.DataFrame(data)
+
+    return pd.DataFrame(columns)
+
+
 class VisualizationService:
     """Service for generating visualizations."""
 
     # Color palettes
     PALETTES = {
-        "default": ["#3B82F6", "#10B981", "#F59E0B", "#EF4444", "#8B5CF6", "#EC4899", "#06B6D4", "#84CC16"],
-        "professional": ["#1E40AF", "#166534", "#B45309", "#991B1B", "#5B21B6", "#9D174D", "#0E7490", "#4D7C0F"],
-        "pastel": ["#93C5FD", "#86EFAC", "#FDE047", "#FCA5A5", "#C4B5FD", "#FBCFE8", "#67E8F9", "#BEF264"],
-        "dark": ["#1E3A8A", "#14532D", "#78350F", "#7F1D1D", "#4C1D95", "#831843", "#164E63", "#365314"],
+        "default": [
+            "#3B82F6",
+            "#10B981",
+            "#F59E0B",
+            "#EF4444",
+            "#8B5CF6",
+            "#EC4899",
+            "#06B6D4",
+            "#84CC16",
+        ],
+        "professional": [
+            "#1E40AF",
+            "#166534",
+            "#B45309",
+            "#991B1B",
+            "#5B21B6",
+            "#9D174D",
+            "#0E7490",
+            "#4D7C0F",
+        ],
+        "pastel": [
+            "#93C5FD",
+            "#86EFAC",
+            "#FDE047",
+            "#FCA5A5",
+            "#C4B5FD",
+            "#FBCFE8",
+            "#67E8F9",
+            "#BEF264",
+        ],
+        "dark": [
+            "#1E3A8A",
+            "#14532D",
+            "#78350F",
+            "#7F1D1D",
+            "#4C1D95",
+            "#831843",
+            "#164E63",
+            "#365314",
+        ],
     }
 
     def __init__(self):
@@ -83,15 +205,21 @@ class VisualizationService:
 
         # Convert dict to DataFrame if needed
         if isinstance(data, dict):
-            data = pd.DataFrame(data)
+            data = normalize_chart_data(data)
 
         # Get configuration
         title = config.get("title", "")
         x_label = config.get("x_label", "")
         y_label = config.get("y_label", "")
-        x_column = config.get("x_column") or (data.columns[0] if len(data.columns) > 0 else None)
-        y_columns = config.get("y_columns") or (list(data.columns[1:]) if len(data.columns) > 1 else [])
-        palette = self.PALETTES.get(config.get("palette", "default"), self.PALETTES["default"])
+        x_column = config.get("x_column") or (
+            data.columns[0] if len(data.columns) > 0 else None
+        )
+        y_columns = config.get("y_columns") or (
+            list(data.columns[1:]) if len(data.columns) > 1 else []
+        )
+        palette = self.PALETTES.get(
+            config.get("palette", "default"), self.PALETTES["default"]
+        )
         figsize = config.get("figsize", (10, 6))
         legend = config.get("legend", True)
         grid = config.get("grid", True)
@@ -107,7 +235,9 @@ class VisualizationService:
             elif chart_type == "pie":
                 self._create_pie_chart(ax, data, config, palette)
             elif chart_type == "scatter":
-                self._create_scatter_chart(ax, data, x_column, y_columns, palette, config)
+                self._create_scatter_chart(
+                    ax, data, x_column, y_columns, palette, config
+                )
             elif chart_type == "histogram":
                 self._create_histogram(ax, data, config, palette)
             elif chart_type == "heatmap":
@@ -117,19 +247,21 @@ class VisualizationService:
             elif chart_type == "area":
                 self._create_area_chart(ax, data, x_column, y_columns, palette, config)
             elif chart_type == "horizontal_bar":
-                self._create_horizontal_bar(ax, data, x_column, y_columns, palette, config)
+                self._create_horizontal_bar(
+                    ax, data, x_column, y_columns, palette, config
+                )
             else:
                 raise ValueError(f"Unknown chart type: {chart_type}")
 
             # Apply common styling
             if title:
-                ax.set_title(title, fontsize=14, fontweight='bold', pad=20)
+                ax.set_title(title, fontsize=14, fontweight="bold", pad=20)
             if x_label:
                 ax.set_xlabel(x_label, fontsize=11)
             if y_label:
                 ax.set_ylabel(y_label, fontsize=11)
             if legend and chart_type not in ["pie", "heatmap"]:
-                ax.legend(loc='best')
+                ax.legend(loc="best")
             if grid and chart_type not in ["pie", "heatmap"]:
                 ax.grid(True, alpha=0.3)
 
@@ -139,9 +271,11 @@ class VisualizationService:
             buf = io.BytesIO()
             format = config.get("format", "png")
             dpi = config.get("dpi", 150)
-            fig.savefig(buf, format=format, dpi=dpi, bbox_inches='tight', facecolor='white')
+            fig.savefig(
+                buf, format=format, dpi=dpi, bbox_inches="tight", facecolor="white"
+            )
             buf.seek(0)
-            image_base64 = base64.b64encode(buf.read()).decode('utf-8')
+            image_base64 = base64.b64encode(buf.read()).decode("utf-8")
 
             plt.close(fig)
 
@@ -170,18 +304,22 @@ class VisualizationService:
     ):
         """Create bar chart."""
         if not y_columns:
-            y_columns = [data.columns[1]] if len(data.columns) > 1 else [data.columns[0]]
+            y_columns = (
+                [data.columns[1]] if len(data.columns) > 1 else [data.columns[0]]
+            )
 
         x = np.arange(len(data))
         width = 0.8 / len(y_columns)
 
         for i, col in enumerate(y_columns):
             offset = (i - len(y_columns) / 2 + 0.5) * width
-            ax.bar(x + offset, data[col], width, label=col, color=palette[i % len(palette)])
+            ax.bar(
+                x + offset, data[col], width, label=col, color=palette[i % len(palette)]
+            )
 
         if x_column and x_column in data.columns:
             ax.set_xticks(x)
-            ax.set_xticklabels(data[x_column], rotation=45, ha='right')
+            ax.set_xticklabels(data[x_column], rotation=45, ha="right")
 
     def _create_horizontal_bar(
         self,
@@ -194,14 +332,22 @@ class VisualizationService:
     ):
         """Create horizontal bar chart."""
         if not y_columns:
-            y_columns = [data.columns[1]] if len(data.columns) > 1 else [data.columns[0]]
+            y_columns = (
+                [data.columns[1]] if len(data.columns) > 1 else [data.columns[0]]
+            )
 
         y = np.arange(len(data))
         height = 0.8 / len(y_columns)
 
         for i, col in enumerate(y_columns):
             offset = (i - len(y_columns) / 2 + 0.5) * height
-            ax.barh(y + offset, data[col], height, label=col, color=palette[i % len(palette)])
+            ax.barh(
+                y + offset,
+                data[col],
+                height,
+                label=col,
+                color=palette[i % len(palette)],
+            )
 
         if x_column and x_column in data.columns:
             ax.set_yticks(y)
@@ -218,16 +364,21 @@ class VisualizationService:
     ):
         """Create line chart."""
         if not y_columns:
-            y_columns = list(data.columns[1:]) if len(data.columns) > 1 else list(data.columns)
+            y_columns = (
+                list(data.columns[1:]) if len(data.columns) > 1 else list(data.columns)
+            )
 
         x_data = data[x_column] if x_column and x_column in data.columns else data.index
 
         for i, col in enumerate(y_columns):
             ax.plot(
-                x_data, data[col],
+                x_data,
+                data[col],
                 label=col,
                 color=palette[i % len(palette)],
-                marker=config.get("marker", "o") if config.get("show_markers", False) else None,
+                marker=config.get("marker", "o")
+                if config.get("show_markers", False)
+                else None,
                 linewidth=config.get("linewidth", 2),
             )
 
@@ -245,7 +396,9 @@ class VisualizationService:
     ):
         """Create stacked area chart."""
         if not y_columns:
-            y_columns = list(data.columns[1:]) if len(data.columns) > 1 else list(data.columns)
+            y_columns = (
+                list(data.columns[1:]) if len(data.columns) > 1 else list(data.columns)
+            )
 
         x_data = data[x_column] if x_column and x_column in data.columns else data.index
 
@@ -253,7 +406,7 @@ class VisualizationService:
             x_data,
             [data[col] for col in y_columns],
             labels=y_columns,
-            colors=palette[:len(y_columns)],
+            colors=palette[: len(y_columns)],
             alpha=0.8,
         )
 
@@ -266,7 +419,11 @@ class VisualizationService:
     ):
         """Create pie chart."""
         labels_col = config.get("labels_column") or data.columns[0]
-        values_col = config.get("values_column") or data.columns[1] if len(data.columns) > 1 else data.columns[0]
+        values_col = (
+            config.get("values_column") or data.columns[1]
+            if len(data.columns) > 1
+            else data.columns[0]
+        )
 
         labels = data[labels_col] if labels_col in data.columns else data.index
         values = data[values_col]
@@ -276,8 +433,8 @@ class VisualizationService:
         if len(values) > max_slices:
             # Group small values into "Other"
             sorted_idx = values.argsort()[::-1]
-            top_idx = sorted_idx[:max_slices - 1]
-            other_idx = sorted_idx[max_slices - 1:]
+            top_idx = sorted_idx[: max_slices - 1]
+            other_idx = sorted_idx[max_slices - 1 :]
 
             top_labels = list(labels.iloc[top_idx])
             top_values = list(values.iloc[top_idx])
@@ -296,8 +453,8 @@ class VisualizationService:
         wedges, texts, autotexts = ax.pie(
             values,
             labels=labels,
-            colors=palette[:len(values)],
-            autopct='%1.1f%%',
+            colors=palette[: len(values)],
+            autopct="%1.1f%%",
             explode=explode,
             startangle=90,
         )
@@ -325,21 +482,27 @@ class VisualizationService:
         color_column = config.get("color_column")
 
         for i, y_col in enumerate(y_columns):
-            sizes = data[size_column] * 100 if size_column and size_column in data.columns else 50
+            sizes = (
+                data[size_column] * 100
+                if size_column and size_column in data.columns
+                else 50
+            )
 
             if color_column and color_column in data.columns:
                 scatter = ax.scatter(
-                    data[x_column], data[y_col],
+                    data[x_column],
+                    data[y_col],
                     c=data[color_column],
                     s=sizes,
                     alpha=0.7,
-                    cmap='viridis',
+                    cmap="viridis",
                     label=y_col,
                 )
                 plt.colorbar(scatter, ax=ax, label=color_column)
             else:
                 ax.scatter(
-                    data[x_column], data[y_col],
+                    data[x_column],
+                    data[y_col],
                     s=sizes,
                     alpha=0.7,
                     color=palette[i % len(palette)],
@@ -359,24 +522,26 @@ class VisualizationService:
         palette: List[str],
     ):
         """Create histogram."""
-        column = config.get("column") or data.select_dtypes(include=[np.number]).columns[0]
+        column = (
+            config.get("column") or data.select_dtypes(include=[np.number]).columns[0]
+        )
         bins = config.get("bins", 20)
 
         ax.hist(
             data[column].dropna(),
             bins=bins,
             color=palette[0],
-            edgecolor='white',
+            edgecolor="white",
             alpha=0.8,
         )
 
         if config.get("show_kde", False):
-            from scipy import stats
             x = np.linspace(data[column].min(), data[column].max(), 100)
-            kde = stats.gaussian_kde(data[column].dropna())
-            ax2 = ax.twinx()
-            ax2.plot(x, kde(x), color=palette[1], linewidth=2, label='KDE')
-            ax2.set_ylabel('Density')
+            density = _gaussian_kde(data[column].dropna().to_numpy(), x)
+            if density is not None:
+                ax2 = ax.twinx()
+                ax2.plot(x, density, color=palette[1], linewidth=2, label="KDE")
+                ax2.set_ylabel("Density")
 
     def _create_heatmap(
         self,
@@ -388,7 +553,9 @@ class VisualizationService:
         # If data is correlation matrix or similar
         numeric_data = data.select_dtypes(include=[np.number])
 
-        im = ax.imshow(numeric_data.values, cmap=config.get("cmap", "RdYlBu_r"), aspect='auto')
+        im = ax.imshow(
+            numeric_data.values, cmap=config.get("cmap", "RdYlBu_r"), aspect="auto"
+        )
 
         # Add colorbar
         plt.colorbar(im, ax=ax)
@@ -396,7 +563,7 @@ class VisualizationService:
         # Set ticks
         ax.set_xticks(np.arange(len(numeric_data.columns)))
         ax.set_yticks(np.arange(len(numeric_data.index)))
-        ax.set_xticklabels(numeric_data.columns, rotation=45, ha='right')
+        ax.set_xticklabels(numeric_data.columns, rotation=45, ha="right")
         ax.set_yticklabels(numeric_data.index)
 
         # Add text annotations
@@ -415,7 +582,9 @@ class VisualizationService:
         palette: List[str],
     ):
         """Create box plot."""
-        columns = config.get("columns") or list(data.select_dtypes(include=[np.number]).columns)
+        columns = config.get("columns") or list(
+            data.select_dtypes(include=[np.number]).columns
+        )
 
         box_data = [data[col].dropna() for col in columns]
 
@@ -425,51 +594,9 @@ class VisualizationService:
             patch_artist=True,
         )
 
-        for patch, color in zip(bp['boxes'], palette):
+        for patch, color in zip(bp["boxes"], palette):
             patch.set_facecolor(color)
             patch.set_alpha(0.7)
-
-    def get_chart_data_for_frontend(
-        self,
-        chart_type: str,
-        data: Union[pd.DataFrame, Dict[str, Any]],
-        config: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
-        """
-        Generate chart configuration for frontend rendering (Chart.js/Plotly compatible).
-
-        Returns data structure that can be used directly by frontend charting libraries.
-        """
-        config = config or {}
-
-        if isinstance(data, dict):
-            data = pd.DataFrame(data)
-
-        x_column = config.get("x_column") or data.columns[0]
-        y_columns = config.get("y_columns") or list(data.columns[1:])
-        palette = self.PALETTES.get(config.get("palette", "default"), self.PALETTES["default"])
-
-        labels = data[x_column].tolist() if x_column in data.columns else data.index.tolist()
-
-        datasets = []
-        for i, col in enumerate(y_columns):
-            datasets.append({
-                "label": col,
-                "data": data[col].tolist(),
-                "backgroundColor": palette[i % len(palette)],
-                "borderColor": palette[i % len(palette)],
-            })
-
-        return {
-            "type": chart_type,
-            "labels": labels,
-            "datasets": datasets,
-            "options": {
-                "title": config.get("title", ""),
-                "xLabel": config.get("x_label", ""),
-                "yLabel": config.get("y_label", ""),
-            }
-        }
 
     def save_chart_to_file(
         self,

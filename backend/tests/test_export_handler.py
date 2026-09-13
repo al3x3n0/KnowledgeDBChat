@@ -6,18 +6,21 @@ import pytest
 
 try:
     from app.services.docx_builder import markdown_to_content_items
+
     HAS_DOCX = True
 except ImportError:
     HAS_DOCX = False
 
 try:
     from app.services.pdf_builder import PDFBuilder
+
     HAS_PDF = True
 except ImportError:
     HAS_PDF = False
 
 try:
     from app.services.pptx_builder import PPTXBuilder
+
     HAS_PPTX = True
 except ImportError:
     HAS_PPTX = False
@@ -126,37 +129,42 @@ class TestMarkdownToSlides:
     def _markdown_to_slides(self, markdown: str, title: str = "Test"):
         """Replicate the handler's slide conversion logic."""
         from app.schemas.presentation import SlideContent
+
         slides = []
-        sections = re.split(r'^##\s+', markdown, flags=re.MULTILINE)
+        sections = re.split(r"^##\s+", markdown, flags=re.MULTILINE)
         slide_num = 1
         for section in sections:
             section = section.strip()
             if not section:
                 continue
-            lines = section.split('\n', 1)
-            slide_title = lines[0].strip().lstrip('#').strip()
+            lines = section.split("\n", 1)
+            slide_title = lines[0].strip().lstrip("#").strip()
             body = lines[1].strip() if len(lines) > 1 else ""
             bullets = []
-            for bline in body.split('\n'):
+            for bline in body.split("\n"):
                 bline = bline.strip()
-                if bline.startswith(('- ', '* ', '+ ')):
+                if bline.startswith(("- ", "* ", "+ ")):
                     bullets.append(bline[2:].strip())
-                elif bline and not bline.startswith('#'):
+                elif bline and not bline.startswith("#"):
                     bullets.append(bline)
-            slides.append(SlideContent(
-                slide_number=slide_num,
-                slide_type="content",
-                title=slide_title,
-                content=bullets[:10],
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=slide_num,
+                    slide_type="content",
+                    title=slide_title,
+                    content=bullets[:10],
+                )
+            )
             slide_num += 1
         if not slides:
-            slides.append(SlideContent(
-                slide_number=1,
-                slide_type="title",
-                title=title,
-                content=["Generated from document"],
-            ))
+            slides.append(
+                SlideContent(
+                    slide_number=1,
+                    slide_type="title",
+                    title=title,
+                    content=["Generated from document"],
+                )
+            )
         return slides
 
     def test_splits_on_h2_headings(self):
@@ -185,8 +193,14 @@ class TestMarkdownToSlides:
 
     def test_presentation_outline_schema(self):
         from app.schemas.presentation import PresentationOutline, SlideContent
+
         slides = [
-            SlideContent(slide_number=1, slide_type="content", title="Slide 1", content=["Bullet 1"]),
+            SlideContent(
+                slide_number=1,
+                slide_type="content",
+                title="Slide 1",
+                content=["Bullet 1"],
+            ),
         ]
         outline = PresentationOutline(title="Test Preso", slides=slides)
         assert outline.title == "Test Preso"
@@ -204,9 +218,11 @@ class TestDocxBuilderAPI:
 
     def test_build_accepts_content_items(self):
         from app.services.docx_builder import DOCXBuilder
+
         builder = DOCXBuilder()
         assert hasattr(builder, "build")
         import inspect
+
         sig = inspect.signature(builder.build)
         param_names = list(sig.parameters.keys())
         assert "title" in param_names
@@ -215,6 +231,7 @@ class TestDocxBuilderAPI:
     def test_build_from_markdown_does_not_exist(self):
         """Confirm that build_from_markdown does NOT exist (the bug we fixed)."""
         from app.services.docx_builder import DOCXBuilder
+
         builder = DOCXBuilder()
         assert not hasattr(builder, "build_from_markdown")
 
@@ -224,17 +241,16 @@ class TestPdfBuilderAPI:
     """Tests verifying PDFBuilder.build() signature matches our usage."""
 
     def test_build_accepts_content_items(self):
-        from app.services.pdf_builder import PDFBuilder
         builder = PDFBuilder()
         assert hasattr(builder, "build")
         import inspect
+
         sig = inspect.signature(builder.build)
         param_names = list(sig.parameters.keys())
         assert "title" in param_names
         assert "content_items" in param_names
 
     def test_build_from_markdown_does_not_exist(self):
-        from app.services.pdf_builder import PDFBuilder
         builder = PDFBuilder()
         assert not hasattr(builder, "build_from_markdown")
 
@@ -244,15 +260,14 @@ class TestPptxBuilderAPI:
     """Tests verifying PPTXBuilder.build() signature matches our usage."""
 
     def test_build_accepts_outline(self):
-        from app.services.pptx_builder import PPTXBuilder
         builder = PPTXBuilder()
         assert hasattr(builder, "build")
         import inspect
+
         sig = inspect.signature(builder.build)
         param_names = list(sig.parameters.keys())
         assert "outline" in param_names
 
     def test_build_from_markdown_does_not_exist(self):
-        from app.services.pptx_builder import PPTXBuilder
         builder = PPTXBuilder()
         assert not hasattr(builder, "build_from_markdown")

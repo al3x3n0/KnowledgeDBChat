@@ -13,6 +13,7 @@ from typing import Any, Optional
 
 from app.core.config import settings
 
+from .anthropic_sdk import STRUCTURED_OUTPUT_TOOL, AnthropicProvider
 from .base import (
     BaseLLMProvider,
     LLMCompletion,
@@ -22,7 +23,6 @@ from .base import (
     to_openai_tools,
     try_parse_json_object,
 )
-from .anthropic_sdk import STRUCTURED_OUTPUT_TOOL, AnthropicProvider
 from .ollama import OllamaProvider
 from .openai_compatible import OpenAICompatibleProvider
 

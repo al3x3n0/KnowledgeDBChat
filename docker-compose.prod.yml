@@ -57,7 +57,6 @@ services:
     environment:
       - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-knowledge_db}
       - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
-      - OLLAMA_BASE_URL=http://ollama:11434
       - CHROMA_PERSIST_DIRECTORY=/app/data/chroma_db
       - VECTOR_STORE_PROVIDER=${VECTOR_STORE_PROVIDER:-qdrant}
       - QDRANT_URL=${QDRANT_URL:-http://qdrant:6333}
@@ -90,26 +89,6 @@ services:
       retries: 3
       start_period: 40s
 
-  # Ollama for local LLM
-  ollama:
-    image: ollama/ollama:latest
-    container_name: knowledge_db_ollama_prod
-    ports:
-      - "${OLLAMA_PORT:-11434}:11434"
-    volumes:
-      - ollama_data:/root/.ollama
-    networks:
-      - knowledge_net
-    environment:
-      - OLLAMA_HOST=0.0.0.0
-    restart: unless-stopped
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
-      interval: 30s
-      timeout: 10s
-      retries: 3
-
-  # Nginx Reverse Proxy
   nginx:
     image: nginx:alpine
     container_name: knowledge_db_nginx_prod
@@ -211,7 +190,11 @@ services:
     networks:
       - knowledge_net
     restart: unless-stopped
-    command: celery -A app.core.celery worker -Q latex --loglevel=info --concurrency=1
+    # app.core.celery_latex, not app.core.celery: this image carries
+    # requirements.latex-worker.txt, and the full app's include list reaches
+    # httpx on the first task module. Verified: the full app dies at worker
+    # startup with ModuleNotFoundError: No module named 'httpx'.
+    command: celery -A app.core.celery_latex worker -Q latex --loglevel=info --concurrency=1
     mem_limit: 2g
     shm_size: 512mb
     pids_limit: 256
@@ -222,6 +205,55 @@ services:
       - no-new-privileges:true
     cap_drop:
       - ALL
+
+  # Dedicated Celery worker for transcription (Whisper image, isolated queue).
+  #
+  # This is the only image carrying Whisper, librosa, speechbrain and
+  # resemblyzer -- ~250 MB the API and the general worker used to replicate.
+  # It builds FROM the backend image, so `docker compose build backend` has to
+  # run first; `make build` orders them.
+  celery_transcription:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile.transcription-worker
+    container_name: knowledge_db_celery_transcription_prod
+    environment:
+      - DATABASE_URL=postgresql://${POSTGRES_USER:-user}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-knowledge_db}
+      - REDIS_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_BROKER_URL=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - CELERY_RESULT_BACKEND=redis://:${REDIS_PASSWORD}@redis:6379/0
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      # MinIO settings (media is read from object storage before decoding)
+      - MINIO_ENDPOINT=${MINIO_ENDPOINT:-localhost:9000}
+      - MINIO_ACCESS_KEY=${MINIO_ACCESS_KEY:-minioadmin}
+      - MINIO_SECRET_KEY=${MINIO_SECRET_KEY:-minioadmin}
+      - MINIO_BUCKET_NAME=${MINIO_BUCKET_NAME:-documents}
+      - MINIO_USE_SSL=${MINIO_USE_SSL:-false}
+      - MINIO_PRESIGNED_URL_EXPIRY=${MINIO_PRESIGNED_URL_EXPIRY:-3600}
+      - MINIO_PROXY_BASE_URL=${MINIO_PROXY_BASE_URL:-}
+      - WHISPER_MODEL_SIZE=${WHISPER_MODEL_SIZE:-small}
+      - WHISPER_DEVICE=${WHISPER_DEVICE:-auto}
+      - TRANSCRIPTION_LANGUAGE=${TRANSCRIPTION_LANGUAGE:-auto}
+      - PRELOAD_WHISPER_MODEL=${PRELOAD_WHISPER_MODEL:-false}
+      - RUN_ALEMBIC_MIGRATIONS=false
+      - PYTHONDONTWRITEBYTECODE=1
+    volumes:
+      - ./data:/app/data
+      # Weights are downloaded on first use; without this they are downloaded
+      # again after every restart.
+      - ./data/whisper_models:/root/.cache/knowledge_db_transcriber
+      - ./data/hf_cache:/root/.cache/huggingface
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - knowledge_net
+    restart: unless-stopped
+    command: celery -A app.core.celery_transcription worker -Q transcription --loglevel=info --concurrency=1
+    mem_limit: 6g
+    shm_size: 2gb
 
   # Celery Beat for scheduled tasks
   celery_beat:
@@ -255,7 +287,6 @@ services:
 volumes:
   postgres_data:
   redis_data:
-  ollama_data:
   qdrant_data:
 
 networks:

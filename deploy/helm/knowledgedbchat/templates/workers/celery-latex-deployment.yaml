@@ -1,0 +1,81 @@
+{{- if .Values.celeryLatex.enabled }}
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ printf "%s-celery-latex" (include "kdbc.fullname" .) }}
+  labels:
+    {{- include "kdbc.componentLabels" (dict "ctx" . "component" "celery-latex") | nindent 4 }}
+spec:
+  replicas: {{ .Values.celeryLatex.replicaCount }}
+  selector:
+    matchLabels:
+      {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-latex") | nindent 6 }}
+  template:
+    metadata:
+      labels:
+        {{- include "kdbc.componentSelectorLabels" (dict "ctx" . "component" "celery-latex") | nindent 8 }}
+      annotations:
+        {{- include "kdbc.configChecksums" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ include "kdbc.serviceAccountName" . }}
+      {{- include "kdbc.imagePullSecrets" . | nindent 6 }}
+      terminationGracePeriodSeconds: 120
+      containers:
+        - name: celery-latex
+          image: "{{ .Values.image.latexWorker.repository }}:{{ .Values.image.latexWorker.tag }}"
+          imagePullPolicy: {{ .Values.image.latexWorker.pullPolicy }}
+          command:
+            - celery
+            - -A
+            - app.core.celery_latex
+            - worker
+            - -Q
+            - latex
+            - --loglevel={{ lower .Values.config.logLevel }}
+            - --concurrency={{ .Values.celeryLatex.concurrency }}
+          env:
+            {{- include "kdbc.connectionEnv" . | nindent 12 }}
+            - name: PYTHONDONTWRITEBYTECODE
+              value: "1"
+            - name: LOG_FILE
+              value: /tmp/logs/app.log
+            - name: OMP_NUM_THREADS
+              value: "1"
+            - name: MKL_NUM_THREADS
+              value: "1"
+            - name: GOTO_NUM_THREADS
+              value: "1"
+            {{- with .Values.global.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          envFrom:
+            {{- include "kdbc.appEnvFrom" . | nindent 12 }}
+          # LaTeX compiles untrusted input: no writable rootfs, no privilege
+          # escalation, no capabilities - mirrors docker-compose hardening.
+          securityContext:
+            readOnlyRootFilesystem: true
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: tmp
+              mountPath: /tmp
+          resources:
+            {{- toYaml .Values.celeryLatex.resources | nindent 12 }}
+      volumes:
+        - name: tmp
+          emptyDir:
+            sizeLimit: 2Gi
+      {{- with .Values.celeryLatex.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.celeryLatex.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.celeryLatex.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

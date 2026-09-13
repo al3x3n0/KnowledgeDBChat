@@ -9,9 +9,10 @@ Semantics:
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 import ipaddress
+from dataclasses import dataclass
 from typing import Any, Dict, Optional
+from urllib.parse import urlparse
 from uuid import UUID
 
 from loguru import logger
@@ -21,7 +22,6 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models.tool_policy import ToolPolicy
 from app.models.user import User
 from app.services.tool_registry import get_tool_metadata
-from urllib.parse import urlparse
 
 
 @dataclass(frozen=True)
@@ -45,7 +45,9 @@ def _match_policy(policy: ToolPolicy, tool_name: str) -> bool:
 
 def _tier_leq(actual: str, maximum: str) -> bool:
     order = {"low": 0, "medium": 1, "high": 2}
-    return order.get(str(actual).strip().lower(), 999) <= order.get(str(maximum).strip().lower(), 999)
+    return order.get(str(actual).strip().lower(), 999) <= order.get(
+        str(maximum).strip().lower(), 999
+    )
 
 
 def _extract_url_from_args(args: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -110,7 +112,9 @@ def _is_private_host(host: str) -> bool:
         return True
     try:
         ip = ipaddress.ip_address(h)
-        return bool(ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved)
+        return bool(
+            ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved
+        )
     except Exception:
         return False
 
@@ -130,7 +134,9 @@ def _host_allowed(host: str, allowed_domains: list[str]) -> bool:
     return False
 
 
-def _constraints_ok(*, constraints: Optional[dict], tool_name: str, tool_args: Optional[dict]) -> tuple[bool, Optional[str]]:
+def _constraints_ok(
+    *, constraints: Optional[dict], tool_name: str, tool_args: Optional[dict]
+) -> tuple[bool, Optional[str]]:
     if not isinstance(constraints, dict) or not constraints:
         return True, None
 
@@ -150,14 +156,23 @@ def _constraints_ok(*, constraints: Optional[dict], tool_name: str, tool_args: O
 
         if constraints.get("deny_private_networks") is True:
             if not host:
-                return False, f"Tool '{tool_name}' could not parse URL host and deny_private_networks=true"
+                return (
+                    False,
+                    f"Tool '{tool_name}' could not parse URL host and deny_private_networks=true",
+                )
             if _is_private_host(host):
-                return False, f"Tool '{tool_name}' URL host is private and deny_private_networks=true"
+                return (
+                    False,
+                    f"Tool '{tool_name}' URL host is private and deny_private_networks=true",
+                )
 
         allowed_domains = constraints.get("allowed_domains")
         if isinstance(allowed_domains, list) and allowed_domains:
             if not host:
-                return False, f"Tool '{tool_name}' could not parse URL host for allowed_domains"
+                return (
+                    False,
+                    f"Tool '{tool_name}' could not parse URL host for allowed_domains",
+                )
             if not _host_allowed(host, allowed_domains):
                 return False, f"Tool '{tool_name}' URL host not in allowed_domains"
 
@@ -180,7 +195,9 @@ async def evaluate_tool_policy(
     """
     tn = str(tool_name or "").strip()
     if not tn:
-        return ToolDecision(allowed=False, require_approval=False, denied_reason="Missing tool name")
+        return ToolDecision(
+            allowed=False, require_approval=False, denied_reason="Missing tool name"
+        )
 
     # Validate tool identifier (fail closed) while supporting dynamic user tools.
     if tn.startswith("user_tool:"):
@@ -188,16 +205,30 @@ async def evaluate_tool_policy(
         pass
     else:
         if get_tool_metadata(tn) is None:
-            return ToolDecision(allowed=False, require_approval=False, denied_reason=f"Unknown tool '{tn}'")
+            return ToolDecision(
+                allowed=False,
+                require_approval=False,
+                denied_reason=f"Unknown tool '{tn}'",
+            )
 
     subject_clauses = [ToolPolicy.subject_type == "global"]
     if user is not None:
-        subject_clauses.append((ToolPolicy.subject_type == "user") & (ToolPolicy.subject_id == user.id))
-        subject_clauses.append((ToolPolicy.subject_type == "role") & (ToolPolicy.subject_key == user.role))
+        subject_clauses.append(
+            (ToolPolicy.subject_type == "user") & (ToolPolicy.subject_id == user.id)
+        )
+        subject_clauses.append(
+            (ToolPolicy.subject_type == "role") & (ToolPolicy.subject_key == user.role)
+        )
     if agent_definition_id:
-        subject_clauses.append((ToolPolicy.subject_type == "agent_definition") & (ToolPolicy.subject_id == agent_definition_id))
+        subject_clauses.append(
+            (ToolPolicy.subject_type == "agent_definition")
+            & (ToolPolicy.subject_id == agent_definition_id)
+        )
     if api_key_id:
-        subject_clauses.append((ToolPolicy.subject_type == "api_key") & (ToolPolicy.subject_id == api_key_id))
+        subject_clauses.append(
+            (ToolPolicy.subject_type == "api_key")
+            & (ToolPolicy.subject_id == api_key_id)
+        )
 
     stmt = select(ToolPolicy).where(or_(*subject_clauses))
     res = await db.execute(stmt)
@@ -214,18 +245,35 @@ async def evaluate_tool_policy(
             allowed=False,
             require_approval=False,
             denied_reason=reason,
-            matched_policies=[{"id": str(p.id), "subject_type": p.subject_type, "tool_name": p.tool_name, "effect": p.effect} for p in denies[:10]],
+            matched_policies=[
+                {
+                    "id": str(p.id),
+                    "subject_type": p.subject_type,
+                    "tool_name": p.tool_name,
+                    "effect": p.effect,
+                }
+                for p in denies[:10]
+            ],
         )
 
     # Enforce constraints (if any). Any violated constraint denies the tool.
     for p in matched:
-        ok, reason = _constraints_ok(constraints=p.constraints, tool_name=tn, tool_args=tool_args)
+        ok, reason = _constraints_ok(
+            constraints=p.constraints, tool_name=tn, tool_args=tool_args
+        )
         if not ok:
             return ToolDecision(
                 allowed=False,
                 require_approval=False,
                 denied_reason=reason or f"Tool '{tn}' denied by policy constraints",
-                matched_policies=[{"id": str(p.id), "subject_type": p.subject_type, "tool_name": p.tool_name, "effect": p.effect}],
+                matched_policies=[
+                    {
+                        "id": str(p.id),
+                        "subject_type": p.subject_type,
+                        "tool_name": p.tool_name,
+                        "effect": p.effect,
+                    }
+                ],
             )
 
     require_approval = any(bool(p.require_approval) for p in matched)
@@ -233,5 +281,14 @@ async def evaluate_tool_policy(
         allowed=True,
         require_approval=require_approval,
         denied_reason=None,
-        matched_policies=[{"id": str(p.id), "subject_type": p.subject_type, "tool_name": p.tool_name, "effect": p.effect, "require_approval": p.require_approval} for p in matched[:20]],
+        matched_policies=[
+            {
+                "id": str(p.id),
+                "subject_type": p.subject_type,
+                "tool_name": p.tool_name,
+                "effect": p.effect,
+                "require_approval": p.require_approval,
+            }
+            for p in matched[:20]
+        ],
     )

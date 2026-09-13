@@ -3,28 +3,28 @@ Usage/analytics endpoints (LLM token usage).
 """
 
 from datetime import datetime
-from typing import Optional, List
+from typing import List, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from sqlalchemy import select, func, desc
+from sqlalchemy import desc, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.database import get_db
-from app.models.llm_usage import LLMUsageEvent
 from app.models.agent_definition import AgentDefinition
+from app.models.llm_usage import LLMUsageEvent
 from app.models.user import User
 from app.schemas.common import PaginatedResponse
 from app.schemas.usage import (
-    LLMUsageEventResponse,
-    LLMUsageSummaryResponse,
-    LLMUsageSummaryItem,
-    LLMRoutingSummaryResponse,
-    LLMRoutingSummaryItem,
+    LLMRoutingExperimentListItem,
+    LLMRoutingExperimentListResponse,
     LLMRoutingExperimentRecommendationResponse,
     LLMRoutingExperimentVariantStat,
-    LLMRoutingExperimentListResponse,
-    LLMRoutingExperimentListItem,
+    LLMRoutingSummaryItem,
+    LLMRoutingSummaryResponse,
+    LLMUsageEventResponse,
+    LLMUsageSummaryItem,
+    LLMUsageSummaryResponse,
 )
 from app.services.auth_service import get_current_user
 
@@ -69,7 +69,9 @@ async def list_llm_usage_events(
     Non-admin users may only view their own events.
     """
     if user_id and (not current_user.is_admin()) and user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to view other users' usage")
+        raise HTTPException(
+            status_code=403, detail="Not authorized to view other users' usage"
+        )
 
     effective_user_id = user_id
     if (not current_user.is_admin()) and effective_user_id is None:
@@ -92,7 +94,11 @@ async def list_llm_usage_events(
     count_query = select(func.count()).select_from(query.subquery())
     total = (await db.execute(count_query)).scalar() or 0
 
-    query = query.order_by(desc(LLMUsageEvent.created_at)).offset((page - 1) * page_size).limit(page_size)
+    query = (
+        query.order_by(desc(LLMUsageEvent.created_at))
+        .offset((page - 1) * page_size)
+        .limit(page_size)
+    )
     rows = (await db.execute(query)).scalars().all()
 
     return PaginatedResponse.create(
@@ -120,7 +126,9 @@ async def llm_usage_summary(
     Non-admin users may only view their own usage.
     """
     if user_id and (not current_user.is_admin()) and user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to view other users' usage")
+        raise HTTPException(
+            status_code=403, detail="Not authorized to view other users' usage"
+        )
 
     effective_user_id = user_id
     if (not current_user.is_admin()) and effective_user_id is None:
@@ -131,8 +139,12 @@ async def llm_usage_summary(
         LLMUsageEvent.model,
         LLMUsageEvent.task_type,
         func.count().label("request_count"),
-        func.coalesce(func.sum(LLMUsageEvent.prompt_tokens), 0).label("total_prompt_tokens"),
-        func.coalesce(func.sum(LLMUsageEvent.completion_tokens), 0).label("total_completion_tokens"),
+        func.coalesce(func.sum(LLMUsageEvent.prompt_tokens), 0).label(
+            "total_prompt_tokens"
+        ),
+        func.coalesce(func.sum(LLMUsageEvent.completion_tokens), 0).label(
+            "total_completion_tokens"
+        ),
         func.coalesce(func.sum(LLMUsageEvent.total_tokens), 0).label("total_tokens"),
         func.avg(LLMUsageEvent.latency_ms).label("avg_latency_ms"),
     ).group_by(LLMUsageEvent.provider, LLMUsageEvent.model, LLMUsageEvent.task_type)
@@ -164,12 +176,13 @@ async def llm_usage_summary(
                 total_prompt_tokens=int(r.total_prompt_tokens or 0),
                 total_completion_tokens=int(r.total_completion_tokens or 0),
                 total_tokens=int(r.total_tokens or 0),
-                avg_latency_ms=float(r.avg_latency_ms) if r.avg_latency_ms is not None else None,
+                avg_latency_ms=float(r.avg_latency_ms)
+                if r.avg_latency_ms is not None
+                else None,
             )
         )
 
     return LLMUsageSummaryResponse(items=items, date_from=date_from, date_to=date_to)
-
 
 
 def _percentile_int(values: List[int], pct: float) -> Optional[int]:
@@ -209,7 +222,9 @@ async def llm_routing_summary(
     Non-admin users may only view their own usage.
     """
     if user_id and (not current_user.is_admin()) and user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to view other users' usage")
+        raise HTTPException(
+            status_code=403, detail="Not authorized to view other users' usage"
+        )
 
     effective_user_id = user_id
     if (not current_user.is_admin()) and effective_user_id is None:
@@ -270,7 +285,9 @@ async def llm_routing_summary(
         routing_tier_provider = routing.get("tier_provider") if routing else None
         routing_tier_model = routing.get("tier_model") if routing else None
         routing_experiment_id = routing.get("experiment_id") if routing else None
-        routing_experiment_variant_id = routing.get("experiment_variant_id") if routing else None
+        routing_experiment_variant_id = (
+            routing.get("experiment_variant_id") if routing else None
+        )
 
         if not include_unrouted and not routing:
             continue
@@ -280,13 +297,21 @@ async def llm_routing_summary(
             r.model,
             r.task_type,
             str(routing_tier).lower() if isinstance(routing_tier, str) else None,
-            str(routing_requested_tier).lower() if isinstance(routing_requested_tier, str) else None,
+            str(routing_requested_tier).lower()
+            if isinstance(routing_requested_tier, str)
+            else None,
             _opt_int(routing_attempt),
             _opt_int(routing_attempts),
-            str(routing_tier_provider).lower() if isinstance(routing_tier_provider, str) else None,
+            str(routing_tier_provider).lower()
+            if isinstance(routing_tier_provider, str)
+            else None,
             str(routing_tier_model) if isinstance(routing_tier_model, str) else None,
-            str(routing_experiment_id) if isinstance(routing_experiment_id, str) else None,
-            str(routing_experiment_variant_id) if isinstance(routing_experiment_variant_id, str) else None,
+            str(routing_experiment_id)
+            if isinstance(routing_experiment_id, str)
+            else None,
+            str(routing_experiment_variant_id)
+            if isinstance(routing_experiment_variant_id, str)
+            else None,
         )
 
         g = groups.get(key)
@@ -332,7 +357,11 @@ async def llm_routing_summary(
         ec = int(g["error_count"] or 0)
         success_rate = (float(sc) / float(rc)) if rc else 0.0
         latencies = g.get("latencies") or []
-        avg_latency = (float(g.get("latency_sum") or 0) / float(len(latencies))) if latencies else None
+        avg_latency = (
+            (float(g.get("latency_sum") or 0) / float(len(latencies)))
+            if latencies
+            else None
+        )
 
         items.append(
             LLMRoutingSummaryItem(
@@ -369,8 +398,10 @@ async def llm_routing_summary(
     )
 
 
-
-@router.get("/llm/routing/experiments/recommendation", response_model=LLMRoutingExperimentRecommendationResponse)
+@router.get(
+    "/llm/routing/experiments/recommendation",
+    response_model=LLMRoutingExperimentRecommendationResponse,
+)
 async def llm_routing_experiment_recommendation(
     experiment_id: str = Query(..., min_length=1),
     agent_id: Optional[UUID] = Query(None),
@@ -386,7 +417,9 @@ async def llm_routing_experiment_recommendation(
     Uses `LLMUsageEvent.extra['routing'].experiment_id/experiment_variant_id`.
     """
     if user_id and (not current_user.is_admin()) and user_id != current_user.id:
-        raise HTTPException(status_code=403, detail="Not authorized to view other users' usage")
+        raise HTTPException(
+            status_code=403, detail="Not authorized to view other users' usage"
+        )
 
     effective_user_id = user_id
     if (not current_user.is_admin()) and effective_user_id is None:
@@ -414,7 +447,7 @@ async def llm_routing_experiment_recommendation(
     def _get_routing(ev_extra: object) -> Optional[dict]:
         if not isinstance(ev_extra, dict):
             return None
-        r = ev_extra.get('routing')
+        r = ev_extra.get("routing")
         return r if isinstance(r, dict) else None
 
     # Aggregate by variant
@@ -423,46 +456,46 @@ async def llm_routing_experiment_recommendation(
         routing = _get_routing(r.extra)
         if not routing:
             continue
-        if str(routing.get('experiment_id') or '') != str(experiment_id):
+        if str(routing.get("experiment_id") or "") != str(experiment_id):
             continue
         if agent_id is not None:
-            rid = routing.get('agent_id')
+            rid = routing.get("agent_id")
             if rid and str(rid) != str(agent_id):
                 continue
 
-        variant_id = str(routing.get('experiment_variant_id') or '').strip()
+        variant_id = str(routing.get("experiment_variant_id") or "").strip()
         if not variant_id:
             continue
 
         g = groups.get(variant_id)
         if g is None:
             g = {
-                'request_count': 0,
-                'success_count': 0,
-                'error_count': 0,
-                'latencies': [],
-                'latency_sum': 0,
+                "request_count": 0,
+                "success_count": 0,
+                "error_count": 0,
+                "latencies": [],
+                "latency_sum": 0,
             }
             groups[variant_id] = g
 
-        g['request_count'] += 1
+        g["request_count"] += 1
         if r.error:
-            g['error_count'] += 1
+            g["error_count"] += 1
         else:
-            g['success_count'] += 1
+            g["success_count"] += 1
 
         if isinstance(r.latency_ms, int):
-            g['latencies'].append(int(r.latency_ms))
-            g['latency_sum'] += int(r.latency_ms)
+            g["latencies"].append(int(r.latency_ms))
+            g["latency_sum"] += int(r.latency_ms)
 
     variants = []
     for vid, g in groups.items():
-        rc = int(g['request_count'] or 0)
-        sc = int(g['success_count'] or 0)
-        ec = int(g['error_count'] or 0)
+        rc = int(g["request_count"] or 0)
+        sc = int(g["success_count"] or 0)
+        ec = int(g["error_count"] or 0)
         sr = (float(sc) / float(rc)) if rc else 0.0
-        lat = g.get('latencies') or []
-        avg = (float(g.get('latency_sum') or 0) / float(len(lat))) if lat else None
+        lat = g.get("latencies") or []
+        avg = (float(g.get("latency_sum") or 0) / float(len(lat))) if lat else None
         variants.append(
             LLMRoutingExperimentVariantStat(
                 experiment_id=str(experiment_id),
@@ -476,10 +509,12 @@ async def llm_routing_experiment_recommendation(
             )
         )
 
-    variants.sort(key=lambda v: (v.success_rate, -(v.p95_latency_ms or 10**9)), reverse=True)
+    variants.sort(
+        key=lambda v: (v.success_rate, -(v.p95_latency_ms or 10**9)), reverse=True
+    )
 
     recommended = variants[0].variant_id if variants else None
-    rationale = 'No data for this experiment in the selected window.'
+    rationale = "No data for this experiment in the selected window."
     if variants:
         best = variants[0]
         rationale = f"Best success_rate={best.success_rate:.3f}, p95_latency_ms={best.p95_latency_ms or 'n/a'}"
@@ -510,7 +545,9 @@ async def list_llm_routing_experiments(
     Admins can view all agents (optionally including system agents). Non-admins can only view
     agents they own and never system agents.
     """
-    effective_include_system = bool(include_system) if current_user.is_admin() else False
+    effective_include_system = (
+        bool(include_system) if current_user.is_admin() else False
+    )
 
     stmt = select(AgentDefinition).order_by(AgentDefinition.name.asc())
 

@@ -1,0 +1,61 @@
+(axis-module fselgt
+  (version "0.1.0")
+  (target rvmt)
+  (description "Branchless select on a float compare, fusing fcmgt+bit")
+
+  (defisa fsel32
+    (base rv32im)
+    (word-bits 32)
+    (registers "f[32]:i32" "pc:i32")
+    (features fp custom)
+    (memory-model rvwmo)
+    (endianness little))
+
+  (defformat FP_R
+    (bits 32)
+    (fields (opcode 6 0) (fd 11 7) (func3 14 12) (fn1 19 15) (fm 24 20) (func7 31 25)))
+
+  (definstruction fselgt
+    (mnemonic FSELGT) (isa fsel32) (category float) (format FP_R)
+    (opcode 11) (func3 0) (func7 1)
+    (operands (fd reg i32 inout) (fn1 reg i32 in) (fm reg i32 in))
+    (asm "fselgt $fd, $fn1, $fm")
+    (semantics "fd = fn1 when fn1 > fm, else fd unchanged")
+    (formal (select (fcmp_olt f32 fm fn1) fn1 fd))
+    (latency 3) (throughput 1.0)
+    (area-estimate-um2 2000.0) (power-estimate-mw 2.5) (expected-speedup 1.0)
+    (rationale "Hottest fusable shape in Godot core/math: 98,280 occurrences."))
+
+  (definstruction fcmgt_s
+    (mnemonic FCMGT_S) (isa fsel32) (category float) (format FP_R)
+    (opcode 11) (func3 1) (func7 1)
+    (operands (fd reg i32 out) (fn1 reg i32 in) (fm reg i32 in))
+    (asm "fcmgt_s $fd, $fn1, $fm")
+    (semantics "Lane mask: all ones when fn1 > fm, else zero")
+    (formal (select (fcmp_olt f32 fm fn1) 4294967295 0))
+    (latency 2) (throughput 1.0)
+    (area-estimate-um2 900.0) (power-estimate-mw 1.0) (expected-speedup 1.0)
+    (rationale "First half of the mined pair."))
+
+  (definstruction bit_s
+    (mnemonic BIT_S) (isa fsel32) (category simd) (format FP_R)
+    (opcode 11) (func3 2) (func7 1)
+    (operands (fd reg i32 inout) (fn1 reg i32 in) (fm reg i32 in))
+    (asm "bit_s $fd, $fn1, $fm")
+    (semantics "Bitwise insert if true: fd = (fd & ~fm) | (fn1 & fm)")
+    (formal (or (and fd (not i32 fm)) (and fn1 fm)))
+    (latency 1) (throughput 1.0)
+    (area-estimate-um2 400.0) (power-estimate-mw 0.5) (expected-speedup 1.0)
+    (rationale "Second half of the mined pair."))
+
+  (definstruction fselgt_nan_bug
+    (mnemonic FSELGT_NAN_BUG) (isa fsel32) (category float) (format FP_R)
+    (opcode 11) (func3 3) (func7 1)
+    (operands (fd reg i32 inout) (fn1 reg i32 in) (fm reg i32 in))
+    (asm "fselgt_nan_bug $fd, $fn1, $fm")
+    (semantics "The obvious alternative: logically negate fn1 <= fm instead of testing fm < fn1")
+    (formal (select (icmp_eq i32 (fcmp_ole f32 fn1 fm) 0) fn1 fd))
+    (latency 3) (throughput 1.0)
+    (area-estimate-um2 2000.0) (power-estimate-mw 2.5) (expected-speedup 1.0)
+    (rationale "Negative control: negating the opposite compare is NaN-asymmetric."))
+)

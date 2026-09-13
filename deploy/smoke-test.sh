@@ -66,8 +66,26 @@ step "Installing $RELEASE into $NAMESPACE"
 # that name their default differently.
 SC_ARGS=()
 [[ -n "${SMOKE_STORAGE_CLASS:-}" ]] && SC_ARGS=(--set "global.storageClass=${SMOKE_STORAGE_CLASS}")
-helm install "$RELEASE" "$CHART_DIR" -n "$NAMESPACE" --create-namespace \
-  -f "$VALUES" "${SC_ARGS[@]}" --timeout "$TIMEOUT" --wait
+# On failure, say WHAT did not become ready before the trap tears the
+# namespace down. `--wait` reports only "context deadline exceeded", and with
+# `set -e` the diagnostic steps below never run -- so a CI failure carried no
+# information about which pod was stuck, which is the one thing needed to fix
+# it. Every command here is best-effort: a diagnostic must not mask the
+# install's own exit status.
+if ! helm install "$RELEASE" "$CHART_DIR" -n "$NAMESPACE" --create-namespace \
+  -f "$VALUES" "${SC_ARGS[@]}" --timeout "$TIMEOUT" --wait; then
+  echo "--- install failed; state of the namespace ---" >&2
+  kubectl -n "$NAMESPACE" get pods,pvc,jobs -o wide 2>&1 | sed 's/^/    /' >&2 || true
+  echo "--- pods not Running or not Ready ---" >&2
+  kubectl -n "$NAMESPACE" get pods \
+    -o jsonpath='{range .items[*]}{.metadata.name}{"\t"}{.status.phase}{"\t"}{range .status.containerStatuses[*]}{.ready}{","}{.state}{end}{"\n"}{end}' \
+    2>&1 | grep -v $'\tRunning\ttrue' | sed 's/^/    /' >&2 || true
+  echo "--- recent events ---" >&2
+  kubectl -n "$NAMESPACE" get events --sort-by=.lastTimestamp 2>&1 | tail -30 | sed 's/^/    /' >&2 || true
+  echo "--- logs from the migration hook, if it ran ---" >&2
+  kubectl -n "$NAMESPACE" logs -l app.kubernetes.io/component=migrate --tail=50 2>&1 | sed 's/^/    /' >&2 || true
+  exit 1
+fi
 pass "helm install succeeded (post-install migration hook completed)"
 
 step "Pod and volume state"

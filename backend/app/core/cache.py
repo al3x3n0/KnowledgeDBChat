@@ -2,9 +2,10 @@
 Caching utilities using Redis.
 """
 
+import asyncio
 import pickle
 from functools import wraps
-from typing import Any, Callable, Optional, TypeVar
+from typing import Any, Callable, Dict, Optional, TypeVar
 
 try:
     import redis.asyncio as aioredis
@@ -17,46 +18,70 @@ from app.core.config import settings
 
 T = TypeVar("T")
 
-# Global Redis client
-_redis_client: Optional[aioredis.Redis] = None
+#: One client per event loop, not one per process.
+#:
+#: An asyncio Redis client binds to the loop that created it, and celery runs
+#: each task in a FRESH loop -- the same reason `create_celery_session` builds
+#: an engine per invocation rather than sharing one. A process-global client
+#: therefore worked for exactly one task per worker and then failed every
+#: call with "Event loop is closed". It failed quietly: `CacheService.get`
+#: catches and returns None, so feature flags silently stopped consulting
+#: Redis in workers and fell back to settings, which looks like flags simply
+#: not taking effect.
+#:
+#: Keyed by id(loop) and swept of closed loops on each access, so a worker
+#: that runs thousands of tasks does not accumulate thousands of clients.
+_redis_clients: Dict[int, aioredis.Redis] = {}
 
 
 async def get_redis_client() -> aioredis.Redis:
     """
-    Get or create Redis client.
+    Get or create the Redis client for the running event loop.
 
     Returns:
-        Redis client instance
+        Redis client instance bound to this loop
     """
-    global _redis_client
-    if _redis_client is None:
-        _redis_client = aioredis.from_url(
+    loop = asyncio.get_running_loop()
+    for key in [k for k, c in _redis_clients.items() if k != id(loop)]:
+        # Its loop is gone; the client cannot be used or cleanly closed from
+        # here, so drop the reference and let it be collected.
+        _redis_clients.pop(key, None)
+
+    client = _redis_clients.get(id(loop))
+    if client is None:
+        client = aioredis.from_url(
             settings.REDIS_URL,
             encoding="utf-8",
             decode_responses=False,  # We'll handle encoding ourselves
         )
-    return _redis_client
+        _redis_clients[id(loop)] = client
+    return client
 
 
 async def close_redis_client():
-    """Close Redis client connection."""
-    global _redis_client
-    if _redis_client:
-        await _redis_client.close()
-        _redis_client = None
+    """Close the client for the running loop, if there is one."""
+    try:
+        loop_id = id(asyncio.get_running_loop())
+    except RuntimeError:
+        loop_id = None
+    client = _redis_clients.pop(loop_id, None) if loop_id is not None else None
+    if client:
+        await client.close()
 
 
 class CacheService:
     """Service for caching data in Redis."""
 
     def __init__(self):
-        self._client: Optional[aioredis.Redis] = None
+        # Deliberately holds no client. `cache_service` is a module singleton
+        # shared by every request and every celery task, so caching one here
+        # would pin the first loop's client for the life of the process --
+        # exactly the bug get_redis_client was changed to avoid, one level up.
+        pass
 
     async def _get_client(self) -> aioredis.Redis:
-        """Get Redis client."""
-        if self._client is None:
-            self._client = await get_redis_client()
-        return self._client
+        """The client for the loop this call is running on."""
+        return await get_redis_client()
 
     async def get(self, key: str) -> Optional[Any]:
         """

@@ -251,6 +251,19 @@ services:
     environment:
       - REACT_APP_API_URL=http://localhost:${KDBC_UI_PORT:-23000}
       - REACT_APP_WS_URL=ws://localhost:${KDBC_UI_PORT:-23000}
+      # Where the HOT-RELOAD socket should connect, which is not where the dev
+      # server listens. webpack-dev-server bakes its client URL from its own
+      # bind address, so the browser was handed ws://0.0.0.0:3000 -- an address
+      # no browser can dial (Safari: "The operation is insecure") and a port
+      # that is container-internal anyway. The page is reached through nginx,
+      # so the socket has to be too; nginx's catch-all already forwards the
+      # upgrade to frontend:3000.
+      #
+      # This was masked while nginx also listened on 3000: browsers that
+      # coerce 0.0.0.0 to localhost happened to land on it. Moving the UI port
+      # removed that coincidence and left only the real misconfiguration.
+      - WDS_SOCKET_HOST=localhost
+      - WDS_SOCKET_PORT=${KDBC_UI_PORT:-23000}
     depends_on:
       - backend
     networks:

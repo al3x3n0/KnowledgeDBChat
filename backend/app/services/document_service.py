@@ -104,16 +104,30 @@ class DocumentService:
             base_query = base_query.where(Document.owner_persona_id == owner_persona_id)
 
         if persona_id or persona_role:
-            base_query = base_query.join(Document.persona_detections)
+            # EXISTS rather than JOIN + DISTINCT. A document can have several
+            # detections, so the join multiplied its row and .distinct() was
+            # there to collapse them again -- but DISTINCT compares whole rows,
+            # and Document carries `tags` and `extra_metadata` as json, which
+            # PostgreSQL has no equality operator for. Every call with a
+            # persona filter returned 500: "could not identify an equality
+            # operator for type json".
+            #
+            # Asking whether a matching detection EXISTS never duplicates the
+            # row, so nothing needs collapsing and no json value is compared.
+            # It is also the question actually being asked: documents this
+            # persona was detected in, not one row per detection.
+            detection_filters = [DocumentPersonaDetection.document_id == Document.id]
             if persona_id:
-                base_query = base_query.where(
+                detection_filters.append(
                     DocumentPersonaDetection.persona_id == persona_id
                 )
             if persona_role:
-                base_query = base_query.where(
-                    DocumentPersonaDetection.role == persona_role
-                )
-            base_query = base_query.distinct()
+                detection_filters.append(DocumentPersonaDetection.role == persona_role)
+            base_query = base_query.where(
+                select(DocumentPersonaDetection.id)
+                .where(and_(*detection_filters))
+                .exists()
+            )
 
         # Get total count
         count_query = select(func.count()).select_from(base_query.subquery())

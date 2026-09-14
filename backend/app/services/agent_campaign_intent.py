@@ -105,6 +105,8 @@ When it is a request:
 - `items` are the first questions to pursue, 2 to 5. Each should be answerable by one agent job.
 - Take the specifics from the message. Do not invent a subject the person did not mention.
 
+If the message asks for SEVERAL campaigns at once, draft the first one and ignore the rest. One campaign the person can launch is useful; refusing because they asked for eight is not, and they can ask again for the others.
+
 If the message gestures at research but names nothing to settle, answer false: a campaign without a goal runs until it exhausts its budget."""
 
 

@@ -248,6 +248,35 @@ async def send_message(
             user_settings=user_settings,
         )
 
+        # Some messages are not questions. "Run a campaign to find out whether
+        # X" asks for work to be started, and answering it with prose alone is
+        # the wrong response -- the reply carries a drafted campaign the person
+        # edits and launches. A draft, never a launch: a campaign spends a job
+        # budget autonomously, and inferring that from a sentence and acting on
+        # it is not helpfulness.
+        #
+        # Attached to the assistant message rather than returned beside it so
+        # reopening the session still shows the offer. Deliberately last and
+        # deliberately swallowed: the answer is the product, and losing it
+        # because an optional offer failed would be a poor trade.
+        try:
+            from app.services.agent_campaign_intent import draft_from_message
+
+            draft = await draft_from_message(
+                message_data.content,
+                llm_service=chat_service.llm_service,
+                user_id=current_user.id,
+                db=db,
+            )
+            if draft:
+                meta = dict(getattr(ai_response, "extra_metadata", None) or {})
+                meta["campaign_draft"] = draft
+                ai_response.extra_metadata = meta
+                await db.commit()
+                await db.refresh(ai_response)
+        except Exception as exc:
+            logger.warning(f"Campaign offer skipped for this reply: {exc}")
+
         return ChatMessageResponse.from_orm(ai_response)
 
     except HTTPException:

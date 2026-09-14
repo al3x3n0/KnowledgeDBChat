@@ -45,6 +45,7 @@ from app.api.endpoints import (
     reading_lists,
     repo_reports,
     research,
+    research_campaigns,
     research_inbox,
     research_monitor_profiles,
     research_notes,
@@ -117,6 +118,11 @@ api_router.include_router(
     domain_research_profiles.router,
     prefix="/domain-research-profiles",
     tags=["domain-research-profiles"],
+)
+api_router.include_router(
+    research_campaigns.router,
+    prefix="/research/campaigns",
+    tags=["research-campaigns"],
 )
 api_router.include_router(
     research_portfolios.router,

@@ -286,6 +286,7 @@ import {
   DocumentFolderItemsResult,
   DocumentFolderRef,
   DocumentFolderTree,
+  ResearchCampaign,
 } from '../types';
 
 // CRA substitutes the *bare identifier* `process.env.REACT_APP_X` at build
@@ -4585,6 +4586,33 @@ class ApiClient {
     return response.data;
   }
   // ==================== Research Notes ====================
+
+  /** Start a research campaign. The chat's campaign widget posts here after
+   *  the person has reviewed what the assistant drafted. */
+  async createResearchCampaign(payload: {
+    name: string;
+    goal: string;
+    items: { title: string; detail?: string }[];
+    max_jobs?: number;
+    job_template?: Record<string, any>;
+  }): Promise<ResearchCampaign> {
+    const response = await this.client.post('/api/v1/research/campaigns', payload);
+    return response.data;
+  }
+
+  async listResearchCampaigns(params?: {
+    status?: string;
+    limit?: number;
+    offset?: number;
+  }): Promise<{ items: ResearchCampaign[]; total: number }> {
+    const response = await this.client.get('/api/v1/research/campaigns', { params });
+    return response.data;
+  }
+
+  async getResearchCampaign(campaignId: string): Promise<ResearchCampaign> {
+    const response = await this.client.get(`/api/v1/research/campaigns/${campaignId}`);
+    return response.data;
+  }
 
   async createResearchNote(data: {
     title: string;

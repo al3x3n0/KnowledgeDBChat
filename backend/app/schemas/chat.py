@@ -43,6 +43,7 @@ class ChatMessageBase(BaseModel):
     source_documents: Optional[List[Dict[str, Any]]]
     context_used: Optional[str]
     search_query: Optional[str]
+    extra_metadata: Optional[Dict[str, Any]] = None
     groundedness_score: Optional[float] = None
     retrieval_trace_id: Optional[UUID] = None
     user_rating: Optional[int]

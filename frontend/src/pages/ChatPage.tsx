@@ -29,6 +29,7 @@ import {
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
+import CampaignDraftWidget from '../components/chat/CampaignDraftWidget';
 import remarkGfm from 'remark-gfm';
 
 import { apiClient } from '../services/api';
@@ -784,6 +785,13 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, question, o
             </span>
           )}
         </div>
+
+        {/* A reply can also offer work, not just answer. When the backend
+            recognised a request to start a campaign it attached a draft; this
+            is where the person reviews and launches it. */}
+        {isAssistant && message.extra_metadata?.campaign_draft && (
+          <CampaignDraftWidget draft={message.extra_metadata.campaign_draft} />
+        )}
 
         {/* Inline citations */}
         {isAssistant && citationNumbers.length > 0 && (

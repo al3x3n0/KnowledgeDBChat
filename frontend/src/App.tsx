@@ -445,20 +445,39 @@ const App: React.FC = () => {
               position="top-right"
               toastOptions={{
                 duration: 4000,
+                // Literal hex, and it has to be: react-hot-toast renders into
+                // its own portal with INLINE styles, so neither Tailwind
+                // classes nor the `.bg-white` -> terminal-background override
+                // in index.css reach it. The defaults here were a stock
+                // #363636 box with #4ade80 icons -- a neutral grey card with
+                // stock-green accents floating over a #0b0f10 surface with
+                // #2dfc9a accents, which read as a different application.
+                //
+                // Values mirror tailwind.config.js: gray.100 lifts the toast
+                // just off the gray.50 page, gray.300 gives it an edge, and
+                // gray.900 is the palette's foreground. Keep them in step if
+                // the theme moves.
                 style: {
-                  background: '#363636',
-                  color: '#fff',
+                  background: '#0f1516',
+                  color: '#f6fff9',
+                  border: '1px solid #1f2b2c',
+                  // High-priority notifications are composed as
+                  // `${title}\n${description}`, and HTML collapses that
+                  // newline to a space -- the two ran together as one line.
+                  // `pre-line` honours the break while still wrapping long
+                  // descriptions, which `pre` would not.
+                  whiteSpace: 'pre-line',
                 },
                 success: {
                   iconTheme: {
-                    primary: '#4ade80',
-                    secondary: '#fff',
+                    primary: '#2dfc9a',
+                    secondary: '#0b0f10',
                   },
                 },
                 error: {
                   iconTheme: {
                     primary: '#ef4444',
-                    secondary: '#fff',
+                    secondary: '#0b0f10',
                   },
                 },
               }}

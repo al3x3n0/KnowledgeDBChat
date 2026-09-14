@@ -42,6 +42,42 @@ export interface ChatMessage {
   user_rating?: number;
   user_feedback?: string;
   created_at: string;
+  /** Structured payload beside the prose. Currently carries
+   *  `campaign_draft` when the reply is offering a research campaign. */
+  extra_metadata?: { campaign_draft?: ResearchCampaignDraft } & Record<string, any>;
+}
+
+/** A campaign the assistant drafted from what was asked, for review before
+ *  anything runs. Shaped to post straight to POST /research/campaigns. */
+export interface ResearchCampaignDraft {
+  name: string;
+  goal: string;
+  items: { title: string; detail?: string }[];
+  max_jobs: number;
+}
+
+export interface ResearchCampaignItem {
+  id: string;
+  title: string;
+  detail?: string | null;
+  status: string;
+  origin: string;
+  generation: number;
+  job_id?: string | null;
+}
+
+export interface ResearchCampaign {
+  id: string;
+  name: string;
+  goal: string;
+  status: string;
+  max_jobs: number;
+  jobs_launched: number;
+  conclusion?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+  completed_at?: string | null;
+  summary?: Record<string, any> | null;
 }
 
 export interface SourceDocument {

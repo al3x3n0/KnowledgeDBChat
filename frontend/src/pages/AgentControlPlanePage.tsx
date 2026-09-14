@@ -1,7 +1,20 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { Link, useSearchParams } from 'react-router-dom';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
-import { Activity, Bot, GitBranch, GitFork, Layers, MemoryStick, Route, Workflow } from 'lucide-react';
+import {
+  Activity,
+  Bot,
+  GitBranch,
+  GitFork,
+  Layers,
+  MemoryStick,
+  PanelLeftClose,
+  PanelLeftOpen,
+  PanelRightClose,
+  PanelRightOpen,
+  Route,
+  Workflow,
+} from 'lucide-react';
 import toast from 'react-hot-toast';
 
 import Button from '../components/common/Button';
@@ -494,6 +507,40 @@ const AgentControlPlanePage: React.FC = () => {
   const queueScope = normalizeQueueScope(searchParams.get('queueScope'));
   const queueSort = normalizeQueueSort(searchParams.get('queueSort'));
   const queueOffset = parseQueueOffset(searchParams.get('queueOffset'));
+  // Panel state, remembered per browser. Wrapped because localStorage throws
+  // outright in a private window rather than returning null.
+  //
+  // Both rails default OPEN so nothing is hidden from someone who has never
+  // collapsed them -- but they exist because the graph is the point of this
+  // page and was getting the least room: at xl the grid spends 320px + 380px
+  // on the side panels and the middle column splits again for the node
+  // inspector, leaving roughly 140px for the graph on a 1280px viewport.
+  const readPanel = (key: string, fallback: boolean) => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw === null ? fallback : raw === '1';
+    } catch {
+      return fallback;
+    }
+  };
+  const [runsCollapsed, setRunsCollapsed] = React.useState(() =>
+    readPanel('cp_panel_runs_collapsed', false)
+  );
+  const [inspectorCollapsed, setInspectorCollapsed] = React.useState(() =>
+    readPanel('cp_panel_inspector_collapsed', false)
+  );
+  React.useEffect(() => {
+    try {
+      window.localStorage.setItem('cp_panel_runs_collapsed', runsCollapsed ? '1' : '0');
+      window.localStorage.setItem(
+        'cp_panel_inspector_collapsed',
+        inspectorCollapsed ? '1' : '0'
+      );
+    } catch {
+      // Private window: the panels still work for this session.
+    }
+  }, [runsCollapsed, inspectorCollapsed]);
+
   const [viewNameDraft, setViewNameDraft] = useState('');
   const [viewIsDefaultDraft, setViewIsDefaultDraft] = useState(false);
   const [reviewNoteDrafts, setReviewNoteDrafts] = useState<Record<string, string>>({});
@@ -1391,15 +1438,66 @@ const AgentControlPlanePage: React.FC = () => {
         </div>
       </div>
 
-      <div className="grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_380px]">
-        <section className="rounded-2xl border border-gray-200 bg-gray-100 p-4 shadow-sm">
-          <div className="mb-4 flex items-center justify-between">
-            <div>
-              <h2 className="text-sm font-semibold text-gray-900">Runs</h2>
-              <p className="text-xs text-gray-500">{filteredRuns.length} visible</p>
+      {/* Every combination spelled out, never interpolated: Tailwind's JIT
+          scans source for complete class names, so a template string like
+          `grid-cols-[${width}_...]` compiles to a class that exists in the
+          markup and in no stylesheet -- the grid silently falls back to one
+          column and the page looks broken for a reason nothing reports. */}
+      <div
+        className={
+          runsCollapsed && inspectorCollapsed
+            ? 'grid gap-6 xl:grid-cols-[44px_minmax(0,1fr)_44px]'
+            : runsCollapsed
+              ? 'grid gap-6 xl:grid-cols-[44px_minmax(0,1fr)_380px]'
+              : inspectorCollapsed
+                ? 'grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_44px]'
+                : 'grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_380px]'
+        }
+      >
+        <section
+          className={`rounded-2xl border border-gray-200 bg-gray-100 shadow-sm ${
+            runsCollapsed ? 'p-2' : 'p-4'
+          }`}
+        >
+          {runsCollapsed ? (
+            // A rail, not nothing: the count is the reason you would reopen it.
+            <div className="flex flex-col items-center gap-2">
+              <button
+                type="button"
+                onClick={() => setRunsCollapsed(false)}
+                className="rounded p-1.5 text-gray-600 hover:bg-gray-200 hover:text-gray-900"
+                title={`Show runs (${filteredRuns.length})`}
+                aria-label="Show runs"
+                aria-expanded={false}
+              >
+                <PanelLeftOpen className="h-4 w-4" />
+              </button>
+              <span className="text-[11px] tabular-nums text-gray-500">
+                {filteredRuns.length}
+              </span>
             </div>
-            {runsQuery.isFetching ? <LoadingSpinner size="sm" /> : null}
-          </div>
+          ) : (
+            <div className="mb-4 flex items-center justify-between">
+              <div>
+                <h2 className="text-sm font-semibold text-gray-900">Runs</h2>
+                <p className="text-xs text-gray-500">{filteredRuns.length} visible</p>
+              </div>
+              <div className="flex items-center gap-1">
+                {runsQuery.isFetching ? <LoadingSpinner size="sm" /> : null}
+                <button
+                  type="button"
+                  onClick={() => setRunsCollapsed(true)}
+                  className="rounded p-1.5 text-gray-600 hover:bg-gray-200 hover:text-gray-900"
+                  title="Hide runs"
+                  aria-label="Hide runs"
+                  aria-expanded
+                >
+                  <PanelLeftClose className="h-4 w-4" />
+                </button>
+              </div>
+            </div>
+          )}
+          {!runsCollapsed && (
           <div className="space-y-3">
             {(filteredRuns || []).map((run) => (
               <button
@@ -1446,6 +1544,7 @@ const AgentControlPlanePage: React.FC = () => {
               </div>
             ) : null}
           </div>
+          )}
         </section>
 
         <section className="space-y-6">
@@ -1628,10 +1727,39 @@ const AgentControlPlanePage: React.FC = () => {
         </section>
 
         <section className="space-y-6">
+          {inspectorCollapsed ? (
+            <div className="rounded-2xl border border-gray-200 bg-white p-2 shadow-sm">
+              <div className="flex flex-col items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => setInspectorCollapsed(false)}
+                  className="rounded p-1.5 text-gray-600 hover:bg-gray-200 hover:text-gray-900"
+                  title="Show inspector"
+                  aria-label="Show inspector"
+                  aria-expanded={false}
+                >
+                  <PanelRightOpen className="h-4 w-4" />
+                </button>
+                <MemoryStick className="h-4 w-4 text-gray-400" />
+              </div>
+            </div>
+          ) : (
           <div className="rounded-2xl border border-gray-200 bg-white p-5 shadow-sm">
-            <div className="mb-4 flex items-center gap-2">
-              <MemoryStick className="h-4 w-4 text-gray-500" />
-              <h3 className="text-sm font-semibold text-gray-900">Inspector</h3>
+            <div className="mb-4 flex items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <MemoryStick className="h-4 w-4 text-gray-500" />
+                <h3 className="text-sm font-semibold text-gray-900">Inspector</h3>
+              </div>
+              <button
+                type="button"
+                onClick={() => setInspectorCollapsed(true)}
+                className="rounded p-1.5 text-gray-600 hover:bg-gray-200 hover:text-gray-900"
+                title="Hide inspector"
+                aria-label="Hide inspector"
+                aria-expanded
+              >
+                <PanelRightClose className="h-4 w-4" />
+              </button>
             </div>
             {detail ? (
               <div className="space-y-5">
@@ -2284,6 +2412,7 @@ const AgentControlPlanePage: React.FC = () => {
               <div className="text-sm text-gray-500">Select a run to see replay, memory, routing, and downstream links.</div>
             )}
           </div>
+          )}
         </section>
       </div>
     </div>

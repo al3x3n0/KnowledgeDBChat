@@ -9,6 +9,7 @@ from app.schemas.agent_job import (
     AgentCheckpointQueueActionResponse,
     AgentCheckpointQueueItemResponse,
 )
+from app.utils.datetimes import as_aware_utc
 
 
 @dataclass(frozen=True)
@@ -114,10 +115,17 @@ def build_job_checkpoint_queue_items(
             AgentJobStatus.FAILED.value,
             AgentJobStatus.PAUSED.value,
         }
+        # Both sides normalised before subtracting. Every timestamp column on
+        # a job is DateTime(timezone=True) while the Python defaults are naive
+        # utcnow(), so what goes in naive comes back from Postgres AWARE --
+        # and `now` here is whatever the composer passed, which is naive. One
+        # such row turned the whole checkpoint queue into a 500:
+        # "can't subtract offset-naive and offset-aware datetimes".
+        last_activity = as_aware_utc(job.last_activity_at)
         stale_running = (
             str(job.status or "").strip().lower() == AgentJobStatus.RUNNING.value
-            and job.last_activity_at is not None
-            and (now - job.last_activity_at) > timedelta(minutes=30)
+            and last_activity is not None
+            and (as_aware_utc(now) - last_activity) > timedelta(minutes=30)
         )
         if not is_recurring or not (failed_or_paused or stale_running):
             continue

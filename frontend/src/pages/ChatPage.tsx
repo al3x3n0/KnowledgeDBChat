@@ -23,10 +23,13 @@ import {
   Network,
   ChevronDown,
   ChevronUp,
+  PanelLeftClose,
+  PanelLeftOpen,
   X
 } from 'lucide-react';
 import { formatDistanceToNow } from 'date-fns';
 import ReactMarkdown from 'react-markdown';
+import CampaignDraftWidget from '../components/chat/CampaignDraftWidget';
 import remarkGfm from 'remark-gfm';
 
 import { apiClient } from '../services/api';
@@ -46,6 +49,31 @@ const ChatPage: React.FC = () => {
   const { user } = useAuth();
   const queryClient = useQueryClient();
   
+  // Remembered per browser, and wrapped because localStorage throws outright
+  // in a private window rather than returning null -- same helper shape as the
+  // knowledge-graph page's panels.
+  const readCollapsed = (key: string, fallback: boolean) => {
+    try {
+      const raw = window.localStorage.getItem(key);
+      return raw === null ? fallback : raw === '1';
+    } catch {
+      return fallback;
+    }
+  };
+  const [sessionsCollapsed, setSessionsCollapsed] = useState(() =>
+    readCollapsed('chat_sessions_collapsed', false)
+  );
+  useEffect(() => {
+    try {
+      window.localStorage.setItem(
+        'chat_sessions_collapsed',
+        sessionsCollapsed ? '1' : '0'
+      );
+    } catch {
+      // A private window refuses to store it; the panel still works this session.
+    }
+  }, [sessionsCollapsed]);
+
   const [message, setMessage] = useState('');
   const [isTyping, setIsTyping] = useState(false);
   const [wsConnection, setWsConnection] = useState<WebSocket | null>(null);
@@ -331,74 +359,123 @@ const ChatPage: React.FC = () => {
   return (
     <div className="flex h-full">
       {/* Sidebar - Chat Sessions */}
-      <div className="w-80 bg-white border-r border-gray-200 flex flex-col h-full">
+      <div
+        className={`${
+          sessionsCollapsed ? 'w-12' : 'w-80'
+        } bg-white border-r border-gray-200 flex flex-col h-full transition-[width] duration-200 ease-out flex-shrink-0`}
+      >
         {/* Header */}
         <div className="p-4 border-b border-gray-200 flex-shrink-0">
-          <Button
-            onClick={handleCreateSession}
-            fullWidth
-            icon={<Plus className="w-4 h-4" />}
-            loading={createSessionMutation.isLoading}
-          >
-            New Chat
-          </Button>
-        </div>
-
-        {/* Sessions List */}
-        <div className="flex-1 overflow-y-auto min-h-0 scroll-smooth scrollbar-thin">
-          {sessionsError ? (
-            <div className="p-4 text-center text-red-500">
-              <p>Error loading sessions</p>
-              <p className="text-xs mt-1">Please refresh the page</p>
-            </div>
-          ) : sessions?.length === 0 ? (
-            <div className="p-4 text-center text-gray-500">
-              <MessageCircle className="w-12 h-12 mx-auto mb-2 text-gray-300" />
-              <p>No chat sessions yet</p>
-              <p className="text-sm">Start a new conversation!</p>
+          {sessionsCollapsed ? (
+            // Collapsed to a rail: the two things worth reaching without
+            // expanding first are "start a chat" and "bring the list back".
+            <div className="flex flex-col items-center gap-2 -mx-2">
+              <button
+                type="button"
+                onClick={() => setSessionsCollapsed(false)}
+                className="p-1.5 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900"
+                title="Show conversations"
+                aria-label="Show conversations"
+                aria-expanded={false}
+              >
+                <PanelLeftOpen className="w-4 h-4" />
+              </button>
+              <button
+                type="button"
+                onClick={handleCreateSession}
+                disabled={createSessionMutation.isLoading}
+                className="p-1.5 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 disabled:opacity-50"
+                title="New chat"
+                aria-label="New chat"
+              >
+                <Plus className="w-4 h-4" />
+              </button>
             </div>
           ) : (
-            <div className="space-y-2 p-2">
-              {sessions?.map((session) => (
-                <div
-                  key={session.id}
-                  className={`group p-3 rounded-lg cursor-pointer transition-colors duration-200 ${
-                    session.id === sessionId
-                      ? 'bg-primary-50 border border-primary-200'
-                      : 'hover:bg-gray-50'
-                  }`}
-                  onClick={() => navigate(`/chat/${session.id}`)}
+            <div className="flex items-center gap-2">
+              <div className="flex-1 min-w-0">
+                <Button
+                  onClick={handleCreateSession}
+                  fullWidth
+                  icon={<Plus className="w-4 h-4" />}
+                  loading={createSessionMutation.isLoading}
                 >
-                  <div className="flex items-start justify-between">
-                    <div className="flex-1 min-w-0">
-                      <h3 className="section-heading truncate">
-                        {session.title || 'Untitled Chat'}
-                      </h3>
-                      <p className="text-xs text-gray-500 mt-1">
-                        {session.last_message_at 
-                          ? `${formatDistanceToNow(new Date(session.last_message_at))} ago`
-                          : 'Just now'}
-                      </p>
-                    </div>
-                    <button
-                      type="button"
-                      className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-200 rounded transition-opacity flex-shrink-0"
-                      onClick={(e) => {
-                        e.stopPropagation();
-                        e.preventDefault();
-                        handleDeleteSession(session.id);
-                      }}
-                      title="Delete session"
-                      aria-label="Delete session"
-                    >
-                      <Trash2 className="w-4 h-4 text-gray-500" />
-                    </button>
-                  </div>
-                </div>
-              ))}
+                  New Chat
+                </Button>
+              </div>
+              <button
+                type="button"
+                onClick={() => setSessionsCollapsed(true)}
+                className="p-1.5 rounded hover:bg-gray-200 text-gray-600 hover:text-gray-900 flex-shrink-0"
+                title="Hide conversations"
+                aria-label="Hide conversations"
+                aria-expanded
+              >
+                <PanelLeftClose className="w-4 h-4" />
+              </button>
             </div>
           )}
         </div>
+
+        {/* Sessions List */}
+        {/* The list itself is what the rail trades away; the header stays
+            so the panel can always be brought back. */}
+        {!sessionsCollapsed && (
+          <div className="flex-1 overflow-y-auto min-h-0 scroll-smooth scrollbar-thin">
+            {sessionsError ? (
+              <div className="p-4 text-center text-red-500">
+                <p>Error loading sessions</p>
+                <p className="text-xs mt-1">Please refresh the page</p>
+              </div>
+            ) : sessions?.length === 0 ? (
+              <div className="p-4 text-center text-gray-500">
+                <MessageCircle className="w-12 h-12 mx-auto mb-2 text-gray-300" />
+                <p>No chat sessions yet</p>
+                <p className="text-sm">Start a new conversation!</p>
+              </div>
+            ) : (
+              <div className="space-y-2 p-2">
+                {sessions?.map((session) => (
+                  <div
+                    key={session.id}
+                    className={`group p-3 rounded-lg cursor-pointer transition-colors duration-200 ${
+                      session.id === sessionId
+                        ? 'bg-primary-50 border border-primary-200'
+                        : 'hover:bg-gray-50'
+                    }`}
+                    onClick={() => navigate(`/chat/${session.id}`)}
+                  >
+                    <div className="flex items-start justify-between">
+                      <div className="flex-1 min-w-0">
+                        <h3 className="section-heading truncate">
+                          {session.title || 'Untitled Chat'}
+                        </h3>
+                        <p className="text-xs text-gray-500 mt-1">
+                          {session.last_message_at 
+                            ? `${formatDistanceToNow(new Date(session.last_message_at))} ago`
+                            : 'Just now'}
+                        </p>
+                      </div>
+                      <button
+                        type="button"
+                        className="opacity-0 group-hover:opacity-100 p-1 hover:bg-gray-200 rounded transition-opacity flex-shrink-0"
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          e.preventDefault();
+                          handleDeleteSession(session.id);
+                        }}
+                        title="Delete session"
+                        aria-label="Delete session"
+                      >
+                        <Trash2 className="w-4 h-4 text-gray-500" />
+                      </button>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
       </div>
 
       {/* Main Chat Area */}
@@ -708,6 +785,13 @@ const ChatMessageComponent: React.FC<ChatMessageProps> = ({ message, question, o
             </span>
           )}
         </div>
+
+        {/* A reply can also offer work, not just answer. When the backend
+            recognised a request to start a campaign it attached a draft; this
+            is where the person reviews and launches it. */}
+        {isAssistant && message.extra_metadata?.campaign_draft && (
+          <CampaignDraftWidget draft={message.extra_metadata.campaign_draft} />
+        )}
 
         {/* Inline citations */}
         {isAssistant && citationNumbers.length > 0 && (

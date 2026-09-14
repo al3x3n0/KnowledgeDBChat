@@ -82,6 +82,10 @@ class ChatMessage(Base):
 
     # Source references (for assistant messages)
     source_documents = Column(JSON, nullable=True)  # List of referenced document IDs
+    #: Structured payload beside the prose -- currently a drafted research
+    #: campaign the reply is offering, which the chat renders as a widget.
+    #: Persisted so reopening the session still shows the offer.
+    extra_metadata = Column(JSON, nullable=True)
     context_used = Column(Text, nullable=True)  # Context that was provided to LLM
     search_query = Column(
         String(500), nullable=True

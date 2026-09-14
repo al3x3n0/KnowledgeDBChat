@@ -118,3 +118,80 @@ async def test_document_service_filters_personas(db_session):
     )
     assert filtered_total == 1
     assert filtered[0].id == document.id
+
+
+async def test_persona_filter_does_not_duplicate_a_multiply_detected_document(
+    db_session,
+):
+    """A document detected several times must come back once.
+
+    The filter used to JOIN document_persona_detections, which multiplies the
+    document row per detection, and then collapse them with .distinct(). That
+    worked here and 500'd in production: DISTINCT compares whole rows, and
+    Document carries `tags` and `extra_metadata` as json -- a type PostgreSQL
+    has no equality operator for. Every call with a persona filter returned
+    "could not identify an equality operator for type json".
+
+    The suite runs on SQLite, which stores json as TEXT and compares it
+    happily, so no test could have caught the failure itself. This one catches
+    the shape instead: with two matching detections a JOIN returns the document
+    twice, so anything that reintroduces the join without deduplicating fails
+    here even on SQLite.
+    """
+    source = await create_test_document_source(db_session)
+    document = await create_test_document(db_session, source, title="Twice Seen")
+    persona = await persona_service.ensure_persona(
+        db_session,
+        name="Repeat Speaker",
+        platform_id="repeat-1",
+    )
+    for start, end in ((0, 5), (10, 15)):
+        await persona_service.record_detection(
+            db_session,
+            document_id=document.id,
+            persona=persona,
+            role="speaker",
+            detection_type="diarization",
+            start_time=start,
+            end_time=end,
+        )
+    await db_session.commit()
+
+    docs, total = await DocumentService().get_documents(
+        db_session,
+        persona_id=persona.id,
+        persona_role="speaker",
+    )
+
+    assert total == 1, "two detections of one document are still one document"
+    assert [d.id for d in docs] == [document.id]
+
+
+def test_persona_filter_avoids_distinct_over_json_columns():
+    """Pins the reason, which the SQLite-backed behaviour cannot express.
+
+    DISTINCT is not merely unnecessary here, it is unusable: PostgreSQL cannot
+    compare the json columns Document carries, so the whole-row comparison
+    raises rather than deduplicating. Reading the source is crude, but the
+    query is built inline in get_documents and refactoring it only to make it
+    assertable would be a larger change than the fix.
+    """
+    import inspect
+
+    from app.services import document_service as module
+
+    source = inspect.getsource(module.DocumentService.get_documents)
+    persona_branch = source[source.index("if persona_id or persona_role:") :]
+    # Comments explaining what was removed mention it by name; strip them so
+    # the assertion reads code rather than prose about code.
+    code_only = "\n".join(
+        line
+        for line in persona_branch.splitlines()
+        if not line.lstrip().startswith("#")
+    )
+
+    assert ".distinct()" not in code_only, (
+        "DISTINCT over Document rows compares json columns PostgreSQL cannot "
+        "compare; use EXISTS so no duplicate is produced to collapse"
+    )
+    assert ".exists()" in code_only

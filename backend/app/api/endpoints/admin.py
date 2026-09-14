@@ -1434,12 +1434,41 @@ async def check_unsafe_exec_docker_sandbox(
 
 @router.get("/llm/models")
 async def list_llm_models(current_user: User = Depends(require_admin)):
+    """Models the configured provider offers.
+
+    `list_available_models` asks Ollama specifically -- it fetches
+    `{OLLAMA_BASE_URL}/api/tags` -- and this route used to call it whatever
+    LLM_PROVIDER said. The stack no longer bundles Ollama, so OLLAMA_BASE_URL
+    points at a service name that does not resolve, and every request spent
+    ~6s waiting out the DNS failure before returning an empty list and logging
+    an ERROR. Measured on a DeepSeek-configured stack: 5.8s for `{"models":
+    []}`.
+
+    Ollama remains supported against an instance the operator runs themselves,
+    so the query is kept -- just asked only when Ollama is the provider.
+    """
     try:
         svc = LLMService()
+        provider = str(getattr(settings, "LLM_PROVIDER", "") or "").strip().lower()
+        if provider != "ollama":
+            # Every other provider serves a fixed catalogue rather than an
+            # enumerable one; the configured model is the honest answer.
+            return {
+                "models": [svc.default_model] if svc.default_model else [],
+                "default_model": svc.default_model,
+                "provider": provider,
+                "enumerable": False,
+            }
+
         models = await svc.list_available_models()
         # Extract names for brevity
         names = [m.get("name") for m in models if isinstance(m, dict)]
-        return {"models": names, "default_model": svc.default_model}
+        return {
+            "models": names,
+            "default_model": svc.default_model,
+            "provider": provider,
+            "enumerable": True,
+        }
     except Exception as e:
         logger.error(f"Error listing LLM models: {e}")
         raise HTTPException(status_code=500, detail="Failed to list LLM models")

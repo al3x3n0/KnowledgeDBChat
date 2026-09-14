@@ -12,6 +12,7 @@ from sqlalchemy import and_, func, select
 
 from app.api.endpoints.agent_jobs import _build_checkpoint_queue_items
 from app.core.celery import celery_app
+from app.core.config import settings
 from app.core.database import create_celery_session
 from app.models.agent_job import AgentJob, AgentJobStatus
 from app.models.chat import ChatMessage, ChatSession
@@ -549,19 +550,21 @@ async def _async_health_check() -> Dict[str, Any]:
 
     # Check vector store
     try:
-        if getattr(vector_store_service, "_initialized", False):
-            stats = await vector_store_service.get_collection_stats()
-            health_status["services"]["vector_store"] = {
-                "status": "healthy",
-                "message": f"Vector store operational, {stats.get('total_chunks', 0)} chunks indexed",
-            }
-        else:
-            health_status["services"]["vector_store"] = {
-                "status": "degraded",
-                "message": "Vector store not initialized yet",
-            }
-            if health_status["overall_status"] == "healthy":
-                health_status["overall_status"] = "degraded"
+        # Initialise if this process has not yet, rather than reporting
+        # "degraded" because it has not. The store is lazily initialised per
+        # process, so a celery worker that has served no search had
+        # `_initialized` False and reported the whole stack degraded while
+        # Qdrant was perfectly healthy -- measured with the collection present
+        # and reachable from that very container. A health check answers
+        # whether the dependency is up, not whether this worker has warmed it.
+        if not getattr(vector_store_service, "_initialized", False):
+            await vector_store_service.initialize()
+
+        stats = await vector_store_service.get_collection_stats()
+        health_status["services"]["vector_store"] = {
+            "status": "healthy",
+            "message": f"Vector store operational, {stats.get('total_chunks', 0)} chunks indexed",
+        }
     except Exception as e:
         health_status["services"]["vector_store"] = {
             "status": "unhealthy",
@@ -574,16 +577,29 @@ async def _async_health_check() -> Dict[str, Any]:
         llm_service = LLMService()
         is_healthy = await llm_service.health_check()
 
+        provider = str(getattr(settings, "LLM_PROVIDER", "") or "").strip().lower()
         if is_healthy:
-            models = await llm_service.list_available_models()
+            # `list_available_models` asks Ollama specifically, and this stack
+            # no longer bundles Ollama, so on any other provider it spent ~6s
+            # failing to resolve the host and logged an ERROR on every health
+            # sweep -- then reported "Ollama operational" about DeepSeek.
+            # health_check() above is already provider-aware; only the model
+            # enumeration is not.
+            if provider == "ollama":
+                models = await llm_service.list_available_models()
+                message = f"Ollama operational, {len(models)} models available"
+            else:
+                message = f"{provider or 'configured'} provider reachable"
             health_status["services"]["llm"] = {
                 "status": "healthy",
-                "message": f"Ollama operational, {len(models)} models available",
+                "message": message,
+                "provider": provider,
             }
         else:
             health_status["services"]["llm"] = {
                 "status": "unhealthy",
-                "message": "Ollama service unavailable",
+                "message": f"{provider or 'LLM'} provider unavailable",
+                "provider": provider,
             }
             health_status["overall_status"] = "degraded"
     except Exception as e:

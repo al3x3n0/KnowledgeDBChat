@@ -252,6 +252,7 @@ async def _dry_run_paths(manifest: Mapping[str, Any], user: Any, db: Any) -> Lis
         holder = ContributedTool(
             id=f"draft:{tool['name']}",
             name=tool["name"],
+            description=str(tool.get("description") or ""),
             tool_type=tool["tool_type"],
             config=dict(tool.get("config") or {}),
             parameters_schema=dict(tool.get("parameters_schema") or {}),

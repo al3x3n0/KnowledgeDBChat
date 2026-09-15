@@ -173,6 +173,79 @@ def conclusion_without_evidence(reason: str) -> Dict[str, Any]:
     }
 
 
+async def conclude(
+    llm_service: Any,
+    *,
+    goal: str,
+    findings: Any,
+    db: Any = None,
+    snapshot_context: Optional[Dict[str, Any]] = None,
+    extra_gaps: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Answer a goal from a set of findings. Never raises.
+
+    The core of `synthesize_conclusion`, taken apart from the job that used to
+    be the only caller. A campaign concludes over the findings of *many* jobs
+    and has no executor, no iteration and no single job id -- and the rule it
+    needs is the same one: if what was collected does not answer the goal, say
+    so rather than manufacture something that sounds like an answer.
+
+    `extra_gaps` is for what the caller knows and the findings cannot say --
+    that a campaign ran out of budget, say, which makes any answer partial for
+    a reason no individual finding records.
+    """
+    rows = summarize_findings_for_prompt(findings)
+    if not rows:
+        result = conclusion_without_evidence("No findings were recorded.")
+        result["gaps"] = list(result["gaps"]) + list(extra_gaps or [])
+        return result
+
+    try:
+        from app.services import llm_structured
+
+        payload = await llm_structured.ask_for_json(
+            llm_service,
+            schema=CONCLUSION_SCHEMA,
+            system_prompt=SYSTEM_PROMPT,
+            user_message=build_conclusion_prompt(goal, findings),
+            task_type="summarization",
+            temperature=0.1,
+            max_tokens=900,
+            db=db,
+            snapshot_context=snapshot_context,
+        )
+    except Exception as exc:
+        # The caller is finalizing something. An optional summary that aborts
+        # would also skip whatever runs after it.
+        logger.warning(f"Conclusion synthesis failed: {exc}")
+        return {
+            "answer": None,
+            "confidence": "low",
+            "evidence": [],
+            "gaps": [f"Conclusion could not be generated: {str(exc)[:200]}"]
+            + list(extra_gaps or []),
+            "generated_by": "error",
+        }
+
+    if not isinstance(payload, dict) or not str(payload.get("answer") or "").strip():
+        result = conclusion_without_evidence(
+            "The model did not return a usable conclusion."
+        )
+        result["gaps"] = list(result["gaps"]) + list(extra_gaps or [])
+        return result
+
+    return {
+        "answer": str(payload.get("answer"))[:4000],
+        "confidence": str(payload.get("confidence") or "low"),
+        "evidence": [str(x)[:300] for x in (payload.get("evidence") or [])][:10],
+        "gaps": [str(x)[:300] for x in (payload.get("gaps") or [])][:10]
+        + list(extra_gaps or []),
+        "generated_by": "llm",
+        "findings_considered": len(rows),
+        "findings_total": len([f for f in findings if isinstance(f, dict)]),
+    }
+
+
 async def synthesize_conclusion(
     executor: Any,
     job: Any,
@@ -181,56 +254,23 @@ async def synthesize_conclusion(
 ) -> Optional[Dict[str, Any]]:
     """Answer the job's goal from its findings. Never raises."""
     findings = state.get("findings") if isinstance(state.get("findings"), list) else []
-    rows = summarize_findings_for_prompt(findings)
-    if not rows:
+    if not summarize_findings_for_prompt(findings):
+        # Kept as its own message: "the run recorded no findings" is about a
+        # job, and a campaign saying that would be wrong -- its jobs may each
+        # have recorded plenty.
         return conclusion_without_evidence("The run recorded no findings.")
 
-    try:
-        from app.services import llm_structured
-
-        payload = await llm_structured.ask_for_json(
-            executor.llm_service,
-            schema=CONCLUSION_SCHEMA,
-            system_prompt=SYSTEM_PROMPT,
-            user_message=build_conclusion_prompt(getattr(job, "goal", ""), findings),
-            task_type="summarization",
-            temperature=0.1,
-            max_tokens=900,
-            db=db,
-            snapshot_context={
-                "job_id": str(getattr(job, "id", "") or "") or None,
-                "iteration": int(getattr(job, "iteration", 0) or 0),
-                "phase": "conclusion",
-            },
-        )
-    except Exception as exc:
-        # Finalization must complete regardless: an optional summary that
-        # aborts the run would also skip the chain trigger after it.
-        logger.warning(
-            f"Conclusion synthesis failed for job {getattr(job, 'id', '')}: {exc}"
-        )
-        return {
-            "answer": None,
-            "confidence": "low",
-            "evidence": [],
-            "gaps": [f"Conclusion could not be generated: {str(exc)[:200]}"],
-            "generated_by": "error",
-        }
-
-    if not isinstance(payload, dict) or not str(payload.get("answer") or "").strip():
-        return conclusion_without_evidence(
-            "The model did not return a usable conclusion."
-        )
-
-    return {
-        "answer": str(payload.get("answer"))[:4000],
-        "confidence": str(payload.get("confidence") or "low"),
-        "evidence": [str(x)[:300] for x in (payload.get("evidence") or [])][:10],
-        "gaps": [str(x)[:300] for x in (payload.get("gaps") or [])][:10],
-        "generated_by": "llm",
-        "findings_considered": len(rows),
-        "findings_total": len([f for f in findings if isinstance(f, dict)]),
-    }
+    return await conclude(
+        executor.llm_service,
+        goal=getattr(job, "goal", ""),
+        findings=findings,
+        db=db,
+        snapshot_context={
+            "job_id": str(getattr(job, "id", "") or "") or None,
+            "iteration": int(getattr(job, "iteration", 0) or 0),
+            "phase": "conclusion",
+        },
+    )
 
 
 def conclusion_line(conclusion: Optional[Dict[str, Any]]) -> str:
@@ -246,6 +286,7 @@ def conclusion_line(conclusion: Optional[Dict[str, Any]]) -> str:
 
 __all__ = [
     "CONCLUSION_SCHEMA",
+    "conclude",
     "build_conclusion_prompt",
     "conclusion_line",
     "conclusion_without_evidence",

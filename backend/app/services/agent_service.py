@@ -14,7 +14,7 @@ import hashlib
 import json
 import time
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from uuid import UUID, uuid4
 
 from fastapi.encoders import jsonable_encoder
@@ -37,6 +37,7 @@ from app.schemas.agent import (
 )
 from app.services import llm_json
 from app.services.agent_memory_integration import AgentMemoryIntegration
+from app.services.agent_plugin_tool_provider import PluginToolProvider
 from app.services.agent_router import AgentRouter
 from app.services.agent_tool_dispatch import (
     AgentToolExecutionContext,
@@ -86,6 +87,9 @@ class AgentService:
                 build_agent_service_research_provider(self),
                 build_agent_service_analytics_content_provider(self),
                 build_agent_service_chat_core_provider(self),
+                # Last, and claiming only the reserved `p_` namespace no
+                # built-in may occupy.
+                PluginToolProvider(),
             ]
         )
         self._vector_store_initialized = False
@@ -298,9 +302,41 @@ class AgentService:
         allowed = set(agent.tool_whitelist or [])
         return [tool for tool in all_tools if tool.get("name") in allowed]
 
-    def _get_tools_description_for_agent(self, agent: AgentDefinition) -> str:
+    async def _contributed_tool_schemas(
+        self, db: Optional[AsyncSession], user_id: Optional[UUID]
+    ) -> List[Dict[str, Any]]:
+        """Schemas for the tools this user's enabled plugins contribute.
+
+        Resolved per call and never stored: `AgentService` is a module-level
+        singleton, so anything cached on it would be offered to whoever opened
+        a chat next.
+
+        Never raises. A plugin that cannot be resolved costs this turn its
+        contributed tools, which is a smaller loss than the turn.
+        """
+        if db is None or user_id is None:
+            return []
+        try:
+            from app.services import plugin_registry
+
+            resolved = await plugin_registry.contributions_for_user(db, user_id)
+            return [spec.schema() for spec in resolved.specs]
+        except Exception as exc:
+            logger.warning(f"Could not resolve plugin tools for chat: {exc}")
+            return []
+
+    def _get_tools_description_for_agent(
+        self,
+        agent: AgentDefinition,
+        contributed: Optional[Sequence[Dict[str, Any]]] = None,
+    ) -> str:
         """Get tools description filtered for specific agent."""
-        filtered_tools = self._filter_tools_for_agent(agent, AGENT_TOOLS)
+        # Contributed tools go through the same whitelist as built-ins: a
+        # plugin tool an agent's whitelist could not exclude would be a hole in
+        # that whitelist rather than a feature.
+        filtered_tools = self._filter_tools_for_agent(
+            agent, list(AGENT_TOOLS) + list(contributed or [])
+        )
         if not filtered_tools:
             return "No tools available."
 
@@ -435,12 +471,14 @@ class AgentService:
                 await db.commit()
 
             # Step 4: Plan - Determine which tools to call (filtered by agent)
+            contributed = await self._contributed_tool_schemas(db, user_id)
             tool_calls = await self._plan_tool_calls_for_agent(
                 message=message,
                 history=history,
                 agent=selected_agent,
                 memory_context=memory_context,
                 user_settings=user_settings,
+                contributed=contributed,
             )
 
             # Step 5: Execute - Run each tool
@@ -599,13 +637,15 @@ class AgentService:
         agent: AgentDefinition,
         memory_context: str,
         user_settings: Optional[UserLLMSettings] = None,
+        contributed: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> List[AgentToolCall]:
         """
         Use LLM to determine which tools to call based on user message.
         Filtered by agent's tool whitelist and enhanced with memory context.
         """
-        # Get tools available to this agent
-        tools_desc = self._get_tools_description_for_agent(agent)
+        # Get tools available to this agent, including whatever this user's
+        # plugins contribute.
+        tools_desc = self._get_tools_description_for_agent(agent, contributed)
 
         # Build conversation context
         context_messages = []
@@ -744,11 +784,12 @@ Your response:"""
         message: str,
         history: List[AgentMessage],
         user_settings: Optional[UserLLMSettings] = None,
+        contributed: Optional[Sequence[Dict[str, Any]]] = None,
     ) -> List[AgentToolCall]:
         """Use LLM to determine which tools to call based on user message."""
 
         # Build the planning prompt
-        tools_desc = get_tools_description()
+        tools_desc = get_tools_description(contributed)
 
         # Build conversation context
         context_messages = []

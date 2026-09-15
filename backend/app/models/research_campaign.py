@@ -84,7 +84,16 @@ class ResearchCampaign(Base):
     # finding types spawn further items.
     job_template = Column(JSON, nullable=True)
 
+    # What the campaign concluded, as one line a list can show.
     conclusion = Column(Text, nullable=True)
+
+    # The same conclusion with its working: the evidence it rests on, what it
+    # could not establish, how confident it is, how many findings were weighed.
+    #
+    # Kept beside the line rather than instead of it. The line is what a list
+    # shows; this is what somebody reads when the line is not enough, and an
+    # answer with no way to see what it rested on is one nobody should act on.
+    conclusion_detail = Column(JSON, nullable=True)
 
     created_at = Column(DateTime, default=datetime.utcnow, nullable=False)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)

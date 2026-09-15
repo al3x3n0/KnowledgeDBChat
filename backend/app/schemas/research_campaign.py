@@ -54,6 +54,10 @@ class ResearchCampaignResponse(BaseModel):
     max_jobs: int
     jobs_launched: int
     conclusion: Optional[str] = None
+    #: The same conclusion with its working -- evidence, gaps, confidence.
+    #: An answer with no way to see what it rested on is one nobody should
+    #: act on.
+    conclusion_detail: Optional[Dict[str, Any]] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

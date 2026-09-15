@@ -19,6 +19,7 @@ from loguru import logger
 from sqlalchemy import or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.agent_core.plugin_specs import NAME_PREFIX
 from app.models.tool_policy import ToolPolicy
 from app.models.user import User
 from app.services.tool_registry import get_tool_metadata
@@ -142,6 +143,16 @@ def _constraints_ok(
 
     meta = get_tool_metadata(tool_name)
     if meta is None:
+        if tool_name.startswith("user_tool:") or tool_name.startswith(NAME_PREFIX):
+            # A dynamic tool has no catalog entry to read a cost tier from, so
+            # a constraint expressed in those terms cannot be evaluated. Still
+            # fail closed -- a constraint that silently does not apply is worse
+            # than one that blocks -- but say which it is, because "unknown
+            # tool" would send someone looking for a typo.
+            return False, (
+                f"Tool '{tool_name}' is contributed rather than built in, so "
+                "the constraints on this policy cannot be evaluated against it"
+            )
         return False, f"Unknown tool '{tool_name}'"
 
     max_cost = constraints.get("max_cost_tier")
@@ -200,8 +211,16 @@ async def evaluate_tool_policy(
         )
 
     # Validate tool identifier (fail closed) while supporting dynamic user tools.
-    if tn.startswith("user_tool:"):
+    if tn.startswith("user_tool:") or tn.startswith(NAME_PREFIX):
         # Dynamic tools are allowed to exist without registry entries.
+        #
+        # A plugin-contributed tool is the same case as a user tool and was
+        # missing from it: the static catalog cannot know a name that belongs
+        # to one person's installed bundle. Rejecting it here does not make
+        # anything safer -- it is still executed through `CustomToolService`,
+        # which evaluates policy again under `user_tool:<id>` and applies the
+        # approval gate -- it only makes a real tool unreachable from the one
+        # surface that checks policy *before* dispatch, which is chat.
         pass
     else:
         if get_tool_metadata(tn) is None:

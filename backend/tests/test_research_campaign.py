@@ -566,3 +566,190 @@ async def test_blank_questions_do_not_become_untitled_work(db_session):
     items = await campaigns._items(db_session, campaign)
 
     assert [i.title for i in items] == ["profile the kernel"]
+
+
+# --------------------------------------------------------------------------
+# A campaign says what it found out
+#
+# `conclusion` was declared on the model, returned by the API, and written by
+# nothing: every campaign that ever completed did so silently. These pin the
+# thing that makes a campaign a line of enquiry rather than a batch runner.
+# --------------------------------------------------------------------------
+
+
+@pytest.fixture
+def scripted_conclusion(monkeypatch):
+    """Answer the conclusion call without reaching a provider."""
+
+    def install(payload):
+        calls = {}
+
+        async def fake(*args, **kwargs):
+            calls["user_message"] = kwargs.get("user_message")
+            if isinstance(payload, Exception):
+                raise payload
+            return payload
+
+        monkeypatch.setattr(
+            "app.services.llm_structured.ask_for_json", fake, raising=False
+        )
+        return calls
+
+    return install
+
+
+ANSWER = {
+    "answer": "Unrolling wins at this size.",
+    "confidence": "medium",
+    "evidence": ["dotprod: 31ms unrolled vs 44ms scalar"],
+    "gaps": ["Only one kernel was measured."],
+}
+
+
+async def _finish_with_findings(db, job_id, findings):
+    return await _finish(
+        db,
+        job_id,
+        results={"goal_contract": {"satisfied": True}, "findings": findings},
+    )
+
+
+@pytest.mark.asyncio
+async def test_a_finished_campaign_says_what_it_concluded(
+    db_session, scripted_conclusion
+):
+    scripted_conclusion(ANSWER)
+    campaign = await _campaign(db_session, items=[{"title": "measure it"}])
+
+    step = await campaigns.advance(db_session, campaign)
+    await _finish_with_findings(
+        db_session, step["launched_job"], [{"type": "measurement", "summary": "31ms"}]
+    )
+    final = await campaigns.advance(db_session, campaign)
+
+    assert final["action"] == "completed"
+    assert campaign.conclusion and "Unrolling wins" in campaign.conclusion
+    assert campaign.conclusion_detail["confidence"] == "medium"
+    assert campaign.conclusion_detail["evidence"]
+    # The step result carries it too, so a caller watching the scheduler sees
+    # the answer without a second query.
+    assert final["conclusion"] == campaign.conclusion
+
+
+@pytest.mark.asyncio
+async def test_the_conclusion_is_drawn_from_what_the_jobs_found(
+    db_session, scripted_conclusion
+):
+    calls = scripted_conclusion(ANSWER)
+    campaign = await _campaign(db_session, items=[{"title": "profile the kernel"}])
+
+    step = await campaigns.advance(db_session, campaign)
+    await _finish_with_findings(
+        db_session,
+        step["launched_job"],
+        [{"type": "measurement", "summary": "31ms unrolled"}],
+    )
+    await campaigns.advance(db_session, campaign)
+
+    prompt = calls["user_message"]
+    assert "31ms unrolled" in prompt, "the finding has to reach the prompt"
+    assert campaign.goal in prompt, "and so does the goal it is answering"
+
+
+@pytest.mark.asyncio
+async def test_a_campaign_that_found_nothing_says_so_rather_than_inventing(
+    db_session, scripted_conclusion
+):
+    """The honest output when nothing was collected. Manufacturing an answer
+    that sounds right is the failure worth preventing here."""
+    called = scripted_conclusion(ANSWER)
+    campaign = await _campaign(db_session, items=[{"title": "look into it"}])
+
+    step = await campaigns.advance(db_session, campaign)
+    await _finish_with_findings(db_session, step["launched_job"], [])
+    await campaigns.advance(db_session, campaign)
+
+    assert campaign.conclusion_detail["generated_by"] == "no_evidence"
+    assert campaign.conclusion_detail["answer"] is None
+    assert "no findings" in campaign.conclusion.lower()
+    assert "user_message" not in called, "no model call when there is nothing to weigh"
+
+
+@pytest.mark.asyncio
+async def test_running_out_of_budget_makes_the_answer_partial(
+    db_session, scripted_conclusion
+):
+    """ "We did not find out" is a different answer from "we found out that no",
+    and only the campaign knows which happened."""
+    scripted_conclusion(ANSWER)
+    campaign = await _campaign(
+        db_session,
+        items=[{"title": "first"}, {"title": "second"}],
+        max_jobs=1,
+    )
+
+    step = await campaigns.advance(db_session, campaign)
+    await _finish_with_findings(
+        db_session, step["launched_job"], [{"type": "measurement", "summary": "31ms"}]
+    )
+    final = await campaigns.advance(db_session, campaign)
+
+    assert final["action"] == "exhausted"
+    gaps = " ".join(campaign.conclusion_detail["gaps"])
+    assert "ran out of budget" in gaps
+    assert "still unanswered" in gaps
+
+
+@pytest.mark.asyncio
+async def test_a_failed_conclusion_does_not_lose_the_campaign(
+    db_session, scripted_conclusion
+):
+    """Losing a finished campaign over its summary would be the wrong trade."""
+    scripted_conclusion(RuntimeError("provider down"))
+    campaign = await _campaign(db_session, items=[{"title": "measure it"}])
+
+    step = await campaigns.advance(db_session, campaign)
+    await _finish_with_findings(
+        db_session, step["launched_job"], [{"type": "measurement", "summary": "31ms"}]
+    )
+    final = await campaigns.advance(db_session, campaign)
+
+    assert final["action"] == "completed"
+    assert campaign.status == CampaignStatus.COMPLETED
+    assert campaign.conclusion_detail["generated_by"] == "error"
+    assert "provider down" in " ".join(campaign.conclusion_detail["gaps"])
+
+
+@pytest.mark.asyncio
+async def test_findings_carry_the_question_they_answered(db_session):
+    """A campaign's findings come from jobs that each asked something
+    different; a flat list of numbers with no subject is not something a
+    conclusion can honestly be drawn from."""
+    campaign = await _campaign(db_session, items=[{"title": "profile the kernel"}])
+    step = await campaigns.advance(db_session, campaign)
+    await _finish_with_findings(
+        db_session, step["launched_job"], [{"type": "measurement", "summary": "31ms"}]
+    )
+
+    findings = await campaigns._all_findings(db_session, campaign)
+
+    assert findings[0]["subject"] == "profile the kernel"
+
+
+@pytest.mark.asyncio
+async def test_an_already_finished_campaign_is_not_reconcluded(
+    db_session, scripted_conclusion
+):
+    """`advance` is called by a scheduler, and schedulers repeat."""
+    scripted_conclusion(ANSWER)
+    campaign = await _campaign(db_session, items=[{"title": "measure it"}])
+    step = await campaigns.advance(db_session, campaign)
+    await _finish_with_findings(
+        db_session, step["launched_job"], [{"type": "measurement", "summary": "31ms"}]
+    )
+    await campaigns.advance(db_session, campaign)
+    first = campaign.conclusion
+
+    await campaigns.advance(db_session, campaign)
+
+    assert campaign.conclusion == first

@@ -26,6 +26,7 @@ from app.models.plugin import Plugin, PluginInstallation
 from app.models.user import User
 from app.schemas.plugin import (
     ContributedToolView,
+    ContributedWorkflowView,
     PluginCreate,
     PluginDraftRequest,
     PluginDraftResponse,
@@ -66,6 +67,33 @@ def _tool_views(plugin: Plugin) -> List[ContributedToolView]:
     return views
 
 
+def _workflow_views(plugin: Plugin) -> List[ContributedWorkflowView]:
+    manifest = plugin.manifest if isinstance(plugin.manifest, dict) else {}
+    views: List[ContributedWorkflowView] = []
+    for flow in (manifest.get("contributes") or {}).get("workflows") or []:
+        if not isinstance(flow, dict):
+            continue
+        nodes = flow.get("nodes") or []
+        used = sorted(
+            {
+                str(n.get("_own_tool") or n.get("builtin_tool"))
+                for n in nodes
+                if n.get("_own_tool") or n.get("builtin_tool")
+            }
+        )
+        views.append(
+            ContributedWorkflowView(
+                id=str(flow.get("id") or ""),
+                name=str(flow.get("name") or ""),
+                description=str(flow.get("description") or ""),
+                node_count=len(nodes),
+                edge_count=len(flow.get("edges") or []),
+                tools_used=used,
+            )
+        )
+    return views
+
+
 def _respond(
     plugin: Plugin, installation: Optional[PluginInstallation]
 ) -> PluginResponse:
@@ -83,6 +111,7 @@ def _respond(
         installed=installation is not None,
         enabled=bool(installation and installation.is_enabled),
         tools=_tool_views(plugin),
+        workflows=_workflow_views(plugin),
         unavailable=[{"tool": n, "reason": why} for n, why in resolved.skipped],
     )
 
@@ -260,6 +289,11 @@ async def install_plugin(
     installation.is_enabled = bool(payload.enabled)
     if payload.settings:
         installation.settings = dict(payload.settings)
+
+    # Workflows this plugin ships become the user's own rows. Creating, never
+    # overwriting: re-installing keeps a flow somebody has since edited.
+    await plugin_registry.materialize_workflows(db, plugin, current_user.id)
+
     await db.commit()
     await db.refresh(installation)
     return _respond(plugin, installation)

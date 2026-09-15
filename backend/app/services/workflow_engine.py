@@ -24,6 +24,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload
 
+from app.agent_core.plugin_specs import NAME_PREFIX
 from app.core.config import settings
 from app.models.user import User
 from app.models.workflow import (
@@ -35,6 +36,26 @@ from app.models.workflow import (
 )
 from app.services.agent_tools import AGENT_TOOLS
 from app.services.custom_tool_service import CustomToolService, ToolExecutionError
+
+#: Every node type the dispatch below handles.
+#:
+#: Declared here so that anything validating a workflow -- a plugin manifest
+#: shipping one, say -- reads the list rather than restating it. A validator
+#: with its own copy accepts a type the engine cannot run, which surfaces as a
+#: workflow that installs cleanly and dies on its first execution.
+#: `tests/test_workflow_node_types.py` asserts the two agree by running one
+#: node of each type through the dispatch.
+NODE_TYPES = (
+    "start",
+    "end",
+    "tool",
+    "condition",
+    "parallel",
+    "loop",
+    "wait",
+    "switch",
+    "subworkflow",
+)
 
 # Try to import redis for pub/sub
 try:
@@ -557,7 +578,10 @@ class WorkflowEngine:
                 )
 
             else:
-                raise WorkflowExecutionError(f"Unknown node type: {node.node_type}")
+                raise WorkflowExecutionError(
+                    f"Unknown node type: {node.node_type}. "
+                    f"Known types: {', '.join(NODE_TYPES)}"
+                )
 
             # Store output in context
             output_key = node.config.get("output_key", node.node_id)
@@ -975,6 +999,13 @@ class WorkflowEngine:
             )
             return result.get("output", {})
 
+        elif node.builtin_tool and str(node.builtin_tool).startswith(NAME_PREFIX):
+            # A tool an installed plugin contributes. It is named here in the
+            # same field as a built-in because to a workflow author both are
+            # just "a tool by name" -- the distinction is who declared it, not
+            # how it is called.
+            return await self._execute_contributed_tool(node.builtin_tool, input_data)
+
         elif node.builtin_tool:
             # Built-in agent tool
             return await self._execute_builtin_tool(node.builtin_tool, input_data)
@@ -983,6 +1014,41 @@ class WorkflowEngine:
             raise WorkflowExecutionError(
                 f"Tool node {node.node_id} has no tool configured"
             )
+
+    async def _execute_contributed_tool(
+        self, tool_name: str, inputs: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Run a tool an installed plugin contributes.
+
+        Goes through the same provider an autonomous job uses rather than
+        resolving the tool a second way here. The two surfaces disagreeing
+        about what a tool *is* -- which arguments it takes, whether a policy
+        denies it, whether it needs approval -- is the failure this avoids, and
+        it is the kind that shows up as "it works in a job but not in a
+        workflow" long after the change that caused it.
+        """
+        from app.services.agent_plugin_tool_provider import PluginToolProvider
+        from app.services.agent_tool_dispatch import AgentToolExecutionContext
+
+        context = AgentToolExecutionContext(
+            mode="workflow",
+            db=self.db,
+            service=self,
+            user_id=getattr(self.user, "id", None),
+        )
+        result = await PluginToolProvider().execute(tool_name, inputs, context)
+
+        if isinstance(result, dict) and result.get("success") is False:
+            # The provider reports a refusal as data; a workflow node has to
+            # fail, or a denied tool would look like a node that ran and
+            # produced nothing.
+            raise ToolExecutionError(
+                f"Contributed tool '{tool_name}' failed: "
+                f"{result.get('error') or 'unknown error'}"
+            )
+        if isinstance(result, dict) and "output" in result:
+            return result["output"]
+        return result if isinstance(result, dict) else {"result": result}
 
     async def _execute_builtin_tool(
         self, tool_name: str, inputs: Dict[str, Any]

@@ -6,19 +6,7 @@
 
 import React, { useState, useEffect, useMemo } from 'react';
 import { useLocation, useNavigate } from 'react-router-dom';
-import {
-  Plus,
-  Play,
-  Pause,
-  Trash2,
-  Edit,
-  Clock,
-  Workflow,
-  MoreVertical,
-  Search,
-  Calendar,
-  Loader2,
-} from 'lucide-react';
+import { Calendar, Clock, Edit, Loader2, MoreVertical, Package, Pause, Play, Plus, Search, Trash2, Workflow } from 'lucide-react';
 import toast from 'react-hot-toast';
 import api from '../services/api';
 
@@ -36,6 +24,8 @@ interface WorkflowItem {
   execution_count: number;
   created_at: string;
   updated_at: string;
+  /** The plugin that put this here, if one did. */
+  origin_plugin_slug?: string | null;
 }
 
 interface ExecutionItem {
@@ -317,6 +307,18 @@ const WorkflowsPage: React.FC = () => {
                         >
                           {workflow.is_active ? 'Active' : 'Inactive'}
                         </span>
+                        {workflow.origin_plugin_slug && (
+                          // A flow you did not build, sitting among the ones
+                          // you did, is indistinguishable from one you forgot
+                          // writing unless the list says where it came from.
+                          <span
+                            className="inline-flex items-center gap-1 rounded-full bg-gray-200 px-2 py-0.5 text-xs text-gray-700"
+                            title={`Installed by the "${workflow.origin_plugin_slug}" plugin. Your edits to it are kept when that plugin is updated.`}
+                          >
+                            <Package className="w-3 h-3" />
+                            {workflow.origin_plugin_slug}
+                          </span>
+                        )}
                       </div>
                       {workflow.description && (
                         <p className="text-sm text-gray-500 mt-1">{workflow.description}</p>

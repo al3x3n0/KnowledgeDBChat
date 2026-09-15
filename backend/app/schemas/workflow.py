@@ -390,6 +390,12 @@ class WorkflowListItem(BaseModel):
     updated_at: datetime
     node_count: int = 0
     execution_count: int = 0
+    #: The plugin that put this workflow here, if one did.
+    #:
+    #: Carried in the *list* response because that is where the question is
+    #: asked: a flow you did not build, sitting among the ones you did, is
+    #: indistinguishable from one you forgot writing unless the list says so.
+    origin_plugin_slug: Optional[str] = None
 
     model_config = ConfigDict(from_attributes=True)
 

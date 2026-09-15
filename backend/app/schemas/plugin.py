@@ -48,6 +48,22 @@ class ContributedToolView(BaseModel):
     job_types: List[str]
 
 
+class ContributedWorkflowView(BaseModel):
+    """One workflow a plugin ships.
+
+    Shown before installing, because a plugin that will create editable objects
+    in your account should say so first -- unlike a tool or a view, this leaves
+    something behind that outlives uninstalling it.
+    """
+
+    id: str
+    name: str
+    description: str = ""
+    node_count: int = 0
+    edge_count: int = 0
+    tools_used: List[str] = Field(default_factory=list)
+
+
 class PluginResponse(BaseModel):
     id: UUID
     slug: str
@@ -65,6 +81,7 @@ class PluginResponse(BaseModel):
 
     #: What it contributes, with governance resolved.
     tools: List[ContributedToolView] = Field(default_factory=list)
+    workflows: List[ContributedWorkflowView] = Field(default_factory=list)
     #: Anything declared that cannot currently be offered, and why.
     unavailable: List[Dict[str, str]] = Field(default_factory=list)
 

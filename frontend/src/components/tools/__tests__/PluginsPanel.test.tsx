@@ -46,6 +46,7 @@ const plugin = {
       job_types: ['research'],
     },
   ],
+  workflows: [],
   unavailable: [],
 };
 
@@ -205,5 +206,36 @@ describe('PluginsPanel', () => {
       await waitFor(() => expect(toast.error).toHaveBeenCalled());
       expect(apiClient.draftPlugin).not.toHaveBeenCalled();
     });
+  });
+
+  it('says what workflows a plugin will create, before it is installed', async () => {
+    // Unlike a tool or a view, a shipped workflow leaves editable objects in
+    // your account that outlive uninstalling the plugin. That should be said
+    // first, not discovered afterwards.
+    apiClient.listPlugins.mockResolvedValue({
+      items: [
+        {
+          ...plugin,
+          workflows: [
+            {
+              id: 'stamp_flow',
+              name: 'Stamp a note',
+              description: '',
+              node_count: 3,
+              edge_count: 2,
+              tools_used: ['stamp'],
+            },
+          ],
+        },
+      ],
+      total: 1,
+    });
+    render(<PluginsPanel />);
+
+    fireEvent.click(await screen.findByText('Benchmarks'));
+
+    expect(await screen.findByText('Stamp a note')).toBeInTheDocument();
+    expect(screen.getByText(/3 nodes, 2 edges/)).toBeInTheDocument();
+    expect(screen.getByText(/stay if you uninstall/)).toBeInTheDocument();
   });
 });

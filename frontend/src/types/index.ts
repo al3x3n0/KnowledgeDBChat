@@ -56,6 +56,8 @@ export interface ChatMessage {
 // bundle I have not installed" unrepresentable, which is its normal state.
 // ---------------------------------------------------------------------------
 
+import type { ContributedWorkflowView } from '../plugins/types';
+
 export interface ContributedToolView {
   name: string;
   declared_name: string;
@@ -81,6 +83,7 @@ export interface Plugin {
   installed: boolean;
   enabled: boolean;
   tools: ContributedToolView[];
+  workflows: ContributedWorkflowView[];
   unavailable: { tool: string; reason: string }[];
 }
 
@@ -107,6 +110,7 @@ export interface ContributedToolsResponse {
 // that consumes them. Re-exported here so `services/api.ts` can keep every
 // response type in one import.
 export type {
+  ContributedWorkflowView,
   PluginUiContribution,
   PluginUiResponse,
   PluginViewSpec,

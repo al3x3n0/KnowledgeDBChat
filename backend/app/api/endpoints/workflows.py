@@ -118,6 +118,7 @@ async def list_workflows(
                     updated_at=wf.updated_at,
                     node_count=len(wf.nodes),
                     execution_count=len(wf.executions),
+                    origin_plugin_slug=wf.origin_plugin_slug,
                 )
             )
 

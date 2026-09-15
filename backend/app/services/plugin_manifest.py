@@ -24,6 +24,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from app.agent_core import tool_specs
 from app.agent_core.plugin_specs import contributed_tool_name, reject_contributed_name
 from app.services.custom_tool_types import allowed_custom_tool_types
+from app.services.plugin_flows import FlowContributionError, validate_workflows
 from app.services.plugin_ui import UiContributionError, validate_ui
 
 #: A slug is lowercase so a tool's full name is predictable from the manifest,
@@ -48,7 +49,7 @@ def known_job_types() -> frozenset[str]:
 #: than ignored: a typo in `contributes` is otherwise a plugin that installs
 #: cleanly and does nothing, which is the most expensive kind of failure to
 #: diagnose.
-CONTRIBUTION_KEYS = frozenset({"tools", "nav", "views", "panels"})
+CONTRIBUTION_KEYS = frozenset({"tools", "nav", "views", "panels", "workflows"})
 
 
 class ManifestError(ValueError):
@@ -186,7 +187,7 @@ def validate_manifest(
     # A plugin that contributes nothing installs cleanly and does nothing,
     # which is worth saying out loud rather than discovering later.
     if not tools and not any(
-        contributes.get(key) for key in ("nav", "views", "panels")
+        contributes.get(key) for key in ("nav", "views", "panels", "workflows")
     ):
         raise ManifestError(
             "this manifest contributes nothing: declare at least one entry "
@@ -195,7 +196,8 @@ def validate_manifest(
 
     try:
         ui = validate_ui(contributes, tools=tools)
-    except UiContributionError as exc:
+        flows = validate_workflows(contributes, slug=slug, tools=tools)
+    except (UiContributionError, FlowContributionError) as exc:
         # Same class of refusal, so a caller catching ManifestError sees every
         # reason a manifest was rejected rather than two kinds of failure.
         raise ManifestError(str(exc))
@@ -210,6 +212,7 @@ def validate_manifest(
             "nav": ui["nav"],
             "views": ui["views"],
             "panels": ui["panels"],
+            "workflows": flows,
         },
         "settings": manifest.get("settings") or {},
     }

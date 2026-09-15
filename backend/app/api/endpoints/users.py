@@ -23,6 +23,7 @@ from app.services.collaboration_service import (
     list_collaboration_users as load_collaboration_users,
 )
 from app.services.llm_service import LLMService
+from app.services.ui_preferences import normalize as normalize_ui_preferences
 from app.utils.exceptions import ValidationError
 
 # Supported task types for per-task model configuration
@@ -274,6 +275,13 @@ async def update_my_preferences(
 
         # Update only provided fields
         update_data = updates.model_dump(exclude_unset=True)
+
+        # `ui` is the one field whose value is a free-form document the
+        # client composes, so it is normalized rather than stored as sent:
+        # unknown keys dropped, lists capped, labels trimmed. Every other
+        # field here is a typed scalar Pydantic has already bounded.
+        if "ui" in update_data:
+            update_data["ui"] = normalize_ui_preferences(update_data["ui"])
         for field, value in update_data.items():
             setattr(preferences, field, value)
 

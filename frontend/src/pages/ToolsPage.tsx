@@ -28,6 +28,7 @@ import toast from 'react-hot-toast';
 import api from '../services/api';
 import { AgentDefinitionSummary } from '../types';
 import JsonViewer from '../components/common/JsonViewer';
+import { PluginsPanel } from '../components/tools/PluginsPanel';
 import { CompOpsConnectionsPanel } from '../components/tools/CompOpsConnectionsPanel';
 import { MLflowConnectionsPanel } from '../components/tools/MLflowConnectionsPanel';
 
@@ -193,6 +194,7 @@ const ToolsPage: React.FC = () => {
         </button>
       </div>
 
+      <PluginsPanel />
       <CompOpsConnectionsPanel onConnectionsChanged={loadTools} />
       <MLflowConnectionsPanel onConnectionsChanged={loadTools} />
 

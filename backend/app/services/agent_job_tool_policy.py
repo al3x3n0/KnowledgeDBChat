@@ -7,9 +7,12 @@ job type and its config, so they are unit-tested directly.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
+
+from loguru import logger
 
 from app.agent_core import tool_specs
+from app.agent_core.tool_specs.spec import ToolSpec
 from app.models.agent_job import AgentJob
 
 
@@ -17,6 +20,7 @@ def get_tools_for_job_type(
     job_type: str,
     config: Optional[Dict[str, Any]],
     profile: Optional[Dict[str, Any]] = None,
+    contributed: Optional[Sequence[ToolSpec]] = None,
 ) -> List[str]:
     """Get available tools based on job type.
 
@@ -25,8 +29,34 @@ def get_tools_for_job_type(
     declares which job types may call it in ``agent_core.tool_specs``, and a
     name listed here but nowhere else was not an error, only a capability the
     job type quietly did without.
+
+    ``contributed`` is what the job owner's enabled plugins offer. It is passed
+    in rather than looked up because this function is pure and synchronous and
+    resolving a user's plugins is neither -- and because the resolution must
+    happen **once, at job start**: the tool menu goes into the stable half of
+    the thinking prompt, which keys the provider's prompt cache and must stay
+    byte-identical for the life of a job. Re-resolving per iteration would both
+    break that cache and let a job's capabilities change underneath it while it
+    runs.
+
+    Contributed tools pass through every filter below -- allowlist, denylist,
+    role blocks, the tool cap -- because a plugin tool that could not be
+    blocked by the same config that blocks a built-in would be a hole in the
+    policy rather than a feature.
     """
-    proposed = sorted(tool_specs.tools_for_job_type(job_type))
+    catalog = tool_specs.STATIC_CATALOG
+    if contributed:
+        try:
+            catalog = catalog.extended_with(contributed)
+        except ValueError as exc:
+            # A contributed tool shadowing a built-in is refused at install, so
+            # arriving here means the built-in set changed under an installed
+            # plugin. Drop the contributions rather than the job: every
+            # built-in tool still works, and the reason is recorded.
+            logger.warning(f"Ignoring contributed tools for this job: {exc}")
+            catalog = tool_specs.STATIC_CATALOG
+
+    proposed = sorted(catalog.tools_for_job_type(job_type))
 
     cfg = config if isinstance(config, dict) else {}
 

@@ -5,39 +5,11 @@
 import React, { useMemo, useState } from 'react';
 import { Outlet, Link, useLocation, useNavigate } from 'react-router-dom';
 import {
-  Activity,
-  BarChart3,
-  BookOpen,
-  Bot,
-  Brain,
-  ClipboardCheck,
-  Cpu,
   Database,
-  FileCheck,
-  FileText,
-  FlaskConical,
-  FolderGit2,
-  GitBranch,
-  GitPullRequest,
-  Key,
-  Layers,
-  ListChecks,
   LogOut,
   Menu,
-  MessageCircle,
-  Network,
-  Presentation,
-  Search,
-  Server,
-  Settings,
-  Shield,
-  Sigma,
-  StickyNote,
   User,
-  Workflow,
-  Wrench,
   X,
-  Zap,
 } from 'lucide-react';
 import { useAuth } from '../contexts/AuthContext';
 import { useKeyboardShortcuts } from '../hooks/useKeyboardShortcuts';
@@ -46,38 +18,12 @@ import AgentWidget from './agent/AgentWidget';
 import NotificationBell from './notifications/NotificationBell';
 import { useQuery } from 'react-query';
 import { apiClient } from '../services/api';
-import type { LatexStatusResponse, SystemHealth } from '../types';
-
-type NavTo = string | { pathname: string; search?: string };
-interface NavItem {
-  name: string;
-  to: NavTo;
-  icon: React.ComponentType<{ className?: string }>;
-}
-
-/**
- * A door is one of the four things this application is for. Its sections are
- * the routes inside it.
- *
- * The nav used to be eight groups of subsystems -- 31 destinations for an
- * admin, 23 for everyone else -- which asked you to know which service owned
- * a thing before you could find it. These four are named for what you are
- * doing: ask the corpus, draw on it, run the work, write it up. Settings is
- * the fifth door and holds the twelve destinations that are configuration or
- * observability; ten of those twelve were already invisible to a non-admin,
- * which is the tell that they were never daily work.
- *
- * Every route is exactly where it was. Moving one between doors is a one-line
- * edit to the array below.
- */
-interface NavDoor {
-  id: string;
-  name: string;
-  icon: React.ComponentType<{ className?: string }>;
-  /** Rendered at the bottom, away from the work. */
-  utility?: boolean;
-  sections: NavItem[];
-}
+import type { NavItem } from '../navigation/catalog';
+import {
+  isActiveNavItem as isActiveItem,
+  useNavigation,
+} from '../navigation/useNavigation';
+import type { SystemHealth } from '../types';
 
 const Layout: React.FC = () => {
   const [sidebarOpen, setSidebarOpen] = useState(false);
@@ -139,17 +85,8 @@ const Layout: React.FC = () => {
     },
   ]);
 
-  const isActiveNavItem = (item: NavItem) => {
-    const pathname = typeof item.to === 'string' ? item.to : item.to.pathname;
-    if (!location.pathname.startsWith(pathname)) return false;
-
-    if (typeof item.to === 'string') return true;
-
-    const desiredTab = item.to.search ? new URLSearchParams(item.to.search).get('tab') : null;
-    if (!desiredTab) return true;
-    const currentTab = new URLSearchParams(location.search).get('tab') || 'overview';
-    return desiredTab === currentTab;
-  };
+  const isActiveNavItem = (item: NavItem) =>
+    isActiveItem(item, location.pathname, location.search);
 
   const handleLogout = async () => {
     await logout();
@@ -166,117 +103,14 @@ const Layout: React.FC = () => {
     }
   );
 
-  const { data: latexStatus } = useQuery<LatexStatusResponse>(
-    ['latex-status'],
-    () => apiClient.getLatexStatus(),
-    {
-      enabled: !!user,
-      refetchInterval: 60000,
-      retry: 1,
-    }
-  );
-
-  const navDoors: NavDoor[] = useMemo(() => {
-    const isAdmin = user?.role === 'admin';
-    const showLatex = Boolean(latexStatus?.enabled) || isAdmin;
-
-    const doors: NavDoor[] = [
-      {
-        id: 'chat',
-        name: 'Chat',
-        icon: MessageCircle,
-        sections: [
-          { name: 'Chat', to: '/chat', icon: MessageCircle },
-          { name: 'Search', to: '/search', icon: Search },
-        ],
-      },
-      {
-        id: 'library',
-        name: 'Library',
-        icon: BookOpen,
-        sections: [
-          { name: 'Documents', to: '/documents', icon: FileText },
-          { name: 'Papers', to: '/papers', icon: BookOpen },
-          { name: 'Reading Lists', to: '/reading-lists', icon: ListChecks },
-          { name: 'Research Notes', to: '/research-notes', icon: StickyNote },
-          { name: 'Memory', to: '/memory', icon: Brain },
-          { name: 'Knowledge Graph', to: '/kg/global', icon: Network },
-          { name: 'Templates', to: '/templates', icon: FileCheck },
-        ],
-      },
-      {
-        // Where the work runs. Workflows belong here rather than in a
-        // department of their own: a workflow is a run written down in
-        // advance.
-        id: 'rnd',
-        name: 'R&D',
-        icon: Zap,
-        sections: [
-          { name: 'Runs', to: '/autonomous-agents', icon: Zap },
-          { name: 'Control Plane', to: '/agent-control-plane', icon: Activity },
-          { name: 'Pipelines', to: '/pipelines', icon: GitBranch },
-          { name: 'Workflows', to: '/workflows', icon: Workflow },
-          { name: 'Agents', to: '/agent-builder', icon: Bot },
-        ],
-      },
-      {
-        id: 'synthesis',
-        name: 'Synthesis',
-        icon: Layers,
-        sections: [
-          { name: 'Synthesis', to: '/synthesis', icon: Layers },
-          { name: 'Presentations', to: '/presentations', icon: Presentation },
-          ...(showLatex ? [{ name: 'LaTeX Studio', to: '/latex', icon: Sigma } as NavItem] : []),
-          { name: 'Repo Reports', to: '/repo-reports', icon: FolderGit2 },
-          { name: 'Draft Reviews', to: '/artifact-drafts', icon: ClipboardCheck },
-          { name: 'Patch PRs', to: '/patch-prs', icon: GitPullRequest },
-        ],
-      },
-      {
-        id: 'settings',
-        name: 'Settings',
-        icon: Settings,
-        utility: true,
-        sections: [
-          { name: 'Tools', to: '/tools', icon: Wrench },
-          { name: 'AI Hub', to: '/ai-hub', icon: Cpu },
-          { name: 'API Keys', to: '/api-keys', icon: Key },
-          { name: 'MCP Config', to: '/mcp-config', icon: Server },
-          ...(isAdmin
-            ? [
-                { name: 'Usage', to: '/usage', icon: BarChart3 },
-                { name: 'Routing Observability', to: '/usage/routing', icon: Activity },
-                { name: 'Routing Experiments', to: '/usage/experiments', icon: FlaskConical },
-                { name: 'Admin', to: { pathname: '/admin', search: '?tab=overview' }, icon: Shield },
-                { name: 'Admin Agents', to: { pathname: '/admin', search: '?tab=agents' }, icon: Bot },
-                { name: 'KG Admin', to: '/admin/kg', icon: Database },
-                { name: 'KG Audit', to: '/admin/kg/audit', icon: Database },
-              ]
-            : []),
-          { name: 'Preferences', to: '/settings', icon: Settings },
-        ] as NavItem[],
-      },
-    ];
-
-    return doors.filter((d) => d.sections.length > 0);
-  }, [latexStatus?.enabled, user?.role]);
-
-  const allNavItems = useMemo(() => navDoors.flatMap((d) => d.sections), [navDoors]);
-
-  const activeNavItem = useMemo(
-    () => allNavItems.find(isActiveNavItem) || null,
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [allNavItems, location.pathname, location.search]
-  );
-
-  const activeDoor = useMemo(() => {
-    if (!activeNavItem) return navDoors[0] || null;
-    return (
-      navDoors.find((d) => d.sections.some((it) => it.name === activeNavItem.name)) ||
-      navDoors[0] ||
-      null
-    );
-  }, [activeNavItem, navDoors]);
+  // The navigation is a catalog plus this person's own arrangement of it --
+  // see `src/navigation/`. It used to be a literal here, which meant everyone
+  // saw the same nav and changing it meant editing this component.
+  const {
+    doors: navDoors,
+    activeItem: activeNavItem,
+    activeDoor,
+  } = useNavigation();
 
   /**
    * The filter searches every section across every door, so a destination

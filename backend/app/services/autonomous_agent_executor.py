@@ -27,6 +27,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
 from app.agent_core.runtime import AgentRuntimeRunner
+from app.agent_core.tool_specs.spec import ToolSpec
 from app.models.agent_definition import AgentDefinition
 from app.models.agent_job import (
     AgentJob,
@@ -80,6 +81,7 @@ from app.services.agent_job_tool_policy import (
 )
 from app.services.agent_latex_runner_service import AgentLatexRunnerService
 from app.services.agent_observation_service import AgentObservationService
+from app.services.agent_plugin_tool_provider import PluginToolProvider
 from app.services.agent_progress_evaluation_service import (
     AgentProgressEvaluationService,
 )
@@ -1612,8 +1614,23 @@ class AutonomousAgentExecutor:
                 build_autonomous_media_provider(self),
                 build_autonomous_snapshot_provider(self),
                 build_autonomous_project_bootstrap_provider(self),
+                # Last: it claims the reserved `p_` namespace, which no
+                # built-in may occupy, so ordering cannot matter -- but a
+                # contributed tool should never be ahead of a first-party one
+                # in a resolution order, on principle rather than by accident.
+                PluginToolProvider(),
             ]
         )
+        #: Contributed tools, resolved at job start and not again. The menu
+        #: goes into the stable half of the thinking prompt, which keys the
+        #: provider prompt cache; re-resolving mid-run would break that cache
+        #: and change a running job's capabilities underneath it.
+        #:
+        #: An executor is built fresh per job run, so one list is enough -- but
+        #: the job it was resolved for is remembered, because a reused instance
+        #: serving a second job must not offer it the first owner's tools.
+        self._contributed_specs: List[ToolSpec] = []
+        self._contributed_for_job: Optional[str] = None
         self.research_runner_service = AgentResearchRunnerService()
         self.latex_runner_service = AgentLatexRunnerService()
         self.experiment_runner_service = AgentExperimentRunnerService()
@@ -1748,6 +1765,10 @@ class AutonomousAgentExecutor:
                 "error": f"Job cannot be executed in status: {job.status}",
                 "status": job.status,
             }
+
+        # Resolve what this owner's plugins contribute, once, before any
+        # prompt is built from the tool menu.
+        await self._resolve_contributed_tools(job, db)
 
         # Load user settings
         user_settings = await self._load_user_settings(job.user_id, db)
@@ -8158,6 +8179,33 @@ RESPONSE FORMAT:
             return ""
         return "CURRENT EXECUTION CONTEXT:\n\n" + "\n\n".join(parts)
 
+    async def _resolve_contributed_tools(self, job: AgentJob, db: AsyncSession) -> None:
+        """Work out what this job owner's plugins offer, once per job.
+
+        Failure here is never fatal. A plugin that cannot be resolved costs a
+        job its contributed tools, which is a smaller loss than the job, and
+        every built-in tool still works.
+        """
+        key = str(job.id)
+        if self._contributed_for_job == key:
+            return
+        # Clear first. If resolution fails for job B on an instance that
+        # resolved job A, the wrong answer is A's tools, not none.
+        self._contributed_specs = []
+        self._contributed_for_job = key
+        try:
+            from app.services import plugin_registry
+
+            resolved = await plugin_registry.contributions_for_user(db, job.user_id)
+            self._contributed_specs = list(resolved.specs)
+            if resolved.specs:
+                logger.info(
+                    f"Job {job.id}: {len(resolved.specs)} contributed tool(s) "
+                    f"available: {', '.join(resolved.spec_names())}"
+                )
+        except Exception as exc:
+            logger.warning(f"Job {job.id}: could not resolve plugin tools: {exc}")
+
     def _get_tools_for_job_type(
         self,
         job_type: str,
@@ -8165,7 +8213,12 @@ RESPONSE FORMAT:
         profile: Optional[Dict[str, Any]] = None,
     ) -> List[str]:
         """Get available tools based on job type."""
-        return get_tools_for_job_type(job_type, config, profile=profile)
+        return get_tools_for_job_type(
+            job_type,
+            config,
+            profile=profile,
+            contributed=self._contributed_specs,
+        )
 
     def _format_tools_for_prompt(
         self,

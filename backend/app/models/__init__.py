@@ -66,6 +66,7 @@ from .model_registry import AdapterStatus, AdapterType, ModelAdapter
 from .notification import Notification, NotificationPreferences, NotificationType
 from .patch_pr import PatchPR
 from .persona import DocumentPersonaDetection, Persona, PersonaEditRequest
+from .plugin import Plugin, PluginInstallation
 from .presentation import PresentationJob, PresentationTemplate
 from .reading_list import ReadingList, ReadingListItem
 from .repo_report import RepoReportJob
@@ -109,6 +110,8 @@ from .workflow import (
 
 __all__ = [
     "AgentPipeline",
+    "Plugin",
+    "PluginInstallation",
     "Document",
     "DocumentFolder",
     "DocumentFolderItem",

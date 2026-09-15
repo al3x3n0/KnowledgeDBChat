@@ -160,6 +160,52 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - **Document generation** — LaTeX projects with server-side compilation (dedicated `celery_latex` worker, disabled/admin-only by default via `LATEX_COMPILER_*`), DOCX editor, PPTX/presentation generation, PDF export, artifact drafts staged for review before publishing.
 - **Training / AI Hub** — datasets, fine-tuning jobs (`services/trainers/`, backends: local/modal/runpod), model registry, eval templates and benchmark harness. Gated by `TRAINING_ENABLED`.
 - **Experiments & scientific validation** — experiment plans/runs, Docker-sandboxed validation with image allowlists and resource caps (`SCIENTIFIC_VALIDATION_*`, `UNSAFE_CODE_EXEC_*` settings).
+- **Navigation & UI customization** — the nav was a literal inside
+  `Layout.tsx`: the same five doors for everyone, changeable only by editing
+  the component. It is now `frontend/src/navigation/`: `catalog.ts` declares
+  every destination as data (a `visibility` flag rather than an inline
+  ternary, so settings can explain why an entry is absent), `preferences.ts`
+  is a **pure** function applying one person's arrangement to it, and
+  `useNavigation.ts` is the single resolved answer the sidebar, the settings
+  editor and the `/` redirect all read — they used to disagree by
+  construction, since the landing page was a hardcoded `<Navigate to="/chat">`
+  in `App.tsx`. A destination's identity is its **route** (including the query
+  string, which is the only thing separating the two Admin tabs), so renaming
+  an entry never orphans the preference that hid it. Three rules are decisions
+  rather than details: an order is a preference and not a whitelist (entries it
+  does not mention keep their catalog position, or every newly shipped page
+  would be invisible to anyone who had customized); hiding never hides the page
+  you are standing on; and a door disappears when its last section does.
+  Storage is `user_preferences.ui` (JSON), **normalized on write** by
+  `services/ui_preferences.py` — it is the one field whose value is a document
+  the client composes, so unknown keys are dropped, lists capped and labels
+  trimmed, and a non-string key is rejected rather than coerced. Null means
+  "never customized", which is deliberately distinct from `{}`. Per-panel
+  collapse toggles stay in `localStorage`: those are per-device conveniences,
+  while hiding a destination is a decision about your work.
+- **Plugins** — a plugin is one installable unit that contributes tools (and, in
+  later slices, flows and UI). `models/plugin.py` holds the manifest;
+  `PluginInstallation` holds one user's decision to run it, so a builtin bundle
+  can belong to the deployment and still be opted into per user. Two sources,
+  one loader (`services/plugin_registry.py`): bundles shipped under
+  `backend/plugins/<name>/plugin.json` are synced at startup, user-authored
+  plugins are rows. `services/plugin_manifest.py` validates at install and
+  **names what is wrong**. A contributed tool is promoted to a real `ToolSpec`
+  (`agent_core/plugin_specs.py`) and offered to the model by name under the
+  reserved `p_<slug>_<tool>` namespace, resolved **once at job start** because
+  the tool menu keys the provider prompt cache. Two things are never taken from
+  the author: the **classification**, which is derived from the executor type
+  (a webhook declaring `effects: read` is overridden, not believed), and the
+  **name**, which is checked against what a provider accepts — `UserTool.name`
+  has no charset constraint, so a tool called `my tool!` is skipped with a
+  warning rather than breaking a run. Execution goes through
+  `CustomToolService`, so the policy engine, approval gates and audit apply
+  unchanged. `agent_core/tool_specs.ToolCatalog` is what makes this possible:
+  the module-level views now delegate to `STATIC_CATALOG` (built-ins only), and
+  a caller that knows whose tools it wants builds its own with
+  `extended_with()`, which refuses anything shadowing a built-in. **Chat is not
+  wired yet** — it builds its menu from the global `AGENT_TOOLS` at three
+  sites; plugin tools reach autonomous jobs only.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
 - **Pipelines** — a DAG of stages in `services/agent_pipeline_spec.py`, each stage a goal contract; tools are *derived* from the contract rather than named. A stage must declare a `job_type` its tools are allowed to run under: every coding tool is restricted to `analysis`/`coding` and the default is `research`, so a coding stage left at the default is planned with `clone_and_index_repo, apply_patch, run_repo_tests` and then cannot see one of them at runtime — measured, eight iterations of `search_documents` while the plan promised a repository fix. `validate()` now refuses that and names the job types that would work. Contract `validity.bounds` are checked on the **latest** finding of a *perishable* type, which is what makes "end with the tests passing" expressible: bounding every `test_result` at `failed == 0` is unsatisfiable, since the baseline run that finds the bug is red by definition, while requiring only that a `test_result` exists is satisfied by a red one. `"latest": false` restores the check-every-occurrence behaviour
 - **Workflows** — visual workflow builder (ReactFlow frontend, Zustand store), `workflow_engine.py` execution, workflow→synthesis conversion, LangGraph-based issue/PR graphs (`langgraph_issue_pr_service.py`).
@@ -271,6 +317,8 @@ Backend configuration is in `backend/.env` (copy from `env.example`). `core/conf
 - `UNSAFE_CODE_EXEC_*`, `SCIENTIFIC_VALIDATION_*` - Sandboxed code execution limits (subprocess or Docker)
 - `TRAINING_*`, `AI_HUB_*`, `DATASET_MAX_*` - Fine-tuning and evals
 - `AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`, `AGENT_KB_PATCH_APPLY_ENABLED` - Agent governance
+- `PLUGIN_BUILTIN_DIR`, `PLUGINS_USER_AUTHORING_ENABLED` - Plugin bundles shipped
+  with the repo, and whether users may author their own
 - `SECRETS_ENCRYPTION_KEY` - Fernet key for the encrypted secrets store
 - `KROKI_URL` - Diagram rendering; `GITLAB_*`, `CONFLUENCE_*` - Data sources
 

@@ -6,6 +6,7 @@ import { Toaster } from 'react-hot-toast';
 import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider } from './contexts/NotificationContext';
 import Layout from './components/Layout';
+import LandingRedirect from './navigation/LandingRedirect';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import ErrorBoundary from './components/common/ErrorBoundary';
 
@@ -89,7 +90,10 @@ const PublicRoute: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   }
 
   if (user) {
-    return <Navigate to="/chat" replace />;
+    // Via "/" rather than straight to /chat, so signing in lands where this
+    // account is configured to land. Hardcoding it here would make the
+    // preference hold for every route into the app except the front door.
+    return <Navigate to="/" replace />;
   }
 
   return <>{children}</>;
@@ -127,7 +131,7 @@ const AppRoutes: React.FC = () => {
             </ProtectedRoute>
           }
         >
-          <Route index element={<Navigate to="/chat" replace />} />
+          <Route index element={<LandingRedirect />} />
           <Route 
             path="chat" 
             element={

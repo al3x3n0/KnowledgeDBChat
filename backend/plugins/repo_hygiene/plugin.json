@@ -1,0 +1,49 @@
+{
+  "id": "hygiene",
+  "name": "Repo Hygiene",
+  "version": "0.1.0",
+  "description": "Small bookkeeping tools for coding and research jobs. Shipped with the deployment as a worked example of a plugin manifest.",
+  "contributes": {
+    "tools": [
+      {
+        "name": "note",
+        "description": "Record a short note in the run's output. Takes `text` and returns it prefixed, so a run can leave a marker a person can grep for.",
+        "tool_type": "transform",
+        "parameters_schema": {
+          "type": "object",
+          "properties": {
+            "text": {
+              "type": "string",
+              "description": "What to record."
+            }
+          },
+          "required": ["text"]
+        },
+        "config": {
+          "template": "note: {{ text }}"
+        },
+        "job_types": ["research", "coding", "analysis"]
+      },
+      {
+        "name": "checklist",
+        "description": "Render a checklist from a list of items, so a run can state what it intends to do before doing it.",
+        "tool_type": "transform",
+        "parameters_schema": {
+          "type": "object",
+          "properties": {
+            "items": {
+              "type": "array",
+              "items": { "type": "string" },
+              "description": "One line per item."
+            }
+          },
+          "required": ["items"]
+        },
+        "config": {
+          "template": "{% for item in items %}- [ ] {{ item }}\n{% endfor %}"
+        },
+        "job_types": ["research", "coding"]
+      }
+    ]
+  }
+}

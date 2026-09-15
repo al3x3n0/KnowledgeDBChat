@@ -84,6 +84,25 @@ async def lifespan(app: FastAPI):
         "Storage service", storage_service.initialize(), timeout_s=20.0
     )
 
+    # Plugin bundles shipped with this repository. Synced rather than loaded
+    # into memory: a builtin becomes an ordinary row, so installing one is the
+    # same operation as installing a user's own and nothing downstream has to
+    # know which source a plugin came from.
+    async def _sync_plugins() -> None:
+        from app.core.database import AsyncSessionLocal
+        from app.services.plugin_registry import sync_builtin_plugins
+
+        async with AsyncSessionLocal() as db:
+            synced = await sync_builtin_plugins(db)
+            await db.commit()
+            if synced:
+                logger.info(
+                    f"Synced {len(synced)} builtin plugin(s): "
+                    + ", ".join(p.slug for p in synced)
+                )
+
+    await _start_init_task("Builtin plugins", _sync_plugins(), timeout_s=10.0)
+
     # Redis subscriber for progress updates (transcription/summarization/ingestion)
     from app.utils.redis_subscriber import redis_subscriber
 

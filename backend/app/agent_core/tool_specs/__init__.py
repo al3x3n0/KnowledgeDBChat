@@ -22,7 +22,7 @@ Adding a tool is now: write the handler, write the spec.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, Iterable, List, Tuple
 
 from app.agent_core.tool_specs import (
     agent_ops,
@@ -81,8 +81,10 @@ if len(_BY_NAME) != len(TOOL_SPECS):
 
 __all__ = [
     "ToolSpec",
+    "ToolCatalog",
     "TOOL_SPECS",
     "TOOL_DOMAINS",
+    "STATIC_CATALOG",
     "tool_domain",
     "all_specs",
     "spec_for",
@@ -92,38 +94,99 @@ __all__ = [
 ]
 
 
+class ToolCatalog:
+    """The specs in force for one caller: the built-ins, plus what was added.
+
+    Every registry in this application is a view of ``TOOL_SPECS``, which is
+    computed once at import and frozen. That is right for tools declared in
+    this repository and wrong for anything a *user* contributes: a plugin tool
+    belongs to one user, and a module-level tuple has no idea who is asking.
+
+    Rather than thread a user through the fifty-seven call sites that read the
+    frozen views, the views stay exactly as they are -- they now delegate to
+    ``STATIC_CATALOG``, which holds the built-ins and nothing else -- and a
+    caller that *does* know whose tools it wants builds its own catalog with
+    ``STATIC_CATALOG.extended_with(...)``.
+
+    A dynamic spec may not shadow a built-in. Silently overriding
+    ``run_repo_tests`` with a webhook would be a privilege-escalation route
+    dressed as a feature, so the collision is refused here as well as at
+    install time -- the second check costs nothing and this is the one that
+    runs on every job.
+    """
+
+    def __init__(self, specs: Iterable[ToolSpec]) -> None:
+        self._specs: Tuple[ToolSpec, ...] = tuple(specs)
+        self._by_name: Dict[str, ToolSpec] = {s.name: s for s in self._specs}
+
+    def extended_with(self, specs: Iterable[ToolSpec]) -> "ToolCatalog":
+        """This catalog plus ``specs``, refusing any that shadow a built-in."""
+        added = []
+        for spec in specs:
+            if spec.name in self._by_name:
+                raise ValueError(
+                    f"tool {spec.name!r} already exists and may not be "
+                    "overridden by a contributed tool"
+                )
+            added.append(spec)
+        return ToolCatalog(self._specs + tuple(added))
+
+    def all_specs(self) -> Tuple[ToolSpec, ...]:
+        return self._specs
+
+    def spec_for(self, tool_name: str) -> ToolSpec | None:
+        return self._by_name.get(str(tool_name or "").strip())
+
+    def spec_names(self) -> frozenset[str]:
+        return frozenset(self._by_name)
+
+    def schemas(self) -> List[Dict[str, Any]]:
+        """Schema entries for every spec, in declaration order."""
+        return [spec.schema() for spec in self._specs]
+
+    def tools_for_job_type(self, job_type: str) -> List[str]:
+        """Spec-declared tools this job type may call.
+
+        ``job_types is None`` means every job type; an empty tuple means none,
+        which is a real case rather than an omission — 58 tools are reachable
+        from chat or MCP and from no autonomous job.
+        """
+        wanted = str(job_type or "").strip()
+        return [
+            spec.name
+            for spec in self._specs
+            if spec.job_types is None or wanted in spec.job_types
+        ]
+
+
+#: The built-in tools, and only those. Anything a user contributes extends a
+#: copy of this rather than mutating it, so one user's plugin can never become
+#: another user's tool.
+STATIC_CATALOG = ToolCatalog(TOOL_SPECS)
+
+
 def tool_domain(tool_name: str) -> str:
     """The domain module a tool was declared in, or "" if it has no spec."""
     return TOOL_DOMAINS.get(str(tool_name or "").strip(), "")
 
 
 def all_specs() -> Tuple[ToolSpec, ...]:
-    return TOOL_SPECS
+    return STATIC_CATALOG.all_specs()
 
 
 def spec_for(tool_name: str) -> ToolSpec | None:
-    return _BY_NAME.get(str(tool_name or "").strip())
+    return STATIC_CATALOG.spec_for(tool_name)
 
 
 def spec_names() -> frozenset[str]:
-    return frozenset(_BY_NAME)
+    return STATIC_CATALOG.spec_names()
 
 
 def schemas() -> List[Dict[str, Any]]:
-    """Schema entries for every spec, in declaration order."""
-    return [spec.schema() for spec in TOOL_SPECS]
+    """Schema entries for every built-in spec, in declaration order."""
+    return STATIC_CATALOG.schemas()
 
 
 def tools_for_job_type(job_type: str) -> List[str]:
-    """Spec-declared tools this job type may call.
-
-    ``job_types is None`` means every job type; an empty tuple means none,
-    which is a real case rather than an omission — 58 tools are reachable from
-    chat or MCP and from no autonomous job.
-    """
-    wanted = str(job_type or "").strip()
-    return [
-        spec.name
-        for spec in TOOL_SPECS
-        if spec.job_types is None or wanted in spec.job_types
-    ]
+    """Built-in tools this job type may call."""
+    return STATIC_CATALOG.tools_for_job_type(job_type)

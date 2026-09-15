@@ -184,7 +184,12 @@ def starved_seed_index(
     if trailing < MAX_CONSECUTIVE_DISCOVERED:
         return None
     for index, view in enumerate(pending):
-        if str(view.get("origin") or "seed") == "seed":
+        # Anything not self-spawned counts as a seed here. The trailing-run
+        # count above already splits origins this way, and the two must agree:
+        # classifying "not discovered" as breaking the run but only "seed" as
+        # able to rescue it leaves any third origin -- `goal`, say -- able to
+        # end a starvation streak without ever being the thing that gets run.
+        if str(view.get("origin") or "seed") != "discovered":
             return index
     return None
 

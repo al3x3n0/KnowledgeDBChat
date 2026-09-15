@@ -531,3 +531,38 @@ async def test_a_summary_shows_what_it_would_do_next_and_why(db_session):
     assert all(
         row["why"] is None or isinstance(row["why"], str) for row in summary["next_up"]
     )
+
+
+@pytest.mark.asyncio
+async def test_a_campaign_given_no_questions_starts_from_its_goal(db_session):
+    """Empty seeds must not produce a campaign that is over before it starts.
+
+    `advance` completes a campaign with nothing pending, and that branch
+    cannot tell "finished the work" from "never had any" -- so an unseeded
+    campaign would report COMPLETED having launched no job at all. Both
+    callers can reach this: the chat widget lets every drafted question be
+    deleted, and the New Campaign modal asks for none.
+    """
+    campaign = await _campaign(db_session, items=[])
+
+    step = await campaigns.advance(db_session, campaign)
+
+    assert step["action"] == "launched", "an unseeded campaign must still run"
+    assert step["launched_job"]
+    assert campaign.status == CampaignStatus.ACTIVE
+
+    items = await campaigns._items(db_session, campaign)
+    assert [i.title for i in items] == ["find an instruction worth proposing"]
+    assert items[0].origin == "goal"
+
+
+@pytest.mark.asyncio
+async def test_blank_questions_do_not_become_untitled_work(db_session):
+    """A trailing empty input box is not a question to research."""
+    campaign = await _campaign(
+        db_session, items=[{"title": "profile the kernel"}, {"title": "   "}]
+    )
+
+    items = await campaigns._items(db_session, campaign)
+
+    assert [i.title for i in items] == ["profile the kernel"]

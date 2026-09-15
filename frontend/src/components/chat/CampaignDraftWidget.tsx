@@ -52,7 +52,9 @@ const CampaignDraftWidget: React.FC<CampaignDraftWidgetProps> = ({ draft }) => {
         max_jobs: budget,
       });
       setLaunchedId(campaign.id);
-      toast.success('Campaign started');
+      toast.success(
+        `Campaign started: "${campaign.name}". The scheduler picks it up within five minutes and runs one job at a time.`,
+      );
     } catch {
       // apiClient surfaces the error itself; the widget stays open so an
       // edited draft is not lost to a failed request.

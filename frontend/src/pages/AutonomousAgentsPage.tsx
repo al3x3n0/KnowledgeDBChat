@@ -37,6 +37,7 @@ import {
   Play,
   Plus,
   RefreshCw,
+  Rocket,
   RotateCcw,
   Search,
   Settings,
@@ -120,7 +121,7 @@ import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import SkeletonList from '../components/common/SkeletonList';
 import CreateFromTemplateModal from '../components/agent/CreateFromTemplateModal';
-import CustomerResearchModal from '../components/agent/CustomerResearchModal';
+import NewCampaignModal from '../components/agent/NewCampaignModal';
 import InboxMonitorModal from '../components/agent/InboxMonitorModal';
 import MonitorProfilesModal from '../components/agent/MonitorProfilesModal';
 import QuickStartClaudeBackendModal from '../components/agent/QuickStartClaudeBackendModal';
@@ -1174,7 +1175,7 @@ const AutonomousAgentsPage: React.FC = () => {
   const [scopeGuardFilter, setScopeGuardFilter] = useState<string>('');
   const [experimentRecoveryFilter, setExperimentRecoveryFilter] = useState<string>('');
   const [showCreateModal, setShowCreateModal] = useState(false);
-  const [showCustomerResearchModal, setShowCustomerResearchModal] = useState(false);
+  const [showNewCampaignModal, setShowNewCampaignModal] = useState(false);
   const [showInboxMonitorModal, setShowInboxMonitorModal] = useState(false);
   const [showMonitorProfilesModal, setShowMonitorProfilesModal] = useState(false);
   const [createFromTemplate, setCreateFromTemplate] = useState<AgentJobTemplate | null>(null);
@@ -5022,7 +5023,6 @@ const AutonomousAgentsPage: React.FC = () => {
         queryClient.invalidateQueries(['agent-checkpoint-queue']);
         toast.success('Job created from template');
         setCreateFromTemplate(null);
-        setShowCustomerResearchModal(false);
         setActiveTab('jobs');
         setSelectedJob(job);
       },
@@ -5041,7 +5041,6 @@ const AutonomousAgentsPage: React.FC = () => {
         queryClient.invalidateQueries(['agent-checkpoint-queue']);
         toast.success('Chain started');
         setStartFromChain(null);
-        setShowCustomerResearchModal(false);
         setActiveTab('jobs');
         setSelectedJob(job);
       },
@@ -7564,9 +7563,9 @@ const AutonomousAgentsPage: React.FC = () => {
             <MapIcon className="w-4 h-4 mr-2" />
             {showSystemMap ? 'Hide System Map' : 'System Map'}
           </Button>
-          <Button variant="secondary" onClick={() => setShowCustomerResearchModal(true)}>
-            <Brain className="w-4 h-4 mr-2" />
-            Customer Research
+          <Button variant="secondary" onClick={() => setShowNewCampaignModal(true)}>
+            <Rocket className="w-4 h-4 mr-2" />
+            New Campaign
           </Button>
           <Button onClick={() => setShowCreateModal(true)}>
             <Plus className="w-4 h-4 mr-2" />
@@ -15887,13 +15886,13 @@ const AutonomousAgentsPage: React.FC = () => {
           codeSources={codeSources}
         />
       )}
-      {showCustomerResearchModal && (
-        <CustomerResearchModal
-          onClose={() => setShowCustomerResearchModal(false)}
-          createFromTemplateMutation={createFromTemplateMutation}
-          createFromChainMutation={createFromChainMutation}
-          templatesData={templatesData}
-          chainsData={chainsData}
+      {showNewCampaignModal && (
+        <NewCampaignModal
+          onClose={() => setShowNewCampaignModal(false)}
+          onCreated={() => {
+            queryClient.invalidateQueries(['agent-jobs']);
+            queryClient.invalidateQueries(['agent-jobs-stats']);
+          }}
         />
       )}
       {showInboxMonitorModal && (

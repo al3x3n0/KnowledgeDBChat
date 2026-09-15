@@ -75,15 +75,37 @@ async def create_campaign(
     db.add(campaign)
     await db.flush()
 
+    seeded = 0
     for item in items:
+        title = str(item.get("title") or "").strip()
+        if not title:
+            continue
         db.add(
             ResearchCampaignItem(
                 campaign_id=campaign.id,
-                title=str(item.get("title") or "")[:300] or "untitled",
+                title=title[:300],
                 detail=str(item.get("detail") or "") or None,
                 origin="seed",
             )
         )
+        seeded += 1
+
+    if not seeded:
+        # A campaign with nothing pending is COMPLETED by its first `advance`
+        # -- the `not pending` branch cannot tell "finished the work" from
+        # "never had any" -- so it would report success having launched no
+        # job at all. The goal is always a serviceable first question, and
+        # findings from it spawn the rest, so start there rather than create
+        # a campaign that is over before the beat task sees it.
+        db.add(
+            ResearchCampaignItem(
+                campaign_id=campaign.id,
+                title=str(goal).strip()[:300],
+                detail=None,
+                origin="goal",
+            )
+        )
+
     await db.flush()
     return campaign
 

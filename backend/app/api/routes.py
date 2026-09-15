@@ -41,6 +41,7 @@ from app.api.endpoints import (
     notifications,
     patch_prs,
     personas,
+    plugins,
     presentations,
     reading_lists,
     repo_reports,
@@ -95,6 +96,7 @@ api_router.include_router(templates.router, prefix="/templates", tags=["template
 api_router.include_router(docx_editor.router, prefix="/documents", tags=["docx-editor"])
 api_router.include_router(agent.router, prefix="/agent", tags=["agent"])
 api_router.include_router(user_tools.router, prefix="/user-tools", tags=["user-tools"])
+api_router.include_router(plugins.router, prefix="/plugins", tags=["plugins"])
 api_router.include_router(workflows.router, prefix="/workflows", tags=["workflows"])
 api_router.include_router(
     presentations.router, prefix="/presentations", tags=["presentations"]

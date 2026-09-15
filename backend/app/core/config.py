@@ -521,6 +521,17 @@ class Settings(BaseSettings):
     # Keep disabled by default for safety.
     CUSTOM_TOOL_DOCKER_ENABLED: bool = False
 
+    # Plugins
+    # Where bundles shipped with this repository are read from, relative to the
+    # backend root unless absolute. A plugin contributes tools that a model is
+    # offered by name, so the directory is deployment state, not user state.
+    PLUGIN_BUILTIN_DIR: str = "plugins"
+    # Whether a user may author and install their own plugins. Contributed
+    # tools run under the same policy engine and approval gates as any other
+    # custom tool, so this is on by default -- but it is the switch to reach
+    # for if a deployment wants extension to be an operator decision.
+    PLUGINS_USER_AUTHORING_ENABLED: bool = True
+
     # AI Hub Training Configuration
     TRAINING_ENABLED: bool = True
     TRAINING_MAX_CONCURRENT_JOBS: int = 2

@@ -47,6 +47,60 @@ export interface ChatMessage {
   extra_metadata?: { campaign_draft?: ResearchCampaignDraft } & Record<string, any>;
 }
 
+// ---------------------------------------------------------------------------
+// Plugins
+//
+// A plugin is a manifest plus this user's decision to run it, and the two are
+// kept apart on purpose: `installed`/`enabled` describe the caller's
+// relationship to a plugin, not the plugin. Merging them would make "a builtin
+// bundle I have not installed" unrepresentable, which is its normal state.
+// ---------------------------------------------------------------------------
+
+export interface ContributedToolView {
+  name: string;
+  declared_name: string;
+  description: string;
+  tool_type: string;
+  /** Derived from the executor type, not read from the manifest. */
+  effects: string;
+  network: string;
+  cost_tier: string;
+  job_types: string[];
+}
+
+export interface Plugin {
+  id: string;
+  slug: string;
+  name: string;
+  description?: string | null;
+  version: string;
+  source: 'builtin' | 'user' | string;
+  owner_id?: string | null;
+  created_at: string;
+  updated_at?: string | null;
+  installed: boolean;
+  enabled: boolean;
+  tools: ContributedToolView[];
+  unavailable: { tool: string; reason: string }[];
+}
+
+export interface PluginListResponse {
+  items: Plugin[];
+  total: number;
+}
+
+export interface ContributedToolsResponse {
+  tools: {
+    name: string;
+    description: string;
+    effects: string;
+    network: string;
+    cost_tier: string;
+    job_types: string[];
+  }[];
+  unavailable: { tool: string; reason: string }[];
+}
+
 /** A campaign the assistant drafted from what was asked, for review before
  *  anything runs. Shaped to post straight to POST /research/campaigns. */
 export interface ResearchCampaignDraft {

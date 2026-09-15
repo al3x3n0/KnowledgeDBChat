@@ -150,9 +150,11 @@ def test_one_declaration_is_enough(monkeypatch):
         cost_tier="high",
         produces=("invented_measurement",),
     )
-    monkeypatch.setattr(tool_specs, "TOOL_SPECS", SPECS + (invented,))
+    # Patch the one catalog the module views derive from. This used to mean
+    # patching TOOL_SPECS *and* _BY_NAME in step -- two globals that had to
+    # agree, which is the shape of problem a catalog object exists to remove.
     monkeypatch.setattr(
-        tool_specs, "_BY_NAME", {s.name: s for s in tool_specs.TOOL_SPECS}
+        tool_specs, "STATIC_CATALOG", tool_specs.ToolCatalog(SPECS + (invented,))
     )
 
     assert any(s["name"] == "measure_invented_thing" for s in tool_specs.schemas())
@@ -168,7 +170,9 @@ def test_a_spec_limited_to_one_job_type_is_offered_only_there(monkeypatch):
         parameters={"type": "object", "properties": {}},
         job_types=("coding",),
     )
-    monkeypatch.setattr(tool_specs, "TOOL_SPECS", SPECS + (narrow,))
+    monkeypatch.setattr(
+        tool_specs, "STATIC_CATALOG", tool_specs.ToolCatalog(SPECS + (narrow,))
+    )
 
     assert "coding_only_thing" in tool_specs.tools_for_job_type("coding")
     assert "coding_only_thing" not in tool_specs.tools_for_job_type("research")
@@ -183,8 +187,14 @@ def test_a_spec_belonging_to_no_job_type_is_offered_to_none(monkeypatch):
         parameters={"type": "object", "properties": {}},
         job_types=(),
     )
-    monkeypatch.setattr(tool_specs, "TOOL_SPECS", SPECS + (chat_only,))
+    monkeypatch.setattr(
+        tool_specs, "STATIC_CATALOG", tool_specs.ToolCatalog(SPECS + (chat_only,))
+    )
 
+    # Assert it is actually in the catalog first. Without this the loop below
+    # passes for a spec that was never added at all, which is how a test that
+    # cannot fail looks exactly like a test that passed.
+    assert "chat_only_thing" in tool_specs.spec_names()
     for job_type in JOB_TYPES:
         assert "chat_only_thing" not in tool_specs.tools_for_job_type(job_type)
 

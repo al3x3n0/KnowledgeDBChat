@@ -286,6 +286,9 @@ import {
   DocumentFolderItemsResult,
   DocumentFolderRef,
   DocumentFolderTree,
+  Plugin,
+  PluginListResponse,
+  ContributedToolsResponse,
   ResearchCampaign,
 } from '../types';
 
@@ -4586,6 +4589,63 @@ class ApiClient {
     return response.data;
   }
   // ==================== Research Notes ====================
+
+  // Plugins ---------------------------------------------------------------
+
+  async listPlugins(): Promise<PluginListResponse> {
+    const response = await this.client.get('/api/v1/plugins');
+    return response.data;
+  }
+
+  async getPlugin(pluginId: string): Promise<Plugin> {
+    const response = await this.client.get(`/api/v1/plugins/${pluginId}`);
+    return response.data;
+  }
+
+  async createPlugin(manifest: Record<string, any>): Promise<Plugin> {
+    const response = await this.client.post('/api/v1/plugins', { manifest });
+    return response.data;
+  }
+
+  async updatePlugin(
+    pluginId: string,
+    manifest: Record<string, any>
+  ): Promise<Plugin> {
+    const response = await this.client.put(`/api/v1/plugins/${pluginId}`, {
+      manifest,
+    });
+    return response.data;
+  }
+
+  async deletePlugin(pluginId: string): Promise<void> {
+    await this.client.delete(`/api/v1/plugins/${pluginId}`);
+  }
+
+  async installPlugin(pluginId: string, enabled = true): Promise<Plugin> {
+    const response = await this.client.post(
+      `/api/v1/plugins/${pluginId}/install`,
+      { enabled }
+    );
+    return response.data;
+  }
+
+  async setPluginEnabled(pluginId: string, enabled: boolean): Promise<Plugin> {
+    const response = await this.client.patch(
+      `/api/v1/plugins/${pluginId}/install`,
+      { enabled }
+    );
+    return response.data;
+  }
+
+  async uninstallPlugin(pluginId: string): Promise<void> {
+    await this.client.delete(`/api/v1/plugins/${pluginId}/install`);
+  }
+
+  /** Exactly what this user's enabled plugins currently offer an agent. */
+  async getMyContributedTools(): Promise<ContributedToolsResponse> {
+    const response = await this.client.get('/api/v1/plugins/me/tools');
+    return response.data;
+  }
 
   /** Start a research campaign. The chat's campaign widget posts here after
    *  the person has reviewed what the assistant drafted. */

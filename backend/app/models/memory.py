@@ -197,6 +197,20 @@ class UserPreferences(Base):
     # Per-task provider overrides (JSON: {"summarization": "deepseek", "chat": "ollama", ...})
     llm_task_providers = Column(JSON, nullable=True)
 
+    # How this user has shaped their own interface: which navigation entries
+    # they hid, reordered, renamed or pinned, and where "/" lands.
+    #
+    # This is identity-level configuration rather than a per-device
+    # convenience, which is why it lives here and not in localStorage: a
+    # person who hides LaTeX Studio has decided something about their work,
+    # and should not have to decide it again on their laptop. Panel-collapse
+    # toggles stay in the browser, where they belong.
+    #
+    # One JSON column rather than a table per concern: the shape will grow
+    # with each kind of customization, and none of it is ever queried across
+    # users.
+    ui = Column(JSON, nullable=True)
+
     # Agent memory integration settings (for chat agent)
     enable_agent_memory = Column(
         Boolean, default=True, nullable=False

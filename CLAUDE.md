@@ -160,6 +160,29 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
 - **Document generation** — LaTeX projects with server-side compilation (dedicated `celery_latex` worker, disabled/admin-only by default via `LATEX_COMPILER_*`), DOCX editor, PPTX/presentation generation, PDF export, artifact drafts staged for review before publishing.
 - **Training / AI Hub** — datasets, fine-tuning jobs (`services/trainers/`, backends: local/modal/runpod), model registry, eval templates and benchmark harness. Gated by `TRAINING_ENABLED`.
 - **Experiments & scientific validation** — experiment plans/runs, Docker-sandboxed validation with image allowlists and resource caps (`SCIENTIFIC_VALIDATION_*`, `UNSAFE_CODE_EXEC_*` settings).
+- **Navigation & UI customization** — the nav was a literal inside
+  `Layout.tsx`: the same five doors for everyone, changeable only by editing
+  the component. It is now `frontend/src/navigation/`: `catalog.ts` declares
+  every destination as data (a `visibility` flag rather than an inline
+  ternary, so settings can explain why an entry is absent), `preferences.ts`
+  is a **pure** function applying one person's arrangement to it, and
+  `useNavigation.ts` is the single resolved answer the sidebar, the settings
+  editor and the `/` redirect all read — they used to disagree by
+  construction, since the landing page was a hardcoded `<Navigate to="/chat">`
+  in `App.tsx`. A destination's identity is its **route** (including the query
+  string, which is the only thing separating the two Admin tabs), so renaming
+  an entry never orphans the preference that hid it. Three rules are decisions
+  rather than details: an order is a preference and not a whitelist (entries it
+  does not mention keep their catalog position, or every newly shipped page
+  would be invisible to anyone who had customized); hiding never hides the page
+  you are standing on; and a door disappears when its last section does.
+  Storage is `user_preferences.ui` (JSON), **normalized on write** by
+  `services/ui_preferences.py` — it is the one field whose value is a document
+  the client composes, so unknown keys are dropped, lists capped and labels
+  trimmed, and a non-string key is rejected rather than coerced. Null means
+  "never customized", which is deliberately distinct from `{}`. Per-panel
+  collapse toggles stay in `localStorage`: those are per-device conveniences,
+  while hiding a destination is a decision about your work.
 - **Plugins** — a plugin is one installable unit that contributes tools (and, in
   later slices, flows and UI). `models/plugin.py` holds the manifest;
   `PluginInstallation` holds one user's decision to run it, so a builtin bundle

@@ -133,6 +133,15 @@ class MemoryInteractionResponse(MemoryInteractionBase):
 class UserPreferencesBase(BaseModel):
     """Base user preferences schema."""
 
+    #: How this person has shaped their interface: navigation order, hidden
+    #: and renamed entries, pins, and where "/" lands. Normalized on write by
+    #: `services/ui_preferences.py` rather than modelled field by field --
+    #: the shape grows with each kind of customization, and a schema that had
+    #: to be edited to let someone pin a page would be the wrong seam.
+    ui: Optional[Dict[str, Any]] = Field(
+        None, description="Per-user interface customization"
+    )
+
     memory_retention_days: int = Field(
         90, ge=1, le=365, description="Memory retention period in days"
     )
@@ -218,6 +227,9 @@ class UserPreferencesCreate(UserPreferencesBase):
 class UserPreferencesUpdate(BaseModel):
     """Schema for updating user preferences."""
 
+    ui: Optional[Dict[str, Any]] = Field(
+        None, description="Per-user interface customization; normalized on write"
+    )
     memory_retention_days: Optional[int] = Field(None, ge=1, le=365)
     max_memories_per_session: Optional[int] = Field(None, ge=1, le=100)
     memory_importance_threshold: Optional[float] = Field(None, ge=0.0, le=1.0)

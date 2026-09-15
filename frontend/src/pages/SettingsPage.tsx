@@ -5,10 +5,11 @@
 import React, { useState, useEffect } from 'react';
 import { useForm } from 'react-hook-form';
 import { useMutation, useQuery } from 'react-query';
-import { User, Lock, Bell, Palette, Shield, Bot } from 'lucide-react';
+import { User, Lock, Bell, Palette, Shield, Bot, Compass } from 'lucide-react';
 import { useSearchParams } from 'react-router-dom';
 
 import { useAuth } from '../contexts/AuthContext';
+import NavigationSettings from '../navigation/NavigationSettings';
 import { useNotifications } from '../contexts/NotificationContext';
 import { apiClient } from '../services/api';
 import { NotificationPreferences } from '../types';
@@ -31,6 +32,7 @@ function resolveSettingsTab(rawTab: string | null, userRole?: string): string {
     'llm',
     'notifications',
     'appearance',
+    'navigation',
     ...(userRole === 'admin' ? ['admin'] : []),
   ]);
   return allowed.has(tab) ? tab : 'profile';
@@ -47,6 +49,7 @@ const SettingsPage: React.FC = () => {
     { id: 'llm', name: 'LLM Settings', icon: Bot },
     { id: 'notifications', name: 'Notifications', icon: Bell },
     { id: 'appearance', name: 'Appearance', icon: Palette },
+    { id: 'navigation', name: 'Navigation', icon: Compass },
   ];
 
   // Add admin tab if user is admin
@@ -96,6 +99,7 @@ const SettingsPage: React.FC = () => {
           {activeTab === 'llm' && <LLMSettingsTab />}
           {activeTab === 'notifications' && <NotificationsTab />}
           {activeTab === 'appearance' && <AppearanceTab />}
+          {activeTab === 'navigation' && <NavigationSettings />}
           {activeTab === 'admin' && user?.role === 'admin' && <AdminTab />}
         </div>
       </div>

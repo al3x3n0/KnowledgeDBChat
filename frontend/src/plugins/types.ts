@@ -63,3 +63,13 @@ export interface PluginUiResponse {
 export const PANEL_SLOTS = ['job.detail', 'runs.header'] as const;
 
 export type PanelSlot = (typeof PANEL_SLOTS)[number];
+
+/** One workflow a plugin ships. */
+export interface ContributedWorkflowView {
+  id: string;
+  name: string;
+  description: string;
+  node_count: number;
+  edge_count: number;
+  tools_used: string[];
+}

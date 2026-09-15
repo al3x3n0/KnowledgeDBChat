@@ -231,6 +231,80 @@ async def contributions_for_user(
     return merged
 
 
+async def materialize_workflows(
+    db: AsyncSession, plugin: Plugin, user_id: Any
+) -> List[Tuple[str, str]]:
+    """Create this plugin's workflows for a user, and say what happened.
+
+    Returns ``(flow_id, outcome)`` pairs where outcome is ``"created"`` or
+    ``"kept"``. Installing creates; re-installing or updating **keeps** what is
+    already there, because a workflow is editable and somebody's changes are
+    worth more than a version bump. A plugin that silently reverted them would
+    be a reason never to install one.
+    """
+    from app.models.workflow import Workflow, WorkflowEdge, WorkflowNode
+    from app.services.plugin_flows import resolve_tool_names
+
+    manifest = plugin.manifest if isinstance(plugin.manifest, dict) else {}
+    flows = (manifest.get("contributes") or {}).get("workflows") or []
+    outcomes: List[Tuple[str, str]] = []
+
+    for flow in flows:
+        if not isinstance(flow, dict):
+            continue
+        resolved = resolve_tool_names(flow, slug=plugin.slug)
+
+        existing = (
+            await db.execute(
+                select(Workflow).where(
+                    Workflow.user_id == user_id,
+                    Workflow.origin_plugin_slug == plugin.slug,
+                    Workflow.origin_flow_id == resolved["id"],
+                )
+            )
+        ).scalar_one_or_none()
+        if existing is not None:
+            outcomes.append((resolved["id"], "kept"))
+            continue
+
+        workflow = Workflow(
+            user_id=user_id,
+            name=resolved["name"],
+            description=resolved.get("description") or None,
+            origin_plugin_slug=plugin.slug,
+            origin_flow_id=resolved["id"],
+            trigger_config={"type": "manual"},
+        )
+        db.add(workflow)
+        await db.flush()
+
+        for node in resolved["nodes"]:
+            db.add(
+                WorkflowNode(
+                    workflow_id=workflow.id,
+                    node_id=node["node_id"],
+                    node_type=node["node_type"],
+                    config=dict(node.get("config") or {}),
+                    position_x=int(node.get("position_x") or 0),
+                    position_y=int(node.get("position_y") or 0),
+                    builtin_tool=node.get("builtin_tool"),
+                )
+            )
+        for edge in resolved["edges"]:
+            db.add(
+                WorkflowEdge(
+                    workflow_id=workflow.id,
+                    source_node_id=edge["source"],
+                    target_node_id=edge["target"],
+                    condition=dict(edge.get("condition") or {}),
+                )
+            )
+        await db.flush()
+        outcomes.append((resolved["id"], "created"))
+
+    return outcomes
+
+
 async def ui_contributions_for_user(
     db: AsyncSession, user_id: Any
 ) -> List[Dict[str, Any]]:

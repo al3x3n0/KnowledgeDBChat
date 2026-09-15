@@ -116,6 +116,25 @@ class Workflow(Base):
     # }
     trigger_config = Column(JSON, nullable=True, default=dict)
 
+    # The plugin this workflow was created from, if it came from one.
+    #
+    # Kept so the editor can say where a workflow came from -- a flow that
+    # appeared without you building it, with no way to tell which plugin put it
+    # there, is indistinguishable from one you forgot writing. Null for a
+    # workflow somebody built themselves, which is most of them.
+    #
+    # A slug rather than a foreign key: the workflow is a *copy*, it outlives
+    # uninstalling the plugin, and it must not be deleted by a cascade when
+    # somebody removes the bundle that seeded it.
+    origin_plugin_slug = Column(String(32), nullable=True, index=True)
+
+    # The id the plugin's manifest gave this flow.
+    #
+    # Identity has to be something the owner cannot change. Matching a shipped
+    # workflow by *name* means renaming it makes the next install create a
+    # second copy -- observed, not theorised.
+    origin_flow_id = Column(String(60), nullable=True)
+
     # Timestamps
     created_at = Column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

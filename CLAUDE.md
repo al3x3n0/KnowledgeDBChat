@@ -243,6 +243,22 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   restated. Drafting never installs: the manifest comes back for review, with
   `notes` saying what had to be repaired, because one that validates is not
   one that does what was meant.
+
+  A plugin can also contribute **flows**. A workflow's `tool` node may name a
+  contributed tool (`workflow_engine._execute_contributed_tool` goes through
+  the same `PluginToolProvider` an autonomous job uses, so the two surfaces
+  cannot disagree about what a tool is), and `contributes.workflows`
+  (`services/plugin_flows.py`) ships whole graphs. Unlike tools and views a
+  shipped workflow is **materialized** — real `workflows`/`workflow_nodes`/
+  `workflow_edges` rows owned by the installing user — because it is an
+  editable object with executions attached. That decides the update rule:
+  installing creates, re-installing **keeps**, because somebody's edits are
+  worth more than a version bump. Identity is `origin_flow_id` (the manifest's
+  id) and never the name: matching on name meant renaming a flow made the next
+  install create a duplicate. Node types are read from
+  `workflow_engine.NODE_TYPES` rather than restated, and node ids are
+  **refused** when longer than the `String(50)` column rather than truncated —
+  shortening an identifier changes which node an edge names.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
 - **Pipelines** — a DAG of stages in `services/agent_pipeline_spec.py`, each stage a goal contract; tools are *derived* from the contract rather than named. A stage must declare a `job_type` its tools are allowed to run under: every coding tool is restricted to `analysis`/`coding` and the default is `research`, so a coding stage left at the default is planned with `clone_and_index_repo, apply_patch, run_repo_tests` and then cannot see one of them at runtime — measured, eight iterations of `search_documents` while the plan promised a repository fix. `validate()` now refuses that and names the job types that would work. Contract `validity.bounds` are checked on the **latest** finding of a *perishable* type, which is what makes "end with the tests passing" expressible: bounding every `test_result` at `failed == 0` is unsatisfiable, since the baseline run that finds the bug is red by definition, while requiring only that a `test_result` exists is satisfied by a red one. `"latest": false` restores the check-every-occurrence behaviour
 - **Workflows** — visual workflow builder (ReactFlow frontend, Zustand store), `workflow_engine.py` execution, workflow→synthesis conversion, LangGraph-based issue/PR graphs (`langgraph_issue_pr_service.py`).

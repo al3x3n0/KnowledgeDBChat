@@ -407,6 +407,31 @@ export const PluginsPanel: React.FC = () => {
                     {plugin.tools.map((tool) => (
                       <ToolRow key={tool.name} tool={tool} />
                     ))}
+
+                    {(plugin.workflows || []).length > 0 && (
+                      <div className="rounded border border-gray-200 bg-white px-3 py-2">
+                        <p className="text-[11px] font-medium uppercase tracking-wide text-gray-500">
+                          Workflows it will create
+                        </p>
+                        {/* Said before installing, because unlike a tool or a
+                            view this leaves editable objects in your account
+                            that outlive uninstalling the plugin. */}
+                        {(plugin.workflows || []).map((flow) => (
+                          <div key={flow.id} className="mt-1">
+                            <p className="text-xs text-gray-900">{flow.name}</p>
+                            <p className="text-[11px] text-gray-500">
+                              {flow.node_count} nodes, {flow.edge_count} edges
+                              {flow.tools_used.length > 0 &&
+                                ` — runs ${flow.tools_used.join(', ')}`}
+                            </p>
+                          </div>
+                        ))}
+                        <p className="mt-1.5 text-[11px] text-gray-500">
+                          Created once, on install. Your edits are kept if the
+                          plugin is updated, and they stay if you uninstall it.
+                        </p>
+                      </div>
+                    )}
                     {plugin.unavailable.length > 0 && (
                       <div className="rounded border border-amber-300 bg-amber-50 px-2 py-1.5">
                         {plugin.unavailable.map((u) => (

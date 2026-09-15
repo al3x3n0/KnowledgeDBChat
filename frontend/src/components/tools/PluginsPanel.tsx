@@ -18,10 +18,12 @@ import {
   ChevronRight,
   Globe,
   Lock,
+  Loader2,
   Package,
   Plus,
   Power,
   Trash2,
+  Wand2,
 } from 'lucide-react';
 import React, { useCallback, useEffect, useState } from 'react';
 import toast from 'react-hot-toast';
@@ -112,6 +114,9 @@ export const PluginsPanel: React.FC = () => {
   const [composing, setComposing] = useState(false);
   const [manifestText, setManifestText] = useState(EXAMPLE_MANIFEST);
   const [saving, setSaving] = useState(false);
+  const [wish, setWish] = useState('');
+  const [drafting, setDrafting] = useState(false);
+  const [draftNotes, setDraftNotes] = useState<string[]>([]);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -149,6 +154,34 @@ export const PluginsPanel: React.FC = () => {
       // The API refuses with the reason and apiClient shows it.
     } finally {
       setSaving(false);
+    }
+  };
+
+  const draft = async () => {
+    const description = wish.trim();
+    if (!description) {
+      toast.error('Say what the plugin should do');
+      return;
+    }
+    setDrafting(true);
+    setDraftNotes([]);
+    try {
+      const result = await apiClient.draftPlugin(description);
+      setDraftNotes(result.notes || []);
+      if (!result.manifest) {
+        toast.error('Could not draft a manifest from that — see the notes');
+        return;
+      }
+      setManifestText(JSON.stringify(result.manifest, null, 2));
+      toast.success(
+        result.attempts > 1
+          ? `Drafted after ${result.attempts} attempts — worth a read`
+          : 'Drafted — review it before creating'
+      );
+    } catch {
+      // apiClient surfaces the error.
+    } finally {
+      setDrafting(false);
     }
   };
 
@@ -203,6 +236,54 @@ export const PluginsPanel: React.FC = () => {
       {composing && (
         <div className="mt-3 rounded border border-gray-300 bg-white p-3">
           <label className="block text-xs font-medium uppercase tracking-wide text-gray-500">
+            Describe it
+          </label>
+          <div className="mt-1 flex gap-2">
+            <input
+              value={wish}
+              onChange={(e) => setWish(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter' && !drafting) draft();
+              }}
+              aria-label="Describe the plugin"
+              placeholder="A page in R&D listing my benchmark runs"
+              className="flex-1 rounded border border-gray-300 bg-white px-2 py-1.5 text-sm"
+            />
+            <button
+              onClick={draft}
+              disabled={drafting}
+              className="inline-flex flex-shrink-0 items-center gap-1.5 rounded bg-gray-200 px-3 py-1.5 text-sm text-gray-800 hover:bg-gray-300 disabled:opacity-50"
+            >
+              {drafting ? (
+                <Loader2 className="h-4 w-4 animate-spin" />
+              ) : (
+                <Wand2 className="h-4 w-4" />
+              )}
+              {drafting ? 'Drafting…' : 'Draft'}
+            </button>
+          </div>
+          <p className="mt-1 text-xs text-gray-500">
+            A draft is written, checked against the same validator that runs on
+            create, and its tools are run to confirm the views read a path that
+            exists. Nothing is installed until you press Create.
+          </p>
+
+          {draftNotes.length > 0 && (
+            <div className="mt-2 rounded border border-amber-300 bg-amber-50 px-2 py-1.5">
+              <p className="text-[11px] font-medium text-amber-800">
+                What it had to fix, or could not:
+              </p>
+              <ul className="mt-0.5 space-y-0.5">
+                {draftNotes.map((note, idx) => (
+                  <li key={idx} className="text-[11px] text-amber-800">
+                    {note}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
+
+          <label className="mt-3 block text-xs font-medium uppercase tracking-wide text-gray-500">
             Manifest
           </label>
           <textarea
@@ -210,6 +291,7 @@ export const PluginsPanel: React.FC = () => {
             onChange={(e) => setManifestText(e.target.value)}
             rows={16}
             spellCheck={false}
+            aria-label="Plugin manifest"
             className="mt-1 w-full rounded border border-gray-300 bg-white px-2 py-1.5 font-mono text-xs"
           />
           <div className="mt-2 flex justify-end gap-2">

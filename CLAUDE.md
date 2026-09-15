@@ -206,6 +206,43 @@ Beyond RAG chat, these are the main functional areas. When touching one, its end
   `extended_with()`, which refuses anything shadowing a built-in. **Chat is not
   wired yet** — it builds its menu from the global `AGENT_TOOLS` at three
   sites; plugin tools reach autonomous jobs only.
+
+  A plugin also contributes **UI, declaratively** (`services/plugin_ui.py`,
+  rendered by `frontend/src/plugins/`): `contributes.views` (kinds `table`,
+  `detail`, `stats`, `markdown`), `contributes.nav` (an entry appended to a
+  door, reachable at `/p/<slug>/<viewId>` — a manifest cannot choose its own
+  path, or an installed plugin could claim `/documents`), and
+  `contributes.panels` (into a named slot in an existing page). **No plugin
+  JavaScript runs in the app's origin**; first-party React renders plugin
+  *data*, markdown is rendered without raw-HTML support, and every value goes
+  through JSX text. Two rules are security boundaries checked against the
+  executor type rather than the manifest: a view may only be backed by a
+  **read-only** tool (rendering a page calls its source, so a write-backed
+  view would perform a write on every visit), and a view may only call **its
+  own plugin's** tools. `GET /plugins/me/ui` serves the contributions;
+  `POST /plugins/me/views/{slug}/{view}/data` runs one view's declared source
+  with arguments from the manifest — deliberately not a general "run any tool
+  from the browser" endpoint. Every name in `PANEL_SLOTS`, `NAV_DOORS` and
+  `ICONS` must exist on both sides;
+  `frontend/src/plugins/__tests__/contract.test.ts` reads the Python directly
+  and fails on drift, including a slot no page actually hosts.
+
+  A plugin can also be **written from a description**
+  (`services/plugin_author_service.py`, `POST /plugins/draft`, the Draft box in
+  the Plugins panel). It does two things a single model call cannot. It
+  *repairs against the real validator* — a refused draft goes back with the
+  refusal, and nothing re-implements a rule, so the thing that decides at
+  install is the thing that decides while drafting. And it *runs the tool it
+  wrote*: a drafted `transform` is executed and the view's declared `path`
+  resolved against the real output, because a path that misses renders an
+  empty table indistinguishable from a tool with nothing to say. Only
+  `transform` is dry-run — it touches nothing, whereas a webhook would reach
+  the network and an `llm_prompt` would spend a model call, neither of which
+  should happen because someone typed a sentence. The prompt's vocabularies
+  are read from `plugin_ui.py` and `custom_tool_types.py` rather than
+  restated. Drafting never installs: the manifest comes back for review, with
+  `notes` saying what had to be repaired, because one that validates is not
+  one that does what was meant.
 - **Tool governance** — `tool_registry.py` + `tool_policy_engine.py` + `models/tool_audit.py`; per-user tool policies, approval gates for dangerous tools (`AGENT_REQUIRE_TOOL_APPROVAL`, `AGENT_DANGEROUS_TOOLS`), full execution audit log, user-defined custom tools (optionally Docker-executed). Tool dispatch lives in `agent_tool_dispatch.py`. Every tool is **declared once** in `app/agent_core/tool_specs/` (one module per domain): the schema a model reads, the governance classification, which job types may call it, and — for measurement tools — what evidence it produces. `agent_tools.AGENT_TOOLS`, the catalog, the job-type policy and the evidence map are all views of those specs, so adding a tool is a handler plus a `ToolSpec`, not four files kept in step by hand. `tests/test_tool_specs.py` enforces it.
 - **Pipelines** — a DAG of stages in `services/agent_pipeline_spec.py`, each stage a goal contract; tools are *derived* from the contract rather than named. A stage must declare a `job_type` its tools are allowed to run under: every coding tool is restricted to `analysis`/`coding` and the default is `research`, so a coding stage left at the default is planned with `clone_and_index_repo, apply_patch, run_repo_tests` and then cannot see one of them at runtime — measured, eight iterations of `search_documents` while the plan promised a repository fix. `validate()` now refuses that and names the job types that would work. Contract `validity.bounds` are checked on the **latest** finding of a *perishable* type, which is what makes "end with the tests passing" expressible: bounding every `test_result` at `failed == 0` is unsatisfiable, since the baseline run that finds the bug is red by definition, while requiring only that a `test_result` exists is satisfied by a red one. `"latest": false` restores the check-every-occurrence behaviour
 - **Workflows** — visual workflow builder (ReactFlow frontend, Zustand store), `workflow_engine.py` execution, workflow→synthesis conversion, LangGraph-based issue/PR graphs (`langgraph_issue_pr_service.py`).

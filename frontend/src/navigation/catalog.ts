@@ -63,6 +63,8 @@ export interface NavItem {
   to: NavTo;
   icon: React.ComponentType<{ className?: string }>;
   visibility?: NavVisibility;
+  /** True when a plugin put this here rather than the application. */
+  contributed?: boolean;
 }
 
 export interface NavDoor {
@@ -175,6 +177,59 @@ export const NAV_CATALOG: NavDoor[] = [
 export interface CatalogContext {
   isAdmin: boolean;
   latexEnabled: boolean;
+}
+
+/** One destination a plugin contributed, ready to merge into a door. */
+export interface ContributedNavEntry {
+  door: string;
+  name: string;
+  /** The route it leads to: /p/<slug>/<viewId>. */
+  to: string;
+  icon: NavItem['icon'];
+}
+
+/**
+ * Fold contributed entries into the catalog.
+ *
+ * They go at the **end** of their door, after the first-party destinations.
+ * An installed plugin should be able to add to the navigation without
+ * rearranging it -- and a person who wants one at the top can pin it, which is
+ * a choice they made rather than one a manifest made for them.
+ *
+ * An entry naming a door that does not exist is dropped. Install-time
+ * validation refuses those, so reaching here means the door list changed under
+ * an installed plugin; losing one entry is better than losing the nav.
+ */
+export function withContributions(
+  doors: NavDoor[],
+  contributed: ContributedNavEntry[]
+): NavDoor[] {
+  if (!contributed.length) return doors;
+  const byDoor = new Map<string, ContributedNavEntry[]>();
+  contributed.forEach((entry) => {
+    const list = byDoor.get(entry.door) || [];
+    list.push(entry);
+    byDoor.set(entry.door, list);
+  });
+
+  return doors.map((door) => {
+    const extra = byDoor.get(door.id);
+    if (!extra || !extra.length) return door;
+    return {
+      ...door,
+      sections: [
+        ...door.sections,
+        ...extra.map((entry) => ({
+          key: entry.to,
+          name: entry.name,
+          to: entry.to,
+          icon: entry.icon,
+          visibility: 'always' as const,
+          contributed: true,
+        })),
+      ],
+    };
+  });
 }
 
 /** Which entry is offered to this user, before their own preferences apply. */

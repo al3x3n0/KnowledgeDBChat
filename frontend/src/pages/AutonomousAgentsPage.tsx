@@ -122,6 +122,7 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 import SkeletonList from '../components/common/SkeletonList';
 import CreateFromTemplateModal from '../components/agent/CreateFromTemplateModal';
 import NewCampaignModal from '../components/agent/NewCampaignModal';
+import PluginSlot from '../plugins/PluginSlot';
 import InboxMonitorModal from '../components/agent/InboxMonitorModal';
 import MonitorProfilesModal from '../components/agent/MonitorProfilesModal';
 import QuickStartClaudeBackendModal from '../components/agent/QuickStartClaudeBackendModal';
@@ -7573,6 +7574,9 @@ const AutonomousAgentsPage: React.FC = () => {
           </Button>
         </div>
       </div>
+
+      {/* Anything an installed plugin contributes to this page. */}
+      <PluginSlot slot="runs.header" compact={false} />
 
       {showSystemMap && (
         <div className="mb-6 rounded-lg border border-gray-200 bg-gray-100 p-4">

@@ -289,6 +289,7 @@ import {
   Plugin,
   PluginListResponse,
   ContributedToolsResponse,
+  PluginUiResponse,
   ResearchCampaign,
 } from '../types';
 
@@ -4639,6 +4640,49 @@ class ApiClient {
 
   async uninstallPlugin(pluginId: string): Promise<void> {
     await this.client.delete(`/api/v1/plugins/${pluginId}/install`);
+  }
+
+  /**
+   * Draft a manifest from a description.
+   *
+   * Drafting never installs anything: the manifest comes back for review,
+   * because one that validates is not the same as one that does what somebody
+   * meant, and only the person who asked can tell.
+   */
+  async draftPlugin(description: string): Promise<{
+    manifest: Record<string, any> | null;
+    notes: string[];
+    attempts: number;
+  }> {
+    const response = await this.client.post('/api/v1/plugins/draft', {
+      description,
+    });
+    return response.data;
+  }
+
+  /** The interface this user's enabled plugins contribute. */
+  async getMyPluginUi(): Promise<PluginUiResponse> {
+    const response = await this.client.get('/api/v1/plugins/me/ui');
+    return response.data;
+  }
+
+  /**
+   * Run the tool behind one view.
+   *
+   * Scoped to a declared view rather than taking a tool name, which is what
+   * keeps a rendered page from being able to call anything it likes: the
+   * arguments come from the manifest, not from here.
+   */
+  async readPluginViewData(
+    slug: string,
+    viewId: string
+  ): Promise<{ data: unknown; static: boolean }> {
+    const response = await this.client.post(
+      `/api/v1/plugins/me/views/${encodeURIComponent(slug)}/${encodeURIComponent(
+        viewId
+      )}/data`
+    );
+    return response.data;
   }
 
   /** Exactly what this user's enabled plugins currently offer an agent. */

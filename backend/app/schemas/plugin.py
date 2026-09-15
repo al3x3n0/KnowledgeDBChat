@@ -84,3 +84,25 @@ class PluginInstallRequest(BaseModel):
 class PluginInstallationUpdate(BaseModel):
     enabled: Optional[bool] = None
     settings: Optional[Dict[str, Any]] = None
+
+
+class PluginDraftRequest(BaseModel):
+    """Ask for a manifest in words."""
+
+    description: str = Field(
+        ..., min_length=3, max_length=4000, description="What the plugin should do"
+    )
+
+
+class PluginDraftResponse(BaseModel):
+    """A drafted manifest, and an account of how it got there.
+
+    `notes` is not decoration. A draft that took three attempts, or that
+    validates but reads a path its own tool does not produce, is one a person
+    should look harder at -- and saying so is more useful than presenting every
+    draft as equally trustworthy.
+    """
+
+    manifest: Optional[Dict[str, Any]] = None
+    notes: List[str] = Field(default_factory=list)
+    attempts: int = 0

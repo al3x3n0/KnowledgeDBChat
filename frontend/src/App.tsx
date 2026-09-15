@@ -7,6 +7,7 @@ import { AuthProvider, useAuth } from './contexts/AuthContext';
 import { NotificationProvider } from './contexts/NotificationContext';
 import Layout from './components/Layout';
 import LandingRedirect from './navigation/LandingRedirect';
+import PluginViewPage from './plugins/PluginViewPage';
 import LoadingSpinner from './components/common/LoadingSpinner';
 import ErrorBoundary from './components/common/ErrorBoundary';
 
@@ -132,6 +133,10 @@ const AppRoutes: React.FC = () => {
           }
         >
           <Route index element={<LandingRedirect />} />
+          {/* Every contributed page lives under this one route shape. A
+              manifest cannot choose its own path, or an installed plugin could
+              claim /documents and shadow a first-party page. */}
+          <Route path="p/:slug/:viewId" element={<PluginViewPage />} />
           <Route 
             path="chat" 
             element={

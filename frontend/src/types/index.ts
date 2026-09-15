@@ -103,6 +103,17 @@ export interface ContributedToolsResponse {
 
 /** A campaign the assistant drafted from what was asked, for review before
  *  anything runs. Shaped to post straight to POST /research/campaigns. */
+// Plugin UI contributions live in `src/plugins/types.ts`, beside the renderer
+// that consumes them. Re-exported here so `services/api.ts` can keep every
+// response type in one import.
+export type {
+  PluginUiContribution,
+  PluginUiResponse,
+  PluginViewSpec,
+  PluginNavEntry,
+  PluginPanel,
+} from '../plugins/types';
+
 export interface ResearchCampaignDraft {
   name: string;
   goal: string;

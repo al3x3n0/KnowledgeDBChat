@@ -107,15 +107,42 @@ def test_a_tool_declared_twice_is_refused():
         validate_manifest(duplicated)
 
 
-def test_a_manifest_carries_undelivered_contributions_through_unharmed():
-    """Dropping `nav` because this release cannot render it would silently
-    destroy half of a manifest written against the documented format."""
+def test_a_nav_entry_is_validated_rather_than_carried_through():
+    """UI contributions used to be passed through unvalidated, because nothing
+    rendered them yet. Now that something does, a wrong one is refused at
+    install with the reason -- which is the only point at which the author is
+    present to fix it. Carrying it through would produce a plugin that installs
+    cleanly and adds nothing, the failure this validator exists to prevent.
+    """
     with_ui = _manifest()
+    # A plausible mistake: the door's *label* rather than its id, and no view.
     with_ui["contributes"]["nav"] = [{"door": "R&D", "name": "Benchmarks"}]
+
+    with pytest.raises(ManifestError) as excinfo:
+        validate_manifest(with_ui)
+
+    assert "door" in str(excinfo.value)
+    assert "rnd" in str(excinfo.value), "the message must name the ids that work"
+
+
+def test_a_valid_nav_entry_survives_intact():
+    with_ui = _manifest()
+    with_ui["contributes"]["views"] = {
+        "board": {
+            "kind": "markdown",
+            "title": "About",
+            "text": "What this plugin does.",
+        }
+    }
+    with_ui["contributes"]["nav"] = [
+        {"door": "rnd", "name": "Benchmarks", "view": "board", "icon": "gauge"}
+    ]
 
     out = validate_manifest(with_ui)
 
-    assert out["contributes"]["nav"] == [{"door": "R&D", "name": "Benchmarks"}]
+    assert out["contributes"]["nav"] == [
+        {"door": "rnd", "name": "Benchmarks", "view": "board", "icon": "gauge"}
+    ]
 
 
 # --------------------------------------------------------------------------

@@ -16,6 +16,7 @@ jest.mock('../../../services/api', () => ({
     setPluginEnabled: jest.fn(),
     uninstallPlugin: jest.fn(),
     deletePlugin: jest.fn(),
+    draftPlugin: jest.fn(),
   },
 }));
 
@@ -99,7 +100,7 @@ describe('PluginsPanel', () => {
 
     await screen.findByText('Benchmarks');
     fireEvent.click(screen.getByRole('button', { name: /New Plugin/ }));
-    fireEvent.change(screen.getByRole('textbox'), {
+    fireEvent.change(screen.getByLabelText('Plugin manifest'), {
       target: { value: '{ not json' },
     });
     fireEvent.click(screen.getByRole('button', { name: 'Create' }));
@@ -128,5 +129,81 @@ describe('PluginsPanel', () => {
     fireEvent.click(await screen.findByText('Benchmarks'));
 
     expect(await screen.findByText(/already a built-in tool/)).toBeInTheDocument();
+  });
+
+  describe('drafting from a description', () => {
+    it('fills the manifest box with what was drafted', async () => {
+      apiClient.draftPlugin.mockResolvedValue({
+        manifest: { id: 'drafted', name: 'Drafted', version: '0.1.0' },
+        notes: [],
+        attempts: 1,
+      });
+      render(<PluginsPanel />);
+      await screen.findByText('Benchmarks');
+      fireEvent.click(screen.getByRole('button', { name: /New Plugin/ }));
+
+      fireEvent.change(
+        screen.getByLabelText('Describe the plugin'),
+        { target: { value: 'a run board' } }
+      );
+      fireEvent.click(screen.getByRole('button', { name: /^Draft$/ }));
+
+      await waitFor(() =>
+        expect(apiClient.draftPlugin).toHaveBeenCalledWith('a run board')
+      );
+      const box = screen.getByLabelText('Plugin manifest') as HTMLTextAreaElement;
+      await waitFor(() => expect(box.value).toContain('"id": "drafted"'));
+    });
+
+    it('shows what the draft had to fix, so a repaired draft gets read harder', async () => {
+      apiClient.draftPlugin.mockResolvedValue({
+        manifest: { id: 'drafted', name: 'Drafted' },
+        notes: ["Attempt 1: id 'Draft-ed' must be lowercase"],
+        attempts: 2,
+      });
+      render(<PluginsPanel />);
+      await screen.findByText('Benchmarks');
+      fireEvent.click(screen.getByRole('button', { name: /New Plugin/ }));
+      fireEvent.change(
+        screen.getByLabelText('Describe the plugin'),
+        { target: { value: 'a run board' } }
+      );
+      fireEvent.click(screen.getByRole('button', { name: /^Draft$/ }));
+
+      expect(await screen.findByText(/must be lowercase/)).toBeInTheDocument();
+      expect(toast.success).toHaveBeenCalledWith(
+        expect.stringContaining('2 attempts')
+      );
+    });
+
+    it('does not install anything by drafting', async () => {
+      apiClient.draftPlugin.mockResolvedValue({
+        manifest: { id: 'drafted' },
+        notes: [],
+        attempts: 1,
+      });
+      render(<PluginsPanel />);
+      await screen.findByText('Benchmarks');
+      fireEvent.click(screen.getByRole('button', { name: /New Plugin/ }));
+      fireEvent.change(
+        screen.getByLabelText('Describe the plugin'),
+        { target: { value: 'x' } }
+      );
+      fireEvent.click(screen.getByRole('button', { name: /^Draft$/ }));
+
+      await waitFor(() => expect(apiClient.draftPlugin).toHaveBeenCalled());
+      expect(apiClient.createPlugin).not.toHaveBeenCalled();
+      expect(apiClient.installPlugin).not.toHaveBeenCalled();
+    });
+
+    it('refuses to draft from nothing', async () => {
+      render(<PluginsPanel />);
+      await screen.findByText('Benchmarks');
+      fireEvent.click(screen.getByRole('button', { name: /New Plugin/ }));
+      fireEvent.click(screen.getByRole('button', { name: /^Draft$/ }));
+
+      await waitFor(() => expect(toast.error).toHaveBeenCalled());
+      expect(apiClient.draftPlugin).not.toHaveBeenCalled();
+    });
   });
 });

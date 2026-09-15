@@ -15,8 +15,10 @@ import { useMutation, useQuery, useQueryClient } from 'react-query';
 import { useAuth } from '../contexts/AuthContext';
 import { apiClient } from '../services/api';
 import type { LatexStatusResponse } from '../types';
-import { buildCatalog, navKey } from './catalog';
-import type { NavDoor, NavItem } from './catalog';
+import { pluginIcon } from '../plugins/navIcons';
+import { usePluginUi } from '../plugins/usePluginUi';
+import { buildCatalog, navKey, withContributions } from './catalog';
+import type { ContributedNavEntry, NavDoor, NavItem } from './catalog';
 import { applyNavPreferences, landingPath } from './preferences';
 import type { NavPreferences, UiPreferences } from './preferences';
 
@@ -76,13 +78,31 @@ export function useNavigation(): Navigation {
     return ui.nav || {};
   }, [preferences]);
 
+  const { contributions } = usePluginUi();
+
+  const contributedNav: ContributedNavEntry[] = useMemo(
+    () =>
+      contributions.flatMap((plugin) =>
+        (plugin.nav || []).map((entry) => ({
+          door: entry.door,
+          name: entry.name,
+          to: `/p/${plugin.slug}/${entry.view}`,
+          icon: pluginIcon(entry.icon),
+        }))
+      ),
+    [contributions]
+  );
+
   const catalog = useMemo(
     () =>
-      buildCatalog({
-        isAdmin: user?.role === 'admin',
-        latexEnabled: Boolean(latexStatus?.enabled),
-      }),
-    [user?.role, latexStatus?.enabled]
+      withContributions(
+        buildCatalog({
+          isAdmin: user?.role === 'admin',
+          latexEnabled: Boolean(latexStatus?.enabled),
+        }),
+        contributedNav
+      ),
+    [user?.role, latexStatus?.enabled, contributedNav]
   );
 
   const activeItem = useMemo(() => {

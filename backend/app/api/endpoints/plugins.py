@@ -27,6 +27,8 @@ from app.models.user import User
 from app.schemas.plugin import (
     ContributedToolView,
     PluginCreate,
+    PluginDraftRequest,
+    PluginDraftResponse,
     PluginInstallationUpdate,
     PluginInstallRequest,
     PluginListResponse,
@@ -34,6 +36,8 @@ from app.schemas.plugin import (
     PluginUpdate,
 )
 from app.services import plugin_registry
+from app.services.custom_tool_service import CustomToolService, ToolExecutionError
+from app.services.plugin_author_service import draft_manifest
 from app.services.plugin_manifest import ManifestError, validate_manifest
 
 router = APIRouter()
@@ -310,6 +314,106 @@ async def uninstall_plugin(
         return
     await db.delete(installation)
     await db.commit()
+
+
+@router.post("/draft", response_model=PluginDraftResponse)
+async def draft_plugin(
+    payload: PluginDraftRequest,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Draft a manifest from a description. Drafting never installs anything.
+
+    The result is handed back for review rather than created, because a
+    manifest that validates is not the same as a manifest that does what
+    somebody meant -- and the only person who can tell is the one who asked.
+    """
+    if not bool(getattr(settings, "PLUGINS_USER_AUTHORING_ENABLED", True)):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Authoring plugins is disabled on this deployment "
+                "(PLUGINS_USER_AUTHORING_ENABLED=false)."
+            ),
+        )
+    result = await draft_manifest(
+        payload.description, user=current_user, db=db, user_id=current_user.id
+    )
+    return PluginDraftResponse(**result)
+
+
+@router.get("/me/ui", response_model=Dict[str, Any])
+async def my_contributed_ui(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """The interface this user's enabled plugins contribute.
+
+    Nav entries, views and panels as declared -- already validated at install,
+    so the renderer can trust the shape and does not re-check it. What it must
+    not trust is the *content*: every string here was written by whoever
+    authored the plugin and is rendered as text, never as markup.
+    """
+    return {
+        "plugins": await plugin_registry.ui_contributions_for_user(db, current_user.id)
+    }
+
+
+@router.post("/me/views/{slug}/{view_id}/data", response_model=Dict[str, Any])
+async def read_view_data(
+    slug: str,
+    view_id: str,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Run the tool that backs one view, and return what it produced.
+
+    Deliberately *not* a general "run a plugin tool from the browser"
+    endpoint. The only thing callable here is a tool a view already declares
+    as its source -- which install-time validation guarantees is read-only and
+    belongs to the plugin that declared the view. A general runner would let a
+    page call any contributed tool with any arguments, which is a much larger
+    surface for the same feature.
+
+    Arguments come from the manifest, not the request, for the same reason.
+    """
+    for contribution in await plugin_registry.ui_contributions_for_user(
+        db, current_user.id
+    ):
+        if contribution["slug"] != slug:
+            continue
+        view = (contribution["views"] or {}).get(view_id)
+        if not view:
+            break
+
+        source = view.get("source")
+        if not source:
+            # A static view -- markdown with its own text. Nothing to run.
+            return {"data": None, "static": True}
+
+        tool_name = contributed_tool_name(slug, str(source.get("tool") or ""))
+        contributed = await plugin_registry.resolve_tool(db, current_user.id, tool_name)
+        if contributed is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"This view is backed by {tool_name!r}, which is no longer available",
+            )
+
+        try:
+            result = await CustomToolService().execute_tool(
+                tool=contributed,
+                inputs=dict(source.get("params") or {}),
+                user=current_user,
+                db=db,
+            )
+        except ToolExecutionError as exc:
+            # A policy denial or approval gate reaches here. Surfaced as 403
+            # rather than 500: the request was well-formed and was refused.
+            raise HTTPException(status_code=403, detail=str(exc))
+
+        return {"data": result.get("output"), "static": False}
+
+    raise HTTPException(status_code=404, detail="No such view")
 
 
 @router.get("/me/tools", response_model=Dict[str, Any])

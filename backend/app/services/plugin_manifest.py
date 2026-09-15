@@ -24,6 +24,7 @@ from typing import Any, Dict, Iterable, List, Optional
 from app.agent_core import tool_specs
 from app.agent_core.plugin_specs import contributed_tool_name, reject_contributed_name
 from app.services.custom_tool_types import allowed_custom_tool_types
+from app.services.plugin_ui import UiContributionError, validate_ui
 
 #: A slug is lowercase so a tool's full name is predictable from the manifest,
 #: and short because it is spent out of a 64-character function-name budget.
@@ -192,6 +193,13 @@ def validate_manifest(
             f"under one of {', '.join(sorted(CONTRIBUTION_KEYS))}"
         )
 
+    try:
+        ui = validate_ui(contributes, tools=tools)
+    except UiContributionError as exc:
+        # Same class of refusal, so a caller catching ManifestError sees every
+        # reason a manifest was rejected rather than two kinds of failure.
+        raise ManifestError(str(exc))
+
     return {
         "id": slug,
         "name": name,
@@ -199,12 +207,9 @@ def validate_manifest(
         "description": str(manifest.get("description") or "").strip(),
         "contributes": {
             "tools": tools,
-            # Carried through unvalidated beyond their shape: this release does
-            # not render them, and dropping them would silently destroy part of
-            # a manifest written against the documented format.
-            "nav": contributes.get("nav") or [],
-            "views": contributes.get("views") or {},
-            "panels": contributes.get("panels") or [],
+            "nav": ui["nav"],
+            "views": ui["views"],
+            "panels": ui["panels"],
         },
         "settings": manifest.get("settings") or {},
     }

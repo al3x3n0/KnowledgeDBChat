@@ -231,6 +231,43 @@ async def contributions_for_user(
     return merged
 
 
+async def ui_contributions_for_user(
+    db: AsyncSession, user_id: Any
+) -> List[Dict[str, Any]]:
+    """The interface each of this user's enabled plugins contributes.
+
+    Returned per plugin rather than merged into one list, because every
+    contribution has to carry the slug it came from: a view names a tool by the
+    author's own short name, and only the plugin it belongs to says which
+    namespaced tool that actually is.
+    """
+    out: List[Dict[str, Any]] = []
+    if user_id is None:
+        return out
+
+    for plugin, _installation in await installations_for(
+        db, user_id, enabled_only=True
+    ):
+        manifest = plugin.manifest if isinstance(plugin.manifest, dict) else {}
+        contributes = manifest.get("contributes") or {}
+        nav = contributes.get("nav") or []
+        views = contributes.get("views") or {}
+        panels = contributes.get("panels") or []
+        if not nav and not views and not panels:
+            continue
+        out.append(
+            {
+                "plugin_id": str(plugin.id),
+                "slug": plugin.slug,
+                "name": plugin.name,
+                "nav": nav,
+                "views": views,
+                "panels": panels,
+            }
+        )
+    return out
+
+
 async def resolve_tool(
     db: AsyncSession, user_id: Any, tool_name: str
 ) -> Optional[ContributedTool]:

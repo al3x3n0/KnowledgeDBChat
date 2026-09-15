@@ -73,6 +73,7 @@ import AIHubBundleSection from './AIHubBundleSection';
 import JobMemoriesSection from './JobMemoriesSection';
 import RunOutputSection from './RunOutputSection';
 import Button from '../common/Button';
+import PluginSlot from '../../plugins/PluginSlot';
 import LoadingSpinner from '../common/LoadingSpinner';
 import AutonomousRndVerificationPanel from './AutonomousRndVerificationPanel';
 import JobExecutionGraphSection from './JobExecutionGraphSection';
@@ -1726,6 +1727,10 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
               <p className="text-sm text-red-600 bg-red-50 rounded-lg p-3">{job.error}</p>
             </div>
           )}
+
+          {/* Anything an installed plugin contributes to this page. Renders
+              nothing at all when no plugin does, which is the normal case. */}
+          <PluginSlot slot="job.detail" />
 
           {/* Results summary */}
           {job.results && (

@@ -7,7 +7,7 @@ it. Nothing is declared here any more, so nothing here can disagree with the
 catalog, the policy or the evidence map.
 """
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional, Sequence
 
 from app.agent_core import tool_specs
 
@@ -15,19 +15,35 @@ from app.agent_core import tool_specs
 AGENT_TOOLS: List[Dict[str, Any]] = tool_specs.schemas()
 
 
-def get_tools_description() -> str:
-    """Generate a text description of available tools for the LLM prompt."""
+def get_tools_description(extra: Optional[Sequence[Dict[str, Any]]] = None) -> str:
+    """Generate a text description of available tools for the LLM prompt.
+
+    ``extra`` is what the *caller's* plugins contribute. It is a parameter
+    rather than a lookup because `AgentService` is a module-level singleton:
+    caching one user's contributed tools on it would offer them to the next
+    person who opened a chat.
+    """
     descriptions = []
-    for tool in AGENT_TOOLS:
-        params = tool["parameters"]["properties"]
+    for tool in list(AGENT_TOOLS) + list(extra or []):
+        # Read defensively. Every built-in schema is hand-written here and has
+        # a type and a description on every property; a *contributed* one is
+        # whatever its author typed, and the first tool missing a key would
+        # otherwise raise while building the prompt -- taking down the whole
+        # turn, for every tool, because one plugin omitted a field.
+        schema = tool.get("parameters") or {}
+        params = schema.get("properties") or {}
+        required = set(schema.get("required") or [])
         param_list = []
         for name, info in params.items():
-            required = name in tool["parameters"].get("required", [])
-            param_str = f"  - {name} ({info['type']}{'*' if required else ''}): {info['description']}"
-            param_list.append(param_str)
+            info = info if isinstance(info, dict) else {}
+            kind = info.get("type") or "any"
+            note = info.get("description") or "(no description)"
+            param_list.append(
+                f"  - {name} ({kind}{'*' if name in required else ''}): {note}"
+            )
 
-        tool_desc = f"""Tool: {tool['name']}
-Description: {tool['description']}
+        tool_desc = f"""Tool: {tool.get('name', '')}
+Description: {tool.get('description') or '(no description)'}
 Parameters:
 {chr(10).join(param_list) if param_list else '  (no parameters)'}"""
         descriptions.append(tool_desc)

@@ -389,6 +389,77 @@ async def _triage(
     return {"dropped": dropped, "targets": targets, "by_id": by_id}
 
 
+async def _all_findings(
+    db: AsyncSession, campaign: ResearchCampaign
+) -> List[Dict[str, Any]]:
+    """Every finding this campaign's jobs produced, with its item attached.
+
+    Carrying the item title matters: a campaign's findings come from several
+    jobs that each answered a different question, and a flat list of numbers
+    with no indication of what each was measuring is not something a
+    conclusion can be drawn from honestly.
+    """
+    collected: List[Dict[str, Any]] = []
+    for item in await _items(db, campaign):
+        if item.job_id is None:
+            continue
+        job = (
+            await db.execute(select(AgentJob).where(AgentJob.id == item.job_id))
+        ).scalar_one_or_none()
+        if job is None:
+            continue
+        for finding in _findings_of(job):
+            enriched = dict(finding)
+            enriched.setdefault("subject", item.title)
+            collected.append(enriched)
+    return collected
+
+
+async def conclude_campaign(
+    db: AsyncSession, campaign: ResearchCampaign
+) -> Dict[str, Any]:
+    """Answer the campaign's goal from what its jobs found, and store it.
+
+    A campaign exists to settle a goal. Ending without saying what the answer
+    turned out to be makes it a batch runner with extra steps -- and that is
+    what it was: `conclusion` was declared on the model, returned by the API,
+    and written by nothing, so every campaign that ever completed did so
+    silently.
+
+    Never raises. A campaign that cannot be concluded is still a campaign that
+    finished, and losing the whole finalization over the summary would be the
+    wrong trade.
+    """
+    from app.services.agent_run_synthesis_service import conclude, conclusion_line
+    from app.services.llm_service import LLMService
+
+    findings = await _all_findings(db, campaign)
+
+    # The budget running out is something the caller knows and no individual
+    # finding records. Saying it here is what keeps "we did not find out" from
+    # being confused with "we found out that no".
+    extra_gaps: List[str] = []
+    if str(campaign.status) == CampaignStatus.EXHAUSTED:
+        pending = len(await _items(db, campaign, CampaignItemStatus.PENDING))
+        extra_gaps.append(
+            f"The campaign ran out of budget after {campaign.jobs_launched} job(s) "
+            f"with {pending} question(s) still unanswered, so this is partial."
+        )
+
+    result = await conclude(
+        LLMService(),
+        goal=str(campaign.goal or ""),
+        findings=findings,
+        db=db,
+        snapshot_context={"campaign_id": str(campaign.id), "phase": "conclusion"},
+        extra_gaps=extra_gaps,
+    )
+
+    campaign.conclusion = conclusion_line(result) or None
+    campaign.conclusion_detail = result
+    return result
+
+
 async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any]:
     """Do the next thing this campaign is due, and say what that was.
 
@@ -440,6 +511,12 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
         campaign.completed_at = datetime.utcnow()
         action = "exhausted"
 
+    if action in ("completed", "exhausted"):
+        # The last thing a campaign does is say what it found out. Both endings
+        # get one: "we ran out of budget" is a different answer from "we
+        # finished", and neither is the same as no answer at all.
+        await conclude_campaign(db, campaign)
+
     campaign.updated_at = datetime.utcnow()
     await db.flush()
 
@@ -464,6 +541,7 @@ async def advance(db: AsyncSession, campaign: ResearchCampaign) -> Dict[str, Any
         "running": len(running) + (1 if launched_job else 0),
         "jobs_launched": int(campaign.jobs_launched or 0),
         "budget": int(campaign.max_jobs or 0),
+        "conclusion": campaign.conclusion,
     }
 
 

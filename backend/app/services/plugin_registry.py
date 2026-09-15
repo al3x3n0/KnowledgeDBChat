@@ -42,6 +42,15 @@ class ContributedTool:
 
     id: str
     name: str
+    #: What its author said it does.
+    #:
+    #: Omitting this was a silent loss: `spec_from_user_tool` reads it off this
+    #: object, so every contributed tool reached the model described as
+    #: "User-contributed transform tool" and was therefore indistinguishable
+    #: from every other of its type -- while the catalogue UI, which reads the
+    #: manifest directly, showed the real text. The description is what a model
+    #: chooses between tools on.
+    description: str
     tool_type: str
     config: Dict[str, Any]
     parameters_schema: Dict[str, Any]
@@ -164,6 +173,7 @@ def contributions_of(
         holder = ContributedTool(
             id=f"{plugin.slug}:{declared}",
             name=contributed_tool_name(plugin.slug, declared),
+            description=str(entry.get("description") or ""),
             tool_type=str(entry.get("tool_type") or ""),
             config=dict(entry.get("config") or {}),
             parameters_schema=dict(entry.get("parameters_schema") or {}),

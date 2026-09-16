@@ -248,6 +248,37 @@ describe('AgentControlPlanePage', () => {
     });
   });
 
+  test('lays out in three columns at xl and two at lg, never one', async () => {
+    // Three columns need 1280px. Below that the page used to drop straight to
+    // a single stacked column, so a 1366-wide laptop scrolled through runs,
+    // then graph, then inspector, one after another.
+    //
+    // Asserted on the class string rather than on rendered geometry because
+    // jsdom applies no CSS: what can go wrong here is a *name*, and the way it
+    // goes wrong is silent. Tailwind's JIT scans source for complete class
+    // names, so "simplifying" these ternaries into a template literal compiles
+    // to a class that exists in the markup and in no stylesheet -- the grid
+    // falls back to one column and nothing reports it.
+    apiClient.getAgentControlRuns.mockResolvedValue({
+      items: [makeRun()],
+      total: 1,
+    });
+    apiClient.getAgentControlRun.mockResolvedValue(makeDetail());
+    apiClient.getAgentControlReviews.mockResolvedValue({ items: [], total: 0 });
+
+    const { container } = renderPage();
+    await screen.findByText('Root control run');
+
+    const grid = container.querySelector('[class*="xl:grid-cols-"]');
+    expect(grid).not.toBeNull();
+    const classes = grid!.className;
+
+    expect(classes).toMatch(/xl:grid-cols-\[\d+px_minmax\(0,1fr\)_\d+px\]/);
+    expect(classes).toMatch(/lg:grid-cols-\[\d+px_minmax\(0,1fr\)\]/);
+    // A template literal would leave "${" in the attribute.
+    expect(classes).not.toContain('${');
+  });
+
   test('renders run list and auto-selects the first visible run', async () => {
     apiClient.getAgentControlRuns.mockResolvedValue({
       items: [makeRun()],

@@ -147,6 +147,18 @@ export interface ResearchCampaign {
   updated_at?: string | null;
   completed_at?: string | null;
   summary?: Record<string, any> | null;
+  /** The conclusion with its working: evidence, gaps, confidence. */
+  conclusion_detail?: {
+    answer?: string | null;
+    confidence?: string;
+    evidence?: string[];
+    gaps?: string[];
+    generated_by?: string;
+    findings_considered?: number;
+    findings_total?: number;
+  } | null;
+  /** The questions it is working through. Present on the detail response only. */
+  items?: ResearchCampaignItem[];
 }
 
 export interface SourceDocument {

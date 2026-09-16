@@ -10,7 +10,7 @@ Scoped by user like every other resource here; a campaign belongs to whoever
 started it.
 """
 
-from typing import List
+from typing import Any, Dict, List
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -20,10 +20,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.endpoints.auth import get_current_active_user
 from app.core.database import get_db
-from app.models.research_campaign import ResearchCampaign
+from app.models.research_campaign import ResearchCampaign, ResearchCampaignItem
 from app.models.user import User
 from app.schemas.research_campaign import (
     ResearchCampaignCreate,
+    ResearchCampaignItemResponse,
     ResearchCampaignListResponse,
     ResearchCampaignResponse,
 )
@@ -33,9 +34,14 @@ router = APIRouter()
 
 
 async def _respond(
-    campaign: ResearchCampaign, db: AsyncSession
+    campaign: ResearchCampaign, db: AsyncSession, *, with_items: bool = False
 ) -> ResearchCampaignResponse:
-    """A campaign plus the service's own view of its progress."""
+    """A campaign plus the service's own view of its progress.
+
+    `with_items` is off for the list: loading every question of every campaign
+    to render a page that shows none of them is a query per campaign for
+    nothing.
+    """
     base = ResearchCampaignResponse.model_validate(campaign)
     try:
         summary = await research_campaign_service.summarize(db, campaign)
@@ -44,7 +50,19 @@ async def _respond(
         # whole response over a progress figure would be the wrong trade.
         logger.warning(f"Could not summarize campaign {campaign.id}: {exc}")
         summary = None
-    return base.model_copy(update={"summary": summary})
+    update: Dict[str, Any] = {"summary": summary}
+    if with_items:
+        rows = (
+            await db.execute(
+                select(ResearchCampaignItem)
+                .where(ResearchCampaignItem.campaign_id == campaign.id)
+                .order_by(ResearchCampaignItem.created_at)
+            )
+        ).scalars()
+        update["items"] = [
+            ResearchCampaignItemResponse.model_validate(row) for row in rows
+        ]
+    return base.model_copy(update=update)
 
 
 @router.post(
@@ -127,4 +145,4 @@ async def get_research_campaign(
     ).scalar_one_or_none()
     if campaign is None:
         raise HTTPException(status_code=404, detail="Campaign not found")
-    return await _respond(campaign, db)
+    return await _respond(campaign, db, with_items=True)

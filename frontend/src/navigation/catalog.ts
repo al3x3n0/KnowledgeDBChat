@@ -40,6 +40,7 @@ import {
   MessageCircle,
   Network,
   Presentation,
+  Rocket,
   Search,
   Server,
   Settings,
@@ -133,6 +134,7 @@ export const NAV_CATALOG: NavDoor[] = [
     icon: Zap,
     sections: [
       item('Runs', '/autonomous-agents', Zap),
+      item('Campaigns', '/campaigns', Rocket),
       item('Control Plane', '/agent-control-plane', Activity),
       item('Pipelines', '/pipelines', GitBranch),
       item('Workflows', '/workflows', Workflow),

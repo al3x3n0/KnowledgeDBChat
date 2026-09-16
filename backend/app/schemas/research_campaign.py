@@ -58,6 +58,10 @@ class ResearchCampaignResponse(BaseModel):
     #: An answer with no way to see what it rested on is one nobody should
     #: act on.
     conclusion_detail: Optional[Dict[str, Any]] = None
+
+    #: The questions this campaign is working through. Present on the detail
+    #: response, empty on the list.
+    items: List[ResearchCampaignItemResponse] = Field(default_factory=list)
     created_at: datetime
     updated_at: Optional[datetime] = None
     completed_at: Optional[datetime] = None

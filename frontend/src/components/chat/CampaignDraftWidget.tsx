@@ -75,12 +75,16 @@ const CampaignDraftWidget: React.FC<CampaignDraftWidgetProps> = ({ draft }) => {
           {items.length} seed question{items.length === 1 ? '' : 's'}, up to {budget}{' '}
           job{budget === 1 ? '' : 's'}. It advances on its own from here.
         </p>
+        {/* To the campaign, not to the job list. The jobs are visible there
+            without any sign of which campaign asked for them; the campaign
+            page shows the questions it is working through and, when it ends,
+            what it concluded. */}
         <button
           type="button"
-          onClick={() => navigate('/autonomous-agents')}
+          onClick={() => navigate('/campaigns')}
           className="mt-2 text-xs text-primary-600 hover:text-primary-700 underline"
         >
-          Watch its jobs
+          Follow the campaign
         </button>
       </div>
     );

@@ -1701,8 +1701,15 @@ async def _process_message_with_streaming(
             )
 
             # Step 1: Plan tool calls
+            #
+            # Streaming chat plans through a different entry point than the
+            # agent-routed path, and offering a user's contributed tools on one
+            # and not the other is the "works over there" failure: the same
+            # question typed into the same box would find the tool or not,
+            # depending on which handler took it.
+            contributed = await agent_service._contributed_tool_schemas(db, user.id)
             tool_calls = await agent_service._plan_tool_calls(
-                message, history, user_settings
+                message, history, user_settings, contributed=contributed
             )
 
             # Send planning result

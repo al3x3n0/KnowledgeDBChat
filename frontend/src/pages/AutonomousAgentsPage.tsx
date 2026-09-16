@@ -95,7 +95,6 @@ import type {
   AgentJobStatus,
   AgentJobChainDefinition,
   AgentJobChainStatus,
-  AgentJobFromChainCreate,
   ResearchInboxItem,
   ResearchInboxItemStatus,
   ResearchMonitorAnalyticsResponse,
@@ -160,6 +159,12 @@ import {
   DOMAIN_TRACK_OPTIONS,
   splitUniqueLines,
 } from './autonomousAgentQuickStarts';
+import {
+  useCreateAgentJobMutation,
+  useCreateJobFromChainMutation,
+  useFollowUpQueueActionMutation,
+  useUpsertMonitorProfileMutation,
+} from '../components/agent/agentJobMutations';
 
 // Tabs load when their tab is opened, not when the page is.
 //
@@ -2906,19 +2911,7 @@ const AutonomousAgentsPage: React.FC = () => {
 
 
 
-  const upsertMonitorProfileMutation = useMutation(
-    (data: { customer?: string; muted_tokens?: string[]; muted_patterns?: string[]; notes?: string; merge_lists?: boolean }) =>
-      apiClient.upsertResearchMonitorProfile(data),
-    {
-      onSuccess: () => {
-        toast.success('Monitor profile updated');
-        queryClient.invalidateQueries(['research-monitor-profiles']);
-      },
-      onError: (error: any) => {
-        toast.error(error.message || 'Failed to update monitor profile');
-      },
-    }
-  );
+  const upsertMonitorProfileMutation = useUpsertMonitorProfileMutation();
 
 
 
@@ -2948,21 +2941,13 @@ const AutonomousAgentsPage: React.FC = () => {
 
 
 
-  const createMutation = useMutation(
-    (data: AgentJobCreate) => apiClient.createAgentJob(data),
-    {
-      onSuccess: (job) => {
-        invalidateAgentRunQueries(queryClient);
-        toast.success('Job created');
-        setShowCreateModal(false);
-        setActiveTab('jobs');
-        setSelectedJob(job);
-      },
-      onError: (error: any) => {
-        toast.error(error.message || 'Create failed');
-      },
-    }
-  );
+  const createMutation = useCreateAgentJobMutation({
+    onCreated: (job) => {
+      setShowCreateModal(false);
+      setActiveTab('jobs');
+      setSelectedJob(job);
+    },
+  });
 
   const createCodingBacklogMutation = useMutation(
     (data: CodingBacklogItemCreate) => apiClient.createCodingBacklogItem(data),
@@ -3578,21 +3563,13 @@ const AutonomousAgentsPage: React.FC = () => {
     }
   );
 
-  const createFromChainMutation = useMutation(
-    (data: AgentJobFromChainCreate) => apiClient.createJobFromChain(data),
-    {
-      onSuccess: (job) => {
-        invalidateAgentRunQueries(queryClient);
-        toast.success('Chain started');
-        setStartFromChain(null);
-        setActiveTab('jobs');
-        setSelectedJob(job);
-      },
-      onError: (error: any) => {
-        toast.error(error.message || 'Failed to start chain');
-      },
-    }
-  );
+  const createFromChainMutation = useCreateJobFromChainMutation({
+    onCreated: (job) => {
+      setStartFromChain(null);
+      setActiveTab('jobs');
+      setSelectedJob(job);
+    },
+  });
 
 
   const isCompilerQueueItem = useCallback((item: AgentCheckpointQueueItem) => (
@@ -3734,86 +3711,19 @@ const AutonomousAgentsPage: React.FC = () => {
 
 
 
-  const followUpQueueActionMutation = useMutation(
-    ({
-      inbox_item_id,
-      domain_research_profile_id,
-      profile_opportunity_id,
-      portfolio_id,
-      portfolio_opportunity_id,
-      action,
-      operator_note,
-      navigateOnLaunch,
-      refreshTarget,
-      reviewRowKey,
-    }: {
-      inbox_item_id?: string;
-      domain_research_profile_id?: string;
-      profile_opportunity_id?: string;
-      portfolio_id?: string;
-      portfolio_opportunity_id?: string;
-      action: 'approve_launch' | 'reject_launch';
-      operator_note?: string;
-      navigateOnLaunch?: boolean;
-      refreshTarget?: 'domain' | 'fleet';
-      reviewRowKey?: string;
-    }) => apiClient.actionAgentCheckpointQueueFollowUp({
-      inbox_item_id,
-      domain_research_profile_id,
-      profile_opportunity_id,
-      portfolio_id,
-      portfolio_opportunity_id,
-      action,
-      operator_note,
-    }),
-    {
-      onMutate: (variables) => {
-        if (variables.reviewRowKey) {
-          setActiveFollowUpReviewKey(variables.reviewRowKey);
-        }
-      },
-      onSuccess: (response, variables) => {
-        invalidateAgentRunQueries(queryClient, [
-          'research-inbox',
-          'research-inbox-stats',
-          'research-portfolios',
-          'domain-research-profiles',
-        ]);
-        if (variables.refreshTarget === 'domain') {
-          void refetchDomainProfiles();
-        } else if (variables.refreshTarget === 'fleet') {
-          void refetchResearchPortfolios();
-        }
-        if (variables.reviewRowKey) {
-          const reviewKey = String(variables.reviewRowKey);
-          setFollowUpReviewNoteDrafts((prev) => {
-            if (!(reviewKey in prev)) return prev;
-            const next = { ...prev };
-            delete next[reviewKey];
-            return next;
-          });
-        }
-        if (response.follow_up_job_id) {
-          toast.success('Follow-up launched');
-          if (variables.navigateOnLaunch !== false) {
-            setActiveTab('jobs');
-            navigate(buildAutonomousAgentsUrl(String(response.follow_up_job_id)), { replace: true });
-            return;
-          }
-        } else {
-          toast.success(response.detail || 'Follow-up decision recorded');
-        }
-      },
-      onError: (error: any) => {
-        toast.error(error?.response?.data?.detail || error?.message || 'Failed to apply follow-up queue action');
-      },
-      onSettled: (_data, _error, variables) => {
-        if (variables?.reviewRowKey) {
-          setActiveFollowUpReviewKey((current) => (current === variables.reviewRowKey ? '' : current));
-        }
-      },
-    }
-  );
+  const followUpQueueActionMutation = useFollowUpQueueActionMutation({
+    setActiveFollowUpReviewKey,
+    setFollowUpReviewNoteDrafts,
+    onRefreshTarget: (target) => {
+      if (target === 'domain') void refetchDomainProfiles();
+      else void refetchResearchPortfolios();
+    },
+    onFollowUpLaunched: (followUpJobId) => {
+      setActiveTab('jobs');
+      navigate(buildAutonomousAgentsUrl(followUpJobId), { replace: true });
+      return true;
+    },
+  });
 
   const bulkFollowUpQueueActionMutation = useMutation(
     ({

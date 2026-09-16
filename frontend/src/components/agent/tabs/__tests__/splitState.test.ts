@@ -17,11 +17,21 @@ import path from 'path';
 const PAGE = path.join(__dirname, '../../../../pages/AutonomousAgentsPage.tsx');
 const TABS_DIR = path.join(__dirname, '..');
 
+const allMatches = (src: string, re: RegExp): string[] => {
+  const out: string[] = [];
+  let m = re.exec(src);
+  while (m !== null) {
+    out.push(m[1]);
+    m = re.exec(src);
+  }
+  return out;
+};
+
 const declaredStates = (src: string): string[] =>
-  [...src.matchAll(/const \[(\w+), set\w+\] = useState/g)].map((m) => m[1]);
+  allMatches(src, /const \[(\w+), set\w+\] = useState/g);
 
 const calledSetters = (src: string): Set<string> =>
-  new Set([...src.matchAll(/\b(set[A-Z]\w*)\s*\(/g)].map((m) => m[1]));
+  new Set(allMatches(src, /\b(set[A-Z]\w*)\s*\(/g));
 
 const setterFor = (state: string) => `set${state[0].toUpperCase()}${state.slice(1)}`;
 

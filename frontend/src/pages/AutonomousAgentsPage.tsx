@@ -777,54 +777,19 @@ const canRelaunchOpportunityRow = (row: Record<string, any>) => {
   return ['failed', 'cancelled'].includes(outcomeStatus) && Boolean(lastJobId);
 };
 
-type InboxHealthDrilldown = '' | 'completed_follow_up' | 'failed_follow_up' | 'cancelled_follow_up' | 'suppressed_relaunch';
-type InboxPolicyDrilldown = '' | 'simulated_policy_impact' | 'policy_evaluation_after_rollout';
-type QueueHealthDrilldown = '' | 'pending_follow_up_approvals' | 'manual_follow_up_recommendations' | 'blocked_follow_up';
-
-const normalizeInboxHealthDrilldown = (value: unknown): InboxHealthDrilldown => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'completed_follow_up') return 'completed_follow_up';
-  if (normalized === 'failed_follow_up') return 'failed_follow_up';
-  if (normalized === 'cancelled_follow_up') return 'cancelled_follow_up';
-  if (normalized === 'suppressed_relaunch') return 'suppressed_relaunch';
-  return '';
-};
-
-const normalizeInboxPolicyDrilldown = (value: unknown): InboxPolicyDrilldown => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'simulated_policy_impact') return 'simulated_policy_impact';
-  if (normalized === 'policy_evaluation_after_rollout') return 'policy_evaluation_after_rollout';
-  return '';
-};
-
-const normalizeQueueHealthDrilldown = (value: unknown): QueueHealthDrilldown => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'pending_follow_up_approvals') return 'pending_follow_up_approvals';
-  if (normalized === 'manual_follow_up_recommendations') return 'manual_follow_up_recommendations';
-  if (normalized === 'blocked_follow_up') return 'blocked_follow_up';
-  return '';
-};
-
-const formatInboxHealthDrilldownLabel = (value: InboxHealthDrilldown): string => {
-  if (value === 'completed_follow_up') return 'completed outcomes';
-  if (value === 'failed_follow_up') return 'failed outcomes';
-  if (value === 'cancelled_follow_up') return 'cancelled outcomes';
-  if (value === 'suppressed_relaunch') return 'suppressed relaunches';
-  return '';
-};
-
-const formatInboxPolicyDrilldownLabel = (value: InboxPolicyDrilldown): string => {
-  if (value === 'simulated_policy_impact') return 'simulated policy impact';
-  if (value === 'policy_evaluation_after_rollout') return 'post-rollout evaluation';
-  return '';
-};
-
-const formatQueueHealthDrilldownLabel = (value: QueueHealthDrilldown): string => {
-  if (value === 'pending_follow_up_approvals') return 'pending approvals';
-  if (value === 'manual_follow_up_recommendations') return 'manual recommendations';
-  if (value === 'blocked_follow_up') return 'blocked follow-ups';
-  return '';
-};
+import {
+  formatInboxHealthDrilldownLabel,
+  formatInboxPolicyDrilldownLabel,
+  formatQueueHealthDrilldownLabel,
+  normalizeInboxHealthDrilldown,
+  normalizeInboxPolicyDrilldown,
+  normalizeQueueHealthDrilldown,
+} from '../components/agent/drilldowns';
+import type {
+  InboxHealthDrilldown,
+  InboxPolicyDrilldown,
+  QueueHealthDrilldown,
+} from '../components/agent/drilldowns';
 
 const resolveOpportunityExplanationHeading = (row: Record<string, any>) => {
   const reviewStatus = String(row.follow_up_review_status || '').trim().toLowerCase();

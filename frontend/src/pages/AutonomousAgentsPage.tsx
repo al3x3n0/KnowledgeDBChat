@@ -5,7 +5,7 @@
  * to accomplish goals like research, monitoring, and analysis.
  */
 
-import React, { useState, useEffect, useLayoutEffect, useCallback, useMemo, useRef } from 'react';
+import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
@@ -122,10 +122,10 @@ import SkeletonList from '../components/common/SkeletonList';
 import CreateFromTemplateModal from '../components/agent/CreateFromTemplateModal';
 import NewCampaignModal from '../components/agent/NewCampaignModal';
 import CollaborationSummaryPanel from '../components/agent/CollaborationSummaryPanel';
-import JobChainsTab from '../components/agent/tabs/JobChainsTab';
-import SwarmReviewTab from '../components/agent/tabs/SwarmReviewTab';
+
+// what extraction was *for*; it just is not what extraction *is*.
 import { invalidateAgentRunQueries } from '../utils/agentRunQueries';
-import JobTemplatesTab, { QuickStart } from '../components/agent/tabs/JobTemplatesTab';
+import type { QuickStart } from '../components/agent/tabs/JobTemplatesTab';
 import PluginSlot from '../plugins/PluginSlot';
 import InboxMonitorModal from '../components/agent/InboxMonitorModal';
 import MonitorProfilesModal from '../components/agent/MonitorProfilesModal';
@@ -163,6 +163,15 @@ import {
   parseSafeRelativeFilePaths,
   splitUniqueLines,
 } from './autonomousAgentQuickStarts';
+
+// Tabs load when their tab is opened, not when the page is.
+//
+// Extraction alone did not shrink the bundle -- the components landed in the
+// same chunk, so opening "My Jobs" still downloaded Swarm Review. Splitting
+// is what extraction was *for*; it just is not what extraction *is*.
+const JobChainsTab = lazy(() => import('../components/agent/tabs/JobChainsTab'));
+const SwarmReviewTab = lazy(() => import('../components/agent/tabs/SwarmReviewTab'));
+const JobTemplatesTab = lazy(() => import('../components/agent/tabs/JobTemplatesTab'));
 
 // Job type icons and labels
 
@@ -12257,26 +12266,28 @@ const AutonomousAgentsPage: React.FC = () => {
         )}
 
         {activeTab === 'swarm' && (
-          <SwarmReviewTab
-            swarmReviewJobs={swarmReviewJobs}
-            swarmReviewJobsLoading={swarmReviewJobsLoading}
-            refetchSwarmReviewJobs={refetchSwarmReviewJobs}
-            swarmAnalyticsData={swarmAnalyticsData}
-            swarmAnalyticsLoading={swarmAnalyticsLoading}
-            refetchSwarmAnalytics={refetchSwarmAnalytics}
-            visibilityScope={swarmReviewVisibilityScope}
-            onVisibilityScopeChange={setSwarmReviewVisibilityScope}
-            backlogBySwarmJobId={backlogBySwarmJobId}
-            userLabelById={userLabelById}
-            collaborationUsers={collaborationUsers}
-            currentUserId={user?.id ? String(user.id) : undefined}
-            noteDrafts={swarmReviewNoteDrafts}
-            onNoteDraftsChange={setSwarmReviewNoteDrafts}
-            actionMutation={actionMutation}
-            createCodingBacklogMutation={createCodingBacklogMutation}
-            onOpenJob={(job) => { setSelectedJob(job); setActiveTab('jobs'); }}
-            onGoToBacklog={() => setActiveTab('backlog')}
-          />
+          <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
+            <SwarmReviewTab
+              swarmReviewJobs={swarmReviewJobs}
+              swarmReviewJobsLoading={swarmReviewJobsLoading}
+              refetchSwarmReviewJobs={refetchSwarmReviewJobs}
+              swarmAnalyticsData={swarmAnalyticsData}
+              swarmAnalyticsLoading={swarmAnalyticsLoading}
+              refetchSwarmAnalytics={refetchSwarmAnalytics}
+              visibilityScope={swarmReviewVisibilityScope}
+              onVisibilityScopeChange={setSwarmReviewVisibilityScope}
+              backlogBySwarmJobId={backlogBySwarmJobId}
+              userLabelById={userLabelById}
+              collaborationUsers={collaborationUsers}
+              currentUserId={user?.id ? String(user.id) : undefined}
+              noteDrafts={swarmReviewNoteDrafts}
+              onNoteDraftsChange={setSwarmReviewNoteDrafts}
+              actionMutation={actionMutation}
+              createCodingBacklogMutation={createCodingBacklogMutation}
+              onOpenJob={(job) => { setSelectedJob(job); setActiveTab('jobs'); }}
+              onGoToBacklog={() => setActiveTab('backlog')}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'outcomes' && (
@@ -14195,23 +14206,27 @@ const AutonomousAgentsPage: React.FC = () => {
         </div>
 
         {activeTab === 'templates' && (
-          <JobTemplatesTab
-            templates={templatesData?.templates || []}
-            quickStarts={templateQuickStarts}
-            claudeBackendAvailable={Boolean(claudeBackendTemplate)}
-            scope={templateRecommendScope}
-            onScopeChange={setTemplateRecommendScope}
-            goal={templateRecommendGoal}
-            onGoalChange={setTemplateRecommendGoal}
-            onSelectTemplate={setCreateFromTemplate}
-          />
+          <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
+            <JobTemplatesTab
+              templates={templatesData?.templates || []}
+              quickStarts={templateQuickStarts}
+              claudeBackendAvailable={Boolean(claudeBackendTemplate)}
+              scope={templateRecommendScope}
+              onScopeChange={setTemplateRecommendScope}
+              goal={templateRecommendGoal}
+              onGoalChange={setTemplateRecommendGoal}
+              onSelectTemplate={setCreateFromTemplate}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'chains' && (
-          <JobChainsTab
-            chains={displayedChainDefinitions}
-            onStartChain={setStartFromChain}
-          />
+          <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
+            <JobChainsTab
+              chains={displayedChainDefinitions}
+              onStartChain={setStartFromChain}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'inbox' && (

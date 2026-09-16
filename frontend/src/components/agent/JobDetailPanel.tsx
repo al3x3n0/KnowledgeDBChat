@@ -20,6 +20,7 @@
  */
 
 import {
+  Activity,
   AlertCircle,
   BarChart3,
   Brain,
@@ -40,7 +41,7 @@ import {
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import toast from 'react-hot-toast';
 import { useMutation, useQuery, useQueryClient } from 'react-query';
-import { useLocation, useNavigate } from 'react-router-dom';
+import { Link, useLocation, useNavigate } from 'react-router-dom';
 
 import { apiClient } from '../../services/api';
 import type {
@@ -761,9 +762,29 @@ export const JobDetailPanel: React.FC<JobDetailPanelProps> = ({
                 <p className="text-sm text-gray-500">{typeConfig.label}</p>
               </div>
             </div>
-            <div className={`flex items-center gap-1 px-3 py-1.5 rounded-full ${statusConfig.bgColor} ${statusConfig.color}`}>
-              <StatusIcon className={`w-4 h-4 ${job.status === 'running' ? 'animate-spin' : ''}`} />
-              <span className="font-medium capitalize">{job.status}</span>
+            <div className="flex items-center gap-2">
+              {/* The link that was missing in this direction.
+                  The Control Plane already offers "Open in Autonomous Agents"
+                  on an agent-job node; nothing here went the other way, so the
+                  deep inspection of a run -- its decision trace, policy
+                  snapshot, escalations, memory graph -- was reachable only by
+                  finding the run again in a different page's list.
+                  `run=job:<id>` is how that page addresses an agent job; its
+                  other run kind is `workflow:<id>`, which is why it stays a
+                  destination of its own rather than becoming this page's
+                  detail view. */}
+              <Link
+                to={`/agent-control-plane?run=job:${encodeURIComponent(String(job.id))}`}
+                className="inline-flex items-center gap-1 rounded-lg border border-gray-300 px-2.5 py-1.5 text-xs text-gray-700 hover:bg-gray-200"
+                title="Inspect this run in the Control Plane"
+              >
+                <Activity className="w-3.5 h-3.5" />
+                Control Plane
+              </Link>
+              <div className={`flex items-center gap-1 px-3 py-1.5 rounded-full ${statusConfig.bgColor} ${statusConfig.color}`}>
+                <StatusIcon className={`w-4 h-4 ${job.status === 'running' ? 'animate-spin' : ''}`} />
+                <span className="font-medium capitalize">{job.status}</span>
+              </div>
             </div>
           </div>
           {(lineageRootNode || lineageParentNode) && (

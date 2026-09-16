@@ -10929,5 +10929,18 @@ export const registerAutonomousAgentsPageTests = (shardIndex: number, shardCount
 
     await waitFor(() => expect(apiClient.getAgentJob).toHaveBeenCalledWith('parent-job-1'));
   });
+
+  shardIt('offers customers in the inbox filter without having visited Autonomy Health', async () => {
+    // `healthCustomers` derives from the monitor-analytics query, which was
+    // enabled only for the health tab -- so this dropdown was empty unless you
+    // had opened Autonomy Health earlier in the same session. A filter that
+    // silently offers nothing depending on where you have been is worse than
+    // one that is absent.
+    await renderWithProviders('/autonomous-agents?tab=inbox');
+
+    await waitFor(() =>
+      expect(apiClient.getResearchMonitorAnalytics).toHaveBeenCalled()
+    );
+  });
   });
 };

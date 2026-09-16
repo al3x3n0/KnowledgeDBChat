@@ -1442,16 +1442,25 @@ const AgentControlPlanePage: React.FC = () => {
           scans source for complete class names, so a template string like
           `grid-cols-[${width}_...]` compiles to a class that exists in the
           markup and in no stylesheet -- the grid silently falls back to one
-          column and the page looks broken for a reason nothing reports. */}
+          column and the page looks broken for a reason nothing reports.
+
+          Three widths, not two. Three columns need 1280px, and below that this
+          used to drop straight to a single stacked column -- so a 1280-wide
+          laptop got the full layout and a 1366-wide one scrolled through runs,
+          then graph, then inspector, one after another. At `lg` the runs list
+          and the graph sit side by side and the inspector spans beneath them:
+          the graph is what the page is for, and the list is what you steer it
+          with, so those two are the pair worth keeping together when there is
+          only room for one pair. */}
       <div
         className={
           runsCollapsed && inspectorCollapsed
-            ? 'grid gap-6 xl:grid-cols-[44px_minmax(0,1fr)_44px]'
+            ? 'grid gap-6 lg:grid-cols-[44px_minmax(0,1fr)] xl:grid-cols-[44px_minmax(0,1fr)_44px]'
             : runsCollapsed
-              ? 'grid gap-6 xl:grid-cols-[44px_minmax(0,1fr)_380px]'
+              ? 'grid gap-6 lg:grid-cols-[44px_minmax(0,1fr)] xl:grid-cols-[44px_minmax(0,1fr)_380px]'
               : inspectorCollapsed
-                ? 'grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_44px]'
-                : 'grid gap-6 xl:grid-cols-[320px_minmax(0,1fr)_380px]'
+                ? 'grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_44px]'
+                : 'grid gap-6 lg:grid-cols-[320px_minmax(0,1fr)] xl:grid-cols-[320px_minmax(0,1fr)_380px]'
         }
       >
         <section
@@ -1726,7 +1735,10 @@ const AgentControlPlanePage: React.FC = () => {
           ) : null}
         </section>
 
-        <section className="space-y-6">
+        {/* Spans both columns at lg, where there are only two: the
+            inspector is what you read after choosing a run, so it is the
+            one that can go below rather than beside. */}
+        <section className="space-y-6 lg:col-span-2 xl:col-span-1">
           {inspectorCollapsed ? (
             <div className="rounded-2xl border border-gray-200 bg-white p-2 shadow-sm">
               <div className="flex flex-col items-center gap-2">

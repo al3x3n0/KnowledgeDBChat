@@ -6,6 +6,24 @@
  */
 
 import React, { Suspense, lazy, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import {
+  AUTONOMY_FOCUS_CARD_CLASS,
+  AUTONOMY_FOCUS_ROW_CLASS,
+  SharedAutonomyMetricGrid,
+  SharedAutonomyReviewLists,
+  SharedPortfolioLikeAutonomyControls,
+  canRelaunchOpportunityRow,
+  formatAutonomyLabel,
+  formatReviewModeLabel,
+  renderOpportunityFollowUpOutcomeMeta,
+  renderOpportunityReevaluationReviewMeta,
+  researchOpportunityStageClass,
+} from '../components/agent/autonomyShared';
+import type {
+  DomainResearchProfilePolicyDraft,
+  ResearchPortfolioPolicyDraft,
+} from '../components/agent/autonomyShared';
+
 import { useQuery, useMutation, useQueryClient } from 'react-query';
 import { useLocation, useNavigate } from 'react-router-dom';
 import {
@@ -75,7 +93,6 @@ import type {
   CodingSwarmProfileCreate,
   CodingSwarmProfileUpdate,
   DomainResearchProfile,
-  DomainResearchProfileCreate,
   DomainResearchProfileUpdate,
   ResearchOpportunity,
   ResearchPortfolio,
@@ -152,7 +169,6 @@ import {
   buildBuildBreakSwarmQuickStartPayload,
   buildFrontendRegressionSwarmQuickStartPayload,
   DEFAULT_VALIDATION_POLICY,
-  DOMAIN_SOURCE_SCOPE_OPTIONS,
   DOMAIN_TRACK_OPTIONS,
   parseQuickStartCommands,
   parseSafeRelativeFilePaths,
@@ -170,6 +186,7 @@ const ResearchInboxTab = lazy(() => import('../components/agent/tabs/ResearchInb
 const CodingBacklogTab = lazy(() => import('../components/agent/tabs/CodingBacklogTab'));
 const DecisionTraceTab = lazy(() => import('../components/agent/tabs/DecisionTraceTab'));
 const OperatorQueueTab = lazy(() => import('../components/agent/tabs/OperatorQueueTab'));
+const DomainProfilesTab = lazy(() => import('../components/agent/tabs/DomainProfilesTab'));
 const AutonomyHealthTab = lazy(() => import('../components/agent/tabs/AutonomyHealthTab'));
 const JobTemplatesTab = lazy(() => import('../components/agent/tabs/JobTemplatesTab'));
 
@@ -249,22 +266,7 @@ const canonicalizeSearchParams = (search: string) =>
     .join('&');
 
 
-type ResearchPortfolioPolicyDraft = {
-  automation_profile: 'balanced' | 'max_autonomy';
-  follow_up_review_mode: 'auto_launch_safe' | 'queue_for_approval' | 'manual_only';
-  confidence_threshold: string;
-  experiment_readiness_threshold: string;
-  max_auto_follow_up_launches: string;
-  max_concurrent_validation_runs: string;
-  max_validation_runtime_minutes: string;
-  max_validation_budget_per_run: string;
-  duplicate_window_items: string;
-  auto_create_experiment_plans: boolean;
-  auto_launch_follow_up: boolean;
-  auto_launch_experiment_runs: boolean;
-};
 
-type DomainResearchProfilePolicyDraft = ResearchPortfolioPolicyDraft;
 
 const buildResearchPortfolioPolicyDraft = (portfolio?: Partial<ResearchPortfolio> | null): ResearchPortfolioPolicyDraft => {
   const policy = ((portfolio?.effective_policy || portfolio?.automation_policy || {}) as Record<string, any>) || {};
@@ -307,195 +309,14 @@ const buildResearchPortfolioUpdatePayload = (draft: ResearchPortfolioPolicyDraft
   },
 });
 
-const buildDomainResearchProfilePolicyDraft = (profile?: Partial<DomainResearchProfile> | null): DomainResearchProfilePolicyDraft => {
-  const policy = ((profile?.effective_policy || profile?.automation_policy || {}) as Record<string, any>) || {};
-  const automationProfile = String(profile?.automation_profile || 'balanced').trim().toLowerCase() === 'max_autonomy'
-    ? 'max_autonomy'
-    : 'balanced';
-  return {
-    automation_profile: automationProfile,
-    follow_up_review_mode: (['auto_launch_safe', 'queue_for_approval', 'manual_only'].includes(String(policy.follow_up_review_mode || '').trim())
-      ? String(policy.follow_up_review_mode).trim()
-      : 'auto_launch_safe') as 'auto_launch_safe' | 'queue_for_approval' | 'manual_only',
-    confidence_threshold: String(policy.confidence_threshold ?? profile?.confidence_threshold ?? (automationProfile === 'max_autonomy' ? 0.68 : 0.72)),
-    experiment_readiness_threshold: String(policy.experiment_readiness_threshold ?? (automationProfile === 'max_autonomy' ? 0.72 : 0.8)),
-    max_auto_follow_up_launches: String(policy.max_auto_follow_up_launches ?? (automationProfile === 'max_autonomy' ? 4 : 2)),
-    max_concurrent_validation_runs: String(policy.max_concurrent_validation_runs ?? (automationProfile === 'max_autonomy' ? 2 : 1)),
-    max_validation_runtime_minutes: String(policy.max_validation_runtime_minutes ?? (automationProfile === 'max_autonomy' ? 30 : 20)),
-    max_validation_budget_per_run: String(policy.max_validation_budget_per_run ?? (automationProfile === 'max_autonomy' ? 50 : 25)),
-    duplicate_window_items: String(policy.duplicate_window_items ?? (automationProfile === 'max_autonomy' ? 120 : 60)),
-    auto_create_experiment_plans: Boolean(policy.auto_create_experiment_plans ?? profile?.auto_create_experiment_plans ?? true),
-    auto_launch_follow_up: Boolean(policy.auto_launch_follow_up ?? profile?.auto_launch_follow_up ?? true),
-    auto_launch_experiment_runs: Boolean(policy.auto_launch_experiment_runs ?? policy.auto_execute_validation_runs ?? (automationProfile === 'max_autonomy')),
-  };
-};
-
-const buildDomainResearchProfileUpdatePayload = (draft: DomainResearchProfilePolicyDraft): DomainResearchProfileUpdate => ({
-  automation_profile: draft.automation_profile,
-  automation_policy: {
-    follow_up_review_mode: draft.follow_up_review_mode,
-    confidence_threshold: Number(draft.confidence_threshold || 0),
-    experiment_readiness_threshold: Number(draft.experiment_readiness_threshold || 0),
-    max_auto_follow_up_launches: Number(draft.max_auto_follow_up_launches || 0),
-    max_concurrent_validation_runs: Number(draft.max_concurrent_validation_runs || 0),
-    max_validation_runtime_minutes: Number(draft.max_validation_runtime_minutes || 0),
-    max_validation_budget_per_run: Number(draft.max_validation_budget_per_run || 0),
-    duplicate_window_items: Number(draft.duplicate_window_items || 0),
-    auto_create_experiment_plans: draft.auto_create_experiment_plans,
-    auto_launch_follow_up: draft.auto_launch_follow_up,
-    auto_launch_experiment_runs: draft.auto_launch_experiment_runs,
-    auto_execute_validation_runs: draft.auto_launch_experiment_runs,
-  },
-});
 
 
 
-const AutonomyStatCard: React.FC<{
-  label: string;
-  value: React.ReactNode;
-  detail?: React.ReactNode;
-}> = ({ label, value, detail }) => (
-  <div className="bg-white border border-gray-200 rounded p-2">
-    <div className="text-gray-500">{label}</div>
-    <div className="mt-1 font-medium text-gray-900">{value}</div>
-    {detail ? <div className="text-gray-500">{detail}</div> : null}
-  </div>
-);
-
-const SharedAutonomyMetricGrid: React.FC<{
-  columns?: string;
-  items: Array<{ label: string; value: React.ReactNode; detail?: React.ReactNode }>;
-}> = ({ columns = 'grid-cols-4', items }) => (
-  <div className={`grid ${columns} gap-2`}>
-    {items.map((item) => (
-      <AutonomyStatCard key={item.label} label={item.label} value={item.value} detail={item.detail} />
-    ))}
-  </div>
-);
-
-const SharedPortfolioLikeAutonomyControls: React.FC<{
-  draft: ResearchPortfolioPolicyDraft;
-  applyLabel: string;
-  disabled?: boolean;
-  onApply: () => void;
-  onFieldChange: (field: keyof ResearchPortfolioPolicyDraft, value: any) => void;
-}> = ({ draft, applyLabel, disabled, onApply, onFieldChange }) => (
-  <div className="bg-white border border-gray-200 rounded p-2">
-    <div className="flex items-center justify-between gap-2">
-      <div className="font-medium text-gray-800">Autonomy controls</div>
-      <Button size="sm" variant="secondary" onClick={onApply} disabled={disabled}>
-        {applyLabel}
-      </Button>
-    </div>
-    <div className="mt-2 grid grid-cols-2 gap-2">
-      <label className="text-gray-600">
-        Autonomy profile
-        <select
-          className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs"
-          value={draft.automation_profile}
-          onChange={(e) => onFieldChange('automation_profile', e.target.value as 'balanced' | 'max_autonomy')}
-        >
-          <option value="balanced">balanced</option>
-          <option value="max_autonomy">max autonomy</option>
-        </select>
-      </label>
-      <label className="text-gray-600">
-        Review mode
-        <select
-          className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs"
-          value={draft.follow_up_review_mode}
-          onChange={(e) => onFieldChange('follow_up_review_mode', e.target.value as 'auto_launch_safe' | 'queue_for_approval' | 'manual_only')}
-        >
-          <option value="auto_launch_safe">auto launch safe</option>
-          <option value="queue_for_approval">queue for approval</option>
-          <option value="manual_only">manual only</option>
-        </select>
-      </label>
-      <label className="text-gray-600">
-        Confidence threshold
-        <input className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs" value={draft.confidence_threshold} onChange={(e) => onFieldChange('confidence_threshold', e.target.value)} />
-      </label>
-      <label className="text-gray-600">
-        Readiness threshold
-        <input className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs" value={draft.experiment_readiness_threshold} onChange={(e) => onFieldChange('experiment_readiness_threshold', e.target.value)} />
-      </label>
-      <label className="text-gray-600">
-        Follow-up cap
-        <input className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs" value={draft.max_auto_follow_up_launches} onChange={(e) => onFieldChange('max_auto_follow_up_launches', e.target.value)} />
-      </label>
-      <label className="text-gray-600">
-        Validation concurrency
-        <input className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs" value={draft.max_concurrent_validation_runs} onChange={(e) => onFieldChange('max_concurrent_validation_runs', e.target.value)} />
-      </label>
-      <label className="text-gray-600">
-        Duplicate window
-        <input className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs" value={draft.duplicate_window_items} onChange={(e) => onFieldChange('duplicate_window_items', e.target.value)} />
-      </label>
-      <label className="text-gray-600">
-        Runtime minutes
-        <input className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs" value={draft.max_validation_runtime_minutes} onChange={(e) => onFieldChange('max_validation_runtime_minutes', e.target.value)} />
-      </label>
-      <label className="text-gray-600">
-        Budget per run
-        <input className="mt-1 w-full border border-gray-300 rounded px-2 py-1 text-xs" value={draft.max_validation_budget_per_run} onChange={(e) => onFieldChange('max_validation_budget_per_run', e.target.value)} />
-      </label>
-    </div>
-    <div className="mt-2 flex flex-wrap gap-3 text-gray-600">
-      <label className="inline-flex items-center gap-2">
-        <input type="checkbox" checked={draft.auto_create_experiment_plans} onChange={(e) => onFieldChange('auto_create_experiment_plans', e.target.checked)} />
-        Auto-create plans
-      </label>
-      <label className="inline-flex items-center gap-2">
-        <input type="checkbox" checked={draft.auto_launch_follow_up} onChange={(e) => onFieldChange('auto_launch_follow_up', e.target.checked)} />
-        Auto-launch follow-up
-      </label>
-      <label className="inline-flex items-center gap-2">
-        <input type="checkbox" checked={draft.auto_launch_experiment_runs} onChange={(e) => onFieldChange('auto_launch_experiment_runs', e.target.checked)} />
-        Auto-launch validation
-      </label>
-    </div>
-  </div>
-);
 
 
-const SharedAutonomyReviewLists: React.FC<{
-  sections: Array<{
-    title: string;
-    rows?: Array<Record<string, any>> | null;
-    formatter?: (row: Record<string, any>) => React.ReactNode;
-    renderRow?: (row: Record<string, any>, idx: number) => React.ReactNode;
-    limit?: number;
-  }>;
-}> = ({ sections }) => (
-  <>
-    {sections
-      .filter((section) => Array.isArray(section.rows) && section.rows.length > 0)
-      .map((section) => (
-        <div key={section.title} className="bg-white border border-gray-200 rounded p-2">
-          <div className="font-medium text-gray-800">{section.title}</div>
-          <div className="mt-1 space-y-1">
-            {(section.rows || []).slice(0, section.limit || 4).map((row, idx) => {
-              const key = `${String(row.opportunity_id || row.canonical_key || idx)}`;
-              if (section.renderRow) {
-                return (
-                  <React.Fragment key={key}>
-                    {section.renderRow(row, idx)}
-                  </React.Fragment>
-                );
-              }
-              return (
-                <div key={key} className="text-gray-600">
-                  {section.formatter
-                    ? section.formatter(row)
-                    : `${String(row.title || row.canonical_key || 'Opportunity')} · ${String(row.reason_code || row.review_type || 'review').replaceAll('_', ' ')}`}
-                </div>
-              );
-            })}
-          </div>
-        </div>
-      ))}
-  </>
-);
+
+
+
 
 
 const scientificResearchPackBlueprint = (repoSourceIds: string[]) => {
@@ -546,8 +367,6 @@ const humanizeScientificValidationReason = (value?: string | null) =>
 
 
 
-const AUTONOMY_FOCUS_ROW_CLASS = 'border-cyan-300 bg-cyan-50 ring-2 ring-cyan-200';
-const AUTONOMY_FOCUS_CARD_CLASS = 'border-cyan-300 ring-2 ring-cyan-200';
 
 
 
@@ -571,14 +390,6 @@ const synthesisStatusClasses = (status?: string | null) => {
 
 
 
-const researchOpportunityStageClass = (value?: string | null) => {
-  const normalized = String(value || '').trim().toLowerCase();
-  if (normalized === 'completed') return 'bg-emerald-100 text-emerald-700';
-  if (normalized === 'blocked' || normalized === 'suppressed') return 'bg-rose-100 text-rose-700';
-  if (normalized === 'planned' || normalized === 'accepted') return 'bg-blue-100 text-blue-700';
-  if (normalized === 'validating') return 'bg-amber-100 text-amber-800';
-  return 'bg-gray-200 text-gray-700';
-};
 
 const formatOpportunityDelta = (nextValue: unknown, previousValue: unknown) => {
   const nextNum = Number(nextValue);
@@ -626,90 +437,8 @@ const renderOpportunityReprioritizationMeta = (row: Record<string, any>) => {
   );
 };
 
-const renderOpportunityFollowUpOutcomeMeta = (row: Record<string, any>) => {
-  const outcomeStatus = String(row.follow_up_outcome_status || '').trim();
-  if (!outcomeStatus) return null;
-  const outcomeSummary = String(row.follow_up_outcome_summary || '').trim();
-  const recordedAt = String(row.follow_up_outcome_recorded_at || '').trim();
-  const childJobId = String(row.follow_up_last_job_id || (Array.isArray(row.child_job_ids) ? row.child_job_ids[0] : '') || '').trim();
-  const badgeClass = outcomeStatus === 'completed'
-    ? 'bg-emerald-100 text-emerald-700'
-    : outcomeStatus === 'failed' || outcomeStatus === 'cancelled'
-      ? 'bg-rose-100 text-rose-700'
-      : 'bg-gray-200 text-gray-700';
-  return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-600">
-      <span className={`px-2 py-0.5 rounded ${badgeClass}`}>
-        Outcome {humanizeDecisionTraceValue(outcomeStatus)}
-      </span>
-      {recordedAt ? <span>{new Date(recordedAt).toLocaleString()}</span> : null}
-      {childJobId ? <span>Job {childJobId}</span> : null}
-      {outcomeSummary ? <span>{outcomeSummary}</span> : null}
-    </div>
-  );
-};
 
-const renderOpportunityReevaluationReviewMeta = (
-  row: Record<string, any>,
-  onNavigate?: (url: string) => void,
-) => {
-  const outcomeStatus = String(row.last_reevaluation_review_outcome || '').trim();
-  if (!outcomeStatus) return null;
-  const recordedAt = String(row.last_reevaluation_reviewed_at || '').trim();
-  const reviewJobId = String(row.last_reevaluation_review_job_id || '').trim();
-  const reviewNote = String(row.last_reevaluation_review_note || '').trim();
-  const sourceNoteId = String(row.last_reevaluation_review_source_note_id || '').trim();
-  const targetNoteId = String(row.last_reevaluation_review_target_note_id || '').trim();
-  const openUrl = (url: string) => {
-    if (!url || !onNavigate) return;
-    onNavigate(url);
-  };
-  const badgeClass = outcomeStatus === 'dismissed'
-    ? 'bg-gray-200 text-gray-700'
-    : 'bg-violet-100 text-violet-700';
-  return (
-    <div className="mt-2 flex flex-wrap items-center gap-2 text-[11px] text-gray-600">
-      <span className={`px-2 py-0.5 rounded ${badgeClass}`}>
-        Reevaluation {humanizeDecisionTraceValue(outcomeStatus)}
-      </span>
-      {recordedAt ? <span>{new Date(recordedAt).toLocaleString()}</span> : null}
-      {reviewNote ? <span>{reviewNote}</span> : null}
-      {reviewJobId ? (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => openUrl(`/synthesis?job=${encodeURIComponent(reviewJobId)}`)}
-        >
-          Open reevaluation job
-        </Button>
-      ) : null}
-      {sourceNoteId ? (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => openUrl(`/research-notes?note=${encodeURIComponent(sourceNoteId)}`)}
-        >
-          Open source note
-        </Button>
-      ) : null}
-      {targetNoteId && targetNoteId !== sourceNoteId ? (
-        <Button
-          size="sm"
-          variant="ghost"
-          onClick={() => openUrl(`/research-notes?note=${encodeURIComponent(targetNoteId)}`)}
-        >
-          Open saved note
-        </Button>
-      ) : null}
-    </div>
-  );
-};
 
-const canRelaunchOpportunityRow = (row: Record<string, any>) => {
-  const outcomeStatus = String(row.follow_up_outcome_status || '').trim().toLowerCase();
-  const lastJobId = String(row.follow_up_last_job_id || '').trim();
-  return ['failed', 'cancelled'].includes(outcomeStatus) && Boolean(lastJobId);
-};
 
 
 const resolveOpportunityExplanationHeading = (row: Record<string, any>) => {
@@ -2199,9 +1928,7 @@ const AutonomousAgentsPage: React.FC = () => {
     },
   ];
 
-const formatAutonomyLabel = (value?: string | null) => String(value || 'balanced').replace(/_/g, ' ');
 
-const formatReviewModeLabel = (value?: string | null) => String(value || 'auto_launch_safe').replace(/_/g, ' ');
 
   const [healthMonitorTypeFilter, setHealthMonitorTypeFilter] = useState<string>('');
 
@@ -2621,10 +2348,6 @@ const formatReviewModeLabel = (value?: string | null) => String(value || 'auto_l
   const selectedPortfolioProfileIds = useMemo(
     () => Object.entries(portfolioProfileSelection).filter(([, enabled]) => enabled).map(([id]) => id),
     [portfolioProfileSelection]
-  );
-  const selectedDomainProfileRepoSourceIds = useMemo(
-    () => Object.entries(domainProfileRepoSelection).filter(([, enabled]) => enabled).map(([id]) => id),
-    [domainProfileRepoSelection]
   );
   const filteredScientificSandboxProfiles = useMemo(
     () =>
@@ -3431,50 +3154,7 @@ const formatReviewModeLabel = (value?: string | null) => String(value || 'auto_l
     });
   }, []);
 
-  const createDomainProfileMutation = useMutation(
-    (data: DomainResearchProfileCreate) => apiClient.createDomainResearchProfile(data),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        toast.success('Domain profile created');
-        setDomainProfileTitle('');
-        setDomainProfileTopic('');
-        setDomainProfileObjective('');
-        setDomainProfileTrackType('compiler');
-        setDomainProfileSourceScope('kb_plus_arxiv_plus_repo');
-        setDomainProfileQueriesText('');
-        setDomainProfileBenchmarkQueriesText('');
-        setDomainProfileCadenceMinutes('1440');
-        setDomainProfileRepoSelection({});
-        setDomainProfileSandboxProfileId(resolveSandboxProfileId('compiler'));
-      },
-      onError: (error: any) => {
-        toast.error(error.message || 'Failed to create domain profile');
-      },
-    }
-  );
 
-  const domainProfileActionMutation = useMutation(
-    ({
-      profileId,
-      action,
-    }: {
-      profileId: string;
-      action: 'start' | 'pause' | 'resume' | 'cancel' | 'run_now';
-    }) => apiClient.performDomainResearchProfileAction(profileId, { action }),
-    {
-      onSuccess: () => {
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-      },
-      onError: (error: any) => {
-        toast.error(error.message || 'Domain profile action failed');
-      },
-    }
-  );
 
   const updateDomainProfileMutation = useMutation(
     ({ profileId, data }: { profileId: string; data: DomainResearchProfileUpdate }) =>
@@ -3844,35 +3524,7 @@ const formatReviewModeLabel = (value?: string | null) => String(value || 'auto_l
     []
   );
 
-  const updateDomainProfilePolicyDraftField = useCallback(
-    (profile: DomainResearchProfile, field: keyof DomainResearchProfilePolicyDraft, value: string | boolean) => {
-      const profileId = String(profile.id || '');
-      if (!profileId) return;
-      setDomainProfilePolicyDrafts((prev) => {
-        const current = prev[profileId] || buildDomainResearchProfilePolicyDraft(profile);
-        return {
-          ...prev,
-          [profileId]: {
-            ...current,
-            [field]: value,
-          },
-        };
-      });
-    },
-    []
-  );
 
-  const submitDomainProfilePolicyDraft = useCallback(
-    (profile: DomainResearchProfile) => {
-      const profileId = String(profile.id || '');
-      const draft = domainProfilePolicyDrafts[profileId] || buildDomainResearchProfilePolicyDraft(profile);
-      updateDomainProfileMutation.mutate({
-        profileId,
-        data: buildDomainResearchProfileUpdatePayload(draft),
-      });
-    },
-    [domainProfilePolicyDrafts, updateDomainProfileMutation]
-  );
 
   const submitPortfolioPolicyDraft = useCallback(
     (portfolio: ResearchPortfolio) => {
@@ -7046,634 +6698,70 @@ const formatReviewModeLabel = (value?: string | null) => String(value || 'auto_l
         )}
 
         {activeTab === 'domain' && (
-          <div className="w-full flex flex-col min-h-0 gap-4">
-            <div className="grid grid-cols-3 gap-4">
-              <div className="col-span-1 bg-white border border-gray-200 rounded-lg p-4 space-y-3">
-                <div>
-                  <h2 className="text-lg font-semibold text-gray-900">Domain Profiles</h2>
-                  <p className="text-sm text-gray-500">Saved R&D research monitors that persist notes, delta summaries, and experiment plans.</p>
-                </div>
-                <Button
-                  variant="secondary"
-                  disabled={createScientificResearchPackMutation.isLoading}
-                  onClick={() => createScientificResearchPackMutation.mutate()}
-                >
-                  {createScientificResearchPackMutation.isLoading ? 'Seeding scientific pack...' : 'Seed Compiler + Microarch Pack'}
-                </Button>
-                {renderScientificSandboxManagementPanel()}
-                <input
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  placeholder="Profile title"
-                  value={domainProfileTitle}
-                  onChange={(e) => setDomainProfileTitle(e.target.value)}
-                />
-                <input
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  placeholder="Domain or topic"
-                  value={domainProfileTopic}
-                  onChange={(e) => setDomainProfileTopic(e.target.value)}
-                />
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                  <select
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                    value={domainProfileTrackType}
-                    onChange={(e) => setDomainProfileTrackType(e.target.value as any)}
-                  >
-                    {DOMAIN_TRACK_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label} track</option>
-                    ))}
-                  </select>
-                  <select
-                    className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                    value={domainProfileSourceScope}
-                    onChange={(e) => setDomainProfileSourceScope(e.target.value as any)}
-                  >
-                    {DOMAIN_SOURCE_SCOPE_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>{option.label}</option>
-                    ))}
-                  </select>
-                </div>
-                <select
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={domainProfileSandboxProfileId}
-                  onChange={(e) => setDomainProfileSandboxProfileId(e.target.value)}
-                >
-                  {domainAvailableSandboxProfiles.map((profile) => (
-                    <option key={String(profile.id)} value={String(profile.id)}>
-                      {String(profile.name)} ({String(profile.track_type || 'generic')})
-                    </option>
-                  ))}
-                </select>
-                <textarea
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  rows={4}
-                  placeholder="Research objective"
-                  value={domainProfileObjective}
-                  onChange={(e) => setDomainProfileObjective(e.target.value)}
-                />
-                <textarea
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  rows={3}
-                  placeholder="Monitor queries, one per line"
-                  value={domainProfileQueriesText}
-                  onChange={(e) => setDomainProfileQueriesText(e.target.value)}
-                />
-                <textarea
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  rows={3}
-                  placeholder="Benchmark queries, one per line"
-                  value={domainProfileBenchmarkQueriesText}
-                  onChange={(e) => setDomainProfileBenchmarkQueriesText(e.target.value)}
-                />
-                {codeSources.length > 0 ? (
-                  <div className="border border-gray-200 rounded-lg p-3 bg-gray-50">
-                    <div className="text-xs font-medium text-gray-800 mb-2">Repository evidence sources</div>
-                    <div className="space-y-2 max-h-36 overflow-auto">
-                      {codeSources.map((source: any) => (
-                        <label key={String(source.id)} className="flex items-start gap-2 text-sm text-gray-700">
-                          <input
-                            type="checkbox"
-                            checked={Boolean(domainProfileRepoSelection[String(source.id)])}
-                            onChange={(e) => setDomainProfileRepoSelection((prev) => ({ ...prev, [String(source.id)]: e.target.checked }))}
-                          />
-                          <span>
-                            <span className="font-medium text-gray-900">{String(source.name || source.id)}</span>
-                            <span className="block text-xs text-gray-500">{String(source.source_type || '').toLowerCase()}</span>
-                          </span>
-                        </label>
-                      ))}
-                    </div>
-                  </div>
-                ) : null}
-                <input
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  placeholder="Cadence in minutes"
-                  value={domainProfileCadenceMinutes}
-                  onChange={(e) => setDomainProfileCadenceMinutes(e.target.value)}
-                />
-                <div className="flex gap-2">
-                  <Button
-                    variant="primary"
-                    disabled={createDomainProfileMutation.isLoading || !domainProfileTitle.trim() || !domainProfileTopic.trim() || !domainProfileObjective.trim()}
-                    onClick={() =>
-                      createDomainProfileMutation.mutate({
-                        title: domainProfileTitle.trim(),
-                        domain: domainProfileTopic.trim(),
-                        objective: domainProfileObjective.trim(),
-                        track_type: domainProfileTrackType,
-                        source_scope: domainProfileSourceScope,
-                        research_mode: 'literature_to_hypothesis',
-                        monitor_queries: splitUniqueLines(domainProfileQueriesText, 12),
-                        repo_source_ids: selectedDomainProfileRepoSourceIds.length ? selectedDomainProfileRepoSourceIds : undefined,
-                        benchmark_queries: splitUniqueLines(domainProfileBenchmarkQueriesText, 16),
-                        sandbox_profile_id: domainProfileSandboxProfileId || resolveSandboxProfileId(domainProfileTrackType),
-                        scoring_policy: {
-                          minimum_subscore: 0.6,
-                          minimum_supporting_sources: 2,
-                          weights: { novelty: 0.4, evidence: 0.35, testability: 0.25 },
-                        },
-                        selection_policy: { max_candidates: 10, max_hypotheses: 3 },
-                        automation_profile: 'balanced',
-                        automation_policy: DEFAULT_VALIDATION_POLICY,
-                        interval_minutes: Number(domainProfileCadenceMinutes) > 0 ? Number(domainProfileCadenceMinutes) : 1440,
-                        persist_artifacts: true,
-                        auto_launch_follow_up: true,
-                        auto_create_experiment_plans: true,
-                        start_immediately: true,
-                      })
-                    }
-                  >
-                    Start Monitor
-                  </Button>
-                  <Button variant="ghost" onClick={() => refetchDomainProfiles()}>
-                    <RefreshCw className="w-4 h-4" />
-                  </Button>
-                </div>
-              </div>
-              <div className="col-span-2 bg-white border border-gray-200 rounded-lg p-4 min-h-0">
-                {domainProfilesLoading ? (
-                  <div className="flex justify-center items-center h-48"><LoadingSpinner /></div>
-                ) : (
-                  <div className="space-y-3">
-                    {(((domainProfilesData as any)?.items || []) as DomainResearchProfile[]).map((profile) => {
-                      const summary = (profile.latest_summary || {}) as Record<string, any>;
-                      const ideaTitles = Array.isArray(summary.ranked_opportunities) ? summary.ranked_opportunities.slice(0, 3) : [];
-                      const opportunities = Array.isArray(profile.opportunities) ? profile.opportunities : [];
-                      const autonomyMode = String(summary.autonomy_mode || profile.automation_profile || 'balanced');
-                      const effectivePolicy = ((profile.effective_policy || summary.effective_policy || profile.automation_policy || {}) as Record<string, any>) || {};
-                      const autonomyStateCounts = (summary.autonomy_state_counts || {}) as Record<string, any>;
-                      const schedulerSummary = (summary.scheduler_summary || {}) as Record<string, any>;
-                      const queuedReviewsCount = Number(summary.queued_operator_reviews_count || 0);
-                      const policyDraft = domainProfilePolicyDrafts[String(profile.id)] || buildDomainResearchProfilePolicyDraft(profile);
-                      const notesCount = Array.isArray(profile.latest_note_ids) ? profile.latest_note_ids.length : 0;
-                      const plansCount = Array.isArray(profile.latest_experiment_plan_ids) ? profile.latest_experiment_plan_ids.length : 0;
-                      const validationRuns = Array.isArray(profile.latest_validation_runs) ? profile.latest_validation_runs : [];
-                      const delta = (summary.delta_since_last_run || {}) as Record<string, any>;
-                      const profileCardKey = buildAutonomyCardKey('domain', String(profile.id));
-                      const isProfileExpanded = Boolean(expandedDomainProfileIds[String(profile.id)]);
-                      return (
-                        <div
-                          key={profile.id}
-                          ref={registerAutonomyCardRef(profileCardKey)}
-                          className={`border border-gray-200 rounded-lg p-4 transition-colors ${highlightedAutonomyCardKey === profileCardKey ? AUTONOMY_FOCUS_CARD_CLASS : ''}`}
-                        >
-                          <div className="flex items-start justify-between gap-4">
-                            <div className="min-w-0">
-                              <div className="flex items-center gap-2 mb-1 flex-wrap">
-                                <h3 className="section-heading">{profile.title}</h3>
-                                <span className="text-xs px-2 py-0.5 rounded bg-gray-200 text-gray-700">{profile.status}</span>
-                                <span className="text-xs px-2 py-0.5 rounded bg-blue-100 text-blue-700">{profile.domain}</span>
-                                <span className="text-xs px-2 py-0.5 rounded bg-indigo-100 text-indigo-700">
-                                  {String(profile.track_type || 'generic').replaceAll('_', ' ')}
-                                </span>
-                                {plansCount > 0 ? (
-                                  <span className="text-xs px-2 py-0.5 rounded bg-emerald-100 text-emerald-700">
-                                    {plansCount} experiment plan{plansCount === 1 ? '' : 's'}
-                                  </span>
-                                ) : null}
-                              </div>
-                              <div className="text-sm text-gray-600 whitespace-pre-wrap">{profile.objective}</div>
-                              <div className="text-xs text-gray-500 mt-2 flex flex-wrap gap-3">
-                                <span>Cadence {profile.interval_minutes}m</span>
-                                <span>Mode {String(profile.research_mode || 'literature_to_hypothesis').replaceAll('_', ' ')}</span>
-                                <span>Scope {String(profile.source_scope || 'kb_plus_arxiv').replaceAll('_', ' ')}</span>
-                                <span>Notes {notesCount}</span>
-                                <span>Plans {plansCount}</span>
-                                <span>Validations {Array.isArray(profile.latest_validation_run_ids) ? profile.latest_validation_run_ids.length : 0}</span>
-                                {profile.last_run_at ? <span>Last run {new Date(profile.last_run_at).toLocaleString()}</span> : null}
-                              </div>
-                              {summary.domain_summary ? (
-                                <div className="mt-2 text-xs text-gray-600">{String(summary.domain_summary)}</div>
-                              ) : null}
-                              {Number(delta.new_signal_count || 0) > 0 ? (
-                                <div className="mt-2 text-xs text-emerald-700">
-                                  New signals {Number(delta.new_signal_count || 0)}
-                                  {Array.isArray(delta.new_idea_titles) && delta.new_idea_titles.length > 0 ? ` · ${delta.new_idea_titles.slice(0, 2).join(', ')}` : ''}
-                                </div>
-                              ) : null}
-                            </div>
-                            <div className="flex gap-2 shrink-0 flex-wrap justify-end">
-                              {['draft', 'completed', 'cancelled'].includes(profile.status) ? (
-                                <Button size="sm" variant="primary" onClick={() => domainProfileActionMutation.mutate({ profileId: profile.id, action: 'start' })}>
-                                  Start
-                                </Button>
-                              ) : null}
-                              {profile.status === 'running' ? (
-                                <Button size="sm" variant="secondary" onClick={() => domainProfileActionMutation.mutate({ profileId: profile.id, action: 'pause' })}>
-                                  Pause
-                                </Button>
-                              ) : null}
-                              {profile.status === 'paused' ? (
-                                <Button size="sm" variant="secondary" onClick={() => domainProfileActionMutation.mutate({ profileId: profile.id, action: 'resume' })}>
-                                  Resume
-                                </Button>
-                              ) : null}
-                              <Button size="sm" variant="ghost" onClick={() => domainProfileActionMutation.mutate({ profileId: profile.id, action: 'run_now' })}>
-                                Run Now
-                              </Button>
-                              {profile.status !== 'cancelled' ? (
-                                <Button size="sm" variant="ghost" onClick={() => domainProfileActionMutation.mutate({ profileId: profile.id, action: 'cancel' })}>
-                                  Cancel
-                                </Button>
-                              ) : null}
-                            </div>
-                          </div>
-                          <details
-                            className="mt-3 bg-gray-50 border border-gray-100 rounded-lg p-3"
-                            open={isProfileExpanded}
-                            onToggle={(e) => {
-                              const nextOpen = (e.currentTarget as HTMLDetailsElement).open;
-                              setExpandedDomainProfileIds((prev) => ({ ...prev, [String(profile.id)]: nextOpen }));
-                            }}
-                          >
-                            <summary className="cursor-pointer text-xs font-medium text-gray-800">Latest research ops state</summary>
-                            <div className="mt-3 space-y-3 text-xs text-gray-700">
-                              <SharedAutonomyMetricGrid
-                                items={[
-                                  {
-                                    label: 'Fresh evidence',
-                                    value: `Docs ${Array.isArray(delta.new_document_ids) ? delta.new_document_ids.length : 0} · Repo ${Array.isArray(delta.new_repo_document_ids) ? delta.new_repo_document_ids.length : 0} · Papers ${Array.isArray(delta.new_paper_ids) ? delta.new_paper_ids.length : 0}`,
-                                  },
-                                  {
-                                    label: 'Novel ideas',
-                                    value: `${Number((summary.novelty_summary || {}).new_idea_count || 0)} new`,
-                                    detail: `Repeated ${Number((summary.novelty_summary || {}).repeated_idea_count || 0)}`,
-                                  },
-                                  {
-                                    label: 'Automation',
-                                    value: `${formatAutonomyLabel(autonomyMode)} · review ${formatReviewModeLabel(effectivePolicy.follow_up_review_mode || 'auto_launch_safe')}`,
-                                    detail: `Confidence ${Number(effectivePolicy.confidence_threshold ?? profile.confidence_threshold ?? 0.7).toFixed(2)} · Sandbox ${String(scientificSandboxProfileById[String(profile.sandbox_profile_id || '')]?.name || profile.sandbox_profile_id || 'default')}`,
-                                  },
-                                  {
-                                    label: 'Autonomy state',
-                                    value: `Eligible ${Number(autonomyStateCounts.eligible || 0)} · Active ${Number(autonomyStateCounts.active || 0)}`,
-                                    detail: `Waiting change ${Number(autonomyStateCounts.completed_waiting_change || 0)} · Structural blocked ${Number(autonomyStateCounts.blocked_structural || 0)}`,
-                                  },
-                                ]}
-                              />
-                              <SharedAutonomyMetricGrid
-                                items={[
-                                  { label: 'Next run', value: schedulerSummary.next_run_at ? new Date(String(schedulerSummary.next_run_at)).toLocaleString() : 'Not scheduled' },
-                                  { label: 'Pending approvals', value: Number(schedulerSummary.pending_follow_up_approvals_count || 0) },
-                                  { label: 'Manual recommendations', value: Number(schedulerSummary.manual_follow_up_recommendations_count || 0) },
-                                  { label: 'Suppressed relaunches', value: Number(schedulerSummary.suppressed_relaunches_count || 0) },
-                                ]}
-                              />
-                              <SharedPortfolioLikeAutonomyControls
-                                draft={policyDraft}
-                                applyLabel="Save"
-                                disabled={updateDomainProfileMutation.isLoading}
-                                onApply={() => submitDomainProfilePolicyDraft(profile)}
-                                onFieldChange={(field, value) => updateDomainProfilePolicyDraftField(profile, field, value)}
-                              />
-                              <div className="text-[11px] text-gray-500">
-                                Queued reviews {queuedReviewsCount}
-                              </div>
-                              {renderBulkFollowUpControls(
-                                'domain',
-                                String(profile.id),
-                                summary.pending_follow_up_approvals as Array<Record<string, any>> | undefined,
-                                summary.manual_follow_up_recommendations as Array<Record<string, any>> | undefined,
-                                summary.suppressed_relaunches as Array<Record<string, any>> | undefined,
-                                opportunities as Array<Record<string, any>> | undefined,
-                              )}
-                              {Array.isArray(summary.blocked_opportunities) && summary.blocked_opportunities.length > 0 ? (
-                                <div className="bg-white border border-gray-200 rounded p-2">
-                                  <div className="font-medium text-gray-800">Blocked opportunities</div>
-                                  <div className="mt-1 space-y-1">
-                                    {summary.blocked_opportunities.slice(0, 4).map((row: Record<string, any>, idx: number) => {
-                                      const resolvedRow = resolveOpportunityContextRow(row, opportunities as Array<Record<string, any>>);
-                                      return renderAutonomySummaryRow(
-                                        'domain',
-                                        String(profile.id),
-                                        'suppressed',
-                                        row,
-                                        idx,
-                                        <>
-                                          <div>{String(row.title || row.canonical_key || 'Blocked opportunity')}{row.last_blocked_reason_code ? ` · ${String(row.last_blocked_reason_code)}` : ''}</div>
-                                          {renderOpportunityExplainabilityPanel(buildAutonomyReviewRowKey('domain', String(profile.id), 'suppressed', String(row.opportunity_id || row.canonical_key || idx)), resolvedRow, { surface: 'domain', ownerId: String(profile.id) })}
-                                        </>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              ) : null}
-                              {Array.isArray(summary.completed_waiting_change_opportunities) && summary.completed_waiting_change_opportunities.length > 0 ? (
-                                <div className="bg-white border border-gray-200 rounded p-2">
-                                  <div className="font-medium text-gray-800">Waiting on evidence change</div>
-                                  <div className="mt-1 space-y-1">
-                                    {summary.completed_waiting_change_opportunities.slice(0, 4).map((row: Record<string, any>, idx: number) => {
-                                      const resolvedRow = resolveOpportunityContextRow(row, opportunities as Array<Record<string, any>>);
-                                      return renderAutonomySummaryRow(
-                                        'domain',
-                                        String(profile.id),
-                                        'suppressed',
-                                        row,
-                                        idx,
-                                        <>
-                                          <div>{String(row.title || row.canonical_key || 'Completed opportunity')}{row.last_decision_reason_code ? ` · ${String(row.last_decision_reason_code)}` : row.reason_code ? ` · ${String(row.reason_code)}` : ''}</div>
-                                          {renderOpportunityExplainabilityPanel(buildAutonomyReviewRowKey('domain', String(profile.id), 'suppressed', String(row.opportunity_id || row.canonical_key || idx)), resolvedRow, { surface: 'domain', ownerId: String(profile.id) })}
-                                        </>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              ) : null}
-                              {Array.isArray(summary.cooldown_opportunities) && summary.cooldown_opportunities.length > 0 ? (
-                                <div className="bg-white border border-gray-200 rounded p-2">
-                                  <div className="font-medium text-gray-800">Cooldown opportunities</div>
-                                  <div className="mt-1 space-y-1">
-                                    {summary.cooldown_opportunities.slice(0, 4).map((row: Record<string, any>, idx: number) => {
-                                      const resolvedRow = resolveOpportunityContextRow(row, opportunities as Array<Record<string, any>>);
-                                      return renderAutonomySummaryRow(
-                                        'domain',
-                                        String(profile.id),
-                                        'suppressed',
-                                        row,
-                                        idx,
-                                        <>
-                                          <div>{String(row.title || row.canonical_key || 'Cooldown opportunity')}{row.last_decision_reason_code ? ` · ${String(row.last_decision_reason_code)}` : row.reason_code ? ` · ${String(row.reason_code)}` : ''}</div>
-                                          {renderOpportunityExplainabilityPanel(buildAutonomyReviewRowKey('domain', String(profile.id), 'suppressed', String(row.opportunity_id || row.canonical_key || idx)), resolvedRow, { surface: 'domain', ownerId: String(profile.id) })}
-                                        </>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              ) : null}
-                              {Array.isArray(summary.skipped_opportunities) && summary.skipped_opportunities.length > 0 ? (
-                                <div className="bg-white border border-gray-200 rounded p-2">
-                                  <div className="font-medium text-gray-800">Skipped opportunities</div>
-                                  <div className="mt-1 space-y-1">
-                                    {summary.skipped_opportunities.slice(0, 4).map((row: Record<string, any>, idx: number) => {
-                                      const resolvedRow = resolveOpportunityContextRow(row, opportunities as Array<Record<string, any>>);
-                                      return renderAutonomySummaryRow(
-                                        'domain',
-                                        String(profile.id),
-                                        'suppressed',
-                                        row,
-                                        idx,
-                                        <>
-                                          <div>{String(row.title || row.canonical_key || 'Skipped opportunity')}{row.reason_code ? ` · ${String(row.reason_code)}` : ''}</div>
-                                          {renderOpportunityExplainabilityPanel(buildAutonomyReviewRowKey('domain', String(profile.id), 'suppressed', String(row.opportunity_id || row.canonical_key || idx)), resolvedRow, { surface: 'domain', ownerId: String(profile.id) })}
-                                        </>
-                                      );
-                                    })}
-                                  </div>
-                                </div>
-                              ) : null}
-                              {summary.evidence_mix ? (
-                                <div className="bg-white border border-gray-200 rounded p-2">
-                                  <div className="font-medium text-gray-800">Evidence mix</div>
-                                  <div className="mt-1 text-gray-600">
-                                    KB {Number((summary.evidence_mix as any)?.documents || 0)}
-                                    {' '}· Repo {Number((summary.evidence_mix as any)?.repo_documents || 0)}
-                                    {' '}· Papers {Number((summary.evidence_mix as any)?.papers || 0)}
-                                  </div>
-                                </div>
-                              ) : null}
-                              {ideaTitles.length > 0 ? (
-                                <div className="bg-white border border-gray-200 rounded p-2">
-                                  <div className="font-medium text-gray-800">Latest top ideas</div>
-                                  <div className="mt-1 space-y-1">
-                                    {ideaTitles.map((idea) => (
-                                      <div key={String(idea)}>{String(idea)}</div>
-                                    ))}
-                                  </div>
-                                </div>
-                              ) : null}
-                              {opportunities.length > 0 ? (
-                                <div className="bg-white border border-gray-200 rounded p-2">
-                                  <div className="font-medium text-gray-800">Opportunity queue</div>
-                                  <div className="mt-2 space-y-2">
-                                    {opportunities.slice(0, 6).map((row) => {
-                                      const opportunityRowKey = buildAutonomyOpportunityRowKey('domain', String(profile.id), String(row.opportunity_id));
-                                      const opportunityNoteId = String((Array.isArray(row.source_note_ids) && row.source_note_ids.length > 0
-                                        ? row.source_note_ids[0]
-                                        : (Array.isArray(profile.latest_note_ids) && profile.latest_note_ids.length > 0 ? profile.latest_note_ids[0] : '')) || '').trim();
-                                      return (
-                                      <div
-                                        key={row.opportunity_id}
-                                        ref={registerAutonomyRowRef(opportunityRowKey)}
-                                        className={`border border-gray-100 rounded p-2 transition-colors ${highlightedAutonomyRowKey === opportunityRowKey ? AUTONOMY_FOCUS_ROW_CLASS : ''}`}
-                                      >
-                                        <div className="flex items-center justify-between gap-2">
-                                          <div className="font-medium text-gray-900">{row.title}</div>
-                                          <span className={`text-[11px] px-2 py-0.5 rounded ${researchOpportunityStageClass(row.stage)}`}>
-                                            {row.stage}
-                                          </span>
-                                        </div>
-                                        <div className="mt-1 text-gray-500">
-                                          Confidence {Number(row.confidence || 0).toFixed(2)}
-                                          {' '}· Novelty {Number(row.novelty || 0).toFixed(2)}
-                                          {' '}· Readiness {Number(row.readiness || 0).toFixed(2)}
-                                        </div>
-                                        {row.operator_note ? <div className="mt-1 text-gray-500">Note: {row.operator_note}</div> : null}
-                                        <div className="mt-2 text-gray-500">
-                                          Plans {Array.isArray(row.linked_experiment_plan_ids) ? row.linked_experiment_plan_ids.length : 0}
-                                          {' '}· Runs {Array.isArray(row.linked_validation_run_ids) ? row.linked_validation_run_ids.length : 0}
-                                          {' '}· Jobs {Array.isArray(row.child_job_ids) ? row.child_job_ids.length : 0}
-                                        </div>
-                                        {String(row.latest_experiment_plan_id || row.latest_validation_run_id || row.latest_validation_job_id || '').trim() ? (
-                                          <div className="mt-1 flex flex-wrap items-center gap-2 text-xs text-gray-500">
-                                            {row.latest_experiment_plan_id ? <span>Latest plan {String(row.latest_experiment_plan_id).slice(0, 8)}</span> : null}
-                                            {row.latest_validation_run_id ? <span>Run {String(row.latest_validation_run_id).slice(0, 8)}</span> : null}
-                                            {row.latest_validation_status ? <span>Status {String(row.latest_validation_status).replace(/_/g, ' ')}</span> : null}
-                                            {row.latest_validation_blocked_reason_code ? <span>Blocked {String(row.latest_validation_blocked_reason_code).replace(/_/g, ' ')}</span> : null}
-                                            {row.latest_experiment_plan_id && opportunityNoteId ? (
-                                              <Button
-                                                size="sm"
-                                                variant="ghost"
-                                                className="!px-2 !py-1 !h-auto text-xs"
-                                                onClick={() => navigate(buildResearchNoteExperimentUrl(opportunityNoteId, { plan: String(row.latest_experiment_plan_id) }))}
-                                              >
-                                                Open plan
-                                              </Button>
-                                            ) : null}
-                                            {row.latest_validation_run_id && opportunityNoteId ? (
-                                              <Button
-                                                size="sm"
-                                                variant="ghost"
-                                                className="!px-2 !py-1 !h-auto text-xs"
-                                                onClick={() => navigate(buildResearchNoteExperimentUrl(opportunityNoteId, { run: String(row.latest_validation_run_id) }))}
-                                              >
-                                                Open run
-                                              </Button>
-                                            ) : null}
-                                            {row.latest_validation_job_id ? (
-                                              <Button
-                                                size="sm"
-                                                variant="ghost"
-                                                className="!px-2 !py-1 !h-auto text-xs"
-                                                onClick={() => navigate(buildAutonomousAgentsUrl(String(row.latest_validation_job_id)), { replace: true })}
-                                              >
-                                                Open validation job
-                                              </Button>
-                                            ) : null}
-                                          </div>
-                                        ) : null}
-                                        <div className="mt-1 text-gray-500">
-                                          Autonomy {String(row.autonomy_state || 'eligible').replace(/_/g, ' ')}
-                                          {row.last_decision_reason_code ? ` · ${String(row.last_decision_reason_code)}` : ''}
-                                          {row.next_eligible_at ? ` · Next eligible ${new Date(row.next_eligible_at).toLocaleString()}` : ''}
-                                        </div>
-                                        {renderOpportunityReevaluationReviewMeta(row, (url) => navigate(url))}
-                                        {renderOpportunityFollowUpOutcomeMeta(row)}
-                                        {renderOpportunityExplainabilityPanel(opportunityRowKey, row, { surface: 'domain', ownerId: String(profile.id) })}
-                                        <div className="mt-2 flex flex-wrap gap-2">
-                                          {row.decision_state !== 'accepted' ? (
-                                            <Button
-                                              size="sm"
-                                              variant="secondary"
-                                              onClick={() => domainOpportunityActionMutation.mutate({ profileId: profile.id, opportunityId: row.opportunity_id, action: 'accept' })}
-                                            >
-                                              Accept
-                                            </Button>
-                                          ) : null}
-                                          {row.decision_state !== 'suppressed' ? (
-                                            <Button
-                                              size="sm"
-                                              variant="ghost"
-                                              onClick={() => beginOpportunitySuppression('domain', profile.id, row)}
-                                            >
-                                              Suppress
-                                            </Button>
-                                          ) : (
-                                            <Button
-                                              size="sm"
-                                              variant="ghost"
-                                              onClick={() => domainOpportunityActionMutation.mutate({ profileId: profile.id, opportunityId: row.opportunity_id, action: 'reopen' })}
-                                            >
-                                              Reopen
-                                            </Button>
-                                          )}
-                                          {row.decision_state === 'accepted' ? (
-                                            <Button
-                                              size="sm"
-                                              variant="primary"
-                                              onClick={() => domainOpportunityActionMutation.mutate({ profileId: profile.id, opportunityId: row.opportunity_id, action: 'materialize_experiment', startImmediately: true })}
-                                            >
-                                              Run Experiment
-                                            </Button>
-                                          ) : null}
-                                          <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            disabled={Array.isArray(row.linked_experiment_plan_ids) && row.linked_experiment_plan_ids.length > 0}
-                                            onClick={() => domainOpportunityActionMutation.mutate({ profileId: profile.id, opportunityId: row.opportunity_id, action: 'create_plan' })}
-                                          >
-                                            Create Plan
-                                          </Button>
-                                          <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            disabled={Array.isArray(row.linked_validation_run_ids) && row.linked_validation_run_ids.length > 0}
-                                            onClick={() => domainOpportunityActionMutation.mutate({ profileId: profile.id, opportunityId: row.opportunity_id, action: 'launch_validation' })}
-                                          >
-                                            Launch Validation
-                                          </Button>
-                                          <Button
-                                            size="sm"
-                                            variant="ghost"
-                                            disabled={canRelaunchOpportunityRow(row) ? false : Array.isArray(row.child_job_ids) && row.child_job_ids.length > 0}
-                                            onClick={() => (
-                                              canRelaunchOpportunityRow(row)
-                                                ? beginOpportunityRelaunch('domain', String(profile.id), row)
-                                                : domainOpportunityActionMutation.mutate({ profileId: profile.id, opportunityId: row.opportunity_id, action: 'launch_follow_up' })
-                                            )}
-                                          >
-                                            {canRelaunchOpportunityRow(row) ? 'Relaunch Follow-up' : 'Follow-up'}
-                                          </Button>
-                                        </div>
-                                        {opportunityNoteDraft?.surface === 'domain'
-                                        && String(opportunityNoteDraft.ownerId) === String(profile.id)
-                                        && String(opportunityNoteDraft.opportunityId) === String(row.opportunity_id) ? (
-                                          <div className={`mt-2 rounded p-2 ${opportunityNoteDraft.mode === 'suppress' ? 'border border-rose-200 bg-rose-50' : 'border border-emerald-200 bg-emerald-50'}`}>
-                                            <div className={`text-[11px] font-medium ${opportunityNoteDraft.mode === 'suppress' ? 'text-rose-700' : 'text-emerald-700'}`}>
-                                              {opportunityNoteDraft.mode === 'suppress' ? 'Suppression note' : 'Relaunch note'}
-                                            </div>
-                                            <textarea
-                                              aria-label={opportunityNoteDraft.mode === 'suppress' ? 'Domain suppression note' : 'Domain relaunch note'}
-                                              className={`mt-2 w-full rounded px-2 py-1 text-xs ${opportunityNoteDraft.mode === 'suppress' ? 'border border-rose-200' : 'border border-emerald-200'}`}
-                                              rows={3}
-                                              value={opportunityNoteDraft.value}
-                                              onChange={(e) => setOpportunityNoteDraft((prev) => prev ? { ...prev, value: e.target.value } : prev)}
-                                            />
-                                            <div className="mt-2 flex gap-2">
-                                              <Button size="sm" variant="secondary" onClick={submitOpportunityAction}>
-                                                {opportunityNoteDraft.mode === 'suppress' ? 'Save suppression' : 'Relaunch follow-up'}
-                                              </Button>
-                                              <Button size="sm" variant="ghost" onClick={cancelOpportunityAction}>
-                                                Cancel
-                                              </Button>
-                                            </div>
-                                          </div>
-                                        ) : null}
-                                      </div>
-                                    );})}
-                                  </div>
-                                </div>
-                              ) : null}
-                              <SharedAutonomyReviewLists
-                                sections={[
-                                  { title: 'Queued operator reviews', rows: summary.queued_operator_reviews as Array<Record<string, any>> | undefined },
-                                  {
-                                    title: 'Pending approvals',
-                                    rows: summary.pending_follow_up_approvals as Array<Record<string, any>> | undefined,
-                                    renderRow: (row, idx) => renderInlineFollowUpApprovalRow('domain', String(profile.id), row, idx),
-                                  },
-                                  {
-                                    title: 'Manual recommendations',
-                                    rows: summary.manual_follow_up_recommendations as Array<Record<string, any>> | undefined,
-                                    renderRow: (row, idx) => renderInlineManualRecommendationRow(
-                                      'domain',
-                                      String(profile.id),
-                                      row,
-                                      idx,
-                                      opportunities as Array<Record<string, any>> | undefined,
-                                    ),
-                                  },
-                                  {
-                                    title: 'Suppressed relaunches',
-                                    rows: summary.suppressed_relaunches as Array<Record<string, any>> | undefined,
-                                    renderRow: (row, idx) => renderInlineSuppressedRelaunchRow(
-                                      'domain',
-                                      String(profile.id),
-                                      row,
-                                      idx,
-                                      opportunities as Array<Record<string, any>> | undefined,
-                                    ),
-                                  },
-                                ]}
-                              />
-                              {(Array.isArray(profile.latest_note_ids) && profile.latest_note_ids.length > 0) || (Array.isArray(profile.latest_experiment_plan_ids) && profile.latest_experiment_plan_ids.length > 0) || validationRuns.length > 0 || (Array.isArray(profile.latest_validation_run_ids) && profile.latest_validation_run_ids.length > 0) ? (
-                                <div className="bg-white border border-gray-200 rounded p-2">
-                                  <div className="font-medium text-gray-800">Artifacts</div>
-                                  {Array.isArray(profile.latest_note_ids) && profile.latest_note_ids.length > 0 ? (
-                                    <div className="mt-1 text-gray-600">Research notes: {profile.latest_note_ids.join(', ')}</div>
-                                  ) : null}
-                                  {Array.isArray(profile.latest_experiment_plan_ids) && profile.latest_experiment_plan_ids.length > 0 ? (
-                                    <div className="mt-1 text-gray-600">Experiment plans: {profile.latest_experiment_plan_ids.join(', ')}</div>
-                                  ) : null}
-                                  {validationRuns.length > 0 ? (
-                                    <div className="mt-2">{renderScientificValidationRuns(validationRuns as any, { ownerProfile: profile })}</div>
-                                  ) : Array.isArray(profile.latest_validation_run_ids) && profile.latest_validation_run_ids.length > 0 ? (
-                                    <div className="mt-1 text-gray-600">Validation runs: {profile.latest_validation_run_ids.join(', ')}</div>
-                                  ) : null}
-                                </div>
-                              ) : null}
-                            </div>
-                          </details>
-                        </div>
-                      );
-                    })}
-                    {!(((domainProfilesData as any)?.items || []) as DomainResearchProfile[]).length ? (
-                      <div className="text-sm text-gray-500">No domain profiles yet.</div>
-                    ) : null}
-                  </div>
-                )}
-              </div>
-            </div>
-          </div>
+          <Suspense fallback={<div className="p-6 text-sm text-gray-500">Loading…</div>}>
+            <DomainProfilesTab
+              domainProfilesData={domainProfilesData}
+              domainProfilesLoading={domainProfilesLoading}
+              refetchDomainProfiles={refetchDomainProfiles}
+              beginOpportunityRelaunch={beginOpportunityRelaunch}
+              beginOpportunitySuppression={beginOpportunitySuppression}
+              buildAutonomousAgentsUrl={buildAutonomousAgentsUrl}
+              buildAutonomyCardKey={buildAutonomyCardKey}
+              buildAutonomyOpportunityRowKey={buildAutonomyOpportunityRowKey}
+              buildAutonomyReviewRowKey={buildAutonomyReviewRowKey}
+              buildResearchNoteExperimentUrl={buildResearchNoteExperimentUrl}
+              cancelOpportunityAction={cancelOpportunityAction}
+              codeSources={codeSources}
+              createScientificResearchPackMutation={createScientificResearchPackMutation}
+              domainAvailableSandboxProfiles={domainAvailableSandboxProfiles}
+              domainOpportunityActionMutation={domainOpportunityActionMutation}
+              domainProfileBenchmarkQueriesText={domainProfileBenchmarkQueriesText}
+              setDomainProfileBenchmarkQueriesText={setDomainProfileBenchmarkQueriesText}
+              domainProfileCadenceMinutes={domainProfileCadenceMinutes}
+              setDomainProfileCadenceMinutes={setDomainProfileCadenceMinutes}
+              domainProfileObjective={domainProfileObjective}
+              setDomainProfileObjective={setDomainProfileObjective}
+              domainProfilePolicyDrafts={domainProfilePolicyDrafts}
+              setDomainProfilePolicyDrafts={setDomainProfilePolicyDrafts}
+              domainProfileQueriesText={domainProfileQueriesText}
+              setDomainProfileQueriesText={setDomainProfileQueriesText}
+              domainProfileRepoSelection={domainProfileRepoSelection}
+              setDomainProfileRepoSelection={setDomainProfileRepoSelection}
+              domainProfileSandboxProfileId={domainProfileSandboxProfileId}
+              setDomainProfileSandboxProfileId={setDomainProfileSandboxProfileId}
+              domainProfileSourceScope={domainProfileSourceScope}
+              setDomainProfileSourceScope={setDomainProfileSourceScope}
+              domainProfileTitle={domainProfileTitle}
+              setDomainProfileTitle={setDomainProfileTitle}
+              domainProfileTopic={domainProfileTopic}
+              setDomainProfileTopic={setDomainProfileTopic}
+              domainProfileTrackType={domainProfileTrackType}
+              setDomainProfileTrackType={setDomainProfileTrackType}
+              expandedDomainProfileIds={expandedDomainProfileIds}
+              setExpandedDomainProfileIds={setExpandedDomainProfileIds}
+              highlightedAutonomyCardKey={highlightedAutonomyCardKey}
+              highlightedAutonomyRowKey={highlightedAutonomyRowKey}
+              navigate={navigate}
+              opportunityNoteDraft={opportunityNoteDraft}
+              setOpportunityNoteDraft={setOpportunityNoteDraft}
+              queryClient={queryClient}
+              registerAutonomyCardRef={registerAutonomyCardRef}
+              registerAutonomyRowRef={registerAutonomyRowRef}
+              renderAutonomySummaryRow={renderAutonomySummaryRow}
+              renderBulkFollowUpControls={renderBulkFollowUpControls}
+              renderInlineFollowUpApprovalRow={renderInlineFollowUpApprovalRow}
+              renderInlineManualRecommendationRow={renderInlineManualRecommendationRow}
+              renderInlineSuppressedRelaunchRow={renderInlineSuppressedRelaunchRow}
+              renderOpportunityExplainabilityPanel={renderOpportunityExplainabilityPanel}
+              renderScientificSandboxManagementPanel={renderScientificSandboxManagementPanel}
+              renderScientificValidationRuns={renderScientificValidationRuns}
+              resolveOpportunityContextRow={resolveOpportunityContextRow}
+              resolveSandboxProfileId={resolveSandboxProfileId}
+              scientificSandboxProfileById={scientificSandboxProfileById}
+              submitOpportunityAction={submitOpportunityAction}
+              updateDomainProfileMutation={updateDomainProfileMutation}
+            />
+          </Suspense>
         )}
 
         {activeTab === 'swarm' && (

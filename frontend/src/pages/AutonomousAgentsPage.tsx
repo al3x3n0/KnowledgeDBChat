@@ -124,6 +124,7 @@ import NewCampaignModal from '../components/agent/NewCampaignModal';
 import CollaborationSummaryPanel from '../components/agent/CollaborationSummaryPanel';
 import JobChainsTab from '../components/agent/tabs/JobChainsTab';
 import SwarmReviewTab from '../components/agent/tabs/SwarmReviewTab';
+import { invalidateAgentRunQueries } from '../utils/agentRunQueries';
 import JobTemplatesTab, { QuickStart } from '../components/agent/tabs/JobTemplatesTab';
 import PluginSlot from '../plugins/PluginSlot';
 import InboxMonitorModal from '../components/agent/InboxMonitorModal';
@@ -1836,12 +1837,11 @@ const AutonomousAgentsPage: React.FC = () => {
         queryClient.invalidateQueries(['notifications']);
         queryClient.invalidateQueries(['notifications-unread-count']);
         if (vars?.action === 'approve_launch' || vars?.action === 'reject_launch' || vars?.action === 'relaunch_follow_up') {
-          queryClient.invalidateQueries(['agent-checkpoint-queue']);
-          queryClient.invalidateQueries(['research-portfolios']);
-          queryClient.invalidateQueries(['domain-research-profiles']);
-          queryClient.invalidateQueries(['research-inbox']);
-          queryClient.invalidateQueries(['agent-jobs']);
-          queryClient.invalidateQueries(['agent-jobs-stats']);
+          invalidateAgentRunQueries(queryClient, [
+            'research-portfolios',
+            'domain-research-profiles',
+            'research-inbox',
+          ]);
           toast.success(
             vars.action === 'approve_launch'
               ? 'Follow-up launched'
@@ -3529,9 +3529,7 @@ const AutonomousAgentsPage: React.FC = () => {
       }),
     {
       onSuccess: (job, vars) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient);
         if (
           (vars?.action === 'relaunch')
           || (vars?.action === 'restart' && String(job?.id || '') !== String(vars?.jobId || ''))
@@ -3617,9 +3615,7 @@ const AutonomousAgentsPage: React.FC = () => {
     (jobId: string) => apiClient.deleteAgentJob(jobId),
     {
       onSuccess: () => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient);
         toast.success('Job deleted');
         setSelectedJob(null);
         navigate(buildAutonomousAgentsUrl(), { replace: true });
@@ -3635,9 +3631,10 @@ const AutonomousAgentsPage: React.FC = () => {
       apiClient.updateResearchInboxItem(itemId, data),
     {
       onSuccess: (_res, vars) => {
-        queryClient.invalidateQueries(['research-inbox']);
-        queryClient.invalidateQueries(['research-inbox-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-inbox',
+          'research-inbox-stats',
+        ]);
         if (vars?.data?.status === 'rejected') {
           setInboxRejectReasonDrafts((current) => {
             const next = { ...current };
@@ -3657,9 +3654,10 @@ const AutonomousAgentsPage: React.FC = () => {
       apiClient.bulkUpdateResearchInboxItems({ item_ids: itemIds, ...data }),
     {
       onSuccess: (res) => {
-        queryClient.invalidateQueries(['research-inbox']);
-        queryClient.invalidateQueries(['research-inbox-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-inbox',
+          'research-inbox-stats',
+        ]);
         setSelectedInboxIds({});
         setInboxBulkRejectReason('');
         toast.success(`Updated ${res.updated} items`);
@@ -3704,10 +3702,10 @@ const AutonomousAgentsPage: React.FC = () => {
       apiClient.updateResearchMonitorPolicy(monitorJobId, data),
     {
       onSuccess: (_res, vars) => {
-        queryClient.invalidateQueries(['research-monitor-analytics']);
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-monitor-analytics',
+          'research-inbox',
+        ]);
         toast.success('Monitor policy updated');
         if (vars.monitorJobId) {
           setHealthPolicySimulations((prev) => {
@@ -3736,10 +3734,10 @@ const AutonomousAgentsPage: React.FC = () => {
       apiClient.rollbackResearchMonitorPolicy(monitorJobId, { history_entry_id: historyEntryId }),
     {
       onSuccess: (_res, vars) => {
-        queryClient.invalidateQueries(['research-monitor-analytics']);
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-monitor-analytics',
+          'research-inbox',
+        ]);
         toast.success('Monitor policy rolled back');
         if (vars.monitorJobId) {
           setHealthPolicySimulations((prev) => {
@@ -3779,8 +3777,9 @@ const AutonomousAgentsPage: React.FC = () => {
     }) => apiClient.updateResearchMonitorBudget(monitorJobId, data),
     {
       onSuccess: (_res, vars) => {
-        queryClient.invalidateQueries(['research-monitor-analytics']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-monitor-analytics',
+        ]);
         toast.success('Monitor autonomy budget updated');
         if (vars.monitorJobId) {
           setHealthBudgetDrafts((prev) => {
@@ -3812,9 +3811,10 @@ const AutonomousAgentsPage: React.FC = () => {
     }) => apiClient.updateResearchMonitorCustomerBudget({ customer, ...data }),
     {
       onSuccess: (_res, vars) => {
-        queryClient.invalidateQueries(['research-monitor-analytics']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-monitor-analytics',
+          'research-inbox',
+        ]);
         toast.success('Customer autonomy budget updated');
         if (vars.customer) {
           setHealthCustomerBudgetDrafts((prev) => {
@@ -3885,9 +3885,10 @@ const AutonomousAgentsPage: React.FC = () => {
       }),
     {
       onSuccess: (_res, vars) => {
-        queryClient.invalidateQueries(['research-monitor-analytics']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-monitor-analytics',
+          'research-inbox',
+        ]);
         toast.success('Customer rebalance applied');
         setHealthCustomerRebalancePreviews((prev) => {
           const next = { ...prev };
@@ -4140,9 +4141,7 @@ const AutonomousAgentsPage: React.FC = () => {
     (data: AgentJobCreate) => apiClient.createAgentJob(data),
     {
       onSuccess: (job) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient);
         toast.success('Job created');
         setShowCreateModal(false);
         setActiveTab('jobs');
@@ -4311,8 +4310,9 @@ const AutonomousAgentsPage: React.FC = () => {
       apiClient.updateDomainResearchProfile(profileId, data),
     {
       onSuccess: () => {
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient, [
+          'domain-research-profiles',
+        ]);
         toast.success('Domain profile settings updated');
       },
       onError: (error: any) => {
@@ -4596,13 +4596,14 @@ const AutonomousAgentsPage: React.FC = () => {
           invalidateOpportunityExperimentQueries(response, variables?.opportunityId);
         }
         if (variables?.action === 'launch_follow_up' || variables?.action === 'relaunch_follow_up') {
-          queryClient.invalidateQueries(['research-inbox']);
-          queryClient.invalidateQueries(['research-inbox-stats']);
-          queryClient.invalidateQueries(['agent-checkpoint-queue']);
-          queryClient.invalidateQueries(['agent-decision-trace']);
-          queryClient.invalidateQueries(['agent-decision-trace-analytics']);
-          queryClient.invalidateQueries(['notifications']);
-          queryClient.invalidateQueries(['notifications-unread-count']);
+          invalidateAgentRunQueries(queryClient, [
+            'research-inbox',
+            'research-inbox-stats',
+            'agent-decision-trace',
+            'agent-decision-trace-analytics',
+            'notifications',
+            'notifications-unread-count',
+          ]);
         }
       },
       onError: (error: any) => {
@@ -4638,13 +4639,14 @@ const AutonomousAgentsPage: React.FC = () => {
           invalidateOpportunityExperimentQueries(response, variables?.opportunityId);
         }
         if (variables?.action === 'launch_follow_up' || variables?.action === 'relaunch_follow_up') {
-          queryClient.invalidateQueries(['research-inbox']);
-          queryClient.invalidateQueries(['research-inbox-stats']);
-          queryClient.invalidateQueries(['agent-checkpoint-queue']);
-          queryClient.invalidateQueries(['agent-decision-trace']);
-          queryClient.invalidateQueries(['agent-decision-trace-analytics']);
-          queryClient.invalidateQueries(['notifications']);
-          queryClient.invalidateQueries(['notifications-unread-count']);
+          invalidateAgentRunQueries(queryClient, [
+            'research-inbox',
+            'research-inbox-stats',
+            'agent-decision-trace',
+            'agent-decision-trace-analytics',
+            'notifications',
+            'notifications-unread-count',
+          ]);
         }
       },
       onError: (error: any) => {
@@ -4990,9 +4992,7 @@ const AutonomousAgentsPage: React.FC = () => {
     (data: AgentJobCreate) => apiClient.createAgentJob(data),
     {
       onSuccess: (job) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient);
         toast.success('Monitor created');
         setShowInboxMonitorModal(false);
         setActiveTab('jobs');
@@ -5008,9 +5008,7 @@ const AutonomousAgentsPage: React.FC = () => {
     (data: AgentJobFromTemplate) => apiClient.createAgentJobFromTemplate(data),
     {
       onSuccess: (job) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient);
         toast.success('Job created from template');
         setCreateFromTemplate(null);
         setActiveTab('jobs');
@@ -5026,9 +5024,7 @@ const AutonomousAgentsPage: React.FC = () => {
     (data: AgentJobFromChainCreate) => apiClient.createJobFromChain(data),
     {
       onSuccess: (job) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient);
         toast.success('Chain started');
         setStartFromChain(null);
         setActiveTab('jobs');
@@ -5565,13 +5561,12 @@ const AutonomousAgentsPage: React.FC = () => {
         }
       },
       onSuccess: (response, variables) => {
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
-        queryClient.invalidateQueries(['research-inbox-stats']);
-        queryClient.invalidateQueries(['research-portfolios']);
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-inbox',
+          'research-inbox-stats',
+          'research-portfolios',
+          'domain-research-profiles',
+        ]);
         if (variables.refreshTarget === 'domain') {
           void refetchDomainProfiles();
         } else if (variables.refreshTarget === 'fleet') {
@@ -5640,13 +5635,12 @@ const AutonomousAgentsPage: React.FC = () => {
         setActiveBulkFollowUpOwnerKey(String(variables.ownerKey || ''));
       },
       onSuccess: (response, variables) => {
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
-        queryClient.invalidateQueries(['research-inbox-stats']);
-        queryClient.invalidateQueries(['research-portfolios']);
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-inbox',
+          'research-inbox-stats',
+          'research-portfolios',
+          'domain-research-profiles',
+        ]);
         if (variables.refreshTarget === 'domain') {
           void refetchDomainProfiles();
         } else {
@@ -5751,17 +5745,16 @@ const AutonomousAgentsPage: React.FC = () => {
         setActiveBulkFollowUpOwnerKey(buildBulkFollowUpOwnerKey(variables.scope, variables.ownerId));
       },
       onSuccess: (response, variables) => {
-        queryClient.invalidateQueries(['research-portfolios']);
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['research-inbox']);
-        queryClient.invalidateQueries(['research-inbox-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['agent-decision-trace']);
-        queryClient.invalidateQueries(['agent-decision-trace-analytics']);
-        queryClient.invalidateQueries(['notifications']);
-        queryClient.invalidateQueries(['notifications-unread-count']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-portfolios',
+          'domain-research-profiles',
+          'research-inbox',
+          'research-inbox-stats',
+          'agent-decision-trace',
+          'agent-decision-trace-analytics',
+          'notifications',
+          'notifications-unread-count',
+        ]);
         if (variables.scope === 'domain') {
           void refetchDomainProfiles();
         } else {
@@ -5829,9 +5822,7 @@ const AutonomousAgentsPage: React.FC = () => {
     }),
     {
       onSuccess: (response) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
+        invalidateAgentRunQueries(queryClient);
         setQueueSelection({});
         setQueueBulkNote('');
         if (response.failed > 0) {
@@ -5875,15 +5866,14 @@ const AutonomousAgentsPage: React.FC = () => {
     }),
     {
       onSuccess: (response) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
-        queryClient.invalidateQueries(['research-inbox-stats']);
-        queryClient.invalidateQueries(['research-portfolios']);
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-decision-trace']);
-        queryClient.invalidateQueries(['agent-decision-trace-analytics']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-inbox',
+          'research-inbox-stats',
+          'research-portfolios',
+          'domain-research-profiles',
+          'agent-decision-trace',
+          'agent-decision-trace-analytics',
+        ]);
         const successfulIds = new Set(
           response.results
             .filter((row) => row.ok)
@@ -5946,17 +5936,16 @@ const AutonomousAgentsPage: React.FC = () => {
     }),
     {
       onSuccess: (response) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
-        queryClient.invalidateQueries(['research-inbox-stats']);
-        queryClient.invalidateQueries(['research-portfolios']);
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-decision-trace']);
-        queryClient.invalidateQueries(['agent-decision-trace-analytics']);
-        queryClient.invalidateQueries(['notifications']);
-        queryClient.invalidateQueries(['notifications-unread-count']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-inbox',
+          'research-inbox-stats',
+          'research-portfolios',
+          'domain-research-profiles',
+          'agent-decision-trace',
+          'agent-decision-trace-analytics',
+          'notifications',
+          'notifications-unread-count',
+        ]);
         const successfulIds = new Set(
           response.results
             .filter((row) => row.ok)
@@ -5999,17 +5988,16 @@ const AutonomousAgentsPage: React.FC = () => {
       apiClient.bulkRelaunchInboxFollowUp({ item_ids, operator_note }),
     {
       onSuccess: (response) => {
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['agent-jobs-stats']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
-        queryClient.invalidateQueries(['research-inbox-stats']);
-        queryClient.invalidateQueries(['research-portfolios']);
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['agent-decision-trace']);
-        queryClient.invalidateQueries(['agent-decision-trace-analytics']);
-        queryClient.invalidateQueries(['notifications']);
-        queryClient.invalidateQueries(['notifications-unread-count']);
+        invalidateAgentRunQueries(queryClient, [
+          'research-inbox',
+          'research-inbox-stats',
+          'research-portfolios',
+          'domain-research-profiles',
+          'agent-decision-trace',
+          'agent-decision-trace-analytics',
+          'notifications',
+          'notifications-unread-count',
+        ]);
         const successfulIds = new Set(
           response.results
             .filter((row) => row.ok)

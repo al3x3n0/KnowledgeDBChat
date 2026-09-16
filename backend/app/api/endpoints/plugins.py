@@ -28,8 +28,9 @@ from app.schemas.plugin import (
     ContributedToolView,
     ContributedWorkflowView,
     PluginCreate,
+    PluginDraftQueued,
     PluginDraftRequest,
-    PluginDraftResponse,
+    PluginDraftStatus,
     PluginInstallationUpdate,
     PluginInstallRequest,
     PluginListResponse,
@@ -38,7 +39,6 @@ from app.schemas.plugin import (
 )
 from app.services import plugin_registry
 from app.services.custom_tool_service import CustomToolService, ToolExecutionError
-from app.services.plugin_author_service import draft_manifest
 from app.services.plugin_manifest import ManifestError, validate_manifest
 
 router = APIRouter()
@@ -350,17 +350,26 @@ async def uninstall_plugin(
     await db.commit()
 
 
-@router.post("/draft", response_model=PluginDraftResponse)
+@router.post(
+    "/draft", response_model=PluginDraftQueued, status_code=status.HTTP_202_ACCEPTED
+)
 async def draft_plugin(
     payload: PluginDraftRequest,
-    db: AsyncSession = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    """Draft a manifest from a description. Drafting never installs anything.
+    """Start drafting a manifest. Returns immediately; poll for the result.
 
-    The result is handed back for review rather than created, because a
-    manifest that validates is not the same as a manifest that does what
-    somebody meant -- and the only person who can tell is the one who asked.
+    Drafting is slow for a reason that is not going away: the draft is checked
+    against the real validator and its tools are actually run, and when either
+    refuses the model is asked again. Measured, a first-time-right draft took
+    about twenty seconds and one needing two repairs took two minutes -- and
+    the repair loop is what makes the output worth having, so the slow case is
+    the common one whenever a first draft is wrong. Held open on the request
+    that is a connection tied up for minutes and a proxy timeout waiting to
+    happen.
+
+    Drafting never installs anything. The manifest comes back for review,
+    because one that validates is not one that does what somebody meant.
     """
     if not bool(getattr(settings, "PLUGINS_USER_AUTHORING_ENABLED", True)):
         raise HTTPException(
@@ -370,10 +379,71 @@ async def draft_plugin(
                 "(PLUGINS_USER_AUTHORING_ENABLED=false)."
             ),
         )
-    result = await draft_manifest(
-        payload.description, user=current_user, db=db, user_id=current_user.id
+
+    from app.tasks.plugin_tasks import draft_plugin_manifest
+
+    task = draft_plugin_manifest.delay(payload.description, str(current_user.id))
+    return PluginDraftQueued(
+        task_id=task.id, poll_url=f"/api/v1/plugins/draft/{task.id}"
     )
-    return PluginDraftResponse(**result)
+
+
+@router.get("/draft/{task_id}", response_model=PluginDraftStatus)
+async def get_plugin_draft(
+    task_id: str,
+    current_user: User = Depends(get_current_active_user),
+):
+    """Where a draft has got to, and its result once there is one.
+
+    A task id is unguessable, which is not the same as checked: the owner is
+    carried in the task's own state and compared here, so one person cannot
+    read another's draft by holding an id.
+    """
+    from celery.result import AsyncResult
+
+    from app.core.celery import celery_app
+
+    result = AsyncResult(task_id, app=celery_app)
+    state = str(result.state or "PENDING")
+    info = result.info if isinstance(result.info, dict) else {}
+
+    owner = str(info.get("user_id") or "")
+    if owner and owner != str(current_user.id):
+        # 404 rather than 403: confirming that somebody else's draft exists is
+        # itself the thing being withheld.
+        raise HTTPException(status_code=404, detail="No such draft")
+
+    if state == "SUCCESS":
+        return PluginDraftStatus(
+            state=state,
+            stage="done",
+            attempt=int(info.get("attempts") or 0),
+            notes=[str(n) for n in (info.get("notes") or [])],
+            manifest=info.get("manifest"),
+            attempts=int(info.get("attempts") or 0),
+            pending=False,
+        )
+
+    if state == "FAILURE":
+        # The task returns its failures rather than raising, so arriving here
+        # means the worker itself died -- a timeout, or a restart mid-draft.
+        return PluginDraftStatus(
+            state=state,
+            stage="done",
+            notes=["The worker drafting this stopped before it finished."],
+            pending=False,
+        )
+
+    # PENDING is also what Celery reports for a task id it has never heard of;
+    # the two are genuinely indistinguishable through this API, and saying so
+    # is better than implying a draft is on its way when none is.
+    return PluginDraftStatus(
+        state=state,
+        stage=str(info.get("stage") or "") or None,
+        attempt=int(info.get("attempt") or 0),
+        notes=[str(n) for n in (info.get("notes") or [])],
+        pending=True,
+    )
 
 
 @router.get("/me/ui", response_model=Dict[str, Any])

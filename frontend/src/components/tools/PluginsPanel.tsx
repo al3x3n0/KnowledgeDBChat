@@ -117,6 +117,7 @@ export const PluginsPanel: React.FC = () => {
   const [wish, setWish] = useState('');
   const [drafting, setDrafting] = useState(false);
   const [draftNotes, setDraftNotes] = useState<string[]>([]);
+  const [draftStage, setDraftStage] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -165,23 +166,52 @@ export const PluginsPanel: React.FC = () => {
     }
     setDrafting(true);
     setDraftNotes([]);
+    setDraftStage(null);
     try {
-      const result = await apiClient.draftPlugin(description);
-      setDraftNotes(result.notes || []);
-      if (!result.manifest) {
-        toast.error('Could not draft a manifest from that — see the notes');
-        return;
+      const { task_id } = await apiClient.draftPlugin(description);
+
+      // Poll rather than wait on the request. Drafting validates what it wrote
+      // and runs the tools it wrote, and asks again when either refuses -- so
+      // the wait is tens of seconds to a couple of minutes, and the repair
+      // reasons are worth showing while it happens.
+      const started = Date.now();
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const status = await apiClient.getPluginDraft(task_id);
+        setDraftNotes(status.notes || []);
+        setDraftStage(
+          status.attempt > 0
+            ? `${status.stage === 'checking' ? 'Running its tools' : 'Writing'} — attempt ${status.attempt}`
+            : 'Queued'
+        );
+
+        if (!status.pending) {
+          if (!status.manifest) {
+            toast.error('Could not draft a manifest from that — see the notes');
+            return;
+          }
+          setManifestText(JSON.stringify(status.manifest, null, 2));
+          toast.success(
+            status.attempts > 1
+              ? `Drafted after ${status.attempts} attempts — worth a read`
+              : 'Drafted — review it before creating'
+          );
+          return;
+        }
+
+        // A bound, so a worker that dies mid-draft does not leave this
+        // spinning for ever. The task's own limit is 6 minutes.
+        if (Date.now() - started > 7 * 60 * 1000) {
+          toast.error('Drafting is taking longer than it should — give up on it');
+          return;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 2000));
       }
-      setManifestText(JSON.stringify(result.manifest, null, 2));
-      toast.success(
-        result.attempts > 1
-          ? `Drafted after ${result.attempts} attempts — worth a read`
-          : 'Drafted — review it before creating'
-      );
     } catch {
       // apiClient surfaces the error.
     } finally {
       setDrafting(false);
+      setDraftStage(null);
     }
   };
 
@@ -259,7 +289,7 @@ export const PluginsPanel: React.FC = () => {
               ) : (
                 <Wand2 className="h-4 w-4" />
               )}
-              {drafting ? 'Drafting…' : 'Draft'}
+              {drafting ? draftStage || 'Drafting…' : 'Draft'}
             </button>
           </div>
           <p className="mt-1 text-xs text-gray-500">

@@ -33,7 +33,7 @@ sentence into a box.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from loguru import logger
 
@@ -290,13 +290,30 @@ async def draft_manifest(
     user: Any = None,
     db: Any = None,
     user_id: Any = None,
+    on_progress: Optional[Callable[[str, int, List[str]], None]] = None,
 ) -> Dict[str, Any]:
     """Draft a manifest, repair it against the validator, and check its paths.
 
     Returns ``{manifest, notes, attempts}``. ``manifest`` is None when no
     attempt produced something installable; ``notes`` then says what the
     validator kept refusing, which is more useful than a bare failure.
+
+    ``on_progress(stage, attempt, notes)`` is called as the loop turns. The
+    notes *are* the progress worth showing -- "fixing: id 'my-plugin' must be
+    lowercase" says more than a spinner, and the repair loop means the slow
+    case is the common one whenever a first draft is wrong.
     """
+
+    def _report(stage: str, attempt: int, notes: List[str]) -> None:
+        if on_progress is None:
+            return
+        try:
+            on_progress(stage, attempt, list(notes))
+        except Exception as exc:  # pragma: no cover - defensive
+            # Progress is a courtesy. A caller whose reporting breaks must not
+            # take the draft down with it.
+            logger.warning(f"Draft progress callback failed: {exc}")
+
     from app.services.llm_service import LLMService
 
     text = str(description or "").strip()
@@ -314,6 +331,7 @@ async def draft_manifest(
     manifest: Optional[Dict[str, Any]] = None
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
+        _report("drafting", attempt, notes)
         try:
             completion = await llm.generate_structured(
                 system_prompt=system,
@@ -353,6 +371,7 @@ async def draft_manifest(
         if user is None or db is None:
             break
 
+        _report("checking", attempt, notes)
         complaints = await _dry_run_paths(manifest, user, db)
         if not complaints:
             break
@@ -367,4 +386,5 @@ async def draft_manifest(
         # review, and handing back nothing would be worse than handing back
         # something imperfect with the flaw written down.
 
+    _report("done", attempt, notes)
     return {"manifest": manifest, "notes": notes, "attempts": attempt}

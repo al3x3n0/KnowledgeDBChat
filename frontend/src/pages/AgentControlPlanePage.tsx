@@ -20,6 +20,7 @@ import toast from 'react-hot-toast';
 import Button from '../components/common/Button';
 import LoadingSpinner from '../components/common/LoadingSpinner';
 import { apiClient } from '../services/api';
+import { invalidateAgentRunQueries } from '../utils/agentRunQueries';
 import type {
   AgentControlRunDetail,
   AgentControlRunEdge,
@@ -876,15 +877,12 @@ const AgentControlPlanePage: React.FC = () => {
             return next;
           });
         }
-        queryClient.invalidateQueries(['agent-control-runs']);
-        queryClient.invalidateQueries(['agent-control-run']);
-        queryClient.invalidateQueries(['agent-control-reviews']);
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['research-portfolios']);
-        queryClient.invalidateQueries(['agent-jobs']);
-        queryClient.invalidateQueries(['research-monitor-analytics']);
-        queryClient.invalidateQueries(['agent-checkpoint-queue']);
-        queryClient.invalidateQueries(['research-inbox']);
+        invalidateAgentRunQueries(queryClient, [
+          'domain-research-profiles',
+          'research-portfolios',
+          'research-monitor-analytics',
+          'research-inbox',
+        ]);
         toast.success(response.detail || 'Operator review updated');
       },
       onError: (error: any) => {
@@ -908,12 +906,10 @@ const AgentControlPlanePage: React.FC = () => {
       onSuccess: (response) => {
         setReviewSelection({});
         setBulkReviewNote('');
-        queryClient.invalidateQueries(['agent-control-runs']);
-        queryClient.invalidateQueries(['agent-control-run']);
-        queryClient.invalidateQueries(['agent-control-reviews']);
-        queryClient.invalidateQueries(['domain-research-profiles']);
-        queryClient.invalidateQueries(['research-portfolios']);
-        queryClient.invalidateQueries(['agent-jobs']);
+        invalidateAgentRunQueries(queryClient, [
+          'domain-research-profiles',
+          'research-portfolios',
+        ]);
         toast.success(
           response.failed > 0
             ? `Bulk action applied to ${response.applied} of ${response.requested_count} items`

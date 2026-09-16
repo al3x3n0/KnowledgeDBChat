@@ -2860,7 +2860,12 @@ const AutonomousAgentsPage: React.FC = () => {
     ['research-monitor-analytics'],
     () => apiClient.getResearchMonitorAnalytics(),
     {
-      enabled: activeTab === 'health',
+      // Health *and* inbox. `healthCustomers` is derived from this response and
+      // fills the inbox's customer filter, so gating it on the health tab left
+      // that dropdown empty unless you had opened Autonomy Health earlier in
+      // the same session -- a filter offering nothing, depending on where you
+      // had been.
+      enabled: activeTab === 'health' || activeTab === 'inbox',
       staleTime: 30000,
     }
   );

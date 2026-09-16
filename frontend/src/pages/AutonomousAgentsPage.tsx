@@ -94,7 +94,6 @@ import type {
   ScientificSandboxProfileUpdate,
   AgentJobTemplate,
   AgentJobStatus,
-  AgentJobType,
   AgentJobChainDefinition,
   AgentJobChainStatus,
   AgentJobFromChainCreate,
@@ -122,6 +121,8 @@ import LoadingSpinner from '../components/common/LoadingSpinner';
 import SkeletonList from '../components/common/SkeletonList';
 import CreateFromTemplateModal from '../components/agent/CreateFromTemplateModal';
 import NewCampaignModal from '../components/agent/NewCampaignModal';
+import JobChainsTab from '../components/agent/tabs/JobChainsTab';
+import JobTemplatesTab, { QuickStart } from '../components/agent/tabs/JobTemplatesTab';
 import PluginSlot from '../plugins/PluginSlot';
 import InboxMonitorModal from '../components/agent/InboxMonitorModal';
 import MonitorProfilesModal from '../components/agent/MonitorProfilesModal';
@@ -132,9 +133,7 @@ import QuickStartRoleWorkflowModal from '../components/agent/QuickStartRoleWorkf
 import QuickStartDomainResearchModal from '../components/agent/QuickStartDomainResearchModal';
 import CreateJobModal from '../components/agent/CreateJobModal';
 import StartChainModal from '../components/agent/StartChainModal';
-import TemplateCard from '../components/agent/TemplateCard';
 import {
-  JOB_TYPE_CONFIG,
   STATUS_CONFIG,
   type AgentJobsTab,
 } from '../components/agent/jobConfig';
@@ -2591,12 +2590,102 @@ const AutonomousAgentsPage: React.FC = () => {
     ['agent-job-chains'],
     () => apiClient.listChainDefinitions()
   );
+  // The seven quick starts were seven near-identical JSX blocks differing in
+  // three values. Declared once here; the tab renders whatever it is given
+  // and knows nothing about scopes or modals.
+  const templateQuickStarts: QuickStart[] = [
+    {
+      label: 'Start Domain Research',
+      onStart: () => {
+        setTemplateRecommendScope('research');
+        if (!templateRecommendGoal.trim()) {
+          setTemplateRecommendGoal(
+            'Research a technical domain, rank evidence-backed ideas, and generate notes'
+          );
+        }
+        setShowDomainResearchQuickStartModal(true);
+      },
+    },
+    {
+      label: 'Start Bug Triage Swarm',
+      onStart: () => {
+        setTemplateRecommendScope('repo');
+        if (!templateRecommendGoal.trim()) {
+          setTemplateRecommendGoal(
+            'Run a coding swarm to reproduce the bug, rank the best repair path, and auto-launch the repair loop'
+          );
+        }
+        setShowBugTriageSwarmQuickStartModal(true);
+      },
+    },
+    {
+      label: 'Start Build Break Swarm',
+      onStart: () => {
+        setTemplateRecommendScope('backend');
+        if (!templateRecommendGoal.trim()) {
+          setTemplateRecommendGoal(
+            'Diagnose the build break, isolate the failing file cluster, and auto-handoff the winning repair path'
+          );
+        }
+        setShowBuildBreakSwarmQuickStartModal(true);
+      },
+    },
+    {
+      label: 'Start Frontend Regression Swarm',
+      onStart: () => {
+        setTemplateRecommendScope('frontend');
+        if (!templateRecommendGoal.trim()) {
+          setTemplateRecommendGoal(
+            'Reproduce the frontend regression, isolate the affected UI surface, and promote the winning repair path'
+          );
+        }
+        setShowFrontendRegressionSwarmQuickStartModal(true);
+      },
+    },
+    {
+      label: 'Start Repo Bug Triage',
+      onStart: () => {
+        setTemplateRecommendScope('repo');
+        if (!templateRecommendGoal.trim()) {
+          setTemplateRecommendGoal(
+            'Triage a repo bug from the observed symptom and return a verified patch proposal'
+          );
+        }
+        setShowRepoBugTriageQuickStartModal(true);
+      },
+    },
+    {
+      label: 'Start Claude Backend Loop',
+      onStart: () => {
+        setTemplateRecommendScope('backend');
+        if (!templateRecommendGoal.trim()) {
+          setTemplateRecommendGoal(
+            'Fix backend API tests and stabilize integrations'
+          );
+        }
+        setShowClaudeQuickStartModal(true);
+      },
+    },
+    {
+      label: 'Start Role Workflow',
+      onStart: () => {
+        if (!templateRecommendGoal.trim()) {
+          setTemplateRecommendGoal(
+            'Investigate contradictory signals and produce a validated recommendation plan'
+          );
+        }
+        setShowRoleWorkflowQuickStartModal(true);
+      },
+    },
+  ];
+
   const displayedChainDefinitions = useMemo(() => {
     const chains = (((chainsData as any)?.chains || []) as AgentJobChainDefinition[]).slice();
     const isRecoveryPlaybook = (chain: AgentJobChainDefinition) => {
       const name = String(chain.name || '').toLowerCase();
       const displayName = String(chain.display_name || '').toLowerCase();
       const description = String(chain.description || '').toLowerCase();
+
       return (
         name.startsWith('playbook_recovery_')
         || displayName.includes('recovery playbook')
@@ -14604,217 +14693,23 @@ const AutonomousAgentsPage: React.FC = () => {
         </div>
 
         {activeTab === 'templates' && (
-          <div className="w-full">
-            <p className="text-sm text-gray-500 mb-4">
-              Choose a template to quickly create a pre-configured autonomous job
-            </p>
-            <div className="mb-3 flex items-center justify-between">
-              <div className="flex items-center gap-2">
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setTemplateRecommendScope('research');
-                    if (!templateRecommendGoal.trim()) {
-                      setTemplateRecommendGoal('Research a technical domain, rank evidence-backed ideas, and generate notes');
-                    }
-                    setShowDomainResearchQuickStartModal(true);
-                  }}
-                >
-                  Start Domain Research
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setTemplateRecommendScope('repo');
-                    if (!templateRecommendGoal.trim()) {
-                      setTemplateRecommendGoal('Run a coding swarm to reproduce the bug, rank the best repair path, and auto-launch the repair loop');
-                    }
-                    setShowBugTriageSwarmQuickStartModal(true);
-                  }}
-                >
-                  Start Bug Triage Swarm
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setTemplateRecommendScope('backend');
-                    if (!templateRecommendGoal.trim()) {
-                      setTemplateRecommendGoal('Diagnose the build break, isolate the failing file cluster, and auto-handoff the winning repair path');
-                    }
-                    setShowBuildBreakSwarmQuickStartModal(true);
-                  }}
-                >
-                  Start Build Break Swarm
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setTemplateRecommendScope('frontend');
-                    if (!templateRecommendGoal.trim()) {
-                      setTemplateRecommendGoal('Reproduce the frontend regression, isolate the affected UI surface, and promote the winning repair path');
-                    }
-                    setShowFrontendRegressionSwarmQuickStartModal(true);
-                  }}
-                >
-                  Start Frontend Regression Swarm
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setTemplateRecommendScope('repo');
-                    if (!templateRecommendGoal.trim()) {
-                      setTemplateRecommendGoal('Triage a repo bug from the observed symptom and return a verified patch proposal');
-                    }
-                    setShowRepoBugTriageQuickStartModal(true);
-                  }}
-                >
-                  Start Repo Bug Triage
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    setTemplateRecommendScope('backend');
-                    if (!templateRecommendGoal.trim()) {
-                      setTemplateRecommendGoal('Fix backend API tests and stabilize integrations');
-                    }
-                    setShowClaudeQuickStartModal(true);
-                  }}
-                  disabled={!claudeBackendTemplate}
-                >
-                  Start Claude Backend Loop
-                </Button>
-                <Button
-                  variant="secondary"
-                  onClick={() => {
-                    if (!templateRecommendGoal.trim()) {
-                      setTemplateRecommendGoal('Investigate contradictory signals and produce a validated recommendation plan');
-                    }
-                    setShowRoleWorkflowQuickStartModal(true);
-                  }}
-                >
-                  Start Role Workflow
-                </Button>
-              </div>
-              {!claudeBackendTemplate && (
-                <span className="text-xs text-gray-500">Claude backend template not available</span>
-              )}
-            </div>
-            <div className="mb-4 grid grid-cols-3 gap-3">
-              <div>
-                <label className="block text-xs font-medium text-gray-600 mb-1">Recommendation scope</label>
-                <select
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={templateRecommendScope}
-                  onChange={(e) => setTemplateRecommendScope(e.target.value)}
-                >
-                  <option value="">Auto</option>
-                  <option value="backend">Backend</option>
-                  <option value="frontend">Frontend</option>
-                  <option value="latex">LaTeX</option>
-                  <option value="research">Research</option>
-                </select>
-              </div>
-              <div className="col-span-2">
-                <label className="block text-xs font-medium text-gray-600 mb-1">Goal hint (optional)</label>
-                <input
-                  type="text"
-                  className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm"
-                  value={templateRecommendGoal}
-                  onChange={(e) => setTemplateRecommendGoal(e.target.value)}
-                  placeholder="e.g. Fix backend API tests for source ingestion"
-                />
-              </div>
-            </div>
-            {templatesData?.templates.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-gray-500">
-                <FileText className="w-12 h-12 mb-3 text-gray-400" />
-                <p className="text-lg font-medium">No templates available</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-3 gap-4">
-                {templatesData?.templates.map((template) => (
-                  <TemplateCard
-                    key={template.id}
-                    template={template}
-                    typeConfig={
-                      JOB_TYPE_CONFIG[template.job_type as AgentJobType] ||
-                      JOB_TYPE_CONFIG.custom
-                    }
-                    onSelect={setCreateFromTemplate}
-                  />
-                ))}
-              </div>
-            )}
-          </div>
+          <JobTemplatesTab
+            templates={templatesData?.templates || []}
+            quickStarts={templateQuickStarts}
+            claudeBackendAvailable={Boolean(claudeBackendTemplate)}
+            scope={templateRecommendScope}
+            onScopeChange={setTemplateRecommendScope}
+            goal={templateRecommendGoal}
+            onGoalChange={setTemplateRecommendGoal}
+            onSelectTemplate={setCreateFromTemplate}
+          />
         )}
 
         {activeTab === 'chains' && (
-          <div className="w-full">
-            <p className="text-sm text-gray-500 mb-4">
-              Job chains allow you to create multi-step workflows where jobs automatically trigger subsequent jobs on completion
-            </p>
-            {displayedChainDefinitions.length === 0 ? (
-              <div className="flex flex-col items-center justify-center py-12 text-gray-500">
-                <GitBranch className="w-12 h-12 mb-3 text-gray-400" />
-                <p className="text-lg font-medium">No chain definitions yet</p>
-                <p className="text-sm">Chain definitions allow you to create multi-step workflows</p>
-              </div>
-            ) : (
-              <div className="grid grid-cols-3 gap-4">
-                {displayedChainDefinitions.map((chain) => {
-                  const isRecoveryPlaybook = String(chain.name || '').toLowerCase().startsWith('playbook_recovery_')
-                    || String(chain.display_name || '').toLowerCase().includes('recovery playbook')
-                    || String(chain.description || '').toLowerCase().includes('saved as a recovery playbook');
-                  return (
-                  <div
-                    key={chain.id}
-                    className="bg-white border border-gray-200 rounded-lg p-4 transition-all duration-fast ease-ui hover:shadow-level-2 hover:-translate-y-px hover:border-gray-400"
-                  >
-                    <div className="flex items-start gap-3 mb-3">
-                      <div className="p-2 rounded-lg bg-purple-100 text-purple-600">
-                        <GitBranch className="w-5 h-5" />
-                      </div>
-                      <div className="flex-1">
-                        <h3 className="section-heading">{chain.display_name}</h3>
-                        <p className="text-sm text-gray-500">{chain.chain_steps.length} steps</p>
-                      </div>
-                      {isRecoveryPlaybook ? (
-                        <span className="text-xs bg-amber-100 text-amber-800 px-2 py-1 rounded">Recovery</span>
-                      ) : null}
-                      {chain.is_system && (
-                        <span className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">System</span>
-                      )}
-                    </div>
-                    {chain.description && (
-                      <p className="text-sm text-gray-600 mb-3 line-clamp-2">{chain.description}</p>
-                    )}
-                    <div className="flex flex-wrap gap-2 mb-3">
-                      {chain.chain_steps.slice(0, 3).map((step, idx) => (
-                        <span key={idx} className="text-xs bg-gray-100 text-gray-600 px-2 py-1 rounded">
-                          {step.step_name}
-                        </span>
-                      ))}
-                      {chain.chain_steps.length > 3 && (
-                        <span className="text-xs text-gray-500">+{chain.chain_steps.length - 3} more</span>
-                      )}
-                    </div>
-                    <Button
-                      size="sm"
-                      variant="secondary"
-                      className="w-full"
-                      onClick={() => {
-                        setStartFromChain(chain);
-                      }}
-                    >
-                      <Play className="w-3 h-3 mr-1" />
-                      Start Chain
-                    </Button>
-                  </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
+          <JobChainsTab
+            chains={displayedChainDefinitions}
+            onStartChain={setStartFromChain}
+          />
         )}
 
         {activeTab === 'inbox' && (
